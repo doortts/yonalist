@@ -349,20 +349,10 @@ export async function fetchRepoWorkItems(
   return sortByUpdatedDesc([...issuePulls, ...discussions]);
 }
 
-/** Repositories the user owns, collaborates on, or reaches via an org. */
-export async function fetchMyRepositories(
-  connection: GithubConnection
-): Promise<RepositorySummary[]> {
-  const params = new URLSearchParams({
-    affiliation: "owner,collaborator,organization_member",
-    sort: "pushed",
-    per_page: "100"
-  });
-  const repos = await requestJson<UserRepoItem[]>(
-    connection,
-    `/user/repos?${params.toString()}`
-  );
-
+function toSummaries(repos: UserRepoItem[]): RepositorySummary[] {
+  if (!Array.isArray(repos)) {
+    return [];
+  }
   return repos
     .filter((repo) => repo.name && repo.owner?.login)
     .map((repo) => ({
@@ -372,6 +362,38 @@ export async function fetchMyRepositories(
       openIssuesCount: repo.open_issues_count ?? 0,
       pushedAt: repo.pushed_at ?? ""
     }));
+}
+
+/**
+ * Repositories the user participates in (owns or collaborates on) or
+ * watches — not every repository reachable through an org membership.
+ */
+export async function fetchMyRepositories(
+  connection: GithubConnection
+): Promise<RepositorySummary[]> {
+  const participatingParams = new URLSearchParams({
+    affiliation: "owner,collaborator",
+    sort: "pushed",
+    per_page: "100"
+  });
+  const [participating, watched] = await Promise.all([
+    requestJson<UserRepoItem[]>(
+      connection,
+      `/user/repos?${participatingParams.toString()}`
+    ),
+    // Watched repositories; optional so an older GHE cannot break the list.
+    requestJson<UserRepoItem[]>(connection, "/user/subscriptions?per_page=100").catch(
+      () => []
+    )
+  ]);
+
+  const merged = new Map<string, RepositorySummary>();
+  for (const summary of [...toSummaries(participating), ...toSummaries(watched)]) {
+    if (!merged.has(summary.fullName)) {
+      merged.set(summary.fullName, summary);
+    }
+  }
+  return [...merged.values()];
 }
 
 /** Groups repositories by owner, owners alphabetical, repos by recent push. */

@@ -254,6 +254,9 @@ describe("Yonalist app shell", () => {
           { status: 200 }
         );
       }
+      if (target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
       return new Response("{}", { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);

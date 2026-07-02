@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import {
+  fetchMyRepositories,
   fetchMyWorkItems,
   fetchRepoWorkItems,
   groupRepositoriesByOwner
@@ -130,6 +131,85 @@ describe("fetchRepoWorkItems", () => {
       expect.stringContaining("q=repo%3Aacme%2Fapp"),
       expect.anything()
     );
+  });
+});
+
+describe("fetchMyRepositories", () => {
+  it("merges participating and watched repositories without duplicates", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/user/repos")) {
+        expect(target).toContain("affiliation=owner%2Ccollaborator");
+        expect(target).not.toContain("organization_member");
+        return jsonResponse([
+          {
+            name: "mine",
+            full_name: "doortts/mine",
+            owner: { login: "doortts" },
+            open_issues_count: 1,
+            pushed_at: "2026-07-01T00:00:00Z"
+          },
+          {
+            name: "shared",
+            full_name: "acme/shared",
+            owner: { login: "acme" },
+            open_issues_count: 2,
+            pushed_at: "2026-06-01T00:00:00Z"
+          }
+        ]);
+      }
+      if (target.includes("/user/subscriptions")) {
+        return jsonResponse([
+          {
+            name: "shared",
+            full_name: "acme/shared",
+            owner: { login: "acme" },
+            open_issues_count: 2,
+            pushed_at: "2026-06-01T00:00:00Z"
+          },
+          {
+            name: "watched-only",
+            full_name: "vendor/watched-only",
+            owner: { login: "vendor" },
+            open_issues_count: 5,
+            pushed_at: "2026-05-01T00:00:00Z"
+          }
+        ]);
+      }
+      throw new Error(`Unexpected request: ${target}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositories(connection);
+
+    expect(repos.map((repo) => repo.fullName)).toEqual([
+      "doortts/mine",
+      "acme/shared",
+      "vendor/watched-only"
+    ]);
+  });
+
+  it("still lists participating repositories when subscriptions fail", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/user/repos")) {
+        return jsonResponse([
+          {
+            name: "mine",
+            full_name: "doortts/mine",
+            owner: { login: "doortts" },
+            open_issues_count: 0,
+            pushed_at: "2026-07-01T00:00:00Z"
+          }
+        ]);
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositories(connection);
+
+    expect(repos.map((repo) => repo.fullName)).toEqual(["doortts/mine"]);
   });
 });
 
