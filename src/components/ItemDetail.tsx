@@ -93,7 +93,6 @@ export function ItemDetail({
       </article>
 
       <form className="comment-composer" onSubmit={onQueueComment}>
-        <label htmlFor="comment-draft">Write a comment</label>
         <textarea
           id="comment-draft"
           aria-label="Write a comment"
@@ -107,9 +106,12 @@ export function ItemDetail({
               ? "Comments are queued first, then synced."
               : "Offline comment will wait in the outbox."}
           </span>
-          <button className="primary-button" type="submit">
+          <button
+            className={online ? "primary-button comment-button" : "primary-button"}
+            type="submit"
+          >
             <Send size={16} />
-            Queue comment
+            {online ? "Comment" : "Queue comment"}
           </button>
         </div>
       </form>

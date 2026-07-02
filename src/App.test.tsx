@@ -77,6 +77,23 @@ describe("Yonalist app shell", () => {
     expect(bookmark).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows a green Comment button online and Queue comment offline", () => {
+    const { unmount } = render(<App initialOnline />);
+
+    const onlineButton = screen.getByRole("button", { name: "Comment" });
+    expect(onlineButton).toHaveClass("comment-button");
+    expect(screen.queryByRole("button", { name: "Queue comment" })).toBeNull();
+    // The label text appears once (as the textarea placeholder), not twice.
+    expect(screen.queryByText("Write a comment")).toBeNull();
+    unmount();
+
+    render(<App initialOnline={false} />);
+
+    expect(screen.getByRole("button", { name: "Queue comment" })).not.toHaveClass(
+      "comment-button"
+    );
+  });
+
   it("creates an offline comment draft and shows it in the outbox", async () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);

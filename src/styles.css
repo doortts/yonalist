@@ -339,6 +339,24 @@ body.is-resizing-pane {
   opacity: 0.55;
 }
 
+/* GitHub-style green for the online Comment action. */
+.primary-button.comment-button {
+  background: #1f883d;
+}
+
+.primary-button.comment-button:hover {
+  background: #1a7f37;
+}
+
+:root[data-theme="dark"] .primary-button.comment-button {
+  background: #238636;
+  color: #ffffff;
+}
+
+:root[data-theme="dark"] .primary-button.comment-button:hover {
+  background: #2ea043;
+}
+
 .secondary-button {
   padding: 7px 12px;
   border-color: var(--border-strong);
@@ -652,16 +670,6 @@ body.is-resizing-pane {
   display: grid;
   gap: 10px;
   margin: 18px 28px 28px;
-  padding: 16px 20px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-card);
-}
-
-.comment-composer label {
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .comment-composer textarea {
