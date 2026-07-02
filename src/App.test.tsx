@@ -186,6 +186,21 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("switches themes from the settings page and persists the choice", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(screen.getByRole("radio", { name: "Dark theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("dark");
+
+    await user.click(screen.getByRole("radio", { name: "Light theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("light");
+  });
+
   it("resizes panes from the column separators", () => {
     render(<App />);
 

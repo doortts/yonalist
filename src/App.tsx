@@ -25,6 +25,7 @@ import { sampleItems, SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useNotifications } from "./hooks/useNotifications";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
+import { useTheme } from "./hooks/useTheme";
 import { createGitHubClient } from "./services/github";
 import { syncOutboxOperations } from "./services/sync";
 
@@ -74,6 +75,7 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const notifications = useNotifications(settings, online, showNotifications);
+  const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const [draftIssue, setDraftIssue] = useState<DraftIssue>({
     title: "",
     body: "",
@@ -463,6 +465,8 @@ export default function App({ initialOnline }: AppProps) {
           <SettingsPage
             settings={settings}
             status={settingsStatus}
+            themeMode={themeMode}
+            onThemeModeChange={setThemeMode}
             onUpdate={updateSetting}
             onSave={saveSettings}
             onConnect={connectGitHub}

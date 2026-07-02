@@ -6,18 +6,26 @@ on issues and pull requests from a local Markdown vault.
 ## Current V1 Slice
 
 - Tauri + React + TypeScript desktop app scaffold.
-- Three-column UI: navigation, item list, and detail/comment pane.
+- Three-column UI (navigation, item list, detail/comment pane) with
+  resizable panes and a token-based design system.
+- Light/dark/system theme modes selectable from Settings.
+- GitHub notifications inbox: 60s polling with If-Modified-Since caching,
+  date-grouped list, reason-based icons/colors, unread badges, only-new
+  filter, hide/unhide, search, and open-in-browser with local viewed
+  tracking. Sample data is shown until a personal access token is set.
 - Markdown + YAML Front Matter domain model for items, comments, outbox
   operations, favorites, attachment manifests, and vault indexing.
 - One-comment-per-file path strategy under
   `<vault>/<host>/<owner>/<repo>/<issues|pulls>/<number>/comments/`.
 - Local-only favorite metadata with a red bookmark affordance.
-- Offline badge and offline queue support for issue/comment drafts.
+- Offline badge, browser online/offline tracking, and an offline queue for
+  issue/comment drafts.
 - Outbox review modal shown when queued work exists and the app comes back
-  online.
+  online; queued operations sync through the GitHub REST client when a
+  personal access token is configured.
 - GitHub REST/OAuth client helpers for host-specific API and web base URLs.
-- Tauri command boundary for vault folder creation, text file read/write, and
-  token storage/loading through the OS keychain.
+- Tauri command boundary for vault folder creation, vault-scoped atomic
+  text file read/write, and token storage/loading through the OS keychain.
 
 ## Commands
 

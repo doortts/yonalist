@@ -1,19 +1,30 @@
-import { CheckCircle2, HardDrive, KeyRound, X } from "lucide-react";
+import { CheckCircle2, HardDrive, KeyRound, SunMoon, X } from "lucide-react";
 import type { FormEvent } from "react";
 import type { AppSettings } from "../appSettings";
+import type { ThemeMode } from "../hooks/useTheme";
 
 interface SettingsPageProps {
   settings: AppSettings;
   status: string;
+  themeMode: ThemeMode;
+  onThemeModeChange: (mode: ThemeMode) => void;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onSave: (event: FormEvent) => void;
   onConnect: () => void;
   onClose: () => void;
 }
 
+const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "System" }
+];
+
 export function SettingsPage({
   settings,
   status,
+  themeMode,
+  onThemeModeChange,
   onUpdate,
   onSave,
   onConnect,
@@ -37,6 +48,33 @@ export function SettingsPage({
       </header>
 
       <div className="settings-body">
+        <section className="settings-section">
+          <div className="settings-section-title">
+            <SunMoon size={18} />
+            <h3>Appearance</h3>
+          </div>
+          <div className="theme-options" role="radiogroup" aria-label="Theme">
+            {themeModeOptions.map((option) => (
+              <label
+                key={option.value}
+                className={
+                  themeMode === option.value ? "theme-option active" : "theme-option"
+                }
+              >
+                <input
+                  type="radio"
+                  name="theme-mode"
+                  aria-label={`${option.label} theme`}
+                  value={option.value}
+                  checked={themeMode === option.value}
+                  onChange={() => onThemeModeChange(option.value)}
+                />
+                <span>{option.label}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+
         <section className="settings-section">
           <div className="settings-section-title">
             <KeyRound size={18} />
