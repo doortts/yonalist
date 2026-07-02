@@ -1,4 +1,6 @@
-import type { GitHubNotification } from "../domain/notifications";
+import { subjectNumber, type GitHubNotification } from "../domain/notifications";
+import type { NotificationDetailContent } from "../services/notificationDetail";
+import { sampleItems } from "./sampleItems";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -96,4 +98,46 @@ export function sampleNotifications(now: Date = new Date()): GitHubNotification[
       }
     }
   ];
+}
+
+/** Demo detail content mirroring what the GitHub API would return. */
+export function sampleNotificationDetail(
+  notification: GitHubNotification
+): NotificationDetailContent {
+  const number = subjectNumber(notification.subject);
+  const match = sampleItems.find(
+    (item) =>
+      `${item.frontMatter.owner}/${item.frontMatter.repo}` ===
+        notification.repository.full_name && item.frontMatter.number === number
+  );
+
+  if (match) {
+    return {
+      title: match.frontMatter.title,
+      state: match.frontMatter.state,
+      author: match.frontMatter.author,
+      created_at: match.frontMatter.created_at,
+      body: match.body,
+      labels: match.frontMatter.labels,
+      comments: [
+        {
+          id: "sample-comment-1",
+          author: "mona",
+          created_at: match.frontMatter.updated_at,
+          body: "Sample reply so the conversation thread layout is visible offline."
+        }
+      ]
+    };
+  }
+
+  return {
+    title: notification.subject.title,
+    state: "open",
+    author: notification.repository.owner.login,
+    created_at: notification.updated_at,
+    body:
+      "This is sample content.\n\nAdd a personal access token in Settings to load the real conversation from GitHub.",
+    labels: [],
+    comments: []
+  };
 }

@@ -26,6 +26,7 @@ export interface UseNotificationsResult {
   demoMode: boolean;
   viewedAt: ViewedAtMap;
   refresh: () => void;
+  markNotificationViewed: (notification: GitHubNotification) => void;
   openNotification: (notification: GitHubNotification) => void;
   hideNotification: (id: string) => void;
   unhideNotification: (id: string) => void;
@@ -106,6 +107,14 @@ export function useNotifications(
     [notifications, viewedAt, settings.webBaseUrl]
   );
 
+  const markNotificationViewed = useCallback(
+    (notification: GitHubNotification) => {
+      const url = notificationWebUrl(notification, settings.webBaseUrl);
+      setViewedAt(markViewed(url));
+    },
+    [settings.webBaseUrl]
+  );
+
   const openNotification = useCallback(
     (notification: GitHubNotification) => {
       const url = notificationWebUrl(notification, settings.webBaseUrl);
@@ -144,6 +153,7 @@ export function useNotifications(
     demoMode,
     viewedAt,
     refresh: load,
+    markNotificationViewed,
     openNotification,
     hideNotification,
     unhideNotification

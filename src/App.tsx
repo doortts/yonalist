@@ -10,6 +10,7 @@ import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
 import { ItemDetail } from "./components/ItemDetail";
 import { ItemListPane } from "./components/ItemListPane";
 import { NewIssuePage, type DraftIssue } from "./components/NewIssuePage";
+import { NotificationDetail } from "./components/NotificationDetail";
 import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
 import { SettingsPage } from "./components/SettingsPage";
@@ -20,8 +21,10 @@ import {
   createIssueOutboxOperation
 } from "./domain/outbox";
 import { commentFilePath, draftIssuePath } from "./domain/paths";
+import type { GitHubNotification } from "./domain/notifications";
 import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
 import { sampleItems, SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
+import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useNotifications } from "./hooks/useNotifications";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
@@ -75,6 +78,13 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const notifications = useNotifications(settings, online, showNotifications);
+  const [selectedNotification, setSelectedNotification] =
+    useState<GitHubNotification | null>(null);
+  const notificationDetail = useNotificationDetail(
+    selectedNotification,
+    settings,
+    online
+  );
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
   const [draftIssue, setDraftIssue] = useState<DraftIssue>({
     title: "",
@@ -431,21 +441,26 @@ export default function App({ initialOnline }: AppProps) {
           state={notifications}
           webBaseUrl={settings.webBaseUrl}
           online={online}
+          selectedId={selectedNotification?.id ?? null}
+          onSelect={(notification) => {
+            setSelectedNotification(notification);
+            notifications.markNotificationViewed(notification);
+          }}
         />
       ) : (
-        <>
-          <ItemListPane
-        items={filteredItems}
-        selectedPath={selectedItem?.path ?? null}
-        query={query}
-        onQueryChange={setQuery}
-        onSelect={(path) => {
-          setSelectedPath(path);
-          setShowNewIssue(false);
-          setShowSettings(false);
-        }}
-        onNewIssue={openNewIssue}
-      />
+        <ItemListPane
+          items={filteredItems}
+          selectedPath={selectedItem?.path ?? null}
+          query={query}
+          onQueryChange={setQuery}
+          onSelect={(path) => {
+            setSelectedPath(path);
+            setShowNewIssue(false);
+            setShowSettings(false);
+          }}
+          onNewIssue={openNewIssue}
+        />
+      )}
 
       <div
         className="pane-resizer list-detail-resizer"
@@ -481,6 +496,12 @@ export default function App({ initialOnline }: AppProps) {
             onSubmit={queueIssue}
             onClose={() => setShowNewIssue(false)}
           />
+        ) : showNotifications ? (
+          <NotificationDetail
+            notification={selectedNotification}
+            state={notificationDetail}
+            onOpenInBrowser={notifications.openNotification}
+          />
         ) : (
           <ItemDetail
             item={selectedItem}
@@ -494,8 +515,6 @@ export default function App({ initialOnline }: AppProps) {
           />
         )}
       </section>
-        </>
-      )}
 
       {showOutbox && (
         <OutboxModal

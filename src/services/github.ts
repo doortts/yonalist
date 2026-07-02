@@ -188,6 +188,32 @@ export function createGitHubClient(options: GitHubClientOptions) {
       );
     },
 
+    getDiscussion(owner: string, repo: string, number: number) {
+      return requestJson(
+        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/discussions/${encodePathSegment(number)}`,
+        { method: "GET" }
+      );
+    },
+
+    listDiscussionComments(
+      owner: string,
+      repo: string,
+      number: number,
+      options: ListOptions = {}
+    ) {
+      return requestJson(
+        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/discussions/${encodePathSegment(number)}/comments${listQuery(options)}`,
+        { method: "GET" }
+      );
+    },
+
+    getRelease(owner: string, repo: string, releaseId: number) {
+      return requestJson(
+        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/releases/${encodePathSegment(releaseId)}`,
+        { method: "GET" }
+      );
+    },
+
     startDeviceFlow(input: DeviceFlowInput) {
       return postOAuth<DeviceCodeResponse>("/login/device/code", new URLSearchParams({
         client_id: input.clientId,

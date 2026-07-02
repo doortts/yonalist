@@ -186,6 +186,36 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows the selected notification's conversation in the detail pane", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    const detailPane = screen.getByLabelText("Detail");
+    expect(
+      within(detailPane).getByLabelText("Empty notification detail")
+    ).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+
+    expect(
+      within(detailPane).getByRole("heading", {
+        name: "Design offline issue reading"
+      })
+    ).toBeInTheDocument();
+    expect(
+      within(detailPane).getByText(/Offline-first reading keeps GitHub work/)
+    ).toBeInTheDocument();
+    expect(
+      within(detailPane).getByText(
+        /Sample reply so the conversation thread layout is visible offline/
+      )
+    ).toBeInTheDocument();
+  });
+
   it("switches themes from the settings page and persists the choice", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -29,6 +29,8 @@ interface NotificationsPaneProps {
   state: UseNotificationsResult;
   webBaseUrl: string;
   online: boolean;
+  selectedId: string | null;
+  onSelect: (notification: GitHubNotification) => void;
 }
 
 const reasonIcons: Record<
@@ -74,7 +76,13 @@ function subtitle(
   return parts.join(", ");
 }
 
-export function NotificationsPane({ state, webBaseUrl, online }: NotificationsPaneProps) {
+export function NotificationsPane({
+  state,
+  webBaseUrl,
+  online,
+  selectedId,
+  onSelect
+}: NotificationsPaneProps) {
   const [query, setQuery] = useState("");
   const [onlyNew, setOnlyNew] = useState(false);
   const [showHidden, setShowHidden] = useState(false);
@@ -112,41 +120,18 @@ export function NotificationsPane({ state, webBaseUrl, online }: NotificationsPa
 
   return (
     <section className="notifications-pane" aria-label="Notifications">
-      <header className="notifications-header">
-        <div>
-          <p className="eyebrow">GitHub</p>
-          <h2>Notifications</h2>
-        </div>
-        <div className="notifications-header-actions">
-          <label className="settings-check notifications-toggle">
-            <input
-              type="checkbox"
-              aria-label="Only new notifications"
-              checked={onlyNew}
-              onChange={(event) => setOnlyNew(event.target.checked)}
-            />
-            <span>Only new</span>
-          </label>
-          <label className="settings-check notifications-toggle">
-            <input
-              type="checkbox"
-              aria-label="Show hidden notifications"
-              checked={showHidden}
-              onChange={(event) => setShowHidden(event.target.checked)}
-            />
-            <span>Hidden ({state.hiddenNotifications.length})</span>
-          </label>
-          <button
-            className="icon-button"
-            type="button"
-            aria-label="Refresh notifications"
-            disabled={state.demoMode || !online}
-            onClick={state.refresh}
-          >
-            <RefreshCw size={16} className={state.loading ? "spinning" : undefined} />
-          </button>
-        </div>
-      </header>
+      <div className="notifications-header">
+        <h2>Notifications</h2>
+        <button
+          className="icon-button"
+          type="button"
+          aria-label="Refresh notifications"
+          disabled={state.demoMode || !online}
+          onClick={state.refresh}
+        >
+          <RefreshCw size={16} className={state.loading ? "spinning" : undefined} />
+        </button>
+      </div>
 
       <div className="notifications-search">
         <Search size={16} />
@@ -156,6 +141,27 @@ export function NotificationsPane({ state, webBaseUrl, online }: NotificationsPa
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+      </div>
+
+      <div className="notifications-filters">
+        <label className="settings-check notifications-toggle">
+          <input
+            type="checkbox"
+            aria-label="Only new notifications"
+            checked={onlyNew}
+            onChange={(event) => setOnlyNew(event.target.checked)}
+          />
+          <span>Only new</span>
+        </label>
+        <label className="settings-check notifications-toggle">
+          <input
+            type="checkbox"
+            aria-label="Show hidden notifications"
+            checked={showHidden}
+            onChange={(event) => setShowHidden(event.target.checked)}
+          />
+          <span>Hidden ({state.hiddenNotifications.length})</span>
+        </label>
       </div>
 
       {state.demoMode && (
@@ -203,12 +209,16 @@ export function NotificationsPane({ state, webBaseUrl, online }: NotificationsPa
                   : notification.subject.type === "Discussion"
                     ? MessagesSquare
                     : null;
+              const rowClasses = [
+                "notification-row",
+                quiet ? "quiet" : "",
+                notification.id === selectedId ? "selected" : ""
+              ]
+                .filter(Boolean)
+                .join(" ");
 
               return (
-                <div
-                  className={quiet ? "notification-row quiet" : "notification-row"}
-                  key={notification.id}
-                >
+                <div className={rowClasses} key={notification.id}>
                   <span
                     className={`notification-reason ${reason.className}`}
                     title={reason.label}
@@ -218,7 +228,7 @@ export function NotificationsPane({ state, webBaseUrl, online }: NotificationsPa
                   <button
                     type="button"
                     className="notification-main"
-                    onClick={() => state.openNotification(notification)}
+                    onClick={() => onSelect(notification)}
                   >
                     <span className="notification-title">
                       {notification.subject.title}
