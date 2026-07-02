@@ -38,38 +38,44 @@ export function ItemDetail({
   return (
     <>
       <header className="detail-header">
-        <div className="bookmark-strip">
-          <button
-            type="button"
-            className={
-              item.frontMatter.local.favorite
-                ? "favorite-button active"
-                : "favorite-button"
-            }
-            aria-label="Toggle favorite"
-            aria-pressed={item.frontMatter.local.favorite}
-            onClick={onToggleFavorite}
-          >
-            <Bookmark size={25} fill="currentColor" />
-          </button>
-          <span className="number-ribbon">#</span>
-        </div>
         <div className="detail-title-row">
           <div>
             <p className="eyebrow">
-              {item.frontMatter.owner}/{item.frontMatter.repo}
+              {item.frontMatter.owner}/{item.frontMatter.repo} ·{" "}
+              {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
             </p>
             <h2>{item.frontMatter.title}</h2>
           </div>
-          <button className="secondary-button" type="button" onClick={onOpenOutbox}>
-            <Inbox size={16} />
-            Outbox {outboxCount}
-          </button>
+          <div className="detail-header-actions">
+            <button
+              type="button"
+              className={
+                item.frontMatter.local.favorite
+                  ? "favorite-button active"
+                  : "favorite-button"
+              }
+              aria-label="Toggle favorite"
+              aria-pressed={item.frontMatter.local.favorite}
+              onClick={onToggleFavorite}
+            >
+              <Bookmark size={18} fill="currentColor" />
+            </button>
+            <button className="secondary-button" type="button" onClick={onOpenOutbox}>
+              <Inbox size={16} />
+              Outbox {outboxCount}
+            </button>
+          </div>
         </div>
         <div className="detail-actions">
-          <span>{item.frontMatter.labels.join(", ") || "No labels"}</span>
-          <span>{item.frontMatter.sync.status}</span>
-          <span>{online ? "Online" : "Offline queue enabled"}</span>
+          {item.frontMatter.labels.map((label) => (
+            <span className="chip" key={label}>
+              {label}
+            </span>
+          ))}
+          <span className="chip chip-status">{item.frontMatter.sync.status}</span>
+          <span className="detail-connection">
+            {online ? "Online" : "Offline queue enabled"}
+          </span>
         </div>
       </header>
 

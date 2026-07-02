@@ -1,5 +1,6 @@
 import { Bookmark, CircleDot, GitPullRequest, Plus, Search } from "lucide-react";
 import type { ItemDocument } from "../domain/types";
+import { timeAgo } from "../timeFormat";
 
 interface ItemListPaneProps {
   items: ItemDocument[];
@@ -56,6 +57,7 @@ export function ItemListPane({
                 <CircleDot size={15} />
               )}
               {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+              <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
             </span>
             <span className="item-title">{item.frontMatter.title}</span>
             <span className="item-footer">
