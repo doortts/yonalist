@@ -31,7 +31,7 @@ button {
 .app-shell {
   display: grid;
   grid-template-columns:
-    var(--sidebar-width, 280px) 6px var(--list-width, 420px) 6px
+    var(--sidebar-width, 280px) 1px var(--list-width, 420px) 1px
     minmax(520px, 1fr);
   min-height: 100vh;
   background: #eef0f2;
@@ -52,7 +52,10 @@ button {
 .pane-resizer {
   position: relative;
   z-index: 4;
+  justify-self: center;
+  width: 11px;
   min-height: 100vh;
+  margin-inline: -5px;
   cursor: col-resize;
   background: transparent;
   outline: 0;
@@ -61,7 +64,7 @@ button {
 
 .pane-resizer::before {
   position: absolute;
-  inset: 0 auto 0 2px;
+  inset: 0 auto 0 5px;
   width: 1px;
   background: #d9dce0;
   content: "";
@@ -69,8 +72,6 @@ button {
 
 .pane-resizer:hover::before,
 .pane-resizer:focus-visible::before {
-  left: 1px;
-  width: 3px;
   background: #e75135;
 }
 
@@ -749,7 +750,7 @@ h2 {
 
 @media (max-width: 980px) {
   .app-shell {
-    grid-template-columns: minmax(180px, var(--sidebar-width, 240px)) 6px minmax(280px, 1fr);
+    grid-template-columns: minmax(180px, var(--sidebar-width, 240px)) 1px minmax(280px, 1fr);
   }
 
   .list-detail-resizer {
