@@ -179,6 +179,36 @@ describe("fetchMyRepositories", () => {
     expect(byName["vendor/watched-only"]).toMatchObject({ watched: true });
   });
 
+  it("follows pagination so large org memberships are not cut off", async () => {
+    const repoAt = (index: number) => ({
+      name: `repo-${index}`,
+      full_name: `pi/repo-${index}`,
+      owner: { login: "pi" },
+      open_issues_count: 0,
+      pushed_at: "2026-07-01T00:00:00Z"
+    });
+    const fullPage = Array.from({ length: 100 }, (_, index) => repoAt(index));
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = new URL(String(url));
+      if (target.searchParams.get("affiliation") === "organization_member") {
+        return target.searchParams.get("page") === "1"
+          ? jsonResponse(fullPage)
+          : jsonResponse([repoAt(100)]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositories(connection);
+
+    expect(repos).toHaveLength(101);
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("affiliation=organization_member&sort=pushed&per_page=100&page=2")
+      )
+    ).toBe(true);
+  });
+
   it("still lists participating repositories when the optional sources fail", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);

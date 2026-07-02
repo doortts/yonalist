@@ -1039,9 +1039,17 @@ body.is-resizing-pane {
   font-size: 12.5px;
 }
 
+.project-visibility-search {
+  margin: 0;
+  justify-self: start;
+  min-width: min(320px, 100%);
+}
+
 .project-visibility-list {
   display: grid;
   gap: 14px;
+  max-height: 420px;
+  overflow-y: auto;
 }
 
 .project-visibility-group {

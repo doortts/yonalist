@@ -346,6 +346,30 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("filters the project visibility list by owner or repository name", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const section = screen.getByLabelText("Project visibility");
+
+    await user.type(within(section).getByLabelText("Filter projects"), "Home");
+
+    expect(
+      within(section).getByRole("checkbox", { name: "Show Yona-projects/Home" })
+    ).toBeInTheDocument();
+    expect(
+      within(section).queryByRole("checkbox", { name: "Show doortts/blog" })
+    ).not.toBeInTheDocument();
+
+    await user.clear(within(section).getByLabelText("Filter projects"));
+    await user.type(within(section).getByLabelText("Filter projects"), "doortts");
+
+    expect(
+      within(section).getByRole("checkbox", { name: "Show doortts/blog" })
+    ).toBeInTheDocument();
+  });
+
   it("shows grouped sample notifications and hides one on demand", async () => {
     const user = userEvent.setup();
     render(<App />);

@@ -374,11 +374,34 @@ function toSummaries(
     }));
 }
 
-function userReposPath(affiliation: string): string {
+const REPO_PAGE_SIZE = 100;
+const MAX_REPO_PAGES = 5;
+
+/** Follows pagination so large org memberships are not cut off at 100. */
+async function requestAllPages(
+  connection: GithubConnection,
+  pathForPage: (page: number) => string
+): Promise<UserRepoItem[]> {
+  const collected: UserRepoItem[] = [];
+  for (let page = 1; page <= MAX_REPO_PAGES; page += 1) {
+    const items = await requestJson<UserRepoItem[]>(connection, pathForPage(page));
+    if (!Array.isArray(items)) {
+      break;
+    }
+    collected.push(...items);
+    if (items.length < REPO_PAGE_SIZE) {
+      break;
+    }
+  }
+  return collected;
+}
+
+function userReposPath(affiliation: string, page: number): string {
   const params = new URLSearchParams({
     affiliation,
     sort: "pushed",
-    per_page: "100"
+    per_page: String(REPO_PAGE_SIZE),
+    page: String(page)
   });
   return `/user/repos?${params.toString()}`;
 }
@@ -393,18 +416,15 @@ export async function fetchMyRepositories(
 ): Promise<RepositorySummary[]> {
   const noFlags = { participating: false, watched: false, orgMember: false };
   const [participating, orgMember, watched] = await Promise.all([
-    requestJson<UserRepoItem[]>(
-      connection,
-      userReposPath("owner,collaborator")
-    ),
+    requestAllPages(connection, (page) => userReposPath("owner,collaborator", page)),
     // Team/org membership repos (e.g. pi/agent-dev); optional per instance.
-    requestJson<UserRepoItem[]>(
-      connection,
-      userReposPath("organization_member")
+    requestAllPages(connection, (page) =>
+      userReposPath("organization_member", page)
     ).catch(() => []),
-    requestJson<UserRepoItem[]>(connection, "/user/subscriptions?per_page=100").catch(
-      () => []
-    )
+    requestAllPages(
+      connection,
+      (page) => `/user/subscriptions?per_page=${REPO_PAGE_SIZE}&page=${page}`
+    ).catch(() => [])
   ]);
 
   const merged = new Map<string, RepositorySummary>();

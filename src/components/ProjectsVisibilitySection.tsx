@@ -1,5 +1,5 @@
-import { FolderTree } from "lucide-react";
-import { useRef } from "react";
+import { FolderTree, Search } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import type { OwnerGroup, RepositorySummary } from "../services/githubItems";
 import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
 
@@ -54,6 +54,25 @@ export function ProjectsVisibilitySection({
   groups,
   visibility
 }: ProjectsVisibilitySectionProps) {
+  const [query, setQuery] = useState("");
+
+  const filteredGroups = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) {
+      return groups;
+    }
+    return groups
+      .map((group) => ({
+        ...group,
+        repositories: group.owner.toLowerCase().includes(normalized)
+          ? group.repositories
+          : group.repositories.filter((repository) =>
+              repository.fullName.toLowerCase().includes(normalized)
+            )
+      }))
+      .filter((group) => group.repositories.length > 0);
+  }, [groups, query]);
+
   return (
     <section className="settings-section" aria-label="Project visibility">
       <div className="settings-section-title">
@@ -65,11 +84,24 @@ export function ProjectsVisibilitySection({
         참여(소유/협업)·구독 중이거나 내 활동이 있는 저장소는 기본으로 표시되고,
         조직 소속으로만 접근 가능한 저장소는 체크해야 표시됩니다.
       </p>
-      {groups.length === 0 && (
+      {groups.length === 0 ? (
         <p className="empty-copy">표시할 저장소가 없습니다. 먼저 로그인하세요.</p>
+      ) : (
+        <div className="notifications-search project-visibility-search">
+          <Search size={15} />
+          <input
+            aria-label="Filter projects"
+            placeholder="owner 또는 저장소 검색"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+      )}
+      {groups.length > 0 && filteredGroups.length === 0 && (
+        <p className="empty-copy">검색과 일치하는 저장소가 없습니다.</p>
       )}
       <div className="project-visibility-list">
-        {groups.map((group) => (
+        {filteredGroups.map((group) => (
           <div className="project-visibility-group" key={group.owner}>
             <OwnerCheckbox group={group} visibility={visibility} />
             {group.repositories.map((repository) => (
