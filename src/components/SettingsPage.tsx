@@ -3,8 +3,11 @@ import type { FormEvent } from "react";
 import type { AppSettings } from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
+import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
 import type { ThemeMode } from "../hooks/useTheme";
+import type { OwnerGroup } from "../services/githubItems";
 import { GithubServersSection } from "./GithubServersSection";
+import { ProjectsVisibilitySection } from "./ProjectsVisibilitySection";
 
 interface SettingsPageProps {
   settings: AppSettings;
@@ -13,6 +16,8 @@ interface SettingsPageProps {
   onThemeModeChange: (mode: ThemeMode) => void;
   servers: UseGithubServersResult;
   auth: UseGithubAuthResult;
+  repositoryGroups: OwnerGroup[];
+  projectVisibility: UseProjectVisibilityResult;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onSave: (event: FormEvent) => void;
   onClose: () => void;
@@ -31,6 +36,8 @@ export function SettingsPage({
   onThemeModeChange,
   servers,
   auth,
+  repositoryGroups,
+  projectVisibility,
   onUpdate,
   onSave,
   onClose
@@ -81,6 +88,11 @@ export function SettingsPage({
         </section>
 
         <GithubServersSection servers={servers} auth={auth} />
+
+        <ProjectsVisibilitySection
+          groups={repositoryGroups}
+          visibility={projectVisibility}
+        />
 
         <section className="settings-section">
           <div className="settings-section-title">

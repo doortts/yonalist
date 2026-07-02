@@ -18,6 +18,12 @@ export interface RepositorySummary {
   fullName: string;
   openIssuesCount: number;
   pushedAt: string;
+  /** Owned by or directly collaborating with the user. */
+  participating: boolean;
+  /** Watched (subscribed) by the user. */
+  watched: boolean;
+  /** Reachable only through an organization membership. */
+  orgMember: boolean;
 }
 
 export interface OwnerGroup {
@@ -349,7 +355,10 @@ export async function fetchRepoWorkItems(
   return sortByUpdatedDesc([...issuePulls, ...discussions]);
 }
 
-function toSummaries(repos: UserRepoItem[]): RepositorySummary[] {
+function toSummaries(
+  repos: UserRepoItem[],
+  flags: Pick<RepositorySummary, "participating" | "watched" | "orgMember">
+): RepositorySummary[] {
   if (!Array.isArray(repos)) {
     return [];
   }
@@ -360,39 +369,58 @@ function toSummaries(repos: UserRepoItem[]): RepositorySummary[] {
       name: repo.name ?? "",
       fullName: repo.full_name ?? `${repo.owner?.login}/${repo.name}`,
       openIssuesCount: repo.open_issues_count ?? 0,
-      pushedAt: repo.pushed_at ?? ""
+      pushedAt: repo.pushed_at ?? "",
+      ...flags
     }));
 }
 
+function userReposPath(affiliation: string): string {
+  const params = new URLSearchParams({
+    affiliation,
+    sort: "pushed",
+    per_page: "100"
+  });
+  return `/user/repos?${params.toString()}`;
+}
+
 /**
- * Repositories the user participates in (owns or collaborates on) or
- * watches — not every repository reachable through an org membership.
+ * Repositories the user can reach, tagged by how: owned/directly
+ * collaborating, watched (subscribed), or via an organization/team
+ * membership. The sidebar decides visibility from these flags.
  */
 export async function fetchMyRepositories(
   connection: GithubConnection
 ): Promise<RepositorySummary[]> {
-  const participatingParams = new URLSearchParams({
-    affiliation: "owner,collaborator",
-    sort: "pushed",
-    per_page: "100"
-  });
-  const [participating, watched] = await Promise.all([
+  const noFlags = { participating: false, watched: false, orgMember: false };
+  const [participating, orgMember, watched] = await Promise.all([
     requestJson<UserRepoItem[]>(
       connection,
-      `/user/repos?${participatingParams.toString()}`
+      userReposPath("owner,collaborator")
     ),
-    // Watched repositories; optional so an older GHE cannot break the list.
+    // Team/org membership repos (e.g. pi/agent-dev); optional per instance.
+    requestJson<UserRepoItem[]>(
+      connection,
+      userReposPath("organization_member")
+    ).catch(() => []),
     requestJson<UserRepoItem[]>(connection, "/user/subscriptions?per_page=100").catch(
       () => []
     )
   ]);
 
   const merged = new Map<string, RepositorySummary>();
-  for (const summary of [...toSummaries(participating), ...toSummaries(watched)]) {
-    if (!merged.has(summary.fullName)) {
-      merged.set(summary.fullName, summary);
+  const upsert = (
+    summaries: RepositorySummary[],
+    flag: keyof typeof noFlags
+  ) => {
+    for (const summary of summaries) {
+      const existing = merged.get(summary.fullName) ?? summary;
+      merged.set(summary.fullName, { ...existing, [flag]: true });
     }
-  }
+  };
+  upsert(toSummaries(participating, noFlags), "participating");
+  upsert(toSummaries(orgMember, noFlags), "orgMember");
+  upsert(toSummaries(watched, noFlags), "watched");
+
   return [...merged.values()];
 }
 

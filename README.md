@@ -12,8 +12,10 @@ on issues and pull requests from a local Markdown vault.
 - Signed-in inbox tabs backed by the GitHub API: All/Favorites/Issues/
   Pull requests/Discussions over an involves:@me search (discussions via
   GraphQL), with locally persisted favorites.
-- Projects section listing only the repositories the user participates
-  in (owner/collaborator) or watches, grouped by owner; selecting one
+- Projects section grouped by owner, showing repositories the user
+  participates in (owner/collaborator), watches, or has inbox activity
+  in by default; org-membership-only repositories can be enabled with
+  per-owner/per-repository checkboxes in Settings. Selecting a project
   gathers that repository's issues, pull requests, and discussions into
   the list.
 - Light/dark/system theme modes selectable from Settings.

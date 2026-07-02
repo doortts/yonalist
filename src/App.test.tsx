@@ -315,6 +315,37 @@ describe("Yonalist app shell", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides a project from the sidebar when unchecked in settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    expect(
+      within(navigation).getByRole("button", { name: /^blog/ })
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    const section = screen.getByLabelText("Project visibility");
+    await user.click(
+      within(section).getByRole("checkbox", { name: "Show doortts/blog" })
+    );
+
+    expect(
+      within(navigation).queryByRole("button", { name: /^blog/ })
+    ).not.toBeInTheDocument();
+    expect(
+      window.localStorage.getItem("yonalist.projectVisibility.v1")
+    ).toContain('"doortts/blog":false');
+
+    // Owner checkbox restores the whole group.
+    await user.click(
+      within(section).getByRole("checkbox", { name: "Show doortts projects" })
+    );
+    expect(
+      within(navigation).getByRole("button", { name: /^blog/ })
+    ).toBeInTheDocument();
+  });
+
   it("shows grouped sample notifications and hides one on demand", async () => {
     const user = userEvent.setup();
     render(<App />);

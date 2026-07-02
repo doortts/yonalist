@@ -1,0 +1,102 @@
+import { FolderTree } from "lucide-react";
+import { useRef } from "react";
+import type { OwnerGroup, RepositorySummary } from "../services/githubItems";
+import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
+
+interface ProjectsVisibilitySectionProps {
+  groups: OwnerGroup[];
+  visibility: UseProjectVisibilityResult;
+}
+
+function sourceLabel(repository: RepositorySummary): string {
+  const sources: string[] = [];
+  if (repository.participating) {
+    sources.push("참여");
+  }
+  if (repository.watched) {
+    sources.push("구독");
+  }
+  if (repository.orgMember) {
+    sources.push("조직");
+  }
+  return sources.join(" · ");
+}
+
+function OwnerCheckbox({
+  group,
+  visibility
+}: {
+  group: OwnerGroup;
+  visibility: UseProjectVisibilityResult;
+}) {
+  const visibleCount = group.repositories.filter(visibility.isVisible).length;
+  const allVisible = visibleCount === group.repositories.length;
+  const ref = useRef<HTMLInputElement>(null);
+  if (ref.current) {
+    ref.current.indeterminate = visibleCount > 0 && !allVisible;
+  }
+
+  return (
+    <label className="settings-check project-owner-check">
+      <input
+        ref={ref}
+        type="checkbox"
+        aria-label={`Show ${group.owner} projects`}
+        checked={allVisible && group.repositories.length > 0}
+        onChange={(event) => visibility.setOwnerVisible(group, event.target.checked)}
+      />
+      <span>{group.owner}</span>
+    </label>
+  );
+}
+
+export function ProjectsVisibilitySection({
+  groups,
+  visibility
+}: ProjectsVisibilitySectionProps) {
+  return (
+    <section className="settings-section" aria-label="Project visibility">
+      <div className="settings-section-title">
+        <FolderTree size={18} />
+        <h3>Projects 표시</h3>
+      </div>
+      <p className="server-editor-help">
+        첫 번째 컬럼의 Projects 구역에 표시할 owner 그룹과 저장소를 선택하세요.
+        참여(소유/협업)·구독 중이거나 내 활동이 있는 저장소는 기본으로 표시되고,
+        조직 소속으로만 접근 가능한 저장소는 체크해야 표시됩니다.
+      </p>
+      {groups.length === 0 && (
+        <p className="empty-copy">표시할 저장소가 없습니다. 먼저 로그인하세요.</p>
+      )}
+      <div className="project-visibility-list">
+        {groups.map((group) => (
+          <div className="project-visibility-group" key={group.owner}>
+            <OwnerCheckbox group={group} visibility={visibility} />
+            {group.repositories.map((repository) => (
+              <label
+                className="settings-check project-repo-check"
+                key={repository.fullName}
+              >
+                <input
+                  type="checkbox"
+                  aria-label={`Show ${repository.fullName}`}
+                  checked={visibility.isVisible(repository)}
+                  onChange={(event) =>
+                    visibility.setRepositoryVisible(
+                      repository.fullName,
+                      event.target.checked
+                    )
+                  }
+                />
+                <span>
+                  {repository.name}
+                  <em className="project-repo-source">{sourceLabel(repository)}</em>
+                </span>
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}

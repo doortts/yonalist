@@ -1039,6 +1039,37 @@ body.is-resizing-pane {
   font-size: 12.5px;
 }
 
+.project-visibility-list {
+  display: grid;
+  gap: 14px;
+}
+
+.project-visibility-group {
+  display: grid;
+  gap: 7px;
+}
+
+.project-owner-check span {
+  font-weight: 650;
+}
+
+.project-repo-check {
+  margin-left: 24px;
+}
+
+.project-repo-check span {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 450;
+}
+
+.project-repo-source {
+  color: var(--text-3);
+  font-size: 11px;
+  font-style: normal;
+}
+
 .theme-options {
   display: flex;
   gap: 10px;

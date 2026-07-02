@@ -80,7 +80,10 @@ export function useRepositories(
           name,
           fullName: `${owner}/${name}`,
           openIssuesCount: count,
-          pushedAt: ""
+          pushedAt: "",
+          participating: true,
+          watched: false,
+          orgMember: false
         }))
       }));
   }, [demoItems]);

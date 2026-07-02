@@ -32,6 +32,7 @@ import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useNotifications } from "./hooks/useNotifications";
+import { useProjectVisibility } from "./hooks/useProjectVisibility";
 import { useRepositories } from "./hooks/useRepositories";
 import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
@@ -100,6 +101,26 @@ export default function App({ initialOnline }: AppProps) {
     [drafts, workItems.items]
   );
   const repositoryGroups = useRepositories(auth.connection, online, workItems.items);
+  // Repos where the user's involves:@me inbox has activity count as
+  // "participating" for default project visibility.
+  const [involvedRepoNames, setInvolvedRepoNames] = useState<Set<string>>(
+    () => new Set()
+  );
+  useEffect(() => {
+    if (workScope.type === "inbox" && !workItems.demoMode && workItems.items.length > 0) {
+      setInvolvedRepoNames(
+        new Set(
+          workItems.items.map(
+            (item) => `${item.frontMatter.owner}/${item.frontMatter.repo}`
+          )
+        )
+      );
+    }
+  }, [workScope, workItems.demoMode, workItems.items]);
+  const projectVisibility = useProjectVisibility(
+    repositoryGroups.groups,
+    involvedRepoNames
+  );
   const notifications = useNotifications(auth.connection, online, showNotifications);
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
@@ -436,7 +457,7 @@ export default function App({ initialOnline }: AppProps) {
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={setRepositoryFilter}
-        repositoryGroups={repositoryGroups.groups}
+        repositoryGroups={projectVisibility.visibleGroups}
         repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}
         settingsOpen={showSettings}
@@ -511,6 +532,8 @@ export default function App({ initialOnline }: AppProps) {
             onThemeModeChange={setThemeMode}
             servers={servers}
             auth={auth}
+            repositoryGroups={repositoryGroups.groups}
+            projectVisibility={projectVisibility}
             onUpdate={updateSetting}
             onSave={saveSettings}
             onClose={() => setShowSettings(false)}

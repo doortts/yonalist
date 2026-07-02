@@ -135,64 +135,54 @@ describe("fetchRepoWorkItems", () => {
 });
 
 describe("fetchMyRepositories", () => {
-  it("merges participating and watched repositories without duplicates", async () => {
+  it("tags repositories by access source and merges duplicates", async () => {
+    const repo = (owner: string, name: string) => ({
+      name,
+      full_name: `${owner}/${name}`,
+      owner: { login: owner },
+      open_issues_count: 1,
+      pushed_at: "2026-07-01T00:00:00Z"
+    });
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
-      if (target.includes("/user/repos")) {
-        expect(target).toContain("affiliation=owner%2Ccollaborator");
-        expect(target).not.toContain("organization_member");
-        return jsonResponse([
-          {
-            name: "mine",
-            full_name: "doortts/mine",
-            owner: { login: "doortts" },
-            open_issues_count: 1,
-            pushed_at: "2026-07-01T00:00:00Z"
-          },
-          {
-            name: "shared",
-            full_name: "acme/shared",
-            owner: { login: "acme" },
-            open_issues_count: 2,
-            pushed_at: "2026-06-01T00:00:00Z"
-          }
-        ]);
+      if (target.includes("affiliation=owner%2Ccollaborator")) {
+        return jsonResponse([repo("doortts", "mine"), repo("acme", "shared")]);
+      }
+      if (target.includes("affiliation=organization_member")) {
+        return jsonResponse([repo("pi", "agent-dev"), repo("acme", "shared")]);
       }
       if (target.includes("/user/subscriptions")) {
-        return jsonResponse([
-          {
-            name: "shared",
-            full_name: "acme/shared",
-            owner: { login: "acme" },
-            open_issues_count: 2,
-            pushed_at: "2026-06-01T00:00:00Z"
-          },
-          {
-            name: "watched-only",
-            full_name: "vendor/watched-only",
-            owner: { login: "vendor" },
-            open_issues_count: 5,
-            pushed_at: "2026-05-01T00:00:00Z"
-          }
-        ]);
+        return jsonResponse([repo("vendor", "watched-only")]);
       }
       throw new Error(`Unexpected request: ${target}`);
     });
     vi.stubGlobal("fetch", fetchMock);
 
     const repos = await fetchMyRepositories(connection);
+    const byName = Object.fromEntries(repos.map((entry) => [entry.fullName, entry]));
 
-    expect(repos.map((repo) => repo.fullName)).toEqual([
-      "doortts/mine",
-      "acme/shared",
-      "vendor/watched-only"
-    ]);
+    expect(Object.keys(byName)).toHaveLength(4);
+    expect(byName["doortts/mine"]).toMatchObject({
+      participating: true,
+      orgMember: false,
+      watched: false
+    });
+    expect(byName["pi/agent-dev"]).toMatchObject({
+      participating: false,
+      orgMember: true,
+      watched: false
+    });
+    expect(byName["acme/shared"]).toMatchObject({
+      participating: true,
+      orgMember: true
+    });
+    expect(byName["vendor/watched-only"]).toMatchObject({ watched: true });
   });
 
-  it("still lists participating repositories when subscriptions fail", async () => {
+  it("still lists participating repositories when the optional sources fail", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
-      if (target.includes("/user/repos")) {
+      if (target.includes("affiliation=owner%2Ccollaborator")) {
         return jsonResponse([
           {
             name: "mine",
@@ -215,10 +205,11 @@ describe("fetchMyRepositories", () => {
 
 describe("groupRepositoriesByOwner", () => {
   it("groups by owner alphabetically with repos by recent push", () => {
+    const flags = { participating: true, watched: false, orgMember: false };
     const groups = groupRepositoriesByOwner([
-      { owner: "zeta", name: "one", fullName: "zeta/one", openIssuesCount: 1, pushedAt: "2026-01-01" },
-      { owner: "acme", name: "old", fullName: "acme/old", openIssuesCount: 2, pushedAt: "2026-01-01" },
-      { owner: "acme", name: "new", fullName: "acme/new", openIssuesCount: 3, pushedAt: "2026-06-01" }
+      { owner: "zeta", name: "one", fullName: "zeta/one", openIssuesCount: 1, pushedAt: "2026-01-01", ...flags },
+      { owner: "acme", name: "old", fullName: "acme/old", openIssuesCount: 2, pushedAt: "2026-01-01", ...flags },
+      { owner: "acme", name: "new", fullName: "acme/new", openIssuesCount: 3, pushedAt: "2026-06-01", ...flags }
     ]);
 
     expect(groups.map((group) => group.owner)).toEqual(["acme", "zeta"]);
