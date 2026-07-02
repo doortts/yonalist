@@ -208,6 +208,75 @@ describe("Yonalist app shell", () => {
     expect(within(section).getByText("개인 토큰으로 인증됨")).toBeInTheDocument();
   });
 
+  it("loads work items and owner-grouped projects from GitHub when signed in", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 101,
+                title: "Real fetched issue",
+                state: "open",
+                body: "from the API",
+                user: { login: "doortts" },
+                labels: [],
+                created_at: "2026-07-01T00:00:00Z",
+                updated_at: "2026-07-02T00:00:00Z",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 3,
+              pushed_at: "2026-07-01T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const list = screen.getByLabelText("Items");
+      expect(await within(list).findByText("Real fetched issue")).toBeInTheDocument();
+
+      const navigation = screen.getByLabelText("Navigation");
+      expect(await within(navigation).findByText("acme")).toBeInTheDocument();
+      expect(
+        within(navigation).getByRole("button", { name: /^app/ })
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("Design offline issue reading")
+      ).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("filters the list with the Discussions tab", async () => {
     const user = userEvent.setup();
     render(<App />);
