@@ -1,0 +1,160 @@
+import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import App from "./App";
+import * as windowDrag from "./windowDrag";
+
+function installLocalStorageMock() {
+  let store: Record<string, string> = {};
+  const localStorageMock = {
+    get length() {
+      return Object.keys(store).length;
+    },
+    clear: vi.fn(() => {
+      store = {};
+    }),
+    getItem: vi.fn((key: string) => store[key] ?? null),
+    key: vi.fn((index: number) => Object.keys(store)[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      delete store[key];
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      store[key] = String(value);
+    })
+  } as Storage;
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: localStorageMock
+  });
+}
+
+describe("Yonalist app shell", () => {
+  beforeEach(() => {
+    installLocalStorageMock();
+  });
+
+  it("shows the offline badge at the top of the first column", () => {
+    render(<App initialOnline={false} />);
+
+    const leftColumn = screen.getByLabelText("Navigation");
+    expect(within(leftColumn).getByText("Offline")).toBeInTheDocument();
+  });
+
+  it("marks the top-left titlebar area as the native window drag region", () => {
+    render(<App />);
+
+    expect(screen.getByLabelText("Window drag region")).toHaveAttribute(
+      "data-tauri-drag-region"
+    );
+  });
+
+  it("starts native dragging from the top-left titlebar area", async () => {
+    const user = userEvent.setup();
+    const startDrag = vi
+      .spyOn(windowDrag, "startNativeWindowDrag")
+      .mockResolvedValue(undefined);
+    render(<App />);
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: screen.getByLabelText("Window drag region")
+    });
+
+    expect(startDrag).toHaveBeenCalledTimes(1);
+    startDrag.mockRestore();
+  });
+
+  it("toggles the red bookmark favorite control in the detail header", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const bookmark = screen.getByRole("button", { name: /toggle favorite/i });
+    expect(bookmark).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(bookmark);
+
+    expect(bookmark).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("creates an offline comment draft and shows it in the outbox", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.type(
+      screen.getByLabelText("Write a comment"),
+      "I can write this offline."
+    );
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+
+    expect(screen.getByText("Pending sync")).toBeInTheDocument();
+    expect(screen.getByText(/I can write this offline/)).toBeInTheDocument();
+  });
+
+  it("opens the new issue composer as the full right pane", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+
+    expect(screen.getByLabelText("New issue composer")).toBeInTheDocument();
+    expect(screen.queryByText("Issue conversation")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Issue title"), "A local draft");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+
+    expect(screen.getAllByText("A local draft").length).toBeGreaterThan(0);
+  });
+
+  it("asks which queued changes to sync when the app comes back online", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.type(screen.getByLabelText("Write a comment"), "Sync this later.");
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+    await user.click(screen.getByRole("button", { name: "Go online" }));
+
+    expect(screen.getByRole("dialog", { name: "Outbox" })).toBeInTheDocument();
+    expect(screen.getByText("Choose queued changes to sync.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sync selected" })).toBeEnabled();
+  });
+
+  it("opens settings and saves GitHub connection settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText("Host name"));
+    await user.type(screen.getByLabelText("Host name"), "ghe.example.com");
+    await user.clear(screen.getByLabelText("Web base URL"));
+    await user.type(screen.getByLabelText("Web base URL"), "https://ghe.example.com");
+    await user.clear(screen.getByLabelText("API base URL"));
+    await user.type(
+      screen.getByLabelText("API base URL"),
+      "https://ghe.example.com/api/v3"
+    );
+    await user.clear(screen.getByLabelText("OAuth client ID"));
+    await user.type(screen.getByLabelText("OAuth client ID"), "client-123");
+    await user.clear(screen.getByLabelText("Vault folder"));
+    await user.type(screen.getByLabelText("Vault folder"), "/Users/doortts/Yonalist");
+    await user.click(screen.getByLabelText("Cache linked attachments"));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(screen.getByText("Settings saved")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      "ghe.example.com"
+    );
+    expect(screen.getByLabelText("Host name")).toHaveValue("ghe.example.com");
+    expect(screen.getByLabelText("Cache linked attachments")).not.toBeChecked();
+
+    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+
+    expect(
+      screen.getByText("OAuth Device Flow ready for ghe.example.com")
+    ).toBeInTheDocument();
+  });
+});
