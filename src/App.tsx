@@ -18,7 +18,15 @@ import {
   WifiOff,
   X
 } from "lucide-react";
-import { FormEvent, PointerEvent, useMemo, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent,
+  useMemo,
+  useState
+} from "react";
 import { toggleFavorite } from "./domain/favorites";
 import { createCommentOutboxOperation, createIssueOutboxOperation } from "./domain/outbox";
 import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
@@ -45,6 +53,13 @@ interface AppSettings {
   downloadCommentsWhileSyncing: boolean;
 }
 
+type ResizablePane = "sidebar" | "list";
+
+interface PaneWidths {
+  sidebar: number;
+  list: number;
+}
+
 const markdown = new MarkdownIt({
   html: false,
   linkify: true,
@@ -66,6 +81,17 @@ const initialSettings: AppSettings = {
 };
 
 const settingsStorageKey = "yonalist.settings.v1";
+const paneWidthStorageKey = "yonalist.paneWidths.v1";
+
+const defaultPaneWidths: PaneWidths = {
+  sidebar: 280,
+  list: 420
+};
+
+const paneWidthLimits: Record<ResizablePane, { min: number; max: number }> = {
+  sidebar: { min: 220, max: 420 },
+  list: { min: 320, max: 640 }
+};
 
 function loadSettings(): AppSettings {
   try {
@@ -88,6 +114,39 @@ function persistSettings(settings: AppSettings) {
     window.localStorage.setItem(settingsStorageKey, JSON.stringify(settings));
   } catch {
     // Settings remain editable even if the browser storage is unavailable.
+  }
+}
+
+function clampPaneWidth(pane: ResizablePane, width: number): number {
+  const limits = paneWidthLimits[pane];
+  return Math.min(limits.max, Math.max(limits.min, Math.round(width)));
+}
+
+function sanitizePaneWidths(widths: Partial<PaneWidths>): PaneWidths {
+  return {
+    sidebar: clampPaneWidth("sidebar", widths.sidebar ?? defaultPaneWidths.sidebar),
+    list: clampPaneWidth("list", widths.list ?? defaultPaneWidths.list)
+  };
+}
+
+function loadPaneWidths(): PaneWidths {
+  try {
+    const stored = window.localStorage.getItem(paneWidthStorageKey);
+    if (!stored) {
+      return defaultPaneWidths;
+    }
+
+    return sanitizePaneWidths(JSON.parse(stored) as Partial<PaneWidths>);
+  } catch {
+    return defaultPaneWidths;
+  }
+}
+
+function persistPaneWidths(widths: PaneWidths) {
+  try {
+    window.localStorage.setItem(paneWidthStorageKey, JSON.stringify(widths));
+  } catch {
+    // Resizing remains available even when stored preferences are unavailable.
   }
 }
 
@@ -167,6 +226,7 @@ export default function App({ initialOnline = true }: AppProps) {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
+  const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths());
   const [draftIssue, setDraftIssue] = useState<DraftIssue>({
     title: "",
     body: ""
@@ -193,6 +253,11 @@ export default function App({ initialOnline = true }: AppProps) {
     const haystack = `${item.frontMatter.title} ${item.frontMatter.owner} ${item.frontMatter.repo} ${item.frontMatter.labels.join(" ")}`.toLowerCase();
     return haystack.includes(query.toLowerCase());
   });
+
+  const layoutStyle = {
+    "--sidebar-width": `${paneWidths.sidebar}px`,
+    "--list-width": `${paneWidths.list}px`
+  } as CSSProperties;
 
   function onToggleFavorite() {
     setItems((current) =>
@@ -254,6 +319,58 @@ export default function App({ initialOnline = true }: AppProps) {
     }
 
     void startNativeWindowDrag();
+  }
+
+  function updatePaneWidth(pane: ResizablePane, width: number) {
+    setPaneWidths((current) => {
+      const next = {
+        ...current,
+        [pane]: clampPaneWidth(pane, width)
+      };
+      persistPaneWidths(next);
+      return next;
+    });
+  }
+
+  function handlePaneResizeStart(
+    pane: ResizablePane,
+    event: ReactMouseEvent<HTMLDivElement>
+  ) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = paneWidths[pane];
+    document.body.classList.add("is-resizing-pane");
+
+    function handleMouseMove(moveEvent: globalThis.MouseEvent) {
+      updatePaneWidth(pane, startWidth + moveEvent.clientX - startX);
+    }
+
+    function stopResize() {
+      document.body.classList.remove("is-resizing-pane");
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", stopResize);
+    }
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", stopResize);
+  }
+
+  function handlePaneResizeKeyDown(
+    pane: ResizablePane,
+    event: KeyboardEvent<HTMLDivElement>
+  ) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") {
+      return;
+    }
+
+    event.preventDefault();
+    const step = event.shiftKey ? 48 : 16;
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    updatePaneWidth(pane, paneWidths[pane] + step * direction);
   }
 
   function queueComment(event: FormEvent) {
@@ -355,7 +472,7 @@ export default function App({ initialOnline = true }: AppProps) {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <aside className="sidebar" aria-label="Navigation">
         <div
           className="window-drag-region"
@@ -428,6 +545,19 @@ export default function App({ initialOnline = true }: AppProps) {
         </section>
       </aside>
 
+      <div
+        className="pane-resizer sidebar-list-resizer"
+        role="separator"
+        aria-label="Resize navigation pane"
+        aria-orientation="vertical"
+        aria-valuemin={paneWidthLimits.sidebar.min}
+        aria-valuemax={paneWidthLimits.sidebar.max}
+        aria-valuenow={paneWidths.sidebar}
+        tabIndex={0}
+        onMouseDown={(event) => handlePaneResizeStart("sidebar", event)}
+        onKeyDown={(event) => handlePaneResizeKeyDown("sidebar", event)}
+      />
+
       <section className="list-pane" aria-label="Items">
         <div className="search-row">
           <Search size={18} />
@@ -481,6 +611,19 @@ export default function App({ initialOnline = true }: AppProps) {
           ))}
         </div>
       </section>
+
+      <div
+        className="pane-resizer list-detail-resizer"
+        role="separator"
+        aria-label="Resize item list pane"
+        aria-orientation="vertical"
+        aria-valuemin={paneWidthLimits.list.min}
+        aria-valuemax={paneWidthLimits.list.max}
+        aria-valuenow={paneWidths.list}
+        tabIndex={0}
+        onMouseDown={(event) => handlePaneResizeStart("list", event)}
+        onKeyDown={(event) => handlePaneResizeKeyDown("list", event)}
+      />
 
       <section className="detail-pane" aria-label="Detail">
         {showSettings ? (

@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -156,5 +156,32 @@ describe("Yonalist app shell", () => {
     expect(
       screen.getByText("OAuth Device Flow ready for ghe.example.com")
     ).toBeInTheDocument();
+  });
+
+  it("resizes panes from the column separators", () => {
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const navigationResizer = screen.getByRole("separator", {
+      name: "Resize navigation pane"
+    });
+    const listResizer = screen.getByRole("separator", {
+      name: "Resize item list pane"
+    });
+
+    fireEvent.mouseDown(navigationResizer, { clientX: 280 });
+    fireEvent.mouseMove(window, { clientX: 340 });
+    fireEvent.mouseUp(window);
+
+    expect(layout).toHaveStyle("--sidebar-width: 340px");
+    expect(window.localStorage.getItem("yonalist.paneWidths.v1")).toContain(
+      '"sidebar":340'
+    );
+
+    fireEvent.mouseDown(listResizer, { clientX: 700 });
+    fireEvent.mouseMove(window, { clientX: 540 });
+    fireEvent.mouseUp(window);
+
+    expect(layout).toHaveStyle("--list-width: 320px");
   });
 });

@@ -30,7 +30,9 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(320px, 420px) minmax(520px, 1fr);
+  grid-template-columns:
+    var(--sidebar-width, 280px) 6px var(--list-width, 420px) 6px
+    minmax(520px, 1fr);
   min-height: 100vh;
   background: #eef0f2;
 }
@@ -45,7 +47,36 @@ button {
 .sidebar {
   padding: 0 18px 28px;
   background: #f6f6f4;
-  border-right: 1px solid #d9dce0;
+}
+
+.pane-resizer {
+  position: relative;
+  z-index: 4;
+  min-height: 100vh;
+  cursor: col-resize;
+  background: transparent;
+  outline: 0;
+  touch-action: none;
+}
+
+.pane-resizer::before {
+  position: absolute;
+  inset: 0 auto 0 2px;
+  width: 1px;
+  background: #d9dce0;
+  content: "";
+}
+
+.pane-resizer:hover::before,
+.pane-resizer:focus-visible::before {
+  left: 1px;
+  width: 3px;
+  background: #e75135;
+}
+
+body.is-resizing-pane {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .window-drag-region {
@@ -155,7 +186,6 @@ h2 {
 .list-pane {
   padding: 28px 0 0;
   background: #fbfbfa;
-  border-right: 1px solid #d9dce0;
 }
 
 .search-row {
@@ -719,7 +749,11 @@ h2 {
 
 @media (max-width: 980px) {
   .app-shell {
-    grid-template-columns: minmax(180px, 240px) minmax(280px, 1fr);
+    grid-template-columns: minmax(180px, var(--sidebar-width, 240px)) 6px minmax(280px, 1fr);
+  }
+
+  .list-detail-resizer {
+    display: none;
   }
 
   .detail-pane {
@@ -730,6 +764,10 @@ h2 {
 @media (max-width: 720px) {
   .app-shell {
     grid-template-columns: 1fr;
+  }
+
+  .pane-resizer {
+    display: none;
   }
 
   .sidebar,
