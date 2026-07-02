@@ -1,8 +1,8 @@
 import { Bookmark, Inbox, Send } from "lucide-react";
 import type { FormEvent } from "react";
 import type { ItemDocument } from "../domain/types";
-import { renderMarkdown } from "../markdownRender";
 import { itemTypeLabel } from "./ItemListPane";
+import { MarkdownBody } from "./MarkdownBody";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
@@ -89,10 +89,7 @@ export function ItemDetail({
             <p>{itemTypeLabel(item)} conversation</p>
           </div>
         </div>
-        <div
-          className="markdown-body"
-          dangerouslySetInnerHTML={renderMarkdown(item.body || "No body.")}
-        />
+        <MarkdownBody body={item.body || "No body."} />
       </article>
 
       <form className="comment-composer" onSubmit={onQueueComment}>

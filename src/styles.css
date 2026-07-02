@@ -612,6 +612,42 @@ body.is-resizing-pane {
   color: var(--accent);
 }
 
+.markdown-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: zoom-in;
+}
+
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  overflow: auto;
+  padding: 40px;
+  background: rgb(10 13 18 / 78%);
+  cursor: zoom-out;
+}
+
+.image-lightbox-image {
+  display: block;
+  margin: auto;
+  max-width: none;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  cursor: default;
+}
+
+.image-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 41;
+}
+
 .comment-composer {
   display: grid;
   gap: 10px;

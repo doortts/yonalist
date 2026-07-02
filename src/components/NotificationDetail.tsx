@@ -1,8 +1,8 @@
 import { Bell, ExternalLink, Loader2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
-import { renderMarkdown } from "../markdownRender";
 import { timeAgo } from "../timeFormat";
+import { MarkdownBody } from "./MarkdownBody";
 
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
@@ -106,10 +106,7 @@ export function NotificationDetail({
                 </p>
               </div>
             </div>
-            <div
-              className="markdown-body"
-              dangerouslySetInnerHTML={renderMarkdown(detail.body || "No description provided.")}
-            />
+            <MarkdownBody body={detail.body || "No description provided."} />
           </article>
 
           {detail.comments.length > 0 && (
@@ -125,10 +122,7 @@ export function NotificationDetail({
                       <p>{comment.created_at ? timeAgo(comment.created_at) : ""}</p>
                     </div>
                   </div>
-                  <div
-                    className="markdown-body"
-                    dangerouslySetInnerHTML={renderMarkdown(comment.body)}
-                  />
+                  <MarkdownBody body={comment.body} />
                 </article>
               ))}
             </section>
