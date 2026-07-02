@@ -7,7 +7,14 @@ on issues and pull requests from a local Markdown vault.
 
 - Tauri + React + TypeScript desktop app scaffold.
 - Three-column UI (navigation, item list, detail/comment pane) with
-  resizable panes and a token-based design system.
+  resizable panes, independently scrolling columns, and a token-based
+  design system.
+- Signed-in inbox tabs backed by the GitHub API: All/Favorites/Issues/
+  Pull requests/Discussions over an involves:@me search (discussions via
+  GraphQL), with locally persisted favorites.
+- Projects section listing the user's repositories grouped by owner;
+  selecting one gathers that repository's issues, pull requests, and
+  discussions into the list.
 - Light/dark/system theme modes selectable from Settings.
 - GitHub authentication mirrored from the Flutter github_client: a
   configurable server list (built-in Naver GHE / Naver Labs GHE / Github

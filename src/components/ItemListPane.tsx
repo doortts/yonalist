@@ -1,4 +1,12 @@
-import { Bookmark, CircleDot, GitPullRequest, Plus, Search } from "lucide-react";
+import {
+  Bookmark,
+  CircleDot,
+  GitPullRequest,
+  MessagesSquare,
+  Plus,
+  RefreshCw,
+  Search
+} from "lucide-react";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
 
@@ -6,22 +14,48 @@ interface ItemListPaneProps {
   items: ItemDocument[];
   selectedPath: string | null;
   query: string;
+  loading: boolean;
+  error: string | null;
+  demoMode: boolean;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
   onNewIssue: () => void;
+  onRefresh: () => void;
 }
 
 export function itemTypeLabel(item: ItemDocument): string {
-  return item.frontMatter.kind === "pull" ? "PR" : "Issue";
+  switch (item.frontMatter.kind) {
+    case "pull":
+      return "PR";
+    case "discussion":
+      return "Discussion";
+    default:
+      return "Issue";
+  }
+}
+
+function kindIcon(item: ItemDocument) {
+  switch (item.frontMatter.kind) {
+    case "pull":
+      return <GitPullRequest size={15} />;
+    case "discussion":
+      return <MessagesSquare size={15} />;
+    default:
+      return <CircleDot size={15} />;
+  }
 }
 
 export function ItemListPane({
   items,
   selectedPath,
   query,
+  loading,
+  error,
+  demoMode,
   onQueryChange,
   onSelect,
-  onNewIssue
+  onNewIssue,
+  onRefresh
 }: ItemListPaneProps) {
   return (
     <section className="list-pane" aria-label="Items">
@@ -33,15 +67,32 @@ export function ItemListPane({
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
         />
+        <button
+          className="icon-button list-refresh"
+          type="button"
+          aria-label="Refresh items"
+          disabled={demoMode}
+          onClick={onRefresh}
+        >
+          <RefreshCw size={15} className={loading ? "spinning" : undefined} />
+        </button>
         <button className="text-button" type="button" onClick={onNewIssue}>
           <Plus size={17} />
           New issue
         </button>
       </div>
 
+      {demoMode && (
+        <p className="list-note">Sample items. Sign in from Settings to load yours.</p>
+      )}
+      {error && <p className="list-error">{error}</p>}
+
       <div className="item-list">
-        {items.length === 0 && (
+        {items.length === 0 && !loading && (
           <p className="empty-copy list-empty">No items match this view.</p>
+        )}
+        {items.length === 0 && loading && (
+          <p className="empty-copy list-empty">Loading items...</p>
         )}
         {items.map((item) => (
           <button
@@ -51,11 +102,7 @@ export function ItemListPane({
             onClick={() => onSelect(item.path)}
           >
             <span className="item-meta">
-              {item.frontMatter.kind === "pull" ? (
-                <GitPullRequest size={15} />
-              ) : (
-                <CircleDot size={15} />
-              )}
+              {kindIcon(item)}
               {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
               <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
             </span>

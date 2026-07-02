@@ -5,22 +5,16 @@ import {
   Folder,
   GitPullRequest,
   Inbox,
+  MessagesSquare,
   Settings,
   Wifi,
   WifiOff
 } from "lucide-react";
 import type { PointerEvent } from "react";
+import type { OwnerGroup } from "../services/githubItems";
 import { startNativeWindowDrag } from "../windowDrag";
 
-export type ListFilter = "all" | "favorites" | "issues" | "pulls";
-
-export interface RepositoryEntry {
-  key: string;
-  host: string;
-  owner: string;
-  repo: string;
-  count: number;
-}
+export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions";
 
 interface SidebarProps {
   online: boolean;
@@ -29,7 +23,8 @@ interface SidebarProps {
   onFilterChange: (filter: ListFilter) => void;
   repositoryFilter: string | null;
   onRepositoryFilterChange: (key: string | null) => void;
-  repositories: RepositoryEntry[];
+  repositoryGroups: OwnerGroup[];
+  repositoriesLoading: boolean;
   counts: Record<ListFilter, number>;
   settingsOpen: boolean;
   onOpenSettings: () => void;
@@ -46,7 +41,8 @@ const filterEntries: Array<{
   { key: "all", label: "All items", icon: Inbox },
   { key: "favorites", label: "Favorites", icon: Bookmark },
   { key: "issues", label: "Issues", icon: CircleDot },
-  { key: "pulls", label: "Pull requests", icon: GitPullRequest }
+  { key: "pulls", label: "Pull requests", icon: GitPullRequest },
+  { key: "discussions", label: "Discussions", icon: MessagesSquare }
 ];
 
 export function Sidebar({
@@ -56,7 +52,8 @@ export function Sidebar({
   onFilterChange,
   repositoryFilter,
   onRepositoryFilterChange,
-  repositories,
+  repositoryGroups,
+  repositoriesLoading,
   counts,
   settingsOpen,
   onOpenSettings,
@@ -135,26 +132,39 @@ export function Sidebar({
 
       <section className="nav-section">
         <h2>Projects</h2>
-        {repositories.map((repository) => (
-          <button
-            className={
-              repositoryFilter === repository.key ? "nav-item active" : "nav-item"
-            }
-            type="button"
-            aria-pressed={repositoryFilter === repository.key}
-            key={repository.key}
-            onClick={() =>
-              onRepositoryFilterChange(
-                repositoryFilter === repository.key ? null : repository.key
-              )
-            }
-          >
-            <Folder size={16} />
-            <span>
-              {repository.owner}/{repository.repo}
-            </span>
-            <strong>{repository.count}</strong>
-          </button>
+        {repositoriesLoading && repositoryGroups.length === 0 && (
+          <p className="nav-note">Loading repositories...</p>
+        )}
+        {!repositoriesLoading && repositoryGroups.length === 0 && (
+          <p className="nav-note">No repositories.</p>
+        )}
+        {repositoryGroups.map((group) => (
+          <div className="nav-owner-group" key={group.owner}>
+            <h3 className="nav-owner">{group.owner}</h3>
+            {group.repositories.map((repository) => (
+              <button
+                className={
+                  repositoryFilter === repository.fullName
+                    ? "nav-item active"
+                    : "nav-item"
+                }
+                type="button"
+                aria-pressed={repositoryFilter === repository.fullName}
+                key={repository.fullName}
+                onClick={() =>
+                  onRepositoryFilterChange(
+                    repositoryFilter === repository.fullName
+                      ? null
+                      : repository.fullName
+                  )
+                }
+              >
+                <Folder size={16} />
+                <span>{repository.name}</span>
+                <strong>{repository.openIssuesCount}</strong>
+              </button>
+            ))}
+          </div>
         ))}
       </section>
 

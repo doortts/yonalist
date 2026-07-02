@@ -208,6 +208,41 @@ describe("Yonalist app shell", () => {
     expect(within(section).getByText("개인 토큰으로 인증됨")).toBeInTheDocument();
   });
 
+  it("filters the list with the Discussions tab", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^Discussions/ }));
+
+    const list = screen.getByLabelText("Items");
+    expect(
+      within(list).getByText("v0.1.0 packaging checklist")
+    ).toBeInTheDocument();
+    expect(
+      within(list).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+  });
+
+  it("groups projects by owner and scopes the list to a repository", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    expect(within(navigation).getByText("doortts")).toBeInTheDocument();
+    expect(within(navigation).getByText("Yona-projects")).toBeInTheDocument();
+
+    await user.click(within(navigation).getByRole("button", { name: /^blog/ }));
+
+    const list = screen.getByLabelText("Items");
+    expect(within(list).getByText("Refresh publishing notes")).toBeInTheDocument();
+    expect(
+      within(list).getByText("v0.1.0 packaging checklist")
+    ).toBeInTheDocument();
+    expect(
+      within(list).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+  });
+
   it("shows grouped sample notifications and hides one on demand", async () => {
     const user = userEvent.setup();
     render(<App />);

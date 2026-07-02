@@ -9,12 +9,16 @@ import {
 import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
 import { ItemDetail } from "./components/ItemDetail";
 import { ItemListPane } from "./components/ItemListPane";
-import { NewIssuePage, type DraftIssue } from "./components/NewIssuePage";
+import {
+  NewIssuePage,
+  type DraftIssue,
+  type RepositoryEntry
+} from "./components/NewIssuePage";
 import { NotificationDetail } from "./components/NotificationDetail";
 import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
 import { SettingsPage } from "./components/SettingsPage";
-import { Sidebar, type ListFilter, type RepositoryEntry } from "./components/Sidebar";
+import { Sidebar, type ListFilter } from "./components/Sidebar";
 import { toggleFavorite } from "./domain/favorites";
 import {
   createCommentOutboxOperation,
@@ -23,11 +27,13 @@ import {
 import { commentFilePath, draftIssuePath } from "./domain/paths";
 import type { GitHubNotification } from "./domain/notifications";
 import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
-import { sampleItems, SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
+import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useNotifications } from "./hooks/useNotifications";
+import { useRepositories } from "./hooks/useRepositories";
+import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useTheme } from "./hooks/useTheme";
@@ -54,6 +60,8 @@ function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
       return item.frontMatter.kind === "issue";
     case "pulls":
       return item.frontMatter.kind === "pull";
+    case "discussions":
+      return item.frontMatter.kind === "discussion";
     default:
       return true;
   }
@@ -61,10 +69,8 @@ function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
 
 export default function App({ initialOnline }: AppProps) {
   const { online, toggleOnline } = useOnlineStatus(initialOnline);
-  const [items, setItems] = useState(sampleItems);
-  const [selectedPath, setSelectedPath] = useState<string | null>(
-    sampleItems[0]?.path ?? null
-  );
+  const [drafts, setDrafts] = useState<ItemDocument[]>([]);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ListFilter>("all");
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
@@ -81,6 +87,19 @@ export default function App({ initialOnline }: AppProps) {
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
+  const workScope = useMemo<WorkScope>(() => {
+    if (repositoryFilter) {
+      const [owner, ...rest] = repositoryFilter.split("/");
+      return { type: "repo", owner, name: rest.join("/") };
+    }
+    return { type: "inbox" };
+  }, [repositoryFilter]);
+  const workItems = useWorkItems(auth.connection, online, workScope);
+  const items = useMemo(
+    () => [...drafts, ...workItems.items],
+    [drafts, workItems.items]
+  );
+  const repositoryGroups = useRepositories(auth.connection, online, workItems.items);
   const notifications = useNotifications(auth.connection, online, showNotifications);
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
@@ -96,8 +115,7 @@ export default function App({ initialOnline }: AppProps) {
     repositoryKey: ""
   });
 
-  const selectedItem =
-    items.find((item) => item.path === selectedPath) ?? items[0];
+
 
   const repositories = useMemo<RepositoryEntry[]>(() => {
     const counts = new Map<string, RepositoryEntry>();
@@ -121,7 +139,9 @@ export default function App({ initialOnline }: AppProps) {
       all: items.length,
       favorites: items.filter((item) => item.frontMatter.local.favorite).length,
       issues: items.filter((item) => item.frontMatter.kind === "issue").length,
-      pulls: items.filter((item) => item.frontMatter.kind === "pull").length
+      pulls: items.filter((item) => item.frontMatter.kind === "pull").length,
+      discussions: items.filter((item) => item.frontMatter.kind === "discussion")
+        .length
     }),
     [items]
   );
@@ -155,6 +175,9 @@ export default function App({ initialOnline }: AppProps) {
     });
   }, [items, filter, repositoryFilter, query]);
 
+  const selectedItem =
+    filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
+
   const layoutStyle = {
     "--sidebar-width": `${paneWidths.sidebar}px`,
     "--list-width": `${paneWidths.list}px`
@@ -180,11 +203,15 @@ export default function App({ initialOnline }: AppProps) {
     if (!selectedItem) {
       return;
     }
-    setItems((current) =>
-      current.map((item) =>
-        item.path === selectedItem.path ? toggleFavorite(item) : item
-      )
-    );
+    if (drafts.some((draft) => draft.path === selectedItem.path)) {
+      setDrafts((current) =>
+        current.map((item) =>
+          item.path === selectedItem.path ? toggleFavorite(item) : item
+        )
+      );
+      return;
+    }
+    workItems.toggleFavorite(selectedItem.path);
   }
 
   function openOutbox() {
@@ -373,7 +400,7 @@ export default function App({ initialOnline }: AppProps) {
       vaultRoot: SAMPLE_VAULT_ROOT
     });
 
-    setItems((current) => [newItem, ...current]);
+    setDrafts((current) => [newItem, ...current]);
     setSelectedPath(draftPath);
     setOutbox((current) => [...current, operation]);
     setDraftIssue({ title: "", body: "", repositoryKey: "" });
@@ -409,7 +436,8 @@ export default function App({ initialOnline }: AppProps) {
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={setRepositoryFilter}
-        repositories={repositories}
+        repositoryGroups={repositoryGroups.groups}
+        repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
@@ -447,6 +475,9 @@ export default function App({ initialOnline }: AppProps) {
           items={filteredItems}
           selectedPath={selectedItem?.path ?? null}
           query={query}
+          loading={workItems.loading}
+          error={workItems.error}
+          demoMode={workItems.demoMode}
           onQueryChange={setQuery}
           onSelect={(path) => {
             setSelectedPath(path);
@@ -454,6 +485,7 @@ export default function App({ initialOnline }: AppProps) {
             setShowSettings(false);
           }}
           onNewIssue={openNewIssue}
+          onRefresh={workItems.refresh}
         />
       )}
 

@@ -50,5 +50,28 @@ export const sampleItems: ItemDocument[] = [
       local: { favorite: false },
       sync: { status: "synced" }
     }
+  },
+  {
+    path: "/vault/github.com/doortts/blog/discussions/5/discussion.md",
+    body:
+      "Let's collect everything needed before tagging v0.1.0.\n\n- [ ] icons\n- [ ] release notes\n- [ ] signing",
+    frontMatter: {
+      kind: "discussion",
+      host: "github.com",
+      owner: "doortts",
+      repo: "blog",
+      number: 5,
+      node_id: "D_5",
+      html_url: "https://github.com/doortts/blog/discussions/5",
+      title: "v0.1.0 packaging checklist",
+      state: "open",
+      author: "doortts",
+      labels: ["release"],
+      created_at: "2026-06-28T10:00:00Z",
+      updated_at: "2026-07-01T04:00:00Z",
+      synced_at: syncedAt,
+      local: { favorite: false },
+      sync: { status: "synced" }
+    }
   }
 ];

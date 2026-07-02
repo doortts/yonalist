@@ -1,6 +1,13 @@
 import { Send, X } from "lucide-react";
 import type { FormEvent } from "react";
-import type { RepositoryEntry } from "./Sidebar";
+
+export interface RepositoryEntry {
+  key: string;
+  host: string;
+  owner: string;
+  repo: string;
+  count: number;
+}
 
 export interface DraftIssue {
   title: string;
