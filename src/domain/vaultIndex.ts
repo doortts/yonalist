@@ -44,10 +44,10 @@ export function buildVaultIndex(documents: VaultSourceDocument[]): VaultIndex {
         title: frontMatter.title,
         state: frontMatter.state,
         author: frontMatter.author,
-        labels: frontMatter.labels,
+        labels: frontMatter.labels ?? [],
         updated_at: frontMatter.updated_at,
         favorite: Boolean(frontMatter.local?.favorite),
-        sync_status: frontMatter.sync.status
+        sync_status: frontMatter.sync?.status ?? "synced"
       };
       items.push(item);
 

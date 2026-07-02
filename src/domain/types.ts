@@ -1,4 +1,5 @@
 export type ItemKind = "issue" | "pull" | "discussion";
+export type ItemState = "open" | "closed" | "merged";
 export type SyncStatus = "synced" | "pending" | "dirty" | "error" | "blocked";
 export type OutboxOperationKind = "create_issue" | "create_comment";
 export type OutboxStatus = "pending" | "blocked" | "syncing" | "failed" | "synced";
@@ -27,7 +28,7 @@ export interface ItemFrontMatter extends ItemIdentity {
   node_id?: string;
   html_url?: string;
   title: string;
-  state: "open" | "closed" | "merged" | string;
+  state: ItemState;
   author: string;
   labels: string[];
   created_at: string;

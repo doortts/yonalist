@@ -1,3 +1,4 @@
+import { outboxOperationPath } from "./paths";
 import type {
   AttachmentManifestEntry,
   ItemKind,
@@ -9,6 +10,7 @@ interface CreateIssueOperationInput extends RepositoryIdentity {
   id: string;
   localFilePath: string;
   createdAt: string;
+  vaultRoot?: string;
 }
 
 interface CreateCommentOperationInput extends RepositoryIdentity {
@@ -17,13 +19,14 @@ interface CreateCommentOperationInput extends RepositoryIdentity {
   number: number;
   localFilePath: string;
   createdAt: string;
+  vaultRoot?: string;
 }
 
 export function createIssueOutboxOperation(
   input: CreateIssueOperationInput
 ): OutboxOperationDocument {
   return {
-    path: `.yonalist/outbox/${input.id}.md`,
+    path: outboxOperationPath(input.vaultRoot ?? "", input.id),
     body: "",
     frontMatter: {
       kind: "outbox_operation",
@@ -45,7 +48,7 @@ export function createCommentOutboxOperation(
   input: CreateCommentOperationInput
 ): OutboxOperationDocument {
   return {
-    path: `.yonalist/outbox/${input.id}.md`,
+    path: outboxOperationPath(input.vaultRoot ?? "", input.id),
     body: "",
     frontMatter: {
       kind: "outbox_operation",

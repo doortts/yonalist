@@ -6,7 +6,9 @@ export interface ParsedMarkdownDocument<TFrontMatter> {
 }
 
 const FRONT_MATTER_OPEN = "---\n";
-const FRONT_MATTER_CLOSE = "\n---";
+// The closing fence must be a line containing exactly `---`, so a `---`
+// embedded inside a YAML value never terminates the front matter early.
+const FRONT_MATTER_CLOSE_PATTERN = /\n---(?:\r?\n|$)/;
 
 export function parseMarkdownDocument<TFrontMatter = Record<string, unknown>>(
   markdown: string
@@ -18,14 +20,16 @@ export function parseMarkdownDocument<TFrontMatter = Record<string, unknown>>(
     };
   }
 
-  const closeIndex = markdown.indexOf(FRONT_MATTER_CLOSE, FRONT_MATTER_OPEN.length);
-  if (closeIndex === -1) {
+  const close = FRONT_MATTER_CLOSE_PATTERN.exec(
+    markdown.slice(FRONT_MATTER_OPEN.length - 1)
+  );
+  if (!close) {
     throw new Error("Markdown document is missing a closing front matter fence.");
   }
 
+  const closeIndex = FRONT_MATTER_OPEN.length - 1 + close.index;
   const yaml = markdown.slice(FRONT_MATTER_OPEN.length, closeIndex);
-  const bodyStart = closeIndex + FRONT_MATTER_CLOSE.length;
-  const body = markdown.slice(bodyStart).replace(/^\n/, "");
+  const body = markdown.slice(closeIndex + close[0].length);
 
   return {
     frontMatter: (YAML.parse(yaml) ?? {}) as TFrontMatter,

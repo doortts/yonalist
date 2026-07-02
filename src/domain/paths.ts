@@ -48,7 +48,7 @@ function compactTimestamp(isoTimestamp: string): string {
   if (Number.isNaN(date.valueOf())) {
     return safeSegment(isoTimestamp);
   }
-  return date.toISOString().replace(/[-:]/g, "").replace(".000", "");
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
 }
 
 export function repositoryRoot(

@@ -364,12 +364,27 @@ h2 {
 }
 
 .issue-create-body {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
-  gap: 0;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
   padding: 0 32px;
+}
+
+.issue-create-body .issue-body-field {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.issue-repo-field select {
+  min-height: 38px;
+  margin-top: 8px;
+  padding: 6px 10px;
+  border: 1px solid #cdd2d8;
+  border-radius: 8px;
+  background: #fff;
+  color: #252832;
 }
 
 .issue-create-body label {
@@ -692,6 +707,30 @@ h2 {
 .empty-copy {
   margin: 22px 0 0;
   color: #727986;
+}
+
+.list-empty {
+  padding: 18px;
+  margin: 0;
+}
+
+.detail-empty {
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  min-height: 60vh;
+  color: #727986;
+  text-align: center;
+}
+
+.detail-empty h2 {
+  color: #454b57;
+}
+
+.outbox-error {
+  color: #a13d25;
+  font-size: 13px;
 }
 
 .modal-copy {

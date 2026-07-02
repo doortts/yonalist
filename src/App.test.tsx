@@ -169,18 +169,18 @@ describe("Yonalist app shell", () => {
       name: "Resize item list pane"
     });
 
-    fireEvent.mouseDown(navigationResizer, { clientX: 280 });
-    fireEvent.mouseMove(window, { clientX: 340 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(navigationResizer, { clientX: 280, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 340 });
+    fireEvent.pointerUp(window);
 
     expect(layout).toHaveStyle("--sidebar-width: 340px");
     expect(window.localStorage.getItem("yonalist.paneWidths.v1")).toContain(
       '"sidebar":340'
     );
 
-    fireEvent.mouseDown(listResizer, { clientX: 700 });
-    fireEvent.mouseMove(window, { clientX: 540 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(listResizer, { clientX: 700, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 540 });
+    fireEvent.pointerUp(window);
 
     expect(layout).toHaveStyle("--list-width: 320px");
   });
