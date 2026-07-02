@@ -166,8 +166,8 @@ export function NotificationsPane({
 
       {state.demoMode && (
         <p className="notifications-note">
-          Showing sample notifications. Add a personal access token in Settings to
-          load your GitHub inbox.
+          Showing sample notifications. Sign in from Settings to load your
+          GitHub inbox.
         </p>
       )}
       {state.error && <p className="notifications-error">{state.error}</p>}

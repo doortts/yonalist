@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AppSettings } from "../appSettings";
+import type { GithubConnection } from "./useGithubAuth";
 import type { GitHubNotification } from "../domain/notifications";
 import { sampleNotificationDetail } from "../fixtures/sampleNotifications";
 import {
@@ -16,13 +16,13 @@ export interface UseNotificationDetailResult {
 /** Loads the conversation for the selected notification through the GitHub API. */
 export function useNotificationDetail(
   notification: GitHubNotification | null,
-  settings: AppSettings,
+  connection: GithubConnection,
   online: boolean
 ): UseNotificationDetailResult {
   const [detail, setDetail] = useState<NotificationDetailContent | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const token = settings.personalAccessToken.trim();
+  const token = connection.token.trim();
 
   useEffect(() => {
     if (!notification) {
@@ -47,8 +47,8 @@ export function useNotificationDetail(
     setError(null);
     fetchNotificationDetail({
       token,
-      apiBaseUrl: settings.apiBaseUrl,
-      webBaseUrl: settings.webBaseUrl,
+      apiBaseUrl: connection.apiBaseUrl,
+      webBaseUrl: connection.webBaseUrl,
       notification
     })
       .then((content) => {
@@ -74,8 +74,8 @@ export function useNotificationDetail(
     notification,
     token,
     online,
-    settings.apiBaseUrl,
-    settings.webBaseUrl
+    connection.apiBaseUrl,
+    connection.webBaseUrl
   ]);
 
   return { detail, loading, error };

@@ -24,6 +24,8 @@ import { commentFilePath, draftIssuePath } from "./domain/paths";
 import type { GitHubNotification } from "./domain/notifications";
 import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
 import { sampleItems, SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
+import { useGithubAuth } from "./hooks/useGithubAuth";
+import { useGithubServers } from "./hooks/useGithubServers";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useNotifications } from "./hooks/useNotifications";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
@@ -77,12 +79,14 @@ export default function App({ initialOnline }: AppProps) {
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
-  const notifications = useNotifications(settings, online, showNotifications);
+  const servers = useGithubServers();
+  const auth = useGithubAuth(servers);
+  const notifications = useNotifications(auth.connection, online, showNotifications);
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
   const notificationDetail = useNotificationDetail(
     selectedNotification,
-    settings,
+    auth.connection,
     online
   );
   const { mode: themeMode, setMode: setThemeMode } = useTheme();
@@ -234,7 +238,7 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
 
-    const token = settings.personalAccessToken.trim();
+    const token = auth.connection.token.trim();
     if (!token) {
       // Without credentials the queue is drained locally (prototype mode).
       const syncedIds = new Set(selected.map((operation) => operation.frontMatter.id));
@@ -250,8 +254,8 @@ export default function App({ initialOnline }: AppProps) {
     try {
       const client = createGitHubClient({
         token,
-        apiBaseUrl: settings.apiBaseUrl,
-        webBaseUrl: settings.webBaseUrl
+        apiBaseUrl: auth.connection.apiBaseUrl,
+        webBaseUrl: auth.connection.webBaseUrl
       });
       const results = await syncOutboxOperations(client, selected, items);
       const syncedIds = new Set(
@@ -391,15 +395,6 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
-  function connectGitHub() {
-    if (!settings.oauthClientId.trim()) {
-      setSettingsStatus("OAuth client ID is required");
-      return;
-    }
-
-    setSettingsStatus(`OAuth Device Flow ready for ${settings.hostName}`);
-  }
-
   return (
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <Sidebar
@@ -439,7 +434,7 @@ export default function App({ initialOnline }: AppProps) {
       {showNotifications ? (
         <NotificationsPane
           state={notifications}
-          webBaseUrl={settings.webBaseUrl}
+          webBaseUrl={auth.connection.webBaseUrl}
           online={online}
           selectedId={selectedNotification?.id ?? null}
           onSelect={(notification) => {
@@ -482,9 +477,10 @@ export default function App({ initialOnline }: AppProps) {
             status={settingsStatus}
             themeMode={themeMode}
             onThemeModeChange={setThemeMode}
+            servers={servers}
+            auth={auth}
             onUpdate={updateSetting}
             onSave={saveSettings}
-            onConnect={connectGitHub}
             onClose={() => setShowSettings(false)}
           />
         ) : showNewIssue ? (

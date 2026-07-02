@@ -816,14 +816,195 @@ body.is-resizing-pane {
   justify-self: start;
 }
 
+.server-list {
+  display: grid;
+  gap: 4px;
+}
+
+.server-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+
+.server-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.settings-section label.server-radio {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  flex-direction: row;
+  gap: 10px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.server-radio input {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.server-label {
+  display: grid;
+  min-width: 0;
+}
+
+.server-alias {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 13.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-url {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.server-action {
+  width: 28px;
+  min-height: 28px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.server-list-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.server-editor {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--bg-detail);
+}
+
+.server-editor-url {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.server-auth-method {
+  display: grid;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  justify-self: start;
+}
+
+.settings-section label.segment {
+  display: inline-flex;
+  align-items: center;
+  flex-direction: row;
+  gap: 6px;
+  padding: 6px 16px;
+  background: var(--bg-card);
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.segment + .segment {
+  border-left: 1px solid var(--border-strong);
+}
+
+.segment.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.segment input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.token-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.token-input input {
+  flex: 1;
+}
+
+.server-editor-help {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+
+.server-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.server-login-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.server-login-status {
+  color: var(--success);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.server-status-message {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
 .theme-options {
   display: flex;
   gap: 10px;
 }
 
-.theme-option {
+.settings-section label.theme-option {
   display: inline-flex;
   align-items: center;
+  flex-direction: row;
   gap: 8px;
   padding: 8px 16px;
   border: 1px solid var(--border-strong);

@@ -9,6 +9,12 @@ on issues and pull requests from a local Markdown vault.
 - Three-column UI (navigation, item list, detail/comment pane) with
   resizable panes and a token-based design system.
 - Light/dark/system theme modes selectable from Settings.
+- GitHub authentication mirrored from the Flutter github_client: a
+  configurable server list (built-in Naver GHE / Naver Labs GHE / Github
+  entries plus custom URLs with aliases), per-server auth method — OAuth
+  authorization-code login through a loopback localhost redirect for
+  servers with registered OAuth Apps, or a per-server personal access
+  token that skips OAuth — and re-login on server switch.
 - GitHub notifications inbox: 60s polling with If-Modified-Since caching,
   date-grouped list, reason-based icons/colors, unread badges, only-new
   filter, hide/unhide, search, and open-in-browser with local viewed

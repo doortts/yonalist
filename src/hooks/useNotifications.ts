@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppSettings } from "../appSettings";
+import type { GithubConnection } from "./useGithubAuth";
 import {
   isReadAndQuiet,
   notificationWebUrl,
@@ -33,11 +33,11 @@ export interface UseNotificationsResult {
 }
 
 export function useNotifications(
-  settings: AppSettings,
+  connection: GithubConnection,
   online: boolean,
   enabled: boolean
 ): UseNotificationsResult {
-  const token = settings.personalAccessToken.trim();
+  const token = connection.token.trim();
   const demoMode = !token;
 
   const [fetched, setFetched] = useState<GitHubNotification[] | null>(null);
@@ -53,7 +53,7 @@ export function useNotifications(
     }
     const seq = ++requestSeq.current;
     setLoading(true);
-    fetchNotifications({ token, apiBaseUrl: settings.apiBaseUrl })
+    fetchNotifications({ token, apiBaseUrl: connection.apiBaseUrl })
       .then((result) => {
         if (requestSeq.current === seq) {
           setFetched(result);
@@ -70,7 +70,7 @@ export function useNotifications(
           setLoading(false);
         }
       });
-  }, [token, online, settings.apiBaseUrl]);
+  }, [token, online, connection.apiBaseUrl]);
 
   useEffect(() => {
     if (!enabled || !token || !online) {
@@ -101,27 +101,27 @@ export function useNotifications(
         (notification) =>
           !isReadAndQuiet(
             notification,
-            viewedAt[notificationWebUrl(notification, settings.webBaseUrl)]
+            viewedAt[notificationWebUrl(notification, connection.webBaseUrl)]
           )
       ).length,
-    [notifications, viewedAt, settings.webBaseUrl]
+    [notifications, viewedAt, connection.webBaseUrl]
   );
 
   const markNotificationViewed = useCallback(
     (notification: GitHubNotification) => {
-      const url = notificationWebUrl(notification, settings.webBaseUrl);
+      const url = notificationWebUrl(notification, connection.webBaseUrl);
       setViewedAt(markViewed(url));
     },
-    [settings.webBaseUrl]
+    [connection.webBaseUrl]
   );
 
   const openNotification = useCallback(
     (notification: GitHubNotification) => {
-      const url = notificationWebUrl(notification, settings.webBaseUrl);
+      const url = notificationWebUrl(notification, connection.webBaseUrl);
       window.open(url, "_blank", "noopener,noreferrer");
       setViewedAt(markViewed(url));
     },
-    [settings.webBaseUrl]
+    [connection.webBaseUrl]
   );
 
   useEffect(() => {

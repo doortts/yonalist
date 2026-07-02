@@ -1,10 +1,4 @@
 export interface AppSettings {
-  hostName: string;
-  webBaseUrl: string;
-  apiBaseUrl: string;
-  oauthClientId: string;
-  oauthScopes: string;
-  personalAccessToken: string;
   vaultFolder: string;
   syncQueuedOnReconnect: boolean;
   cacheLinkedAttachments: boolean;
@@ -12,12 +6,6 @@ export interface AppSettings {
 }
 
 export const defaultSettings: AppSettings = {
-  hostName: "github.com",
-  webBaseUrl: "https://github.com",
-  apiBaseUrl: "https://api.github.com",
-  oauthClientId: "",
-  oauthScopes: "repo",
-  personalAccessToken: "",
   vaultFolder: "~/Yonalist",
   syncQueuedOnReconnect: true,
   cacheLinkedAttachments: true,
@@ -33,9 +21,18 @@ export function loadSettings(): AppSettings {
       return defaultSettings;
     }
 
+    const parsed = JSON.parse(stored) as Partial<AppSettings>;
+    // GitHub connection fields moved to the per-server store
+    // (yonalist.github.*); only vault/sync preferences remain here.
     return {
-      ...defaultSettings,
-      ...(JSON.parse(stored) as Partial<AppSettings>)
+      vaultFolder: parsed.vaultFolder ?? defaultSettings.vaultFolder,
+      syncQueuedOnReconnect:
+        parsed.syncQueuedOnReconnect ?? defaultSettings.syncQueuedOnReconnect,
+      cacheLinkedAttachments:
+        parsed.cacheLinkedAttachments ?? defaultSettings.cacheLinkedAttachments,
+      downloadCommentsWhileSyncing:
+        parsed.downloadCommentsWhileSyncing ??
+        defaultSettings.downloadCommentsWhileSyncing
     };
   } catch {
     return defaultSettings;

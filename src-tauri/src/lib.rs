@@ -1,6 +1,10 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -96,6 +100,196 @@ fn write_text_file(
     write_text_file_inner(&path, &contents)
 }
 
+/// Loopback listener waiting for the OAuth authorization-code redirect,
+/// mirroring the Flutter client's ephemeral localhost HttpServer.
+#[derive(Default)]
+pub struct OAuthServerState(Mutex<Option<TcpListener>>);
+
+const AUTH_COMPLETE_PAGE_HTML: &str = r#"<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>로그인 완료</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+    }
+    .card {
+      background: #fff;
+      padding: 32px 40px;
+      border-radius: 12px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+      text-align: center;
+      max-width: 360px;
+    }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    p  { font-size: 14px; margin: 4px 0; color: #57606a; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>로그인이 완료되었습니다</h1>
+    <p>앱 창이 다시 활성화될 거예요.</p>
+    <p>이 탭은 닫으셔도 됩니다.</p>
+  </div>
+  <script>
+    setTimeout(function(){ try { window.close(); } catch (e) {} }, 200);
+  </script>
+</body>
+</html>"#;
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+                match hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    None => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn parse_query(query: &str) -> HashMap<String, String> {
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next()?;
+            let value = parts.next().unwrap_or("");
+            Some((percent_decode(key), percent_decode(value)))
+        })
+        .collect()
+}
+
+fn accept_oauth_callback(listener: TcpListener) -> Result<HashMap<String, String>, String> {
+    let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .map_err(|error| error.to_string())?;
+
+    let path = request_line.split_whitespace().nth(1).unwrap_or("");
+    let query = path.splitn(2, '?').nth(1).unwrap_or("");
+    let params = parse_query(query);
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        AUTH_COMPLETE_PAGE_HTML.len(),
+        AUTH_COMPLETE_PAGE_HTML
+    );
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let _ = stream.flush();
+
+    Ok(params)
+}
+
+/// Binds the loopback redirect server on an ephemeral port and returns it.
+#[tauri::command]
+fn oauth_start(state: tauri::State<OAuthServerState>) -> Result<u16, String> {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    *state.0.lock().unwrap() = Some(listener);
+    Ok(port)
+}
+
+/// Waits for the OAuth redirect, replies with the completion page, brings the
+/// app window back to the front, and returns the callback query parameters.
+#[tauri::command]
+async fn oauth_wait(
+    window: tauri::Window,
+    state: tauri::State<'_, OAuthServerState>,
+) -> Result<HashMap<String, String>, String> {
+    let listener = state
+        .0
+        .lock()
+        .unwrap()
+        .take()
+        .ok_or_else(|| "OAuth server is not running.".to_string())?;
+
+    let params = tauri::async_runtime::spawn_blocking(move || accept_oauth_callback(listener))
+        .await
+        .map_err(|error| error.to_string())??;
+
+    // macOS/Windows can refuse to foreground a background app; the
+    // always-on-top toggle forces the window above the browser.
+    let _ = window.show();
+    let _ = window.set_focus();
+    let _ = window.set_always_on_top(true);
+    std::thread::sleep(std::time::Duration::from_millis(80));
+    let _ = window.set_always_on_top(false);
+
+    Ok(params)
+}
+
+/// Exchanges the authorization code for an access token. Runs natively so the
+/// webview's CORS policy cannot block the token endpoint.
+#[tauri::command]
+fn oauth_exchange(
+    token_url: String,
+    client_id: String,
+    client_secret: String,
+    code: String,
+    redirect_uri: String,
+) -> Result<String, String> {
+    if !token_url.starts_with("https://") && !token_url.starts_with("http://") {
+        return Err("Token URL must be an http(s) URL.".to_string());
+    }
+    let response = ureq::post(&token_url)
+        .set("Accept", "application/json")
+        .send_form(&[
+            ("client_id", client_id.as_str()),
+            ("client_secret", client_secret.as_str()),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect_uri.as_str()),
+        ])
+        .map_err(|error| error.to_string())?;
+    response.into_string().map_err(|error| error.to_string())
+}
+
+/// Opens the OAuth authorization page in the user's default browser.
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("Only http(s) URLs can be opened.".to_string());
+    }
+    open::that(url).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn store_token(service: String, account: String, token: String) -> Result<(), String> {
     let entry = keyring::Entry::new(&service, &account).map_err(|error| error.to_string())?;
@@ -117,12 +311,17 @@ fn load_token(service: String, account: String) -> Result<Option<String>, String
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(OAuthServerState::default())
         .invoke_handler(tauri::generate_handler![
             ensure_vault,
             read_text_file,
             write_text_file,
             store_token,
-            load_token
+            load_token,
+            oauth_start,
+            oauth_wait,
+            oauth_exchange,
+            open_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
@@ -181,6 +380,37 @@ mod tests {
             path,
             PathBuf::from("/tmp/vault/github.com/openai/codex/issues/42/issue.md")
         );
+    }
+
+    #[test]
+    fn parse_query_decodes_oauth_callback_parameters() {
+        let params = parse_query("code=abc123&state=xyz%2F1+2");
+
+        assert_eq!(params.get("code").map(String::as_str), Some("abc123"));
+        assert_eq!(params.get("state").map(String::as_str), Some("xyz/1 2"));
+    }
+
+    #[test]
+    fn oauth_callback_server_replies_and_returns_params() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let handle = std::thread::spawn(move || accept_oauth_callback(listener));
+
+        let mut client =
+            std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        client
+            .write_all(b"GET /auth?code=abc&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .expect("send request");
+        let mut response = String::new();
+        use std::io::Read;
+        client.read_to_string(&mut response).expect("read response");
+
+        let params = handle.join().expect("join").expect("params");
+        assert_eq!(params.get("code").map(String::as_str), Some("abc"));
+        assert_eq!(params.get("state").map(String::as_str), Some("s1"));
+        assert!(response.contains("200 OK"));
+        assert!(response.contains("로그인이 완료되었습니다"));
     }
 
     #[test]

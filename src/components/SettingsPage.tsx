@@ -1,16 +1,20 @@
-import { CheckCircle2, HardDrive, KeyRound, SunMoon, X } from "lucide-react";
+import { CheckCircle2, HardDrive, SunMoon, X } from "lucide-react";
 import type { FormEvent } from "react";
 import type { AppSettings } from "../appSettings";
+import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
+import type { UseGithubServersResult } from "../hooks/useGithubServers";
 import type { ThemeMode } from "../hooks/useTheme";
+import { GithubServersSection } from "./GithubServersSection";
 
 interface SettingsPageProps {
   settings: AppSettings;
   status: string;
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
+  servers: UseGithubServersResult;
+  auth: UseGithubAuthResult;
   onUpdate: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onSave: (event: FormEvent) => void;
-  onConnect: () => void;
   onClose: () => void;
 }
 
@@ -25,9 +29,10 @@ export function SettingsPage({
   status,
   themeMode,
   onThemeModeChange,
+  servers,
+  auth,
   onUpdate,
   onSave,
-  onConnect,
   onClose
 }: SettingsPageProps) {
   return (
@@ -75,75 +80,7 @@ export function SettingsPage({
           </div>
         </section>
 
-        <section className="settings-section">
-          <div className="settings-section-title">
-            <KeyRound size={18} />
-            <h3>GitHub connection</h3>
-          </div>
-          <div className="settings-grid">
-            <label>
-              Host name
-              <input
-                aria-label="Host name"
-                value={settings.hostName}
-                onChange={(event) => onUpdate("hostName", event.target.value)}
-              />
-            </label>
-            <label>
-              Web base URL
-              <input
-                aria-label="Web base URL"
-                value={settings.webBaseUrl}
-                onChange={(event) => onUpdate("webBaseUrl", event.target.value)}
-              />
-            </label>
-            <label>
-              API base URL
-              <input
-                aria-label="API base URL"
-                value={settings.apiBaseUrl}
-                onChange={(event) => onUpdate("apiBaseUrl", event.target.value)}
-              />
-            </label>
-            <label>
-              OAuth client ID
-              <input
-                aria-label="OAuth client ID"
-                value={settings.oauthClientId}
-                onChange={(event) => onUpdate("oauthClientId", event.target.value)}
-              />
-            </label>
-            <label>
-              OAuth scopes
-              <input
-                aria-label="OAuth scopes"
-                value={settings.oauthScopes}
-                onChange={(event) => onUpdate("oauthScopes", event.target.value)}
-              />
-            </label>
-            <label>
-              Personal access token
-              <input
-                aria-label="Personal access token"
-                type="password"
-                autoComplete="off"
-                placeholder="ghp_..."
-                value={settings.personalAccessToken}
-                onChange={(event) =>
-                  onUpdate("personalAccessToken", event.target.value)
-                }
-              />
-            </label>
-          </div>
-          <button
-            className="secondary-button settings-inline-action"
-            type="button"
-            onClick={onConnect}
-          >
-            <KeyRound size={16} />
-            Connect GitHub
-          </button>
-        </section>
+        <GithubServersSection servers={servers} auth={auth} />
 
         <section className="settings-section">
           <div className="settings-section-title">

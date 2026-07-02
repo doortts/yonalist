@@ -1,4 +1,45 @@
 import "@testing-library/jest-dom/vitest";
+import { beforeEach } from "vitest";
+
+// vitest's jsdom environment ships without a usable localStorage; install a
+// functional in-memory implementation shared by all test files.
+function createLocalStorageMock(): Storage {
+  let store: Record<string, string> = {};
+  return {
+    get length() {
+      return Object.keys(store).length;
+    },
+    clear() {
+      store = {};
+    },
+    getItem(key: string) {
+      return key in store ? store[key] : null;
+    },
+    key(index: number) {
+      return Object.keys(store)[index] ?? null;
+    },
+    removeItem(key: string) {
+      delete store[key];
+    },
+    setItem(key: string, value: string) {
+      store[key] = String(value);
+    }
+  } as Storage;
+}
+
+if (
+  typeof window !== "undefined" &&
+  typeof window.localStorage?.setItem !== "function"
+) {
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: createLocalStorageMock()
+  });
+}
+
+beforeEach(() => {
+  window.localStorage.clear?.();
+});
 
 // jsdom does not implement PointerEvent; the pane resizer relies on it.
 if (typeof window !== "undefined" && !window.PointerEvent) {

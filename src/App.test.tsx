@@ -120,7 +120,7 @@ describe("Yonalist app shell", () => {
     expect(screen.getByRole("button", { name: "Sync selected" })).toBeEnabled();
   });
 
-  it("opens settings and saves GitHub connection settings", async () => {
+  it("opens settings and saves vault preferences", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -128,17 +128,6 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
 
-    await user.clear(screen.getByLabelText("Host name"));
-    await user.type(screen.getByLabelText("Host name"), "ghe.example.com");
-    await user.clear(screen.getByLabelText("Web base URL"));
-    await user.type(screen.getByLabelText("Web base URL"), "https://ghe.example.com");
-    await user.clear(screen.getByLabelText("API base URL"));
-    await user.type(
-      screen.getByLabelText("API base URL"),
-      "https://ghe.example.com/api/v3"
-    );
-    await user.clear(screen.getByLabelText("OAuth client ID"));
-    await user.type(screen.getByLabelText("OAuth client ID"), "client-123");
     await user.clear(screen.getByLabelText("Vault folder"));
     await user.type(screen.getByLabelText("Vault folder"), "/Users/doortts/Yonalist");
     await user.click(screen.getByLabelText("Cache linked attachments"));
@@ -146,16 +135,77 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByText("Settings saved")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
-      "ghe.example.com"
+      "/Users/doortts/Yonalist"
     );
-    expect(screen.getByLabelText("Host name")).toHaveValue("ghe.example.com");
     expect(screen.getByLabelText("Cache linked attachments")).not.toBeChecked();
+  });
 
-    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+  it("lists default GitHub servers and switches the selected one", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    const section = screen.getByLabelText("GitHub servers");
+    const naver = within(section).getByRole("radio", {
+      name: "네이버 — https://oss.navercorp.com/api/v3"
+    });
+    const github = within(section).getByRole("radio", {
+      name: "Github — https://api.github.com"
+    });
+    expect(naver).toBeChecked();
+    expect(
+      within(section).getByRole("button", { name: "Login to Github" })
+    ).toBeInTheDocument();
+
+    await user.click(github);
+
+    expect(github).toBeChecked();
+    expect(
+      within(section).getByText("서버를 변경했습니다. 새 서버로 다시 로그인하세요.")
+    ).toBeInTheDocument();
+    expect(
+      window.localStorage.getItem("yonalist.github.apiBaseUrl.v1")
+    ).toBe("https://api.github.com");
+  });
+
+  it("adds a custom GHE server with a personal token", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+
+    const section = screen.getByLabelText("GitHub servers");
+    await user.click(within(section).getByRole("button", { name: /URL 추가/ }));
+
+    await user.type(
+      within(section).getByLabelText("API Base URL"),
+      "https://ghe.example.com/api/v3"
+    );
+    await user.type(within(section).getByLabelText("별칭"), "사내 GHE");
+    await user.click(within(section).getByRole("radio", { name: "개인 토큰" }));
+    await user.type(
+      within(section).getByLabelText("Personal Access Token"),
+      "ghp_test_token"
+    );
+    await user.click(within(section).getByRole("button", { name: "추가" }));
 
     expect(
-      screen.getByText("OAuth Device Flow ready for ghe.example.com")
+      within(section).getByRole("radio", {
+        name: "사내 GHE — https://ghe.example.com/api/v3"
+      })
     ).toBeInTheDocument();
+    expect(
+      window.localStorage.getItem("yonalist.github.personalTokens.v1")
+    ).toContain("ghp_test_token");
+
+    // Selecting the token-backed server signs in without the OAuth flow.
+    await user.click(
+      within(section).getByRole("radio", {
+        name: "사내 GHE — https://ghe.example.com/api/v3"
+      })
+    );
+    expect(within(section).getByText("개인 토큰으로 인증됨")).toBeInTheDocument();
   });
 
   it("shows grouped sample notifications and hides one on demand", async () => {

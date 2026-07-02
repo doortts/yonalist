@@ -136,7 +136,7 @@ export function sampleNotificationDetail(
     author: notification.repository.owner.login,
     created_at: notification.updated_at,
     body:
-      "This is sample content.\n\nAdd a personal access token in Settings to load the real conversation from GitHub.",
+      "This is sample content.\n\nSign in from Settings to load the real conversation from GitHub.",
     labels: [],
     comments: []
   };
