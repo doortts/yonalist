@@ -10,9 +10,7 @@ import {
   Wifi,
   WifiOff
 } from "lucide-react";
-import type { PointerEvent } from "react";
 import type { OwnerGroup } from "../services/githubItems";
-import { startNativeWindowDrag } from "../windowDrag";
 
 export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions";
 
@@ -61,22 +59,10 @@ export function Sidebar({
   onOpenNotifications,
   unreadNotificationCount
 }: SidebarProps) {
-  function handleWindowDragStart(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0) {
-      return;
-    }
-
-    void startNativeWindowDrag();
-  }
-
   return (
     <aside className="sidebar" aria-label="Navigation">
-      <div
-        className="window-drag-region"
-        data-tauri-drag-region
-        aria-label="Window drag region"
-        onPointerDown={handleWindowDragStart}
-      />
+      <div className="pane-titlebar-spacer" />
+      <div className="sidebar-scroll">
       <div className="brand-row">
         <div>
           <p className="eyebrow">Yonalist</p>
@@ -179,6 +165,7 @@ export function Sidebar({
           <span>Settings</span>
         </button>
       </section>
+      </div>
     </aside>
   );
 }

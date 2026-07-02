@@ -59,6 +59,7 @@ export function ItemListPane({
 }: ItemListPaneProps) {
   return (
     <section className="list-pane" aria-label="Items">
+      <div className="pane-titlebar-spacer" />
       <div className="search-row">
         <Search size={18} />
         <input

@@ -19,6 +19,7 @@ import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar, type ListFilter } from "./components/Sidebar";
+import { TitleBar } from "./components/TitleBar";
 import { toggleFavorite } from "./domain/favorites";
 import {
   createCommentOutboxOperation,
@@ -445,6 +446,7 @@ export default function App({ initialOnline }: AppProps) {
 
   return (
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
+      <TitleBar />
       <Sidebar
         online={online}
         onToggleOnline={toggleOnline}
@@ -524,6 +526,8 @@ export default function App({ initialOnline }: AppProps) {
       />
 
       <section className="detail-pane" aria-label="Detail">
+        <div className="pane-titlebar-spacer" />
+        <div className="detail-scroll">
         {showSettings ? (
           <SettingsPage
             settings={settings}
@@ -565,6 +569,7 @@ export default function App({ initialOnline }: AppProps) {
             onOpenOutbox={openOutbox}
           />
         )}
+        </div>
       </section>
 
       {showOutbox && (

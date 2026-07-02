@@ -120,6 +120,7 @@ export function NotificationsPane({
 
   return (
     <section className="notifications-pane" aria-label="Notifications">
+      <div className="pane-titlebar-spacer" />
       <div className="notifications-header">
         <h2>Notifications</h2>
         <button
