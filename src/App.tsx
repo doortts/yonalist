@@ -10,6 +10,7 @@ import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
 import { ItemDetail } from "./components/ItemDetail";
 import { ItemListPane } from "./components/ItemListPane";
 import { NewIssuePage, type DraftIssue } from "./components/NewIssuePage";
+import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar, type ListFilter, type RepositoryEntry } from "./components/Sidebar";
@@ -21,6 +22,7 @@ import {
 import { commentFilePath, draftIssuePath } from "./domain/paths";
 import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
 import { sampleItems, SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
+import { useNotifications } from "./hooks/useNotifications";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { createGitHubClient } from "./services/github";
@@ -66,10 +68,12 @@ export default function App({ initialOnline }: AppProps) {
   const [showOutbox, setShowOutbox] = useState(false);
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
+  const notifications = useNotifications(settings, online, showNotifications);
   const [draftIssue, setDraftIssue] = useState<DraftIssue>({
     title: "",
     body: "",
@@ -174,8 +178,15 @@ export default function App({ initialOnline }: AppProps) {
 
   function openSettings() {
     setShowNewIssue(false);
+    setShowNotifications(false);
     setShowSettings(true);
     setSettingsStatus("");
+  }
+
+  function openNotifications() {
+    setShowNewIssue(false);
+    setShowSettings(false);
+    setShowNotifications(true);
   }
 
   function openNewIssue() {
@@ -387,6 +398,7 @@ export default function App({ initialOnline }: AppProps) {
           setFilter(next);
           setShowSettings(false);
           setShowNewIssue(false);
+          setShowNotifications(false);
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={setRepositoryFilter}
@@ -394,6 +406,9 @@ export default function App({ initialOnline }: AppProps) {
         counts={filterCounts}
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
+        notificationsOpen={showNotifications}
+        onOpenNotifications={openNotifications}
+        unreadNotificationCount={notifications.unreadCount}
       />
 
       <div
@@ -409,7 +424,15 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      <ItemListPane
+      {showNotifications ? (
+        <NotificationsPane
+          state={notifications}
+          webBaseUrl={settings.webBaseUrl}
+          online={online}
+        />
+      ) : (
+        <>
+          <ItemListPane
         items={filteredItems}
         selectedPath={selectedItem?.path ?? null}
         query={query}
@@ -467,6 +490,8 @@ export default function App({ initialOnline }: AppProps) {
           />
         )}
       </section>
+        </>
+      )}
 
       {showOutbox && (
         <OutboxModal

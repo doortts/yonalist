@@ -1,4 +1,5 @@
 import {
+  Bell,
   Bookmark,
   CircleDot,
   Folder,
@@ -32,6 +33,9 @@ interface SidebarProps {
   counts: Record<ListFilter, number>;
   settingsOpen: boolean;
   onOpenSettings: () => void;
+  notificationsOpen: boolean;
+  onOpenNotifications: () => void;
+  unreadNotificationCount: number;
 }
 
 const filterEntries: Array<{
@@ -55,7 +59,10 @@ export function Sidebar({
   repositories,
   counts,
   settingsOpen,
-  onOpenSettings
+  onOpenSettings,
+  notificationsOpen,
+  onOpenNotifications,
+  unreadNotificationCount
 }: SidebarProps) {
   function handleWindowDragStart(event: PointerEvent<HTMLDivElement>) {
     if (event.button !== 0) {
@@ -91,11 +98,30 @@ export function Sidebar({
       {!online && <span className="offline-badge">Offline</span>}
 
       <section className="nav-section">
+        <h2>GitHub</h2>
+        <button
+          className={notificationsOpen ? "nav-item active" : "nav-item"}
+          type="button"
+          onClick={onOpenNotifications}
+        >
+          <Bell size={16} />
+          <span>Notifications</span>
+          {unreadNotificationCount > 0 && (
+            <strong className="nav-badge">{unreadNotificationCount}</strong>
+          )}
+        </button>
+      </section>
+
+      <section className="nav-section">
         <h2>Inbox</h2>
         {filterEntries.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
-            className={filter === key && !settingsOpen ? "nav-item active" : "nav-item"}
+            className={
+              filter === key && !settingsOpen && !notificationsOpen
+                ? "nav-item active"
+                : "nav-item"
+            }
             type="button"
             aria-pressed={filter === key}
             onClick={() => onFilterChange(key)}

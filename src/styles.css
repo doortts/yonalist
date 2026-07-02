@@ -814,6 +814,257 @@ body.is-resizing-pane {
   font-weight: 600;
 }
 
+/* ---------- Notifications ---------- */
+
+.notifications-pane {
+  display: flex;
+  flex-direction: column;
+  grid-column: 3 / -1;
+  min-width: 0;
+  min-height: 100vh;
+  background: var(--bg-list);
+}
+
+.notifications-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 52px 24px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.notifications-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.notifications-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.notifications-toggle span {
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.notifications-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 24px 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-3);
+}
+
+.notifications-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-1);
+  font-size: 14px;
+}
+
+.notifications-search input::placeholder {
+  color: var(--text-3);
+}
+
+.notifications-search:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+}
+
+.notifications-note,
+.notifications-error {
+  margin: 8px 24px 0;
+  font-size: 12.5px;
+}
+
+.notifications-note {
+  color: var(--text-3);
+}
+
+.notifications-error {
+  color: var(--danger);
+}
+
+.notifications-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 12px 24px;
+}
+
+.notifications-date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  padding: 14px 12px 4px;
+}
+
+.notifications-date-row h3 {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.notifications-open-all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.notifications-open-all:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.notification-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-radius: var(--radius);
+}
+
+.notification-row:hover {
+  background: var(--bg-hover);
+}
+
+.notification-row.quiet {
+  background: rgb(17 24 39 / 3%);
+}
+
+.notification-row.quiet:hover {
+  background: var(--bg-hover);
+}
+
+.notification-reason {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  color: var(--text-3);
+}
+
+.reason-mention {
+  color: #7c4dff;
+}
+
+.reason-comment {
+  color: #009688;
+}
+
+.reason-author {
+  color: #ff5722;
+}
+
+.reason-team {
+  color: #536dfe;
+}
+
+.notification-main {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.notification-title {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-row.quiet .notification-title {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.notification-number {
+  color: var(--text-3);
+  font-weight: 500;
+}
+
+.notification-subtitle {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-unread-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.notification-hide {
+  flex-shrink: 0;
+  width: 30px;
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 100ms ease;
+}
+
+.notification-row:hover .notification-hide,
+.notification-hide:focus-visible {
+  opacity: 1;
+}
+
+.nav-item strong.nav-badge {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  text-align: center;
+}
+
+.spinning {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---------- Modal ---------- */
 
 .modal-backdrop {

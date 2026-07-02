@@ -158,6 +158,34 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows grouped sample notifications and hides one on demand", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    const pane = screen.getByLabelText("Notifications");
+    expect(within(pane).getByText("Today")).toBeInTheDocument();
+    expect(
+      within(pane).getByText("Design offline issue reading")
+    ).toBeInTheDocument();
+
+    const hideButtons = within(pane).getAllByRole("button", {
+      name: "Hide notification"
+    });
+    await user.click(hideButtons[0]);
+
+    expect(
+      within(pane).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+
+    await user.click(within(pane).getByLabelText("Show hidden notifications"));
+
+    expect(
+      within(pane).getByText("Design offline issue reading")
+    ).toBeInTheDocument();
+  });
+
   it("resizes panes from the column separators", () => {
     render(<App />);
 
