@@ -87,12 +87,12 @@
 }
 
 /* ---------- Scrollbars ----------
-   Shared by every scrollable area: always visible like the default,
-   but on a slimmer 8px gutter with a subtle rounded thumb. */
+   Shared by every scrollable area: a slim 6px gutter whose thumb only
+   appears while the pointer hovers the scrolling region. */
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track,
@@ -102,10 +102,15 @@
 
 ::-webkit-scrollbar-thumb {
   border-radius: 999px;
+  background: transparent;
+}
+
+*:hover::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
 }
 
-::-webkit-scrollbar-thumb:hover {
+*::-webkit-scrollbar-thumb:hover,
+*:hover::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 
