@@ -1686,6 +1686,11 @@ body.is-resizing-pane {
   color: #8250df;
 }
 
+.chip-state-draft {
+  background: var(--bg-hover);
+  color: var(--text-2);
+}
+
 :root[data-theme="dark"] .chip-state-merged {
   color: #a371f7;
 }

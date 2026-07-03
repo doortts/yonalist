@@ -205,6 +205,21 @@ describe("Yonalist app shell", () => {
     expect(bookmark).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows the item state and its comment thread in the detail pane", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detail = screen.getByLabelText("Detail");
+    expect(within(detail).getByText("open")).toHaveClass("chip-state-open");
+    const comments = within(detail).getByLabelText("Comments");
+    expect(
+      within(comments).getByText(/Sample reply so the conversation thread/)
+    ).toBeInTheDocument();
+    expect(within(detail).getByText(/댓글 2/)).toBeInTheDocument();
+  });
+
   it("shows a green Comment button online and Queue comment offline", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<App initialOnline />);

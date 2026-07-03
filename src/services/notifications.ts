@@ -31,11 +31,31 @@ function cacheKey(options: FetchNotificationsOptions): string {
   ].join("|");
 }
 
+// In-flight coalescing: concurrent fetches for the same feed share one
+// request instead of hitting the API twice.
+const inflight = new Map<string, Promise<GitHubNotification[]>>();
+
 export function clearNotificationCache() {
   cache.clear();
+  inflight.clear();
 }
 
-export async function fetchNotifications(
+export function fetchNotifications(
+  options: FetchNotificationsOptions
+): Promise<GitHubNotification[]> {
+  const key = cacheKey(options);
+  const running = inflight.get(key);
+  if (running) {
+    return running;
+  }
+  const request = doFetchNotifications(options).finally(() => {
+    inflight.delete(key);
+  });
+  inflight.set(key, request);
+  return request;
+}
+
+async function doFetchNotifications(
   options: FetchNotificationsOptions
 ): Promise<GitHubNotification[]> {
   const fetcher = options.fetchImpl ?? fetch;

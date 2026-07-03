@@ -109,6 +109,29 @@ describe("fetchNotifications", () => {
     expect(String(fetchMock.mock.calls[2][0])).toContain("page=3");
   });
 
+  it("coalesces concurrent fetches for the same feed into one request", async () => {
+    let resolveResponse: (response: Response) => void = () => {};
+    const pending = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetchMock = vi.fn(() => pending);
+
+    const options = {
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    const first = fetchNotifications(options);
+    const second = fetchNotifications(options);
+
+    resolveResponse(jsonResponse([notification("1")]));
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(a).toHaveLength(1);
+    expect(b).toBe(a);
+  });
+
   it("keeps paginating on full pages when no Link header exists", async () => {
     const fullPage = Array.from({ length: 50 }, (_, index) =>
       notification(String(index))

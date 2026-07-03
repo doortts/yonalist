@@ -1,11 +1,14 @@
-import { Bookmark, Inbox, Send } from "lucide-react";
+import { Bookmark, Inbox, Loader2, Send } from "lucide-react";
 import type { FormEvent } from "react";
 import type { ItemDocument } from "../domain/types";
+import type { UseItemThreadResult } from "../hooks/useItemThread";
+import { timeAgo } from "../timeFormat";
 import { itemTypeLabel } from "./ItemListPane";
 import { MarkdownBody } from "./MarkdownBody";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
+  thread: UseItemThreadResult;
   online: boolean;
   outboxCount: number;
   commentDraft: string;
@@ -17,6 +20,7 @@ interface ItemDetailProps {
 
 export function ItemDetail({
   item,
+  thread,
   online,
   outboxCount,
   commentDraft,
@@ -34,6 +38,10 @@ export function ItemDetail({
       </div>
     );
   }
+
+  // Prefer the live thread state (merged/draft detection) over the listing.
+  const state = thread.thread?.state ?? item.frontMatter.state;
+  const comments = thread.thread?.comments ?? [];
 
   return (
     <>
@@ -67,6 +75,8 @@ export function ItemDetail({
           </div>
         </div>
         <div className="detail-actions">
+          <span className={`chip chip-state-${state}`}>{state}</span>
+          {thread.thread?.draft && <span className="chip chip-state-draft">draft</span>}
           {item.frontMatter.labels.map((label) => (
             <span className="chip" key={label}>
               {label}
@@ -74,6 +84,7 @@ export function ItemDetail({
           ))}
           <span className="chip chip-status">{item.frontMatter.sync.status}</span>
           <span className="detail-connection">
+            {comments.length > 0 && `댓글 ${comments.length} · `}
             {online ? "Online" : "Offline queue enabled"}
           </span>
         </div>
@@ -86,11 +97,43 @@ export function ItemDetail({
           </span>
           <div>
             <strong>{item.frontMatter.author}</strong>
-            <p>{itemTypeLabel(item)} conversation</p>
+            <p>
+              {itemTypeLabel(item)} conversation
+              {item.frontMatter.created_at
+                ? ` · ${timeAgo(item.frontMatter.created_at)}`
+                : ""}
+            </p>
           </div>
         </div>
         <MarkdownBody body={item.body || "No body."} />
       </article>
+
+      {thread.loading && (
+        <div className="detail-loading" aria-label="Loading comments">
+          <Loader2 size={18} className="spinning" />
+          <span>Loading comments...</span>
+        </div>
+      )}
+      {thread.error && <p className="notifications-error detail-error">{thread.error}</p>}
+
+      {comments.length > 0 && (
+        <section className="notification-comments" aria-label="Comments">
+          {comments.map((comment) => (
+            <article className="content-panel comment-panel" key={comment.id}>
+              <div className="author-row">
+                <span className="avatar">
+                  {comment.author.slice(0, 1).toUpperCase()}
+                </span>
+                <div>
+                  <strong>{comment.author}</strong>
+                  <p>{comment.created_at ? timeAgo(comment.created_at) : ""}</p>
+                </div>
+              </div>
+              <MarkdownBody body={comment.body} />
+            </article>
+          ))}
+        </section>
+      )}
 
       <form className="comment-composer" onSubmit={onQueueComment}>
         <textarea

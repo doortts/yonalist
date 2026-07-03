@@ -75,3 +75,29 @@ export const sampleItems: ItemDocument[] = [
     }
   }
 ];
+
+/** Demo conversation threads so the detail pane shows comments offline. */
+export function sampleItemThread(item: ItemDocument): {
+  state: "open" | "closed" | "merged";
+  draft: boolean;
+  comments: Array<{ id: string; author: string; created_at: string; body: string }>;
+} {
+  return {
+    state: item.frontMatter.state,
+    draft: false,
+    comments: [
+      {
+        id: `${item.frontMatter.number}-sample-1`,
+        author: "mona",
+        created_at: item.frontMatter.updated_at,
+        body: "Sample reply so the conversation thread layout is visible offline."
+      },
+      {
+        id: `${item.frontMatter.number}-sample-2`,
+        author: item.frontMatter.author,
+        created_at: item.frontMatter.updated_at,
+        body: "Thanks! Sign in from Settings to load the real thread."
+      }
+    ]
+  };
+}

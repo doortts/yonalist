@@ -36,6 +36,7 @@ import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useGithubServers } from "./hooks/useGithubServers";
+import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
@@ -235,7 +236,7 @@ export default function App({ initialOnline }: AppProps) {
   const notifications = useNotifications(
     auth.connection,
     online,
-    showNotifications,
+    authGate === "passed",
     notificationRepoFilter
   );
   const [selectedNotification, setSelectedNotification] =
@@ -314,6 +315,14 @@ export default function App({ initialOnline }: AppProps) {
 
   const selectedItem =
     filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
+
+  const detailVisible =
+    authGate === "passed" && !showSettings && !showNewIssue && !showNotifications;
+  const itemThread = useItemThread(
+    detailVisible ? selectedItem ?? null : null,
+    auth.connection,
+    online
+  );
 
   const layoutStyle = {
     "--sidebar-width": `${paneWidths.sidebar}px`,
@@ -695,6 +704,7 @@ export default function App({ initialOnline }: AppProps) {
         ) : (
           <ItemDetail
             item={selectedItem}
+            thread={itemThread}
             online={online}
             outboxCount={outbox.length}
             commentDraft={commentDraft}
