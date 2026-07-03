@@ -114,12 +114,11 @@ export async function fetchNotificationDetail(
   }
 
   if (notification.subject.type === "Discussion") {
-    const [discussion, comments] = await Promise.all([
-      client.getDiscussion(owner, repo, number) as Promise<IssueResponse>,
-      client
-        .listDiscussionComments(owner, repo, number)
-        .catch(() => []) as Promise<CommentResponse[]>
-    ]);
+    const { discussion, comments } = (await client.getDiscussionWithComments(
+      owner,
+      repo,
+      number
+    )) as { discussion: IssueResponse; comments: CommentResponse[] };
     return {
       title: discussion.title ?? notification.subject.title,
       state: discussion.state ?? "open",

@@ -38,9 +38,32 @@ function client(fetchMock: typeof fetch) {
 
 describe("syncOutboxOperations", () => {
   it("creates issues from drafts and comments from operation bodies", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(JSON.stringify({ number: 100 }), { status: 201 })
-    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/issues")) {
+        return new Response(
+          JSON.stringify({
+            number: 100,
+            node_id: "I_100",
+            html_url: "https://github.com/acme/app/issues/100",
+            created_at: "2026-07-02T00:00:00Z",
+            updated_at: "2026-07-02T00:00:00Z"
+          }),
+          { status: 201 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: 456,
+          node_id: "IC_456",
+          html_url: "https://github.com/acme/app/issues/42#issuecomment-456",
+          created_at: "2026-07-02T01:00:00Z",
+          updated_at: "2026-07-02T01:00:00Z",
+          body: "Queued comment"
+        }),
+        { status: 201 }
+      );
+    });
 
     const issueOperation = createIssueOutboxOperation({
       id: "issue-1",
@@ -71,6 +94,16 @@ describe("syncOutboxOperations", () => {
     );
 
     expect(results.map((result) => result.ok)).toEqual([true, true]);
+    expect(results[0].remote).toMatchObject({
+      type: "issue",
+      number: 100,
+      node_id: "I_100"
+    });
+    expect(results[1].remote).toMatchObject({
+      type: "comment",
+      id: 456,
+      node_id: "IC_456"
+    });
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.github.com/repos/acme/app/issues",
       expect.objectContaining({

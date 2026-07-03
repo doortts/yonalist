@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::collections::HashMap;
+use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -12,12 +13,32 @@ pub struct VaultPaths {
     pub outbox_dir: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct VaultMarkdownFile {
+    pub relative_path: String,
+    pub contents: String,
+}
+
 fn display_path(path: PathBuf) -> String {
     path.to_string_lossy().into_owned()
 }
 
+fn expand_vault_path(vault_path: &str) -> PathBuf {
+    if vault_path == "~" {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = vault_path.strip_prefix("~/") {
+        if let Some(home) = env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(vault_path)
+}
+
 pub fn vault_paths(vault_path: impl AsRef<Path>) -> VaultPaths {
-    let vault_path = vault_path.as_ref();
+    let vault_path = expand_vault_path(&vault_path.as_ref().to_string_lossy());
     let metadata_dir = vault_path.join(".yonalist");
     let outbox_dir = metadata_dir.join("outbox");
 
@@ -48,7 +69,7 @@ pub fn resolve_vault_file(vault_path: &str, relative_path: &str) -> Result<PathB
         return Err("File path may not contain '..', '.' or root components.".to_string());
     }
 
-    Ok(Path::new(vault_path).join(relative))
+    Ok(expand_vault_path(vault_path).join(relative))
 }
 
 fn ensure_parent(path: &Path) -> Result<(), String> {
@@ -77,6 +98,42 @@ fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), String> {
     })
 }
 
+fn collect_markdown_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<VaultMarkdownFile>,
+) -> Result<(), String> {
+    if !directory.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if file_type.is_dir() {
+            collect_markdown_files(root, &path, files)?;
+            continue;
+        }
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+
+        let relative_path = path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .into_owned();
+        let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+        files.push(VaultMarkdownFile {
+            relative_path,
+            contents,
+        });
+    }
+
+    Ok(())
+}
+
 #[tauri::command]
 fn ensure_vault(vault_path: String) -> Result<VaultPaths, String> {
     let paths = vault_paths(&vault_path);
@@ -98,6 +155,50 @@ fn write_text_file(
 ) -> Result<(), String> {
     let path = resolve_vault_file(&vault_path, &relative_path)?;
     write_text_file_inner(&path, &contents)
+}
+
+#[tauri::command]
+fn delete_text_file(vault_path: String, relative_path: String) -> Result<(), String> {
+    let path = resolve_vault_file(&vault_path, &relative_path)?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn move_text_file(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    contents: Option<String>,
+) -> Result<(), String> {
+    let from_path = resolve_vault_file(&vault_path, &from_relative_path)?;
+    let to_path = resolve_vault_file(&vault_path, &to_relative_path)?;
+    ensure_parent(&to_path)?;
+
+    if let Some(contents) = contents {
+        write_text_file_inner(&to_path, &contents)?;
+        let _ = fs::remove_file(from_path);
+        return Ok(());
+    }
+
+    fs::rename(&from_path, &to_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+
+    let expanded = expand_vault_path(&vault_path);
+    let root = expanded.as_path();
+    let mut files = Vec::new();
+    collect_markdown_files(root, root, &mut files)?;
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(files)
 }
 
 /// Loopback listener waiting for the OAuth authorization-code redirect,
@@ -350,6 +451,9 @@ pub fn run() {
             ensure_vault,
             read_text_file,
             write_text_file,
+            delete_text_file,
+            move_text_file,
+            list_markdown_files,
             store_token,
             load_token,
             oauth_start,
@@ -375,6 +479,15 @@ mod tests {
     }
 
     #[test]
+    fn vault_paths_expand_home_shorthand() {
+        let home = std::env::var("HOME").expect("home");
+        let paths = vault_paths("~/Yonalist");
+
+        assert_eq!(paths.metadata_dir, format!("{home}/Yonalist/.yonalist"));
+        assert_eq!(paths.outbox_dir, format!("{home}/Yonalist/.yonalist/outbox"));
+    }
+
+    #[test]
     fn write_text_file_creates_parent_directories() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let path = temp_dir
@@ -390,6 +503,52 @@ mod tests {
 
         let contents = fs::read_to_string(path).expect("read file");
         assert!(contents.contains("kind: issue"));
+    }
+
+    #[test]
+    fn list_markdown_files_returns_vault_relative_documents() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let issue_path = temp_dir.path().join("github.com/acme/app/issues/1/issue.md");
+        let attachment_path = temp_dir.path().join("github.com/acme/app/issues/1/image.png");
+        write_text_file_inner(&issue_path, "---\nkind: issue\n---\nbody").expect("write md");
+        ensure_parent(&attachment_path).expect("attachment parent");
+        fs::write(&attachment_path, b"png").expect("write attachment");
+
+        let files = list_markdown_files(display_path(temp_dir.path().to_path_buf()))
+            .expect("list files");
+
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].relative_path,
+            "github.com/acme/app/issues/1/issue.md"
+        );
+        assert!(files[0].contents.contains("kind: issue"));
+    }
+
+    #[test]
+    fn move_text_file_can_replace_contents_and_remove_source() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        write_text_file(
+            display_path(temp_dir.path().to_path_buf()),
+            "drafts/issue.md".to_string(),
+            "draft".to_string(),
+        )
+        .expect("write draft");
+
+        move_text_file(
+            display_path(temp_dir.path().to_path_buf()),
+            "drafts/issue.md".to_string(),
+            "issues/10/issue.md".to_string(),
+            Some("synced".to_string()),
+        )
+        .expect("move file");
+
+        assert!(!temp_dir.path().join("drafts/issue.md").exists());
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("issues/10/issue.md"))
+                .expect("read moved"),
+            "synced"
+        );
     }
 
     #[test]

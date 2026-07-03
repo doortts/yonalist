@@ -39,6 +39,9 @@ on issues and pull requests from a local Markdown vault.
   tracking. Sample data is shown until a personal access token is set.
 - Markdown + YAML Front Matter domain model for items, comments, outbox
   operations, favorites, attachment manifests, and vault indexing.
+- Queued issue/comment drafts are written as Markdown documents in the selected
+  vault, outbox operation files are restored on startup, and successful issue
+  sync moves draft files to their remote issue-number paths.
 - One-comment-per-file path strategy under
   `<vault>/<host>/<owner>/<repo>/<issues|pulls>/<number>/comments/`.
 - Local-only favorite metadata with a red bookmark affordance.
@@ -49,7 +52,9 @@ on issues and pull requests from a local Markdown vault.
   personal access token is configured.
 - GitHub REST/OAuth client helpers for host-specific API and web base URLs.
 - Tauri command boundary for vault folder creation, vault-scoped atomic
-  text file read/write, and token storage/loading through the OS keychain.
+  text file read/write, Markdown file listing, deletion, and moves. Personal
+  token storage remains in the current per-server settings store; OS keychain
+  migration is intentionally deferred.
 
 ## Commands
 

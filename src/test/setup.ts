@@ -27,10 +27,7 @@ function createLocalStorageMock(): Storage {
   } as Storage;
 }
 
-if (
-  typeof window !== "undefined" &&
-  typeof window.localStorage?.setItem !== "function"
-) {
+if (typeof window !== "undefined") {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: createLocalStorageMock()

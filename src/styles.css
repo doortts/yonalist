@@ -28,6 +28,9 @@
   --favorite: #e75135;
   --danger: #c2402a;
   --danger-soft: #fdf0ec;
+  --warning: #b45309;
+  --warning-soft: #fff3d6;
+  --warning-border: rgb(245 158 11 / 48%);
   --success: #1a7f37;
 
   /* Layout */
@@ -79,6 +82,9 @@
   --favorite: #f0654a;
   --danger: #f47067;
   --danger-soft: rgb(244 112 103 / 12%);
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 16%);
+  --warning-border: rgb(251 191 36 / 46%);
   --success: #57ab5a;
 
   --shadow-modal: 0 20px 70px rgb(0 0 0 / 55%);
@@ -87,8 +93,13 @@
 }
 
 /* ---------- Scrollbars ----------
-   Shared by every scrollable area: a slim 6px gutter whose thumb only
-   appears while the pointer hovers the scrolling region. */
+   Shared by every scrollable area: a slim 6px gutter whose thumb appears
+   while the pointer hovers the scrolling region or while the region scrolls. */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
 
 ::-webkit-scrollbar {
   width: 6px;
@@ -107,11 +118,18 @@
 
 /* The hovered scroll container is tagged by useScrollbarHover — WebKit
    does not repaint scrollbars on ancestor :hover changes. */
-.scrollbar-hover::-webkit-scrollbar-thumb {
+.scrollbar-hover,
+.scrollbar-active {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.scrollbar-hover::-webkit-scrollbar-thumb,
+.scrollbar-active::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
 }
 
-.scrollbar-hover::-webkit-scrollbar-thumb:hover {
+.scrollbar-hover::-webkit-scrollbar-thumb:hover,
+.scrollbar-active::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 
@@ -243,6 +261,32 @@ body.is-resizing-pane {
   justify-content: space-between;
   gap: 12px;
   padding: 8px 8px 0;
+}
+
+.brand-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.login-required-button {
+  border-color: var(--warning);
+  background: var(--warning);
+  color: #ffffff;
+  box-shadow: 0 8px 18px rgb(180 83 9 / 22%);
+}
+
+.login-required-button:hover {
+  border-color: var(--warning);
+  background: #92400e;
+  color: #ffffff;
+}
+
+.login-required-button:focus-visible {
+  border-color: var(--warning);
+  outline: 2px solid rgb(245 158 11 / 28%);
+  outline-offset: 2px;
 }
 
 .eyebrow {

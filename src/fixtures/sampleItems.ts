@@ -1,4 +1,5 @@
 import type { ItemDocument } from "../domain/types";
+import { itemIdentityKey } from "../domain/items";
 
 export const SAMPLE_VAULT_ROOT = "/vault";
 
@@ -75,6 +76,14 @@ export const sampleItems: ItemDocument[] = [
     }
   }
 ];
+
+const sampleItemKeys = new Set(
+  sampleItems.map((item) => itemIdentityKey(item.frontMatter))
+);
+
+export function isSampleItem(item: ItemDocument): boolean {
+  return sampleItemKeys.has(itemIdentityKey(item.frontMatter));
+}
 
 /** Demo conversation threads so the detail pane shows comments offline. */
 export function sampleItemThread(item: ItemDocument): {

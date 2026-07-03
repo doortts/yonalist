@@ -5,6 +5,7 @@ import {
   Folder,
   GitPullRequest,
   Inbox,
+  LogIn,
   MessagesSquare,
   Settings,
   Wifi,
@@ -16,6 +17,7 @@ export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions
 
 interface SidebarProps {
   online: boolean;
+  loginRequired: boolean;
   onToggleOnline: () => void;
   filter: ListFilter;
   onFilterChange: (filter: ListFilter) => void;
@@ -45,6 +47,7 @@ const filterEntries: Array<{
 
 export function Sidebar({
   online,
+  loginRequired,
   onToggleOnline,
   filter,
   onFilterChange,
@@ -68,14 +71,27 @@ export function Sidebar({
           <p className="eyebrow">Yonalist</p>
           <h1>GitHub Inbox</h1>
         </div>
-        <button
-          className="icon-button"
-          type="button"
-          aria-label={online ? "Go offline" : "Go online"}
-          onClick={onToggleOnline}
-        >
-          {online ? <Wifi size={18} /> : <WifiOff size={18} />}
-        </button>
+        <div className="brand-actions">
+          {loginRequired && (
+            <button
+              className="icon-button login-required-button"
+              type="button"
+              aria-label="Login required"
+              title="Sign in required"
+              onClick={onOpenSettings}
+            >
+              <LogIn size={17} />
+            </button>
+          )}
+          <button
+            className="icon-button"
+            type="button"
+            aria-label={online ? "Go offline" : "Go online"}
+            onClick={onToggleOnline}
+          >
+            {online ? <Wifi size={18} /> : <WifiOff size={18} />}
+          </button>
+        </div>
       </div>
 
       {!online && <span className="offline-badge">Offline</span>}

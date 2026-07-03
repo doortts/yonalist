@@ -1,7 +1,7 @@
 import type { ItemDocument, ItemKind, ItemState } from "../domain/types";
 import { itemMainPath } from "../domain/paths";
 import type { GithubConnection } from "../hooks/useGithubAuth";
-import { GitHubRequestError } from "./github";
+import { createGitHubTransport } from "./githubTransport";
 
 /**
  * Fetches the signed-in user's work items (issues, pull requests,
@@ -49,18 +49,6 @@ interface SearchIssuesResponse {
   items?: SearchIssueItem[];
 }
 
-interface RestDiscussionItem {
-  number: number;
-  title?: string;
-  state?: string;
-  body?: string | null;
-  user?: { login?: string };
-  labels?: Array<{ name?: string } | string>;
-  created_at?: string;
-  updated_at?: string;
-  html_url?: string;
-}
-
 interface UserRepoItem {
   name?: string;
   full_name?: string;
@@ -88,62 +76,6 @@ function hostOf(connection: GithubConnection): string {
   } catch {
     return connection.webBaseUrl;
   }
-}
-
-function apiHeaders(token: string): Record<string, string> {
-  return {
-    Accept: "application/vnd.github+json",
-    Authorization: `Bearer ${token}`,
-    "X-GitHub-Api-Version": "2022-11-28"
-  };
-}
-
-async function requestJson<T>(connection: GithubConnection, path: string): Promise<T> {
-  const base = connection.apiBaseUrl.replace(/\/+$/, "");
-  const response = await fetch(`${base}${path}`, {
-    headers: apiHeaders(connection.token)
-  });
-  if (!response.ok) {
-    throw new GitHubRequestError(response.status, "");
-  }
-  return (await response.json()) as T;
-}
-
-function graphqlUrl(connection: GithubConnection): string {
-  const base = connection.apiBaseUrl.replace(/\/+$/, "");
-  if (/\/api\/v\d+$/.test(base)) {
-    return base.replace(/\/api\/v\d+$/, "/api/graphql");
-  }
-  return `${base}/graphql`;
-}
-
-async function graphql<T>(
-  connection: GithubConnection,
-  query: string,
-  variables: Record<string, unknown>
-): Promise<T> {
-  const response = await fetch(graphqlUrl(connection), {
-    method: "POST",
-    headers: {
-      ...apiHeaders(connection.token),
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({ query, variables })
-  });
-  if (!response.ok) {
-    throw new GitHubRequestError(response.status, "");
-  }
-  const payload = (await response.json()) as {
-    data?: T;
-    errors?: Array<{ message?: string }>;
-  };
-  if (payload.errors?.length) {
-    throw new Error(payload.errors[0].message ?? "GraphQL request failed.");
-  }
-  if (!payload.data) {
-    throw new Error("GraphQL response has no data.");
-  }
-  return payload.data;
 }
 
 function labelNames(labels: Array<{ name?: string } | string> | undefined): string[] {
@@ -212,14 +144,14 @@ async function searchIssues(
   query: string
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
+  const transport = createGitHubTransport(connection);
   const params = new URLSearchParams({
     q: query,
     sort: "updated",
     order: "desc",
     per_page: String(PAGE_SIZE)
   });
-  const response = await requestJson<SearchIssuesResponse>(
-    connection,
+  const response = await transport.requestJson<SearchIssuesResponse>(
     `/search/issues?${params.toString()}`
   );
 
@@ -263,16 +195,33 @@ query ($q: String!, $first: Int!) {
   }
 }`;
 
+const REPO_DISCUSSIONS_QUERY = `
+query ($owner: String!, $repo: String!, $first: Int!) {
+  repository(owner: $owner, name: $repo) {
+    discussions(first: $first, orderBy: { field: UPDATED_AT, direction: DESC }) {
+      nodes {
+        number
+        title
+        body
+        url
+        closed
+        createdAt
+        updatedAt
+        author { login }
+        labels(first: 10) { nodes { name } }
+      }
+    }
+  }
+}`;
+
 async function searchDiscussions(
   connection: GithubConnection,
   query: string
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const data = await graphql<{ search: { nodes: DiscussionSearchNode[] } }>(
-    connection,
-    DISCUSSION_SEARCH_QUERY,
-    { q: query, first: PAGE_SIZE }
-  );
+  const data = await createGitHubTransport(connection).graphql<{
+    search: { nodes: DiscussionSearchNode[] };
+  }>(DISCUSSION_SEARCH_QUERY, { q: query, first: PAGE_SIZE });
 
   return data.search.nodes
     .filter((node) => typeof node.number === "number")
@@ -303,25 +252,26 @@ async function listRepoDiscussions(
   repo: string
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const items = await requestJson<RestDiscussionItem[]>(
-    connection,
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/discussions?per_page=${PAGE_SIZE}`
-  );
+  const data = await createGitHubTransport(connection).graphql<{
+    repository?: { discussions?: { nodes?: DiscussionSearchNode[] } } | null;
+  }>(REPO_DISCUSSIONS_QUERY, { owner, repo, first: PAGE_SIZE });
 
-  return items.map((item) =>
+  return (data.repository?.discussions?.nodes ?? []).map((item) =>
     toItemDocument({
       host,
       owner,
       repo,
       kind: "discussion",
-      number: item.number,
+      number: item.number ?? 0,
       title: item.title ?? `#${item.number}`,
-      state: normalizeState(item.state),
-      author: item.user?.login ?? "unknown",
-      labels: labelNames(item.labels),
-      createdAt: item.created_at ?? "",
-      updatedAt: item.updated_at ?? "",
-      htmlUrl: item.html_url,
+      state: item.closed ? "closed" : "open",
+      author: item.author?.login ?? "unknown",
+      labels: (item.labels?.nodes ?? [])
+        .map((label) => label.name ?? "")
+        .filter(Boolean),
+      createdAt: item.createdAt ?? "",
+      updatedAt: item.updatedAt ?? "",
+      htmlUrl: item.url,
       body: item.body ?? ""
     })
   );
@@ -387,7 +337,9 @@ async function requestAllPages(
 ): Promise<UserRepoItem[]> {
   const collected: UserRepoItem[] = [];
   for (let page = 1; page <= MAX_REPO_PAGES; page += 1) {
-    const items = await requestJson<UserRepoItem[]>(connection, pathForPage(page));
+    const items = await createGitHubTransport(connection).requestJson<UserRepoItem[]>(
+      pathForPage(page)
+    );
     if (!Array.isArray(items)) {
       break;
     }

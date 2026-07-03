@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ItemDocument } from "../domain/types";
-import { sampleItemThread } from "../fixtures/sampleItems";
+import { isSampleItem, sampleItemThread } from "../fixtures/sampleItems";
 import { fetchItemThread, type ItemThread } from "../services/itemThread";
 import type { GithubConnection } from "./useGithubAuth";
 
@@ -26,12 +26,18 @@ export function useItemThread(
   useEffect(() => {
     if (!item) {
       setThread(null);
+      setLoading(false);
       setError(null);
       return;
     }
 
     if (!token) {
-      setThread(sampleItemThread(item));
+      setThread(
+        isSampleItem(item)
+          ? sampleItemThread(item)
+          : { state: item.frontMatter.state, draft: false, comments: [] }
+      );
+      setLoading(false);
       setError(null);
       return;
     }
@@ -39,12 +45,14 @@ export function useItemThread(
     if (number === 0) {
       // Local drafts have no remote conversation yet.
       setThread({ state: item.frontMatter.state, draft: false, comments: [] });
+      setLoading(false);
       setError(null);
       return;
     }
 
     if (!online) {
       setThread(null);
+      setLoading(false);
       setError(null);
       return;
     }

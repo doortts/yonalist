@@ -99,25 +99,34 @@ describe("fetchMyWorkItems", () => {
 });
 
 describe("fetchRepoWorkItems", () => {
-  it("combines repo search results with REST discussions", async () => {
+  it("combines repo search results with GraphQL discussions", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
       if (target.includes("/search/issues")) {
         return jsonResponse({ items: [] });
       }
-      if (target.includes("/repos/acme/app/discussions")) {
-        return jsonResponse([
-          {
-            number: 9,
-            title: "Q&A",
-            state: "open",
-            body: "Question",
-            user: { login: "mona" },
-            created_at: "2026-07-01T00:00:00Z",
-            updated_at: "2026-07-02T00:00:00Z",
-            html_url: "https://github.com/acme/app/discussions/9"
+      if (target.includes("/graphql")) {
+        return jsonResponse({
+          data: {
+            repository: {
+              discussions: {
+                nodes: [
+                  {
+                    number: 9,
+                    title: "Q&A",
+                    closed: false,
+                    body: "Question",
+                    author: { login: "mona" },
+                    createdAt: "2026-07-01T00:00:00Z",
+                    updatedAt: "2026-07-02T00:00:00Z",
+                    url: "https://github.com/acme/app/discussions/9",
+                    labels: { nodes: [] }
+                  }
+                ]
+              }
+            }
           }
-        ]);
+        });
       }
       throw new Error(`Unexpected request: ${target}`);
     });
@@ -130,6 +139,10 @@ describe("fetchRepoWorkItems", () => {
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("q=repo%3Aacme%2Fapp"),
       expect.anything()
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/graphql",
+      expect.objectContaining({ method: "POST" })
     );
   });
 });

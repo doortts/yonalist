@@ -31,11 +31,17 @@ import {
   createCommentOutboxOperation,
   createIssueOutboxOperation
 } from "./domain/outbox";
-import { commentFilePath, draftIssuePath } from "./domain/paths";
+import { mergeItemDocuments, withVaultItemPath } from "./domain/items";
+import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
 import type { GitHubNotification } from "./domain/notifications";
-import type { ItemDocument, OutboxOperationDocument } from "./domain/types";
+import type {
+  CommentDocument,
+  ItemDocument,
+  OutboxOperationDocument
+} from "./domain/types";
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
+import { useAuthGate } from "./hooks/useAuthGate";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
@@ -47,21 +53,22 @@ import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
-import {
-  loadLastAuthenticatedUrl,
-  loadSkipLogin,
-  persistLastAuthenticatedUrl,
-  persistSkipLogin,
-  validateConnection
-} from "./services/authGate";
 import { createGitHubClient } from "./services/github";
-import { syncOutboxOperations } from "./services/sync";
+import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
+import {
+  commentDocumentContents,
+  deleteVaultDocument,
+  itemDocumentContents,
+  loadVaultState,
+  moveVaultDocument,
+  persistCommentDocument,
+  persistItemDocument,
+  persistOutboxOperation
+} from "./services/vaultStore";
 
 interface AppProps {
   initialOnline?: boolean;
 }
-
-type AuthGateState = "checking" | "required" | "passed";
 
 function createOperationId(prefix: string): string {
   const unique =
@@ -109,85 +116,27 @@ export default function App({ initialOnline }: AppProps) {
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
+  const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
+  const authGate = useAuthGate({ auth, servers, online });
 
-  // Startup gate: assume the last authenticated host, verify its stored
-  // credentials, and fall back to the login page when that fails (or on the
-  // very first run). Skipping is remembered so demo mode stays reachable.
-  const [authGate, setAuthGate] = useState<AuthGateState>(() =>
-    loadSkipLogin() ? "passed" : "checking"
-  );
-  const gateStarted = useRef(false);
   useEffect(() => {
-    if (authGate !== "checking" || gateStarted.current) {
+    if (authGate.state !== "passed") {
       return;
-    }
-    gateStarted.current = true;
-
-    const lastAuthenticated = loadLastAuthenticatedUrl();
-    if (
-      lastAuthenticated &&
-      lastAuthenticated !== servers.selectedUrl &&
-      servers.urls.includes(lastAuthenticated)
-    ) {
-      servers.select(lastAuthenticated);
     }
 
-    const url = lastAuthenticated ?? servers.selectedUrl;
-    const token = servers.tokenOf(url);
-    if (!token) {
-      setAuthGate("required");
-      return;
-    }
-    if (!online) {
-      // Offline-first: trust the stored token until the network returns.
-      setAuthGate("passed");
-      return;
-    }
-    void validateConnection({
-      apiBaseUrl: url,
-      webBaseUrl: auth.connection.webBaseUrl,
-      token
-    }).then((ok) => {
-      if (ok) {
-        persistLastAuthenticatedUrl(url);
+    let cancelled = false;
+    void loadVaultState(vaultRoot).then((state) => {
+      if (cancelled) {
+        return;
       }
-      setAuthGate(ok ? "passed" : "required");
+      setDrafts(state.items);
+      setOutbox(state.outbox);
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authGate]);
+    return () => {
+      cancelled = true;
+    };
+  }, [authGate.state, vaultRoot]);
 
-  // On the login page, credentials open the app only after they verify
-  // against the server, so a stale token cannot slip through.
-  const gateValidating = useRef(false);
-  const [gateError, setGateError] = useState<string | null>(null);
-  useEffect(() => {
-    if (authGate !== "required" || !auth.signedIn || gateValidating.current) {
-      return;
-    }
-    if (!online) {
-      persistLastAuthenticatedUrl(servers.selectedUrl);
-      setAuthGate("passed");
-      return;
-    }
-    gateValidating.current = true;
-    void validateConnection(auth.connection).then((ok) => {
-      gateValidating.current = false;
-      if (ok) {
-        persistLastAuthenticatedUrl(servers.selectedUrl);
-        setGateError(null);
-        setAuthGate("passed");
-      } else {
-        setGateError(
-          "인증에 실패했습니다. 토큰을 확인하거나 다른 서버로 로그인하세요."
-        );
-      }
-    });
-  }, [authGate, auth.signedIn, auth.connection, online, servers.selectedUrl]);
-
-  function skipLogin() {
-    persistSkipLogin(true);
-    setAuthGate("passed");
-  }
   const workScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
       const [owner, ...rest] = repositoryFilter.split("/");
@@ -195,12 +144,29 @@ export default function App({ initialOnline }: AppProps) {
     }
     return { type: "inbox" };
   }, [repositoryFilter]);
-  const workItems = useWorkItems(auth.connection, online, workScope);
+  const workItems = useWorkItems(auth.connection, online, workScope, vaultRoot);
   const items = useMemo(
-    () => [...drafts, ...workItems.items],
-    [drafts, workItems.items]
+    () => mergeItemDocuments(drafts, workItems.items, vaultRoot),
+    [drafts, workItems.items, vaultRoot]
   );
   const repositoryGroups = useRepositories(auth.connection, online, workItems.items);
+
+  useEffect(() => {
+    if (
+      authGate.state !== "passed" ||
+      !online ||
+      workItems.demoMode ||
+      workItems.items.length === 0
+    ) {
+      return;
+    }
+
+    void Promise.all(
+      workItems.items.map((item) =>
+        persistItemDocument(vaultRoot, withVaultItemPath(vaultRoot, item))
+      )
+    );
+  }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
   // Repos where the user's involves:@me inbox has activity count as
   // "participating" for default project visibility.
   const [involvedRepoNames, setInvolvedRepoNames] = useState<Set<string>>(
@@ -239,7 +205,7 @@ export default function App({ initialOnline }: AppProps) {
   const notifications = useNotifications(
     auth.connection,
     online,
-    authGate === "passed",
+    authGate.state === "passed",
     notificationRepoFilter
   );
   const [selectedNotification, setSelectedNotification] =
@@ -320,7 +286,10 @@ export default function App({ initialOnline }: AppProps) {
     filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
 
   const detailVisible =
-    authGate === "passed" && !showSettings && !showNewIssue && !showNotifications;
+    authGate.state === "passed" &&
+    !showSettings &&
+    !showNewIssue &&
+    !showNotifications;
   const itemThread = useItemThread(
     detailVisible ? selectedItem ?? null : null,
     auth.connection,
@@ -406,6 +375,86 @@ export default function App({ initialOnline }: AppProps) {
     });
   }
 
+  async function applySyncedOutboxResult(result: OutboxSyncResult) {
+    const { operation, remote } = result;
+    if (!remote) {
+      return;
+    }
+
+    if (remote.type === "issue") {
+      const draft = items.find(
+        (item) => item.path === operation.frontMatter.local_file_path
+      );
+      if (!draft) {
+        await deleteVaultDocument(vaultRoot, operation.path);
+        return;
+      }
+
+      const syncedFrontMatter = {
+        ...draft.frontMatter,
+        number: remote.number,
+        node_id: remote.node_id,
+        html_url: remote.html_url,
+        updated_at: remote.updated_at ?? new Date().toISOString(),
+        synced_at: new Date().toISOString(),
+        sync: { status: "synced" as const }
+      };
+      const syncedItem: ItemDocument = {
+        path: itemMainPath(vaultRoot, syncedFrontMatter),
+        frontMatter: syncedFrontMatter,
+        body: draft.body
+      };
+
+      await moveVaultDocument(
+        vaultRoot,
+        draft.path,
+        syncedItem.path,
+        itemDocumentContents(syncedItem)
+      );
+      setDrafts((current) =>
+        current.map((item) => (item.path === draft.path ? syncedItem : item))
+      );
+    }
+
+    if (remote.type === "comment") {
+      const target = operation.frontMatter.target;
+      if (target.kind && typeof target.number === "number") {
+        const createdAt = remote.created_at ?? new Date().toISOString();
+        const comment: CommentDocument = {
+          path: commentFilePath(vaultRoot, {
+            kind: target.kind,
+            host: target.host,
+            owner: target.owner,
+            repo: target.repo,
+            number: target.number,
+            created_at: createdAt,
+            remote_id: remote.id
+          }),
+          body: remote.body ?? operation.body,
+          frontMatter: {
+            kind: "issue_comment",
+            remote_id:
+              typeof remote.id === "number" ? remote.id : Number(remote.id) || undefined,
+            node_id: remote.node_id,
+            author: "local",
+            created_at: createdAt,
+            updated_at: remote.updated_at ?? createdAt,
+            sync: { status: "synced" }
+          }
+        };
+
+        await moveVaultDocument(
+          vaultRoot,
+          operation.frontMatter.local_file_path,
+          comment.path,
+          commentDocumentContents(comment)
+        );
+      }
+    }
+
+    await deleteVaultDocument(vaultRoot, operation.path);
+  }
+
   async function syncSelectedOutbox() {
     const selected = outbox.filter((operation) =>
       selectedOutboxIds.has(operation.frontMatter.id)
@@ -434,6 +483,11 @@ export default function App({ initialOnline }: AppProps) {
         webBaseUrl: auth.connection.webBaseUrl
       });
       const results = await syncOutboxOperations(client, selected, items);
+      await Promise.all(
+        results
+          .filter((result) => result.ok)
+          .map((result) => applySyncedOutboxResult(result))
+      );
       const syncedIds = new Set(
         results.filter((result) => result.ok).map((result) => result.operation.frontMatter.id)
       );
@@ -443,20 +497,29 @@ export default function App({ initialOnline }: AppProps) {
           .map((result) => [result.operation.frontMatter.id, result.error ?? "Sync failed."])
       );
 
+      const failedOperations = outbox
+        .filter((operation) => failures.has(operation.frontMatter.id))
+        .map((operation) => ({
+          ...operation,
+          frontMatter: {
+            ...operation.frontMatter,
+            status: "failed" as const,
+            last_error: failures.get(operation.frontMatter.id)
+          }
+        }));
+      await Promise.all(
+        failedOperations.map((operation) =>
+          persistOutboxOperation(vaultRoot, operation)
+        )
+      );
       setOutbox((current) =>
         current
           .filter((operation) => !syncedIds.has(operation.frontMatter.id))
-          .map((operation) =>
-            failures.has(operation.frontMatter.id)
-              ? {
-                  ...operation,
-                  frontMatter: {
-                    ...operation.frontMatter,
-                    status: "failed" as const,
-                    last_error: failures.get(operation.frontMatter.id)
-                  }
-                }
-              : operation
+          .map(
+            (operation) =>
+              failedOperations.find(
+                (failed) => failed.frontMatter.id === operation.frontMatter.id
+              ) ?? operation
           )
       );
       setSelectedOutboxIds(new Set());
@@ -483,7 +546,7 @@ export default function App({ initialOnline }: AppProps) {
       repo: selectedItem.frontMatter.repo,
       itemKind: selectedItem.frontMatter.kind,
       number: selectedItem.frontMatter.number,
-      localFilePath: commentFilePath(SAMPLE_VAULT_ROOT, {
+      localFilePath: commentFilePath(vaultRoot, {
         kind: selectedItem.frontMatter.kind,
         host: selectedItem.frontMatter.host,
         owner: selectedItem.frontMatter.owner,
@@ -493,10 +556,24 @@ export default function App({ initialOnline }: AppProps) {
         local_id: id
       }),
       createdAt: new Date().toISOString(),
-      vaultRoot: SAMPLE_VAULT_ROOT
+      vaultRoot
     });
+    const comment: CommentDocument = {
+      path: operation.frontMatter.local_file_path,
+      body,
+      frontMatter: {
+        kind: "issue_comment",
+        author: "local",
+        created_at: operation.frontMatter.created_at,
+        updated_at: operation.frontMatter.created_at,
+        sync: { status: "pending" }
+      }
+    };
+    const queuedOperation = { ...operation, body };
 
-    setOutbox((current) => [...current, { ...operation, body }]);
+    void persistCommentDocument(vaultRoot, comment);
+    void persistOutboxOperation(vaultRoot, queuedOperation);
+    setOutbox((current) => [...current, queuedOperation]);
     setCommentDraft("");
   }
 
@@ -514,7 +591,7 @@ export default function App({ initialOnline }: AppProps) {
     }
 
     const localId = createOperationId("issue");
-    const draftPath = draftIssuePath(SAMPLE_VAULT_ROOT, {
+    const draftPath = draftIssuePath(vaultRoot, {
       host: repository.host,
       owner: repository.owner,
       repo: repository.repo,
@@ -546,12 +623,15 @@ export default function App({ initialOnline }: AppProps) {
       repo: repository.repo,
       localFilePath: draftPath,
       createdAt: new Date().toISOString(),
-      vaultRoot: SAMPLE_VAULT_ROOT
+      vaultRoot
     });
+    const queuedOperation = { ...operation, body: draftIssue.title };
 
+    void persistItemDocument(vaultRoot, newItem);
+    void persistOutboxOperation(vaultRoot, queuedOperation);
     setDrafts((current) => [newItem, ...current]);
     setSelectedPath(draftPath);
-    setOutbox((current) => [...current, operation]);
+    setOutbox((current) => [...current, queuedOperation]);
     setDraftIssue({ title: "", body: "", repositoryKey: "" });
     setShowNewIssue(false);
     setShowSettings(false);
@@ -571,14 +651,14 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
-  if (authGate !== "passed") {
+  if (authGate.state !== "passed") {
     return (
       <LoginPage
         servers={servers}
         auth={auth}
-        checking={authGate === "checking"}
-        error={gateError}
-        onSkip={skipLogin}
+        checking={authGate.state === "checking"}
+        error={authGate.error}
+        onSkip={authGate.skipLogin}
       />
     );
   }
@@ -589,6 +669,7 @@ export default function App({ initialOnline }: AppProps) {
       <TitleBar />
       <Sidebar
         online={online}
+        loginRequired={!auth.signedIn}
         onToggleOnline={toggleOnline}
         filter={filter}
         onFilterChange={(next) => {

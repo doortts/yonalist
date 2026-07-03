@@ -75,16 +75,29 @@ describe("fetchItemThread", () => {
     }
   });
 
-  it("loads discussion comments through the discussions endpoints", async () => {
+  it("loads discussion comments through GraphQL", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
-      if (target.includes("/discussions/5/comments")) {
-        return jsonResponse([
-          { id: 2, body: "Reply", user: { login: "mona" }, created_at: "2026-07-02T00:00:00Z" }
-        ]);
-      }
-      expect(target).toContain("/discussions/5");
-      return jsonResponse({ state: "open" });
+      expect(target).toContain("/graphql");
+      return jsonResponse({
+        data: {
+          repository: {
+            discussion: {
+              closed: false,
+              comments: {
+                nodes: [
+                  {
+                    databaseId: 2,
+                    body: "Reply",
+                    author: { login: "mona" },
+                    createdAt: "2026-07-02T00:00:00Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      });
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -98,6 +111,7 @@ describe("fetchItemThread", () => {
 
       expect(thread.state).toBe("open");
       expect(thread.comments).toHaveLength(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();
     }

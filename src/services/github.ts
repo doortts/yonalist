@@ -1,3 +1,9 @@
+import {
+  createGitHubTransport,
+  encodePathSegment,
+  GitHubRequestError
+} from "./githubTransport";
+
 interface GitHubClientOptions {
   token: string;
   apiBaseUrl: string;
@@ -24,6 +30,29 @@ interface ListOptions {
   perPage?: number;
 }
 
+interface GraphQLDiscussionNode {
+  title?: string;
+  body?: string;
+  closed?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+  url?: string;
+  author?: { login?: string } | null;
+  labels?: { nodes?: Array<{ name?: string }> };
+  comments?: {
+    nodes?: GraphQLDiscussionCommentNode[];
+  };
+}
+
+interface GraphQLDiscussionCommentNode {
+  id?: string;
+  databaseId?: number;
+  body?: string;
+  author?: { login?: string } | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface DeviceCodeResponse {
   device_code: string;
   user_code: string;
@@ -40,95 +69,72 @@ export interface DeviceTokenResponse {
   error_description?: string;
 }
 
-export class GitHubRequestError extends Error {
-  readonly status: number;
-  readonly detail: string;
+export { GitHubRequestError };
 
-  constructor(status: number, detail: string) {
-    super(
-      detail
-        ? `GitHub request failed with ${status}: ${detail}`
-        : `GitHub request failed with ${status}.`
-    );
-    this.name = "GitHubRequestError";
-    this.status = status;
-    this.detail = detail;
+const DISCUSSION_DETAIL_QUERY = `
+query ($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    discussion(number: $number) {
+      title
+      body
+      closed
+      createdAt
+      updatedAt
+      url
+      author { login }
+      labels(first: 20) { nodes { name } }
+      comments(first: 100) {
+        nodes {
+          id
+          databaseId
+          body
+          author { login }
+          createdAt
+          updatedAt
+        }
+      }
+    }
   }
+}`;
+
+function discussionLabels(node: GraphQLDiscussionNode): Array<{ name?: string }> {
+  return node.labels?.nodes ?? [];
 }
 
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/g, "");
-}
-
-function encodePathSegment(value: string | number): string {
-  return encodeURIComponent(String(value));
-}
-
-async function extractErrorDetail(response: Response): Promise<string> {
-  try {
-    const payload = (await response.json()) as { message?: string };
-    return payload.message ?? "";
-  } catch {
-    return "";
+function mapDiscussion(node: GraphQLDiscussionNode | null | undefined) {
+  if (!node) {
+    throw new Error("Discussion was not found.");
   }
+  return {
+    title: node.title,
+    state: node.closed ? "closed" : "open",
+    body: node.body,
+    user: { login: node.author?.login },
+    labels: discussionLabels(node),
+    created_at: node.createdAt,
+    updated_at: node.updatedAt,
+    html_url: node.url
+  };
+}
+
+function mapDiscussionComments(
+  node: GraphQLDiscussionNode | null | undefined
+) {
+  if (!node) {
+    throw new Error("Discussion was not found.");
+  }
+  return (node.comments?.nodes ?? []).map((comment) => ({
+    id: comment.databaseId ?? comment.id,
+    node_id: comment.id,
+    body: comment.body,
+    user: { login: comment.author?.login },
+    created_at: comment.createdAt,
+    updated_at: comment.updatedAt
+  }));
 }
 
 export function createGitHubClient(options: GitHubClientOptions) {
-  const fetcher = options.fetch ?? fetch;
-  const apiBaseUrl = trimTrailingSlash(options.apiBaseUrl);
-  const webBaseUrl = trimTrailingSlash(options.webBaseUrl);
-
-  async function requestJson<TResponse>(
-    path: string,
-    init: RequestInit
-  ): Promise<TResponse> {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/vnd.github+json");
-    headers.set("X-GitHub-Api-Version", "2022-11-28");
-    if (init.body !== undefined) {
-      headers.set("Content-Type", "application/json");
-    }
-    if (options.token) {
-      headers.set("Authorization", `Bearer ${options.token}`);
-    }
-
-    const response = await fetcher(`${apiBaseUrl}${path}`, {
-      ...init,
-      headers
-    });
-
-    if (!response.ok) {
-      throw new GitHubRequestError(
-        response.status,
-        await extractErrorDetail(response)
-      );
-    }
-
-    return (await response.json()) as TResponse;
-  }
-
-  async function postOAuth<TResponse>(
-    path: string,
-    body: URLSearchParams
-  ): Promise<TResponse> {
-    const response = await fetcher(`${webBaseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body
-    });
-
-    if (!response.ok) {
-      throw new GitHubRequestError(
-        response.status,
-        await extractErrorDetail(response)
-      );
-    }
-
-    return (await response.json()) as TResponse;
-  }
+  const transport = createGitHubTransport(options);
 
   function listQuery(options: ListOptions = {}): string {
     const params = new URLSearchParams();
@@ -141,7 +147,7 @@ export function createGitHubClient(options: GitHubClientOptions) {
 
   return {
     createIssue(owner: string, repo: string, issue: CreateIssueInput) {
-      return requestJson(`/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues`, {
+      return transport.requestJson(`/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues`, {
         method: "POST",
         body: JSON.stringify(issue)
       });
@@ -153,7 +159,7 @@ export function createGitHubClient(options: GitHubClientOptions) {
       number: number,
       body: string
     ) {
-      return requestJson(
+      return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}/comments`,
         {
           method: "POST",
@@ -163,14 +169,14 @@ export function createGitHubClient(options: GitHubClientOptions) {
     },
 
     getIssue(owner: string, repo: string, number: number) {
-      return requestJson(
+      return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`,
         { method: "GET" }
       );
     },
 
     getPull(owner: string, repo: string, number: number) {
-      return requestJson(
+      return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/pulls/${encodePathSegment(number)}`,
         { method: "GET" }
       );
@@ -182,40 +188,50 @@ export function createGitHubClient(options: GitHubClientOptions) {
       number: number,
       options: ListOptions = {}
     ) {
-      return requestJson(
+      return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}/comments${listQuery(options)}`,
         { method: "GET" }
       );
     },
 
-    getDiscussion(owner: string, repo: string, number: number) {
-      return requestJson(
-        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/discussions/${encodePathSegment(number)}`,
-        { method: "GET" }
-      );
+    async getDiscussion(owner: string, repo: string, number: number) {
+      const data = await transport.graphql<{
+        repository?: { discussion?: GraphQLDiscussionNode | null } | null;
+      }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
+      return mapDiscussion(data.repository?.discussion);
     },
 
-    listDiscussionComments(
+    async listDiscussionComments(
       owner: string,
       repo: string,
-      number: number,
-      options: ListOptions = {}
+      number: number
     ) {
-      return requestJson(
-        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/discussions/${encodePathSegment(number)}/comments${listQuery(options)}`,
-        { method: "GET" }
-      );
+      const data = await transport.graphql<{
+        repository?: { discussion?: GraphQLDiscussionNode | null } | null;
+      }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
+      return mapDiscussionComments(data.repository?.discussion);
+    },
+
+    async getDiscussionWithComments(owner: string, repo: string, number: number) {
+      const data = await transport.graphql<{
+        repository?: { discussion?: GraphQLDiscussionNode | null } | null;
+      }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
+      const discussion = data.repository?.discussion;
+      return {
+        discussion: mapDiscussion(discussion),
+        comments: mapDiscussionComments(discussion)
+      };
     },
 
     getRelease(owner: string, repo: string, releaseId: number) {
-      return requestJson(
+      return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/releases/${encodePathSegment(releaseId)}`,
         { method: "GET" }
       );
     },
 
     startDeviceFlow(input: DeviceFlowInput) {
-      return postOAuth<DeviceCodeResponse>("/login/device/code", new URLSearchParams({
+      return transport.postOAuth<DeviceCodeResponse>("/login/device/code", new URLSearchParams({
         client_id: input.clientId,
         scope: input.scopes.join(" ")
       }));
@@ -224,7 +240,7 @@ export function createGitHubClient(options: GitHubClientOptions) {
     // GitHub reports polling states (authorization_pending, slow_down, ...)
     // as HTTP 200 with an `error` field; callers must check it.
     pollDeviceFlow(input: PollDeviceFlowInput) {
-      return postOAuth<DeviceTokenResponse>("/login/oauth/access_token", new URLSearchParams({
+      return transport.postOAuth<DeviceTokenResponse>("/login/oauth/access_token", new URLSearchParams({
         client_id: input.clientId,
         device_code: input.deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { withVaultItemPath } from "../domain/items";
 import type { ItemDocument } from "../domain/types";
 import { sampleItems } from "../fixtures/sampleItems";
 import {
@@ -29,7 +30,8 @@ export interface UseWorkItemsResult {
 export function useWorkItems(
   connection: GithubConnection,
   online: boolean,
-  scope: WorkScope
+  scope: WorkScope,
+  vaultRoot = "/vault"
 ): UseWorkItemsResult {
   const token = connection.token.trim();
   const demoMode = !token;
@@ -84,18 +86,20 @@ export function useWorkItems(
 
   const items = useMemo(() => {
     const base = demoMode ? sampleItems : fetched ?? [];
-    return base.map((item) =>
-      favorites[item.path] === undefined
+    return base.map((rawItem) => {
+      const item = withVaultItemPath(vaultRoot, rawItem);
+      const favorite = favorites[item.path] ?? favorites[rawItem.path];
+      return favorite === undefined
         ? item
         : {
             ...item,
             frontMatter: {
               ...item.frontMatter,
-              local: { ...item.frontMatter.local, favorite: favorites[item.path] }
+              local: { ...item.frontMatter.local, favorite }
             }
-          }
-    );
-  }, [demoMode, fetched, favorites]);
+          };
+    });
+  }, [demoMode, fetched, favorites, vaultRoot]);
 
   const toggleFavorite = useCallback(
     (path: string) => {

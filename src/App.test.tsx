@@ -1,7 +1,9 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { serializeMarkdownDocument } from "./domain/markdown";
+import type { ItemFrontMatter } from "./domain/types";
 import * as windowDrag from "./windowDrag";
 
 function installLocalStorageMock() {
@@ -167,6 +169,29 @@ describe("Yonalist app shell", () => {
     expect(within(leftColumn).getByText("Offline")).toBeInTheDocument();
   });
 
+  it("shows a login-required icon next to the network control when unsigned", () => {
+    render(<App />);
+
+    const leftColumn = screen.getByLabelText("Navigation");
+    expect(
+      within(leftColumn).getByLabelText("Login required")
+    ).toBeInTheDocument();
+  });
+
+  it("hides the login-required icon when a token is configured", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+
+    render(<App />);
+
+    const leftColumn = await screen.findByLabelText("Navigation");
+    expect(
+      within(leftColumn).queryByLabelText("Login required")
+    ).not.toBeInTheDocument();
+  });
+
   it("marks the top-left titlebar area as the native window drag region", () => {
     render(<App />);
 
@@ -299,6 +324,36 @@ describe("Yonalist app shell", () => {
     expect(screen.getAllByText("A local draft").length).toBeGreaterThan(0);
   });
 
+  it("restores queued issue drafts and outbox operations from the local vault", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+    await user.type(screen.getByLabelText("Issue title"), "Persist after restart");
+    await user.type(screen.getByLabelText("Issue body"), "Stored as Markdown.");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+      "Persist after restart"
+    );
+
+    unmount();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect((await screen.findAllByText("Persist after restart")).length).toBeGreaterThan(
+      0
+    );
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+
+    const outboxDialog = screen.getByRole("dialog", { name: "Outbox" });
+    expect(outboxDialog).toBeInTheDocument();
+    expect(within(outboxDialog).getByText(/Persist after restart/)).toBeInTheDocument();
+  });
+
   it("asks which queued changes to sync when the app comes back online", async () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
@@ -312,6 +367,103 @@ describe("Yonalist app shell", () => {
     expect(screen.getByRole("dialog", { name: "Outbox" })).toBeInTheDocument();
     expect(screen.getByText("Choose queued changes to sync.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sync selected" })).toBeEnabled();
+  });
+
+  it("renames synced issue drafts to their remote issue path in the vault", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.endsWith("/repos/acme/app/issues") && init?.method === "POST") {
+        return new Response(
+          JSON.stringify({
+            number: 100,
+            node_id: "I_100",
+            html_url: "https://github.com/acme/app/issues/100",
+            created_at: "2026-07-03T00:00:00Z",
+            updated_at: "2026-07-03T00:00:00Z"
+          }),
+          { status: 201 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 101,
+                title: "Existing issue",
+                state: "open",
+                body: "from the API",
+                user: { login: "doortts" },
+                labels: [],
+                created_at: "2026-07-01T00:00:00Z",
+                updated_at: "2026-07-02T00:00:00Z",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 3,
+              pushed_at: "2026-07-01T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/101/comments")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/101")) {
+        return new Response(JSON.stringify({ state: "open" }), { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Existing issue")).length).toBeGreaterThan(
+        0
+      );
+
+      await user.click(screen.getByRole("button", { name: "New issue" }));
+      await user.type(screen.getByLabelText("Issue title"), "Sync me");
+      await user.click(screen.getByRole("button", { name: "Queue issue" }));
+      await user.click(screen.getByRole("button", { name: /outbox/i }));
+      await user.click(screen.getByRole("button", { name: "Sync selected" }));
+
+      await waitFor(() => {
+        const stored = window.localStorage.getItem("yonalist.vaultDocuments.v1");
+        expect(stored).toContain("issues/100/issue.md");
+        expect(stored).not.toContain("issues/_drafts");
+      });
+      expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("opens settings and saves vault preferences", async () => {
@@ -486,6 +638,107 @@ describe("Yonalist app shell", () => {
       expect(
         screen.queryByText("Design offline issue reading")
       ).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("deduplicates a fetched item that already exists in the local vault with a different path root", async () => {
+    const title = "2026-05-19 AI Engineering : 10장 AI 엔지니어링 아키텍처와 사용자 피드백";
+    const storedDiscussion: ItemFrontMatter = {
+      kind: "discussion",
+      host: "oss.navercorp.com",
+      owner: "pi",
+      repo: "agent-dev",
+      number: 50,
+      title,
+      state: "open",
+      author: "sw-codex",
+      labels: [],
+      created_at: "2026-05-19T00:00:00Z",
+      updated_at: "2026-05-19T00:00:00Z",
+      html_url: "https://oss.navercorp.com/pi/agent-dev/discussions/50",
+      local: { favorite: false },
+      sync: { status: "synced" }
+    };
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.vaultDocuments.v1",
+      JSON.stringify({
+        "~/Yonalist": {
+          "oss.navercorp.com/pi/agent-dev/discussions/50/discussion.md":
+            serializeMarkdownDocument(storedDiscussion, "Stored discussion body")
+        }
+      })
+    );
+
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              search: {
+                nodes: [
+                  {
+                    number: 50,
+                    title,
+                    body: "Fetched discussion body",
+                    url: "https://oss.navercorp.com/pi/agent-dev/discussions/50",
+                    closed: false,
+                    createdAt: "2026-05-19T00:00:00Z",
+                    updatedAt: "2026-05-19T00:00:00Z",
+                    author: { login: "sw-codex" },
+                    repository: {
+                      name: "agent-dev",
+                      owner: { login: "pi" }
+                    },
+                    labels: { nodes: [] }
+                  }
+                ]
+              }
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "agent-dev",
+              full_name: "pi/agent-dev",
+              owner: { login: "pi" },
+              open_issues_count: 1,
+              pushed_at: "2026-05-19T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions") || target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(screen.getByRole("button", { name: /^Discussions/ }));
+      const list = screen.getByLabelText("Items");
+
+      await waitFor(() => {
+        expect(within(list).getAllByText(title)).toHaveLength(1);
+      });
     } finally {
       vi.unstubAllGlobals();
     }

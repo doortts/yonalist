@@ -94,17 +94,30 @@ describe("fetchNotificationDetail", () => {
   it("loads discussions with their comments", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
-      if (target.includes("/discussions/5/comments")) {
-        return jsonResponse([
-          { id: 1, body: "Reply", user: { login: "mona" }, created_at: "2026-07-02T00:00:00Z" }
-        ]);
-      }
-      expect(target).toContain("/discussions/5");
+      expect(target).toContain("/graphql");
       return jsonResponse({
-        title: "Roadmap",
-        state: "open",
-        body: "Talk",
-        user: { login: "doortts" }
+        data: {
+          repository: {
+            discussion: {
+              title: "Roadmap",
+              closed: false,
+              body: "Talk",
+              author: { login: "doortts" },
+              createdAt: "2026-07-01T00:00:00Z",
+              labels: { nodes: [{ name: "planning" }] },
+              comments: {
+                nodes: [
+                  {
+                    databaseId: 1,
+                    body: "Reply",
+                    author: { login: "mona" },
+                    createdAt: "2026-07-02T00:00:00Z"
+                  }
+                ]
+              }
+            }
+          }
+        }
       });
     });
 
@@ -118,7 +131,9 @@ describe("fetchNotificationDetail", () => {
     });
 
     expect(detail.title).toBe("Roadmap");
+    expect(detail.labels).toEqual(["planning"]);
     expect(detail.comments).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("loads release notes using the release id from the subject", async () => {

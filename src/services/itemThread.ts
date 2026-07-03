@@ -62,12 +62,11 @@ export async function fetchItemThread(
   const { owner, repo, number } = target;
 
   if (target.kind === "discussion") {
-    const [discussion, comments] = await Promise.all([
-      client.getDiscussion(owner, repo, number) as Promise<StateResponse>,
-      client
-        .listDiscussionComments(owner, repo, number)
-        .catch(() => []) as Promise<CommentResponse[]>
-    ]);
+    const { discussion, comments } = (await client.getDiscussionWithComments(
+      owner,
+      repo,
+      number
+    )) as { discussion: StateResponse; comments: CommentResponse[] };
     return {
       state: normalizeState(discussion.state),
       draft: false,

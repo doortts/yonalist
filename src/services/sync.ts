@@ -4,7 +4,44 @@ import type { GitHubClient } from "./github";
 export interface OutboxSyncResult {
   operation: OutboxOperationDocument;
   ok: boolean;
+  remote?: SyncedRemote;
   error?: string;
+}
+
+export type SyncedRemote =
+  | {
+      type: "issue";
+      number: number;
+      node_id?: string;
+      html_url?: string;
+      created_at?: string;
+      updated_at?: string;
+    }
+  | {
+      type: "comment";
+      id: number | string;
+      node_id?: string;
+      html_url?: string;
+      body?: string;
+      created_at?: string;
+      updated_at?: string;
+    };
+
+interface CreatedIssueResponse {
+  number?: number;
+  node_id?: string;
+  html_url?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+interface CreatedCommentResponse {
+  id?: number | string;
+  node_id?: string;
+  html_url?: string;
+  body?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 function findDraftItem(
@@ -33,22 +70,52 @@ export async function syncOutboxOperations(
         if (!draft) {
           throw new Error("Draft issue file is missing from the vault.");
         }
-        await client.createIssue(target.owner, target.repo, {
+        const created = (await client.createIssue(target.owner, target.repo, {
           title: draft.frontMatter.title,
           body: draft.body
+        })) as CreatedIssueResponse;
+        if (typeof created.number !== "number") {
+          throw new Error("GitHub did not return the created issue number.");
+        }
+        results.push({
+          operation,
+          ok: true,
+          remote: {
+            type: "issue",
+            number: created.number,
+            node_id: created.node_id,
+            html_url: created.html_url,
+            created_at: created.created_at,
+            updated_at: created.updated_at
+          }
         });
       } else {
         if (target.number === undefined) {
           throw new Error("Comment operation is missing a target number.");
         }
-        await client.createIssueComment(
+        const created = (await client.createIssueComment(
           target.owner,
           target.repo,
           target.number,
           operation.body
-        );
+        )) as CreatedCommentResponse;
+        if (created.id === undefined) {
+          throw new Error("GitHub did not return the created comment id.");
+        }
+        results.push({
+          operation,
+          ok: true,
+          remote: {
+            type: "comment",
+            id: created.id,
+            node_id: created.node_id,
+            html_url: created.html_url,
+            body: created.body,
+            created_at: created.created_at,
+            updated_at: created.updated_at
+          }
+        });
       }
-      results.push({ operation, ok: true });
     } catch (error) {
       results.push({
         operation,
