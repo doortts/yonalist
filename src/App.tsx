@@ -97,7 +97,8 @@ export default function App({ initialOnline }: AppProps) {
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
-  const [showNotifications, setShowNotifications] = useState(false);
+  // Notifications are the landing view once authentication passes.
+  const [showNotifications, setShowNotifications] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
@@ -567,7 +568,12 @@ export default function App({ initialOnline }: AppProps) {
           setShowNotifications(false);
         }}
         repositoryFilter={repositoryFilter}
-        onRepositoryFilterChange={setRepositoryFilter}
+        onRepositoryFilterChange={(key) => {
+          setRepositoryFilter(key);
+          setShowSettings(false);
+          setShowNewIssue(false);
+          setShowNotifications(false);
+        }}
         repositoryGroups={projectVisibility.visibleGroups}
         repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}

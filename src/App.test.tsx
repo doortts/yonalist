@@ -114,6 +114,52 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("lands on the notifications view after passing the gate", () => {
+    render(<App />);
+
+    expect(screen.getByLabelText("Notifications")).toBeInTheDocument();
+    expect(
+      screen.getByLabelText("Empty notification detail")
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Items")).not.toBeInTheDocument();
+  });
+
+  it("collapses owners with no selected repositories in the project tree", async () => {
+    window.localStorage.setItem(
+      "yonalist.projectVisibility.v1",
+      JSON.stringify({ "doortts/blog": false })
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /Projects 표시/
+      })
+    );
+
+    const section = screen.getByLabelText("Project visibility");
+    // doortts has nothing selected → collapsed; Yona-projects stays open.
+    const doorttsToggle = within(section).getByRole("button", {
+      name: "Toggle doortts projects"
+    });
+    expect(doorttsToggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      within(section).queryByRole("checkbox", { name: "Show doortts/blog" })
+    ).not.toBeInTheDocument();
+    expect(
+      within(section).getByRole("checkbox", { name: "Show Yona-projects/Home" })
+    ).toBeInTheDocument();
+
+    await user.click(doorttsToggle);
+
+    expect(doorttsToggle).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(section).getByRole("checkbox", { name: "Show doortts/blog" })
+    ).toBeInTheDocument();
+  });
+
   it("shows the offline badge at the top of the first column", () => {
     render(<App initialOnline={false} />);
 
@@ -149,6 +195,8 @@ describe("Yonalist app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
     const bookmark = screen.getByRole("button", { name: /toggle favorite/i });
     expect(bookmark).toHaveAttribute("aria-pressed", "true");
 
@@ -157,8 +205,11 @@ describe("Yonalist app shell", () => {
     expect(bookmark).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("shows a green Comment button online and Queue comment offline", () => {
+  it("shows a green Comment button online and Queue comment offline", async () => {
+    const user = userEvent.setup();
     const { unmount } = render(<App initialOnline />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const onlineButton = screen.getByRole("button", { name: "Comment" });
     expect(onlineButton).toHaveClass("comment-button");
@@ -168,6 +219,7 @@ describe("Yonalist app shell", () => {
     unmount();
 
     render(<App initialOnline={false} />);
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     expect(screen.getByRole("button", { name: "Queue comment" })).not.toHaveClass(
       "comment-button"
@@ -177,6 +229,8 @@ describe("Yonalist app shell", () => {
   it("creates an offline comment draft and shows it in the outbox", async () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     await user.type(
       screen.getByLabelText("Write a comment"),
@@ -193,6 +247,8 @@ describe("Yonalist app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
     await user.click(screen.getByRole("button", { name: "New issue" }));
 
     expect(screen.getByLabelText("New issue composer")).toBeInTheDocument();
@@ -207,6 +263,8 @@ describe("Yonalist app shell", () => {
   it("asks which queued changes to sync when the app comes back online", async () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     await user.type(screen.getByLabelText("Write a comment"), "Sync this later.");
     await user.click(screen.getByRole("button", { name: "Queue comment" }));
@@ -374,8 +432,10 @@ describe("Yonalist app shell", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     try {
+      const user = userEvent.setup();
       render(<App />);
 
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
       const list = screen.getByLabelText("Items");
       expect(await within(list).findByText("Real fetched issue")).toBeInTheDocument();
 

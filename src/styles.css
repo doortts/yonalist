@@ -1227,9 +1227,7 @@ body.is-resizing-pane {
 
 .project-visibility-list {
   display: grid;
-  gap: 14px;
-  max-height: 420px;
-  overflow-y: auto;
+  gap: 10px;
 }
 
 .project-visibility-group {
@@ -1237,12 +1235,41 @@ body.is-resizing-pane {
   gap: 7px;
 }
 
+.project-owner-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.project-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.project-group-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.project-owner-count {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
 .project-owner-check span {
   font-weight: 650;
 }
 
 .project-repo-check {
-  margin-left: 24px;
+  margin-left: 44px;
 }
 
 .project-repo-check span {

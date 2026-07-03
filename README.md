@@ -22,7 +22,8 @@ on issues and pull requests from a local Markdown vault.
 - Auth-first startup: the app assumes the last authenticated host and
   verifies its stored credentials; on failure or first run a login page
   (host picker + OAuth/token sign-in, skippable into sample data) is the
-  start screen.
+  start screen. After the gate the notifications inbox is the landing
+  view.
 - Two-column settings: the middle column lists setting categories
   (Appearance, GitHub 서버, Projects 표시, Vault and sync) and the
   detail column shows only the selected one.
