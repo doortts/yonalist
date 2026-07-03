@@ -110,7 +110,7 @@ export function ProjectsVisibilitySection({
       {groups.length === 0 ? (
         <p className="empty-copy">표시할 저장소가 없습니다. 먼저 로그인하세요.</p>
       ) : (
-        <div className="notifications-search project-visibility-search">
+        <div className="project-visibility-search">
           <Search size={15} />
           <input
             aria-label="Filter projects"
