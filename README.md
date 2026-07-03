@@ -19,6 +19,13 @@ on issues and pull requests from a local Markdown vault.
   gathers that repository's issues, pull requests, and discussions into
   the list.
 - Light/dark/system theme modes selectable from Settings.
+- Auth-first startup: the app assumes the last authenticated host and
+  verifies its stored credentials; on failure or first run a login page
+  (host picker + OAuth/token sign-in, skippable into sample data) is the
+  start screen.
+- Two-column settings: the middle column lists setting categories
+  (Appearance, GitHub 서버, Projects 표시, Vault and sync) and the
+  detail column shows only the selected one.
 - GitHub authentication mirrored from the Flutter github_client: a
   configurable server list (built-in Naver GHE / Naver Labs GHE / Github
   entries plus custom URLs with aliases), per-server auth method — OAuth

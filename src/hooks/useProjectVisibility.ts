@@ -17,7 +17,8 @@ export interface UseProjectVisibilityResult {
 
 export function useProjectVisibility(
   groups: OwnerGroup[],
-  involvedRepoNames: ReadonlySet<string>
+  involvedRepoNames: ReadonlySet<string>,
+  snapshotReady = false
 ): UseProjectVisibilityResult {
   const [overrides, setOverrides] = useState<ProjectVisibilityMap>(() =>
     loadProjectVisibility()
@@ -26,6 +27,33 @@ export function useProjectVisibility(
   useEffect(() => {
     persistProjectVisibility(overrides);
   }, [overrides]);
+
+  // Defaults depend on live signals (involves:@me activity) that vary between
+  // sessions. Once those signals are ready, freeze the computed default for
+  // every repository without an explicit choice so the sidebar stays exactly
+  // as the user last saw it instead of re-deriving on each launch.
+  useEffect(() => {
+    if (!snapshotReady || groups.length === 0) {
+      return;
+    }
+    setOverrides((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const group of groups) {
+        for (const repository of group.repositories) {
+          if (next[repository.fullName] === undefined) {
+            next[repository.fullName] = isRepositoryVisible(
+              repository,
+              current,
+              involvedRepoNames
+            );
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [snapshotReady, groups, involvedRepoNames]);
 
   const isVisible = useCallback(
     (repository: RepositorySummary) =>

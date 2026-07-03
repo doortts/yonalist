@@ -32,6 +32,86 @@ function installLocalStorageMock() {
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
+    // Existing shell tests assume the app is past the startup login gate.
+    window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
+  });
+
+  it("starts on the login page on first run and can skip into demo mode", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    const user = userEvent.setup();
+    render(<App />);
+
+    const login = screen.getByLabelText("GitHub login");
+    expect(within(login).getByText("GitHub 로그인")).toBeInTheDocument();
+    expect(within(login).getByLabelText("GitHub servers")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Navigation")).not.toBeInTheDocument();
+
+    await user.click(
+      within(login).getByRole("button", { name: /샘플 데이터로 둘러보기/ })
+    );
+
+    expect(screen.getByLabelText("Navigation")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBe("true");
+  });
+
+  it("opens straight into the app when the last authenticated host verifies", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_valid" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByLabelText("Navigation")).toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledWith(
+        "https://oss.navercorp.com/api/v3/user",
+        expect.anything()
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the login page when the stored credentials fail verification", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_expired" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/user")) {
+        return new Response(JSON.stringify({ message: "Bad credentials" }), {
+          status: 401
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
+      expect(
+        await screen.findByText(/인증에 실패했습니다/)
+      ).toBeInTheDocument();
+      expect(screen.queryByLabelText("Navigation")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows the offline badge at the top of the first column", () => {
@@ -144,6 +224,11 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Settings" }));
 
     expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /Vault and sync/
+      })
+    );
 
     await user.clear(screen.getByLabelText("Vault folder"));
     await user.type(screen.getByLabelText("Vault folder"), "/Users/doortts/Yonalist");
@@ -162,6 +247,11 @@ describe("Yonalist app shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /GitHub 서버/
+      })
+    );
 
     const section = screen.getByLabelText("GitHub servers");
     const naver = within(section).getByRole("radio", {
@@ -191,6 +281,11 @@ describe("Yonalist app shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /GitHub 서버/
+      })
+    );
 
     const section = screen.getByLabelText("GitHub servers");
     await user.click(within(section).getByRole("button", { name: /URL 추가/ }));
@@ -342,6 +437,11 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /Projects 표시/
+      })
+    );
     const section = screen.getByLabelText("Project visibility");
     await user.click(
       within(section).getByRole("checkbox", { name: "Show doortts/blog" })
@@ -368,6 +468,11 @@ describe("Yonalist app shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /Projects 표시/
+      })
+    );
     const section = screen.getByLabelText("Project visibility");
 
     await user.type(within(section).getByLabelText("Filter projects"), "Home");

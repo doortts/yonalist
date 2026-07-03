@@ -9,6 +9,7 @@ import {
 import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
 import { ItemDetail } from "./components/ItemDetail";
 import { ItemListPane } from "./components/ItemListPane";
+import { LoginPage } from "./components/LoginPage";
 import {
   NewIssuePage,
   type DraftIssue,
@@ -17,6 +18,10 @@ import {
 import { NotificationDetail } from "./components/NotificationDetail";
 import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
+import {
+  SettingsCategoryPane,
+  type SettingsSection
+} from "./components/SettingsCategoryPane";
 import { SettingsPage } from "./components/SettingsPage";
 import { Sidebar, type ListFilter } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
@@ -39,12 +44,21 @@ import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useTheme } from "./hooks/useTheme";
+import {
+  loadLastAuthenticatedUrl,
+  loadSkipLogin,
+  persistLastAuthenticatedUrl,
+  persistSkipLogin,
+  validateConnection
+} from "./services/authGate";
 import { createGitHubClient } from "./services/github";
 import { syncOutboxOperations } from "./services/sync";
 
 interface AppProps {
   initialOnline?: boolean;
 }
+
+type AuthGateState = "checking" | "required" | "passed";
 
 function createOperationId(prefix: string): string {
   const unique =
@@ -82,6 +96,7 @@ export default function App({ initialOnline }: AppProps) {
   const [showOutbox, setShowOutbox] = useState(false);
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [showNotifications, setShowNotifications] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
@@ -89,6 +104,85 @@ export default function App({ initialOnline }: AppProps) {
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
+
+  // Startup gate: assume the last authenticated host, verify its stored
+  // credentials, and fall back to the login page when that fails (or on the
+  // very first run). Skipping is remembered so demo mode stays reachable.
+  const [authGate, setAuthGate] = useState<AuthGateState>(() =>
+    loadSkipLogin() ? "passed" : "checking"
+  );
+  const gateStarted = useRef(false);
+  useEffect(() => {
+    if (authGate !== "checking" || gateStarted.current) {
+      return;
+    }
+    gateStarted.current = true;
+
+    const lastAuthenticated = loadLastAuthenticatedUrl();
+    if (
+      lastAuthenticated &&
+      lastAuthenticated !== servers.selectedUrl &&
+      servers.urls.includes(lastAuthenticated)
+    ) {
+      servers.select(lastAuthenticated);
+    }
+
+    const url = lastAuthenticated ?? servers.selectedUrl;
+    const token = servers.tokenOf(url);
+    if (!token) {
+      setAuthGate("required");
+      return;
+    }
+    if (!online) {
+      // Offline-first: trust the stored token until the network returns.
+      setAuthGate("passed");
+      return;
+    }
+    void validateConnection({
+      apiBaseUrl: url,
+      webBaseUrl: auth.connection.webBaseUrl,
+      token
+    }).then((ok) => {
+      if (ok) {
+        persistLastAuthenticatedUrl(url);
+      }
+      setAuthGate(ok ? "passed" : "required");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authGate]);
+
+  // On the login page, credentials open the app only after they verify
+  // against the server, so a stale token cannot slip through.
+  const gateValidating = useRef(false);
+  const [gateError, setGateError] = useState<string | null>(null);
+  useEffect(() => {
+    if (authGate !== "required" || !auth.signedIn || gateValidating.current) {
+      return;
+    }
+    if (!online) {
+      persistLastAuthenticatedUrl(servers.selectedUrl);
+      setAuthGate("passed");
+      return;
+    }
+    gateValidating.current = true;
+    void validateConnection(auth.connection).then((ok) => {
+      gateValidating.current = false;
+      if (ok) {
+        persistLastAuthenticatedUrl(servers.selectedUrl);
+        setGateError(null);
+        setAuthGate("passed");
+      } else {
+        setGateError(
+          "인증에 실패했습니다. 토큰을 확인하거나 다른 서버로 로그인하세요."
+        );
+      }
+    });
+  }, [authGate, auth.signedIn, auth.connection, online, servers.selectedUrl]);
+
+  function skipLogin() {
+    persistSkipLogin(true);
+    setAuthGate("passed");
+  }
   const workScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
       const [owner, ...rest] = repositoryFilter.split("/");
@@ -107,6 +201,7 @@ export default function App({ initialOnline }: AppProps) {
   const [involvedRepoNames, setInvolvedRepoNames] = useState<Set<string>>(
     () => new Set()
   );
+  const [involvementReady, setInvolvementReady] = useState(false);
   useEffect(() => {
     if (workScope.type === "inbox" && !workItems.demoMode && workItems.items.length > 0) {
       setInvolvedRepoNames(
@@ -116,11 +211,13 @@ export default function App({ initialOnline }: AppProps) {
           )
         )
       );
+      setInvolvementReady(true);
     }
   }, [workScope, workItems.demoMode, workItems.items]);
   const projectVisibility = useProjectVisibility(
     repositoryGroups.groups,
-    involvedRepoNames
+    involvedRepoNames,
+    involvementReady && !repositoryGroups.loading
   );
   const notifications = useNotifications(auth.connection, online, showNotifications);
   const [selectedNotification, setSelectedNotification] =
@@ -444,6 +541,18 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
+  if (authGate !== "passed") {
+    return (
+      <LoginPage
+        servers={servers}
+        auth={auth}
+        checking={authGate === "checking"}
+        error={gateError}
+        onSkip={skipLogin}
+      />
+    );
+  }
+
   return (
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <TitleBar />
@@ -482,7 +591,9 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      {showNotifications ? (
+      {showSettings ? (
+        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
+      ) : showNotifications ? (
         <NotificationsPane
           state={notifications}
           webBaseUrl={auth.connection.webBaseUrl}
@@ -530,6 +641,7 @@ export default function App({ initialOnline }: AppProps) {
         <div className="detail-scroll">
         {showSettings ? (
           <SettingsPage
+            section={settingsSection}
             settings={settings}
             status={settingsStatus}
             themeMode={themeMode}
