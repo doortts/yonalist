@@ -46,7 +46,8 @@ describe("fetchNotifications", () => {
     const url = String(fetchMock.mock.calls[0][0]);
     expect(url).toContain("/notifications?");
     expect(url).toContain("all=true");
-    expect(url).toContain("per_page=100");
+    // The notifications endpoint caps per_page at 50.
+    expect(url).toContain("per_page=50");
   });
 
   it("reuses the cached list when the server replies 304", async () => {
@@ -77,8 +78,39 @@ describe("fetchNotifications", () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 
-  it("fetches additional pages while a page is full", async () => {
-    const fullPage = Array.from({ length: 100 }, (_, index) =>
+  it("follows the Link header across pages", async () => {
+    const page = (count: number, start: number) =>
+      Array.from({ length: count }, (_, index) => notification(String(start + index)));
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(page(50, 0), {
+        Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(page(50, 50), {
+        Link: '<https://api.github.com/notifications?page=3>; rel="next"'
+      })
+    );
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(page(10, 100), {
+        Link: '<https://api.github.com/notifications?page=1>; rel="first"'
+      })
+    );
+
+    const result = await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    expect(result).toHaveLength(110);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[2][0])).toContain("page=3");
+  });
+
+  it("keeps paginating on full pages when no Link header exists", async () => {
+    const fullPage = Array.from({ length: 50 }, (_, index) =>
       notification(String(index))
     );
     const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
@@ -91,7 +123,7 @@ describe("fetchNotifications", () => {
       fetchImpl: fetchMock as unknown as typeof fetch
     });
 
-    expect(result).toHaveLength(101);
+    expect(result).toHaveLength(51);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[1][0])).toContain("page=2");
   });

@@ -14,8 +14,11 @@ interface CacheEntry {
   notifications: GitHubNotification[];
 }
 
-const MAX_PAGES = 3;
-const PER_PAGE = 100;
+// The notifications endpoint caps per_page at 50 (unlike most list APIs'
+// 100), so pagination must follow the Link header instead of assuming a
+// short page means the end.
+const MAX_PAGES = 20;
+const PER_PAGE = 50;
 
 // Conditional-request cache so a 304 skips re-downloading every page.
 const cache = new Map<string, CacheEntry>();
@@ -78,7 +81,12 @@ export async function fetchNotifications(
 
     const pageItems = (await response.json()) as GitHubNotification[];
     notifications.push(...pageItems);
-    if (pageItems.length < PER_PAGE) {
+
+    const link = response.headers.get("Link");
+    const hasNext = link
+      ? link.includes('rel="next"')
+      : pageItems.length === PER_PAGE;
+    if (!hasNext) {
       break;
     }
   }
