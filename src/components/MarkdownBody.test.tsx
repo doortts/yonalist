@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { GithubConnectionContext } from "../GithubConnectionContext";
 import { MarkdownBody } from "./MarkdownBody";
 
 const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text";
@@ -26,6 +27,73 @@ describe("MarkdownBody", () => {
       "src",
       "https://example.com/roadmap.png"
     );
+  });
+
+  it("swaps GHE attachment images to authenticated data URLs", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).Authorization).toBe(
+        "Bearer ghp_token"
+      );
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(
+        <GithubConnectionContext.Provider
+          value={{
+            apiBaseUrl: "https://ghe.example.com/api/v3",
+            webBaseUrl: "https://ghe.example.com",
+            token: "ghp_token"
+          }}
+        >
+          <MarkdownBody
+            body={`![attachment](https://ghe.example.com/storage/user/${Math.random()}/x.png)`}
+          />
+        </GithubConnectionContext.Provider>
+      );
+
+      const image = screen.getByRole("img", { name: "attachment" });
+      await waitFor(() =>
+        expect(image.getAttribute("src")).toMatch(/^data:image\/png;base64,/)
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("leaves third-party images untouched", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(
+        <GithubConnectionContext.Provider
+          value={{
+            apiBaseUrl: "https://ghe.example.com/api/v3",
+            webBaseUrl: "https://ghe.example.com",
+            token: "ghp_token"
+          }}
+        >
+          <MarkdownBody body="![ext](https://example.com/pic.png)" />
+        </GithubConnectionContext.Provider>
+      );
+
+      expect(screen.getByRole("img", { name: "ext" })).toHaveAttribute(
+        "src",
+        "https://example.com/pic.png"
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("closes the lightbox from the backdrop, close button, and Escape", async () => {

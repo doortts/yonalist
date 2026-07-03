@@ -1,6 +1,11 @@
 import { X } from "lucide-react";
-import { type MouseEvent, useEffect, useState } from "react";
+import { type MouseEvent, useContext, useEffect, useRef, useState } from "react";
+import { GithubConnectionContext } from "../GithubConnectionContext";
 import { renderMarkdown } from "../markdownRender";
+import {
+  needsAuthenticatedFetch,
+  resolveAuthenticatedImage
+} from "../services/imageProxy";
 
 interface MarkdownBodyProps {
   body: string;
@@ -9,9 +14,35 @@ interface MarkdownBodyProps {
 /**
  * Sanitized markdown content. Images are constrained to the pane width and
  * clicking one opens the original at its natural size in a lightbox.
+ * Attachment images on the signed-in GitHub host are refetched with the
+ * token, since the webview's plain <img> requests would 401 on GHE.
  */
 export function MarkdownBody({ body }: MarkdownBodyProps) {
+  const connection = useContext(GithubConnectionContext);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    let cancelled = false;
+    for (const image of container.querySelectorAll("img")) {
+      const src = image.getAttribute("src") ?? "";
+      if (!needsAuthenticatedFetch(src, connection)) {
+        continue;
+      }
+      void resolveAuthenticatedImage(src, connection).then((resolved) => {
+        if (!cancelled && resolved) {
+          image.src = resolved;
+        }
+      });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [body, connection]);
 
   useEffect(() => {
     if (!lightboxSrc) {
@@ -36,6 +67,7 @@ export function MarkdownBody({ body }: MarkdownBodyProps) {
   return (
     <>
       <div
+        ref={containerRef}
         className="markdown-body"
         onClick={handleClick}
         dangerouslySetInnerHTML={renderMarkdown(body)}

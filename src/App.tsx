@@ -7,6 +7,7 @@ import {
   useState
 } from "react";
 import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
+import { GithubConnectionContext } from "./GithubConnectionContext";
 import { ItemDetail } from "./components/ItemDetail";
 import { ItemListPane } from "./components/ItemListPane";
 import { LoginPage } from "./components/LoginPage";
@@ -581,6 +582,7 @@ export default function App({ initialOnline }: AppProps) {
   }
 
   return (
+    <GithubConnectionContext.Provider value={auth.connection}>
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <TitleBar />
       <Sidebar
@@ -729,5 +731,6 @@ export default function App({ initialOnline }: AppProps) {
         />
       )}
     </main>
+    </GithubConnectionContext.Provider>
   );
 }

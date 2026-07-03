@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
@@ -281,6 +281,40 @@ fn oauth_exchange(
     response.into_string().map_err(|error| error.to_string())
 }
 
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Downloads an attachment image natively — the webview cannot attach the
+/// GitHub token to <img> requests, so GHE attachments would 401 — and
+/// returns it as a data URL.
+#[tauri::command]
+fn fetch_image(url: String, token: Option<String>) -> Result<String, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("Only http(s) images can be fetched.".to_string());
+    }
+
+    let mut request = ureq::get(&url).set("Accept", "image/*");
+    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+        request = request.set("Authorization", &format!("Bearer {}", token.trim()));
+    }
+    let response = request.call().map_err(|error| error.to_string())?;
+
+    let content_type = response.content_type().to_string();
+    if !content_type.starts_with("image/") {
+        return Err(format!(
+            "URL did not return an image (content-type: {content_type})."
+        ));
+    }
+
+    let mut bytes: Vec<u8> = Vec::new();
+    std::io::Read::take(response.into_reader(), MAX_IMAGE_BYTES)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:{content_type};base64,{encoded}"))
+}
+
 /// Opens the OAuth authorization page in the user's default browser.
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -321,7 +355,8 @@ pub fn run() {
             oauth_start,
             oauth_wait,
             oauth_exchange,
-            open_url
+            open_url,
+            fetch_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
@@ -380,6 +415,12 @@ mod tests {
             path,
             PathBuf::from("/tmp/vault/github.com/openai/codex/issues/42/issue.md")
         );
+    }
+
+    #[test]
+    fn fetch_image_rejects_non_http_urls() {
+        assert!(fetch_image("file:///etc/passwd".to_string(), None).is_err());
+        assert!(fetch_image("data:image/png;base64,AAAA".to_string(), None).is_err());
     }
 
     #[test]
