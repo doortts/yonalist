@@ -68,6 +68,31 @@ async function doFetchNotifications(
   if (options.participating) {
     params.set("participating", "true");
   }
+
+  const baseHeaders: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${options.token}`,
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+
+  // Conditional requests on this endpoint return only the notifications
+  // updated since the given time — replacing the list with that delta would
+  // wipe everything older. So the If-Modified-Since check runs as a cheap
+  // one-item probe, and any change triggers an unconditional full refetch.
+  if (cached?.lastModified) {
+    params.set("per_page", "1");
+    params.set("page", "1");
+    const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
+      headers: { ...baseHeaders, "If-Modified-Since": cached.lastModified }
+    });
+    if (probe.status === 304) {
+      return cached.notifications;
+    }
+    if (!probe.ok) {
+      throw new GitHubRequestError(probe.status, "");
+    }
+  }
+
   params.set("per_page", String(PER_PAGE));
 
   const notifications: GitHubNotification[] = [];
@@ -75,22 +100,11 @@ async function doFetchNotifications(
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     params.set("page", String(page));
-    const headers: Record<string, string> = {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${options.token}`,
-      "X-GitHub-Api-Version": "2022-11-28"
-    };
-    if (page === 1 && cached?.lastModified) {
-      headers["If-Modified-Since"] = cached.lastModified;
-    }
 
     const response = await fetcher(`${base}/notifications?${params.toString()}`, {
-      headers
+      headers: baseHeaders
     });
 
-    if (page === 1 && response.status === 304 && cached) {
-      return cached.notifications;
-    }
     if (!response.ok) {
       throw new GitHubRequestError(response.status, "");
     }

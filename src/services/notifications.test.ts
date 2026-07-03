@@ -50,7 +50,7 @@ describe("fetchNotifications", () => {
     expect(url).toContain("per_page=50");
   });
 
-  it("reuses the cached list when the server replies 304", async () => {
+  it("reuses the cached list when the probe replies 304", async () => {
     const first = vi.fn(async () =>
       jsonResponse([notification("1")], { "Last-Modified": "Wed, 01 Jul 2026 00:00:00 GMT" })
     );
@@ -61,7 +61,9 @@ describe("fetchNotifications", () => {
     await fetchNotifications({ ...options, fetchImpl: first as unknown as typeof fetch });
 
     const second = vi.fn(
-      async (_url: unknown, init?: RequestInit) => {
+      async (url: unknown, init?: RequestInit) => {
+        // The conditional check is a cheap one-item probe.
+        expect(String(url)).toContain("per_page=1");
         expect(
           (init?.headers as Record<string, string>)["If-Modified-Since"]
         ).toBe("Wed, 01 Jul 2026 00:00:00 GMT");
@@ -76,6 +78,44 @@ describe("fetchNotifications", () => {
     expect(cached).toHaveLength(1);
     expect(cached[0].id).toBe("1");
     expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches the full list unconditionally when the probe sees changes", async () => {
+    const options = {
+      token: "token",
+      apiBaseUrl: "https://api.github.com"
+    };
+    const first = vi.fn(async () =>
+      jsonResponse([notification("old-1"), notification("old-2")], {
+        "Last-Modified": "Wed, 01 Jul 2026 00:00:00 GMT"
+      })
+    );
+    await fetchNotifications({ ...options, fetchImpl: first as unknown as typeof fetch });
+
+    // The feed changed: the probe answers 200, and the follow-up full fetch
+    // must NOT carry If-Modified-Since (a conditional response would only
+    // contain the delta and wipe the older notifications).
+    const second = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const target = String(url);
+      const headers = init?.headers as Record<string, string>;
+      if (target.includes("per_page=1")) {
+        expect(headers["If-Modified-Since"]).toBeDefined();
+        return jsonResponse([notification("new")]);
+      }
+      expect(headers["If-Modified-Since"]).toBeUndefined();
+      return jsonResponse(
+        [notification("new"), notification("old-1"), notification("old-2")],
+        { "Last-Modified": "Thu, 02 Jul 2026 00:00:00 GMT" }
+      );
+    });
+
+    const result = await fetchNotifications({
+      ...options,
+      fetchImpl: second as unknown as typeof fetch
+    });
+
+    expect(result.map((entry) => entry.id)).toEqual(["new", "old-1", "old-2"]);
+    expect(second).toHaveBeenCalledTimes(2);
   });
 
   it("follows the Link header across pages", async () => {
