@@ -35,7 +35,9 @@ export interface UseNotificationsResult {
 export function useNotifications(
   connection: GithubConnection,
   online: boolean,
-  enabled: boolean
+  enabled: boolean,
+  /** Project-visibility filter; repositories mapped to false are hidden. */
+  isRepoVisible?: (repositoryFullName: string) => boolean
 ): UseNotificationsResult {
   const token = connection.token.trim();
   const demoMode = !token;
@@ -86,13 +88,25 @@ export function useNotifications(
     [demoMode, fetched]
   );
 
+  const repoVisible = useCallback(
+    (notification: GitHubNotification) =>
+      isRepoVisible?.(notification.repository.full_name) ?? true,
+    [isRepoVisible]
+  );
+
   const notifications = useMemo(
-    () => all.filter((notification) => !hiddenIds.has(notification.id)),
-    [all, hiddenIds]
+    () =>
+      all.filter(
+        (notification) => !hiddenIds.has(notification.id) && repoVisible(notification)
+      ),
+    [all, hiddenIds, repoVisible]
   );
   const hiddenNotifications = useMemo(
-    () => all.filter((notification) => hiddenIds.has(notification.id)),
-    [all, hiddenIds]
+    () =>
+      all.filter(
+        (notification) => hiddenIds.has(notification.id) && repoVisible(notification)
+      ),
+    [all, hiddenIds, repoVisible]
   );
 
   const unreadCount = useMemo(

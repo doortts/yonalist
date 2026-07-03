@@ -552,6 +552,43 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("filters notifications by the project visibility selection", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Landing notifications include doortts/blog items initially.
+    const pane = screen.getByLabelText("Notifications");
+    expect(
+      within(pane).getByText("Refresh publishing notes")
+    ).toBeInTheDocument();
+
+    // Uncheck doortts/blog in Settings → Projects 표시.
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+        name: /Projects 표시/
+      })
+    );
+    await user.click(
+      within(screen.getByLabelText("Project visibility")).getByRole("checkbox", {
+        name: "Show doortts/blog"
+      })
+    );
+
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    const filtered = screen.getByLabelText("Notifications");
+    expect(
+      within(filtered).queryByText("Refresh publishing notes")
+    ).not.toBeInTheDocument();
+    expect(
+      within(filtered).queryByText("v0.1.0 packaging checklist")
+    ).not.toBeInTheDocument();
+    expect(
+      within(filtered).getByText("Design offline issue reading")
+    ).toBeInTheDocument();
+  });
+
   it("shows grouped sample notifications and hides one on demand", async () => {
     const user = userEvent.setup();
     render(<App />);

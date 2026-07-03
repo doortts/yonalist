@@ -220,7 +220,24 @@ export default function App({ initialOnline }: AppProps) {
     involvedRepoNames,
     involvementReady && !repositoryGroups.loading
   );
-  const notifications = useNotifications(auth.connection, online, showNotifications);
+  // Notifications follow the Projects 표시 selection: repositories the user
+  // unchecked are filtered out; repositories we do not manage stay visible.
+  const isRepoVisible = projectVisibility.isVisible;
+  const notificationRepoFilter = useMemo(() => {
+    const managed = new Map<string, boolean>();
+    for (const group of repositoryGroups.groups) {
+      for (const repository of group.repositories) {
+        managed.set(repository.fullName, isRepoVisible(repository));
+      }
+    }
+    return (repositoryFullName: string) => managed.get(repositoryFullName) ?? true;
+  }, [repositoryGroups.groups, isRepoVisible]);
+  const notifications = useNotifications(
+    auth.connection,
+    online,
+    showNotifications,
+    notificationRepoFilter
+  );
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
   const notificationDetail = useNotificationDetail(
