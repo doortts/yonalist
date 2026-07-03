@@ -12,6 +12,7 @@ import {
   WifiOff
 } from "lucide-react";
 import type { OwnerGroup } from "../services/githubItems";
+import { LoadingDots } from "./LoadingDots";
 
 export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions";
 
@@ -31,6 +32,7 @@ interface SidebarProps {
   notificationsOpen: boolean;
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
+  notificationsLoading: boolean;
 }
 
 const filterEntries: Array<{
@@ -60,7 +62,8 @@ export function Sidebar({
   onOpenSettings,
   notificationsOpen,
   onOpenNotifications,
-  unreadNotificationCount
+  unreadNotificationCount,
+  notificationsLoading
 }: SidebarProps) {
   return (
     <aside className="sidebar" aria-label="Navigation">
@@ -105,8 +108,12 @@ export function Sidebar({
         >
           <Bell size={16} />
           <span>Notifications</span>
-          {unreadNotificationCount > 0 && (
-            <strong className="nav-badge">{unreadNotificationCount}</strong>
+          {notificationsLoading ? (
+            <LoadingDots ariaLabel="Refreshing notifications" />
+          ) : (
+            unreadNotificationCount > 0 && (
+              <strong className="nav-badge">{unreadNotificationCount}</strong>
+            )
           )}
         </button>
       </section>

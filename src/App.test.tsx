@@ -116,6 +116,45 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("shows animated loading dots while notifications refresh", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_valid" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    // Repositories never resolve, so the loading indicator stays visible.
+    let resolveRepos: (value: Response) => void = () => {};
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/user/repos")) {
+        return new Promise<Response>((resolve) => {
+          resolveRepos = resolve;
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const nav = await screen.findByLabelText("Navigation");
+      expect(
+        await within(nav).findByLabelText("Refreshing notifications")
+      ).toBeInTheDocument();
+      resolveRepos(new Response("[]", { status: 200 }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("lands on the notifications view after passing the gate", () => {
     render(<App />);
 

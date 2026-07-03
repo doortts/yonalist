@@ -697,6 +697,9 @@ export default function App({ initialOnline }: AppProps) {
           // count would flash (e.g. 300 → 15); hold the badge back instead.
           repositoryGroups.loaded ? notifications.unreadCount : 0
         }
+        notificationsLoading={
+          notifications.loading || (!notifications.demoMode && !repositoryGroups.loaded)
+        }
       />
 
       <div

@@ -1720,6 +1720,14 @@ body.is-resizing-pane {
   text-align: center;
 }
 
+.nav-item .loading-dots {
+  min-width: 20px;
+  color: var(--text-3);
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-align: left;
+}
+
 .detail-loading {
   display: flex;
   align-items: center;
