@@ -32,6 +32,8 @@
 
   /* Layout */
   --titlebar-height: 42px;
+  --scrollbar-thumb: rgb(17 24 39 / 25%);
+  --scrollbar-thumb-hover: rgb(17 24 39 / 45%);
 
   /* Shape */
   --radius-sm: 6px;
@@ -80,6 +82,35 @@
   --success: #57ab5a;
 
   --shadow-modal: 0 20px 70px rgb(0 0 0 / 55%);
+  --scrollbar-thumb: rgb(255 255 255 / 22%);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 40%);
+}
+
+/* ---------- Scrollbars ----------
+   Shared by every scrollable area: a thin 6px gutter whose thumb is
+   invisible until the pointer hovers the scrolling region. */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: transparent;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 * {
