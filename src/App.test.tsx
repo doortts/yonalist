@@ -205,6 +205,30 @@ describe("Yonalist app shell", () => {
     expect(bookmark).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("offers icon-only open-in-browser buttons on both detail panes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    // Notifications detail
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    const notificationOpen = within(screen.getByLabelText("Detail")).getByRole(
+      "button",
+      { name: "Open in browser" }
+    );
+    expect(notificationOpen).toHaveAttribute("title", "브라우저에서 열기");
+    expect(notificationOpen.textContent).toBe("");
+
+    // Item detail
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    const itemOpen = within(screen.getByLabelText("Detail")).getByRole("button", {
+      name: "Open in browser"
+    });
+    expect(itemOpen).toHaveAttribute("title", "브라우저에서 열기");
+    expect(itemOpen.textContent).toBe("");
+  });
+
   it("shows the item state and its comment thread in the detail pane", async () => {
     const user = userEvent.setup();
     render(<App />);

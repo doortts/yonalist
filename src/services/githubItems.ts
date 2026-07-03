@@ -73,6 +73,7 @@ interface DiscussionSearchNode {
   number?: number;
   title?: string;
   body?: string;
+  url?: string;
   closed?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -250,6 +251,7 @@ query ($q: String!, $first: Int!) {
         number
         title
         body
+        url
         closed
         createdAt
         updatedAt
@@ -289,6 +291,7 @@ async function searchDiscussions(
           .filter(Boolean),
         createdAt: node.createdAt ?? "",
         updatedAt: node.updatedAt ?? "",
+        htmlUrl: node.url,
         body: node.body ?? ""
       })
     );

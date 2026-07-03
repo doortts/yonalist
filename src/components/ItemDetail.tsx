@@ -1,7 +1,10 @@
-import { Bookmark, Inbox, Loader2, Send } from "lucide-react";
-import type { FormEvent } from "react";
+import { Bookmark, Globe, Inbox, Loader2, Send } from "lucide-react";
+import { type FormEvent, useContext } from "react";
+import { GithubConnectionContext } from "../GithubConnectionContext";
+import { itemWebUrl } from "../domain/itemLinks";
 import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
+import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
 import { itemTypeLabel } from "./ItemListPane";
 import { MarkdownBody } from "./MarkdownBody";
@@ -29,6 +32,8 @@ export function ItemDetail({
   onToggleFavorite,
   onOpenOutbox
 }: ItemDetailProps) {
+  const connection = useContext(GithubConnectionContext);
+
   if (!item) {
     return (
       <div className="detail-empty" aria-label="Empty detail">
@@ -55,6 +60,15 @@ export function ItemDetail({
             <h2>{item.frontMatter.title}</h2>
           </div>
           <div className="detail-header-actions">
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Open in browser"
+              title="브라우저에서 열기"
+              onClick={() => void openExternal(itemWebUrl(item, connection.webBaseUrl))}
+            >
+              <Globe size={16} />
+            </button>
             <button
               type="button"
               className={

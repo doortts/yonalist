@@ -105,12 +105,13 @@
   background: transparent;
 }
 
-*:hover::-webkit-scrollbar-thumb {
+/* The hovered scroll container is tagged by useScrollbarHover — WebKit
+   does not repaint scrollbars on ancestor :hover changes. */
+.scrollbar-hover::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
 }
 
-*::-webkit-scrollbar-thumb:hover,
-*:hover::-webkit-scrollbar-thumb:hover {
+.scrollbar-hover::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 

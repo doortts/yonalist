@@ -6,6 +6,7 @@ import {
   type GitHubNotification
 } from "../domain/notifications";
 import { sampleNotifications } from "../fixtures/sampleNotifications";
+import { openExternal } from "../services/browser";
 import { fetchNotifications } from "../services/notifications";
 import {
   loadHiddenIds,
@@ -132,7 +133,7 @@ export function useNotifications(
   const openNotification = useCallback(
     (notification: GitHubNotification) => {
       const url = notificationWebUrl(notification, connection.webBaseUrl);
-      window.open(url, "_blank", "noopener,noreferrer");
+      void openExternal(url);
       setViewedAt(markViewed(url));
     },
     [connection.webBaseUrl]

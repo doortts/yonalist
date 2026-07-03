@@ -9,6 +9,8 @@ import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseRepositoriesResult {
   groups: OwnerGroup[];
+  /** True once the repository list (the visibility-filter basis) has loaded. */
+  loaded: boolean;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -90,6 +92,7 @@ export function useRepositories(
 
   return {
     groups: token ? groups ?? [] : demoGroups,
+    loaded: token ? groups !== null : true,
     loading,
     error,
     refresh: load

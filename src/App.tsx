@@ -45,6 +45,7 @@ import { useRepositories } from "./hooks/useRepositories";
 import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
+import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
 import {
   loadLastAuthenticatedUrl,
@@ -86,6 +87,7 @@ function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
 }
 
 export default function App({ initialOnline }: AppProps) {
+  useScrollbarHover();
   const { online, toggleOnline } = useOnlineStatus(initialOnline);
   const [drafts, setDrafts] = useState<ItemDocument[]>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
@@ -609,7 +611,11 @@ export default function App({ initialOnline }: AppProps) {
         onOpenSettings={openSettings}
         notificationsOpen={showNotifications}
         onOpenNotifications={openNotifications}
-        unreadNotificationCount={notifications.unreadCount}
+        unreadNotificationCount={
+          // Until the repository filter basis has loaded, the raw unread
+          // count would flash (e.g. 300 → 15); hold the badge back instead.
+          repositoryGroups.loaded ? notifications.unreadCount : 0
+        }
       />
 
       <div

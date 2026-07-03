@@ -1,4 +1,4 @@
-import { Bell, ExternalLink, Loader2 } from "lucide-react";
+import { Bell, Globe, Loader2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
@@ -60,12 +60,13 @@ export function NotificationDetail({
           </div>
           <div className="detail-header-actions">
             <button
-              className="secondary-button"
+              className="icon-button"
               type="button"
+              aria-label="Open in browser"
+              title="브라우저에서 열기"
               onClick={() => onOpenInBrowser(notification)}
             >
-              <ExternalLink size={15} />
-              Open in browser
+              <Globe size={16} />
             </button>
           </div>
         </div>
