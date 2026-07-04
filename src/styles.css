@@ -10,6 +10,9 @@
   --bg-hover: rgb(17 24 39 / 5%);
   --bg-active: rgb(17 24 39 / 8%);
   --bg-input: #ffffff;
+  /* Opaque equivalent of --bg-hover over --bg-card, for comment headers and
+     their speech-bubble tail (which sits over a different background). */
+  --comment-header: #f3f3f4;
 
   /* Lines */
   --border: #e5e7eb;
@@ -67,6 +70,7 @@
   --bg-active: rgb(255 255 255 / 10%);
   --bg-input: #191c22;
   --bg-quiet: rgb(255 255 255 / 3%);
+  --comment-header: #303341;
 
   --border: #2c3039;
   --border-strong: #3b404b;
@@ -915,30 +919,28 @@ body.is-resizing-pane {
 
 /* ---- Conversation ---- */
 .conversation {
-  margin: 20px 28px 8px;
+  margin: 20px 10px 8px;
 }
 
-/* Opening post: a full-width white card with a header divider and a
-   bottom border separating it from the comment timeline. */
+/* Opening post: bleeds past the conversation's margins to fill the top and
+   sides, sharing the comment-card background, with just a bottom line
+   separating it from the timeline. */
 .opening-post {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  margin: -20px -10px 0;
+  padding: 14px 16px 16px;
   background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
 }
 
 .opening-post-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--bg-hover);
   font-size: 13px;
 }
 
 .opening-post-body {
-  padding: 4px 16px 16px;
+  padding-top: 4px;
 }
 
 .opening-post-body .markdown-body {
@@ -992,7 +994,7 @@ body.is-resizing-pane {
 
 .comment-bubble::after {
   left: -7px;
-  border-right: 8px solid var(--bg-hover);
+  border-right: 8px solid var(--comment-header);
 }
 
 .comment-header {
@@ -1002,7 +1004,7 @@ body.is-resizing-pane {
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--bg-hover);
+  background: var(--comment-header);
   font-size: 13px;
 }
 
