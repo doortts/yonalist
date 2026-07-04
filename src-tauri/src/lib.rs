@@ -384,16 +384,18 @@ fn oauth_exchange(
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Downloads an attachment image natively — the webview cannot attach the
-/// GitHub token to <img> requests, so GHE attachments would 401 — and
-/// returns it as a data URL.
+/// Downloads an image natively — the webview cannot attach the GitHub token to
+/// <img> requests, so GHE images would 401 — and returns it as a data URL. We
+/// send `Accept: */*` because some GHE hosts reply 406 to a narrow `image/*`,
+/// and then validate that the final response is actually an image (SSO-gated
+/// hosts such as the avatars service redirect to an HTML login page instead).
 #[tauri::command]
 fn fetch_image(url: String, token: Option<String>) -> Result<String, String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Only http(s) images can be fetched.".to_string());
     }
 
-    let mut request = ureq::get(&url).set("Accept", "image/*");
+    let mut request = ureq::get(&url).set("Accept", "*/*");
     if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
         request = request.set("Authorization", &format!("Bearer {}", token.trim()));
     }
