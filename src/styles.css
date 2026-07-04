@@ -918,19 +918,31 @@ body.is-resizing-pane {
   margin: 20px 28px 8px;
 }
 
-/* Opening post: full width, no card or timeline. */
+/* Opening post: a full-width white card with a header divider and a
+   bottom border separating it from the comment timeline. */
+.opening-post {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
 .opening-post-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding-bottom: 12px;
-  margin-bottom: 4px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--bg-hover);
   font-size: 13px;
 }
 
+.opening-post-body {
+  padding: 4px 16px 16px;
+}
+
 .opening-post-body .markdown-body {
-  margin-top: 4px;
+  margin-top: 10px;
   max-width: none;
 }
 
