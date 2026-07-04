@@ -37,8 +37,9 @@ interface GraphQLDiscussionNode {
   createdAt?: string;
   updatedAt?: string;
   url?: string;
-  author?: { login?: string } | null;
-  labels?: { nodes?: Array<{ name?: string }> };
+  author?: { login?: string; avatarUrl?: string } | null;
+  authorAssociation?: string;
+  labels?: { nodes?: Array<{ name?: string; color?: string }> };
   comments?: {
     nodes?: GraphQLDiscussionCommentNode[];
   };
@@ -48,7 +49,8 @@ interface GraphQLDiscussionCommentNode {
   id?: string;
   databaseId?: number;
   body?: string;
-  author?: { login?: string } | null;
+  author?: { login?: string; avatarUrl?: string } | null;
+  authorAssociation?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -81,14 +83,16 @@ query ($owner: String!, $repo: String!, $number: Int!) {
       createdAt
       updatedAt
       url
-      author { login }
-      labels(first: 20) { nodes { name } }
+      author { login avatarUrl }
+      authorAssociation
+      labels(first: 20) { nodes { name color } }
       comments(first: 100) {
         nodes {
           id
           databaseId
           body
-          author { login }
+          author { login avatarUrl }
+          authorAssociation
           createdAt
           updatedAt
         }
@@ -97,7 +101,9 @@ query ($owner: String!, $repo: String!, $number: Int!) {
   }
 }`;
 
-function discussionLabels(node: GraphQLDiscussionNode): Array<{ name?: string }> {
+function discussionLabels(
+  node: GraphQLDiscussionNode
+): Array<{ name?: string; color?: string }> {
   return node.labels?.nodes ?? [];
 }
 
@@ -109,7 +115,8 @@ function mapDiscussion(node: GraphQLDiscussionNode | null | undefined) {
     title: node.title,
     state: node.closed ? "closed" : "open",
     body: node.body,
-    user: { login: node.author?.login },
+    user: { login: node.author?.login, avatar_url: node.author?.avatarUrl },
+    author_association: node.authorAssociation,
     labels: discussionLabels(node),
     created_at: node.createdAt,
     updated_at: node.updatedAt,
@@ -127,7 +134,8 @@ function mapDiscussionComments(
     id: comment.databaseId ?? comment.id,
     node_id: comment.id,
     body: comment.body,
-    user: { login: comment.author?.login },
+    user: { login: comment.author?.login, avatar_url: comment.author?.avatarUrl },
+    author_association: comment.authorAssociation,
     created_at: comment.createdAt,
     updated_at: comment.updatedAt
   }));

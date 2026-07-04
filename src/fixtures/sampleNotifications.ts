@@ -116,13 +116,15 @@ export function sampleNotificationDetail(
       title: match.frontMatter.title,
       state: match.frontMatter.state,
       author: match.frontMatter.author,
+      authorAssociation: "OWNER",
       created_at: match.frontMatter.created_at,
       body: match.body,
-      labels: match.frontMatter.labels,
+      labels: match.frontMatter.labels.map((name) => ({ name, color: "" })),
       comments: [
         {
           id: "sample-comment-1",
           author: "mona",
+          authorAssociation: "MEMBER",
           created_at: match.frontMatter.updated_at,
           body: "Sample reply so the conversation thread layout is visible offline."
         }

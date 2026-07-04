@@ -43,8 +43,9 @@ describe("fetchNotificationDetail", () => {
         title: "Fix login",
         state: "open",
         body: "Issue body",
-        user: { login: "doortts" },
-        labels: [{ name: "bug" }],
+        user: { login: "doortts", avatar_url: "https://avatars/doortts.png" },
+        labels: [{ name: "bug", color: "d73a4a" }],
+        author_association: "OWNER",
         created_at: "2026-07-01T00:00:00Z"
       });
     });
@@ -57,9 +58,18 @@ describe("fetchNotificationDetail", () => {
 
     expect(detail.title).toBe("Fix login");
     expect(detail.state).toBe("open");
-    expect(detail.labels).toEqual(["bug"]);
+    expect(detail.authorAvatarUrl).toBe("https://avatars/doortts.png");
+    expect(detail.authorAssociation).toBe("OWNER");
+    expect(detail.labels).toEqual([{ name: "bug", color: "d73a4a" }]);
     expect(detail.comments).toEqual([
-      { id: "9", author: "mona", created_at: "2026-07-02T11:00:00Z", body: "First!" }
+      {
+        id: "9",
+        author: "mona",
+        avatarUrl: undefined,
+        authorAssociation: undefined,
+        created_at: "2026-07-02T11:00:00Z",
+        body: "First!"
+      }
     ]);
   });
 
@@ -131,7 +141,7 @@ describe("fetchNotificationDetail", () => {
     });
 
     expect(detail.title).toBe("Roadmap");
-    expect(detail.labels).toEqual(["planning"]);
+    expect(detail.labels).toEqual([{ name: "planning", color: "" }]);
     expect(detail.comments).toHaveLength(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

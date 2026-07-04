@@ -819,6 +819,7 @@ body.is-resizing-pane {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -826,6 +827,110 @@ body.is-resizing-pane {
   color: var(--accent);
   font-size: 15px;
   font-weight: 650;
+}
+
+.avatar-image {
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+/* ---- Label chips ---- */
+.label-chip {
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+
+/* ---- Conversation timeline (GitHub-style) ---- */
+.conversation {
+  position: relative;
+  margin: 20px 28px 8px;
+  padding-left: 8px;
+}
+
+/* vertical timeline line running behind the avatars */
+.conversation::before {
+  content: "";
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: 27px;
+  width: 2px;
+  background: var(--border);
+}
+
+.comment-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.comment-bubble {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+/* speech-bubble arrow pointing at the avatar */
+.comment-bubble::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: -8px;
+  width: 14px;
+  height: 14px;
+  border-left: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--comment-header-bg, var(--bg-hover));
+  transform: rotate(45deg);
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: var(--comment-header-bg, var(--bg-hover));
+  font-size: 13px;
+}
+
+.comment-author {
+  color: var(--text-1);
+  font-weight: 650;
+}
+
+.comment-association {
+  padding: 1px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.comment-time {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.comment-body {
+  padding: 4px 16px 14px;
+}
+
+.comment-body .markdown-body {
+  margin-top: 10px;
+  max-width: none;
+}
+
+.comment-thread {
+  display: block;
 }
 
 .markdown-body {
@@ -850,6 +955,145 @@ body.is-resizing-pane {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: zoom-in;
+}
+
+/* ---- GitHub-flavored markdown ---- */
+
+.markdown-body table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow: auto;
+  margin: 12px 0;
+  border-collapse: collapse;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 13px;
+  border: 1px solid var(--border);
+}
+
+.markdown-body th {
+  background: var(--bg-hover);
+  font-weight: 650;
+}
+
+.markdown-body tr:nth-child(2n) td {
+  background: var(--bg-hover);
+}
+
+.markdown-body pre.hljs,
+.markdown-body pre {
+  overflow: auto;
+  padding: 12px 14px;
+  margin: 12px 0;
+  border-radius: var(--radius);
+  background: var(--bg-quiet);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.markdown-body code {
+  padding: 0.15em 0.4em;
+  border-radius: 5px;
+  background: var(--bg-hover);
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+.markdown-body pre code {
+  padding: 0;
+  background: transparent;
+  font-size: inherit;
+}
+
+.markdown-body blockquote {
+  margin: 12px 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
+}
+
+.markdown-body .task-list-item {
+  list-style: none;
+}
+
+.markdown-body ul.contains-task-list {
+  padding-left: 8px;
+}
+
+.markdown-body .task-list-item-checkbox {
+  margin: 0 0.4em 0.2em -1.2em;
+  vertical-align: middle;
+  accent-color: var(--accent);
+}
+
+/* highlight.js token colors (theme-aware, minimal GitHub-like palette) */
+.markdown-body .hljs-comment,
+.markdown-body .hljs-quote {
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.markdown-body .hljs-keyword,
+.markdown-body .hljs-selector-tag,
+.markdown-body .hljs-literal,
+.markdown-body .hljs-doctag {
+  color: #cf222e;
+}
+
+.markdown-body .hljs-string,
+.markdown-body .hljs-regexp,
+.markdown-body .hljs-addition {
+  color: #0a3069;
+}
+
+.markdown-body .hljs-number,
+.markdown-body .hljs-built_in,
+.markdown-body .hljs-type {
+  color: #0550ae;
+}
+
+.markdown-body .hljs-title,
+.markdown-body .hljs-section,
+.markdown-body .hljs-function .hljs-title {
+  color: #8250df;
+}
+
+.markdown-body .hljs-attr,
+.markdown-body .hljs-attribute,
+.markdown-body .hljs-variable {
+  color: #953800;
+}
+
+:root[data-theme="dark"] .markdown-body .hljs-keyword,
+:root[data-theme="dark"] .markdown-body .hljs-literal,
+:root[data-theme="dark"] .markdown-body .hljs-doctag {
+  color: #ff7b72;
+}
+
+:root[data-theme="dark"] .markdown-body .hljs-string,
+:root[data-theme="dark"] .markdown-body .hljs-regexp,
+:root[data-theme="dark"] .markdown-body .hljs-addition {
+  color: #a5d6ff;
+}
+
+:root[data-theme="dark"] .markdown-body .hljs-number,
+:root[data-theme="dark"] .markdown-body .hljs-built_in,
+:root[data-theme="dark"] .markdown-body .hljs-type {
+  color: #79c0ff;
+}
+
+:root[data-theme="dark"] .markdown-body .hljs-title,
+:root[data-theme="dark"] .markdown-body .hljs-section {
+  color: #d2a8ff;
+}
+
+:root[data-theme="dark"] .markdown-body .hljs-attr,
+:root[data-theme="dark"] .markdown-body .hljs-attribute,
+:root[data-theme="dark"] .markdown-body .hljs-variable {
+  color: #ffa657;
 }
 
 .image-lightbox {

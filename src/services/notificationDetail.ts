@@ -1,29 +1,32 @@
+import type {
+  ConversationComment,
+  GitHubLabel
+} from "../domain/conversation";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import { createGitHubClient } from "./github";
 
-export interface NotificationComment {
-  id: string;
-  author: string;
-  created_at: string;
-  body: string;
-}
+export type { ConversationComment as NotificationComment } from "../domain/conversation";
 
 export interface NotificationDetailContent {
   title: string;
   state: string;
   author: string;
+  authorAvatarUrl?: string;
+  authorAssociation?: string;
   created_at?: string;
   body: string;
-  labels: string[];
-  comments: NotificationComment[];
+  labels: GitHubLabel[];
+  comments: ConversationComment[];
 }
 
 interface UserResponse {
   login?: string;
+  avatar_url?: string;
 }
 
 interface LabelResponse {
   name?: string;
+  color?: string;
 }
 
 interface IssueResponse {
@@ -32,6 +35,7 @@ interface IssueResponse {
   body?: string | null;
   user?: UserResponse;
   labels?: Array<LabelResponse | string>;
+  author_association?: string;
   created_at?: string;
   merged_at?: string | null;
 }
@@ -40,6 +44,7 @@ interface CommentResponse {
   id?: number | string;
   body?: string | null;
   user?: UserResponse;
+  author_association?: string;
   created_at?: string;
 }
 
@@ -60,16 +65,22 @@ export interface FetchNotificationDetailOptions {
   fetchImpl?: typeof fetch;
 }
 
-function labelNames(labels: Array<LabelResponse | string> | undefined): string[] {
+function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLabel[] {
   return (labels ?? [])
-    .map((label) => (typeof label === "string" ? label : label.name ?? ""))
-    .filter(Boolean);
+    .map((label) =>
+      typeof label === "string"
+        ? { name: label, color: "" }
+        : { name: label.name ?? "", color: label.color ?? "" }
+    )
+    .filter((label) => label.name);
 }
 
-function mapComments(comments: CommentResponse[]): NotificationComment[] {
+function mapComments(comments: CommentResponse[]): ConversationComment[] {
   return comments.map((comment) => ({
     id: String(comment.id ?? ""),
     author: comment.user?.login ?? "unknown",
+    avatarUrl: comment.user?.avatar_url,
+    authorAssociation: comment.author_association,
     created_at: comment.created_at ?? "",
     body: comment.body ?? ""
   }));
@@ -102,6 +113,7 @@ export async function fetchNotificationDetail(
       title: release.name || release.tag_name || notification.subject.title,
       state: release.tag_name ?? "release",
       author: release.author?.login ?? "unknown",
+      authorAvatarUrl: release.author?.avatar_url,
       created_at: release.published_at ?? release.created_at,
       body: release.body ?? "",
       labels: [],
@@ -123,9 +135,11 @@ export async function fetchNotificationDetail(
       title: discussion.title ?? notification.subject.title,
       state: discussion.state ?? "open",
       author: discussion.user?.login ?? "unknown",
+      authorAvatarUrl: discussion.user?.avatar_url,
+      authorAssociation: discussion.author_association,
       created_at: discussion.created_at,
       body: discussion.body ?? "",
-      labels: labelNames(discussion.labels),
+      labels: mapLabels(discussion.labels),
       comments: mapComments(comments)
     };
   }
@@ -144,9 +158,11 @@ export async function fetchNotificationDetail(
     title: item.title ?? notification.subject.title,
     state: isPull && item.merged_at ? "merged" : item.state ?? "open",
     author: item.user?.login ?? "unknown",
+    authorAvatarUrl: item.user?.avatar_url,
+    authorAssociation: item.author_association,
     created_at: item.created_at,
     body: item.body ?? "",
-    labels: labelNames(item.labels),
+    labels: mapLabels(item.labels),
     comments: mapComments(comments)
   };
 }

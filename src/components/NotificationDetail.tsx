@@ -2,7 +2,8 @@ import { Bell, Globe, Loader2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
-import { MarkdownBody } from "./MarkdownBody";
+import { CommentThread, ConversationEntry } from "./CommentThread";
+import { LabelChip } from "./LabelChip";
 
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
@@ -73,9 +74,7 @@ export function NotificationDetail({
         <div className="detail-actions">
           {detail && <span className={`chip chip-state-${detail.state}`}>{detail.state}</span>}
           {detail?.labels.map((label) => (
-            <span className="chip" key={label}>
-              {label}
-            </span>
+            <LabelChip key={label.name} label={label} />
           ))}
           <span className="detail-connection">
             {notification.reason.replace(/_/g, " ")}
@@ -93,42 +92,20 @@ export function NotificationDetail({
       {error && <p className="notifications-error detail-error">{error}</p>}
 
       {detail && !loading && (
-        <>
-          <article className="content-panel">
-            <div className="author-row">
-              <span className="avatar">
-                {detail.author.slice(0, 1).toUpperCase()}
-              </span>
-              <div>
-                <strong>{detail.author}</strong>
-                <p>
-                  {subjectTypeLabel(notification.subject.type)} conversation
-                  {detail.created_at ? ` · ${timeAgo(detail.created_at)}` : ""}
-                </p>
-              </div>
-            </div>
-            <MarkdownBody body={detail.body || "No description provided."} />
-          </article>
-
-          {detail.comments.length > 0 && (
-            <section className="notification-comments" aria-label="Comments">
-              {detail.comments.map((comment) => (
-                <article className="content-panel comment-panel" key={comment.id}>
-                  <div className="author-row">
-                    <span className="avatar">
-                      {comment.author.slice(0, 1).toUpperCase()}
-                    </span>
-                    <div>
-                      <strong>{comment.author}</strong>
-                      <p>{comment.created_at ? timeAgo(comment.created_at) : ""}</p>
-                    </div>
-                  </div>
-                  <MarkdownBody body={comment.body} />
-                </article>
-              ))}
-            </section>
-          )}
-        </>
+        <div className="conversation">
+          <ConversationEntry
+            author={{
+              login: detail.author,
+              avatarUrl: detail.authorAvatarUrl,
+              association: detail.authorAssociation
+            }}
+            subtitle={`${subjectTypeLabel(notification.subject.type)} · ${
+              detail.created_at ? `opened ${timeAgo(detail.created_at)}` : "conversation"
+            }`}
+            body={detail.body || "No description provided."}
+          />
+          <CommentThread comments={detail.comments} subjectAuthor={detail.author} />
+        </div>
       )}
     </>
   );

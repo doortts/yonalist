@@ -6,8 +6,9 @@ import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
 import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
+import { CommentThread, ConversationEntry } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
-import { MarkdownBody } from "./MarkdownBody";
+import { LabelChip } from "./LabelChip";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
@@ -47,6 +48,10 @@ export function ItemDetail({
   // Prefer the live thread state (merged/draft detection) over the listing.
   const state = thread.thread?.state ?? item.frontMatter.state;
   const comments = thread.thread?.comments ?? [];
+  // Colored labels from the live thread; fall back to the stored names.
+  const labels =
+    thread.thread?.labels ??
+    item.frontMatter.labels.map((name) => ({ name, color: "" }));
 
   return (
     <>
@@ -91,10 +96,8 @@ export function ItemDetail({
         <div className="detail-actions">
           <span className={`chip chip-state-${state}`}>{state}</span>
           {thread.thread?.draft && <span className="chip chip-state-draft">draft</span>}
-          {item.frontMatter.labels.map((label) => (
-            <span className="chip" key={label}>
-              {label}
-            </span>
+          {labels.map((label) => (
+            <LabelChip key={label.name} label={label} />
           ))}
           <span className="chip chip-status">{item.frontMatter.sync.status}</span>
           <span className="detail-connection">
@@ -104,50 +107,33 @@ export function ItemDetail({
         </div>
       </header>
 
-      <article className="content-panel">
-        <div className="author-row">
-          <span className="avatar">
-            {item.frontMatter.author.slice(0, 1).toUpperCase()}
-          </span>
-          <div>
-            <strong>{item.frontMatter.author}</strong>
-            <p>
-              {itemTypeLabel(item)} conversation
-              {item.frontMatter.created_at
-                ? ` · ${timeAgo(item.frontMatter.created_at)}`
-                : ""}
-            </p>
+      <div className="conversation">
+        <ConversationEntry
+          author={{
+            login: item.frontMatter.author,
+            avatarUrl: thread.thread?.authorAvatarUrl,
+            association: thread.thread?.authorAssociation
+          }}
+          subtitle={`${itemTypeLabel(item)} · ${
+            item.frontMatter.created_at
+              ? `opened ${timeAgo(item.frontMatter.created_at)}`
+              : "conversation"
+          }`}
+          body={item.body || "No body."}
+        />
+
+        {thread.loading && (
+          <div className="detail-loading" aria-label="Loading comments">
+            <Loader2 size={18} className="spinning" />
+            <span>Loading comments...</span>
           </div>
-        </div>
-        <MarkdownBody body={item.body || "No body."} />
-      </article>
+        )}
+        {thread.error && (
+          <p className="notifications-error detail-error">{thread.error}</p>
+        )}
 
-      {thread.loading && (
-        <div className="detail-loading" aria-label="Loading comments">
-          <Loader2 size={18} className="spinning" />
-          <span>Loading comments...</span>
-        </div>
-      )}
-      {thread.error && <p className="notifications-error detail-error">{thread.error}</p>}
-
-      {comments.length > 0 && (
-        <section className="notification-comments" aria-label="Comments">
-          {comments.map((comment) => (
-            <article className="content-panel comment-panel" key={comment.id}>
-              <div className="author-row">
-                <span className="avatar">
-                  {comment.author.slice(0, 1).toUpperCase()}
-                </span>
-                <div>
-                  <strong>{comment.author}</strong>
-                  <p>{comment.created_at ? timeAgo(comment.created_at) : ""}</p>
-                </div>
-              </div>
-              <MarkdownBody body={comment.body} />
-            </article>
-          ))}
-        </section>
-      )}
+        <CommentThread comments={comments} subjectAuthor={item.frontMatter.author} />
+      </div>
 
       <form className="comment-composer" onSubmit={onQueueComment}>
         <textarea

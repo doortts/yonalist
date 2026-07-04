@@ -35,7 +35,7 @@ export function useItemThread(
       setThread(
         isSampleItem(item)
           ? sampleItemThread(item)
-          : { state: item.frontMatter.state, draft: false, comments: [] }
+          : { state: item.frontMatter.state, draft: false, labels: [], comments: [] }
       );
       setLoading(false);
       setError(null);
@@ -44,7 +44,7 @@ export function useItemThread(
 
     if (number === 0) {
       // Local drafts have no remote conversation yet.
-      setThread({ state: item.frontMatter.state, draft: false, comments: [] });
+      setThread({ state: item.frontMatter.state, draft: false, labels: [], comments: [] });
       setLoading(false);
       setError(null);
       return;
