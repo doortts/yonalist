@@ -2,6 +2,7 @@ import { subjectNumber, type GitHubNotification } from "../domain/notifications"
 import type { NotificationDetailContent } from "../services/notificationDetail";
 import { sampleItems } from "./sampleItems";
 
+const MINUTE = 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
 
@@ -16,7 +17,8 @@ export function sampleNotifications(now: Date = new Date()): GitHubNotification[
       id: "sample-1",
       unread: true,
       reason: "mention",
-      updated_at: iso(2 * HOUR, now),
+      // A few minutes ago so the newest sample always lands in "Today".
+      updated_at: iso(5 * MINUTE, now),
       last_read_at: null,
       subject: {
         title: "Design offline issue reading",

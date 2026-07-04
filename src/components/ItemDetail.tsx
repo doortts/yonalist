@@ -6,7 +6,7 @@ import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
 import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
-import { CommentThread, ConversationEntry } from "./CommentThread";
+import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
 
@@ -108,7 +108,7 @@ export function ItemDetail({
       </header>
 
       <div className="conversation">
-        <ConversationEntry
+        <OpeningPost
           author={{
             login: item.frontMatter.author,
             avatarUrl: thread.thread?.authorAvatarUrl,

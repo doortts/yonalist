@@ -9,6 +9,8 @@ interface AvatarProps {
   login: string;
   avatarUrl?: string;
   size?: number;
+  /** When false, render nothing (instead of the initial) if no image loads. */
+  showFallback?: boolean;
 }
 
 /**
@@ -16,7 +18,12 @@ interface AvatarProps {
  * fetching through the auth proxy for GHE hosts, and falls back to the
  * login's initial when there's no image or it fails to load.
  */
-export function Avatar({ login, avatarUrl, size = 36 }: AvatarProps) {
+export function Avatar({
+  login,
+  avatarUrl,
+  size = 36,
+  showFallback = true
+}: AvatarProps) {
   const connection = useContext(GithubConnectionContext);
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -55,6 +62,10 @@ export function Avatar({ login, avatarUrl, size = 36 }: AvatarProps) {
         onError={() => setFailed(true)}
       />
     );
+  }
+
+  if (!showFallback) {
+    return null;
   }
 
   return (

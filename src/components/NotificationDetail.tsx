@@ -2,7 +2,7 @@ import { Bell, Globe, Loader2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
-import { CommentThread, ConversationEntry } from "./CommentThread";
+import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 
 interface NotificationDetailProps {
@@ -93,7 +93,7 @@ export function NotificationDetail({
 
       {detail && !loading && (
         <div className="conversation">
-          <ConversationEntry
+          <OpeningPost
             author={{
               login: detail.author,
               avatarUrl: detail.authorAvatarUrl,

@@ -6,25 +6,14 @@ import { timeAgo } from "../timeFormat";
 import { Avatar } from "./Avatar";
 import { MarkdownBody } from "./MarkdownBody";
 
-interface CommentAuthor {
+interface EntryAuthor {
   login: string;
   avatarUrl?: string;
   association?: string;
   isAuthor?: boolean;
 }
 
-interface ConversationEntryProps {
-  author: CommentAuthor;
-  timestamp?: string;
-  subtitle?: string;
-  body: string;
-}
-
-function AssociationBadge({
-  author
-}: {
-  author: CommentAuthor;
-}) {
+function AssociationBadge({ author }: { author: EntryAuthor }) {
   const association = authorAssociationLabel(author.association);
   const label = author.isAuthor ? "Author" : association;
   if (!label) {
@@ -33,31 +22,40 @@ function AssociationBadge({
   return <span className="comment-association">{label}</span>;
 }
 
-/**
- * A single timeline entry (the opening post or a comment) rendered like a
- * GitHub conversation card: an avatar on the timeline, a header bar with the
- * author, association badge and time, and the sanitized markdown body.
- */
-export function ConversationEntry({
-  author,
-  timestamp,
-  subtitle,
-  body
-}: ConversationEntryProps) {
+function EntryMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   return (
-    <article className="comment-item">
-      <Avatar login={author.login} avatarUrl={author.avatarUrl} size={40} />
-      <div className="comment-bubble">
-        <header className="comment-header">
-          <strong className="comment-author">{author.login}</strong>
-          <AssociationBadge author={author} />
-          <span className="comment-time">
-            {subtitle ? subtitle : timestamp ? `commented ${timeAgo(timestamp)}` : ""}
-          </span>
-        </header>
-        <div className="comment-body">
-          <MarkdownBody body={body} />
-        </div>
+    <>
+      <Avatar
+        login={author.login}
+        avatarUrl={author.avatarUrl}
+        size={20}
+        showFallback={false}
+      />
+      <strong className="comment-author">{author.login}</strong>
+      <AssociationBadge author={author} />
+      <span className="comment-time">{meta}</span>
+    </>
+  );
+}
+
+interface OpeningPostProps {
+  author: EntryAuthor;
+  subtitle: string;
+  body: string;
+}
+
+/**
+ * The opening issue/PR/discussion post — rendered full width, outside the
+ * comment timeline, like GitHub's first conversation item.
+ */
+export function OpeningPost({ author, subtitle, body }: OpeningPostProps) {
+  return (
+    <article className="opening-post">
+      <header className="opening-post-header">
+        <EntryMeta author={author} meta={subtitle} />
+      </header>
+      <div className="opening-post-body">
+        <MarkdownBody body={body} />
       </div>
     </article>
   );
@@ -69,7 +67,11 @@ interface CommentThreadProps {
   subjectAuthor?: string;
 }
 
-/** The list of reply comments below the opening post. */
+/**
+ * Reply comments rendered as a GitHub-style timeline: a vertical line with a
+ * node dot per comment and a bordered card holding a header and body. No
+ * initial-letter avatars sit on the line.
+ */
 export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
   if (comments.length === 0) {
     return null;
@@ -77,17 +79,30 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
   return (
     <section className="comment-thread" aria-label="Comments">
       {comments.map((comment) => (
-        <ConversationEntry
-          key={comment.id}
-          author={{
-            login: comment.author,
-            avatarUrl: comment.avatarUrl,
-            association: comment.authorAssociation,
-            isAuthor: Boolean(subjectAuthor) && comment.author === subjectAuthor
-          }}
-          timestamp={comment.created_at}
-          body={comment.body}
-        />
+        <article className="comment-item" key={comment.id}>
+          <span className="comment-node" aria-hidden="true" />
+          <div className="comment-bubble">
+            <header className="comment-header">
+              <EntryMeta
+                author={{
+                  login: comment.author,
+                  avatarUrl: comment.avatarUrl,
+                  association: comment.authorAssociation,
+                  isAuthor:
+                    Boolean(subjectAuthor) && comment.author === subjectAuthor
+                }}
+                meta={
+                  comment.created_at
+                    ? `commented ${timeAgo(comment.created_at)}`
+                    : "commented"
+                }
+              />
+            </header>
+            <div className="comment-body">
+              <MarkdownBody body={comment.body} />
+            </div>
+          </div>
+        </article>
       ))}
     </section>
   );

@@ -841,53 +841,67 @@ body.is-resizing-pane {
   font-weight: 600;
 }
 
-/* ---- Conversation timeline (GitHub-style) ---- */
+/* ---- Conversation ---- */
 .conversation {
-  position: relative;
   margin: 20px 28px 8px;
-  padding-left: 8px;
 }
 
-/* vertical timeline line running behind the avatars */
-.conversation::before {
+/* Opening post: full width, no card or timeline. */
+.opening-post-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.opening-post-body .markdown-body {
+  margin-top: 4px;
+  max-width: none;
+}
+
+/* Comment timeline: a vertical line with a node dot per comment. */
+.comment-thread {
+  position: relative;
+  margin-top: 20px;
+  padding-left: 22px;
+}
+
+.comment-thread::before {
   content: "";
   position: absolute;
-  top: 20px;
-  bottom: 20px;
-  left: 27px;
+  top: 4px;
+  bottom: 10px;
+  left: 4px;
   width: 2px;
   background: var(--border);
 }
 
 .comment-item {
   position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
   margin-bottom: 16px;
 }
 
+/* node dot where the comment meets the timeline line */
+.comment-node {
+  position: absolute;
+  top: 14px;
+  left: -22px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg-detail);
+  border-radius: 50%;
+  background: var(--border-strong);
+  transform: translateX(-1px);
+}
+
 .comment-bubble {
-  position: relative;
-  flex: 1;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-card);
-}
-
-/* speech-bubble arrow pointing at the avatar */
-.comment-bubble::before {
-  content: "";
-  position: absolute;
-  top: 12px;
-  left: -8px;
-  width: 14px;
-  height: 14px;
-  border-left: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  background: var(--comment-header-bg, var(--bg-hover));
-  transform: rotate(45deg);
 }
 
 .comment-header {
@@ -897,7 +911,7 @@ body.is-resizing-pane {
   padding: 8px 14px;
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background: var(--comment-header-bg, var(--bg-hover));
+  background: var(--bg-hover);
   font-size: 13px;
 }
 
@@ -927,10 +941,6 @@ body.is-resizing-pane {
 .comment-body .markdown-body {
   margin-top: 10px;
   max-width: none;
-}
-
-.comment-thread {
-  display: block;
 }
 
 .markdown-body {
