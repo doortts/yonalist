@@ -99,7 +99,6 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
     <section className="comment-thread" aria-label="Comments">
       {comments.map((comment) => (
         <article className="comment-item" key={comment.id}>
-          <span className="comment-node" aria-hidden="true" />
           <div className="comment-bubble">
             <header className="comment-header">
               <EntryMeta

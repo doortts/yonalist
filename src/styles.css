@@ -934,21 +934,9 @@ body.is-resizing-pane {
   max-width: none;
 }
 
-/* Comment timeline: a vertical line with a node dot per comment. */
+/* Comment timeline: short connector lines bridging the gap between cards. */
 .comment-thread {
-  position: relative;
-  margin-top: 20px;
-  padding-left: 22px;
-}
-
-.comment-thread::before {
-  content: "";
-  position: absolute;
-  top: 4px;
-  bottom: 10px;
-  left: 4px;
-  width: 2px;
-  background: var(--border);
+  margin-top: 16px;
 }
 
 .comment-item {
@@ -956,17 +944,15 @@ body.is-resizing-pane {
   margin-bottom: 16px;
 }
 
-/* node dot where the comment meets the timeline line */
-.comment-node {
+/* vertical connector sitting in the gap above each comment (not the first) */
+.comment-item + .comment-item::before {
+  content: "";
   position: absolute;
-  top: 14px;
-  left: -22px;
-  width: 10px;
-  height: 10px;
-  border: 2px solid var(--bg-detail);
-  border-radius: 50%;
-  background: var(--border-strong);
-  transform: translateX(-1px);
+  top: -17px;
+  left: 28px;
+  width: 2px;
+  height: 18px;
+  background: var(--border);
 }
 
 .comment-bubble {
