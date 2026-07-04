@@ -68,7 +68,8 @@ describe("fetchNotificationDetail", () => {
         avatarUrl: undefined,
         authorAssociation: undefined,
         created_at: "2026-07-02T11:00:00Z",
-        body: "First!"
+        body: "First!",
+        reactions: []
       }
     ]);
   });

@@ -43,6 +43,7 @@ interface SearchIssueItem {
   html_url?: string;
   pull_request?: unknown;
   repository_url?: string;
+  comments?: number;
 }
 
 interface SearchIssuesResponse {
@@ -98,6 +99,7 @@ function toItemDocument(input: {
   state: ItemState;
   author: string;
   labels: string[];
+  commentsCount?: number;
   createdAt: string;
   updatedAt: string;
   htmlUrl?: string;
@@ -120,6 +122,7 @@ function toItemDocument(input: {
       state: input.state,
       author: input.author,
       labels: input.labels,
+      comments_count: input.commentsCount,
       created_at: input.createdAt,
       updated_at: input.updatedAt,
       local: { favorite: false },
@@ -167,6 +170,7 @@ async function searchIssues(
       state: normalizeState(item.state),
       author: item.user?.login ?? "unknown",
       labels: labelNames(item.labels),
+      commentsCount: item.comments,
       createdAt: item.created_at ?? "",
       updatedAt: item.updated_at ?? "",
       htmlUrl: item.html_url,

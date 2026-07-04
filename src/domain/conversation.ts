@@ -4,6 +4,36 @@ export interface GitHubLabel {
   color: string;
 }
 
+/** Emoji reaction summary counts (only non-zero entries kept). */
+export type ReactionSummary = Array<{ emoji: string; count: number }>;
+
+/** GitHub REST `reactions` object → an ordered emoji/count summary. */
+export function summarizeReactions(
+  reactions: Record<string, unknown> | undefined | null
+): ReactionSummary {
+  if (!reactions) {
+    return [];
+  }
+  const map: Array<[string, string]> = [
+    ["+1", "👍"],
+    ["-1", "👎"],
+    ["laugh", "😄"],
+    ["hooray", "🎉"],
+    ["confused", "😕"],
+    ["heart", "❤️"],
+    ["rocket", "🚀"],
+    ["eyes", "👀"]
+  ];
+  const summary: ReactionSummary = [];
+  for (const [key, emoji] of map) {
+    const count = Number(reactions[key]);
+    if (Number.isFinite(count) && count > 0) {
+      summary.push({ emoji, count });
+    }
+  }
+  return summary;
+}
+
 /** One entry in an issue/PR/discussion conversation. */
 export interface ConversationComment {
   id: string;
@@ -12,6 +42,7 @@ export interface ConversationComment {
   authorAssociation?: string;
   created_at: string;
   body: string;
+  reactions?: ReactionSummary;
 }
 
 /**

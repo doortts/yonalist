@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { authorAssociationLabel, labelTextColor } from "./conversation";
+import {
+  authorAssociationLabel,
+  labelTextColor,
+  summarizeReactions
+} from "./conversation";
 
 describe("labelTextColor", () => {
   it("uses dark text on light backgrounds", () => {
@@ -32,5 +36,32 @@ describe("authorAssociationLabel", () => {
     expect(authorAssociationLabel("NONE")).toBeNull();
     expect(authorAssociationLabel(undefined)).toBeNull();
     expect(authorAssociationLabel("FIRST_TIMER")).toBeNull();
+  });
+});
+
+describe("summarizeReactions", () => {
+  it("keeps only non-zero reactions in GitHub's order with emoji", () => {
+    expect(
+      summarizeReactions({
+        "+1": 3,
+        "-1": 0,
+        laugh: 1,
+        hooray: 0,
+        confused: 0,
+        heart: 2,
+        rocket: 0,
+        eyes: 0,
+        total_count: 6
+      })
+    ).toEqual([
+      { emoji: "👍", count: 3 },
+      { emoji: "😄", count: 1 },
+      { emoji: "❤️", count: 2 }
+    ]);
+  });
+
+  it("returns an empty summary when there are no reactions", () => {
+    expect(summarizeReactions(undefined)).toEqual([]);
+    expect(summarizeReactions({})).toEqual([]);
   });
 });

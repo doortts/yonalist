@@ -2,6 +2,7 @@ import {
   Bookmark,
   CircleDot,
   GitPullRequest,
+  MessageSquare,
   MessagesSquare,
   Plus,
   RefreshCw,
@@ -108,8 +109,26 @@ export function ItemListPane({
               <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
             </span>
             <span className="item-title">{item.frontMatter.title}</span>
+            {item.frontMatter.labels.length > 0 && (
+              <span className="item-labels">
+                {item.frontMatter.labels.slice(0, 4).map((label) => (
+                  <span className="item-label" key={label}>
+                    {label}
+                  </span>
+                ))}
+              </span>
+            )}
             <span className="item-footer">
-              {item.frontMatter.owner}/{item.frontMatter.repo}
+              <span className="item-repo">
+                {item.frontMatter.owner}/{item.frontMatter.repo}
+              </span>
+              {item.frontMatter.comments_count !== undefined &&
+                item.frontMatter.comments_count > 0 && (
+                  <span className="item-comments">
+                    <MessageSquare size={12} />
+                    {item.frontMatter.comments_count}
+                  </span>
+                )}
               {item.frontMatter.local.favorite && (
                 <Bookmark className="small-bookmark" size={14} fill="currentColor" />
               )}

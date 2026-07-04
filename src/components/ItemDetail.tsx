@@ -9,6 +9,7 @@ import { timeAgo } from "../timeFormat";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
+import { StateBadge } from "./StateBadge";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
@@ -94,8 +95,11 @@ export function ItemDetail({
           </div>
         </div>
         <div className="detail-actions">
-          <span className={`chip chip-state-${state}`}>{state}</span>
-          {thread.thread?.draft && <span className="chip chip-state-draft">draft</span>}
+          <StateBadge
+            kind={item.frontMatter.kind}
+            state={state}
+            draft={thread.thread?.draft}
+          />
           {labels.map((label) => (
             <LabelChip key={label.name} label={label} />
           ))}
@@ -120,6 +124,7 @@ export function ItemDetail({
               : "conversation"
           }`}
           body={item.body || "No body."}
+          reactions={thread.thread?.reactions}
         />
 
         {thread.loading && (

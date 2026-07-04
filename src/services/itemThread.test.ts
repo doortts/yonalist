@@ -43,7 +43,15 @@ describe("fetchItemThread", () => {
 
       expect(thread.state).toBe("merged");
       expect(thread.comments).toEqual([
-        { id: "1", author: "mona", created_at: "2026-07-02T00:00:00Z", body: "First!" }
+        {
+          id: "1",
+          author: "mona",
+          avatarUrl: undefined,
+          authorAssociation: undefined,
+          created_at: "2026-07-02T00:00:00Z",
+          body: "First!",
+          reactions: []
+        }
       ]);
     } finally {
       vi.unstubAllGlobals();

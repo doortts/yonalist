@@ -24,7 +24,7 @@ export interface NotificationSubject {
 export interface NotificationRepository {
   full_name: string;
   name: string;
-  owner: { login: string };
+  owner: { login: string; avatar_url?: string };
 }
 
 export interface GitHubNotification {

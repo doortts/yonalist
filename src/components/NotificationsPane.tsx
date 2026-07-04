@@ -24,6 +24,7 @@ import {
 } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
 import { timeAgo } from "../timeFormat";
+import { Avatar } from "./Avatar";
 
 interface NotificationsPaneProps {
   state: UseNotificationsResult;
@@ -220,11 +221,19 @@ export function NotificationsPane({
 
               return (
                 <div className={rowClasses} key={notification.id}>
-                  <span
-                    className={`notification-reason ${reason.className}`}
-                    title={reason.label}
-                  >
-                    {SubjectIcon ? <SubjectIcon size={17} /> : <ReasonIcon size={17} />}
+                  <span className="notification-lead">
+                    <Avatar
+                      login={notification.repository.owner.login}
+                      avatarUrl={notification.repository.owner.avatar_url}
+                      size={26}
+                      showFallback={false}
+                    />
+                    <span
+                      className={`notification-reason ${reason.className}`}
+                      title={reason.label}
+                    >
+                      {SubjectIcon ? <SubjectIcon size={17} /> : <ReasonIcon size={17} />}
+                    </span>
                   </span>
                   <button
                     type="button"

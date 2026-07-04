@@ -93,13 +93,18 @@ export function sampleItemThread(item: ItemDocument): ItemThread {
     draft: false,
     authorAssociation: "OWNER",
     labels: item.frontMatter.labels.map((name) => ({ name, color: "" })),
+    reactions: [
+      { emoji: "👍", count: 2 },
+      { emoji: "🎉", count: 1 }
+    ],
     comments: [
       {
         id: `${item.frontMatter.number}-sample-1`,
         author: "mona",
         authorAssociation: "MEMBER",
         created_at: item.frontMatter.updated_at,
-        body: "Sample reply so the conversation thread layout is visible offline."
+        body: "Sample reply so the conversation thread layout is visible offline.",
+        reactions: [{ emoji: "❤️", count: 3 }]
       },
       {
         id: `${item.frontMatter.number}-sample-2`,

@@ -1,6 +1,8 @@
-import type {
-  ConversationComment,
-  GitHubLabel
+import {
+  summarizeReactions,
+  type ConversationComment,
+  type GitHubLabel,
+  type ReactionSummary
 } from "../domain/conversation";
 import type { ItemKind, ItemState } from "../domain/types";
 import type { GithubConnection } from "../hooks/useGithubAuth";
@@ -13,6 +15,7 @@ export interface ItemThread {
   authorAvatarUrl?: string;
   authorAssociation?: string;
   labels: GitHubLabel[];
+  reactions?: ReactionSummary;
   comments: ConversationComment[];
 }
 
@@ -40,6 +43,7 @@ interface StateResponse {
   user?: UserResponse;
   author_association?: string;
   labels?: Array<LabelResponse | string>;
+  reactions?: Record<string, unknown>;
 }
 
 interface CommentResponse {
@@ -47,6 +51,7 @@ interface CommentResponse {
   body?: string | null;
   user?: UserResponse;
   author_association?: string;
+  reactions?: Record<string, unknown>;
   created_at?: string;
 }
 
@@ -74,7 +79,8 @@ function mapComments(comments: CommentResponse[]): ConversationComment[] {
     avatarUrl: comment.user?.avatar_url,
     authorAssociation: comment.author_association,
     created_at: comment.created_at ?? "",
-    body: comment.body ?? ""
+    body: comment.body ?? "",
+    reactions: summarizeReactions(comment.reactions)
   }));
 }
 
@@ -85,6 +91,7 @@ function threadFrom(item: StateResponse, comments: CommentResponse[], state: Ite
     authorAvatarUrl: item.user?.avatar_url,
     authorAssociation: item.author_association,
     labels: mapLabels(item.labels),
+    reactions: summarizeReactions(item.reactions),
     comments: mapComments(comments)
   };
 }

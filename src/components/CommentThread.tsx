@@ -1,10 +1,27 @@
 import {
   authorAssociationLabel,
-  type ConversationComment
+  type ConversationComment,
+  type ReactionSummary
 } from "../domain/conversation";
 import { timeAgo } from "../timeFormat";
 import { Avatar } from "./Avatar";
 import { MarkdownBody } from "./MarkdownBody";
+
+function Reactions({ reactions }: { reactions?: ReactionSummary }) {
+  if (!reactions || reactions.length === 0) {
+    return null;
+  }
+  return (
+    <div className="reactions" aria-label="Reactions">
+      {reactions.map((reaction) => (
+        <span className="reaction" key={reaction.emoji}>
+          <span className="reaction-emoji">{reaction.emoji}</span>
+          {reaction.count}
+        </span>
+      ))}
+    </div>
+  );
+}
 
 interface EntryAuthor {
   login: string;
@@ -42,13 +59,14 @@ interface OpeningPostProps {
   author: EntryAuthor;
   subtitle: string;
   body: string;
+  reactions?: ReactionSummary;
 }
 
 /**
  * The opening issue/PR/discussion post — rendered full width, outside the
  * comment timeline, like GitHub's first conversation item.
  */
-export function OpeningPost({ author, subtitle, body }: OpeningPostProps) {
+export function OpeningPost({ author, subtitle, body, reactions }: OpeningPostProps) {
   return (
     <article className="opening-post">
       <header className="opening-post-header">
@@ -56,6 +74,7 @@ export function OpeningPost({ author, subtitle, body }: OpeningPostProps) {
       </header>
       <div className="opening-post-body">
         <MarkdownBody body={body} />
+        <Reactions reactions={reactions} />
       </div>
     </article>
   );
@@ -100,6 +119,7 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
             </header>
             <div className="comment-body">
               <MarkdownBody body={comment.body} />
+              <Reactions reactions={comment.reactions} />
             </div>
           </div>
         </article>

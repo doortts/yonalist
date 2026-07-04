@@ -1,9 +1,11 @@
 import { Bell, Globe, Loader2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
+import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
+import { StateBadge } from "./StateBadge";
 
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
@@ -22,6 +24,16 @@ function subjectTypeLabel(type: string): string {
     default:
       return "Issue";
   }
+}
+
+function subjectKind(type: string): ItemKind {
+  if (type === "PullRequest") {
+    return "pull";
+  }
+  if (type === "Discussion") {
+    return "discussion";
+  }
+  return "issue";
 }
 
 export function NotificationDetail({
@@ -72,7 +84,15 @@ export function NotificationDetail({
           </div>
         </div>
         <div className="detail-actions">
-          {detail && <span className={`chip chip-state-${detail.state}`}>{detail.state}</span>}
+          {detail &&
+            (notification.subject.type === "Release" ? (
+              <span className="chip">{detail.state}</span>
+            ) : (
+              <StateBadge
+                kind={subjectKind(notification.subject.type)}
+                state={detail.state}
+              />
+            ))}
           {detail?.labels.map((label) => (
             <LabelChip key={label.name} label={label} />
           ))}
@@ -103,6 +123,7 @@ export function NotificationDetail({
               detail.created_at ? `opened ${timeAgo(detail.created_at)}` : "conversation"
             }`}
             body={detail.body || "No description provided."}
+            reactions={detail.reactions}
           />
           <CommentThread comments={detail.comments} subjectAuthor={detail.author} />
         </div>

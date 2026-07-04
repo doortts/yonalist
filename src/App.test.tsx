@@ -300,7 +300,7 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const detail = screen.getByLabelText("Detail");
-    expect(within(detail).getByText("open")).toHaveClass("chip-state-open");
+    expect(within(detail).getByText("Open")).toHaveClass("state-open");
     const comments = within(detail).getByLabelText("Comments");
     expect(
       within(comments).getByText(/Sample reply so the conversation thread/)

@@ -689,9 +689,49 @@ body.is-resizing-pane {
   line-height: 1.35;
 }
 
+.item-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.item-label {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.item-repo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.item-comments {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .small-bookmark {
   margin-left: auto;
   color: var(--favorite);
+}
+
+/* keep favorite bookmark at the far right when a comment count is present */
+.item-comments + .small-bookmark {
+  margin-left: 0;
+}
+
+.item-footer .item-comments {
+  margin-left: auto;
+}
+
+.item-footer .item-comments ~ .small-bookmark {
+  margin-left: 6px;
 }
 
 .list-empty {
@@ -780,6 +820,38 @@ body.is-resizing-pane {
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* GitHub-style state pill: icon + word on a solid colored background. */
+.state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.state-badge svg {
+  flex-shrink: 0;
+}
+
+.state-open {
+  background: #1a7f37;
+}
+
+.state-closed {
+  background: #cf222e;
+}
+
+.state-merged {
+  background: #8250df;
+}
+
+.state-draft {
+  background: #6e7781;
 }
 
 .chip-status {
@@ -941,6 +1013,30 @@ body.is-resizing-pane {
 .comment-body .markdown-body {
   margin-top: 10px;
   max-width: none;
+}
+
+/* read-only reaction summary */
+.reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.reaction-emoji {
+  font-size: 13px;
 }
 
 .markdown-body {
@@ -1875,6 +1971,19 @@ body.is-resizing-pane {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* owner avatar with the reason icon as a small overlay badge */
+.notification-lead {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+}
+
+.notification-lead .avatar {
+  width: 26px;
+  height: 26px;
+}
+
 .notification-reason {
   display: inline-flex;
   align-items: center;
@@ -1884,6 +1993,23 @@ body.is-resizing-pane {
   height: 30px;
   border-radius: 50%;
   color: var(--text-3);
+}
+
+/* when an owner avatar is present, shrink the reason icon into a corner badge */
+.notification-lead .avatar + .notification-reason {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--bg-list);
+  box-shadow: 0 0 0 1.5px var(--bg-list);
+}
+
+.notification-lead .avatar + .notification-reason svg {
+  width: 12px;
+  height: 12px;
 }
 
 .reason-mention {

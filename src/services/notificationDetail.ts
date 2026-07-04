@@ -1,6 +1,8 @@
-import type {
-  ConversationComment,
-  GitHubLabel
+import {
+  summarizeReactions,
+  type ConversationComment,
+  type GitHubLabel,
+  type ReactionSummary
 } from "../domain/conversation";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import { createGitHubClient } from "./github";
@@ -16,6 +18,7 @@ export interface NotificationDetailContent {
   created_at?: string;
   body: string;
   labels: GitHubLabel[];
+  reactions?: ReactionSummary;
   comments: ConversationComment[];
 }
 
@@ -36,6 +39,7 @@ interface IssueResponse {
   user?: UserResponse;
   labels?: Array<LabelResponse | string>;
   author_association?: string;
+  reactions?: Record<string, unknown>;
   created_at?: string;
   merged_at?: string | null;
 }
@@ -45,6 +49,7 @@ interface CommentResponse {
   body?: string | null;
   user?: UserResponse;
   author_association?: string;
+  reactions?: Record<string, unknown>;
   created_at?: string;
 }
 
@@ -82,7 +87,8 @@ function mapComments(comments: CommentResponse[]): ConversationComment[] {
     avatarUrl: comment.user?.avatar_url,
     authorAssociation: comment.author_association,
     created_at: comment.created_at ?? "",
-    body: comment.body ?? ""
+    body: comment.body ?? "",
+    reactions: summarizeReactions(comment.reactions)
   }));
 }
 
@@ -140,6 +146,7 @@ export async function fetchNotificationDetail(
       created_at: discussion.created_at,
       body: discussion.body ?? "",
       labels: mapLabels(discussion.labels),
+      reactions: summarizeReactions(discussion.reactions),
       comments: mapComments(comments)
     };
   }
@@ -163,6 +170,7 @@ export async function fetchNotificationDetail(
     created_at: item.created_at,
     body: item.body ?? "",
     labels: mapLabels(item.labels),
+    reactions: summarizeReactions(item.reactions),
     comments: mapComments(comments)
   };
 }
