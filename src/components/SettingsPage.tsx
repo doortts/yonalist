@@ -145,6 +145,17 @@ export function SettingsPage({
                 />
                 <span>Download comments while syncing</span>
               </label>
+              <label className="settings-check">
+                <input
+                  aria-label="Desktop notifications for new items"
+                  type="checkbox"
+                  checked={settings.desktopNotifications}
+                  onChange={(event) =>
+                    onUpdate("desktopNotifications", event.target.checked)
+                  }
+                />
+                <span>Desktop notifications for new items</span>
+              </label>
             </div>
           </section>
         )}

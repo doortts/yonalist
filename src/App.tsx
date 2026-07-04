@@ -45,6 +45,7 @@ import { useAuthGate } from "./hooks/useAuthGate";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
+import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
 import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
 import { useRepositories } from "./hooks/useRepositories";
@@ -208,6 +209,13 @@ export default function App({ initialOnline }: AppProps) {
     authGate.state === "passed",
     notificationRepoFilter
   );
+  useDesktopNotifications({
+    notifications: notifications.notifications,
+    viewedAt: notifications.viewedAt,
+    webBaseUrl: auth.connection.webBaseUrl,
+    enabled: settings.desktopNotifications && authGate.state === "passed",
+    demoMode: notifications.demoMode
+  });
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
   const notificationDetail = useNotificationDetail(

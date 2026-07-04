@@ -3,13 +3,15 @@ export interface AppSettings {
   syncQueuedOnReconnect: boolean;
   cacheLinkedAttachments: boolean;
   downloadCommentsWhileSyncing: boolean;
+  desktopNotifications: boolean;
 }
 
 export const defaultSettings: AppSettings = {
   vaultFolder: "~/Yonalist",
   syncQueuedOnReconnect: true,
   cacheLinkedAttachments: true,
-  downloadCommentsWhileSyncing: true
+  downloadCommentsWhileSyncing: true,
+  desktopNotifications: true
 };
 
 const settingsStorageKey = "yonalist.settings.v1";
@@ -32,7 +34,9 @@ export function loadSettings(): AppSettings {
         parsed.cacheLinkedAttachments ?? defaultSettings.cacheLinkedAttachments,
       downloadCommentsWhileSyncing:
         parsed.downloadCommentsWhileSyncing ??
-        defaultSettings.downloadCommentsWhileSyncing
+        defaultSettings.downloadCommentsWhileSyncing,
+      desktopNotifications:
+        parsed.desktopNotifications ?? defaultSettings.desktopNotifications
     };
   } catch {
     return defaultSettings;

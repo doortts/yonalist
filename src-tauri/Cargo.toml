@@ -20,6 +20,7 @@ open = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "=2.8.0", features = [] }
+tauri-plugin-notification = "2"
 tauri-runtime = "=2.8.0"
 ureq = "2"
 
