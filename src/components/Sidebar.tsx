@@ -8,7 +8,6 @@ import {
   LogIn,
   MessagesSquare,
   Settings,
-  Wifi,
   WifiOff
 } from "lucide-react";
 import type { OwnerGroup } from "../services/githubItems";
@@ -86,14 +85,17 @@ export function Sidebar({
               <LogIn size={17} />
             </button>
           )}
-          <button
-            className="icon-button"
-            type="button"
-            aria-label={online ? "Go offline" : "Go online"}
-            onClick={onToggleOnline}
-          >
-            {online ? <Wifi size={18} /> : <WifiOff size={18} />}
-          </button>
+          {!online && (
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="Go online"
+              title="오프라인 — 클릭하면 온라인으로 전환"
+              onClick={onToggleOnline}
+            >
+              <WifiOff size={18} />
+            </button>
+          )}
         </div>
       </div>
 
