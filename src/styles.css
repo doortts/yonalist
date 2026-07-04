@@ -946,32 +946,53 @@ body.is-resizing-pane {
   max-width: none;
 }
 
-/* Comment timeline: short connector lines bridging the gap between cards. */
+/* Comment timeline: each reply is an avatar in a left gutter next to a
+   bordered speech bubble whose tail points back at the avatar. */
 .comment-thread {
   margin-top: 16px;
 }
 
 .comment-item {
-  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
   margin-bottom: 16px;
 }
 
-/* vertical connector sitting in the gap above each comment (not the first) */
-.comment-item + .comment-item::before {
-  content: "";
-  position: absolute;
-  top: -17px;
-  left: 28px;
-  width: 2px;
-  height: 18px;
-  background: var(--border);
+.comment-item > .avatar {
+  flex: none;
 }
 
 .comment-bubble {
+  position: relative;
+  flex: 1;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--bg-card);
+}
+
+/* Speech-bubble tail: a border-colored triangle with a header-colored
+   triangle laid 1px over it, so only the bubble's border edge shows. */
+.comment-bubble::before,
+.comment-bubble::after {
+  content: "";
+  position: absolute;
+  top: 13px;
+  width: 0;
+  height: 0;
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+}
+
+.comment-bubble::before {
+  left: -8px;
+  border-right: 8px solid var(--border);
+}
+
+.comment-bubble::after {
+  left: -7px;
+  border-right: 8px solid var(--bg-hover);
 }
 
 .comment-header {

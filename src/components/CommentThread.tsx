@@ -39,6 +39,16 @@ function AssociationBadge({ author }: { author: EntryAuthor }) {
   return <span className="comment-association">{label}</span>;
 }
 
+function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
+  return (
+    <>
+      <strong className="comment-author">{author.login}</strong>
+      <AssociationBadge author={author} />
+      <span className="comment-time">{meta}</span>
+    </>
+  );
+}
+
 function EntryMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   return (
     <>
@@ -48,9 +58,7 @@ function EntryMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
         size={20}
         showFallback={false}
       />
-      <strong className="comment-author">{author.login}</strong>
-      <AssociationBadge author={author} />
-      <span className="comment-time">{meta}</span>
+      <HeaderMeta author={author} meta={meta} />
     </>
   );
 }
@@ -87,9 +95,9 @@ interface CommentThreadProps {
 }
 
 /**
- * Reply comments rendered as a GitHub-style timeline: a vertical line with a
- * node dot per comment and a bordered card holding a header and body. No
- * initial-letter avatars sit on the line.
+ * Reply comments rendered as a GitHub-style timeline: each reply shows the
+ * author's avatar in a left gutter beside a bordered speech bubble whose tail
+ * points back at the avatar.
  */
 export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
   if (comments.length === 0) {
@@ -97,32 +105,35 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
   }
   return (
     <section className="comment-thread" aria-label="Comments">
-      {comments.map((comment) => (
-        <article className="comment-item" key={comment.id}>
-          <div className="comment-bubble">
-            <header className="comment-header">
-              <EntryMeta
-                author={{
-                  login: comment.author,
-                  avatarUrl: comment.avatarUrl,
-                  association: comment.authorAssociation,
-                  isAuthor:
-                    Boolean(subjectAuthor) && comment.author === subjectAuthor
-                }}
-                meta={
-                  comment.created_at
-                    ? `commented ${timeAgo(comment.created_at)}`
-                    : "commented"
-                }
-              />
-            </header>
-            <div className="comment-body">
-              <MarkdownBody body={comment.body} />
-              <Reactions reactions={comment.reactions} />
+      {comments.map((comment) => {
+        const author: EntryAuthor = {
+          login: comment.author,
+          avatarUrl: comment.avatarUrl,
+          association: comment.authorAssociation,
+          isAuthor: Boolean(subjectAuthor) && comment.author === subjectAuthor
+        };
+        return (
+          <article className="comment-item" key={comment.id}>
+            <Avatar login={comment.author} avatarUrl={comment.avatarUrl} size={40} />
+            <div className="comment-bubble">
+              <header className="comment-header">
+                <HeaderMeta
+                  author={author}
+                  meta={
+                    comment.created_at
+                      ? `commented ${timeAgo(comment.created_at)}`
+                      : "commented"
+                  }
+                />
+              </header>
+              <div className="comment-body">
+                <MarkdownBody body={comment.body} />
+                <Reactions reactions={comment.reactions} />
+              </div>
             </div>
-          </div>
-        </article>
-      ))}
+          </article>
+        );
+      })}
     </section>
   );
 }
