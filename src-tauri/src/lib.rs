@@ -181,8 +181,15 @@ fn move_text_file(
 
     if let Some(contents) = contents {
         write_text_file_inner(&to_path, &contents)?;
-        let _ = fs::remove_file(from_path);
-        return Ok(());
+        // Surface removal failures (except an already-missing source) so the
+        // caller knows a duplicate may be left behind.
+        return match fs::remove_file(&from_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "Moved file written, but removing the source failed: {error}"
+            )),
+        };
     }
 
     fs::rename(&from_path, &to_path).map_err(|error| error.to_string())
@@ -292,13 +299,50 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
-fn accept_oauth_callback(listener: TcpListener) -> Result<HashMap<String, String>, String> {
-    let (mut stream, _) = listener.accept().map_err(|error| error.to_string())?;
-    let mut reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+/// How long the loopback server waits for the browser redirect before giving
+/// up (the user may have closed the authorization page).
+const OAUTH_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// Upper bound for the redirect's request line, far above any real OAuth
+/// callback, so a misbehaving client cannot grow memory unboundedly.
+const MAX_REQUEST_LINE_BYTES: u64 = 8 * 1024;
+
+fn accept_oauth_callback(
+    listener: TcpListener,
+    timeout: std::time::Duration,
+) -> Result<HashMap<String, String>, String> {
+    // TcpListener has no accept timeout; poll in non-blocking mode instead.
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + timeout;
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(pair) => break pair,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    return Err("Timed out waiting for the OAuth redirect.".to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    };
+    stream
+        .set_nonblocking(false)
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .map_err(|error| error.to_string())?;
+
+    let clone = stream.try_clone().map_err(|error| error.to_string())?;
+    let mut reader = BufReader::new(clone).take(MAX_REQUEST_LINE_BYTES);
     let mut request_line = String::new();
     reader
         .read_line(&mut request_line)
         .map_err(|error| error.to_string())?;
+    if !request_line.ends_with('\n') && request_line.len() as u64 >= MAX_REQUEST_LINE_BYTES {
+        return Err("OAuth callback request line is too long.".to_string());
+    }
 
     let path = request_line.split_whitespace().nth(1).unwrap_or("");
     let query = path.splitn(2, '?').nth(1).unwrap_or("");
@@ -344,9 +388,11 @@ async fn oauth_wait(
         .take()
         .ok_or_else(|| "OAuth server is not running.".to_string())?;
 
-    let params = tauri::async_runtime::spawn_blocking(move || accept_oauth_callback(listener))
-        .await
-        .map_err(|error| error.to_string())??;
+    let params = tauri::async_runtime::spawn_blocking(move || {
+        accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
 
     // macOS/Windows can refuse to foreground a background app; the
     // always-on-top toggle forces the window above the browser.
@@ -363,9 +409,24 @@ async fn oauth_wait(
 }
 
 /// Exchanges the authorization code for an access token. Runs natively so the
-/// webview's CORS policy cannot block the token endpoint.
+/// webview's CORS policy cannot block the token endpoint. Async so the
+/// blocking HTTP round-trip never stalls the IPC thread.
 #[tauri::command]
-fn oauth_exchange(
+async fn oauth_exchange(
+    token_url: String,
+    client_id: String,
+    client_secret: String,
+    code: String,
+    redirect_uri: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        oauth_exchange_inner(token_url, client_id, client_secret, code, redirect_uri)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn oauth_exchange_inner(
     token_url: String,
     client_id: String,
     client_secret: String,
@@ -375,7 +436,11 @@ fn oauth_exchange(
     if !token_url.starts_with("https://") && !token_url.starts_with("http://") {
         return Err("Token URL must be an http(s) URL.".to_string());
     }
-    let response = ureq::post(&token_url)
+    let agent = ureq::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build();
+    let response = agent
+        .post(&token_url)
         .set("Accept", "application/json")
         .send_form(&[
             ("client_id", client_id.as_str()),
@@ -478,7 +543,10 @@ fn fetch_image_attempt(
     url: &str,
     auth_header: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let agent = ureq::builder().redirects(0).build();
+    let agent = ureq::builder()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(15))
+        .build();
     let mut current_url = tauri::Url::parse(url).map_err(|error| error.to_string())?;
 
     for _ in 0..=MAX_IMAGE_REDIRECTS {
@@ -876,7 +944,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
 
-        let handle = std::thread::spawn(move || accept_oauth_callback(listener));
+        let handle = std::thread::spawn(move || {
+            accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT)
+        });
 
         let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
         client
@@ -891,6 +961,128 @@ mod tests {
         assert_eq!(params.get("state").map(String::as_str), Some("s1"));
         assert!(response.contains("200 OK"));
         assert!(response.contains("로그인이 완료되었습니다"));
+    }
+
+    #[test]
+    fn oauth_callback_times_out_when_no_redirect_arrives() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+
+        let started = std::time::Instant::now();
+        let result = accept_oauth_callback(listener, std::time::Duration::from_millis(150));
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Timed out"));
+        // Must return promptly after the deadline, not hang.
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn oauth_callback_rejects_oversized_request_line() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let handle = std::thread::spawn(move || {
+            accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT)
+        });
+
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let huge_query = "x".repeat((MAX_REQUEST_LINE_BYTES as usize) + 1024);
+        client
+            .write_all(format!("GET /auth?code={huge_query} HTTP/1.1\r\n").as_bytes())
+            .expect("send request");
+
+        let result = handle.join().expect("join");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("too long"));
+    }
+
+    #[test]
+    fn oauth_exchange_posts_form_and_returns_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let token_url = format!("http://{}/login/oauth/access_token", listener.local_addr().expect("addr"));
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            use std::io::Read;
+            loop {
+                let read = stream.read(&mut buffer).expect("read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                let text = String::from_utf8_lossy(&request);
+                if text.contains("client_id=my-client") && text.contains("code=abc") {
+                    break;
+                }
+            }
+            let body = r#"{"access_token":"tok_1"}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                )
+                .expect("write response");
+            String::from_utf8_lossy(&request).into_owned()
+        });
+
+        let body = oauth_exchange_inner(
+            token_url,
+            "my-client".to_string(),
+            "secret".to_string(),
+            "abc".to_string(),
+            "http://localhost:1/auth".to_string(),
+        )
+        .expect("exchange");
+
+        let request = handle.join().expect("join");
+        assert!(request.contains("client_secret=secret"));
+        assert!(body.contains("tok_1"));
+    }
+
+    #[test]
+    fn oauth_exchange_rejects_non_http_urls() {
+        let result = oauth_exchange_inner(
+            "file:///etc/passwd".to_string(),
+            "id".to_string(),
+            "secret".to_string(),
+            "code".to_string(),
+            "http://localhost/auth".to_string(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_text_file_reports_source_removal_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault = display_path(temp_dir.path().to_path_buf());
+        write_text_file(vault.clone(), "drafts/issue.md".to_string(), "draft".to_string())
+            .expect("write draft");
+
+        // Make the source directory read-only so removing the file fails.
+        let drafts_dir = temp_dir.path().join("drafts");
+        fs::set_permissions(&drafts_dir, fs::Permissions::from_mode(0o555))
+            .expect("chmod readonly");
+
+        let result = move_text_file(
+            vault,
+            "drafts/issue.md".to_string(),
+            "issues/10/issue.md".to_string(),
+            Some("synced".to_string()),
+        );
+
+        // Restore permissions so the tempdir can clean up.
+        fs::set_permissions(&drafts_dir, fs::Permissions::from_mode(0o755)).expect("chmod back");
+
+        assert!(result.is_err());
     }
 
     #[test]
