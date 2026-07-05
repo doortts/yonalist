@@ -132,23 +132,25 @@ export default function App({ initialOnline }: AppProps) {
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
 
+  // Local vault data loads immediately, in parallel with the background auth
+  // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
-    if (authGate.state !== "passed") {
-      return;
-    }
-
     let cancelled = false;
-    void loadVaultState(vaultRoot).then((state) => {
-      if (cancelled) {
-        return;
-      }
-      setDrafts(state.items);
-      setOutbox(state.outbox);
-    });
+    void loadVaultState(vaultRoot)
+      .then((state) => {
+        if (cancelled) {
+          return;
+        }
+        setDrafts(state.items);
+        setOutbox(state.outbox);
+      })
+      .catch((error) => {
+        console.error("Failed to load vault state", error);
+      });
     return () => {
       cancelled = true;
     };
-  }, [authGate.state, vaultRoot]);
+  }, [vaultRoot]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {

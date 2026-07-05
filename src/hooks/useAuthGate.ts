@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  checkConnection,
   loadLastAuthenticatedUrl,
   loadSkipLogin,
   persistLastAuthenticatedUrl,
@@ -46,20 +47,29 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       setState("required");
       return;
     }
+
+    // Optimistic gate: a stored token renders the app immediately (local
+    // vault data works offline anyway); the credentials are verified in the
+    // background and only a definitive rejection returns to the login page.
+    setState("passed");
     if (!online) {
-      setState("passed");
       return;
     }
 
-    void validateConnection({
+    void checkConnection({
       apiBaseUrl: url,
       webBaseUrl: auth.connection.webBaseUrl,
       token
-    }).then((ok) => {
-      if (ok) {
+    }).then((result) => {
+      if (result === "ok") {
         persistLastAuthenticatedUrl(url);
+      } else if (result === "invalid") {
+        setError(
+          "저장된 인증 정보가 더 이상 유효하지 않습니다. 다시 로그인하세요."
+        );
+        setState("required");
       }
-      setState(ok ? "passed" : "required");
+      // "unreachable" keeps the optimistic pass — offline-first.
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);

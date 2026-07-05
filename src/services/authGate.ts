@@ -41,11 +41,18 @@ export function persistSkipLogin(skip: boolean) {
   }
 }
 
+/**
+ * Distinguishes "the token is definitively rejected" from "the server just
+ * could not be reached" so the offline-first gate only kicks the user back to
+ * the login page for real auth failures.
+ */
+export type ConnectionCheck = "ok" | "invalid" | "unreachable";
+
 /** Verifies the stored credentials by asking GitHub for the current user. */
-export async function validateConnection(
+export async function checkConnection(
   connection: GithubConnection,
   fetchImpl: typeof fetch = fetch
-): Promise<boolean> {
+): Promise<ConnectionCheck> {
   try {
     const base = connection.apiBaseUrl.replace(/\/+$/, "");
     const response = await fetchImpl(`${base}/user`, {
@@ -55,8 +62,22 @@ export async function validateConnection(
         "X-GitHub-Api-Version": "2022-11-28"
       }
     });
-    return response.ok;
+    if (response.ok) {
+      return "ok";
+    }
+    // 401/403 mean the credentials themselves were rejected; anything else
+    // (5xx, proxies, rate limits) should not sign the user out.
+    return response.status === 401 || response.status === 403
+      ? "invalid"
+      : "unreachable";
   } catch {
-    return false;
+    return "unreachable";
   }
+}
+
+export async function validateConnection(
+  connection: GithubConnection,
+  fetchImpl: typeof fetch = fetch
+): Promise<boolean> {
+  return (await checkConnection(connection, fetchImpl)) === "ok";
 }
