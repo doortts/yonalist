@@ -30,7 +30,13 @@
   --accent-contrast: #ffffff;
   --favorite: #e75135;
   --danger: #c2402a;
+  --danger-hover: #a53522;
   --danger-soft: #fdf0ec;
+  /* Notification reason accents (dark theme lightens these for contrast) */
+  --reason-mention: #7c4dff;
+  --reason-comment: #009688;
+  --reason-author: #ff5722;
+  --reason-team: #536dfe;
   --warning: #b45309;
   --warning-soft: #fff3d6;
   --warning-border: rgb(245 158 11 / 48%);
@@ -98,7 +104,12 @@
   --accent-contrast: #0d1117;
   --favorite: #f0654a;
   --danger: #f47067;
+  --danger-hover: #f78b84;
   --danger-soft: rgb(244 112 103 / 12%);
+  --reason-mention: #b39dff;
+  --reason-comment: #4dd0c4;
+  --reason-author: #ff8a65;
+  --reason-team: #8c9eff;
   --warning: #fbbf24;
   --warning-soft: rgb(251 191 36 / 16%);
   --warning-border: rgb(251 191 36 / 46%);
@@ -288,20 +299,20 @@ body.is-resizing-pane {
 }
 
 .icon-button.login-required-button {
-  border-color: #dc2626;
-  background: #dc2626;
+  border-color: var(--danger);
+  background: var(--danger);
   color: #ffffff;
   box-shadow: 0 8px 18px rgb(220 38 38 / 32%);
 }
 
 .icon-button.login-required-button:hover {
-  border-color: #b91c1c;
-  background: #b91c1c;
+  border-color: var(--danger-hover);
+  background: var(--danger-hover);
   color: #ffffff;
 }
 
 .icon-button.login-required-button:focus-visible {
-  border-color: #b91c1c;
+  border-color: var(--danger-hover);
   outline: 2px solid rgb(220 38 38 / 34%);
   outline-offset: 2px;
 }
@@ -1195,7 +1206,7 @@ body.is-resizing-pane {
 .markdown-body h1 {
   width: 95%;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border);
   font-size: 2em;
   font-weight: 600;
 }
@@ -1203,7 +1214,7 @@ body.is-resizing-pane {
 .markdown-body h2 {
   width: 95%;
   padding-bottom: 0.3em;
-  border-bottom: 1px solid #eaecef;
+  border-bottom: 1px solid var(--border);
   font-size: 1.5em;
   line-height: 1.25;
 }
@@ -1276,7 +1287,7 @@ body.is-resizing-pane {
 
 .markdown-body code {
   padding: 5px 5px 2px;
-  border: 1px solid #ddd;
+  border: 1px solid var(--border-strong);
   border-radius: 3px;
   background: transparent;
   font-size: 13px;
@@ -1297,8 +1308,8 @@ body.is-resizing-pane {
 .markdown-body blockquote {
   margin: 12px 0;
   padding: 0 15px;
-  border-left: 4px solid #ddd;
-  color: #777;
+  border-left: 4px solid var(--border-strong);
+  color: var(--text-3);
 }
 
 .markdown-body .task-list-item {
@@ -2193,19 +2204,19 @@ body.is-resizing-pane {
 }
 
 .reason-mention {
-  color: #7c4dff;
+  color: var(--reason-mention);
 }
 
 .reason-comment {
-  color: #009688;
+  color: var(--reason-comment);
 }
 
 .reason-author {
-  color: #ff5722;
+  color: var(--reason-author);
 }
 
 .reason-team {
-  color: #536dfe;
+  color: var(--reason-team);
 }
 
 .notification-main {
