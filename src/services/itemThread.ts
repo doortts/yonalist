@@ -7,6 +7,7 @@ import {
 import type { ItemKind, ItemState } from "../domain/types";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import { createGitHubClient } from "./github";
+import { LruCache } from "./lruCache";
 
 export interface ItemThread {
   state: ItemState;
@@ -17,6 +18,8 @@ export interface ItemThread {
   labels: GitHubLabel[];
   reactions?: ReactionSummary;
   comments: ConversationComment[];
+  /** True when the comment listing failed — distinct from "no comments". */
+  commentsError?: boolean;
 }
 
 export interface ItemThreadTarget {
@@ -24,6 +27,37 @@ export interface ItemThreadTarget {
   owner: string;
   repo: string;
   number: number;
+}
+
+export interface FetchItemThreadOptions {
+  /**
+   * The item's updated_at (or any changing marker). Repeat requests for the
+   * same version are served from the session cache; a new version refetches.
+   */
+  version?: string;
+}
+
+const threadCache = new LruCache<ItemThread>(50);
+const inflightThreads = new Map<string, Promise<ItemThread>>();
+
+export function clearItemThreadCache() {
+  threadCache.clear();
+  inflightThreads.clear();
+}
+
+function threadCacheKey(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  version: string
+): string {
+  return [
+    connection.apiBaseUrl,
+    target.kind,
+    target.owner,
+    target.repo,
+    target.number,
+    version
+  ].join("|");
 }
 
 interface UserResponse {
@@ -84,7 +118,11 @@ function mapComments(comments: CommentResponse[]): ConversationComment[] {
   }));
 }
 
-function threadFrom(item: StateResponse, comments: CommentResponse[], state: ItemState): ItemThread {
+function threadFrom(
+  item: StateResponse,
+  comments: CommentResponse[] | null,
+  state: ItemState
+): ItemThread {
   return {
     state,
     draft: Boolean(item.draft),
@@ -92,15 +130,47 @@ function threadFrom(item: StateResponse, comments: CommentResponse[], state: Ite
     authorAssociation: item.author_association,
     labels: mapLabels(item.labels),
     reactions: summarizeReactions(item.reactions),
-    comments: mapComments(comments)
+    comments: mapComments(comments ?? []),
+    commentsError: comments === null
   };
 }
 
 /**
  * Loads the live conversation for a work item: refined state (merged/draft
- * for pull requests), labels, author, and the comment thread.
+ * for pull requests), labels, author, and the comment thread. Results are
+ * cached per (connection, target, version) so reselecting an unchanged item
+ * does not refetch; threads with failed comment loads are never cached.
  */
 export async function fetchItemThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  options: FetchItemThreadOptions = {}
+): Promise<ItemThread> {
+  const key = threadCacheKey(connection, target, options.version ?? "");
+  const cached = threadCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const running = inflightThreads.get(key);
+  if (running) {
+    return running;
+  }
+
+  const request = fetchItemThreadUncached(connection, target)
+    .then((thread) => {
+      if (!thread.commentsError) {
+        threadCache.set(key, thread);
+      }
+      return thread;
+    })
+    .finally(() => {
+      inflightThreads.delete(key);
+    });
+  inflightThreads.set(key, request);
+  return request;
+}
+
+async function fetchItemThreadUncached(
   connection: GithubConnection,
   target: ItemThreadTarget
 ): Promise<ItemThread> {
@@ -125,7 +195,7 @@ export async function fetchItemThread(
       client.getPull(owner, repo, number) as Promise<StateResponse>,
       client
         .listIssueComments(owner, repo, number)
-        .catch(() => []) as Promise<CommentResponse[]>
+        .catch(() => null) as Promise<CommentResponse[] | null>
     ]);
     return threadFrom(
       pull,
@@ -138,7 +208,7 @@ export async function fetchItemThread(
     client.getIssue(owner, repo, number) as Promise<StateResponse>,
     client
       .listIssueComments(owner, repo, number)
-      .catch(() => []) as Promise<CommentResponse[]>
+      .catch(() => null) as Promise<CommentResponse[] | null>
   ]);
   return threadFrom(issue, comments, normalizeState(issue.state));
 }

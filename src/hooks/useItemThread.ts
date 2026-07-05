@@ -60,12 +60,17 @@ export function useItemThread(
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetchItemThread(connection, {
-      kind: item.frontMatter.kind,
-      owner: item.frontMatter.owner,
-      repo: item.frontMatter.repo,
-      number
-    })
+    fetchItemThread(
+      connection,
+      {
+        kind: item.frontMatter.kind,
+        owner: item.frontMatter.owner,
+        repo: item.frontMatter.repo,
+        number
+      },
+      // Reselecting an unchanged item is served from the session cache.
+      { version: item.frontMatter.updated_at }
+    )
       .then((result) => {
         if (!cancelled) {
           setThread(result);

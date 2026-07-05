@@ -110,6 +110,11 @@ export function NotificationDetail({
       )}
 
       {error && <p className="notifications-error detail-error">{error}</p>}
+      {detail?.commentsError && !loading && (
+        <p className="notifications-error detail-error">
+          Comments could not be loaded. Reopen this notification to retry.
+        </p>
+      )}
 
       {detail && !loading && (
         <div className="conversation">

@@ -6,6 +6,7 @@ import {
 } from "../domain/conversation";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import { createGitHubClient } from "./github";
+import { LruCache } from "./lruCache";
 
 export type { ConversationComment as NotificationComment } from "../domain/conversation";
 
@@ -20,6 +21,8 @@ export interface NotificationDetailContent {
   labels: GitHubLabel[];
   reactions?: ReactionSummary;
   comments: ConversationComment[];
+  /** True when the comment listing failed — distinct from "no comments". */
+  commentsError?: boolean;
 }
 
 interface UserResponse {
@@ -92,11 +95,58 @@ function mapComments(comments: CommentResponse[]): ConversationComment[] {
   }));
 }
 
+const detailCache = new LruCache<NotificationDetailContent>(50);
+const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
+
+export function clearNotificationDetailCache() {
+  detailCache.clear();
+  inflightDetails.clear();
+}
+
+function detailCacheKey(options: FetchNotificationDetailOptions): string {
+  const { notification } = options;
+  return [
+    options.apiBaseUrl,
+    notification.subject.url,
+    // A new activity bumps updated_at, invalidating the cached conversation.
+    notification.updated_at
+  ].join("|");
+}
+
 /**
  * Loads the conversation behind a notification through the GitHub REST API,
  * normalized so the detail pane can render every subject type the same way.
+ * Results are cached per (connection, subject, updated_at); details whose
+ * comments failed to load are not cached so reopening retries.
  */
 export async function fetchNotificationDetail(
+  options: FetchNotificationDetailOptions
+): Promise<NotificationDetailContent> {
+  const key = detailCacheKey(options);
+  const cached = detailCache.get(key);
+  if (cached) {
+    return cached;
+  }
+  const running = inflightDetails.get(key);
+  if (running) {
+    return running;
+  }
+
+  const request = fetchNotificationDetailUncached(options)
+    .then((detail) => {
+      if (!detail.commentsError) {
+        detailCache.set(key, detail);
+      }
+      return detail;
+    })
+    .finally(() => {
+      inflightDetails.delete(key);
+    });
+  inflightDetails.set(key, request);
+  return request;
+}
+
+async function fetchNotificationDetailUncached(
   options: FetchNotificationDetailOptions
 ): Promise<NotificationDetailContent> {
   const { notification } = options;
@@ -156,8 +206,8 @@ export async function fetchNotificationDetail(
     (isPull
       ? client.getPull(owner, repo, number)
       : client.getIssue(owner, repo, number)) as Promise<IssueResponse>,
-    client.listIssueComments(owner, repo, number).catch(() => []) as Promise<
-      CommentResponse[]
+    client.listIssueComments(owner, repo, number).catch(() => null) as Promise<
+      CommentResponse[] | null
     >
   ]);
 
@@ -171,6 +221,7 @@ export async function fetchNotificationDetail(
     body: item.body ?? "",
     labels: mapLabels(item.labels),
     reactions: summarizeReactions(item.reactions),
-    comments: mapComments(comments)
+    comments: mapComments(comments ?? []),
+    commentsError: comments === null
   };
 }

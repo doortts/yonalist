@@ -1,4 +1,5 @@
 import type { GithubConnection } from "../hooks/useGithubAuth";
+import { LruCache } from "./lruCache";
 import { isTauri } from "./oauth";
 
 /**
@@ -8,9 +9,17 @@ import { isTauri } from "./oauth";
  * data URLs.
  */
 
-const resolvedCache = new Map<string, string>();
+// Bounded: data URLs are large (whole images in memory), so cap the session
+// cache instead of letting a long-running window grow without limit.
+const resolvedCache = new LruCache<string>(200);
 const inflight = new Map<string, Promise<string | null>>();
-const failedCache = new Set<string>();
+const failedCache = new LruCache<true>(500);
+
+export function clearImageProxyCache() {
+  resolvedCache.clear();
+  inflight.clear();
+  failedCache.clear();
+}
 
 function cacheKey(src: string, connection: GithubConnection): string {
   return `${connection.apiBaseUrl}\n${connection.token}\n${src}`;
@@ -100,12 +109,12 @@ export function resolveAuthenticatedImage(
       if (dataUrl) {
         resolvedCache.set(key, dataUrl);
       } else {
-        failedCache.add(key);
+        failedCache.set(key, true);
       }
       return dataUrl;
     })
     .catch(() => {
-      failedCache.add(key);
+      failedCache.set(key, true);
       return null;
     })
     .finally(() => {

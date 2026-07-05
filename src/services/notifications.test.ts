@@ -80,6 +80,30 @@ describe("fetchNotifications", () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 
+  it("sends the stored ETag on the probe and honors its 304", async () => {
+    // First response carries only an ETag (some GHE setups omit
+    // Last-Modified), so the probe must be conditional on If-None-Match.
+    const first = vi.fn(async () =>
+      jsonResponse([notification("1")], { ETag: 'W/"etag-1"' })
+    );
+    const options = { token: "token", apiBaseUrl: "https://api.github.com" };
+    await fetchNotifications({ ...options, fetchImpl: first as unknown as typeof fetch });
+
+    const second = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect(String(url)).toContain("per_page=1");
+      const headers = init?.headers as Record<string, string>;
+      expect(headers["If-None-Match"]).toBe('W/"etag-1"');
+      return new Response(null, { status: 304 });
+    });
+    const cached = await fetchNotifications({
+      ...options,
+      fetchImpl: second as unknown as typeof fetch
+    });
+
+    expect(cached).toHaveLength(1);
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
   it("refetches the full list unconditionally when the probe sees changes", async () => {
     const options = {
       token: "token",

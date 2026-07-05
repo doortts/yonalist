@@ -1,6 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
-import { fetchNotificationDetail } from "./notificationDetail";
+import {
+  clearNotificationDetailCache,
+  fetchNotificationDetail
+} from "./notificationDetail";
 
 function notification(
   type: string,
@@ -31,6 +34,79 @@ const baseOptions = {
 };
 
 describe("fetchNotificationDetail", () => {
+  beforeEach(() => {
+    clearNotificationDetailCache();
+  });
+
+  it("serves the same notification version from the cache", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title: "Cached", state: "open", user: { login: "mona" } });
+    });
+
+    const options = {
+      ...baseOptions,
+      notification: notification("Issue", "https://api.github.com/repos/acme/app/issues/7"),
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    await fetchNotificationDetail(options);
+    const callsAfterFirst = fetchMock.mock.calls.length;
+    const cached = await fetchNotificationDetail(options);
+
+    expect(cached.title).toBe("Cached");
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("refetches when the notification's updated_at changes", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title: "Fresh", state: "open", user: { login: "mona" } });
+    });
+
+    const base = notification("Issue", "https://api.github.com/repos/acme/app/issues/7");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: base,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    const callsAfterFirst = fetchMock.mock.calls.length;
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: { ...base, updated_at: "2026-07-03T00:00:00Z" },
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+
+  it("flags and does not cache details whose comments failed", async () => {
+    let commentCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        commentCalls += 1;
+        return commentCalls === 1
+          ? new Response("{}", { status: 500 })
+          : jsonResponse([]);
+      }
+      return jsonResponse({ title: "T", state: "open", user: { login: "mona" } });
+    });
+
+    const options = {
+      ...baseOptions,
+      notification: notification("Issue", "https://api.github.com/repos/acme/app/issues/7"),
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    const first = await fetchNotificationDetail(options);
+    const second = await fetchNotificationDetail(options);
+
+    expect(first.commentsError).toBe(true);
+    expect(second.commentsError).toBe(false);
+  });
+
   it("loads an issue with its comment thread", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);

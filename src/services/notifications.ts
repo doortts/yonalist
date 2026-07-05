@@ -11,6 +11,7 @@ export interface FetchNotificationsOptions {
 
 interface CacheEntry {
   lastModified: string | null;
+  etag: string | null;
   notifications: GitHubNotification[];
 }
 
@@ -77,13 +78,21 @@ async function doFetchNotifications(
 
   // Conditional requests on this endpoint return only the notifications
   // updated since the given time — replacing the list with that delta would
-  // wipe everything older. So the If-Modified-Since check runs as a cheap
-  // one-item probe, and any change triggers an unconditional full refetch.
-  if (cached?.lastModified) {
+  // wipe everything older. So the conditional check (If-Modified-Since and/or
+  // If-None-Match — some GHE setups only send ETags) runs as a cheap one-item
+  // probe, and any change triggers an unconditional full refetch.
+  if (cached && (cached.lastModified || cached.etag)) {
     params.set("per_page", "1");
     params.set("page", "1");
+    const conditionalHeaders: Record<string, string> = { ...baseHeaders };
+    if (cached.lastModified) {
+      conditionalHeaders["If-Modified-Since"] = cached.lastModified;
+    }
+    if (cached.etag) {
+      conditionalHeaders["If-None-Match"] = cached.etag;
+    }
     const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
-      headers: { ...baseHeaders, "If-Modified-Since": cached.lastModified }
+      headers: conditionalHeaders
     });
     if (probe.status === 304) {
       return cached.notifications;
@@ -97,6 +106,7 @@ async function doFetchNotifications(
 
   const notifications: GitHubNotification[] = [];
   let lastModified: string | null = null;
+  let etag: string | null = null;
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     params.set("page", String(page));
@@ -111,6 +121,7 @@ async function doFetchNotifications(
 
     if (page === 1) {
       lastModified = response.headers.get("Last-Modified");
+      etag = response.headers.get("ETag");
     }
 
     const pageItems = (await response.json()) as GitHubNotification[];
@@ -125,7 +136,7 @@ async function doFetchNotifications(
     }
   }
 
-  cache.set(key, { lastModified, notifications });
+  cache.set(key, { lastModified, etag, notifications });
   return notifications;
 }
 

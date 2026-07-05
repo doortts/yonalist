@@ -141,6 +141,12 @@ export function ItemDetail({
         {thread.error && (
           <p className="notifications-error detail-error">{thread.error}</p>
         )}
+        {thread.thread?.commentsError && (
+          <p className="notifications-error detail-error">
+            Comments could not be loaded. Check the connection and reopen this
+            item to retry.
+          </p>
+        )}
 
         <CommentThread comments={comments} subjectAuthor={item.frontMatter.author} />
       </div>

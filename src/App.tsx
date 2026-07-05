@@ -66,6 +66,10 @@ import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
 import { createGitHubClient } from "./services/github";
+import { clearImageProxyCache } from "./services/imageProxy";
+import { clearItemThreadCache } from "./services/itemThread";
+import { clearNotificationDetailCache } from "./services/notificationDetail";
+import { clearNotificationCache } from "./services/notifications";
 import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
 import {
   commentDocumentContents,
@@ -140,6 +144,20 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+
+  // Session caches hold per-connection data; switching servers or tokens
+  // must not leak the previous session's threads, notifications, or images.
+  const previousConnectionKey = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${auth.connection.apiBaseUrl}|${auth.connection.token}`;
+    if (previousConnectionKey.current !== null && previousConnectionKey.current !== key) {
+      clearNotificationCache();
+      clearItemThreadCache();
+      clearNotificationDetailCache();
+      clearImageProxyCache();
+    }
+    previousConnectionKey.current = key;
+  }, [auth.connection.apiBaseUrl, auth.connection.token]);
 
   // Local vault data loads immediately, in parallel with the background auth
   // check — offline-first means the first screen never waits on the network.

@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
-import { fetchItemThread } from "./itemThread";
+import { clearItemThreadCache, fetchItemThread } from "./itemThread";
 
 const connection: GithubConnection = {
   apiBaseUrl: "https://api.github.com",
@@ -16,6 +16,10 @@ function jsonResponse(body: unknown) {
 }
 
 describe("fetchItemThread", () => {
+  beforeEach(() => {
+    clearItemThreadCache();
+  });
+
   it("marks merged draft pulls and returns the comment thread", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);
@@ -86,6 +90,102 @@ describe("fetchItemThread", () => {
 
       expect(thread.state).toBe("closed");
       expect(thread.comments).toEqual([]);
+      // The failure must be visible, not disguised as "no comments".
+      expect(thread.commentsError).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports commentsError false when the comment fetch succeeds", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const thread = await fetchItemThread(connection, {
+        kind: "issue",
+        owner: "acme",
+        repo: "app",
+        number: 42
+      });
+
+      expect(thread.commentsError).toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("serves repeat requests for the same version from the cache", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "2026-07-01T00:00:00Z" });
+      const callsAfterFirst = fetchMock.mock.calls.length;
+      const cached = await fetchItemThread(connection, target, {
+        version: "2026-07-01T00:00:00Z"
+      });
+
+      expect(cached.state).toBe("open");
+      expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refetches when the item's version changes", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+      const callsAfterFirst = fetchMock.mock.calls.length;
+      await fetchItemThread(connection, target, { version: "v2" });
+
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not cache threads whose comments failed to load", async () => {
+    let commentCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        commentCalls += 1;
+        return commentCalls === 1
+          ? new Response("{}", { status: 500 })
+          : jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      const first = await fetchItemThread(connection, target, { version: "v1" });
+      const second = await fetchItemThread(connection, target, { version: "v1" });
+
+      expect(first.commentsError).toBe(true);
+      expect(second.commentsError).toBe(false);
     } finally {
       vi.unstubAllGlobals();
     }
