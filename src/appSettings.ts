@@ -1,9 +1,12 @@
+export type MarkdownStyle = "github" | "yona";
+
 export interface AppSettings {
   vaultFolder: string;
   syncQueuedOnReconnect: boolean;
   cacheLinkedAttachments: boolean;
   downloadCommentsWhileSyncing: boolean;
   desktopNotifications: boolean;
+  markdownStyle: MarkdownStyle;
 }
 
 export const defaultSettings: AppSettings = {
@@ -11,7 +14,8 @@ export const defaultSettings: AppSettings = {
   syncQueuedOnReconnect: true,
   cacheLinkedAttachments: true,
   downloadCommentsWhileSyncing: true,
-  desktopNotifications: true
+  desktopNotifications: true,
+  markdownStyle: "github"
 };
 
 const settingsStorageKey = "yonalist.settings.v1";
@@ -36,7 +40,11 @@ export function loadSettings(): AppSettings {
         parsed.downloadCommentsWhileSyncing ??
         defaultSettings.downloadCommentsWhileSyncing,
       desktopNotifications:
-        parsed.desktopNotifications ?? defaultSettings.desktopNotifications
+        parsed.desktopNotifications ?? defaultSettings.desktopNotifications,
+      markdownStyle:
+        parsed.markdownStyle === "yona" || parsed.markdownStyle === "github"
+          ? parsed.markdownStyle
+          : defaultSettings.markdownStyle
     };
   } catch {
     return defaultSettings;

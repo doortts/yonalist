@@ -15,6 +15,7 @@ import {
   type AppSettings
 } from "./appSettings";
 import { GithubConnectionContext } from "./GithubConnectionContext";
+import { MarkdownStyleContext } from "./MarkdownStyleContext";
 import { VaultRootContext } from "./VaultRootContext";
 import { ItemDetail } from "./components/ItemDetail";
 import {
@@ -1066,6 +1067,7 @@ export default function App({ initialOnline }: AppProps) {
 
   return (
     <GithubConnectionContext.Provider value={auth.connection}>
+    <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <TitleBar />
@@ -1238,6 +1240,7 @@ export default function App({ initialOnline }: AppProps) {
       )}
     </main>
     </VaultRootContext.Provider>
+    </MarkdownStyleContext.Provider>
     </GithubConnectionContext.Provider>
   );
 }

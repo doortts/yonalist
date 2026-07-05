@@ -42,8 +42,8 @@ const filterEntries: Array<{
   label: string;
   icon: typeof Inbox;
 }> = [
-  { key: "all", label: "All items", icon: Inbox },
   { key: "favorites", label: "Favorites", icon: Bookmark },
+  { key: "all", label: "All items", icon: Inbox },
   { key: "issues", label: "Issues", icon: CircleDot },
   { key: "pulls", label: "Pull requests", icon: GitPullRequest },
   { key: "discussions", label: "Discussions", icon: MessagesSquare }

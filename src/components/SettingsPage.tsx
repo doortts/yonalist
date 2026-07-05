@@ -15,6 +15,7 @@ import type { ThemeMode } from "../hooks/useTheme";
 import type { ResetProgressState, ResetProgressStepStatus } from "../resetProgress";
 import type { OwnerGroup } from "../services/githubItems";
 import { GithubServersSection } from "./GithubServersSection";
+import { MarkdownStyleComparison } from "./MarkdownStyleComparison";
 import { ProjectsVisibilitySection } from "./ProjectsVisibilitySection";
 import { settingsSections, type SettingsSection } from "./SettingsCategoryPane";
 
@@ -100,28 +101,34 @@ export function SettingsPage({
 
       <div className="settings-body">
         {section === "appearance" && (
-          <section className="settings-section">
-            <div className="theme-options" role="radiogroup" aria-label="Theme">
-              {themeModeOptions.map((option) => (
-                <label
-                  key={option.value}
-                  className={
-                    themeMode === option.value ? "theme-option active" : "theme-option"
-                  }
-                >
-                  <input
-                    type="radio"
-                    name="theme-mode"
-                    aria-label={`${option.label} theme`}
-                    value={option.value}
-                    checked={themeMode === option.value}
-                    onChange={() => onThemeModeChange(option.value)}
-                  />
-                  <span>{option.label}</span>
-                </label>
-              ))}
-            </div>
-          </section>
+          <>
+            <section className="settings-section">
+              <div className="theme-options" role="radiogroup" aria-label="Theme">
+                {themeModeOptions.map((option) => (
+                  <label
+                    key={option.value}
+                    className={
+                      themeMode === option.value ? "theme-option active" : "theme-option"
+                    }
+                  >
+                    <input
+                      type="radio"
+                      name="theme-mode"
+                      aria-label={`${option.label} theme`}
+                      value={option.value}
+                      checked={themeMode === option.value}
+                      onChange={() => onThemeModeChange(option.value)}
+                    />
+                    <span>{option.label}</span>
+                  </label>
+                ))}
+              </div>
+            </section>
+            <MarkdownStyleComparison
+              value={settings.markdownStyle}
+              onChange={(nextStyle) => onUpdate("markdownStyle", nextStyle)}
+            />
+          </>
         )}
 
         {section === "servers" && (
@@ -283,7 +290,7 @@ export function SettingsPage({
         )}
       </div>
 
-      {section === "vault" && (
+      {(section === "appearance" || section === "vault") && (
         <footer className="settings-actions">
           <span>{status}</span>
           <button className="primary-button" type="submit">

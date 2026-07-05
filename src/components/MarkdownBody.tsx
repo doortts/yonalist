@@ -1,6 +1,8 @@
 import { X } from "lucide-react";
 import { type MouseEvent, useContext, useEffect, useRef, useState } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
+import { MarkdownStyleContext } from "../MarkdownStyleContext";
+import type { MarkdownStyle } from "../appSettings";
 import { renderMarkdown } from "../markdownRender";
 import {
   needsAuthenticatedFetch,
@@ -9,6 +11,7 @@ import {
 
 interface MarkdownBodyProps {
   body: string;
+  variant?: MarkdownStyle;
 }
 
 /**
@@ -17,8 +20,10 @@ interface MarkdownBodyProps {
  * Attachment images on the signed-in GitHub host are refetched with the
  * token, since the webview's plain <img> requests would 401 on GHE.
  */
-export function MarkdownBody({ body }: MarkdownBodyProps) {
+export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
   const connection = useContext(GithubConnectionContext);
+  const defaultVariant = useContext(MarkdownStyleContext);
+  const styleVariant = variant ?? defaultVariant;
   const containerRef = useRef<HTMLDivElement>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
@@ -68,7 +73,7 @@ export function MarkdownBody({ body }: MarkdownBodyProps) {
     <>
       <div
         ref={containerRef}
-        className="markdown-body"
+        className={`markdown-body markdown-body-${styleVariant}`}
         onClick={handleClick}
         dangerouslySetInnerHTML={renderMarkdown(body)}
       />

@@ -16,7 +16,7 @@ export const settingsSections: Array<{
   {
     key: "appearance",
     label: "Appearance",
-    description: "라이트/다크 테마",
+    description: "테마와 마크다운",
     icon: SunMoon
   },
   {

@@ -1539,6 +1539,27 @@ describe("Yonalist app shell", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 
+  it("switches markdown rendering style from the appearance settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByLabelText("Markdown rendering samples")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "Yona markdown style" }));
+    await user.click(screen.getByRole("button", { name: "Save settings" }));
+
+    expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
+      '"markdownStyle":"yona"'
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close settings" }));
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detail = screen.getByLabelText("Detail");
+    expect(detail.querySelector(".markdown-body-yona")).not.toBeNull();
+  });
+
   it("resizes panes from the column separators", () => {
     render(<App />);
 

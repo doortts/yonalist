@@ -8,11 +8,18 @@ const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text"
 
 describe("MarkdownBody", () => {
   it("renders markdown images inside the body", () => {
-    render(<MarkdownBody body={imageMarkdown} />);
+    const { container } = render(<MarkdownBody body={imageMarkdown} />);
 
     const image = screen.getByRole("img", { name: "roadmap" });
     expect(image).toHaveAttribute("src", "https://example.com/roadmap.png");
+    expect(container.querySelector(".markdown-body-github")).not.toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("can render the preserved Yona markdown style for comparison", () => {
+    const { container } = render(<MarkdownBody body="Body" variant="yona" />);
+
+    expect(container.querySelector(".markdown-body-yona")).not.toBeNull();
   });
 
   it("opens the original image in a lightbox when clicked", async () => {
