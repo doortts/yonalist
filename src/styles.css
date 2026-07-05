@@ -49,6 +49,8 @@
 
   /* Layout */
   --titlebar-height: 42px;
+  --content-drag-height: 28px;
+  --content-titlebar-gap: 4px;
   --scrollbar-thumb: rgb(17 24 39 / 25%);
   --scrollbar-thumb-hover: rgb(17 24 39 / 45%);
 
@@ -280,8 +282,35 @@ body.is-resizing-pane {
   user-select: none;
 }
 
+.app-content-drag-strip {
+  position: fixed;
+  top: 0;
+  right: 0;
+  left: 0;
+  z-index: 15;
+  height: var(--content-drag-height);
+  cursor: default;
+  user-select: none;
+}
+
+.app-shell > .app-titlebar {
+  right: auto;
+  width: var(--sidebar-width, 280px);
+}
+
+.app-shell > .app-content-drag-strip {
+  left: calc(var(--sidebar-width, 280px) + 1px);
+}
+
 .pane-titlebar-spacer {
   flex: 0 0 var(--titlebar-height);
+}
+
+.list-pane > .pane-titlebar-spacer,
+.detail-pane > .pane-titlebar-spacer,
+.notifications-pane > .pane-titlebar-spacer,
+.settings-category-pane > .pane-titlebar-spacer {
+  flex-basis: var(--content-titlebar-gap);
 }
 
 .brand-row {
@@ -2504,6 +2533,7 @@ body.is-resizing-pane {
   }
 
   .app-titlebar,
+  .app-content-drag-strip,
   .pane-titlebar-spacer {
     display: none;
   }
