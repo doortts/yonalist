@@ -25,11 +25,13 @@ function loadWebTokens(): Record<string, string> {
   }
 }
 
-function persistWebTokens(tokens: Record<string, string>) {
+function persistWebTokens(tokens: Record<string, string>): boolean {
   try {
     window.localStorage.setItem(WEB_STORAGE_KEY, JSON.stringify(tokens));
+    return true;
   } catch {
     // The session still works in memory; it just won't survive a restart.
+    return false;
   }
 }
 
@@ -39,37 +41,63 @@ function normalize(token: string | null | undefined): string | null {
 }
 
 export async function saveSessionToken(url: string, token: string): Promise<void> {
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("store_token", {
-      service: KEYCHAIN_SERVICE,
-      account: url,
-      token
-    });
+  const normalized = normalize(token);
+  if (!normalized) {
+    await clearSessionToken(url);
     return;
   }
-  persistWebTokens({ ...loadWebTokens(), [url]: token });
+
+  const persistFallback = () =>
+    persistWebTokens({ ...loadWebTokens(), [url]: normalized });
+
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      await invoke("store_token", {
+        service: KEYCHAIN_SERVICE,
+        account: url,
+        token: normalized
+      });
+    } catch (error) {
+      if (!persistFallback()) {
+        throw error;
+      }
+      return;
+    }
+    persistFallback();
+    return;
+  }
+  persistFallback();
 }
 
 export async function loadSessionToken(url: string): Promise<string | null> {
+  const fallbackToken = normalize(loadWebTokens()[url]);
   if (isTauri()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      return normalize(
+      const keychainToken = normalize(
         await invoke<string | null>("load_token", {
           service: KEYCHAIN_SERVICE,
           account: url
         })
       );
+      if (keychainToken) {
+        persistWebTokens({ ...loadWebTokens(), [url]: keychainToken });
+        return keychainToken;
+      }
     } catch {
       // A locked/unavailable keychain should not block startup.
-      return null;
     }
+    return fallbackToken;
   }
-  return normalize(loadWebTokens()[url]);
+  return fallbackToken;
 }
 
 export async function clearSessionToken(url: string): Promise<void> {
+  const tokens = loadWebTokens();
+  delete tokens[url];
+  persistWebTokens(tokens);
+
   if (isTauri()) {
     try {
       const { invoke } = await import("@tauri-apps/api/core");
@@ -82,7 +110,4 @@ export async function clearSessionToken(url: string): Promise<void> {
     }
     return;
   }
-  const tokens = loadWebTokens();
-  delete tokens[url];
-  persistWebTokens(tokens);
 }

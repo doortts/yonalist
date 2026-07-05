@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { githubOAuthCredentialsFor, githubScopes } from "../githubAuthConfig";
+import { persistLastAuthenticatedUrl } from "../services/authGate";
 import { deriveHostUrl } from "../services/githubServers";
 import { loginWithOAuth } from "../services/oauth";
 import {
@@ -93,12 +94,9 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
         clientSecret: credentials.clientSecret,
         scopes: githubScopes
       });
+      await saveSessionToken(servers.selectedUrl, accessToken);
+      persistLastAuthenticatedUrl(servers.selectedUrl);
       setSessionToken(accessToken);
-      // Persisted so the next launch signs in without asking. A failed write
-      // (e.g. a denied keychain prompt) must be visible, not silent.
-      void saveSessionToken(servers.selectedUrl, accessToken).catch((cause) => {
-        console.error("Failed to persist the OAuth session token", cause);
-      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {

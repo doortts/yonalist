@@ -117,6 +117,23 @@ function matchesStateFilter(item: ItemDocument, filter: ItemStateFilter): boolea
   return item.frontMatter.state === "closed" || item.frontMatter.state === "merged";
 }
 
+function AuthRestorePage() {
+  return (
+    <main className="login-shell" aria-label="Restoring GitHub session">
+      <TitleBar />
+      <div className="login-card">
+        <div className="login-card-header">
+          <p className="eyebrow">Yonalist</p>
+          <h1>GitHub 세션 복구 중</h1>
+          <p className="login-copy">
+            저장된 인증 정보를 확인하고 있습니다.
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 export default function App({ initialOnline }: AppProps) {
   useScrollbarHover();
   const { online, toggleOnline } = useOnlineStatus(initialOnline);
@@ -854,12 +871,16 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
-  if (authGate.state !== "passed") {
+  if (authGate.state === "checking") {
+    return <AuthRestorePage />;
+  }
+
+  if (authGate.state === "required") {
     return (
       <LoginPage
         servers={servers}
         auth={auth}
-        checking={authGate.state === "checking"}
+        checking={false}
         error={authGate.error}
         onSkip={authGate.skipLogin}
       />

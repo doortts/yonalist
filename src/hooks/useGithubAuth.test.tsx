@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as sessionTokens from "../services/sessionTokens";
 import { useGithubAuth } from "./useGithubAuth";
 import { useGithubServers } from "./useGithubServers";
 
@@ -165,6 +166,55 @@ describe("useGithubAuth", () => {
       ) as Record<string, string>;
       expect(stored[NAVER_URL]).toBe("oauth-session-token");
     });
+  });
+
+  it("remembers the authenticated OAuth server as soon as login succeeds", async () => {
+    const { result } = renderAuth();
+
+    await act(async () => {
+      await result.current.auth.login();
+    });
+
+    expect(
+      window.localStorage.getItem("yonalist.github.lastAuthenticatedUrl.v1")
+    ).toBe(NAVER_URL);
+  });
+
+  it("does not finish OAuth login until the session token is persisted", async () => {
+    let finishSave!: () => void;
+    const savePromise = new Promise<void>((resolve) => {
+      finishSave = resolve;
+    });
+    const saveSpy = vi
+      .spyOn(sessionTokens, "saveSessionToken")
+      .mockReturnValue(savePromise);
+
+    try {
+      const { result } = renderAuth();
+      let loginDone = false;
+      let loginPromise!: Promise<void>;
+
+      await act(async () => {
+        loginPromise = result.current.auth.login().then(() => {
+          loginDone = true;
+        });
+        await Promise.resolve();
+      });
+
+      expect(saveSpy).toHaveBeenCalledWith(NAVER_URL, "oauth-session-token");
+      expect(loginDone).toBe(false);
+      expect(result.current.auth.signedIn).toBe(false);
+
+      finishSave();
+      await act(async () => {
+        await loginPromise;
+      });
+
+      expect(loginDone).toBe(true);
+      expect(result.current.auth.signedIn).toBe(true);
+    } finally {
+      saveSpy.mockRestore();
+    }
   });
 
   it("logout removes the persisted session token", async () => {

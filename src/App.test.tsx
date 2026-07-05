@@ -43,7 +43,10 @@ describe("Yonalist app shell", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const login = screen.getByLabelText("GitHub login");
+    expect(screen.getByLabelText("Restoring GitHub session")).toBeInTheDocument();
+    expect(screen.queryByLabelText("GitHub login")).not.toBeInTheDocument();
+
+    const login = await screen.findByLabelText("GitHub login");
     expect(within(login).getByText("GitHub 로그인")).toBeInTheDocument();
     // The gate checks the persisted session store before settling on
     // "required", so the server picker appears asynchronously.
