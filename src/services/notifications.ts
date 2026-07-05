@@ -7,6 +7,7 @@ export interface FetchNotificationsOptions {
   all?: boolean;
   participating?: boolean;
   fetchImpl?: typeof fetch;
+  onPartialResult?: (notifications: GitHubNotification[]) => void;
 }
 
 interface CacheEntry {
@@ -95,6 +96,7 @@ async function doFetchNotifications(
       headers: conditionalHeaders
     });
     if (probe.status === 304) {
+      options.onPartialResult?.(cached.notifications);
       return cached.notifications;
     }
     if (!probe.ok) {
@@ -126,6 +128,7 @@ async function doFetchNotifications(
 
     const pageItems = (await response.json()) as GitHubNotification[];
     notifications.push(...pageItems);
+    options.onPartialResult?.([...notifications]);
 
     const link = response.headers.get("Link");
     const hasNext = link

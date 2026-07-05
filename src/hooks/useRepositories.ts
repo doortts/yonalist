@@ -28,7 +28,7 @@ export interface UseRepositoriesResult {
 export function useRepositories(
   connection: GithubConnection,
   online: boolean,
-  demoItems: ItemDocument[]
+  localItems: ItemDocument[]
 ): UseRepositoriesResult {
   const token = connection.token.trim();
   const [groups, setGroups] = useState<OwnerGroup[] | null>(null);
@@ -84,13 +84,14 @@ export function useRepositories(
     load();
   }, [load, token, connection.apiBaseUrl]);
 
-  const demoGroups = useMemo<OwnerGroup[]>(() => {
+  const localGroups = useMemo<OwnerGroup[]>(() => {
     const counts = new Map<string, Map<string, number>>();
-    for (const item of demoItems) {
+    for (const item of localItems) {
       const byRepo = counts.get(item.frontMatter.owner) ?? new Map<string, number>();
+      const current = byRepo.get(item.frontMatter.repo) ?? 0;
       byRepo.set(
         item.frontMatter.repo,
-        (byRepo.get(item.frontMatter.repo) ?? 0) + 1
+        current + (item.frontMatter.state === "open" ? 1 : 0)
       );
       counts.set(item.frontMatter.owner, byRepo);
     }
@@ -109,11 +110,13 @@ export function useRepositories(
           orgMember: false
         }))
       }));
-  }, [demoItems]);
+  }, [localItems]);
+
+  const visibleGroups = token ? groups ?? localGroups : localGroups;
 
   return {
-    groups: token ? groups ?? [] : demoGroups,
-    loaded: token ? groups !== null : true,
+    groups: visibleGroups,
+    loaded: token ? groups !== null || localGroups.length > 0 : true,
     loading,
     error,
     refresh: load

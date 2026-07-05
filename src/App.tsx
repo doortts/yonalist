@@ -68,6 +68,7 @@ import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
 import { createGitHubClient } from "./services/github";
 import { clearImageProxyCache } from "./services/imageProxy";
+import { scheduleIdleTask } from "./services/idleQueue";
 import { clearItemThreadCache } from "./services/itemThread";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
@@ -227,7 +228,7 @@ export default function App({ initialOnline }: AppProps) {
     () => mergeItemDocuments(drafts, workItems.items, vaultRoot),
     [drafts, workItems.items, vaultRoot]
   );
-  const repositoryGroups = useRepositories(auth.connection, online, inboxWorkItems.items);
+  const repositoryGroups = useRepositories(auth.connection, online, inboxItems);
   // Conflict hint: comment targets that changed remotely after the comment
   // was queued, so the user can re-read the thread before syncing.
   const remoteChangedOutboxIds = useMemo(() => {
@@ -260,11 +261,13 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
 
-    void Promise.all(
-      workItems.items.map((item) =>
-        persistItemDocument(vaultRoot, withVaultItemPath(vaultRoot, item))
-      )
-    );
+    return scheduleIdleTask(() => {
+      void Promise.all(
+        workItems.items.map((item) =>
+          persistItemDocument(vaultRoot, withVaultItemPath(vaultRoot, item))
+        )
+      );
+    });
   }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
   // Repos where the user's involves:@me inbox has activity count as
   // "participating" for default project visibility.

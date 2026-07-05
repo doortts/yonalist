@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import { sampleNotifications } from "../fixtures/sampleNotifications";
 import { clearNotificationCache } from "../services/notifications";
+import { persistCachedNotifications } from "../services/notificationStores";
 import type { GithubConnection } from "./useGithubAuth";
 import { useNotifications } from "./useNotifications";
 
@@ -68,6 +69,57 @@ describe("useNotifications", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(
       "Bearer ghp_test"
     );
+  });
+
+  it("shows persisted notifications immediately while the refresh is still running", async () => {
+    persistCachedNotifications(connection.apiBaseUrl, [makeNotification("cached")]);
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useNotifications(connection, true, true));
+
+    expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+      "cached"
+    ]);
+    expect(result.current.loading).toBe(true);
+  });
+
+  it("renders the first notification page before later pages finish", async () => {
+    let resolveSecondPage: (response: Response) => void = () => {};
+    const secondPage = new Promise<Response>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify([makeNotification("first")]), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+        }
+      })
+    );
+    fetchMock.mockReturnValueOnce(secondPage);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useNotifications(connection, true, true));
+
+    await waitFor(() =>
+      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+        "first"
+      ])
+    );
+    expect(result.current.loading).toBe(true);
+
+    resolveSecondPage(jsonResponse([makeNotification("second")]));
+
+    await waitFor(() =>
+      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+        "first",
+        "second"
+      ])
+    );
+    expect(result.current.loading).toBe(false);
   });
 
   it("serves sample data without fetching when the token is empty (demo mode)", () => {

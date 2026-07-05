@@ -173,6 +173,37 @@ describe("fetchNotifications", () => {
     expect(String(fetchMock.mock.calls[2][0])).toContain("page=3");
   });
 
+  it("emits the first page before later notification pages finish", async () => {
+    const partials: string[][] = [];
+    let resolveSecondPage: (response: Response) => void = () => {};
+    const secondPage = new Promise<Response>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse([notification("first")], {
+        Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+      })
+    );
+    fetchMock.mockReturnValueOnce(secondPage);
+
+    const resultPromise = fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      onPartialResult: (items) =>
+        partials.push(items.map((notification) => notification.id))
+    });
+
+    await vi.waitFor(() => expect(partials).toEqual([["first"]]));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveSecondPage(jsonResponse([notification("second")]));
+
+    await expect(resultPromise).resolves.toHaveLength(2);
+    expect(partials).toEqual([["first"], ["first", "second"]]);
+  });
+
   it("coalesces concurrent fetches for the same feed into one request", async () => {
     let resolveResponse: (response: Response) => void = () => {};
     const pending = new Promise<Response>((resolve) => {

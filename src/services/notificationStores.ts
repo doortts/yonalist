@@ -1,7 +1,42 @@
+import type { GitHubNotification } from "../domain/notifications";
+
 const viewedStorageKey = "yonalist.notifications.viewedAt.v1";
 const hiddenStorageKey = "yonalist.notifications.hidden.v1";
+const notificationCacheStorageKey = "yonalist.notifications.cache.v1";
 
 export type ViewedAtMap = Record<string, string>;
+
+interface NotificationCacheEntry {
+  notifications: GitHubNotification[];
+  cachedAt: string;
+}
+
+type NotificationCache = Record<string, NotificationCacheEntry>;
+
+function hostKey(apiBaseUrl: string): string {
+  return apiBaseUrl.replace(/\/+$/g, "");
+}
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (!stored) {
+      return fallback;
+    }
+    const parsed = JSON.parse(stored) as unknown;
+    return parsed && typeof parsed === "object" ? (parsed as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson<T>(key: string, value: T) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // The app still works with an in-memory result.
+  }
+}
 
 export function loadViewedAt(): ViewedAtMap {
   try {
@@ -42,4 +77,28 @@ export function persistHiddenIds(ids: Set<string>) {
   } catch {
     // Hiding still works for the session without persistence.
   }
+}
+
+export function loadCachedNotifications(
+  apiBaseUrl: string
+): GitHubNotification[] | null {
+  return (
+    readJson<NotificationCache>(notificationCacheStorageKey, {})[
+      hostKey(apiBaseUrl)
+    ]?.notifications ?? null
+  );
+}
+
+export function persistCachedNotifications(
+  apiBaseUrl: string,
+  notifications: GitHubNotification[]
+) {
+  const cache = readJson<NotificationCache>(notificationCacheStorageKey, {});
+  writeJson(notificationCacheStorageKey, {
+    ...cache,
+    [hostKey(apiBaseUrl)]: {
+      notifications,
+      cachedAt: new Date().toISOString()
+    }
+  });
 }

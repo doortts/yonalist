@@ -9,8 +9,10 @@ import { sampleNotifications } from "../fixtures/sampleNotifications";
 import { openExternal } from "../services/browser";
 import { fetchNotifications } from "../services/notifications";
 import {
+  loadCachedNotifications,
   loadViewedAt,
   markViewed,
+  persistCachedNotifications,
   type ViewedAtMap
 } from "../services/notificationStores";
 
@@ -38,11 +40,22 @@ export function useNotifications(
   const token = connection.token.trim();
   const demoMode = !token;
 
-  const [fetched, setFetched] = useState<GitHubNotification[] | null>(null);
+  const [fetched, setFetched] = useState<GitHubNotification[] | null>(() =>
+    token ? loadCachedNotifications(connection.apiBaseUrl) : null
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewedAt, setViewedAt] = useState<ViewedAtMap>(() => loadViewedAt());
   const requestSeq = useRef(0);
+
+  useEffect(() => {
+    if (!token) {
+      setFetched(null);
+      return;
+    }
+    const cached = loadCachedNotifications(connection.apiBaseUrl);
+    setFetched(cached ?? null);
+  }, [token, connection.apiBaseUrl]);
 
   const load = useCallback(() => {
     if (!token || !online) {
@@ -50,10 +63,20 @@ export function useNotifications(
     }
     const seq = ++requestSeq.current;
     setLoading(true);
-    fetchNotifications({ token, apiBaseUrl: connection.apiBaseUrl })
+    fetchNotifications({
+      token,
+      apiBaseUrl: connection.apiBaseUrl,
+      onPartialResult: (partial) => {
+        if (requestSeq.current === seq) {
+          setFetched(partial);
+          persistCachedNotifications(connection.apiBaseUrl, partial);
+        }
+      }
+    })
       .then((result) => {
         if (requestSeq.current === seq) {
           setFetched(result);
+          persistCachedNotifications(connection.apiBaseUrl, result);
           setError(null);
         }
       })
