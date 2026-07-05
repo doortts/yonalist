@@ -321,11 +321,46 @@ body.is-resizing-pane {
   padding: 8px 8px 0;
 }
 
+.brand-copy {
+  min-width: 0;
+}
+
 .brand-actions {
   display: flex;
   align-items: center;
   flex-shrink: 0;
   gap: 8px;
+}
+
+.global-outbox-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  margin-top: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 650;
+}
+
+.global-outbox-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.global-outbox-button svg {
+  flex-shrink: 0;
+}
+
+.global-outbox-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .icon-button.login-required-button {
@@ -901,6 +936,16 @@ body.is-resizing-pane {
 }
 
 /* ---------- Detail pane ---------- */
+
+:root[data-theme="dark"] .detail-pane {
+  --bg-detail: #202020;
+  --bg-card: #242526;
+  --bg-input: #1f1f1f;
+  --bg-hover: rgb(255 255 255 / 7%);
+  --comment-header: #2b2c2d;
+  --border: #343536;
+  --border-strong: #46484a;
+}
 
 .detail-pane {
   display: flex;
@@ -2316,7 +2361,7 @@ body.is-resizing-pane {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 4px 8px 20px;
+  padding: 4px 0 20px;
 }
 
 .notifications-date-row {
@@ -2355,8 +2400,11 @@ body.is-resizing-pane {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 12px;
-  border-radius: var(--radius);
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  transition: background-color 120ms ease;
 }
 
 .notification-row:hover {
@@ -2364,7 +2412,7 @@ body.is-resizing-pane {
 }
 
 .notification-row.quiet {
-  background: var(--bg-quiet);
+  background: transparent;
 }
 
 .notification-row.quiet:hover {

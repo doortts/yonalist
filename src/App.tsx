@@ -1091,9 +1091,11 @@ export default function App({ initialOnline }: AppProps) {
         repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}
+        outboxCount={outbox.length}
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
         onOpenProjectSettings={() => openSettings("projects")}
+        onOpenOutbox={openOutbox}
         notificationsOpen={showNotifications}
         onOpenNotifications={openNotifications}
         unreadNotificationCount={
@@ -1208,12 +1210,10 @@ export default function App({ initialOnline }: AppProps) {
             item={selectedItem}
             thread={itemThread}
             online={online}
-            outboxCount={outbox.length}
             commentDraft={commentDraft}
             onCommentDraftChange={setCommentDraft}
             onQueueComment={queueComment}
             onToggleFavorite={onToggleFavorite}
-            onOpenOutbox={openOutbox}
           />
         )}
         </div>

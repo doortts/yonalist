@@ -15,24 +15,20 @@ interface ItemDetailProps {
   item: ItemDocument | undefined;
   thread: UseItemThreadResult;
   online: boolean;
-  outboxCount: number;
   commentDraft: string;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (event: FormEvent) => void;
   onToggleFavorite: () => void;
-  onOpenOutbox: () => void;
 }
 
 export function ItemDetail({
   item,
   thread,
   online,
-  outboxCount,
   commentDraft,
   onCommentDraftChange,
   onQueueComment,
-  onToggleFavorite,
-  onOpenOutbox
+  onToggleFavorite
 }: ItemDetailProps) {
   const connection = useContext(GithubConnectionContext);
 
@@ -92,10 +88,6 @@ export function ItemDetail({
               onClick={onToggleFavorite}
             >
               <Bookmark size={18} fill="currentColor" />
-            </button>
-            <button className="secondary-button" type="button" onClick={onOpenOutbox}>
-              <Inbox size={16} />
-              Outbox {outboxCount}
             </button>
           </div>
         </div>

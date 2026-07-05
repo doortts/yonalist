@@ -26,9 +26,11 @@ interface SidebarProps {
   repositoryGroups: OwnerGroup[];
   repositoriesLoading: boolean;
   counts: Record<ListFilter, number>;
+  outboxCount: number;
   settingsOpen: boolean;
   onOpenSettings: () => void;
   onOpenProjectSettings: () => void;
+  onOpenOutbox: () => void;
   notificationsOpen: boolean;
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
@@ -58,9 +60,11 @@ export function Sidebar({
   repositoryGroups,
   repositoriesLoading,
   counts,
+  outboxCount,
   settingsOpen,
   onOpenSettings,
   onOpenProjectSettings,
+  onOpenOutbox,
   notificationsOpen,
   onOpenNotifications,
   unreadNotificationCount,
@@ -74,9 +78,21 @@ export function Sidebar({
       <div className="pane-titlebar-spacer" />
       <div className="sidebar-scroll">
       <div className="brand-row">
-        <div>
+        <div className="brand-copy">
           <p className="eyebrow">Yonalist</p>
           <h1>GitHub Inbox</h1>
+          <button
+            className="global-outbox-button"
+            type="button"
+            aria-label={`Open outbox, ${outboxCount} pending ${
+              outboxCount === 1 ? "change" : "changes"
+            }`}
+            title="Outbox stores offline issues and comments waiting to sync to GitHub."
+            onClick={onOpenOutbox}
+          >
+            <Inbox size={14} />
+            <span>Outbox {outboxCount}</span>
+          </button>
         </div>
         <div className="brand-actions">
           {loginRequired && (

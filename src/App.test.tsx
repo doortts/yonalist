@@ -400,6 +400,28 @@ describe("Yonalist app shell", () => {
     expect(screen.getByText(/I can write this offline/)).toBeInTheDocument();
   });
 
+  it("shows the app-wide outbox below the GitHub Inbox title", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const navigation = screen.getByLabelText("Navigation");
+    const outboxButton = within(navigation).getByRole("button", {
+      name: "Open outbox, 0 pending changes"
+    });
+    expect(outboxButton).toHaveTextContent("Outbox 0");
+    expect(outboxButton).toHaveAttribute(
+      "title",
+      "Outbox stores offline issues and comments waiting to sync to GitHub."
+    );
+    expect(
+      within(screen.getByLabelText("Detail")).queryByRole("button", {
+        name: /outbox/i
+      })
+    ).not.toBeInTheDocument();
+  });
+
   it("opens the new issue composer as the full right pane", async () => {
     const user = userEvent.setup();
     render(<App />);
