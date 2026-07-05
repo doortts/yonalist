@@ -7,6 +7,7 @@ import {
   persistSkipLogin,
   validateConnection
 } from "../services/authGate";
+import { clearSessionToken, loadSessionToken } from "../services/sessionTokens";
 import type { UseGithubAuthResult } from "./useGithubAuth";
 import type { UseGithubServersResult } from "./useGithubServers";
 
@@ -42,34 +43,49 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
     }
 
     const url = lastAuthenticated ?? servers.selectedUrl;
-    const token = servers.tokenOf(url);
-    if (!token) {
-      setState("required");
+
+    // Optimistic gate: any stored credential — personal token or a persisted
+    // OAuth session — renders the app immediately (local vault data works
+    // offline anyway); the credentials are verified in the background and
+    // only a definitive rejection returns to the login page.
+    const enterWith = (token: string, isSessionToken: boolean) => {
+      setState("passed");
+      if (!online) {
+        return;
+      }
+      void checkConnection({
+        apiBaseUrl: url,
+        webBaseUrl: auth.connection.webBaseUrl,
+        token
+      }).then((result) => {
+        if (result === "ok") {
+          persistLastAuthenticatedUrl(url);
+        } else if (result === "invalid") {
+          if (isSessionToken) {
+            // Expired/revoked OAuth sessions must not sign in the next start.
+            void clearSessionToken(url);
+          }
+          setError(
+            "저장된 인증 정보가 더 이상 유효하지 않습니다. 다시 로그인하세요."
+          );
+          setState("required");
+        }
+        // "unreachable" keeps the optimistic pass — offline-first.
+      });
+    };
+
+    const personalToken = servers.tokenOf(url);
+    if (personalToken) {
+      enterWith(personalToken, false);
       return;
     }
 
-    // Optimistic gate: a stored token renders the app immediately (local
-    // vault data works offline anyway); the credentials are verified in the
-    // background and only a definitive rejection returns to the login page.
-    setState("passed");
-    if (!online) {
-      return;
-    }
-
-    void checkConnection({
-      apiBaseUrl: url,
-      webBaseUrl: auth.connection.webBaseUrl,
-      token
-    }).then((result) => {
-      if (result === "ok") {
-        persistLastAuthenticatedUrl(url);
-      } else if (result === "invalid") {
-        setError(
-          "저장된 인증 정보가 더 이상 유효하지 않습니다. 다시 로그인하세요."
-        );
+    void loadSessionToken(url).then((sessionToken) => {
+      if (sessionToken) {
+        enterWith(sessionToken, true);
+      } else {
         setState("required");
       }
-      // "unreachable" keeps the optimistic pass — offline-first.
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);

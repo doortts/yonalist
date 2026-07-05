@@ -45,7 +45,9 @@ describe("Yonalist app shell", () => {
 
     const login = screen.getByLabelText("GitHub login");
     expect(within(login).getByText("GitHub 로그인")).toBeInTheDocument();
-    expect(within(login).getByLabelText("GitHub servers")).toBeInTheDocument();
+    // The gate checks the persisted session store before settling on
+    // "required", so the server picker appears asynchronously.
+    expect(await within(login).findByLabelText("GitHub servers")).toBeInTheDocument();
     expect(screen.queryByLabelText("Navigation")).not.toBeInTheDocument();
 
     await user.click(
@@ -82,6 +84,55 @@ describe("Yonalist app shell", () => {
         "https://oss.navercorp.com/api/v3/user",
         expect.anything()
       );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("restores a persisted OAuth session on restart without asking to log in", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    // A previous run signed in via OAuth and persisted the session token.
+    window.localStorage.setItem(
+      "yonalist.github.sessionTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "gho_persisted" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (String(url).includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (String(url).includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      // Straight into the app — no login page.
+      expect(await screen.findByLabelText("Navigation")).toBeInTheDocument();
+      expect(screen.queryByLabelText("GitHub login")).not.toBeInTheDocument();
+
+      // Data requests carry the restored session token.
+      await waitFor(() => {
+        const notificationCall = fetchMock.mock.calls.find(([url]) =>
+          String(url).includes("/notifications")
+        );
+        expect(notificationCall).toBeTruthy();
+        const init = (notificationCall as unknown[])?.[1] as RequestInit;
+        const headers = init?.headers as Record<string, string>;
+        expect(headers.Authorization).toBe("Bearer gho_persisted");
+      });
     } finally {
       vi.unstubAllGlobals();
     }

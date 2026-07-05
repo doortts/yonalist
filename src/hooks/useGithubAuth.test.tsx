@@ -1,11 +1,13 @@
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useGithubAuth } from "./useGithubAuth";
 import { useGithubServers } from "./useGithubServers";
 
 // The OAuth loopback flow opens a real browser; stub it with a canned token.
+// isTauri stays real-ish (false) so sessionTokens uses the web fallback.
 vi.mock("../services/oauth", () => ({
-  loginWithOAuth: vi.fn(async () => "oauth-session-token")
+  loginWithOAuth: vi.fn(async () => "oauth-session-token"),
+  isTauri: () => false
 }));
 
 // First built-in default (selected on a fresh profile) and another default.
@@ -133,5 +135,56 @@ describe("useGithubAuth", () => {
     // Personal tokens live in the server store, not the session.
     expect(result.current.auth.signedIn).toBe(true);
     expect(result.current.auth.connection.token).toBe("ghp_stored");
+  });
+
+  const sessionTokensKey = "yonalist.github.sessionTokens.v1";
+
+  it("restores a stored OAuth session token on startup", async () => {
+    window.localStorage.setItem(
+      sessionTokensKey,
+      JSON.stringify({ [NAVER_URL]: "gho_restored" })
+    );
+
+    const { result } = renderAuth();
+
+    await waitFor(() => expect(result.current.auth.signedIn).toBe(true));
+    expect(result.current.auth.connection.token).toBe("gho_restored");
+    expect(result.current.auth.authMethod).toBe("oauth");
+  });
+
+  it("persists the OAuth token after login so a restart stays signed in", async () => {
+    const { result } = renderAuth();
+
+    await act(async () => {
+      await result.current.auth.login();
+    });
+
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem(sessionTokensKey) ?? "{}"
+      ) as Record<string, string>;
+      expect(stored[NAVER_URL]).toBe("oauth-session-token");
+    });
+  });
+
+  it("logout removes the persisted session token", async () => {
+    window.localStorage.setItem(
+      sessionTokensKey,
+      JSON.stringify({ [NAVER_URL]: "gho_restored" })
+    );
+    const { result } = renderAuth();
+    await waitFor(() => expect(result.current.auth.signedIn).toBe(true));
+
+    act(() => {
+      result.current.auth.logout();
+    });
+
+    expect(result.current.auth.signedIn).toBe(false);
+    await waitFor(() => {
+      const stored = JSON.parse(
+        window.localStorage.getItem(sessionTokensKey) ?? "{}"
+      ) as Record<string, string>;
+      expect(stored[NAVER_URL]).toBeUndefined();
+    });
   });
 });

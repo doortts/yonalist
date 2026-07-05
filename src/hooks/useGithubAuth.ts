@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { githubOAuthCredentialsFor, githubScopes } from "../githubAuthConfig";
 import { deriveHostUrl } from "../services/githubServers";
 import { loginWithOAuth } from "../services/oauth";
+import {
+  clearSessionToken,
+  loadSessionToken,
+  saveSessionToken
+} from "../services/sessionTokens";
 import type { UseGithubServersResult } from "./useGithubServers";
 
 /** Connection facts the API-consuming features need. */
@@ -26,8 +31,9 @@ export interface UseGithubAuthResult {
 /**
  * Authentication for the selected GitHub server, mirroring the Flutter
  * client: a saved personal token signs in directly and skips OAuth; servers
- * with registered OAuth credentials use the loopback browser flow. Switching
- * servers drops the in-memory OAuth session so the user logs in again.
+ * with registered OAuth credentials use the loopback browser flow. OAuth
+ * session tokens persist (OS keychain on desktop) and restore on startup or
+ * when switching back to a server, so a restart does not ask to log in again.
  */
 export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthResult {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
@@ -37,6 +43,16 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
   useEffect(() => {
     setSessionToken(null);
     setError(null);
+    // Restore the persisted session for this server, if one exists.
+    let cancelled = false;
+    void loadSessionToken(servers.selectedUrl).then((stored) => {
+      if (!cancelled && stored) {
+        setSessionToken(stored);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [servers.selectedUrl]);
 
   const personalToken = servers.tokenOf(servers.selectedUrl);
@@ -68,6 +84,8 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
         scopes: githubScopes
       });
       setSessionToken(accessToken);
+      // Persisted so the next launch signs in without asking.
+      void saveSessionToken(servers.selectedUrl, accessToken);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -77,7 +95,8 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
 
   const logout = useCallback(() => {
     setSessionToken(null);
-  }, []);
+    void clearSessionToken(servers.selectedUrl);
+  }, [servers.selectedUrl]);
 
   return {
     connection: {

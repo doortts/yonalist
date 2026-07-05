@@ -46,7 +46,7 @@ describe("useAuthGate", () => {
     vi.restoreAllMocks();
   });
 
-  it("requires login when no token is stored", () => {
+  it("requires login when no token is stored", async () => {
     const { result } = renderHook(() =>
       useAuthGate({
         auth: makeAuth(),
@@ -55,7 +55,59 @@ describe("useAuthGate", () => {
       })
     );
 
-    expect(result.current.state).toBe("required");
+    // The gate first checks the persisted session store, so this is async.
+    await waitFor(() => expect(result.current.state).toBe("required"));
+  });
+
+  it("passes with a stored OAuth session token and no personal token", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.sessionTokens.v1",
+      JSON.stringify({ [API_URL]: "gho_saved" })
+    );
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() =>
+      useAuthGate({
+        auth: makeAuth(),
+        servers: makeServers({ tokenOf: () => null }),
+        online: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.state).toBe("passed"));
+    // The background validation used the restored session token.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      "Bearer gho_saved"
+    );
+  });
+
+  it("clears a rejected session token and returns to the login page", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.sessionTokens.v1",
+      JSON.stringify({ [API_URL]: "gho_expired" })
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 401 }))
+    );
+
+    const { result } = renderHook(() =>
+      useAuthGate({
+        auth: makeAuth(),
+        servers: makeServers({ tokenOf: () => null }),
+        online: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.state).toBe("required"));
+    expect(result.current.error).toBeTruthy();
+    const stored = JSON.parse(
+      window.localStorage.getItem("yonalist.github.sessionTokens.v1") ?? "{}"
+    ) as Record<string, string>;
+    expect(stored[API_URL]).toBeUndefined();
   });
 
   it("passes optimistically with a stored token before validation resolves", () => {

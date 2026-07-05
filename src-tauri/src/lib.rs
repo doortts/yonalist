@@ -671,6 +671,16 @@ fn load_token(service: String, account: String) -> Result<Option<String>, String
     }
 }
 
+#[tauri::command]
+fn delete_token(service: String, account: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(&service, &account).map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -685,6 +695,7 @@ pub fn run() {
             list_markdown_files,
             store_token,
             load_token,
+            delete_token,
             oauth_start,
             oauth_wait,
             oauth_exchange,
