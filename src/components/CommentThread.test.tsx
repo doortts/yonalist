@@ -31,7 +31,7 @@ describe("CommentThread", () => {
     expect(within(thread).getByText("Author")).toBeInTheDocument();
   });
 
-  it("shows a display name before the login when one is available", () => {
+  it("shows only a display name and keeps the login in a tooltip", () => {
     render(
       <CommentThread
         comments={[
@@ -46,7 +46,8 @@ describe("CommentThread", () => {
       />
     );
 
-    expect(screen.getByText("Yogno Koo yogno-koo")).toBeInTheDocument();
+    expect(screen.getByText("Yogno Koo")).toHaveAttribute("title", "yogno-koo");
+    expect(screen.queryByText("Yogno Koo yogno-koo")).not.toBeInTheDocument();
   });
 
   it("renders nothing when there are no comments", () => {
@@ -72,7 +73,7 @@ describe("OpeningPost", () => {
     expect(container.querySelector(".avatar")).toBeNull();
   });
 
-  it("shows the opening post author's display name before the login", () => {
+  it("shows only the opening post author's display name and keeps the login in a tooltip", () => {
     render(
       <OpeningPost
         author={{ login: "octocat", name: "The Octocat" }}
@@ -81,7 +82,8 @@ describe("OpeningPost", () => {
       />
     );
 
-    expect(screen.getByText("The Octocat octocat")).toBeInTheDocument();
+    expect(screen.getByText("The Octocat")).toHaveAttribute("title", "octocat");
+    expect(screen.queryByText("The Octocat octocat")).not.toBeInTheDocument();
   });
 
   it("shows a real avatar image when one is provided", () => {

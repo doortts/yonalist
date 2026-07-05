@@ -41,14 +41,14 @@ function AssociationBadge({ author }: { author: EntryAuthor }) {
 }
 
 function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
-  const displayName =
-    author.name && author.name !== author.login
-      ? `${author.name} ${author.login}`
-      : author.login;
+  const hasDisplayName = Boolean(author.name && author.name !== author.login);
+  const displayName = hasDisplayName ? author.name : author.login;
 
   return (
     <>
-      <strong className="comment-author">{displayName}</strong>
+      <strong className="comment-author" title={hasDisplayName ? author.login : undefined}>
+        {displayName}
+      </strong>
       <AssociationBadge author={author} />
       <span className="comment-time">{meta}</span>
     </>
