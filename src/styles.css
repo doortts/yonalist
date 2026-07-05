@@ -986,7 +986,7 @@ body.is-resizing-pane {
 
 :root[data-theme="dark"] .detail-pane {
   --bg-detail: #181818;
-  --bg-card: #242526;
+  --bg-card: #080e14;
   --bg-input: #1f1f1f;
   --bg-hover: rgb(255 255 255 / 7%);
   --comment-header: #2b2c2d;
