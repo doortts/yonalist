@@ -50,6 +50,10 @@ hljs.registerLanguage("typescript", typescript);
 hljs.registerLanguage("xml", xml);
 hljs.registerLanguage("yaml", yaml);
 
+const LANGUAGE_ALIASES: Record<string, string> = {
+  golang: "go"
+};
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -58,12 +62,24 @@ function escapeHtml(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+function highlightLanguage(info: string): string {
+  const requested = info.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  const language = LANGUAGE_ALIASES[requested] ?? requested;
+  return language && hljs.getLanguage(language) ? language : "";
+}
+
+function stripScriptTags(body: string): string {
+  return body
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+    .replace(/<script\b[^>]*\/?>/gi, "");
+}
+
 const markdown = new MarkdownIt({
-  html: false,
+  html: true,
   linkify: true,
   breaks: true,
   highlight(code: string, lang: string): string {
-    const language = lang && hljs.getLanguage(lang) ? lang : "";
+    const language = highlightLanguage(lang);
     const highlighted = language
       ? hljs.highlight(code, { language }).value
       : escapeHtml(code);
@@ -80,9 +96,14 @@ markdown.use(emojiPlugin);
 // Keep the task-list checkbox attributes and highlight/label classes through
 // sanitization.
 const SANITIZE_CONFIG = {
-  ADD_ATTR: ["checked", "disabled", "type"]
+  ADD_ATTR: ["checked", "disabled", "type", "width", "height", "loading"]
 };
 
 export function renderMarkdown(body: string): { __html: string } {
-  return { __html: DOMPurify.sanitize(markdown.render(body), SANITIZE_CONFIG) };
+  return {
+    __html: DOMPurify.sanitize(
+      markdown.render(stripScriptTags(body)),
+      SANITIZE_CONFIG
+    )
+  };
 }

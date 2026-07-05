@@ -23,11 +23,29 @@ describe("renderMarkdown", () => {
     expect(__html).not.toContain("<a");
   });
 
-  it("neutralizes raw HTML so it renders as text, not elements", () => {
+  it("allows sanitized raw image HTML tags", () => {
+    const { __html } = renderMarkdown(
+      '<img src="https://example.com/image.png" width="600px" onerror="alert(1)" />'
+    );
+
+    expect(__html).toContain("<img");
+    expect(__html).toContain('src="https://example.com/image.png"');
+    expect(__html).toContain('width="600px"');
+    expect(__html).not.toContain("onerror");
+  });
+
+  it("removes unsafe raw image attributes", () => {
     const { __html } = renderMarkdown('<img src="x" onerror="alert(1)">');
 
-    expect(__html).not.toContain("<img");
-    expect(__html).toContain("&lt;img");
+    expect(__html).toContain("<img");
+    expect(__html).not.toContain("onerror");
+  });
+
+  it("still strips raw script tags from HTML content", () => {
+    const { __html } = renderMarkdown('<script>alert(1)</script><img src="https://example.com/a.png">');
+
+    expect(__html).not.toContain("<script>");
+    expect(__html).toContain("<img");
   });
 
   it("renders GFM task lists as checkboxes", () => {
@@ -77,6 +95,14 @@ describe("renderMarkdown", () => {
       expect(__html, lang).toContain(`language-${lang}`);
       expect(__html, lang).toContain("hljs-");
     }
+  });
+
+  it("highlights common language aliases like golang", () => {
+    const { __html } = renderMarkdown("```golang\nfunc main() {\n  println(\"hi\")\n}\n```");
+
+    expect(__html).toContain('class="hljs language-go"');
+    expect(__html).not.toContain("language-golang");
+    expect(__html).toContain("hljs-");
   });
 
   it("falls back to escaped plain text for unregistered languages", () => {
