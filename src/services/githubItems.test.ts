@@ -361,6 +361,93 @@ describe("fetchMyRepositories", () => {
     ).toBe(true);
   });
 
+  it("includes watched repositories beyond the first five subscription pages", async () => {
+    const repoAt = (index: number) => ({
+      name: `watched-${index}`,
+      full_name: `pi/watched-${index}`,
+      owner: { login: "pi" },
+      open_issues_count: 0,
+      pushed_at: "2026-07-01T00:00:00Z"
+    });
+    const fullPage = Array.from({ length: 100 }, (_, index) => repoAt(index));
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = new URL(String(url));
+      if (target.pathname.endsWith("/user/subscriptions")) {
+        return Number(target.searchParams.get("page")) <= 5
+          ? jsonResponse(fullPage)
+          : jsonResponse([
+              {
+                name: "orderbot",
+                full_name: "pi/orderbot",
+                owner: { login: "pi" },
+                open_issues_count: 0,
+                pushed_at: "2026-05-11T00:00:00Z"
+              }
+            ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositorySummaries(connection);
+
+    expect(repos).toContainEqual(
+      expect.objectContaining({
+        fullName: "pi/orderbot",
+        watched: true
+      })
+    );
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("/user/subscriptions?per_page=100&page=6")
+      )
+    ).toBe(true);
+  });
+
+  it("continues watched repository pagination when a short page still has a next link", async () => {
+    const repoAt = (index: number) => ({
+      name: `watched-${index}`,
+      full_name: `pi/watched-${index}`,
+      owner: { login: "pi" },
+      open_issues_count: 0,
+      pushed_at: "2026-07-01T00:00:00Z"
+    });
+    const shortPage = Array.from({ length: 99 }, (_, index) => repoAt(index));
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = new URL(String(url));
+      if (target.pathname.endsWith("/user/subscriptions")) {
+        return target.searchParams.get("page") === "1"
+          ? new Response(JSON.stringify(shortPage), {
+              status: 200,
+              headers: {
+                "content-type": "application/json",
+                Link: '<https://api.github.com/user/subscriptions?per_page=100&page=2>; rel="next"'
+              }
+            })
+          : jsonResponse([
+              {
+                name: "orderbot",
+                full_name: "pi/orderbot",
+                owner: { login: "pi" },
+                open_issues_count: 0,
+                pushed_at: "2026-05-11T00:00:00Z"
+              }
+            ]);
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositorySummaries(connection);
+
+    expect(repos).toContainEqual(
+      expect.objectContaining({
+        fullName: "pi/orderbot",
+        watched: true
+      })
+    );
+  });
+
   it("still lists participating repositories when the optional sources fail", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       const target = String(url);

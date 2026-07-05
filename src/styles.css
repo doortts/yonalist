@@ -2,64 +2,64 @@
   color-scheme: light;
 
   /* Surfaces */
-  --bg-app: #f7f7f4;
-  --bg-sidebar: #f7f7f4;
+  --bg-app: #f5f6f8;
+  --bg-sidebar: #f2f3f5;
   --bg-list: #ffffff;
-  --bg-detail: #ffffff;
+  --bg-detail: #f8f9fb;
   --bg-card: #ffffff;
-  --bg-hover: rgb(32 33 36 / 5%);
-  --bg-active: rgb(32 33 36 / 8%);
+  --bg-hover: rgb(17 24 39 / 5%);
+  --bg-active: rgb(17 24 39 / 8%);
   --bg-input: #ffffff;
   /* Opaque equivalent of --bg-hover over --bg-card, for comment headers and
      their speech-bubble tail (which sits over a different background). */
-  --comment-header: #f4f4f1;
+  --comment-header: #f3f3f4;
 
   /* Lines */
-  --border: #deded8;
-  --border-strong: #c8c8c0;
+  --border: #e5e7eb;
+  --border-strong: #d2d6dc;
 
   /* Text */
-  --text-1: #202123;
-  --text-2: #5f6368;
-  --text-3: #8d928a;
+  --text-1: #1f2328;
+  --text-2: #59626e;
+  --text-3: #8c95a1;
 
   /* Accents */
-  --accent: #10a37f;
-  --accent-strong: #0d8f70;
-  --accent-soft: rgb(16 163 127 / 12%);
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --accent-soft: rgb(37 99 235 / 9%);
   --accent-contrast: #ffffff;
-  --favorite: #e2553d;
-  --danger: #b42318;
-  --danger-hover: #922018;
-  --danger-soft: #fff1ef;
+  --favorite: #e75135;
+  --danger: #c2402a;
+  --danger-hover: #a53522;
+  --danger-soft: #fdf0ec;
   /* Notification reason accents (dark theme lightens these for contrast) */
   --reason-mention: #7c4dff;
   --reason-comment: #009688;
   --reason-author: #ff5722;
   --reason-team: #536dfe;
-  --warning: #9a6700;
-  --warning-soft: #fff6d7;
-  --warning-border: rgb(154 103 0 / 38%);
-  --success: #1f883d;
+  --warning: #b45309;
+  --warning-soft: #fff3d6;
+  --warning-border: rgb(245 158 11 / 48%);
+  --success: #1a7f37;
   --yona-comment: #8b008b;
-  --yona-link: #0969da;
-  --yona-code-bg: #f2f2ef;
-  --yona-table-border: #d8d8d2;
-  --yona-table-head: #f5f5f2;
+  --yona-link: #4183c4;
+  --yona-code-bg: #efefef;
+  --yona-table-border: #dcddde;
+  --yona-table-head: #f7f7f7;
 
   /* Layout */
   --titlebar-height: 42px;
   --content-drag-height: 28px;
   --content-titlebar-gap: 4px;
-  --scrollbar-thumb: rgb(32 33 36 / 20%);
-  --scrollbar-thumb-hover: rgb(32 33 36 / 36%);
+  --scrollbar-thumb: rgb(17 24 39 / 25%);
+  --scrollbar-thumb-hover: rgb(17 24 39 / 45%);
 
   /* Shape */
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
-  --shadow-modal: 0 20px 70px rgb(32 33 36 / 18%);
-  --bg-quiet: rgb(32 33 36 / 3%);
+  --shadow-modal: 0 20px 70px rgb(15 20 30 / 25%);
+  --bg-quiet: rgb(17 24 39 / 3%);
 
   color: var(--text-1);
   background: var(--bg-app);
@@ -77,6 +77,50 @@
   font-style: normal;
   font-weight: normal;
   font-display: block;
+}
+
+:root[data-theme="yona"] {
+  color-scheme: light;
+
+  --bg-app: #f3f4f6;
+  --bg-sidebar: #f3f4f6;
+  --bg-list: #ffffff;
+  --bg-detail: #ffffff;
+  --bg-card: #ffffff;
+  --bg-hover: rgb(243 108 34 / 6%);
+  --bg-active: rgb(243 108 34 / 12%);
+  --bg-input: #ffffff;
+  --bg-quiet: #f2f4f5;
+  --comment-header: #f2f4f5;
+
+  --border: #d9d9d9;
+  --border-strong: #cccccc;
+
+  --text-1: #333333;
+  --text-2: #666666;
+  --text-3: #999999;
+
+  --accent: #f36c22;
+  --accent-strong: #e95e01;
+  --accent-soft: rgb(243 108 34 / 12%);
+  --accent-contrast: #ffffff;
+  --favorite: #f36c22;
+  --danger: #c93426;
+  --danger-hover: #b13427;
+  --danger-soft: rgb(201 52 38 / 10%);
+  --warning: #f39c12;
+  --warning-soft: rgb(243 156 18 / 14%);
+  --warning-border: rgb(243 156 18 / 42%);
+  --success: #24a05f;
+  --yona-comment: #8b008b;
+  --yona-link: #4183c4;
+  --yona-code-bg: #efefef;
+  --yona-table-border: #dcddde;
+  --yona-table-head: #f7f7f7;
+
+  --scrollbar-thumb: rgb(51 51 51 / 22%);
+  --scrollbar-thumb-hover: rgb(51 51 51 / 40%);
+  --shadow-modal: 0 20px 70px rgb(51 51 51 / 22%);
 }
 
 :root[data-theme="dark"] {
@@ -2412,6 +2456,24 @@ body.is-resizing-pane {
 .theme-options {
   display: flex;
   gap: 10px;
+}
+
+.theme-settings-group {
+  display: grid;
+  gap: 10px;
+}
+
+.theme-settings-group + .theme-settings-group {
+  margin-top: 18px;
+}
+
+.theme-settings-group h3 {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .settings-section label.theme-option {

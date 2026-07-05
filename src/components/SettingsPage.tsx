@@ -11,7 +11,7 @@ import type { AppSettings } from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
 import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
-import type { ThemeMode } from "../hooks/useTheme";
+import type { DarkTheme, LightTheme, ThemeMode } from "../hooks/useTheme";
 import type { ResetProgressState, ResetProgressStepStatus } from "../resetProgress";
 import type { OwnerGroup } from "../services/githubItems";
 import { GithubServersSection } from "./GithubServersSection";
@@ -25,7 +25,11 @@ interface SettingsPageProps {
   status: string;
   resetProgress: ResetProgressState;
   themeMode: ThemeMode;
+  lightTheme: LightTheme;
+  darkTheme: DarkTheme;
   onThemeModeChange: (mode: ThemeMode) => void;
+  onLightThemeChange: (theme: LightTheme) => void;
+  onDarkThemeChange: (theme: DarkTheme) => void;
   servers: UseGithubServersResult;
   auth: UseGithubAuthResult;
   repositoryGroups: OwnerGroup[];
@@ -40,6 +44,15 @@ const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
   { value: "system", label: "System" }
+];
+
+const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
+  { value: "default", label: "Default" },
+  { value: "yona", label: "Yona" }
+];
+
+const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
+  { value: "dark", label: "Default" }
 ];
 
 const resetStepStatusLabels: Record<ResetProgressStepStatus, string> = {
@@ -68,7 +81,11 @@ export function SettingsPage({
   status,
   resetProgress,
   themeMode,
+  lightTheme,
+  darkTheme,
   onThemeModeChange,
+  onLightThemeChange,
+  onDarkThemeChange,
   servers,
   auth,
   repositoryGroups,
@@ -103,25 +120,94 @@ export function SettingsPage({
         {section === "appearance" && (
           <>
             <section className="settings-section">
-              <div className="theme-options" role="radiogroup" aria-label="Theme">
-                {themeModeOptions.map((option) => (
-                  <label
-                    key={option.value}
-                    className={
-                      themeMode === option.value ? "theme-option active" : "theme-option"
-                    }
-                  >
-                    <input
-                      type="radio"
-                      name="theme-mode"
-                      aria-label={`${option.label} theme`}
-                      value={option.value}
-                      checked={themeMode === option.value}
-                      onChange={() => onThemeModeChange(option.value)}
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                ))}
+              <div className="theme-settings-group">
+                <h3>Theme mode</h3>
+                <div
+                  className="theme-options"
+                  role="radiogroup"
+                  aria-label="Theme mode"
+                >
+                  {themeModeOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={
+                        themeMode === option.value
+                          ? "theme-option active"
+                          : "theme-option"
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="theme-mode"
+                        aria-label={`${option.label} mode`}
+                        value={option.value}
+                        checked={themeMode === option.value}
+                        onChange={() => onThemeModeChange(option.value)}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="theme-settings-group">
+                <h3>Light theme</h3>
+                <div
+                  className="theme-options"
+                  role="radiogroup"
+                  aria-label="Light theme"
+                >
+                  {lightThemeOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={
+                        lightTheme === option.value
+                          ? "theme-option active"
+                          : "theme-option"
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="light-theme"
+                        aria-label={`${option.label} light theme`}
+                        value={option.value}
+                        checked={lightTheme === option.value}
+                        onChange={() => onLightThemeChange(option.value)}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              <div className="theme-settings-group">
+                <h3>Dark theme</h3>
+                <div
+                  className="theme-options"
+                  role="radiogroup"
+                  aria-label="Dark theme"
+                >
+                  {darkThemeOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={
+                        darkTheme === option.value
+                          ? "theme-option active"
+                          : "theme-option"
+                      }
+                    >
+                      <input
+                        type="radio"
+                        name="dark-theme"
+                        aria-label={`${option.label} dark theme`}
+                        value={option.value}
+                        checked={darkTheme === option.value}
+                        onChange={() => onDarkThemeChange(option.value)}
+                      />
+                      <span>{option.label}</span>
+                    </label>
+                  ))}
+                </div>
               </div>
             </section>
             <MarkdownStyleComparison

@@ -51,7 +51,11 @@ import {
 } from "./domain/outbox";
 import { mergeItemDocuments, withVaultItemPath } from "./domain/items";
 import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
-import type { GitHubNotification } from "./domain/notifications";
+import {
+  isReadAndQuiet,
+  notificationWebUrl,
+  type GitHubNotification
+} from "./domain/notifications";
 import type {
   CommentDocument,
   ItemDocument,
@@ -295,7 +299,17 @@ export default function App({ initialOnline }: AppProps) {
     () => mergeItemDocuments(drafts, workItems.items, vaultRoot),
     [drafts, workItems.items, vaultRoot]
   );
-  const repositoryGroups = useRepositories(auth.connection, online, inboxItems);
+  const unfilteredNotifications = useNotifications(
+    auth.connection,
+    online,
+    authGate.state === "passed"
+  );
+  const repositoryGroups = useRepositories(
+    auth.connection,
+    online,
+    inboxItems,
+    unfilteredNotifications.notifications
+  );
   // Conflict hint: comment targets that changed remotely after the comment
   // was queued, so the user can re-read the thread before syncing.
   const remoteChangedOutboxIds = useMemo(() => {
@@ -382,12 +396,35 @@ export default function App({ initialOnline }: AppProps) {
     }
     return (repositoryFullName: string) => managed.get(repositoryFullName) ?? true;
   }, [repositoryGroups.groups, isRepoVisible]);
-  const notifications = useNotifications(
-    auth.connection,
-    online,
-    authGate.state === "passed",
-    notificationRepoFilter
+  const filteredNotificationItems = useMemo(
+    () =>
+      unfilteredNotifications.notifications.filter((notification) =>
+        notificationRepoFilter(notification.repository.full_name)
+      ),
+    [unfilteredNotifications.notifications, notificationRepoFilter]
   );
+  const filteredUnreadNotificationCount = useMemo(
+    () =>
+      filteredNotificationItems.filter(
+        (notification) =>
+          !isReadAndQuiet(
+            notification,
+            unfilteredNotifications.viewedAt[
+              notificationWebUrl(notification, auth.connection.webBaseUrl)
+            ]
+          )
+      ).length,
+    [
+      filteredNotificationItems,
+      unfilteredNotifications.viewedAt,
+      auth.connection.webBaseUrl
+    ]
+  );
+  const notifications = {
+    ...unfilteredNotifications,
+    notifications: filteredNotificationItems,
+    unreadCount: filteredUnreadNotificationCount
+  };
   useDesktopNotifications({
     notifications: notifications.notifications,
     viewedAt: notifications.viewedAt,
@@ -422,7 +459,14 @@ export default function App({ initialOnline }: AppProps) {
     auth.connection,
     online
   );
-  const { mode: themeMode, setMode: setThemeMode } = useTheme();
+  const {
+    mode: themeMode,
+    setMode: setThemeMode,
+    lightTheme,
+    setLightTheme,
+    darkTheme,
+    setDarkTheme
+  } = useTheme();
   const [draftIssue, setDraftIssue] = useState<DraftIssue>({
     title: "",
     body: "",
@@ -1018,6 +1062,8 @@ export default function App({ initialOnline }: AppProps) {
       servers.reset();
       projectVisibility.reset();
       setThemeMode("system");
+      setLightTheme("default");
+      setDarkTheme("dark");
       setSettings(defaultSettings);
       setDrafts([]);
       setOutbox([]);
@@ -1181,7 +1227,11 @@ export default function App({ initialOnline }: AppProps) {
               status={settingsStatus}
               resetProgress={resetProgress}
               themeMode={themeMode}
+              lightTheme={lightTheme}
+              darkTheme={darkTheme}
               onThemeModeChange={setThemeMode}
+              onLightThemeChange={setLightTheme}
+              onDarkThemeChange={setDarkTheme}
               servers={servers}
               auth={auth}
               repositoryGroups={repositoryGroups.groups}

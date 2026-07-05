@@ -1529,14 +1529,30 @@ describe("Yonalist app shell", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(screen.getByRole("radio", { name: "Dark theme" }));
+    await user.click(await screen.findByRole("radio", { name: "Yona light theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("yona");
+    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("yona");
+
+    await user.click(screen.getByRole("radio", { name: "Dark mode" }));
 
     expect(document.documentElement.dataset.theme).toBe("dark");
     expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("dark");
 
-    await user.click(screen.getByRole("radio", { name: "Light theme" }));
+    await user.click(screen.getByRole("radio", { name: "Light mode" }));
 
-    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.theme).toBe("yona");
+    expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("light");
+
+    await user.click(screen.getByRole("radio", { name: "Default light theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("default");
+    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("default");
+
+    await user.click(screen.getByRole("radio", { name: "System mode" }));
+
+    expect(document.documentElement.dataset.theme).toBe("default");
+    expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
   });
 
   it("switches markdown rendering style from the appearance settings", async () => {

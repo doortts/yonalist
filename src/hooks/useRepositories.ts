@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { GitHubNotification } from "../domain/notifications";
 import type { ItemDocument } from "../domain/types";
 import {
   fetchMyRepositorySummaries,
   groupRepositoriesByOwner,
-  type OwnerGroup
+  type OwnerGroup,
+  type RepositorySummary
 } from "../services/githubItems";
 import {
   loadCachedRepositorySummaries,
@@ -21,6 +23,64 @@ export interface UseRepositoriesResult {
   refresh: () => void;
 }
 
+function mergeRepositorySummaries(
+  ...sources: RepositorySummary[][]
+): RepositorySummary[] {
+  const merged = new Map<string, RepositorySummary>();
+  for (const repository of sources.flat()) {
+    const existing = merged.get(repository.fullName);
+    if (!existing) {
+      merged.set(repository.fullName, repository);
+      continue;
+    }
+    merged.set(repository.fullName, {
+      ...existing,
+      openIssuesCount: Math.max(
+        existing.openIssuesCount,
+        repository.openIssuesCount
+      ),
+      pushedAt:
+        existing.pushedAt.localeCompare(repository.pushedAt) >= 0
+          ? existing.pushedAt
+          : repository.pushedAt,
+      participating: existing.participating || repository.participating,
+      watched: existing.watched || repository.watched,
+      orgMember: existing.orgMember || repository.orgMember
+    });
+  }
+  return [...merged.values()];
+}
+
+function watchedRepositoriesFromNotifications(
+  notifications: GitHubNotification[]
+): RepositorySummary[] {
+  const repositories = new Map<string, RepositorySummary>();
+  for (const notification of notifications) {
+    if (notification.reason !== "subscribed") {
+      continue;
+    }
+    const fullName = notification.repository.full_name;
+    if (!fullName) {
+      continue;
+    }
+    const [fallbackOwner, ...fallbackNameParts] = fullName.split("/");
+    const owner = notification.repository.owner?.login || fallbackOwner;
+    const name =
+      notification.repository.name || fallbackNameParts.join("/") || fullName;
+    repositories.set(fullName, {
+      owner,
+      name,
+      fullName,
+      openIssuesCount: 0,
+      pushedAt: notification.updated_at ?? "",
+      participating: false,
+      watched: true,
+      orgMember: false
+    });
+  }
+  return [...repositories.values()];
+}
+
 /**
  * Repositories the user participates in, grouped by owner for the sidebar.
  * Without a token the groups are derived from the demo items so the section
@@ -29,7 +89,8 @@ export interface UseRepositoriesResult {
 export function useRepositories(
   connection: GithubConnection,
   online: boolean,
-  localItems: ItemDocument[]
+  localItems: ItemDocument[],
+  notifications: GitHubNotification[] = []
 ): UseRepositoriesResult {
   const token = connection.token.trim();
   const [groups, setGroups] = useState<OwnerGroup[] | null>(null);
@@ -128,7 +189,24 @@ export function useRepositories(
       }));
   }, [localItems]);
 
-  const visibleGroups = token ? groups ?? localGroups : localGroups;
+  const notificationRepositories = useMemo(
+    () => watchedRepositoriesFromNotifications(notifications),
+    [notifications]
+  );
+  const remoteRepositories = useMemo(
+    () => groups?.flatMap((group) => group.repositories) ?? null,
+    [groups]
+  );
+  const localRepositories = useMemo(
+    () => localGroups.flatMap((group) => group.repositories),
+    [localGroups]
+  );
+  const visibleGroups = useMemo(() => {
+    const base = token ? remoteRepositories ?? localRepositories : localRepositories;
+    return groupRepositoriesByOwner(
+      mergeRepositorySummaries(base, notificationRepositories)
+    );
+  }, [token, remoteRepositories, localRepositories, notificationRepositories]);
 
   return {
     groups: visibleGroups,

@@ -51,10 +51,10 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   const apiBaseUrl = trimTrailingSlash(options.apiBaseUrl);
   const webBaseUrl = trimTrailingSlash(options.webBaseUrl);
 
-  async function requestJson<TResponse>(
+  async function request(
     path: string,
     init: RequestInit = {}
-  ): Promise<TResponse> {
+  ): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/vnd.github+json");
     headers.set("X-GitHub-Api-Version", "2022-11-28");
@@ -77,6 +77,14 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
       );
     }
 
+    return response;
+  }
+
+  async function requestJson<TResponse>(
+    path: string,
+    init: RequestInit = {}
+  ): Promise<TResponse> {
+    const response = await request(path, init);
     return (await response.json()) as TResponse;
   }
 
@@ -138,5 +146,5 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
     return payload.data;
   }
 
-  return { apiBaseUrl, webBaseUrl, requestJson, postOAuth, graphql };
+  return { apiBaseUrl, webBaseUrl, request, requestJson, postOAuth, graphql };
 }

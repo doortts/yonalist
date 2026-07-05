@@ -408,24 +408,31 @@ function toSummaries(
 
 const REPO_PAGE_SIZE = 100;
 const MAX_REPO_PAGES = 5;
+const MAX_WATCHED_REPO_PAGES = 20;
 const REPO_COUNT_BATCH_SIZE = 25;
 const REPO_COUNT_CONCURRENCY = 3;
+
+function hasNextPage(linkHeader: string | null): boolean {
+  return linkHeader?.includes('rel="next"') ?? false;
+}
 
 /** Follows pagination so large org memberships are not cut off at 100. */
 async function requestAllPages(
   connection: GithubConnection,
-  pathForPage: (page: number) => string
+  pathForPage: (page: number) => string,
+  maxPages = MAX_REPO_PAGES
 ): Promise<UserRepoItem[]> {
   const collected: UserRepoItem[] = [];
-  for (let page = 1; page <= MAX_REPO_PAGES; page += 1) {
-    const items = await createGitHubTransport(connection).requestJson<UserRepoItem[]>(
-      pathForPage(page)
-    );
+  const transport = createGitHubTransport(connection);
+  for (let page = 1; page <= maxPages; page += 1) {
+    const response = await transport.request(pathForPage(page));
+    const items = (await response.json()) as UserRepoItem[];
     if (!Array.isArray(items)) {
       break;
     }
     collected.push(...items);
-    if (items.length < REPO_PAGE_SIZE) {
+    const linkHeader = response.headers.get("Link");
+    if (linkHeader ? !hasNextPage(linkHeader) : items.length < REPO_PAGE_SIZE) {
       break;
     }
   }
@@ -570,7 +577,8 @@ export async function fetchMyRepositorySummaries(
     ).catch(() => []),
     requestAllPages(
       connection,
-      (page) => `/user/subscriptions?per_page=${REPO_PAGE_SIZE}&page=${page}`
+      (page) => `/user/subscriptions?per_page=${REPO_PAGE_SIZE}&page=${page}`,
+      MAX_WATCHED_REPO_PAGES
     ).catch(() => [])
   ]);
 

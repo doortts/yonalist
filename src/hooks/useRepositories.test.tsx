@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { GitHubNotification } from "../domain/notifications";
 import type { ItemDocument, ItemKind, ItemState } from "../domain/types";
 import type { RepositorySummary } from "../services/githubItems";
 import type { GithubConnection } from "./useGithubAuth";
@@ -74,6 +75,27 @@ function repository(owner: string, name: string): RepositorySummary {
   };
 }
 
+function notification(fullName: string): GitHubNotification {
+  const [owner, name] = fullName.split("/");
+  return {
+    id: `${fullName}-notification`,
+    unread: true,
+    reason: "subscribed",
+    updated_at: "2026-07-04T00:00:00Z",
+    last_read_at: null,
+    subject: {
+      title: `${fullName} updated`,
+      type: "PullRequest",
+      url: `https://api.github.com/repos/${fullName}/pulls/1`
+    },
+    repository: {
+      full_name: fullName,
+      name,
+      owner: { login: owner }
+    }
+  };
+}
+
 describe("useRepositories", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -115,5 +137,26 @@ describe("useRepositories", () => {
       ])
     );
     expect(result.current.groups[0].repositories[0].fullName).toBe("remote/app");
+  });
+
+  it("adds watched repositories discovered from notifications to the filter list", async () => {
+    fetchMyRepositorySummariesMock.mockResolvedValue([repository("pi", "agent-dev")]);
+
+    const { result } = renderHook(() =>
+      useRepositories(connection, true, [], [notification("pi/orderbot")])
+    );
+
+    await waitFor(() =>
+      expect(
+        result.current.groups
+          .find((group) => group.owner === "pi")
+          ?.repositories.map((repo) => repo.fullName)
+      ).toEqual(["pi/agent-dev", "pi/orderbot"])
+    );
+    expect(
+      result.current.groups
+        .find((group) => group.owner === "pi")
+        ?.repositories.find((repo) => repo.fullName === "pi/orderbot")
+    ).toMatchObject({ watched: true, participating: false });
   });
 });
