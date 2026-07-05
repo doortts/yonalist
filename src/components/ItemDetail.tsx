@@ -112,6 +112,7 @@ export function ItemDetail({
         <OpeningPost
           author={{
             login: item.frontMatter.author,
+            name: thread.thread?.authorName,
             avatarUrl: thread.thread?.authorAvatarUrl,
             association: thread.thread?.authorAssociation
           }}

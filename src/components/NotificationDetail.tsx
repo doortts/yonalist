@@ -121,6 +121,7 @@ export function NotificationDetail({
           <OpeningPost
             author={{
               login: detail.author,
+              name: detail.authorName,
               avatarUrl: detail.authorAvatarUrl,
               association: detail.authorAssociation
             }}

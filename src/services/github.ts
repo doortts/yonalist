@@ -37,7 +37,7 @@ interface GraphQLDiscussionNode {
   createdAt?: string;
   updatedAt?: string;
   url?: string;
-  author?: { login?: string; avatarUrl?: string } | null;
+  author?: { login?: string; name?: string; avatarUrl?: string } | null;
   authorAssociation?: string;
   labels?: { nodes?: Array<{ name?: string; color?: string }> };
   comments?: {
@@ -49,7 +49,7 @@ interface GraphQLDiscussionCommentNode {
   id?: string;
   databaseId?: number;
   body?: string;
-  author?: { login?: string; avatarUrl?: string } | null;
+  author?: { login?: string; name?: string; avatarUrl?: string } | null;
   authorAssociation?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -83,7 +83,7 @@ query ($owner: String!, $repo: String!, $number: Int!) {
       createdAt
       updatedAt
       url
-      author { login avatarUrl }
+      author { login ... on User { name } avatarUrl }
       authorAssociation
       labels(first: 20) { nodes { name color } }
       comments(first: 100) {
@@ -91,7 +91,7 @@ query ($owner: String!, $repo: String!, $number: Int!) {
           id
           databaseId
           body
-          author { login avatarUrl }
+          author { login ... on User { name } avatarUrl }
           authorAssociation
           createdAt
           updatedAt
@@ -115,7 +115,11 @@ function mapDiscussion(node: GraphQLDiscussionNode | null | undefined) {
     title: node.title,
     state: node.closed ? "closed" : "open",
     body: node.body,
-    user: { login: node.author?.login, avatar_url: node.author?.avatarUrl },
+    user: {
+      login: node.author?.login,
+      name: node.author?.name,
+      avatar_url: node.author?.avatarUrl
+    },
     author_association: node.authorAssociation,
     labels: discussionLabels(node),
     created_at: node.createdAt,
@@ -134,7 +138,11 @@ function mapDiscussionComments(
     id: comment.databaseId ?? comment.id,
     node_id: comment.id,
     body: comment.body,
-    user: { login: comment.author?.login, avatar_url: comment.author?.avatarUrl },
+    user: {
+      login: comment.author?.login,
+      name: comment.author?.name,
+      avatar_url: comment.author?.avatarUrl
+    },
     author_association: comment.authorAssociation,
     created_at: comment.createdAt,
     updated_at: comment.updatedAt

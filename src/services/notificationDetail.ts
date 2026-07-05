@@ -7,6 +7,12 @@ import {
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import { createGitHubClient } from "./github";
 import { LruCache } from "./lruCache";
+import {
+  clearUserProfileCache,
+  displayNameForLogin,
+  fetchUserProfiles,
+  type UserProfile
+} from "./userProfiles";
 
 export type { ConversationComment as NotificationComment } from "../domain/conversation";
 
@@ -14,6 +20,7 @@ export interface NotificationDetailContent {
   title: string;
   state: string;
   author: string;
+  authorName?: string;
   authorAvatarUrl?: string;
   authorAssociation?: string;
   created_at?: string;
@@ -27,6 +34,7 @@ export interface NotificationDetailContent {
 
 interface UserResponse {
   login?: string;
+  name?: string | null;
   avatar_url?: string;
 }
 
@@ -83,16 +91,46 @@ function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLab
     .filter((label) => label.name);
 }
 
-function mapComments(comments: CommentResponse[]): ConversationComment[] {
-  return comments.map((comment) => ({
-    id: String(comment.id ?? ""),
-    author: comment.user?.login ?? "unknown",
-    avatarUrl: comment.user?.avatar_url,
-    authorAssociation: comment.author_association,
-    created_at: comment.created_at ?? "",
-    body: comment.body ?? "",
-    reactions: summarizeReactions(comment.reactions)
-  }));
+type ProfileMap = Record<string, UserProfile>;
+
+function displayNameForUser(
+  user: UserResponse | undefined,
+  profiles: ProfileMap
+): string | undefined {
+  const login = user?.login;
+  const inlineName = user?.name?.trim();
+  if (inlineName && inlineName !== login) {
+    return inlineName;
+  }
+  return displayNameForLogin(profiles, login);
+}
+
+function loginNeedingProfile(user: UserResponse | undefined): string | undefined {
+  const login = user?.login;
+  if (!login || login === "unknown") {
+    return undefined;
+  }
+  const inlineName = user.name?.trim();
+  return inlineName && inlineName !== login ? undefined : login;
+}
+
+function mapComments(
+  comments: CommentResponse[],
+  profiles: ProfileMap = {}
+): ConversationComment[] {
+  return comments.map((comment) => {
+    const authorName = displayNameForUser(comment.user, profiles);
+    return {
+      id: String(comment.id ?? ""),
+      author: comment.user?.login ?? "unknown",
+      ...(authorName ? { authorName } : {}),
+      avatarUrl: comment.user?.avatar_url,
+      authorAssociation: comment.author_association,
+      created_at: comment.created_at ?? "",
+      body: comment.body ?? "",
+      reactions: summarizeReactions(comment.reactions)
+    };
+  });
 }
 
 const detailCache = new LruCache<NotificationDetailContent>(50);
@@ -101,6 +139,26 @@ const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
 export function clearNotificationDetailCache() {
   detailCache.clear();
   inflightDetails.clear();
+  clearUserProfileCache();
+}
+
+async function userProfilesForDetail(
+  options: FetchNotificationDetailOptions,
+  item: IssueResponse,
+  comments: CommentResponse[] | null
+): Promise<ProfileMap> {
+  return fetchUserProfiles(
+    {
+      token: options.token,
+      apiBaseUrl: options.apiBaseUrl,
+      webBaseUrl: options.webBaseUrl,
+      fetch: options.fetchImpl
+    },
+    [
+      loginNeedingProfile(item.user),
+      ...(comments ?? []).map((comment) => loginNeedingProfile(comment.user))
+    ]
+  );
 }
 
 function detailCacheKey(options: FetchNotificationDetailOptions): string {
@@ -187,10 +245,12 @@ async function fetchNotificationDetailUncached(
       repo,
       number
     )) as { discussion: IssueResponse; comments: CommentResponse[] };
+    const authorName = displayNameForUser(discussion.user, {});
     return {
       title: discussion.title ?? notification.subject.title,
       state: discussion.state ?? "open",
       author: discussion.user?.login ?? "unknown",
+      ...(authorName ? { authorName } : {}),
       authorAvatarUrl: discussion.user?.avatar_url,
       authorAssociation: discussion.author_association,
       created_at: discussion.created_at,
@@ -210,18 +270,21 @@ async function fetchNotificationDetailUncached(
       CommentResponse[] | null
     >
   ]);
+  const profiles = await userProfilesForDetail(options, item, comments);
+  const authorName = displayNameForUser(item.user, profiles);
 
   return {
     title: item.title ?? notification.subject.title,
     state: isPull && item.merged_at ? "merged" : item.state ?? "open",
     author: item.user?.login ?? "unknown",
+    ...(authorName ? { authorName } : {}),
     authorAvatarUrl: item.user?.avatar_url,
     authorAssociation: item.author_association,
     created_at: item.created_at,
     body: item.body ?? "",
     labels: mapLabels(item.labels),
     reactions: summarizeReactions(item.reactions),
-    comments: mapComments(comments ?? []),
+    comments: mapComments(comments ?? [], profiles),
     commentsError: comments === null
   };
 }

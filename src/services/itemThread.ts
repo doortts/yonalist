@@ -8,11 +8,18 @@ import type { ItemKind, ItemState } from "../domain/types";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import { createGitHubClient } from "./github";
 import { LruCache } from "./lruCache";
+import {
+  clearUserProfileCache,
+  displayNameForLogin,
+  fetchUserProfiles,
+  type UserProfile
+} from "./userProfiles";
 
 export interface ItemThread {
   state: ItemState;
   /** Pull requests only: still marked as a draft. */
   draft: boolean;
+  authorName?: string;
   authorAvatarUrl?: string;
   authorAssociation?: string;
   labels: GitHubLabel[];
@@ -43,6 +50,7 @@ const inflightThreads = new Map<string, Promise<ItemThread>>();
 export function clearItemThreadCache() {
   threadCache.clear();
   inflightThreads.clear();
+  clearUserProfileCache();
 }
 
 function threadCacheKey(
@@ -62,6 +70,7 @@ function threadCacheKey(
 
 interface UserResponse {
   login?: string;
+  name?: string | null;
   avatar_url?: string;
 }
 
@@ -103,36 +112,87 @@ function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLab
     .filter((label) => label.name);
 }
 
-function mapComments(comments: CommentResponse[]): ConversationComment[] {
+type ProfileMap = Record<string, UserProfile>;
+
+function displayNameForUser(
+  user: UserResponse | undefined,
+  profiles: ProfileMap
+): string | undefined {
+  const login = user?.login;
+  const inlineName = user?.name?.trim();
+  if (inlineName && inlineName !== login) {
+    return inlineName;
+  }
+  return displayNameForLogin(profiles, login);
+}
+
+function loginNeedingProfile(user: UserResponse | undefined): string | undefined {
+  const login = user?.login;
+  if (!login || login === "unknown") {
+    return undefined;
+  }
+  const inlineName = user.name?.trim();
+  return inlineName && inlineName !== login ? undefined : login;
+}
+
+function mapComments(
+  comments: CommentResponse[],
+  profiles: ProfileMap = {}
+): ConversationComment[] {
   if (!Array.isArray(comments)) {
     return [];
   }
-  return comments.map((comment) => ({
-    id: String(comment.id ?? ""),
-    author: comment.user?.login ?? "unknown",
-    avatarUrl: comment.user?.avatar_url,
-    authorAssociation: comment.author_association,
-    created_at: comment.created_at ?? "",
-    body: comment.body ?? "",
-    reactions: summarizeReactions(comment.reactions)
-  }));
+  return comments.map((comment) => {
+    const authorName = displayNameForUser(comment.user, profiles);
+    return {
+      id: String(comment.id ?? ""),
+      author: comment.user?.login ?? "unknown",
+      ...(authorName ? { authorName } : {}),
+      avatarUrl: comment.user?.avatar_url,
+      authorAssociation: comment.author_association,
+      created_at: comment.created_at ?? "",
+      body: comment.body ?? "",
+      reactions: summarizeReactions(comment.reactions)
+    };
+  });
 }
 
 function threadFrom(
   item: StateResponse,
   comments: CommentResponse[] | null,
-  state: ItemState
+  state: ItemState,
+  profiles: ProfileMap = {}
 ): ItemThread {
+  const authorName = displayNameForUser(item.user, profiles);
   return {
     state,
     draft: Boolean(item.draft),
+    ...(authorName ? { authorName } : {}),
     authorAvatarUrl: item.user?.avatar_url,
     authorAssociation: item.author_association,
     labels: mapLabels(item.labels),
     reactions: summarizeReactions(item.reactions),
-    comments: mapComments(comments ?? []),
+    comments: mapComments(comments ?? [], profiles),
     commentsError: comments === null
   };
+}
+
+async function userProfilesForThread(
+  connection: GithubConnection,
+  item: StateResponse,
+  comments: CommentResponse[] | null
+): Promise<ProfileMap> {
+  return fetchUserProfiles(
+    {
+      token: connection.token,
+      apiBaseUrl: connection.apiBaseUrl,
+      webBaseUrl: connection.webBaseUrl
+    },
+    [
+      loginNeedingProfile(item.user),
+      ...(comments ?? []).map((comment) => loginNeedingProfile(comment.user))
+    ]
+  );
 }
 
 /**
@@ -187,7 +247,13 @@ async function fetchItemThreadUncached(
       repo,
       number
     )) as { discussion: StateResponse; comments: CommentResponse[] };
-    return threadFrom(discussion, comments, normalizeState(discussion.state));
+    const profiles = await userProfilesForThread(connection, discussion, comments);
+    return threadFrom(
+      discussion,
+      comments,
+      normalizeState(discussion.state),
+      profiles
+    );
   }
 
   if (target.kind === "pull") {
@@ -197,10 +263,12 @@ async function fetchItemThreadUncached(
         .listIssueComments(owner, repo, number)
         .catch(() => null) as Promise<CommentResponse[] | null>
     ]);
+    const profiles = await userProfilesForThread(connection, pull, comments);
     return threadFrom(
       pull,
       comments,
-      pull.merged_at ? "merged" : normalizeState(pull.state)
+      pull.merged_at ? "merged" : normalizeState(pull.state),
+      profiles
     );
   }
 
@@ -210,5 +278,6 @@ async function fetchItemThreadUncached(
       .listIssueComments(owner, repo, number)
       .catch(() => null) as Promise<CommentResponse[] | null>
   ]);
-  return threadFrom(issue, comments, normalizeState(issue.state));
+  const profiles = await userProfilesForThread(connection, issue, comments);
+  return threadFrom(issue, comments, normalizeState(issue.state), profiles);
 }

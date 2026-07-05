@@ -38,6 +38,7 @@ export function summarizeReactions(
 export interface ConversationComment {
   id: string;
   author: string;
+  authorName?: string;
   avatarUrl?: string;
   authorAssociation?: string;
   created_at: string;

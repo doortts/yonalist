@@ -36,6 +36,13 @@ describe("fetchItemThread", () => {
           }
         ]);
       }
+      if (target.includes("/users/mona")) {
+        return jsonResponse({
+          login: "mona",
+          name: "Mona Lisa",
+          avatar_url: "https://avatars.example.com/mona.png"
+        });
+      }
       expect(target).toContain("/pulls/17");
       return jsonResponse({
         state: "closed",
@@ -58,6 +65,7 @@ describe("fetchItemThread", () => {
         {
           id: "1",
           author: "mona",
+          authorName: "Mona Lisa",
           avatarUrl: "https://avatars.example.com/mona.png",
           authorAssociation: undefined,
           created_at: "2026-07-02T00:00:00Z",
@@ -205,7 +213,7 @@ describe("fetchItemThread", () => {
                   {
                     databaseId: 2,
                     body: "Reply",
-                    author: { login: "mona" },
+                    author: { login: "mona", name: "Mona Lisa" },
                     createdAt: "2026-07-02T00:00:00Z"
                   }
                 ]
@@ -226,8 +234,49 @@ describe("fetchItemThread", () => {
       });
 
       expect(thread.state).toBe("open");
-      expect(thread.comments).toHaveLength(1);
+      expect(thread.comments[0].authorName).toBe("Mona Lisa");
       expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("hydrates opening post and comment display names from user profiles", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/comments")) {
+        return jsonResponse([
+          {
+            id: 9,
+            body: "Named reply",
+            user: { login: "mona" },
+            created_at: "2026-07-02T00:00:00Z"
+          }
+        ]);
+      }
+      if (target.includes("/users/doortts")) {
+        return jsonResponse({ login: "doortts", name: "Doortts Kim" });
+      }
+      if (target.includes("/users/mona")) {
+        return jsonResponse({ login: "mona", name: "Mona Lisa" });
+      }
+      return jsonResponse({
+        state: "open",
+        user: { login: "doortts" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const thread = await fetchItemThread(connection, {
+        kind: "issue",
+        owner: "acme",
+        repo: "app",
+        number: 42
+      });
+
+      expect(thread.authorName).toBe("Doortts Kim");
+      expect(thread.comments[0].authorName).toBe("Mona Lisa");
     } finally {
       vi.unstubAllGlobals();
     }

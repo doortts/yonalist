@@ -115,6 +115,12 @@ describe("fetchNotificationDetail", () => {
           { id: 9, body: "First!", user: { login: "mona" }, created_at: "2026-07-02T11:00:00Z" }
         ]);
       }
+      if (target.includes("/users/doortts")) {
+        return jsonResponse({ login: "doortts", name: "Doortts Kim" });
+      }
+      if (target.includes("/users/mona")) {
+        return jsonResponse({ login: "mona", name: "Mona Lisa" });
+      }
       return jsonResponse({
         title: "Fix login",
         state: "open",
@@ -134,6 +140,7 @@ describe("fetchNotificationDetail", () => {
 
     expect(detail.title).toBe("Fix login");
     expect(detail.state).toBe("open");
+    expect(detail.authorName).toBe("Doortts Kim");
     expect(detail.authorAvatarUrl).toBe("https://avatars/doortts.png");
     expect(detail.authorAssociation).toBe("OWNER");
     expect(detail.labels).toEqual([{ name: "bug", color: "d73a4a" }]);
@@ -141,6 +148,7 @@ describe("fetchNotificationDetail", () => {
       {
         id: "9",
         author: "mona",
+        authorName: "Mona Lisa",
         avatarUrl: undefined,
         authorAssociation: undefined,
         created_at: "2026-07-02T11:00:00Z",
@@ -155,6 +163,9 @@ describe("fetchNotificationDetail", () => {
       const target = String(url);
       if (target.includes("/comments")) {
         return jsonResponse([]);
+      }
+      if (target.includes("/users/mona")) {
+        return jsonResponse({ login: "mona", name: "Mona Lisa" });
       }
       expect(target).toContain("/pulls/17");
       return jsonResponse({
@@ -189,7 +200,7 @@ describe("fetchNotificationDetail", () => {
               title: "Roadmap",
               closed: false,
               body: "Talk",
-              author: { login: "doortts" },
+              author: { login: "doortts", name: "Doortts Kim" },
               createdAt: "2026-07-01T00:00:00Z",
               labels: { nodes: [{ name: "planning" }] },
               comments: {
@@ -197,7 +208,7 @@ describe("fetchNotificationDetail", () => {
                   {
                     databaseId: 1,
                     body: "Reply",
-                    author: { login: "mona" },
+                    author: { login: "mona", name: "Mona Lisa" },
                     createdAt: "2026-07-02T00:00:00Z"
                   }
                 ]
@@ -218,8 +229,9 @@ describe("fetchNotificationDetail", () => {
     });
 
     expect(detail.title).toBe("Roadmap");
+    expect(detail.authorName).toBe("Doortts Kim");
     expect(detail.labels).toEqual([{ name: "planning", color: "" }]);
-    expect(detail.comments).toHaveLength(1);
+    expect(detail.comments[0].authorName).toBe("Mona Lisa");
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 

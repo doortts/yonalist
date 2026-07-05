@@ -25,6 +25,7 @@ function Reactions({ reactions }: { reactions?: ReactionSummary }) {
 
 interface EntryAuthor {
   login: string;
+  name?: string;
   avatarUrl?: string;
   association?: string;
   isAuthor?: boolean;
@@ -40,9 +41,14 @@ function AssociationBadge({ author }: { author: EntryAuthor }) {
 }
 
 function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
+  const displayName =
+    author.name && author.name !== author.login
+      ? `${author.name} ${author.login}`
+      : author.login;
+
   return (
     <>
-      <strong className="comment-author">{author.login}</strong>
+      <strong className="comment-author">{displayName}</strong>
       <AssociationBadge author={author} />
       <span className="comment-time">{meta}</span>
     </>
@@ -108,6 +114,7 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
       {comments.map((comment) => {
         const author: EntryAuthor = {
           login: comment.author,
+          name: comment.authorName,
           avatarUrl: comment.avatarUrl,
           association: comment.authorAssociation,
           isAuthor: Boolean(subjectAuthor) && comment.author === subjectAuthor

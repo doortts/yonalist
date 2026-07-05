@@ -31,6 +31,24 @@ describe("CommentThread", () => {
     expect(within(thread).getByText("Author")).toBeInTheDocument();
   });
 
+  it("shows a display name before the login when one is available", () => {
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "3",
+            author: "yogno-koo",
+            authorName: "Yogno Koo",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "named reply"
+          }
+        ]}
+      />
+    );
+
+    expect(screen.getByText("Yogno Koo yogno-koo")).toBeInTheDocument();
+  });
+
   it("renders nothing when there are no comments", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();
@@ -52,6 +70,18 @@ describe("OpeningPost", () => {
     expect(screen.getByText("hello")).toBeInTheDocument();
     // No initial-letter avatar fallback is rendered.
     expect(container.querySelector(".avatar")).toBeNull();
+  });
+
+  it("shows the opening post author's display name before the login", () => {
+    render(
+      <OpeningPost
+        author={{ login: "octocat", name: "The Octocat" }}
+        subtitle="Issue"
+        body="hello"
+      />
+    );
+
+    expect(screen.getByText("The Octocat octocat")).toBeInTheDocument();
   });
 
   it("shows a real avatar image when one is provided", () => {
