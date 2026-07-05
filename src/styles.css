@@ -114,6 +114,7 @@
   --warning-soft: rgb(251 191 36 / 16%);
   --warning-border: rgb(251 191 36 / 46%);
   --success: #57ab5a;
+  --yona-comment: #d78cff;
 
   --shadow-modal: 0 20px 70px rgb(0 0 0 / 55%);
   --scrollbar-thumb: rgb(255 255 255 / 22%);
@@ -2162,17 +2163,13 @@ body.is-resizing-pane {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-/* owner avatar with the reason icon as a small overlay badge */
 .notification-lead {
-  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
   width: 30px;
   height: 30px;
-}
-
-.notification-lead .avatar {
-  width: 26px;
-  height: 26px;
 }
 
 .notification-reason {
@@ -2184,23 +2181,6 @@ body.is-resizing-pane {
   height: 30px;
   border-radius: 50%;
   color: var(--text-3);
-}
-
-/* when an owner avatar is present, shrink the reason icon into a corner badge */
-.notification-lead .avatar + .notification-reason {
-  position: absolute;
-  right: -4px;
-  bottom: -4px;
-  width: 17px;
-  height: 17px;
-  border-radius: 50%;
-  background: var(--bg-list);
-  box-shadow: 0 0 0 1.5px var(--bg-list);
-}
-
-.notification-lead .avatar + .notification-reason svg {
-  width: 12px;
-  height: 12px;
 }
 
 .reason-mention {
@@ -2459,8 +2439,8 @@ body.is-resizing-pane {
   text-transform: uppercase;
 }
 
-/* Reconnect sync result toast */
-.sync-toast {
+/* App feedback snackbar */
+.app-snackbar {
   position: fixed;
   right: 20px;
   bottom: 20px;

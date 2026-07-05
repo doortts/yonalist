@@ -86,6 +86,22 @@ describe("useNotifications", () => {
     expect(sampleIds.length).toBeGreaterThan(0);
   });
 
+  it("ignores previously hidden notification ids after hiding support is removed", () => {
+    const hiddenId = sampleNotifications()[0].id;
+    window.localStorage.setItem(
+      "yonalist.notifications.hidden.v1",
+      JSON.stringify([hiddenId])
+    );
+
+    const { result } = renderHook(() =>
+      useNotifications({ ...connection, token: "" }, true, true)
+    );
+
+    expect(result.current.notifications.map((notification) => notification.id)).toContain(
+      hiddenId
+    );
+  });
+
   it("does not fetch when offline", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

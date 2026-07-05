@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ItemDocument } from "../domain/types";
 import {
-  fetchMyRepositories,
+  fetchMyRepositorySummaries,
   groupRepositoriesByOwner,
   type OwnerGroup
 } from "../services/githubItems";
+import {
+  loadCachedRepositorySummaries,
+  persistCachedRepositorySummaries
+} from "../services/repositoryCache";
 import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseRepositoriesResult {
@@ -33,21 +37,30 @@ export function useRepositories(
   const requestSeq = useRef(0);
 
   const load = useCallback(() => {
-    if (!token || !online) {
+    if (!token) {
+      return;
+    }
+    const cached = loadCachedRepositorySummaries(connection.apiBaseUrl);
+    if (cached) {
+      setGroups(groupRepositoriesByOwner(cached));
+    }
+    if (!online) {
       return;
     }
     const seq = ++requestSeq.current;
     setLoading(true);
-    fetchMyRepositories(connection)
+    fetchMyRepositorySummaries(connection)
       .then((repositories) => {
         if (requestSeq.current === seq) {
+          persistCachedRepositorySummaries(connection.apiBaseUrl, repositories);
           setGroups(groupRepositoriesByOwner(repositories));
           setError(null);
         }
       })
       .catch((cause) => {
         if (requestSeq.current === seq) {
-          setError(cause instanceof Error ? cause.message : String(cause));
+          const detail = cause instanceof Error ? cause.message : String(cause);
+          setError(`Could not load repositories: ${detail}`);
         }
       })
       .finally(() => {
@@ -59,9 +72,17 @@ export function useRepositories(
   }, [token, online, connection.apiBaseUrl]);
 
   useEffect(() => {
-    setGroups(null);
+    requestSeq.current += 1;
+    if (!token) {
+      setGroups(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+    const cached = loadCachedRepositorySummaries(connection.apiBaseUrl);
+    setGroups(cached ? groupRepositoriesByOwner(cached) : null);
     load();
-  }, [load]);
+  }, [load, token, connection.apiBaseUrl]);
 
   const demoGroups = useMemo<OwnerGroup[]>(() => {
     const counts = new Map<string, Map<string, number>>();

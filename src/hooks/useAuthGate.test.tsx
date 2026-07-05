@@ -28,6 +28,7 @@ function makeAuth(overrides: Partial<UseGithubAuthResult> = {}): UseGithubAuthRe
     connection: { apiBaseUrl: API_URL, webBaseUrl: "https://github.com", token: "stored-token" },
     authMethod: "personal_token",
     signedIn: true,
+    restoringSession: false,
     loggingIn: false,
     error: null,
     login: vi.fn(),
@@ -49,7 +50,10 @@ describe("useAuthGate", () => {
   it("requires login when no token is stored", async () => {
     const { result } = renderHook(() =>
       useAuthGate({
-        auth: makeAuth(),
+        auth: makeAuth({
+          connection: { apiBaseUrl: API_URL, webBaseUrl: "https://github.com", token: "" },
+          signedIn: false
+        }),
         servers: makeServers({ tokenOf: () => null }),
         online: true
       })
@@ -69,7 +73,14 @@ describe("useAuthGate", () => {
 
     const { result } = renderHook(() =>
       useAuthGate({
-        auth: makeAuth(),
+        auth: makeAuth({
+          connection: {
+            apiBaseUrl: API_URL,
+            webBaseUrl: "https://github.com",
+            token: "gho_saved"
+          },
+          authMethod: "oauth"
+        }),
         servers: makeServers({ tokenOf: () => null }),
         online: true
       })
@@ -96,7 +107,14 @@ describe("useAuthGate", () => {
 
     const { result } = renderHook(() =>
       useAuthGate({
-        auth: makeAuth(),
+        auth: makeAuth({
+          connection: {
+            apiBaseUrl: API_URL,
+            webBaseUrl: "https://github.com",
+            token: "gho_expired"
+          },
+          authMethod: "oauth"
+        }),
         servers: makeServers({ tokenOf: () => null }),
         online: true
       })

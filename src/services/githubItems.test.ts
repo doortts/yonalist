@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import {
+  fetchMyRepositorySummaries,
   fetchMyRepositories,
   fetchMyWorkItems,
   fetchRepoWorkItems,
+  fetchRepositoryOpenItemCounts,
   groupRepositoriesByOwner
 } from "./githubItems";
 
@@ -174,6 +176,76 @@ describe("fetchRepoWorkItems", () => {
 });
 
 describe("fetchMyRepositories", () => {
+  it("loads repository summaries without waiting for GraphQL count enrichment", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("affiliation=owner%2Ccollaborator")) {
+        return jsonResponse([
+          {
+            name: "app",
+            full_name: "acme/app",
+            owner: { login: "acme" },
+            open_issues_count: 4,
+            pushed_at: "2026-07-01T00:00:00Z"
+          }
+        ]);
+      }
+      if (target.includes("/graphql")) {
+        throw new Error("Repository summaries should not fetch count GraphQL.");
+      }
+      return jsonResponse([]);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const repos = await fetchMyRepositorySummaries(connection);
+
+    expect(repos).toHaveLength(1);
+    expect(repos[0]).toMatchObject({
+      fullName: "acme/app",
+      openIssuesCount: 4
+    });
+    expect(
+      fetchMock.mock.calls.some((call) => String(call[0]).includes("/graphql"))
+    ).toBe(false);
+  });
+
+  it("fetches exact open item counts only for the repositories supplied", async () => {
+    const flags = { participating: true, watched: false, orgMember: false };
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/graphql")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        expect(String(body.query)).toContain("RepositoryOpenItemCounts");
+        expect(JSON.stringify(body.variables)).toContain("acme");
+        expect(JSON.stringify(body.variables)).not.toContain("hidden");
+        return jsonResponse({
+          data: {
+            r0: {
+              issues: { totalCount: 1 },
+              pullRequests: { totalCount: 2 },
+              discussions: { totalCount: 3 }
+            }
+          }
+        });
+      }
+      throw new Error(`Unexpected request: ${target}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const counts = await fetchRepositoryOpenItemCounts(connection, [
+      {
+        owner: "acme",
+        name: "visible",
+        fullName: "acme/visible",
+        openIssuesCount: 0,
+        pushedAt: "",
+        ...flags
+      }
+    ]);
+
+    expect(counts).toEqual({ "acme/visible": 6 });
+  });
+
   it("tags repositories by access source and merges duplicates", async () => {
     const repo = (owner: string, name: string) => ({
       name,

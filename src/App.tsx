@@ -59,6 +59,7 @@ import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
 import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
+import { useRepositoryOpenCounts } from "./hooks/useRepositoryOpenCounts";
 import { useRepositories } from "./hooks/useRepositories";
 import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
@@ -137,6 +138,7 @@ export default function App({ initialOnline }: AppProps) {
   const [showNotifications, setShowNotifications] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
+  const [appSnackbar, setAppSnackbar] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
@@ -272,6 +274,11 @@ export default function App({ initialOnline }: AppProps) {
     repositoryGroups.groups,
     involvedRepoNames,
     involvementReady && !repositoryGroups.loading
+  );
+  const visibleRepositoryCounts = useRepositoryOpenCounts(
+    auth.connection,
+    online,
+    projectVisibility.visibleGroups
   );
   // Notifications follow the Projects 표시 selection: repositories the user
   // unchecked are filtered out; repositories we do not manage stay visible.
@@ -426,9 +433,26 @@ export default function App({ initialOnline }: AppProps) {
     if (!syncFeedback) {
       return;
     }
-    const timer = window.setTimeout(() => setSyncFeedback(null), 6000);
-    return () => window.clearTimeout(timer);
+    setAppSnackbar(syncFeedback);
   }, [syncFeedback]);
+
+  useEffect(() => {
+    const message = repositoryGroups.error ?? visibleRepositoryCounts.error;
+    if (message) {
+      setAppSnackbar(message);
+    }
+  }, [repositoryGroups.error, visibleRepositoryCounts.error]);
+
+  useEffect(() => {
+    if (!appSnackbar) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setAppSnackbar(null);
+      setSyncFeedback(null);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [appSnackbar]);
 
   function onToggleFavorite() {
     if (!selectedItem) {
@@ -451,6 +475,7 @@ export default function App({ initialOnline }: AppProps) {
   }
 
   function openSettings() {
+    setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
     setShowSettings(true);
@@ -458,6 +483,7 @@ export default function App({ initialOnline }: AppProps) {
   }
 
   function openNotifications() {
+    setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowSettings(false);
     setShowNotifications(true);
@@ -863,7 +889,7 @@ export default function App({ initialOnline }: AppProps) {
           setShowNewIssue(false);
           setShowNotifications(false);
         }}
-        repositoryGroups={projectVisibility.visibleGroups}
+        repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}
         settingsOpen={showSettings}
@@ -1003,9 +1029,9 @@ export default function App({ initialOnline }: AppProps) {
           onClose={() => setShowOutbox(false)}
         />
       )}
-      {syncFeedback && (
-        <div className="sync-toast" role="status">
-          {syncFeedback}
+      {appSnackbar && (
+        <div className="app-snackbar" role="status">
+          {appSnackbar}
         </div>
       )}
     </main>

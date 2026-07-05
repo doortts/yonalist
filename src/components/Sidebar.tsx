@@ -65,6 +65,7 @@ export function Sidebar({
   notificationsLoading
 }: SidebarProps) {
   const inboxActive = !repositoryFilter && !settingsOpen && !notificationsOpen;
+  const projectsActive = !settingsOpen && !notificationsOpen;
 
   return (
     <aside className="sidebar" aria-label="Navigation">
@@ -153,12 +154,12 @@ export function Sidebar({
             {group.repositories.map((repository) => (
               <button
                 className={
-                  repositoryFilter === repository.fullName
+                  projectsActive && repositoryFilter === repository.fullName
                     ? "nav-item active"
                     : "nav-item"
                 }
                 type="button"
-                aria-pressed={repositoryFilter === repository.fullName}
+                aria-pressed={projectsActive && repositoryFilter === repository.fullName}
                 key={repository.fullName}
                 onClick={() => onRepositoryFilterChange(repository.fullName)}
               >

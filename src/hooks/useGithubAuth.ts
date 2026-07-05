@@ -22,6 +22,7 @@ export interface UseGithubAuthResult {
   connection: GithubConnection;
   authMethod: GithubAuthMethod;
   signedIn: boolean;
+  restoringSession: boolean;
   loggingIn: boolean;
   error: string | null;
   login: () => Promise<void>;
@@ -37,25 +38,34 @@ export interface UseGithubAuthResult {
  */
 export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthResult {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const personalToken = servers.tokenOf(servers.selectedUrl);
 
   useEffect(() => {
     setSessionToken(null);
     setError(null);
+    if (personalToken) {
+      setRestoringSession(false);
+      return;
+    }
+    setRestoringSession(true);
     // Restore the persisted session for this server, if one exists.
     let cancelled = false;
     void loadSessionToken(servers.selectedUrl).then((stored) => {
       if (!cancelled && stored) {
         setSessionToken(stored);
       }
+      if (!cancelled) {
+        setRestoringSession(false);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [servers.selectedUrl]);
+  }, [servers.selectedUrl, personalToken]);
 
-  const personalToken = servers.tokenOf(servers.selectedUrl);
   const token = personalToken ?? sessionToken ?? "";
   const authMethod: GithubAuthMethod = personalToken ? "personal_token" : "oauth";
 
@@ -109,6 +119,7 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
     },
     authMethod,
     signedIn: token !== "",
+    restoringSession,
     loggingIn,
     error,
     login,

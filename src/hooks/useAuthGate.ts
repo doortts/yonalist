@@ -7,7 +7,7 @@ import {
   persistSkipLogin,
   validateConnection
 } from "../services/authGate";
-import { clearSessionToken, loadSessionToken } from "../services/sessionTokens";
+import { clearSessionToken } from "../services/sessionTokens";
 import type { UseGithubAuthResult } from "./useGithubAuth";
 import type { UseGithubServersResult } from "./useGithubServers";
 
@@ -24,14 +24,12 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
     loadSkipLogin() ? "passed" : "checking"
   );
   const [error, setError] = useState<string | null>(null);
-  const gateStarted = useRef(false);
   const gateValidating = useRef(false);
 
   useEffect(() => {
-    if (state !== "checking" || gateStarted.current) {
+    if (state !== "checking") {
       return;
     }
-    gateStarted.current = true;
 
     const lastAuthenticated = loadLastAuthenticatedUrl();
     if (
@@ -40,30 +38,38 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       servers.urls.includes(lastAuthenticated)
     ) {
       servers.select(lastAuthenticated);
+      return;
     }
 
-    const url = lastAuthenticated ?? servers.selectedUrl;
+    if (auth.restoringSession) {
+      return;
+    }
 
-    // Optimistic gate: any stored credential — personal token or a persisted
-    // OAuth session — renders the app immediately (local vault data works
-    // offline anyway); the credentials are verified in the background and
-    // only a definitive rejection returns to the login page.
-    const enterWith = (token: string, isSessionToken: boolean) => {
+    const token = auth.connection.token.trim();
+    if (!token) {
+      setState("required");
+      return;
+    }
+
+    // Optimistic gate: any restored credential renders the app immediately
+    // (local vault data works offline anyway); credentials are verified in the
+    // background and only a definitive rejection returns to the login page.
+    const enterWith = () => {
       setState("passed");
       if (!online) {
         return;
       }
       void checkConnection({
-        apiBaseUrl: url,
+        apiBaseUrl: auth.connection.apiBaseUrl,
         webBaseUrl: auth.connection.webBaseUrl,
         token
       }).then((result) => {
         if (result === "ok") {
-          persistLastAuthenticatedUrl(url);
+          persistLastAuthenticatedUrl(auth.connection.apiBaseUrl);
         } else if (result === "invalid") {
-          if (isSessionToken) {
+          if (auth.authMethod === "oauth") {
             // Expired/revoked OAuth sessions must not sign in the next start.
-            void clearSessionToken(url);
+            void clearSessionToken(auth.connection.apiBaseUrl);
           }
           setError(
             "저장된 인증 정보가 더 이상 유효하지 않습니다. 다시 로그인하세요."
@@ -74,21 +80,15 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       });
     };
 
-    const personalToken = servers.tokenOf(url);
-    if (personalToken) {
-      enterWith(personalToken, false);
-      return;
-    }
-
-    void loadSessionToken(url).then((sessionToken) => {
-      if (sessionToken) {
-        enterWith(sessionToken, true);
-      } else {
-        setState("required");
-      }
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state]);
+    enterWith();
+  }, [
+    state,
+    auth.authMethod,
+    auth.connection,
+    auth.restoringSession,
+    online,
+    servers
+  ]);
 
   useEffect(() => {
     if (state !== "required" || !auth.signedIn || gateValidating.current) {

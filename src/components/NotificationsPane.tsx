@@ -3,14 +3,12 @@ import {
   AtSign,
   Bot,
   ExternalLink,
-  EyeOff,
   GitPullRequest,
   Mail,
   MessageCircle,
   MessagesSquare,
   RefreshCw,
   Search,
-  Undo2,
   Users
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -24,7 +22,6 @@ import {
 } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
 import { timeAgo } from "../timeFormat";
-import { Avatar } from "./Avatar";
 
 interface NotificationsPaneProps {
   state: UseNotificationsResult;
@@ -86,13 +83,10 @@ export function NotificationsPane({
 }: NotificationsPaneProps) {
   const [query, setQuery] = useState("");
   const [onlyNew, setOnlyNew] = useState(false);
-  const [showHidden, setShowHidden] = useState(false);
-
-  const source = showHidden ? state.hiddenNotifications : state.notifications;
 
   const visible = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return source.filter((notification) => {
+    return state.notifications.filter((notification) => {
       if (
         onlyNew &&
         isReadAndQuiet(
@@ -109,7 +103,7 @@ export function NotificationsPane({
         `${notification.subject.title} ${notification.repository.full_name}`.toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [source, query, onlyNew, state.viewedAt, webBaseUrl]);
+  }, [state.notifications, query, onlyNew, state.viewedAt, webBaseUrl]);
 
   const groups = useMemo(() => groupNotificationsByDate(visible), [visible]);
 
@@ -155,15 +149,6 @@ export function NotificationsPane({
           />
           <span>Only new</span>
         </label>
-        <label className="settings-check notifications-toggle">
-          <input
-            type="checkbox"
-            aria-label="Show hidden notifications"
-            checked={showHidden}
-            onChange={(event) => setShowHidden(event.target.checked)}
-          />
-          <span>Hidden ({state.hiddenNotifications.length})</span>
-        </label>
       </div>
 
       {state.demoMode && (
@@ -177,24 +162,22 @@ export function NotificationsPane({
       <div className="notifications-list">
         {groups.length === 0 && (
           <p className="empty-copy list-empty">
-            {showHidden ? "No hidden notifications." : "No notifications."}
+            No notifications.
           </p>
         )}
         {groups.map((group) => (
           <section key={group.key} aria-label={`Notifications for ${group.label}`}>
             <div className="notifications-date-row">
               <h3>{group.label}</h3>
-              {!showHidden && (
-                <button
-                  type="button"
-                  className="notifications-open-all"
-                  aria-label={`Open all notifications for ${group.label}`}
-                  title="Open all in browser"
-                  onClick={() => openAll(group.notifications)}
-                >
-                  <ExternalLink size={15} />
-                </button>
-              )}
+              <button
+                type="button"
+                className="notifications-open-all"
+                aria-label={`Open all notifications for ${group.label}`}
+                title="Open all in browser"
+                onClick={() => openAll(group.notifications)}
+              >
+                <ExternalLink size={15} />
+              </button>
             </div>
             {group.notifications.map((notification) => {
               const url = notificationWebUrl(notification, webBaseUrl);
@@ -222,14 +205,9 @@ export function NotificationsPane({
               return (
                 <div className={rowClasses} key={notification.id}>
                   <span className="notification-lead">
-                    <Avatar
-                      login={notification.repository.owner.login}
-                      avatarUrl={notification.repository.owner.avatar_url}
-                      size={26}
-                      showFallback={false}
-                    />
                     <span
                       className={`notification-reason ${reason.className}`}
+                      aria-label={reason.label}
                       title={reason.label}
                     >
                       {SubjectIcon ? <SubjectIcon size={17} /> : <ReasonIcon size={17} />}
@@ -251,20 +229,6 @@ export function NotificationsPane({
                     </span>
                   </button>
                   {!quiet && <span className="notification-unread-dot" aria-label="Unread" />}
-                  <button
-                    type="button"
-                    className="icon-button notification-hide"
-                    aria-label={
-                      showHidden ? "Unhide notification" : "Hide notification"
-                    }
-                    onClick={() =>
-                      showHidden
-                        ? state.unhideNotification(notification.id)
-                        : state.hideNotification(notification.id)
-                    }
-                  >
-                    {showHidden ? <Undo2 size={15} /> : <EyeOff size={15} />}
-                  </button>
                 </div>
               );
             })}

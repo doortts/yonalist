@@ -404,6 +404,7 @@ function toSummaries(
 const REPO_PAGE_SIZE = 100;
 const MAX_REPO_PAGES = 5;
 const REPO_COUNT_BATCH_SIZE = 25;
+const REPO_COUNT_CONCURRENCY = 3;
 
 /** Follows pagination so large org memberships are not cut off at 100. */
 async function requestAllPages(
@@ -480,26 +481,71 @@ async function enrichRepositoriesWithOpenItemCounts(
     return repositories;
   }
 
-  const next = [...repositories];
+  try {
+    const counts = await fetchRepositoryOpenItemCounts(connection, repositories);
+    return repositories.map((repository) => ({
+      ...repository,
+      openIssuesCount: counts[repository.fullName] ?? repository.openIssuesCount
+    }));
+  } catch {
+    // Older GitHub Enterprise instances may not expose Discussions in GraphQL.
+    // Keep the REST repository count rather than hiding the repository list.
+    return repositories;
+  }
+}
+
+async function runWithConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  concurrency: number
+): Promise<T[]> {
+  const results: T[] = [];
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < tasks.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await tasks[index]();
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker())
+  );
+  return results;
+}
+
+export async function fetchRepositoryOpenItemCounts(
+  connection: GithubConnection,
+  repositories: RepositorySummary[]
+): Promise<Record<string, number>> {
+  if (repositories.length === 0) {
+    return {};
+  }
+
   const transport = createGitHubTransport(connection);
-  for (let start = 0; start < next.length; start += REPO_COUNT_BATCH_SIZE) {
-    const batch = next.slice(start, start + REPO_COUNT_BATCH_SIZE);
-    const { query, variables } = repositoryCountQuery(batch);
-    try {
+  const batches: RepositorySummary[][] = [];
+  for (let start = 0; start < repositories.length; start += REPO_COUNT_BATCH_SIZE) {
+    batches.push(repositories.slice(start, start + REPO_COUNT_BATCH_SIZE));
+  }
+
+  const parts = await runWithConcurrency(
+    batches.map((batch) => async () => {
+      const { query, variables } = repositoryCountQuery(batch);
       const data = await transport.graphql<Record<string, RepositoryOpenCounts | null>>(
         query,
         variables
       );
+      const counts: Record<string, number> = {};
       batch.forEach((repository, index) => {
-        const count = openItemCount(data[`r${index}`]);
-        next[start + index] = { ...repository, openIssuesCount: count };
+        counts[repository.fullName] = openItemCount(data[`r${index}`]);
       });
-    } catch {
-      // Older GitHub Enterprise instances may not expose Discussions in GraphQL.
-      // Keep the REST repository count rather than hiding the repository list.
-    }
-  }
-  return next;
+      return counts;
+    }),
+    REPO_COUNT_CONCURRENCY
+  );
+
+  return Object.assign({}, ...parts) as Record<string, number>;
 }
 
 /**
@@ -507,7 +553,7 @@ async function enrichRepositoriesWithOpenItemCounts(
  * collaborating, watched (subscribed), or via an organization/team
  * membership. The sidebar decides visibility from these flags.
  */
-export async function fetchMyRepositories(
+export async function fetchMyRepositorySummaries(
   connection: GithubConnection
 ): Promise<RepositorySummary[]> {
   const noFlags = { participating: false, watched: false, orgMember: false };
@@ -537,7 +583,14 @@ export async function fetchMyRepositories(
   upsert(toSummaries(orgMember, noFlags), "orgMember");
   upsert(toSummaries(watched, noFlags), "watched");
 
-  return enrichRepositoriesWithOpenItemCounts(connection, [...merged.values()]);
+  return [...merged.values()];
+}
+
+export async function fetchMyRepositories(
+  connection: GithubConnection
+): Promise<RepositorySummary[]> {
+  const repositories = await fetchMyRepositorySummaries(connection);
+  return enrichRepositoriesWithOpenItemCounts(connection, repositories);
 }
 
 /** Groups repositories by owner, owners alphabetical, repos by recent push. */

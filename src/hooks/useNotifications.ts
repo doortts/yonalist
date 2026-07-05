@@ -9,10 +9,8 @@ import { sampleNotifications } from "../fixtures/sampleNotifications";
 import { openExternal } from "../services/browser";
 import { fetchNotifications } from "../services/notifications";
 import {
-  loadHiddenIds,
   loadViewedAt,
   markViewed,
-  persistHiddenIds,
   type ViewedAtMap
 } from "../services/notificationStores";
 
@@ -20,7 +18,6 @@ const POLL_INTERVAL_MS = 60 * 1000;
 
 export interface UseNotificationsResult {
   notifications: GitHubNotification[];
-  hiddenNotifications: GitHubNotification[];
   unreadCount: number;
   loading: boolean;
   error: string | null;
@@ -29,8 +26,6 @@ export interface UseNotificationsResult {
   refresh: () => void;
   markNotificationViewed: (notification: GitHubNotification) => void;
   openNotification: (notification: GitHubNotification) => void;
-  hideNotification: (id: string) => void;
-  unhideNotification: (id: string) => void;
 }
 
 export function useNotifications(
@@ -47,7 +42,6 @@ export function useNotifications(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [viewedAt, setViewedAt] = useState<ViewedAtMap>(() => loadViewedAt());
-  const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => loadHiddenIds());
   const requestSeq = useRef(0);
 
   const load = useCallback(() => {
@@ -97,17 +91,8 @@ export function useNotifications(
 
   const notifications = useMemo(
     () =>
-      all.filter(
-        (notification) => !hiddenIds.has(notification.id) && repoVisible(notification)
-      ),
-    [all, hiddenIds, repoVisible]
-  );
-  const hiddenNotifications = useMemo(
-    () =>
-      all.filter(
-        (notification) => hiddenIds.has(notification.id) && repoVisible(notification)
-      ),
-    [all, hiddenIds, repoVisible]
+      all.filter((notification) => repoVisible(notification)),
+    [all, repoVisible]
   );
 
   const unreadCount = useMemo(
@@ -139,29 +124,8 @@ export function useNotifications(
     [connection.webBaseUrl]
   );
 
-  useEffect(() => {
-    persistHiddenIds(hiddenIds);
-  }, [hiddenIds]);
-
-  const hideNotification = useCallback((id: string) => {
-    setHiddenIds((current) => {
-      const next = new Set(current);
-      next.add(id);
-      return next;
-    });
-  }, []);
-
-  const unhideNotification = useCallback((id: string) => {
-    setHiddenIds((current) => {
-      const next = new Set(current);
-      next.delete(id);
-      return next;
-    });
-  }, []);
-
   return {
     notifications,
-    hiddenNotifications,
     unreadCount,
     loading,
     error,
@@ -169,8 +133,6 @@ export function useNotifications(
     viewedAt,
     refresh: load,
     markNotificationViewed,
-    openNotification,
-    hideNotification,
-    unhideNotification
+    openNotification
   };
 }

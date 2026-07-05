@@ -862,6 +862,129 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("does not request exact counts for projects hidden from the sidebar", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const countQueries: string[] = [];
+    const countVariables: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if (String(body.query).includes("RepositoryOpenItemCounts")) {
+          countQueries.push(String(body.query));
+          countVariables.push(body.variables as Record<string, unknown>);
+          return new Response(
+            JSON.stringify({
+              data: {
+                r0: {
+                  issues: { totalCount: 1 },
+                  pullRequests: { totalCount: 1 },
+                  discussions: { totalCount: 1 }
+                }
+              }
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("affiliation=owner%2Ccollaborator")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "visible",
+              full_name: "acme/visible",
+              owner: { login: "acme" },
+              open_issues_count: 1,
+              pushed_at: "2026-07-01T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("affiliation=organization_member")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "hidden",
+              full_name: "pi/hidden",
+              owner: { login: "pi" },
+              open_issues_count: 99,
+              pushed_at: "2026-07-01T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      const navigation = await screen.findByLabelText("Navigation");
+      expect(
+        await within(navigation).findByRole("button", { name: /^visible/ })
+      ).toBeInTheDocument();
+      expect(
+        within(navigation).queryByRole("button", { name: /^hidden/ })
+      ).not.toBeInTheDocument();
+
+      await waitFor(() => expect(countQueries).toHaveLength(1));
+      expect(JSON.stringify(countVariables)).toContain("visible");
+      expect(JSON.stringify(countVariables)).not.toContain("hidden");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows repository loading failures in a bottom snackbar", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("affiliation=owner%2Ccollaborator")) {
+        return new Response(JSON.stringify({ message: "repo list unavailable" }), {
+          status: 500
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App />);
+
+      expect(
+        await screen.findByText(/Could not load repositories/i)
+      ).toHaveClass("app-snackbar");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("deduplicates a fetched item that already exists in the local vault with a different path root", async () => {
     const title = "2026-05-19 AI Engineering : 10장 AI 엔지니어링 아키텍처와 사용자 피드백";
     const storedDiscussion: ItemFrontMatter = {
@@ -1121,6 +1244,24 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
+  it("clears the active project when Notifications is selected", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    const project = within(navigation).getByRole("button", { name: /^blog/ });
+    await user.click(project);
+
+    expect(project).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(within(navigation).getByRole("button", { name: /^Notifications/ }));
+
+    expect(
+      within(navigation).getByRole("button", { name: /^Notifications/ })
+    ).toHaveClass("active");
+    expect(project).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("hides a project from the sidebar when unchecked in settings", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1223,7 +1364,7 @@ describe("Yonalist app shell", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows grouped sample notifications and hides one on demand", async () => {
+  it("shows grouped sample notifications without per-notification hiding", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -1234,21 +1375,16 @@ describe("Yonalist app shell", () => {
     expect(
       within(pane).getByText("Design offline issue reading")
     ).toBeInTheDocument();
-
-    const hideButtons = within(pane).getAllByRole("button", {
-      name: "Hide notification"
-    });
-    await user.click(hideButtons[0]);
-
+    expect(pane.querySelector(".notification-lead .avatar")).toBeNull();
     expect(
-      within(pane).queryByText("Design offline issue reading")
+      pane.querySelector(".notification-lead .notification-reason")
+    ).not.toBeNull();
+    expect(
+      within(pane).queryByRole("button", { name: "Hide notification" })
     ).not.toBeInTheDocument();
-
-    await user.click(within(pane).getByLabelText("Show hidden notifications"));
-
     expect(
-      within(pane).getByText("Design offline issue reading")
-    ).toBeInTheDocument();
+      within(pane).queryByLabelText("Show hidden notifications")
+    ).not.toBeInTheDocument();
   });
 
   it("shows the selected notification's conversation in the detail pane", async () => {
