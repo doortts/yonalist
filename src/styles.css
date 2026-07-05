@@ -2,64 +2,64 @@
   color-scheme: light;
 
   /* Surfaces */
-  --bg-app: #f5f6f8;
-  --bg-sidebar: #ffffff;
+  --bg-app: #f7f7f4;
+  --bg-sidebar: #f7f7f4;
   --bg-list: #ffffff;
   --bg-detail: #ffffff;
   --bg-card: #ffffff;
-  --bg-hover: rgb(17 24 39 / 5%);
-  --bg-active: rgb(17 24 39 / 8%);
+  --bg-hover: rgb(32 33 36 / 5%);
+  --bg-active: rgb(32 33 36 / 8%);
   --bg-input: #ffffff;
   /* Opaque equivalent of --bg-hover over --bg-card, for comment headers and
      their speech-bubble tail (which sits over a different background). */
-  --comment-header: #f3f3f4;
+  --comment-header: #f4f4f1;
 
   /* Lines */
-  --border: #e5e7eb;
-  --border-strong: #d2d6dc;
+  --border: #deded8;
+  --border-strong: #c8c8c0;
 
   /* Text */
-  --text-1: #1f2328;
-  --text-2: #59626e;
-  --text-3: #8c95a1;
+  --text-1: #202123;
+  --text-2: #5f6368;
+  --text-3: #8d928a;
 
   /* Accents */
-  --accent: #2563eb;
-  --accent-strong: #1d4ed8;
-  --accent-soft: rgb(37 99 235 / 9%);
+  --accent: #10a37f;
+  --accent-strong: #0d8f70;
+  --accent-soft: rgb(16 163 127 / 12%);
   --accent-contrast: #ffffff;
-  --favorite: #e75135;
-  --danger: #c2402a;
-  --danger-hover: #a53522;
-  --danger-soft: #fdf0ec;
+  --favorite: #e2553d;
+  --danger: #b42318;
+  --danger-hover: #922018;
+  --danger-soft: #fff1ef;
   /* Notification reason accents (dark theme lightens these for contrast) */
   --reason-mention: #7c4dff;
   --reason-comment: #009688;
   --reason-author: #ff5722;
   --reason-team: #536dfe;
-  --warning: #b45309;
-  --warning-soft: #fff3d6;
-  --warning-border: rgb(245 158 11 / 48%);
-  --success: #1a7f37;
+  --warning: #9a6700;
+  --warning-soft: #fff6d7;
+  --warning-border: rgb(154 103 0 / 38%);
+  --success: #1f883d;
   --yona-comment: #8b008b;
-  --yona-link: #4183c4;
-  --yona-code-bg: #efefef;
-  --yona-table-border: #dcddde;
-  --yona-table-head: #f7f7f7;
+  --yona-link: #0969da;
+  --yona-code-bg: #f2f2ef;
+  --yona-table-border: #d8d8d2;
+  --yona-table-head: #f5f5f2;
 
   /* Layout */
   --titlebar-height: 42px;
   --content-drag-height: 28px;
   --content-titlebar-gap: 4px;
-  --scrollbar-thumb: rgb(17 24 39 / 25%);
-  --scrollbar-thumb-hover: rgb(17 24 39 / 45%);
+  --scrollbar-thumb: rgb(32 33 36 / 20%);
+  --scrollbar-thumb-hover: rgb(32 33 36 / 36%);
 
   /* Shape */
   --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
-  --shadow-modal: 0 20px 70px rgb(15 20 30 / 25%);
-  --bg-quiet: rgb(17 24 39 / 3%);
+  --shadow-modal: 0 20px 70px rgb(32 33 36 / 18%);
+  --bg-quiet: rgb(32 33 36 / 3%);
 
   color: var(--text-1);
   background: var(--bg-app);
