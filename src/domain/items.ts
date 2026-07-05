@@ -42,6 +42,8 @@ function mergeRemoteOverLocal(
     ...remote,
     frontMatter: {
       ...remote.frontMatter,
+      comments_count:
+        remote.frontMatter.comments_count ?? local.frontMatter.comments_count,
       local: {
         ...remote.frontMatter.local,
         favorite:

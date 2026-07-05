@@ -71,6 +71,7 @@ interface DiscussionSearchNode {
   body?: string;
   url?: string;
   closed?: boolean;
+  comments?: { totalCount?: number };
   createdAt?: string;
   updatedAt?: string;
   author?: { login?: string } | null;
@@ -259,6 +260,7 @@ query ($q: String!, $first: Int!) {
         body
         url
         closed
+        comments { totalCount }
         createdAt
         updatedAt
         author { login }
@@ -279,6 +281,7 @@ query ($owner: String!, $repo: String!, $first: Int!) {
         body
         url
         closed
+        comments { totalCount }
         createdAt
         updatedAt
         author { login }
@@ -312,6 +315,7 @@ async function searchDiscussions(
         author: node.author?.login ?? "unknown",
         labels: labels.names,
         labelColors: labels.colors,
+        commentsCount: node.comments?.totalCount,
         createdAt: node.createdAt ?? "",
         updatedAt: node.updatedAt ?? "",
         htmlUrl: node.url,
@@ -343,6 +347,7 @@ async function listRepoDiscussions(
       author: item.author?.login ?? "unknown",
       labels: labels.names,
       labelColors: labels.colors,
+      commentsCount: item.comments?.totalCount,
       createdAt: item.createdAt ?? "",
       updatedAt: item.updatedAt ?? "",
       htmlUrl: item.url,

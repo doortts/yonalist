@@ -68,6 +68,7 @@ describe("fetchMyWorkItems", () => {
                 title: "Roadmap",
                 body: "Talk",
                 closed: false,
+                comments: { totalCount: 6 },
                 createdAt: "2026-06-30T00:00:00Z",
                 updatedAt: "2026-07-01T00:00:00Z",
                 author: { login: "doortts" },
@@ -92,6 +93,7 @@ describe("fetchMyWorkItems", () => {
     expect(items[1].frontMatter.labels).toEqual(["bug"]);
     expect(items[1].frontMatter.label_colors).toEqual({ bug: "b60205" });
     expect(items[2].frontMatter.label_colors).toEqual({ planning: "fef2c0" });
+    expect(items[2].frontMatter.comments_count).toBe(6);
     expect(items[2].path).toBe(
       "/vault/github.com/acme/app/discussions/5/discussion.md"
     );
@@ -103,6 +105,7 @@ describe("fetchMyWorkItems", () => {
       String(url).includes("/graphql")
     );
     expect(String(graphQlCall?.[1]?.body)).toContain("name color");
+    expect(String(graphQlCall?.[1]?.body)).toContain("comments { totalCount }");
   });
 });
 
@@ -140,6 +143,7 @@ describe("fetchRepoWorkItems", () => {
                     title: "Q&A",
                     closed: false,
                     body: "Question",
+                    comments: { totalCount: 3 },
                     author: { login: "mona" },
                     createdAt: "2026-07-01T00:00:00Z",
                     updatedAt: "2026-07-02T00:00:00Z",
@@ -164,6 +168,7 @@ describe("fetchRepoWorkItems", () => {
     ]);
     expect(items[0].frontMatter.title).toBe("Repo issue");
     expect(items[0].frontMatter.label_colors).toEqual({ bug: "b60205" });
+    expect(items[1].frontMatter.comments_count).toBe(3);
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringContaining("/repos/acme/app/issues?"),
       expect.anything()

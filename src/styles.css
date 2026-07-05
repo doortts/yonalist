@@ -3,9 +3,9 @@
 
   /* Surfaces */
   --bg-app: #f5f6f8;
-  --bg-sidebar: #f2f3f5;
+  --bg-sidebar: #ffffff;
   --bg-list: #ffffff;
-  --bg-detail: #f8f9fb;
+  --bg-detail: #ffffff;
   --bg-card: #ffffff;
   --bg-hover: rgb(17 24 39 / 5%);
   --bg-active: rgb(17 24 39 / 8%);
@@ -83,9 +83,9 @@
   color-scheme: dark;
 
   --bg-app: #15171c;
-  --bg-sidebar: #292a2b;
+  --bg-sidebar: #181818;
   --bg-list: #181818;
-  --bg-detail: #1a1d23;
+  --bg-detail: #181818;
   --bg-card: #131417;
   --bg-hover: rgb(255 255 255 / 6%);
   --bg-active: rgb(255 255 255 / 10%);
@@ -941,7 +941,7 @@ body.is-resizing-pane {
 /* ---------- Detail pane ---------- */
 
 :root[data-theme="dark"] .detail-pane {
-  --bg-detail: #202020;
+  --bg-detail: #181818;
   --bg-card: #242526;
   --bg-input: #1f1f1f;
   --bg-hover: rgb(255 255 255 / 7%);
