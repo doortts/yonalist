@@ -175,12 +175,12 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /Projects 표시/
       })
     );
 
-    const section = screen.getByLabelText("Project visibility");
+    const section = await screen.findByLabelText("Project visibility");
     // doortts has nothing selected → collapsed; Yona-projects stays open.
     const doorttsToggle = within(section).getByRole("button", {
       name: "Toggle doortts projects"
@@ -642,7 +642,7 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /Vault and sync/
       })
     );
@@ -665,12 +665,12 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /GitHub 서버/
       })
     );
 
-    const section = screen.getByLabelText("GitHub servers");
+    const section = await screen.findByLabelText("GitHub servers");
     const naver = within(section).getByRole("radio", {
       name: "네이버 — https://oss.navercorp.com/api/v3"
     });
@@ -699,12 +699,12 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /GitHub 서버/
       })
     );
 
-    const section = screen.getByLabelText("GitHub servers");
+    const section = await screen.findByLabelText("GitHub servers");
     await user.click(within(section).getByRole("button", { name: /URL 추가/ }));
 
     await user.type(
@@ -1081,11 +1081,11 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /Projects 표시/
       })
     );
-    const section = screen.getByLabelText("Project visibility");
+    const section = await screen.findByLabelText("Project visibility");
     await user.click(
       within(section).getByRole("checkbox", { name: "Show doortts/blog" })
     );
@@ -1112,11 +1112,11 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /Projects 표시/
       })
     );
-    const section = screen.getByLabelText("Project visibility");
+    const section = await screen.findByLabelText("Project visibility");
 
     await user.type(within(section).getByLabelText("Filter projects"), "Home");
 
@@ -1148,12 +1148,12 @@ describe("Yonalist app shell", () => {
     // Uncheck doortts/blog in Settings → Projects 표시.
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(screen.getByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
         name: /Projects 표시/
       })
     );
     await user.click(
-      within(screen.getByLabelText("Project visibility")).getByRole("checkbox", {
+      within(await screen.findByLabelText("Project visibility")).getByRole("checkbox", {
         name: "Show doortts/blog"
       })
     );
