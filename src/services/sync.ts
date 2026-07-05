@@ -1,11 +1,71 @@
 import type { ItemDocument, OutboxOperationDocument } from "../domain/types";
 import type { GitHubClient } from "./github";
+import { GitHubRequestError } from "./githubTransport";
 
 export interface OutboxSyncResult {
   operation: OutboxOperationDocument;
   ok: boolean;
   remote?: SyncedRemote;
   error?: string;
+  /**
+   * True when retrying cannot possibly succeed (target deleted, validation
+   * rejected, locked) — the operation should be blocked, not re-queued.
+   */
+  permanent?: boolean;
+}
+
+export interface SyncOptions {
+  /** Backoff between retry attempts for transient failures. */
+  retryDelays?: number[];
+}
+
+const DEFAULT_RETRY_DELAYS = [500, 1500];
+
+/**
+ * A failure is permanent when the server definitively rejected the operation:
+ * the target is gone (404/410), the payload is invalid (422), or access is
+ * denied (403, except rate limiting which clears on its own).
+ */
+export function isPermanentSyncError(error: unknown): boolean {
+  if (!(error instanceof GitHubRequestError)) {
+    return false;
+  }
+  if (error.status === 404 || error.status === 410 || error.status === 422) {
+    return true;
+  }
+  if (error.status === 403) {
+    return !/rate limit/i.test(error.detail);
+  }
+  return false;
+}
+
+function wait(ms: number): Promise<void> {
+  if (ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Runs one operation attempt, retrying transient failures with backoff. */
+async function attemptWithRetry<T>(
+  run: () => Promise<T>,
+  retryDelays: number[]
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    if (attempt > 0) {
+      await wait(retryDelays[attempt - 1]);
+    }
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error;
+      if (isPermanentSyncError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
 }
 
 export type SyncedRemote =
@@ -58,9 +118,11 @@ function findDraftItem(
 export async function syncOutboxOperations(
   client: GitHubClient,
   operations: OutboxOperationDocument[],
-  items: ItemDocument[]
+  items: ItemDocument[],
+  options: SyncOptions = {}
 ): Promise<OutboxSyncResult[]> {
   const results: OutboxSyncResult[] = [];
+  const retryDelays = options.retryDelays ?? DEFAULT_RETRY_DELAYS;
 
   for (const operation of operations) {
     const { target } = operation.frontMatter;
@@ -70,10 +132,14 @@ export async function syncOutboxOperations(
         if (!draft) {
           throw new Error("Draft issue file is missing from the vault.");
         }
-        const created = (await client.createIssue(target.owner, target.repo, {
-          title: draft.frontMatter.title,
-          body: draft.body
-        })) as CreatedIssueResponse;
+        const created = (await attemptWithRetry(
+          () =>
+            client.createIssue(target.owner, target.repo, {
+              title: draft.frontMatter.title,
+              body: draft.body
+            }),
+          retryDelays
+        )) as CreatedIssueResponse;
         if (typeof created.number !== "number") {
           throw new Error("GitHub did not return the created issue number.");
         }
@@ -93,11 +159,15 @@ export async function syncOutboxOperations(
         if (target.number === undefined) {
           throw new Error("Comment operation is missing a target number.");
         }
-        const created = (await client.createIssueComment(
-          target.owner,
-          target.repo,
-          target.number,
-          operation.body
+        const created = (await attemptWithRetry(
+          () =>
+            client.createIssueComment(
+              target.owner,
+              target.repo,
+              target.number as number,
+              operation.body
+            ),
+          retryDelays
         )) as CreatedCommentResponse;
         if (created.id === undefined) {
           throw new Error("GitHub did not return the created comment id.");
@@ -120,7 +190,8 @@ export async function syncOutboxOperations(
       results.push({
         operation,
         ok: false,
-        error: error instanceof Error ? error.message : String(error)
+        error: error instanceof Error ? error.message : String(error),
+        permanent: isPermanentSyncError(error)
       });
     }
   }

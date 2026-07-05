@@ -132,6 +132,7 @@ export default function App({ initialOnline }: AppProps) {
   // Notifications are the landing view once authentication passes.
   const [showNotifications, setShowNotifications] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
@@ -190,6 +191,27 @@ export default function App({ initialOnline }: AppProps) {
     [drafts, workItems.items, vaultRoot]
   );
   const repositoryGroups = useRepositories(auth.connection, online, inboxWorkItems.items);
+  // Conflict hint: comment targets that changed remotely after the comment
+  // was queued, so the user can re-read the thread before syncing.
+  const remoteChangedOutboxIds = useMemo(() => {
+    const changed = new Set<string>();
+    for (const operation of outbox) {
+      if (operation.frontMatter.operation !== "create_comment") {
+        continue;
+      }
+      const { target } = operation.frontMatter;
+      const item = items.find(
+        (candidate) =>
+          candidate.frontMatter.owner === target.owner &&
+          candidate.frontMatter.repo === target.repo &&
+          candidate.frontMatter.number === target.number
+      );
+      if (item && item.frontMatter.updated_at > operation.frontMatter.created_at) {
+        changed.add(operation.frontMatter.id);
+      }
+    }
+    return changed;
+  }, [outbox, items]);
 
   useEffect(() => {
     if (
@@ -354,8 +376,9 @@ export default function App({ initialOnline }: AppProps) {
     "--list-width": `${paneWidths.list}px`
   } as CSSProperties;
 
-  // Reopening the outbox review when connectivity returns (browser event or
-  // manual toggle) so queued work is never silently forgotten.
+  // When connectivity returns (browser event or manual toggle), queued work
+  // is flushed automatically for signed-in sessions — with a result toast —
+  // and surfaced for review otherwise, so it is never silently forgotten.
   const previousOnline = useRef(online);
   useEffect(() => {
     if (
@@ -364,11 +387,30 @@ export default function App({ initialOnline }: AppProps) {
       settings.syncQueuedOnReconnect &&
       outbox.length > 0
     ) {
-      setSelectedOutboxIds(new Set(outbox.map((operation) => operation.frontMatter.id)));
-      setShowOutbox(true);
+      const retryable = outbox.filter(
+        (operation) => operation.frontMatter.status !== "blocked"
+      );
+      if (auth.connection.token.trim() && retryable.length > 0) {
+        void autoFlushOutbox(retryable);
+      } else if (!auth.connection.token.trim()) {
+        setSelectedOutboxIds(
+          new Set(outbox.map((operation) => operation.frontMatter.id))
+        );
+        setShowOutbox(true);
+      }
     }
     previousOnline.current = online;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, outbox, settings.syncQueuedOnReconnect]);
+
+  // Sync feedback toast auto-dismisses.
+  useEffect(() => {
+    if (!syncFeedback) {
+      return;
+    }
+    const timer = window.setTimeout(() => setSyncFeedback(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [syncFeedback]);
 
   function onToggleFavorite() {
     if (!selectedItem) {
@@ -508,12 +550,22 @@ export default function App({ initialOnline }: AppProps) {
     await deleteVaultDocument(vaultRoot, operation.path);
   }
 
-  async function syncSelectedOutbox() {
-    const selected = outbox.filter((operation) =>
-      selectedOutboxIds.has(operation.frontMatter.id)
-    );
+  interface SyncOutcome {
+    synced: number;
+    failed: number;
+    blocked: number;
+  }
+
+  /**
+   * Pushes the given operations to GitHub and reconciles the vault/outbox.
+   * Transient failures stay "failed" (retryable); definitive rejections
+   * (target gone, validation) become "blocked" so they are never auto-retried.
+   */
+  async function performSync(
+    selected: OutboxOperationDocument[]
+  ): Promise<SyncOutcome | null> {
     if (selected.length === 0) {
-      return;
+      return null;
     }
 
     const token = auth.connection.token.trim();
@@ -525,7 +577,7 @@ export default function App({ initialOnline }: AppProps) {
       );
       setSelectedOutboxIds(new Set());
       setShowOutbox(false);
-      return;
+      return { synced: selected.length, failed: 0, blocked: 0 };
     }
 
     setSyncing(true);
@@ -547,19 +599,22 @@ export default function App({ initialOnline }: AppProps) {
       const failures = new Map(
         results
           .filter((result) => !result.ok)
-          .map((result) => [result.operation.frontMatter.id, result.error ?? "Sync failed."])
+          .map((result) => [result.operation.frontMatter.id, result])
       );
 
       const failedOperations = outbox
         .filter((operation) => failures.has(operation.frontMatter.id))
-        .map((operation) => ({
-          ...operation,
-          frontMatter: {
-            ...operation.frontMatter,
-            status: "failed" as const,
-            last_error: failures.get(operation.frontMatter.id)
-          }
-        }));
+        .map((operation) => {
+          const failure = failures.get(operation.frontMatter.id);
+          return {
+            ...operation,
+            frontMatter: {
+              ...operation.frontMatter,
+              status: failure?.permanent ? ("blocked" as const) : ("failed" as const),
+              last_error: failure?.error ?? "Sync failed."
+            }
+          };
+        });
       await Promise.all(
         failedOperations.map((operation) =>
           persistOutboxOperation(vaultRoot, operation)
@@ -576,11 +631,62 @@ export default function App({ initialOnline }: AppProps) {
           )
       );
       setSelectedOutboxIds(new Set());
-      if (failures.size === 0) {
-        setShowOutbox(false);
-      }
+      return {
+        synced: syncedIds.size,
+        failed: failedOperations.filter(
+          (operation) => operation.frontMatter.status === "failed"
+        ).length,
+        blocked: failedOperations.filter(
+          (operation) => operation.frontMatter.status === "blocked"
+        ).length
+      };
     } finally {
       setSyncing(false);
+    }
+  }
+
+  function describeSyncOutcome(outcome: SyncOutcome): string {
+    const parts: string[] = [];
+    if (outcome.synced > 0) {
+      parts.push(
+        `Synced ${outcome.synced} queued change${outcome.synced === 1 ? "" : "s"}`
+      );
+    }
+    if (outcome.failed > 0) {
+      parts.push(`${outcome.failed} failed`);
+    }
+    if (outcome.blocked > 0) {
+      parts.push(`${outcome.blocked} blocked`);
+    }
+    return parts.join(" · ");
+  }
+
+  async function syncSelectedOutbox() {
+    const selected = outbox.filter((operation) =>
+      selectedOutboxIds.has(operation.frontMatter.id)
+    );
+    const outcome = await performSync(selected);
+    if (!outcome) {
+      return;
+    }
+    setSyncFeedback(describeSyncOutcome(outcome));
+    if (outcome.failed === 0 && outcome.blocked === 0) {
+      setShowOutbox(false);
+    }
+  }
+
+  /** Reconnect flush: sync everything retryable without asking, then report. */
+  async function autoFlushOutbox(operations: OutboxOperationDocument[]) {
+    const outcome = await performSync(operations);
+    if (!outcome) {
+      return;
+    }
+    setSyncFeedback(describeSyncOutcome(outcome));
+    if (outcome.failed > 0 || outcome.blocked > 0) {
+      // Leave nothing preselected: blocked entries should not be one-click
+      // retried, and the user should review what went wrong.
+      setSelectedOutboxIds(new Set());
+      setShowOutbox(true);
     }
   }
 
@@ -873,10 +979,16 @@ export default function App({ initialOnline }: AppProps) {
           selectedIds={selectedOutboxIds}
           online={online}
           syncing={syncing}
+          remoteChangedIds={remoteChangedOutboxIds}
           onToggleSelection={toggleOutboxSelection}
           onSync={() => void syncSelectedOutbox()}
           onClose={() => setShowOutbox(false)}
         />
+      )}
+      {syncFeedback && (
+        <div className="sync-toast" role="status">
+          {syncFeedback}
+        </div>
       )}
     </main>
     </GithubConnectionContext.Provider>

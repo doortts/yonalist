@@ -152,6 +152,9 @@ export function ItemListPane({
             <span className="item-meta">
               {kindIcon(item)}
               {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+              {item.frontMatter.sync.status === "pending" && (
+                <span className="item-sync-pending">Pending</span>
+              )}
               <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
             </span>
             <span className="item-title">{item.frontMatter.title}</span>

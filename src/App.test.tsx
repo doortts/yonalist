@@ -408,6 +408,135 @@ describe("Yonalist app shell", () => {
     expect(screen.getByRole("button", { name: "Sync selected" })).toBeEnabled();
   });
 
+  it("marks queued drafts with a pending badge in the list", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+    await user.type(screen.getByLabelText("Issue title"), "Pending badge draft");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+
+    const matches = await screen.findAllByText("Pending badge draft");
+    const card = matches
+      .map((element) => element.closest(".item-card"))
+      .find(Boolean) as HTMLElement;
+    expect(card).toBeTruthy();
+    expect(within(card).getByText("Pending")).toBeInTheDocument();
+  });
+
+  async function seedQueuedIssueDraft(user: ReturnType<typeof userEvent.setup>) {
+    const seeded = render(<App initialOnline={false} />);
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+    await user.type(screen.getByLabelText("Issue title"), "Auto flush me");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+    seeded.unmount();
+
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+  }
+
+  function autoFlushFetchMock(issuePost: () => Response) {
+    return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (/\/repos\/[^/]+\/[^/]+\/issues$/.test(target) && init?.method === "POST") {
+        return issuePost();
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos") || target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+  }
+
+  it("auto-syncs the outbox on reconnect when signed in", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () =>
+        new Response(
+          JSON.stringify({
+            number: 200,
+            node_id: "I_200",
+            html_url: "https://oss.navercorp.com/acme/app/issues/200",
+            created_at: "2026-07-05T00:00:00Z",
+            updated_at: "2026-07-05T00:00:00Z"
+          }),
+          { status: 201 }
+        )
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      // Vault (and with it the outbox) has loaded once the draft is visible.
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
+      expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            /\/repos\/[^/]+\/[^/]+\/issues$/.test(String(url)) &&
+            (init as RequestInit | undefined)?.method === "POST"
+        )
+      ).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("blocks permanently failed operations and opens the outbox for review", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ message: "Not Found" }), { status: 404 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "Outbox" });
+      expect(within(dialog).getByText(/Blocked/)).toBeInTheDocument();
+      // Blocked operations are not preselected for another doomed retry.
+      expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
+      // Permanent failures are not retried.
+      expect(
+        fetchMock.mock.calls.filter(
+          ([url, init]) =>
+            /\/repos\/[^/]+\/[^/]+\/issues$/.test(String(url)) &&
+            (init as RequestInit | undefined)?.method === "POST"
+        )
+      ).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("renames synced issue drafts to their remote issue path in the vault", async () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",

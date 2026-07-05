@@ -6,6 +6,8 @@ interface OutboxModalProps {
   selectedIds: Set<string>;
   online: boolean;
   syncing: boolean;
+  /** Operations whose remote target changed after they were queued. */
+  remoteChangedIds?: Set<string>;
   onToggleSelection: (id: string) => void;
   onSync: () => void;
   onClose: () => void;
@@ -16,6 +18,7 @@ export function OutboxModal({
   selectedIds,
   online,
   syncing,
+  remoteChangedIds,
   onToggleSelection,
   onSync,
   onClose
@@ -59,6 +62,18 @@ export function OutboxModal({
                     {operation.frontMatter.status === "failed" && (
                       <p className="outbox-error">
                         {operation.frontMatter.last_error ?? "Sync failed."}
+                      </p>
+                    )}
+                    {operation.frontMatter.status === "blocked" && (
+                      <p className="outbox-error outbox-blocked">
+                        Blocked —{" "}
+                        {operation.frontMatter.last_error ??
+                          "this change can no longer be synced."}
+                      </p>
+                    )}
+                    {remoteChangedIds?.has(operation.frontMatter.id) && (
+                      <p className="outbox-conflict">
+                        Target changed remotely since this was queued.
                       </p>
                     )}
                   </div>
