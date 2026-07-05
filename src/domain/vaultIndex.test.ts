@@ -20,6 +20,7 @@ describe("vault index", () => {
             state: "open",
             author: "mona",
             labels: ["offline"],
+            label_colors: { offline: "1d76db" },
             created_at: "2026-07-01T00:00:00Z",
             updated_at: "2026-07-01T00:00:00Z",
             synced_at: "2026-07-02T00:00:00Z",
@@ -56,6 +57,7 @@ describe("vault index", () => {
 
     expect(index.items).toHaveLength(1);
     expect(index.items[0].favorite).toBe(true);
+    expect(index.items[0].label_colors).toEqual({ offline: "1d76db" });
     expect(index.repositories[0].key).toBe("github.com/openai/codex");
     expect(index.outbox).toHaveLength(1);
   });

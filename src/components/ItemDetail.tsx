@@ -49,10 +49,15 @@ export function ItemDetail({
   // Prefer the live thread state (merged/draft detection) over the listing.
   const state = thread.thread?.state ?? item.frontMatter.state;
   const comments = thread.thread?.comments ?? [];
-  // Colored labels from the live thread; fall back to the stored names.
+  // Colored labels from the live thread; fall back to stored front matter.
+  const storedLabels = item.frontMatter.labels.map((name) => ({
+    name,
+    color: item.frontMatter.label_colors?.[name] ?? ""
+  }));
   const labels =
-    thread.thread?.labels ??
-    item.frontMatter.labels.map((name) => ({ name, color: "" }));
+    thread.thread?.labels && thread.thread.labels.length > 0
+      ? thread.thread.labels
+      : storedLabels;
 
   return (
     <>

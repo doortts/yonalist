@@ -2,22 +2,27 @@ import {
   Bookmark,
   CircleDot,
   GitPullRequest,
-  MessageSquare,
   MessagesSquare,
   Plus,
   RefreshCw,
   Search
 } from "lucide-react";
+import type { CSSProperties } from "react";
+import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
+
+export type ItemStateFilter = "open" | "closed";
 
 interface ItemListPaneProps {
   items: ItemDocument[];
   selectedPath: string | null;
+  stateFilter: ItemStateFilter;
   query: string;
   loading: boolean;
   error: string | null;
   demoMode: boolean;
+  onStateFilterChange: (filter: ItemStateFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
   onNewIssue: () => void;
@@ -46,13 +51,31 @@ function kindIcon(item: ItemDocument) {
   }
 }
 
+function labelColorStyle(
+  item: ItemDocument,
+  label: string
+): CSSProperties | undefined {
+  const color = item.frontMatter.label_colors?.[label]?.replace(/^#/, "");
+  if (!color || !/^[0-9a-fA-F]{6}$/.test(color)) {
+    return undefined;
+  }
+  const background = `#${color}`;
+  return {
+    backgroundColor: background,
+    borderColor: background,
+    color: labelTextColor(color)
+  };
+}
+
 export function ItemListPane({
   items,
   selectedPath,
+  stateFilter,
   query,
   loading,
   error,
   demoMode,
+  onStateFilterChange,
   onQueryChange,
   onSelect,
   onNewIssue,
@@ -84,6 +107,29 @@ export function ItemListPane({
         </button>
       </div>
 
+      <div className="item-state-row" role="group" aria-label="Item state">
+        <button
+          type="button"
+          className={
+            stateFilter === "open" ? "item-state-tab active" : "item-state-tab"
+          }
+          aria-pressed={stateFilter === "open"}
+          onClick={() => onStateFilterChange("open")}
+        >
+          Opened
+        </button>
+        <button
+          type="button"
+          className={
+            stateFilter === "closed" ? "item-state-tab active" : "item-state-tab"
+          }
+          aria-pressed={stateFilter === "closed"}
+          onClick={() => onStateFilterChange("closed")}
+        >
+          Closed
+        </button>
+      </div>
+
       {demoMode && (
         <p className="list-note">Sample items. Sign in from Settings to load yours.</p>
       )}
@@ -112,7 +158,15 @@ export function ItemListPane({
             {item.frontMatter.labels.length > 0 && (
               <span className="item-labels">
                 {item.frontMatter.labels.slice(0, 4).map((label) => (
-                  <span className="item-label" key={label}>
+                  <span
+                    className={
+                      item.frontMatter.label_colors?.[label]
+                        ? "item-label colored"
+                        : "item-label"
+                    }
+                    key={label}
+                    style={labelColorStyle(item, label)}
+                  >
                     {label}
                   </span>
                 ))}
@@ -125,7 +179,7 @@ export function ItemListPane({
               {item.frontMatter.comments_count !== undefined &&
                 item.frontMatter.comments_count > 0 && (
                   <span className="item-comments">
-                    <MessageSquare size={12} />
+                    <span className="yona-comment-icon" aria-hidden="true" />
                     {item.frontMatter.comments_count}
                   </span>
                 )}

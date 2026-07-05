@@ -64,6 +64,8 @@ export function Sidebar({
   unreadNotificationCount,
   notificationsLoading
 }: SidebarProps) {
+  const inboxActive = !repositoryFilter && !settingsOpen && !notificationsOpen;
+
   return (
     <aside className="sidebar" aria-label="Navigation">
       <div className="pane-titlebar-spacer" />
@@ -125,13 +127,9 @@ export function Sidebar({
         {filterEntries.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
-            className={
-              filter === key && !settingsOpen && !notificationsOpen
-                ? "nav-item active"
-                : "nav-item"
-            }
+            className={inboxActive && filter === key ? "nav-item active" : "nav-item"}
             type="button"
-            aria-pressed={filter === key}
+            aria-pressed={inboxActive && filter === key}
             onClick={() => onFilterChange(key)}
           >
             <Icon size={16} />
@@ -162,13 +160,7 @@ export function Sidebar({
                 type="button"
                 aria-pressed={repositoryFilter === repository.fullName}
                 key={repository.fullName}
-                onClick={() =>
-                  onRepositoryFilterChange(
-                    repositoryFilter === repository.fullName
-                      ? null
-                      : repository.fullName
-                  )
-                }
+                onClick={() => onRepositoryFilterChange(repository.fullName)}
               >
                 <Folder size={16} />
                 <span>{repository.name}</span>

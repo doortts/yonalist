@@ -63,6 +63,39 @@ describe("resolveAuthenticatedImage", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("retries with GitHub's token auth scheme when bearer auth returns a login page", async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("<html>login</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" }
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(bytes, {
+          status: 200,
+          headers: { "content-type": "image/png" }
+        })
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const resolved = await resolveAuthenticatedImage(
+      `https://oss.navercorp.com/avatars/u/${Math.random()}.png`,
+      connection
+    );
+
+    expect(resolved).toMatch(/^data:image\/png;base64,/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][1]?.headers).toEqual({
+      Authorization: "Bearer ghp_token"
+    });
+    expect(fetchMock.mock.calls[1][1]?.headers).toEqual({
+      Authorization: "token ghp_token"
+    });
+  });
+
   it("returns null for non-image responses", async () => {
     const fetchMock = vi.fn(
       async () =>
@@ -79,5 +112,24 @@ describe("resolveAuthenticatedImage", () => {
     );
 
     expect(resolved).toBeNull();
+  });
+
+  it("caches failed authenticated image lookups for the session", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<html>rate limited</html>", {
+          status: 429,
+          headers: { "content-type": "text/html" }
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const url = `https://oss.navercorp.com/sessions/_auth_request_bounce?${Math.random()}`;
+    const first = await resolveAuthenticatedImage(url, connection);
+    const second = await resolveAuthenticatedImage(url, connection);
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

@@ -121,7 +121,10 @@ export function sampleNotificationDetail(
       authorAssociation: "OWNER",
       created_at: match.frontMatter.created_at,
       body: match.body,
-      labels: match.frontMatter.labels.map((name) => ({ name, color: "" })),
+      labels: match.frontMatter.labels.map((name) => ({
+        name,
+        color: match.frontMatter.label_colors?.[name] ?? ""
+      })),
       comments: [
         {
           id: "sample-comment-1",

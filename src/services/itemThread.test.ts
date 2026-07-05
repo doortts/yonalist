@@ -21,7 +21,15 @@ describe("fetchItemThread", () => {
       const target = String(url);
       if (target.includes("/comments")) {
         return jsonResponse([
-          { id: 1, body: "First!", user: { login: "mona" }, created_at: "2026-07-02T00:00:00Z" }
+          {
+            id: 1,
+            body: "First!",
+            user: {
+              login: "mona",
+              avatar_url: "https://avatars.example.com/mona.png"
+            },
+            created_at: "2026-07-02T00:00:00Z"
+          }
         ]);
       }
       expect(target).toContain("/pulls/17");
@@ -46,7 +54,7 @@ describe("fetchItemThread", () => {
         {
           id: "1",
           author: "mona",
-          avatarUrl: undefined,
+          avatarUrl: "https://avatars.example.com/mona.png",
           authorAssociation: undefined,
           created_at: "2026-07-02T00:00:00Z",
           body: "First!",

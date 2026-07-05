@@ -45,6 +45,7 @@ export function buildVaultIndex(documents: VaultSourceDocument[]): VaultIndex {
         state: frontMatter.state,
         author: frontMatter.author,
         labels: frontMatter.labels ?? [],
+        label_colors: frontMatter.label_colors ?? {},
         updated_at: frontMatter.updated_at,
         favorite: Boolean(frontMatter.local?.favorite),
         sync_status: frontMatter.sync?.status ?? "synced"

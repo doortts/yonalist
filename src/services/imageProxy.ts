@@ -10,6 +10,11 @@ import { isTauri } from "./oauth";
 
 const resolvedCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string | null>>();
+const failedCache = new Set<string>();
+
+function cacheKey(src: string, connection: GithubConnection): string {
+  return `${connection.apiBaseUrl}\n${connection.token}\n${src}`;
+}
 
 /** Only images on the signed-in GitHub host get the token attached. */
 export function needsAuthenticatedFetch(
@@ -54,18 +59,23 @@ async function fetchAsDataUrl(
   }
 
   // Web preview fallback; may still be blocked by CORS on some hosts.
-  const response = await fetch(src, {
-    headers: { Authorization: `Bearer ${connection.token}` }
-  });
-  if (!response.ok) {
-    return null;
+  const token = connection.token.trim();
+  const authHeaders = [`Bearer ${token}`, `token ${token}`];
+  for (const authHeader of authHeaders) {
+    const response = await fetch(src, {
+      headers: { Authorization: authHeader }
+    });
+    if (!response.ok) {
+      continue;
+    }
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("image/")) {
+      continue;
+    }
+    const base64 = arrayBufferToBase64(await response.arrayBuffer());
+    return `data:${contentType};base64,${base64}`;
   }
-  const contentType = response.headers.get("content-type") ?? "";
-  if (!contentType.startsWith("image/")) {
-    return null;
-  }
-  const base64 = arrayBufferToBase64(await response.arrayBuffer());
-  return `data:${contentType};base64,${base64}`;
+  return null;
 }
 
 /** Resolves an attachment URL to a data URL, caching per session. */
@@ -73,25 +83,34 @@ export function resolveAuthenticatedImage(
   src: string,
   connection: GithubConnection
 ): Promise<string | null> {
-  const cached = resolvedCache.get(src);
+  const key = cacheKey(src, connection);
+  const cached = resolvedCache.get(key);
   if (cached) {
     return Promise.resolve(cached);
   }
-  const running = inflight.get(src);
+  if (failedCache.has(key)) {
+    return Promise.resolve(null);
+  }
+  const running = inflight.get(key);
   if (running) {
     return running;
   }
   const request = fetchAsDataUrl(src, connection)
     .then((dataUrl) => {
       if (dataUrl) {
-        resolvedCache.set(src, dataUrl);
+        resolvedCache.set(key, dataUrl);
+      } else {
+        failedCache.add(key);
       }
       return dataUrl;
     })
-    .catch(() => null)
+    .catch(() => {
+      failedCache.add(key);
+      return null;
+    })
     .finally(() => {
-      inflight.delete(src);
+      inflight.delete(key);
     });
-  inflight.set(src, request);
+  inflight.set(key, request);
   return request;
 }

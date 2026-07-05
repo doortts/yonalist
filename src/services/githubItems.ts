@@ -1,7 +1,7 @@
 import type { ItemDocument, ItemKind, ItemState } from "../domain/types";
 import { itemMainPath } from "../domain/paths";
 import type { GithubConnection } from "../hooks/useGithubAuth";
-import { createGitHubTransport } from "./githubTransport";
+import { createGitHubTransport, encodePathSegment } from "./githubTransport";
 
 /**
  * Fetches the signed-in user's work items (issues, pull requests,
@@ -16,6 +16,7 @@ export interface RepositorySummary {
   owner: string;
   name: string;
   fullName: string;
+  /** Open issues + open pull requests + open discussions. */
   openIssuesCount: number;
   pushedAt: string;
   /** Owned by or directly collaborating with the user. */
@@ -37,7 +38,7 @@ interface SearchIssueItem {
   state?: string;
   body?: string | null;
   user?: { login?: string };
-  labels?: Array<{ name?: string } | string>;
+  labels?: Array<{ name?: string; color?: string } | string>;
   created_at?: string;
   updated_at?: string;
   html_url?: string;
@@ -58,6 +59,12 @@ interface UserRepoItem {
   pushed_at?: string;
 }
 
+interface RepositoryOpenCounts {
+  issues?: { totalCount?: number };
+  pullRequests?: { totalCount?: number };
+  discussions?: { totalCount?: number };
+}
+
 interface DiscussionSearchNode {
   number?: number;
   title?: string;
@@ -68,7 +75,7 @@ interface DiscussionSearchNode {
   updatedAt?: string;
   author?: { login?: string } | null;
   repository?: { name?: string; owner?: { login?: string } };
-  labels?: { nodes?: Array<{ name?: string }> };
+  labels?: { nodes?: Array<{ name?: string; color?: string }> };
 }
 
 function hostOf(connection: GithubConnection): string {
@@ -79,10 +86,28 @@ function hostOf(connection: GithubConnection): string {
   }
 }
 
-function labelNames(labels: Array<{ name?: string } | string> | undefined): string[] {
-  return (labels ?? [])
-    .map((label) => (typeof label === "string" ? label : label.name ?? ""))
-    .filter(Boolean);
+function cleanLabelColor(color: string | undefined): string {
+  const normalized = (color ?? "").replace(/^#/, "");
+  return /^[0-9a-fA-F]{6}$/.test(normalized) ? normalized : "";
+}
+
+function labelInfo(
+  labels: Array<{ name?: string; color?: string } | string> | undefined
+): { names: string[]; colors: Record<string, string> } {
+  const names: string[] = [];
+  const colors: Record<string, string> = {};
+  for (const label of labels ?? []) {
+    const name = typeof label === "string" ? label : label.name ?? "";
+    if (!name) {
+      continue;
+    }
+    names.push(name);
+    const color = typeof label === "string" ? "" : cleanLabelColor(label.color);
+    if (color) {
+      colors[name] = color;
+    }
+  }
+  return { names, colors };
 }
 
 function normalizeState(state: string | undefined): ItemState {
@@ -99,6 +124,7 @@ function toItemDocument(input: {
   state: ItemState;
   author: string;
   labels: string[];
+  labelColors?: Record<string, string>;
   commentsCount?: number;
   createdAt: string;
   updatedAt: string;
@@ -122,6 +148,9 @@ function toItemDocument(input: {
       state: input.state,
       author: input.author,
       labels: input.labels,
+      ...(input.labelColors && Object.keys(input.labelColors).length > 0
+        ? { label_colors: input.labelColors }
+        : {}),
       comments_count: input.commentsCount,
       created_at: input.createdAt,
       updated_at: input.updatedAt,
@@ -160,6 +189,7 @@ async function searchIssues(
 
   return (response.items ?? []).map((item) => {
     const { owner, repo } = ownerRepoFromRepositoryUrl(item.repository_url);
+    const labels = labelInfo(item.labels);
     return toItemDocument({
       host,
       owner,
@@ -169,7 +199,47 @@ async function searchIssues(
       title: item.title ?? `#${item.number}`,
       state: normalizeState(item.state),
       author: item.user?.login ?? "unknown",
-      labels: labelNames(item.labels),
+      labels: labels.names,
+      labelColors: labels.colors,
+      commentsCount: item.comments,
+      createdAt: item.created_at ?? "",
+      updatedAt: item.updated_at ?? "",
+      htmlUrl: item.html_url,
+      body: item.body ?? ""
+    });
+  });
+}
+
+async function listRepoIssuesAndPulls(
+  connection: GithubConnection,
+  owner: string,
+  repo: string
+): Promise<ItemDocument[]> {
+  const host = hostOf(connection);
+  const transport = createGitHubTransport(connection);
+  const params = new URLSearchParams({
+    state: "all",
+    sort: "updated",
+    direction: "desc",
+    per_page: String(PAGE_SIZE)
+  });
+  const response = await transport.requestJson<SearchIssueItem[]>(
+    `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues?${params.toString()}`
+  );
+
+  return (Array.isArray(response) ? response : []).map((item) => {
+    const labels = labelInfo(item.labels);
+    return toItemDocument({
+      host,
+      owner,
+      repo,
+      kind: item.pull_request ? "pull" : "issue",
+      number: item.number,
+      title: item.title ?? `#${item.number}`,
+      state: normalizeState(item.state),
+      author: item.user?.login ?? "unknown",
+      labels: labels.names,
+      labelColors: labels.colors,
       commentsCount: item.comments,
       createdAt: item.created_at ?? "",
       updatedAt: item.updated_at ?? "",
@@ -193,7 +263,7 @@ query ($q: String!, $first: Int!) {
         updatedAt
         author { login }
         repository { name owner { login } }
-        labels(first: 10) { nodes { name } }
+        labels(first: 10) { nodes { name color } }
       }
     }
   }
@@ -212,7 +282,7 @@ query ($owner: String!, $repo: String!, $first: Int!) {
         createdAt
         updatedAt
         author { login }
-        labels(first: 10) { nodes { name } }
+        labels(first: 10) { nodes { name color } }
       }
     }
   }
@@ -229,8 +299,9 @@ async function searchDiscussions(
 
   return data.search.nodes
     .filter((node) => typeof node.number === "number")
-    .map((node) =>
-      toItemDocument({
+    .map((node) => {
+      const labels = labelInfo(node.labels?.nodes);
+      return toItemDocument({
         host,
         owner: node.repository?.owner?.login ?? "unknown",
         repo: node.repository?.name ?? "unknown",
@@ -239,15 +310,14 @@ async function searchDiscussions(
         title: node.title ?? `#${node.number}`,
         state: node.closed ? "closed" : "open",
         author: node.author?.login ?? "unknown",
-        labels: (node.labels?.nodes ?? [])
-          .map((label) => label.name ?? "")
-          .filter(Boolean),
+        labels: labels.names,
+        labelColors: labels.colors,
         createdAt: node.createdAt ?? "",
         updatedAt: node.updatedAt ?? "",
         htmlUrl: node.url,
         body: node.body ?? ""
-      })
-    );
+      });
+    });
 }
 
 async function listRepoDiscussions(
@@ -260,8 +330,9 @@ async function listRepoDiscussions(
     repository?: { discussions?: { nodes?: DiscussionSearchNode[] } } | null;
   }>(REPO_DISCUSSIONS_QUERY, { owner, repo, first: PAGE_SIZE });
 
-  return (data.repository?.discussions?.nodes ?? []).map((item) =>
-    toItemDocument({
+  return (data.repository?.discussions?.nodes ?? []).map((item) => {
+    const labels = labelInfo(item.labels?.nodes);
+    return toItemDocument({
       host,
       owner,
       repo,
@@ -270,15 +341,14 @@ async function listRepoDiscussions(
       title: item.title ?? `#${item.number}`,
       state: item.closed ? "closed" : "open",
       author: item.author?.login ?? "unknown",
-      labels: (item.labels?.nodes ?? [])
-        .map((label) => label.name ?? "")
-        .filter(Boolean),
+      labels: labels.names,
+      labelColors: labels.colors,
       createdAt: item.createdAt ?? "",
       updatedAt: item.updatedAt ?? "",
       htmlUrl: item.url,
       body: item.body ?? ""
-    })
-  );
+    });
+  });
 }
 
 function sortByUpdatedDesc(items: ItemDocument[]): ItemDocument[] {
@@ -306,7 +376,7 @@ export async function fetchRepoWorkItems(
   repo: string
 ): Promise<ItemDocument[]> {
   const [issuePulls, discussions] = await Promise.all([
-    searchIssues(connection, `repo:${owner}/${repo}`),
+    listRepoIssuesAndPulls(connection, owner, repo),
     listRepoDiscussions(connection, owner, repo).catch(() => [])
   ]);
   return sortByUpdatedDesc([...issuePulls, ...discussions]);
@@ -333,6 +403,7 @@ function toSummaries(
 
 const REPO_PAGE_SIZE = 100;
 const MAX_REPO_PAGES = 5;
+const REPO_COUNT_BATCH_SIZE = 25;
 
 /** Follows pagination so large org memberships are not cut off at 100. */
 async function requestAllPages(
@@ -363,6 +434,72 @@ function userReposPath(affiliation: string, page: number): string {
     page: String(page)
   });
   return `/user/repos?${params.toString()}`;
+}
+
+function repositoryCountQuery(repositories: RepositorySummary[]): {
+  query: string;
+  variables: Record<string, string>;
+} {
+  const variables: Record<string, string> = {};
+  const fields = repositories.map((repository, index) => {
+    const ownerVariable = `owner${index}`;
+    const repoVariable = `repo${index}`;
+    variables[ownerVariable] = repository.owner;
+    variables[repoVariable] = repository.name;
+    return `
+      r${index}: repository(owner: $${ownerVariable}, name: $${repoVariable}) {
+        issues(states: OPEN) { totalCount }
+        pullRequests(states: OPEN) { totalCount }
+        discussions(states: OPEN) { totalCount }
+      }
+    `;
+  });
+  const declarations = repositories
+    .flatMap((_, index) => [`$owner${index}: String!`, `$repo${index}: String!`])
+    .join(", ");
+
+  return {
+    query: `query RepositoryOpenItemCounts(${declarations}) {${fields.join("\n")}}`,
+    variables
+  };
+}
+
+function openItemCount(counts: RepositoryOpenCounts | null | undefined): number {
+  return (
+    (counts?.issues?.totalCount ?? 0) +
+    (counts?.pullRequests?.totalCount ?? 0) +
+    (counts?.discussions?.totalCount ?? 0)
+  );
+}
+
+async function enrichRepositoriesWithOpenItemCounts(
+  connection: GithubConnection,
+  repositories: RepositorySummary[]
+): Promise<RepositorySummary[]> {
+  if (repositories.length === 0) {
+    return repositories;
+  }
+
+  const next = [...repositories];
+  const transport = createGitHubTransport(connection);
+  for (let start = 0; start < next.length; start += REPO_COUNT_BATCH_SIZE) {
+    const batch = next.slice(start, start + REPO_COUNT_BATCH_SIZE);
+    const { query, variables } = repositoryCountQuery(batch);
+    try {
+      const data = await transport.graphql<Record<string, RepositoryOpenCounts | null>>(
+        query,
+        variables
+      );
+      batch.forEach((repository, index) => {
+        const count = openItemCount(data[`r${index}`]);
+        next[start + index] = { ...repository, openIssuesCount: count };
+      });
+    } catch {
+      // Older GitHub Enterprise instances may not expose Discussions in GraphQL.
+      // Keep the REST repository count rather than hiding the repository list.
+    }
+  }
+  return next;
 }
 
 /**
@@ -400,7 +537,7 @@ export async function fetchMyRepositories(
   upsert(toSummaries(orgMember, noFlags), "orgMember");
   upsert(toSummaries(watched, noFlags), "watched");
 
-  return [...merged.values()];
+  return enrichRepositoriesWithOpenItemCounts(connection, [...merged.values()]);
 }
 
 /** Groups repositories by owner, owners alphabetical, repos by recent push. */

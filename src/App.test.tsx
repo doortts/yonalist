@@ -798,6 +798,56 @@ describe("Yonalist app shell", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("switches the item list between opened and closed items", async () => {
+    const closedIssue: ItemFrontMatter = {
+      kind: "issue",
+      host: "github.com",
+      owner: "doortts",
+      repo: "blog",
+      number: 44,
+      title: "Closed local issue",
+      state: "closed",
+      author: "mona",
+      labels: [],
+      created_at: "2026-06-01T00:00:00Z",
+      updated_at: "2026-06-02T00:00:00Z",
+      local: { favorite: false },
+      sync: { status: "synced" }
+    };
+    window.localStorage.setItem(
+      "yonalist.vaultDocuments.v1",
+      JSON.stringify({
+        "~/Yonalist": {
+          "github.com/doortts/blog/issues/44/issue.md":
+            serializeMarkdownDocument(closedIssue, "Already handled.")
+        }
+      })
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const list = screen.getByLabelText("Items");
+    expect(within(list).getByRole("button", { name: "Opened" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(within(list).queryByText("Closed local issue")).not.toBeInTheDocument();
+
+    await user.click(within(list).getByRole("button", { name: "Closed" }));
+
+    expect(within(list).getByRole("button", { name: "Closed" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(await within(list).findByText("Closed local issue")).toBeInTheDocument();
+    expect(
+      within(list).queryByText("Design offline issue reading")
+    ).not.toBeInTheDocument();
+  });
+
   it("groups projects by owner and scopes the list to a repository", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -816,6 +866,79 @@ describe("Yonalist app shell", () => {
     expect(
       within(list).queryByText("Design offline issue reading")
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a project when selected even if another item-type filter was active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    await user.click(within(navigation).getByRole("button", { name: /^Issues/ }));
+    await user.click(within(navigation).getByRole("button", { name: /^blog/ }));
+
+    expect(
+      within(navigation).getByRole("button", { name: /^All items/ })
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(navigation).getByRole("button", { name: /^Issues/ })
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(navigation).getByRole("button", { name: /^blog/ })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    const list = screen.getByLabelText("Items");
+    expect(within(list).getByText("Refresh publishing notes")).toBeInTheDocument();
+    expect(
+      within(list).getByText("v0.1.0 packaging checklist")
+    ).toBeInTheDocument();
+    expect(within(list).queryByText("No items match this view.")).not.toBeInTheDocument();
+  });
+
+  it("switches from a project collection back to an inbox collection", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    await user.click(within(navigation).getByRole("button", { name: /^blog/ }));
+    expect(
+      within(navigation).getByRole("button", { name: /^blog/ })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(within(navigation).getByRole("button", { name: /^Issues/ }));
+
+    expect(
+      within(navigation).getByRole("button", { name: /^blog/ })
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      within(navigation).getByRole("button", { name: /^Issues/ })
+    ).toHaveAttribute("aria-pressed", "true");
+
+    const list = screen.getByLabelText("Items");
+    expect(within(list).getByText("Design offline issue reading")).toBeInTheDocument();
+    expect(
+      within(list).queryByText("v0.1.0 packaging checklist")
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the selected project active when clicked again", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    const project = within(navigation).getByRole("button", { name: /^blog/ });
+    await user.click(project);
+    await user.click(project);
+
+    expect(project).toHaveAttribute("aria-pressed", "true");
+    expect(
+      within(navigation).getByRole("button", { name: /^All items/ })
+    ).toHaveAttribute("aria-pressed", "false");
+
+    const list = screen.getByLabelText("Items");
+    expect(within(list).getByText("Refresh publishing notes")).toBeInTheDocument();
+    expect(
+      within(list).getByText("v0.1.0 packaging checklist")
+    ).toBeInTheDocument();
   });
 
   it("hides a project from the sidebar when unchecked in settings", async () => {

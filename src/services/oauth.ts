@@ -25,9 +25,9 @@ function randomState(): string {
 }
 
 /**
- * GitHub OAuth authorization-code login through a loopback redirect, mirroring
- * the Flutter client: bind an ephemeral localhost server, open the browser at
- * the host's authorize endpoint, then exchange the returned code natively.
+ * GitHub OAuth authorization-code login through a loopback redirect. The
+ * authorization page opens in an app-owned webview so GitHub Enterprise web
+ * session cookies are available to avatar image requests inside the app.
  */
 export async function loginWithOAuth(options: OAuthLoginOptions): Promise<string> {
   if (!isTauri()) {

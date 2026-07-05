@@ -19,6 +19,7 @@ describe("markdown front matter", () => {
       state: "open",
       author: "mona",
       labels: ["offline", "sync"],
+      label_colors: { offline: "1d76db", sync: "5319e7" },
       created_at: "2026-07-01T01:02:03Z",
       updated_at: "2026-07-01T04:05:06Z",
       synced_at: "2026-07-02T00:00:00Z",
@@ -31,6 +32,10 @@ describe("markdown front matter", () => {
 
     expect(parsed.frontMatter.local.favorite).toBe(true);
     expect(parsed.frontMatter.labels).toEqual(["offline", "sync"]);
+    expect(parsed.frontMatter.label_colors).toEqual({
+      offline: "1d76db",
+      sync: "5319e7"
+    });
     expect(parsed.body).toBe("Body **text**");
   });
 

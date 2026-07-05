@@ -31,7 +31,8 @@ export function useWorkItems(
   connection: GithubConnection,
   online: boolean,
   scope: WorkScope,
-  vaultRoot = "/vault"
+  vaultRoot = "/vault",
+  enabled = true
 ): UseWorkItemsResult {
   const token = connection.token.trim();
   const demoMode = !token;
@@ -46,7 +47,7 @@ export function useWorkItems(
     scope.type === "repo" ? `repo:${scope.owner}/${scope.name}` : "inbox";
 
   const load = useCallback(() => {
-    if (!token || !online) {
+    if (!enabled || !token || !online) {
       return;
     }
     const seq = ++requestSeq.current;
@@ -73,19 +74,21 @@ export function useWorkItems(
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, online, connection.apiBaseUrl, connection.webBaseUrl, scopeKey]);
+  }, [enabled, token, online, connection.apiBaseUrl, connection.webBaseUrl, scopeKey]);
 
   useEffect(() => {
     setFetched(null);
-    load();
-  }, [load]);
+    if (enabled) {
+      load();
+    }
+  }, [enabled, load]);
 
   useEffect(() => {
     persistFavorites(favorites);
   }, [favorites]);
 
   const items = useMemo(() => {
-    const base = demoMode ? sampleItems : fetched ?? [];
+    const base = demoMode ? sampleItems : enabled ? fetched ?? [] : [];
     return base.map((rawItem) => {
       const item = withVaultItemPath(vaultRoot, rawItem);
       const favorite = favorites[item.path] ?? favorites[rawItem.path];
@@ -99,7 +102,7 @@ export function useWorkItems(
             }
           };
     });
-  }, [demoMode, fetched, favorites, vaultRoot]);
+  }, [demoMode, enabled, fetched, favorites, vaultRoot]);
 
   const toggleFavorite = useCallback(
     (path: string) => {
@@ -112,5 +115,12 @@ export function useWorkItems(
     [favorites, items]
   );
 
-  return { items, loading, error, demoMode, refresh: load, toggleFavorite };
+  return {
+    items,
+    loading: enabled ? loading : false,
+    error: enabled ? error : null,
+    demoMode,
+    refresh: load,
+    toggleFavorite
+  };
 }

@@ -31,6 +31,7 @@ export interface ItemFrontMatter extends ItemIdentity {
   state: ItemState;
   author: string;
   labels: string[];
+  label_colors?: Record<string, string>;
   comments_count?: number;
   created_at: string;
   updated_at: string;
@@ -99,6 +100,7 @@ export interface ItemIndexEntry extends ItemIdentity {
   state: string;
   author: string;
   labels: string[];
+  label_colors?: Record<string, string>;
   updated_at: string;
   favorite: boolean;
   sync_status: SyncStatus;

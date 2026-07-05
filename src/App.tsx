@@ -9,7 +9,10 @@ import {
 import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { ItemDetail } from "./components/ItemDetail";
-import { ItemListPane } from "./components/ItemListPane";
+import {
+  ItemListPane,
+  type ItemStateFilter
+} from "./components/ItemListPane";
 import { LoginPage } from "./components/LoginPage";
 import {
   NewIssuePage,
@@ -94,6 +97,13 @@ function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
   }
 }
 
+function matchesStateFilter(item: ItemDocument, filter: ItemStateFilter): boolean {
+  if (filter === "open") {
+    return item.frontMatter.state === "open";
+  }
+  return item.frontMatter.state === "closed" || item.frontMatter.state === "merged";
+}
+
 export default function App({ initialOnline }: AppProps) {
   useScrollbarHover();
   const { online, toggleOnline } = useOnlineStatus(initialOnline);
@@ -101,6 +111,8 @@ export default function App({ initialOnline }: AppProps) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<ListFilter>("all");
+  const [itemStateFilter, setItemStateFilter] =
+    useState<ItemStateFilter>("open");
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
@@ -138,19 +150,36 @@ export default function App({ initialOnline }: AppProps) {
     };
   }, [authGate.state, vaultRoot]);
 
-  const workScope = useMemo<WorkScope>(() => {
+  const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
       const [owner, ...rest] = repositoryFilter.split("/");
       return { type: "repo", owner, name: rest.join("/") };
     }
     return { type: "inbox" };
   }, [repositoryFilter]);
-  const workItems = useWorkItems(auth.connection, online, workScope, vaultRoot);
+  const inboxWorkItems = useWorkItems(
+    auth.connection,
+    online,
+    { type: "inbox" },
+    vaultRoot
+  );
+  const projectWorkItems = useWorkItems(
+    auth.connection,
+    online,
+    repositoryScope,
+    vaultRoot,
+    Boolean(repositoryFilter)
+  );
+  const workItems = repositoryFilter ? projectWorkItems : inboxWorkItems;
+  const inboxItems = useMemo(
+    () => mergeItemDocuments(drafts, inboxWorkItems.items, vaultRoot),
+    [drafts, inboxWorkItems.items, vaultRoot]
+  );
   const items = useMemo(
     () => mergeItemDocuments(drafts, workItems.items, vaultRoot),
     [drafts, workItems.items, vaultRoot]
   );
-  const repositoryGroups = useRepositories(auth.connection, online, workItems.items);
+  const repositoryGroups = useRepositories(auth.connection, online, inboxWorkItems.items);
 
   useEffect(() => {
     if (
@@ -175,17 +204,20 @@ export default function App({ initialOnline }: AppProps) {
   );
   const [involvementReady, setInvolvementReady] = useState(false);
   useEffect(() => {
-    if (workScope.type === "inbox" && !workItems.demoMode && workItems.items.length > 0) {
+    if (
+      !inboxWorkItems.demoMode &&
+      inboxWorkItems.items.length > 0
+    ) {
       setInvolvedRepoNames(
         new Set(
-          workItems.items.map(
+          inboxWorkItems.items.map(
             (item) => `${item.frontMatter.owner}/${item.frontMatter.repo}`
           )
         )
       );
       setInvolvementReady(true);
     }
-  }, [workScope, workItems.demoMode, workItems.items]);
+  }, [inboxWorkItems.demoMode, inboxWorkItems.items]);
   const projectVisibility = useProjectVisibility(
     repositoryGroups.groups,
     involvedRepoNames,
@@ -251,20 +283,23 @@ export default function App({ initialOnline }: AppProps) {
 
   const filterCounts = useMemo<Record<ListFilter, number>>(
     () => ({
-      all: items.length,
-      favorites: items.filter((item) => item.frontMatter.local.favorite).length,
-      issues: items.filter((item) => item.frontMatter.kind === "issue").length,
-      pulls: items.filter((item) => item.frontMatter.kind === "pull").length,
-      discussions: items.filter((item) => item.frontMatter.kind === "discussion")
+      all: inboxItems.length,
+      favorites: inboxItems.filter((item) => item.frontMatter.local.favorite).length,
+      issues: inboxItems.filter((item) => item.frontMatter.kind === "issue").length,
+      pulls: inboxItems.filter((item) => item.frontMatter.kind === "pull").length,
+      discussions: inboxItems.filter((item) => item.frontMatter.kind === "discussion")
         .length
     }),
-    [items]
+    [inboxItems]
   );
 
   const filteredItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return items.filter((item) => {
-      if (!matchesFilter(item, filter)) {
+      if (!repositoryFilter && !matchesFilter(item, filter)) {
+        return false;
+      }
+      if (!matchesStateFilter(item, itemStateFilter)) {
         return false;
       }
       if (
@@ -288,7 +323,7 @@ export default function App({ initialOnline }: AppProps) {
         .toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [items, filter, repositoryFilter, query]);
+  }, [items, filter, itemStateFilter, repositoryFilter, query]);
 
   const selectedItem =
     filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
@@ -682,6 +717,7 @@ export default function App({ initialOnline }: AppProps) {
         filter={filter}
         onFilterChange={(next) => {
           setFilter(next);
+          setRepositoryFilter(null);
           setShowSettings(false);
           setShowNewIssue(false);
           setShowNotifications(false);
@@ -740,10 +776,12 @@ export default function App({ initialOnline }: AppProps) {
         <ItemListPane
           items={filteredItems}
           selectedPath={selectedItem?.path ?? null}
+          stateFilter={itemStateFilter}
           query={query}
           loading={workItems.loading}
           error={workItems.error}
           demoMode={workItems.demoMode}
+          onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
           onSelect={(path) => {
             setSelectedPath(path);

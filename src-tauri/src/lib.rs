@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
+use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
@@ -332,6 +333,7 @@ fn oauth_start(state: tauri::State<OAuthServerState>) -> Result<u16, String> {
 /// app window back to the front, and returns the callback query parameters.
 #[tauri::command]
 async fn oauth_wait(
+    app: tauri::AppHandle,
     window: tauri::Window,
     state: tauri::State<'_, OAuthServerState>,
 ) -> Result<HashMap<String, String>, String> {
@@ -353,6 +355,9 @@ async fn oauth_wait(
     let _ = window.set_always_on_top(true);
     std::thread::sleep(std::time::Duration::from_millis(80));
     let _ = window.set_always_on_top(false);
+    if let Some(oauth_window) = app.get_webview_window("oauth-login") {
+        let _ = oauth_window.close();
+    }
 
     Ok(params)
 }
@@ -383,29 +388,35 @@ fn oauth_exchange(
 }
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_REDIRECTS: usize = 8;
 
-/// Downloads an image natively — the webview cannot attach the GitHub token to
-/// <img> requests, so GHE images would 401 — and returns it as a data URL. We
-/// send `Accept: */*` because some GHE hosts reply 406 to a narrow `image/*`,
-/// and then validate that the final response is actually an image (SSO-gated
-/// hosts such as the avatars service redirect to an HTML login page instead).
-#[tauri::command]
-fn fetch_image(url: String, token: Option<String>) -> Result<String, String> {
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err("Only http(s) images can be fetched.".to_string());
-    }
+#[derive(Clone, Debug)]
+struct StoredCookie {
+    name: String,
+    value: String,
+    domain: Option<String>,
+    path: Option<String>,
+    secure: Option<bool>,
+}
 
-    let mut request = ureq::get(&url).set("Accept", "*/*");
-    if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
-        request = request.set("Authorization", &format!("Bearer {}", token.trim()));
-    }
-    let response = request.call().map_err(|error| error.to_string())?;
+fn stored_cookies(cookies: Vec<tauri::webview::Cookie<'static>>) -> Vec<StoredCookie> {
+    cookies
+        .into_iter()
+        .filter(|cookie| !cookie.name().is_empty())
+        .map(|cookie| StoredCookie {
+            name: cookie.name().to_string(),
+            value: cookie.value().to_string(),
+            domain: cookie.domain().map(str::to_string),
+            path: cookie.path().map(str::to_string),
+            secure: cookie.secure(),
+        })
+        .collect()
+}
 
+fn response_to_image_data_url(response: ureq::Response) -> Result<Option<String>, String> {
     let content_type = response.content_type().to_string();
     if !content_type.starts_with("image/") {
-        return Err(format!(
-            "URL did not return an image (content-type: {content_type})."
-        ));
+        return Ok(None);
     }
 
     let mut bytes: Vec<u8> = Vec::new();
@@ -415,16 +426,163 @@ fn fetch_image(url: String, token: Option<String>) -> Result<String, String> {
 
     use base64::Engine as _;
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    Ok(format!("data:{content_type};base64,{encoded}"))
+    Ok(Some(format!("data:{content_type};base64,{encoded}")))
 }
 
-/// Opens the OAuth authorization page in the user's default browser.
+fn cookie_matches_url(cookie: &StoredCookie, url: &tauri::Url) -> bool {
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return false;
+    };
+    if cookie.secure == Some(true) && url.scheme() != "https" {
+        return false;
+    }
+    if let Some(domain) = cookie.domain.as_deref() {
+        let domain = domain.trim_start_matches('.').to_ascii_lowercase();
+        if host != domain && !host.ends_with(&format!(".{domain}")) {
+            return false;
+        }
+    }
+    if let Some(path) = cookie.path.as_deref() {
+        if !url.path().starts_with(path) {
+            return false;
+        }
+    }
+    true
+}
+
+fn cookie_header(cookies: &[StoredCookie], url: &tauri::Url) -> Option<String> {
+    let header = cookies
+        .iter()
+        .filter(|cookie| cookie_matches_url(cookie, url))
+        .map(|cookie| format!("{}={}", cookie.name, cookie.value))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if header.is_empty() {
+        None
+    } else {
+        Some(header)
+    }
+}
+
+fn redirect_target(current: &tauri::Url, response: &ureq::Response) -> Option<tauri::Url> {
+    if !(300..400).contains(&response.status()) {
+        return None;
+    }
+    response
+        .header("Location")
+        .and_then(|location| current.join(location).ok())
+}
+
+fn fetch_image_attempt(
+    cookies: &[StoredCookie],
+    url: &str,
+    auth_header: Option<&str>,
+) -> Result<Option<String>, String> {
+    let agent = ureq::builder().redirects(0).build();
+    let mut current_url = tauri::Url::parse(url).map_err(|error| error.to_string())?;
+
+    for _ in 0..=MAX_IMAGE_REDIRECTS {
+        let cookie_header = cookie_header(cookies, &current_url);
+        let mut request = agent.get(current_url.as_str()).set("Accept", "*/*");
+        if let Some(auth_header) = auth_header {
+            request = request.set("Authorization", auth_header);
+        }
+        if let Some(cookie_header) = cookie_header.as_deref() {
+            request = request.set("Cookie", cookie_header);
+        }
+
+        let response = match request.call() {
+            Ok(response) => response,
+            Err(ureq::Error::Status(_, response)) => response,
+            Err(error) => return Err(error.to_string()),
+        };
+
+        if let Some(next_url) = redirect_target(&current_url, &response) {
+            current_url = next_url;
+            continue;
+        }
+
+        return response_to_image_data_url(response);
+    }
+
+    Err("Too many redirects while fetching image.".to_string())
+}
+
+/// Downloads an image natively — the webview cannot attach the GitHub token to
+/// <img> requests, so GHE images would 401 — and returns it as a data URL. We
+/// send `Accept: */*` because some GHE hosts reply 406 to a narrow `image/*`,
+/// and then validate that the final response is actually an image (SSO-gated
+/// hosts such as the avatars service redirect to an HTML login page instead).
 #[tauri::command]
-fn open_url(url: String) -> Result<(), String> {
+async fn fetch_image(
+    window: tauri::WebviewWindow,
+    url: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    let cookies = stored_cookies(window.cookies().unwrap_or_default());
+    tauri::async_runtime::spawn_blocking(move || fetch_image_inner(&cookies, url, token))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn fetch_image_inner(
+    cookies: &[StoredCookie],
+    url: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("Only http(s) images can be fetched.".to_string());
+    }
+
+    let trimmed_token = token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    let mut auth_headers: Vec<Option<String>> = match trimmed_token {
+        Some(token) => vec![
+            Some(format!("Bearer {token}")),
+            Some(format!("token {token}")),
+        ],
+        None => vec![None],
+    };
+    if trimmed_token.is_some() {
+        auth_headers.push(None);
+    }
+
+    let mut last_error: Option<String> = None;
+    for auth_header in auth_headers {
+        match fetch_image_attempt(cookies, &url, auth_header.as_deref()) {
+            Ok(Some(data_url)) => return Ok(data_url),
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| "URL did not return an image.".to_string()))
+}
+
+/// Opens the OAuth authorization page in an app-owned webview so Enterprise
+/// session cookies are stored where comment avatars are rendered.
+#[tauri::command]
+async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Only http(s) URLs can be opened.".to_string());
     }
-    open::that(url).map_err(|error| error.to_string())
+
+    let parsed = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
+    if let Some(window) = app.get_webview_window("oauth-login") {
+        window.navigate(parsed).map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(&app, "oauth-login", tauri::WebviewUrl::External(parsed))
+        .title("GitHub Login")
+        .inner_size(960.0, 760.0)
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -487,7 +645,10 @@ mod tests {
         let paths = vault_paths("~/Yonalist");
 
         assert_eq!(paths.metadata_dir, format!("{home}/Yonalist/.yonalist"));
-        assert_eq!(paths.outbox_dir, format!("{home}/Yonalist/.yonalist/outbox"));
+        assert_eq!(
+            paths.outbox_dir,
+            format!("{home}/Yonalist/.yonalist/outbox")
+        );
     }
 
     #[test]
@@ -511,14 +672,18 @@ mod tests {
     #[test]
     fn list_markdown_files_returns_vault_relative_documents() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let issue_path = temp_dir.path().join("github.com/acme/app/issues/1/issue.md");
-        let attachment_path = temp_dir.path().join("github.com/acme/app/issues/1/image.png");
+        let issue_path = temp_dir
+            .path()
+            .join("github.com/acme/app/issues/1/issue.md");
+        let attachment_path = temp_dir
+            .path()
+            .join("github.com/acme/app/issues/1/image.png");
         write_text_file_inner(&issue_path, "---\nkind: issue\n---\nbody").expect("write md");
         ensure_parent(&attachment_path).expect("attachment parent");
         fs::write(&attachment_path, b"png").expect("write attachment");
 
-        let files = list_markdown_files(display_path(temp_dir.path().to_path_buf()))
-            .expect("list files");
+        let files =
+            list_markdown_files(display_path(temp_dir.path().to_path_buf())).expect("list files");
 
         assert_eq!(files.len(), 1);
         assert_eq!(
@@ -548,8 +713,7 @@ mod tests {
 
         assert!(!temp_dir.path().join("drafts/issue.md").exists());
         assert_eq!(
-            fs::read_to_string(temp_dir.path().join("issues/10/issue.md"))
-                .expect("read moved"),
+            fs::read_to_string(temp_dir.path().join("issues/10/issue.md")).expect("read moved"),
             "synced"
         );
     }
@@ -581,8 +745,122 @@ mod tests {
 
     #[test]
     fn fetch_image_rejects_non_http_urls() {
-        assert!(fetch_image("file:///etc/passwd".to_string(), None).is_err());
-        assert!(fetch_image("data:image/png;base64,AAAA".to_string(), None).is_err());
+        assert!(fetch_image_inner(&[], "file:///etc/passwd".to_string(), None).is_err());
+        assert!(fetch_image_inner(&[], "data:image/png;base64,AAAA".to_string(), None).is_err());
+    }
+
+    #[test]
+    fn cookie_header_serializes_webview_cookies() {
+        let cookies = vec![
+            StoredCookie {
+                name: "user_session".to_string(),
+                value: "abc".to_string(),
+                domain: Some("oss.navercorp.com".to_string()),
+                path: Some("/".to_string()),
+                secure: Some(true),
+            },
+            StoredCookie {
+                name: "_gh_sess".to_string(),
+                value: "def".to_string(),
+                domain: Some(".navercorp.com".to_string()),
+                path: Some("/sessions".to_string()),
+                secure: Some(true),
+            },
+        ];
+        let url = tauri::Url::parse("https://oss.navercorp.com/sessions/login").unwrap();
+
+        assert_eq!(
+            cookie_header(&cookies, &url),
+            Some("user_session=abc; _gh_sess=def".to_string())
+        );
+    }
+
+    #[test]
+    fn cookie_header_filters_by_domain_path_and_secure_flag() {
+        let cookies = vec![
+            StoredCookie {
+                name: "keep".to_string(),
+                value: "yes".to_string(),
+                domain: Some(".navercorp.com".to_string()),
+                path: Some("/sessions".to_string()),
+                secure: Some(true),
+            },
+            StoredCookie {
+                name: "wrong_domain".to_string(),
+                value: "no".to_string(),
+                domain: Some("example.com".to_string()),
+                path: Some("/".to_string()),
+                secure: Some(true),
+            },
+            StoredCookie {
+                name: "wrong_path".to_string(),
+                value: "no".to_string(),
+                domain: Some("oss.navercorp.com".to_string()),
+                path: Some("/admin".to_string()),
+                secure: Some(true),
+            },
+            StoredCookie {
+                name: "secure_only".to_string(),
+                value: "no".to_string(),
+                domain: Some("oss.navercorp.com".to_string()),
+                path: Some("/".to_string()),
+                secure: Some(true),
+            },
+        ];
+
+        let https_url = tauri::Url::parse("https://oss.navercorp.com/sessions/login").unwrap();
+        let http_url = tauri::Url::parse("http://oss.navercorp.com/sessions/login").unwrap();
+
+        assert_eq!(
+            cookie_header(&cookies, &https_url),
+            Some("keep=yes; secure_only=no".to_string())
+        );
+        assert_eq!(cookie_header(&cookies, &http_url), None);
+    }
+
+    #[test]
+    fn fetch_image_retries_github_token_auth_when_bearer_returns_html() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let url = format!("http://{}/avatar.png", listener.local_addr().expect("addr"));
+
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut request = Vec::new();
+                let mut buffer = [0; 512];
+                use std::io::Read;
+                loop {
+                    let read = stream.read(&mut buffer).expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request);
+
+                if request.contains("Authorization: token ghp_token") {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x89PNG",
+                        )
+                        .expect("write image");
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 18\r\nConnection: close\r\n\r\n<html>login</html>",
+                        )
+                        .expect("write html");
+                }
+            }
+        });
+
+        let image = fetch_image_inner(&[], url, Some("ghp_token".to_string())).expect("image");
+
+        handle.join().expect("join");
+        assert!(image.starts_with("data:image/png;base64,"));
     }
 
     #[test]
@@ -600,8 +878,7 @@ mod tests {
 
         let handle = std::thread::spawn(move || accept_oauth_callback(listener));
 
-        let mut client =
-            std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
         client
             .write_all(b"GET /auth?code=abc&state=s1 HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .expect("send request");

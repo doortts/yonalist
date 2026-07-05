@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import {
   needsAuthenticatedFetch,
@@ -11,6 +11,29 @@ interface AvatarProps {
   size?: number;
   /** When false, render nothing (instead of the initial) if no image loads. */
   showFallback?: boolean;
+}
+
+function inferredAvatarUrl(
+  login: string,
+  webBaseUrl: string,
+  size: number
+): string | null {
+  const normalizedLogin = login.trim();
+  if (
+    !normalizedLogin ||
+    normalizedLogin === "unknown" ||
+    !webBaseUrl.trim()
+  ) {
+    return null;
+  }
+
+  try {
+    const url = new URL(`${encodeURIComponent(normalizedLogin)}.png`, webBaseUrl);
+    url.searchParams.set("size", String(size * 2));
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -27,30 +50,65 @@ export function Avatar({
   const connection = useContext(GithubConnectionContext);
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const proxyAttempted = useRef(false);
+  const requestSeq = useRef(0);
+  const displayUrl =
+    avatarUrl ?? inferredAvatarUrl(login, connection.webBaseUrl, size);
 
   useEffect(() => {
+    const seq = ++requestSeq.current;
+    proxyAttempted.current = false;
     setFailed(false);
-    if (!avatarUrl) {
+    if (!displayUrl) {
       setSrc(null);
       return;
     }
-    if (!needsAuthenticatedFetch(avatarUrl, connection)) {
-      setSrc(avatarUrl);
+    if (!needsAuthenticatedFetch(displayUrl, connection)) {
+      setSrc(displayUrl);
       return;
     }
-    let cancelled = false;
+
+    proxyAttempted.current = true;
     setSrc(null);
-    void resolveAuthenticatedImage(avatarUrl, connection).then((resolved) => {
-      if (!cancelled) {
+    void resolveAuthenticatedImage(displayUrl, connection).then((resolved) => {
+      if (requestSeq.current !== seq) {
+        return;
+      }
+      if (resolved) {
         setSrc(resolved);
+      } else {
+        setFailed(true);
       }
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [avatarUrl, connection]);
+  }, [displayUrl, connection.webBaseUrl, connection.token]);
 
   const style = { width: size, height: size };
+
+  function handleError() {
+    if (
+      !displayUrl ||
+      proxyAttempted.current ||
+      !needsAuthenticatedFetch(displayUrl, connection)
+    ) {
+      setFailed(true);
+      return;
+    }
+
+    proxyAttempted.current = true;
+    const seq = ++requestSeq.current;
+    setFailed(false);
+    setSrc(null);
+    void resolveAuthenticatedImage(displayUrl, connection).then((resolved) => {
+      if (requestSeq.current !== seq) {
+        return;
+      }
+      if (resolved) {
+        setSrc(resolved);
+      } else {
+        setFailed(true);
+      }
+    });
+  }
 
   if (src && !failed) {
     return (
@@ -59,7 +117,7 @@ export function Avatar({
         style={style}
         src={src}
         alt={login}
-        onError={() => setFailed(true)}
+        onError={handleError}
       />
     );
   }

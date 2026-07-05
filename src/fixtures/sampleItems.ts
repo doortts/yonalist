@@ -23,6 +23,7 @@ export const sampleItems: ItemDocument[] = [
       state: "open",
       author: "doortts",
       labels: ["offline", "sync"],
+      label_colors: { offline: "1d76db", sync: "5319e7" },
       created_at: "2026-07-01T10:00:00Z",
       updated_at: "2026-07-02T09:00:00Z",
       synced_at: syncedAt,
@@ -46,6 +47,7 @@ export const sampleItems: ItemDocument[] = [
       state: "open",
       author: "mona",
       labels: ["docs"],
+      label_colors: { docs: "0075ca" },
       created_at: "2026-06-30T10:00:00Z",
       updated_at: "2026-07-01T12:00:00Z",
       synced_at: syncedAt,
@@ -69,6 +71,7 @@ export const sampleItems: ItemDocument[] = [
       state: "open",
       author: "doortts",
       labels: ["release"],
+      label_colors: { release: "0e8a16" },
       created_at: "2026-06-28T10:00:00Z",
       updated_at: "2026-07-01T04:00:00Z",
       synced_at: syncedAt,
@@ -92,7 +95,10 @@ export function sampleItemThread(item: ItemDocument): ItemThread {
     state: item.frontMatter.state,
     draft: false,
     authorAssociation: "OWNER",
-    labels: item.frontMatter.labels.map((name) => ({ name, color: "" })),
+    labels: item.frontMatter.labels.map((name) => ({
+      name,
+      color: item.frontMatter.label_colors?.[name] ?? ""
+    })),
     reactions: [
       { emoji: "👍", count: 2 },
       { emoji: "🎉", count: 1 }

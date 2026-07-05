@@ -26,7 +26,7 @@ afterEach(() => {
 
 describe("fetchMyWorkItems", () => {
   it("maps search results and discussions into vault item documents", async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, _init?: RequestInit) => {
       const target = String(url);
       if (target.includes("/search/issues")) {
         return jsonResponse({
@@ -37,7 +37,7 @@ describe("fetchMyWorkItems", () => {
               state: "open",
               body: "Body",
               user: { login: "doortts" },
-              labels: [{ name: "bug" }],
+              labels: [{ name: "bug", color: "b60205" }],
               created_at: "2026-07-01T00:00:00Z",
               updated_at: "2026-07-02T00:00:00Z",
               html_url: "https://github.com/acme/app/issues/42",
@@ -70,7 +70,7 @@ describe("fetchMyWorkItems", () => {
                 updatedAt: "2026-07-01T00:00:00Z",
                 author: { login: "doortts" },
                 repository: { name: "app", owner: { login: "acme" } },
-                labels: { nodes: [{ name: "planning" }] }
+                labels: { nodes: [{ name: "planning", color: "fef2c0" }] }
               }
             ]
           }
@@ -88,6 +88,8 @@ describe("fetchMyWorkItems", () => {
     ]);
     expect(items[1].path).toBe("/vault/github.com/acme/app/issues/42/issue.md");
     expect(items[1].frontMatter.labels).toEqual(["bug"]);
+    expect(items[1].frontMatter.label_colors).toEqual({ bug: "b60205" });
+    expect(items[2].frontMatter.label_colors).toEqual({ planning: "fef2c0" });
     expect(items[2].path).toBe(
       "/vault/github.com/acme/app/discussions/5/discussion.md"
     );
@@ -95,15 +97,35 @@ describe("fetchMyWorkItems", () => {
       expect.stringContaining("/search/issues?q=involves%3A%40me"),
       expect.anything()
     );
+    const graphQlCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/graphql")
+    );
+    expect(String(graphQlCall?.[1]?.body)).toContain("name color");
   });
 });
 
 describe("fetchRepoWorkItems", () => {
-  it("combines repo search results with GraphQL discussions", async () => {
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+  it("combines direct repo issue results with GraphQL discussions", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.includes("/search/issues")) {
-        return jsonResponse({ items: [] });
+        throw new Error("Repo-scoped refresh should not use issue search.");
+      }
+      if (target.includes("/repos/acme/app/issues")) {
+        return jsonResponse([
+          {
+            number: 42,
+            title: "Repo issue",
+            state: "open",
+            body: "Issue body",
+            user: { login: "mona" },
+            labels: [{ name: "bug", color: "b60205" }],
+            created_at: "2026-07-01T00:00:00Z",
+            updated_at: "2026-07-03T00:00:00Z",
+            html_url: "https://github.com/acme/app/issues/42",
+            comments: 2
+          }
+        ]);
       }
       if (target.includes("/graphql")) {
         return jsonResponse({
@@ -134,10 +156,14 @@ describe("fetchRepoWorkItems", () => {
 
     const items = await fetchRepoWorkItems(connection, "acme", "app");
 
-    expect(items).toHaveLength(1);
-    expect(items[0].frontMatter.kind).toBe("discussion");
+    expect(items.map((item) => item.frontMatter.kind)).toEqual([
+      "issue",
+      "discussion"
+    ]);
+    expect(items[0].frontMatter.title).toBe("Repo issue");
+    expect(items[0].frontMatter.label_colors).toEqual({ bug: "b60205" });
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("q=repo%3Aacme%2Fapp"),
+      expect.stringContaining("/repos/acme/app/issues?"),
       expect.anything()
     );
     expect(fetchMock).toHaveBeenCalledWith(
@@ -156,7 +182,7 @@ describe("fetchMyRepositories", () => {
       open_issues_count: 1,
       pushed_at: "2026-07-01T00:00:00Z"
     });
-    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.includes("affiliation=owner%2Ccollaborator")) {
         return jsonResponse([repo("doortts", "mine"), repo("acme", "shared")]);
@@ -166,6 +192,36 @@ describe("fetchMyRepositories", () => {
       }
       if (target.includes("/user/subscriptions")) {
         return jsonResponse([repo("vendor", "watched-only")]);
+      }
+      if (target.includes("/graphql")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        expect(String(body.query)).toContain("issues(states: OPEN)");
+        expect(String(body.query)).toContain("pullRequests(states: OPEN)");
+        expect(String(body.query)).toContain("discussions(states: OPEN)");
+        return jsonResponse({
+          data: {
+            r0: {
+              issues: { totalCount: 2 },
+              pullRequests: { totalCount: 3 },
+              discussions: { totalCount: 4 }
+            },
+            r1: {
+              issues: { totalCount: 0 },
+              pullRequests: { totalCount: 5 },
+              discussions: { totalCount: 0 }
+            },
+            r2: {
+              issues: { totalCount: 1 },
+              pullRequests: { totalCount: 1 },
+              discussions: { totalCount: 1 }
+            },
+            r3: {
+              issues: { totalCount: 9 },
+              pullRequests: { totalCount: 0 },
+              discussions: { totalCount: 2 }
+            }
+          }
+        });
       }
       throw new Error(`Unexpected request: ${target}`);
     });
@@ -178,18 +234,24 @@ describe("fetchMyRepositories", () => {
     expect(byName["doortts/mine"]).toMatchObject({
       participating: true,
       orgMember: false,
-      watched: false
+      watched: false,
+      openIssuesCount: 9
     });
     expect(byName["pi/agent-dev"]).toMatchObject({
       participating: false,
       orgMember: true,
-      watched: false
+      watched: false,
+      openIssuesCount: 3
     });
     expect(byName["acme/shared"]).toMatchObject({
       participating: true,
-      orgMember: true
+      orgMember: true,
+      openIssuesCount: 5
     });
-    expect(byName["vendor/watched-only"]).toMatchObject({ watched: true });
+    expect(byName["vendor/watched-only"]).toMatchObject({
+      watched: true,
+      openIssuesCount: 11
+    });
   });
 
   it("follows pagination so large org memberships are not cut off", async () => {
@@ -231,7 +293,7 @@ describe("fetchMyRepositories", () => {
             name: "mine",
             full_name: "doortts/mine",
             owner: { login: "doortts" },
-            open_issues_count: 0,
+            open_issues_count: 7,
             pushed_at: "2026-07-01T00:00:00Z"
           }
         ]);
@@ -243,6 +305,7 @@ describe("fetchMyRepositories", () => {
     const repos = await fetchMyRepositories(connection);
 
     expect(repos.map((repo) => repo.fullName)).toEqual(["doortts/mine"]);
+    expect(repos[0].openIssuesCount).toBe(7);
   });
 });
 
