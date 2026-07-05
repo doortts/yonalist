@@ -84,8 +84,11 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
         scopes: githubScopes
       });
       setSessionToken(accessToken);
-      // Persisted so the next launch signs in without asking.
-      void saveSessionToken(servers.selectedUrl, accessToken);
+      // Persisted so the next launch signs in without asking. A failed write
+      // (e.g. a denied keychain prompt) must be visible, not silent.
+      void saveSessionToken(servers.selectedUrl, accessToken).catch((cause) => {
+        console.error("Failed to persist the OAuth session token", cause);
+      });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
