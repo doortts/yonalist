@@ -62,4 +62,29 @@ describe("renderMarkdown", () => {
     // highlight.js wraps tokens in spans
     expect(__html).toContain("hljs");
   });
+
+  it("highlights the common languages that stay registered", () => {
+    for (const [lang, sample] of [
+      ["typescript", "const a: number = 1;"],
+      ["python", "def f():\n  return 1"],
+      ["rust", "fn main() {}"],
+      ["bash", "echo hi"],
+      ["json", '{"a": 1}'],
+      ["yaml", "a: 1"],
+      ["diff", "+added\n-removed"]
+    ] as const) {
+      const { __html } = renderMarkdown(`\`\`\`${lang}\n${sample}\n\`\`\``);
+      expect(__html, lang).toContain(`language-${lang}`);
+      expect(__html, lang).toContain("hljs-");
+    }
+  });
+
+  it("falls back to escaped plain text for unregistered languages", () => {
+    const { __html } = renderMarkdown("```brainfuck\n<+>-\n```");
+
+    // No crash, code still fenced and escaped, no bogus token spans.
+    expect(__html).toContain("<pre class=\"hljs\">");
+    expect(__html).toContain("&lt;+&gt;-");
+    expect(__html).not.toContain("language-brainfuck");
+  });
 });

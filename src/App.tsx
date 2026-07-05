@@ -1,6 +1,8 @@
 import {
   type CSSProperties,
   type FormEvent,
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -26,7 +28,13 @@ import {
   SettingsCategoryPane,
   type SettingsSection
 } from "./components/SettingsCategoryPane";
-import { SettingsPage } from "./components/SettingsPage";
+// Settings never render on the first screen; code-split them out of the
+// initial bundle.
+const SettingsPage = lazy(() =>
+  import("./components/SettingsPage").then((module) => ({
+    default: module.SettingsPage
+  }))
+);
 import { Sidebar, type ListFilter } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
 import { toggleFavorite } from "./domain/favorites";
@@ -812,20 +820,22 @@ export default function App({ initialOnline }: AppProps) {
         <div className="pane-titlebar-spacer" />
         <div className="detail-scroll">
         {showSettings ? (
-          <SettingsPage
-            section={settingsSection}
-            settings={settings}
-            status={settingsStatus}
-            themeMode={themeMode}
-            onThemeModeChange={setThemeMode}
-            servers={servers}
-            auth={auth}
-            repositoryGroups={repositoryGroups.groups}
-            projectVisibility={projectVisibility}
-            onUpdate={updateSetting}
-            onSave={saveSettings}
-            onClose={() => setShowSettings(false)}
-          />
+          <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
+            <SettingsPage
+              section={settingsSection}
+              settings={settings}
+              status={settingsStatus}
+              themeMode={themeMode}
+              onThemeModeChange={setThemeMode}
+              servers={servers}
+              auth={auth}
+              repositoryGroups={repositoryGroups.groups}
+              projectVisibility={projectVisibility}
+              onUpdate={updateSetting}
+              onSave={saveSettings}
+              onClose={() => setShowSettings(false)}
+            />
+          </Suspense>
         ) : showNewIssue ? (
           <NewIssuePage
             draft={draftIssue}
