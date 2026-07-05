@@ -1,6 +1,11 @@
-import { FolderTree, HardDrive, Server, SunMoon } from "lucide-react";
+import { FolderTree, HardDrive, RotateCcw, Server, SunMoon } from "lucide-react";
 
-export type SettingsSection = "appearance" | "servers" | "projects" | "vault";
+export type SettingsSection =
+  | "appearance"
+  | "servers"
+  | "projects"
+  | "vault"
+  | "reset";
 
 export const settingsSections: Array<{
   key: SettingsSection;
@@ -31,6 +36,12 @@ export const settingsSections: Array<{
     label: "Vault and sync",
     description: "볼트 폴더와 동기화",
     icon: HardDrive
+  },
+  {
+    key: "reset",
+    label: "Reset",
+    description: "설정과 캐시 초기화",
+    icon: RotateCcw
   }
 ];
 

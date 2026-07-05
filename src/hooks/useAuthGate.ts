@@ -8,6 +8,7 @@ import {
   validateConnection
 } from "../services/authGate";
 import { clearSessionToken } from "../services/sessionTokens";
+import { tracePerf } from "../services/perfTrace";
 import type { UseGithubAuthResult } from "./useGithubAuth";
 import type { UseGithubServersResult } from "./useGithubServers";
 
@@ -59,11 +60,19 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       if (!online) {
         return;
       }
+      const startedAt = performance.now();
+      tracePerf("auth_check_start", {
+        apiBaseUrl: auth.connection.apiBaseUrl
+      });
       void checkConnection({
         apiBaseUrl: auth.connection.apiBaseUrl,
         webBaseUrl: auth.connection.webBaseUrl,
         token
       }).then((result) => {
+        tracePerf("auth_check_done", {
+          result,
+          durationMs: performance.now() - startedAt
+        });
         if (result === "ok") {
           persistLastAuthenticatedUrl(auth.connection.apiBaseUrl);
         } else if (result === "invalid") {
@@ -114,6 +123,17 @@ export function useAuthGate({ auth, servers, online }: UseAuthGateInput) {
       }
     });
   }, [state, auth.signedIn, auth.connection, online, servers.selectedUrl]);
+
+  useEffect(() => {
+    if (
+      state === "passed" &&
+      !auth.signedIn &&
+      !auth.restoringSession &&
+      !loadSkipLogin()
+    ) {
+      setState("required");
+    }
+  }, [state, auth.signedIn, auth.restoringSession]);
 
   function skipLogin() {
     persistSkipLogin(true);

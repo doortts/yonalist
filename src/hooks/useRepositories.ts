@@ -9,6 +9,7 @@ import {
   loadCachedRepositorySummaries,
   persistCachedRepositorySummaries
 } from "../services/repositoryCache";
+import { tracePerf, tracePerfOnce } from "../services/perfTrace";
 import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseRepositoriesResult {
@@ -43,11 +44,18 @@ export function useRepositories(
     const cached = loadCachedRepositorySummaries(connection.apiBaseUrl);
     if (cached) {
       setGroups(groupRepositoriesByOwner(cached));
+      tracePerfOnce("repositories-cache-loaded", "repositories_cache_loaded", {
+        count: cached.length
+      });
     }
     if (!online) {
       return;
     }
     const seq = ++requestSeq.current;
+    const startedAt = performance.now();
+    tracePerf("repositories_remote_start", {
+      apiBaseUrl: connection.apiBaseUrl
+    });
     setLoading(true);
     fetchMyRepositorySummaries(connection)
       .then((repositories) => {
@@ -55,12 +63,20 @@ export function useRepositories(
           persistCachedRepositorySummaries(connection.apiBaseUrl, repositories);
           setGroups(groupRepositoriesByOwner(repositories));
           setError(null);
+          tracePerf("repositories_remote_done", {
+            count: repositories.length,
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .catch((cause) => {
         if (requestSeq.current === seq) {
           const detail = cause instanceof Error ? cause.message : String(cause);
           setError(`Could not load repositories: ${detail}`);
+          tracePerf("repositories_remote_error", {
+            message: detail,
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .finally(() => {

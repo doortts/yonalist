@@ -1,5 +1,6 @@
 import type { GitHubNotification } from "../domain/notifications";
 import { GitHubRequestError } from "./github";
+import { tracePerf } from "./perfTrace";
 
 export interface FetchNotificationsOptions {
   token: string;
@@ -92,8 +93,14 @@ async function doFetchNotifications(
     if (cached.etag) {
       conditionalHeaders["If-None-Match"] = cached.etag;
     }
+    const probeStartedAt = performance.now();
+    tracePerf("notifications_probe_start", {});
     const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
       headers: conditionalHeaders
+    });
+    tracePerf("notifications_probe_done", {
+      status: probe.status,
+      durationMs: performance.now() - probeStartedAt
     });
     if (probe.status === 304) {
       options.onPartialResult?.(cached.notifications);
@@ -113,11 +120,18 @@ async function doFetchNotifications(
   for (let page = 1; page <= MAX_PAGES; page += 1) {
     params.set("page", String(page));
 
+    const pageStartedAt = performance.now();
+    tracePerf("notifications_page_start", { page });
     const response = await fetcher(`${base}/notifications?${params.toString()}`, {
       headers: baseHeaders
     });
 
     if (!response.ok) {
+      tracePerf("notifications_page_error", {
+        page,
+        status: response.status,
+        durationMs: performance.now() - pageStartedAt
+      });
       throw new GitHubRequestError(response.status, "");
     }
 
@@ -127,6 +141,11 @@ async function doFetchNotifications(
     }
 
     const pageItems = (await response.json()) as GitHubNotification[];
+    tracePerf("notifications_page_done", {
+      page,
+      items: pageItems.length,
+      durationMs: performance.now() - pageStartedAt
+    });
     notifications.push(...pageItems);
     options.onPartialResult?.([...notifications]);
 

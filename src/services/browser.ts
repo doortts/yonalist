@@ -4,7 +4,7 @@ import { isTauri } from "./oauth";
 export async function openExternal(url: string): Promise<void> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("open_url", { url });
+    await invoke("open_external_url", { url });
     return;
   }
   window.open(url, "_blank", "noopener,noreferrer");

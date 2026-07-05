@@ -13,6 +13,7 @@ export interface UseProjectVisibilityResult {
   isVisible: (repository: RepositorySummary) => boolean;
   setRepositoryVisible: (fullName: string, visible: boolean) => void;
   setOwnerVisible: (group: OwnerGroup, visible: boolean) => void;
+  reset: () => void;
 }
 
 export function useProjectVisibility(
@@ -86,5 +87,9 @@ export function useProjectVisibility(
     });
   }, []);
 
-  return { visibleGroups, isVisible, setRepositoryVisible, setOwnerVisible };
+  const reset = useCallback(() => {
+    setOverrides({});
+  }, []);
+
+  return { visibleGroups, isVisible, setRepositoryVisible, setOwnerVisible, reset };
 }

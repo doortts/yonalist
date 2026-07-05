@@ -3,6 +3,10 @@ import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { GithubConnection } from "../hooks/useGithubAuth";
+import {
+  clearImageProxyCache,
+  persistCachedAvatarImage
+} from "../services/imageProxy";
 import { Avatar } from "./Avatar";
 
 const connection: GithubConnection = {
@@ -20,6 +24,7 @@ function renderWithConnection(ui: ReactElement) {
 }
 
 afterEach(() => {
+  clearImageProxyCache();
   vi.unstubAllGlobals();
 });
 
@@ -64,6 +69,32 @@ describe("Avatar", () => {
       );
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a cached avatar immediately while stale checks happen in the background", () => {
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+    persistCachedAvatarImage(
+      "hyeonseo-kim",
+      connection,
+      "https://oss.navercorp.com/avatars/u/1.png",
+      {
+        dataUrl: "data:image/png;base64,cached",
+        checkedAt: new Date("2026-07-01T00:00:00Z")
+      }
+    );
+
+    renderWithConnection(
+      <Avatar
+        login="hyeonseo-kim"
+        avatarUrl="https://oss.navercorp.com/avatars/u/1.png"
+      />
+    );
+
+    expect(screen.getByRole("img", { name: "hyeonseo-kim" })).toHaveAttribute(
+      "src",
+      "data:image/png;base64,cached"
+    );
   });
 
   it("does not retry the direct Enterprise URL after the auth proxy fails", async () => {

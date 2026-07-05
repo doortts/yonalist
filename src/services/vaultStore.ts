@@ -9,9 +9,20 @@ import type {
 } from "../domain/types";
 
 const vaultDocumentsKey = "yonalist.vaultDocuments.v1";
+const vaultDocumentHashesKey = "yonalist.vaultDocumentHashes.v1";
 
 interface StoredVaults {
   [vaultRoot: string]: Record<string, string>;
+}
+
+interface StoredVaultHashes {
+  [vaultRoot: string]: Record<string, string>;
+}
+
+interface NativeVaultDocumentHashRecord {
+  relative_path: string;
+  content_hash: string;
+  size: number;
 }
 
 interface TauriVaultFile {
@@ -74,6 +85,158 @@ function persistStoredVaults(vaults: StoredVaults) {
   }
 }
 
+function hashString(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function loadStoredVaultHashes(): StoredVaultHashes {
+  try {
+    const stored = window.localStorage.getItem(vaultDocumentHashesKey);
+    return stored ? (JSON.parse(stored) as StoredVaultHashes) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistStoredVaultHashes(hashes: StoredVaultHashes) {
+  try {
+    window.localStorage.setItem(vaultDocumentHashesKey, JSON.stringify(hashes));
+  } catch {
+    // Hashes are an optimization; failed persistence should not block writes.
+  }
+}
+
+async function getStoredDocumentHash(
+  vaultRoot: string,
+  documentRelativePath: string
+): Promise<string | null> {
+  if (isTauri()) {
+    return invokeTauri<string | null>("get_vault_document_hash", {
+      vaultPath: vaultRoot,
+      relativePath: documentRelativePath
+    });
+  }
+  return loadStoredVaultHashes()[vaultRoot]?.[documentRelativePath] ?? null;
+}
+
+async function rememberDocumentHash(
+  vaultRoot: string,
+  documentRelativePath: string,
+  hash: string,
+  size: number
+) {
+  if (isTauri()) {
+    await invokeTauri("upsert_vault_document_hash", {
+      vaultPath: vaultRoot,
+      relativePath: documentRelativePath,
+      contentHash: hash,
+      size
+    });
+    return;
+  }
+
+  const hashes = loadStoredVaultHashes();
+  const documents = { ...(hashes[vaultRoot] ?? {}) };
+  if (documents[documentRelativePath] === hash) {
+    return;
+  }
+  documents[documentRelativePath] = hash;
+  hashes[vaultRoot] = documents;
+  persistStoredVaultHashes(hashes);
+}
+
+async function rememberDocumentHashes(
+  vaultRoot: string,
+  documents: Array<{ relativePath: string; contents: string }>
+) {
+  if (isTauri()) {
+    const records: NativeVaultDocumentHashRecord[] = documents.map((document) => ({
+      relative_path: document.relativePath,
+      content_hash: hashString(document.contents),
+      size: document.contents.length
+    }));
+    await invokeTauri("replace_vault_document_hashes", {
+      vaultPath: vaultRoot,
+      documents: records
+    });
+    return;
+  }
+
+  const hashes = loadStoredVaultHashes();
+  const current = hashes[vaultRoot] ?? {};
+  const next: Record<string, string> = {};
+
+  for (const document of documents) {
+    next[document.relativePath] = hashString(document.contents);
+  }
+
+  const currentKeys = Object.keys(current);
+  const nextKeys = Object.keys(next);
+  const changed =
+    currentKeys.length !== nextKeys.length ||
+    nextKeys.some((key) => current[key] !== next[key]);
+  if (!changed) {
+    return;
+  }
+  hashes[vaultRoot] = next;
+  persistStoredVaultHashes(hashes);
+}
+
+async function forgetDocumentHash(vaultRoot: string, documentRelativePath: string) {
+  if (isTauri()) {
+    await invokeTauri("delete_vault_document_hash", {
+      vaultPath: vaultRoot,
+      relativePath: documentRelativePath
+    });
+    return;
+  }
+
+  const hashes = loadStoredVaultHashes();
+  const documents = { ...(hashes[vaultRoot] ?? {}) };
+  if (!(documentRelativePath in documents)) {
+    return;
+  }
+  delete documents[documentRelativePath];
+  hashes[vaultRoot] = documents;
+  persistStoredVaultHashes(hashes);
+}
+
+async function moveDocumentHash(
+  vaultRoot: string,
+  fromRelativePath: string,
+  toRelativePath: string,
+  contents?: string
+) {
+  if (isTauri()) {
+    await invokeTauri("move_vault_document_hash", {
+      vaultPath: vaultRoot,
+      fromRelativePath,
+      toRelativePath,
+      contentHash: typeof contents === "string" ? hashString(contents) : null,
+      size: typeof contents === "string" ? contents.length : null
+    });
+    return;
+  }
+
+  const hashes = loadStoredVaultHashes();
+  const documents = { ...(hashes[vaultRoot] ?? {}) };
+  const nextHash =
+    typeof contents === "string"
+      ? hashString(contents)
+      : documents[fromRelativePath];
+  delete documents[fromRelativePath];
+  if (nextHash) {
+    documents[toRelativePath] = nextHash;
+  }
+  hashes[vaultRoot] = documents;
+  persistStoredVaultHashes(hashes);
+}
+
 function serializeItem(item: ItemDocument): string {
   return serializeMarkdownDocument(item.frontMatter, item.body);
 }
@@ -97,18 +260,33 @@ async function writeVaultFile(
   contents: string
 ) {
   const relative = relativePath(vaultRoot, documentPath);
+  const nextHash = hashString(contents);
+  if ((await getStoredDocumentHash(vaultRoot, relative)) === nextHash) {
+    return;
+  }
   if (isTauri()) {
     await invokeTauri("write_text_file", {
       vaultPath: vaultRoot,
       relativePath: relative,
       contents
     });
+    await rememberDocumentHash(vaultRoot, relative, nextHash, contents.length);
     return;
   }
 
   const vaults = loadStoredVaults();
+  const existingDocuments = vaults[vaultRoot] ?? {};
+  const existsInPreviewStore = Object.prototype.hasOwnProperty.call(
+    existingDocuments,
+    relative
+  );
+  if (existsInPreviewStore && hashString(existingDocuments[relative]) === nextHash) {
+    await rememberDocumentHash(vaultRoot, relative, nextHash, contents.length);
+    return;
+  }
   vaults[vaultRoot] = { ...(vaults[vaultRoot] ?? {}), [relative]: contents };
   persistStoredVaults(vaults);
+  await rememberDocumentHash(vaultRoot, relative, nextHash, contents.length);
 }
 
 export async function deleteVaultDocument(vaultRoot: string, documentPath: string) {
@@ -118,6 +296,7 @@ export async function deleteVaultDocument(vaultRoot: string, documentPath: strin
       vaultPath: vaultRoot,
       relativePath: relative
     });
+    await forgetDocumentHash(vaultRoot, relative);
     return;
   }
 
@@ -126,6 +305,7 @@ export async function deleteVaultDocument(vaultRoot: string, documentPath: strin
   delete documents[relative];
   vaults[vaultRoot] = documents;
   persistStoredVaults(vaults);
+  await forgetDocumentHash(vaultRoot, relative);
 }
 
 export async function moveVaultDocument(
@@ -143,6 +323,7 @@ export async function moveVaultDocument(
       toRelativePath,
       contents
     });
+    await moveDocumentHash(vaultRoot, fromRelativePath, toRelativePath, contents);
     return;
   }
 
@@ -152,6 +333,12 @@ export async function moveVaultDocument(
   delete documents[fromRelativePath];
   vaults[vaultRoot] = documents;
   persistStoredVaults(vaults);
+  await moveDocumentHash(
+    vaultRoot,
+    fromRelativePath,
+    toRelativePath,
+    documents[toRelativePath]
+  );
 }
 
 export function itemDocumentContents(item: ItemDocument): string {
@@ -191,6 +378,13 @@ export async function readVaultDocuments(
     const files = await invokeTauri<TauriVaultFile[]>("list_markdown_files", {
       vaultPath: vaultRoot
     });
+    await rememberDocumentHashes(
+      vaultRoot,
+      files.map((file) => ({
+        relativePath: file.relative_path,
+        contents: file.contents
+      }))
+    );
     return files.map((file) => ({
       path: absolutePath(vaultRoot, file.relative_path),
       contents: file.contents
@@ -198,6 +392,13 @@ export async function readVaultDocuments(
   }
 
   const documents = loadStoredVaults()[vaultRoot] ?? {};
+  await rememberDocumentHashes(
+    vaultRoot,
+    Object.entries(documents).map(([path, contents]) => ({
+      relativePath: path,
+      contents
+    }))
+  );
   return Object.entries(documents).map(([path, contents]) => ({
     path: absolutePath(vaultRoot, path),
     contents

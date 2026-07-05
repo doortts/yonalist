@@ -8,6 +8,7 @@ import {
   loadCachedRepositoryOpenCounts,
   persistCachedRepositoryOpenCounts
 } from "../services/repositoryCache";
+import { tracePerf } from "../services/perfTrace";
 import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseRepositoryOpenCountsResult {
@@ -36,7 +37,8 @@ function withCounts(
 export function useRepositoryOpenCounts(
   connection: GithubConnection,
   online: boolean,
-  groups: OwnerGroup[]
+  groups: OwnerGroup[],
+  selectedRepositoryFullName: string | null
 ): UseRepositoryOpenCountsResult {
   const token = connection.token.trim();
   const [counts, setCounts] = useState<Record<string, number>>(() =>
@@ -59,6 +61,15 @@ export function useRepositoryOpenCounts(
     () => flattenGroups(groups).map((repository) => repository.fullName).join("\n"),
     [groups]
   );
+  const selectedRepository = useMemo(
+    () =>
+      selectedRepositoryFullName
+        ? flattenGroups(groups).find(
+            (repository) => repository.fullName === selectedRepositoryFullName
+          ) ?? null
+        : null,
+    [groups, selectedRepositoryFullName]
+  );
 
   useEffect(() => {
     const visibleRepositories = flattenGroups(groups);
@@ -72,20 +83,23 @@ export function useRepositoryOpenCounts(
       }
     }
 
-    if (!token || !online || groups.length === 0) {
+    if (!token || !online || groups.length === 0 || !selectedRepository) {
       setLoading(false);
       return;
     }
-    const repositories = visibleRepositories.filter(
-      (repository) => !requested.current.has(repository.fullName)
-    );
-    if (repositories.length === 0) {
+    if (requested.current.has(selectedRepository.fullName)) {
       setLoading(false);
       return;
     }
 
+    const repositories = [selectedRepository];
     repositories.forEach((repository) => requested.current.add(repository.fullName));
     const seq = requestSeq.current;
+    const startedAt = performance.now();
+    tracePerf("repository_count_remote_start", {
+      fullName: selectedRepository.fullName,
+      apiBaseUrl: connection.apiBaseUrl
+    });
     setLoading(true);
     fetchRepositoryOpenItemCounts(connection, repositories)
       .then((nextCounts) => {
@@ -106,6 +120,11 @@ export function useRepositoryOpenCounts(
           return merged;
         });
         setError(null);
+        tracePerf("repository_count_remote_done", {
+          fullName: selectedRepository.fullName,
+          count: visibleCounts[selectedRepository.fullName],
+          durationMs: performance.now() - startedAt
+        });
       })
       .catch((cause) => {
         repositories.forEach((repository) =>
@@ -114,6 +133,11 @@ export function useRepositoryOpenCounts(
         if (requestSeq.current === seq) {
           const detail = cause instanceof Error ? cause.message : String(cause);
           setError(`Could not refresh project counts: ${detail}`);
+          tracePerf("repository_count_remote_error", {
+            fullName: selectedRepository.fullName,
+            message: detail,
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .finally(() => {
@@ -122,7 +146,7 @@ export function useRepositoryOpenCounts(
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, online, connection.apiBaseUrl, visibleKey]);
+  }, [token, online, connection.apiBaseUrl, visibleKey, selectedRepository]);
 
   return {
     groups: withCounts(groups, counts),

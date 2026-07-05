@@ -8,6 +8,7 @@ import {
   loadSessionToken,
   saveSessionToken
 } from "../services/sessionTokens";
+import { tracePerf } from "../services/perfTrace";
 import type { UseGithubServersResult } from "./useGithubServers";
 
 /** Connection facts the API-consuming features need. */
@@ -54,12 +55,19 @@ export function useGithubAuth(servers: UseGithubServersResult): UseGithubAuthRes
     setRestoringSession(true);
     // Restore the persisted session for this server, if one exists.
     let cancelled = false;
+    const startedAt = performance.now();
+    tracePerf("session_restore_start", { server: servers.selectedUrl });
     void loadSessionToken(servers.selectedUrl).then((stored) => {
       if (!cancelled && stored) {
         setSessionToken(stored);
       }
       if (!cancelled) {
         setRestoringSession(false);
+        tracePerf("session_restore_done", {
+          server: servers.selectedUrl,
+          hasToken: Boolean(stored),
+          durationMs: performance.now() - startedAt
+        });
       }
     });
     return () => {

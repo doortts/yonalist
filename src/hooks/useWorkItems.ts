@@ -8,6 +8,7 @@ import {
   type FavoritesMap
 } from "../services/favoritesStore";
 import { fetchMyWorkItems, fetchRepoWorkItems } from "../services/githubItems";
+import { tracePerf } from "../services/perfTrace";
 import type { GithubConnection } from "./useGithubAuth";
 
 export type WorkScope =
@@ -51,6 +52,11 @@ export function useWorkItems(
       return;
     }
     const seq = ++requestSeq.current;
+    const startedAt = performance.now();
+    tracePerf("work_items_remote_start", {
+      scope: scopeKey,
+      apiBaseUrl: connection.apiBaseUrl
+    });
     setLoading(true);
     const request =
       scope.type === "repo"
@@ -61,11 +67,21 @@ export function useWorkItems(
         if (requestSeq.current === seq) {
           setFetched(items);
           setError(null);
+          tracePerf("work_items_remote_done", {
+            scope: scopeKey,
+            count: items.length,
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .catch((cause) => {
         if (requestSeq.current === seq) {
           setError(cause instanceof Error ? cause.message : String(cause));
+          tracePerf("work_items_remote_error", {
+            scope: scopeKey,
+            message: cause instanceof Error ? cause.message : String(cause),
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .finally(() => {

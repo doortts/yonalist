@@ -15,6 +15,7 @@ import {
   persistCachedNotifications,
   type ViewedAtMap
 } from "../services/notificationStores";
+import { tracePerf, tracePerfOnce } from "../services/perfTrace";
 
 const POLL_INTERVAL_MS = 60 * 1000;
 
@@ -55,6 +56,12 @@ export function useNotifications(
     }
     const cached = loadCachedNotifications(connection.apiBaseUrl);
     setFetched(cached ?? null);
+    if (cached) {
+      tracePerfOnce("notifications-cache-loaded", "notifications_cache_loaded", {
+        count: cached.length,
+        apiBaseUrl: connection.apiBaseUrl
+      });
+    }
   }, [token, connection.apiBaseUrl]);
 
   const load = useCallback(() => {
@@ -62,6 +69,10 @@ export function useNotifications(
       return;
     }
     const seq = ++requestSeq.current;
+    const startedAt = performance.now();
+    tracePerf("notifications_remote_start", {
+      apiBaseUrl: connection.apiBaseUrl
+    });
     setLoading(true);
     fetchNotifications({
       token,
@@ -70,6 +81,10 @@ export function useNotifications(
         if (requestSeq.current === seq) {
           setFetched(partial);
           persistCachedNotifications(connection.apiBaseUrl, partial);
+          tracePerf("notifications_partial_result", {
+            count: partial.length,
+            durationMs: performance.now() - startedAt
+          });
         }
       }
     })
@@ -78,11 +93,19 @@ export function useNotifications(
           setFetched(result);
           persistCachedNotifications(connection.apiBaseUrl, result);
           setError(null);
+          tracePerf("notifications_remote_done", {
+            count: result.length,
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .catch((cause) => {
         if (requestSeq.current === seq) {
           setError(cause instanceof Error ? cause.message : String(cause));
+          tracePerf("notifications_remote_error", {
+            message: cause instanceof Error ? cause.message : String(cause),
+            durationMs: performance.now() - startedAt
+          });
         }
       })
       .finally(() => {

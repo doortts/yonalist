@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIssueOutboxOperation } from "../domain/outbox";
 import type { ItemDocument } from "../domain/types";
+import { serializeMarkdownDocument } from "../domain/markdown";
 import {
   loadVaultState,
   persistItemDocument,
@@ -29,6 +30,10 @@ const draftIssue: ItemDocument = {
   }
 };
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("vaultStore", () => {
   it("persists Markdown item and outbox documents and rebuilds state", async () => {
     const operation = createIssueOutboxOperation({
@@ -55,5 +60,37 @@ describe("vaultStore", () => {
     expect(state.items[0].path).toBe(draftIssue.path);
     expect(state.outbox).toHaveLength(1);
     expect(state.outbox[0].frontMatter.id).toBe("local-1");
+  });
+
+  it("skips writing unchanged item documents when the stored hash matches", async () => {
+    const setItemSpy = vi.spyOn(window.localStorage, "setItem");
+
+    await persistItemDocument(vaultRoot, draftIssue);
+    const firstWriteCount = setItemSpy.mock.calls.length;
+    await persistItemDocument(vaultRoot, draftIssue);
+
+    expect(setItemSpy.mock.calls.length).toBe(firstWriteCount);
+  });
+
+  it("records hashes while loading local vault documents so identical refreshes do not rewrite", async () => {
+    window.localStorage.setItem(
+      "yonalist.vaultDocuments.v1",
+      JSON.stringify({
+        [vaultRoot]: {
+          "github.com/acme/app/issues/_drafts/local-1/issue.md":
+            serializeMarkdownDocument(draftIssue.frontMatter, draftIssue.body)
+        }
+      })
+    );
+
+    await loadVaultState(vaultRoot);
+    const setItemSpy = vi.spyOn(window.localStorage, "setItem");
+
+    await persistItemDocument(vaultRoot, draftIssue);
+
+    expect(setItemSpy).not.toHaveBeenCalledWith(
+      "yonalist.vaultDocuments.v1",
+      expect.any(String)
+    );
   });
 });

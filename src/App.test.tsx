@@ -713,6 +713,56 @@ describe("Yonalist app shell", () => {
     expect(screen.getByLabelText("Cache linked attachments")).not.toBeChecked();
   });
 
+  it("resets all settings and caches without deleting vault documents", async () => {
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ vaultFolder: "/Users/doortts/CustomVault" })
+    );
+    window.localStorage.setItem("yonalist.themeMode.v1", "dark");
+    window.localStorage.setItem("yonalist.repositorySummaries.v1", "{\"cache\":true}");
+    window.localStorage.setItem(
+      "yonalist.vaultDocuments.v1",
+      JSON.stringify({
+        "/Users/doortts/CustomVault": {
+          "github.com/acme/app/issues/1/issue.md": "issue"
+        }
+      })
+    );
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+        name: /Reset/
+      })
+    );
+    await user.click(screen.getByRole("button", { name: "Reset settings and caches" }));
+    const dialog = await screen.findByRole("dialog", {
+      name: "Confirm reset settings and caches"
+    });
+    expect(dialog).toHaveTextContent("Vault Markdown files and outbox documents");
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Yes, reset everything" })
+    );
+
+    const progress = await screen.findByLabelText("Reset progress");
+    await waitFor(() => {
+      expect(progress).toHaveTextContent(
+        "Reset complete. Vault Markdown files and outbox documents were kept."
+      );
+      expect(within(progress).getAllByText("Done")).toHaveLength(5);
+      expect(window.localStorage.getItem("yonalist.settings.v1")).toBeNull();
+      expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
+      expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
+    });
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+      "github.com/acme/app/issues/1/issue.md"
+    );
+  });
+
   it("lists default GitHub servers and switches the selected one", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -865,11 +915,12 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("does not request exact counts for projects hidden from the sidebar", async () => {
+  it("requests exact project counts only after a project is selected", async () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",
       JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
     );
+    const user = userEvent.setup();
     const countQueries: string[] = [];
     const countVariables: Array<Record<string, unknown>> = [];
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -938,12 +989,25 @@ describe("Yonalist app shell", () => {
       render(<App />);
 
       const navigation = await screen.findByLabelText("Navigation");
-      expect(
-        await within(navigation).findByRole("button", { name: /^visible/ })
-      ).toBeInTheDocument();
+      const visibleProject = await within(navigation).findByRole("button", {
+        name: /^visible/
+      });
+      expect(visibleProject).toBeInTheDocument();
       expect(
         within(navigation).queryByRole("button", { name: /^hidden/ })
       ).not.toBeInTheDocument();
+
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(([url]) =>
+            String(url).includes("affiliation=owner%2Ccollaborator")
+          )
+        ).toBe(true)
+      );
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+      expect(countQueries).toHaveLength(0);
+
+      await user.click(visibleProject);
 
       await waitFor(() => expect(countQueries).toHaveLength(1));
       expect(JSON.stringify(countVariables)).toContain("visible");
@@ -1299,6 +1363,24 @@ describe("Yonalist app shell", () => {
     expect(
       within(navigation).getByRole("button", { name: /^blog/ })
     ).toBeInTheDocument();
+  });
+
+  it("opens project visibility settings from the Repository header shortcut", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    await user.click(
+      within(navigation).getByRole("button", {
+        name: "Open repository filter settings"
+      })
+    );
+
+    const settingsSections = await screen.findByLabelText("Settings sections");
+    expect(
+      within(settingsSections).getByRole("button", { name: /Projects 표시/ })
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByLabelText("Project visibility")).toBeInTheDocument();
   });
 
   it("filters the project visibility list by owner or repository name", async () => {

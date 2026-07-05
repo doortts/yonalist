@@ -8,8 +8,14 @@ import {
   useRef,
   useState
 } from "react";
-import { loadSettings, persistSettings, type AppSettings } from "./appSettings";
+import {
+  defaultSettings,
+  loadSettings,
+  persistSettings,
+  type AppSettings
+} from "./appSettings";
 import { GithubConnectionContext } from "./GithubConnectionContext";
+import { VaultRootContext } from "./VaultRootContext";
 import { ItemDetail } from "./components/ItemDetail";
 import {
   ItemListPane,
@@ -66,12 +72,23 @@ import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
+import {
+  resetApplicationData,
+  type ResetApplicationStepId
+} from "./services/appReset";
+import {
+  idleResetProgress,
+  type ResetProgressItem,
+  type ResetProgressState,
+  type ResetProgressStepStatus
+} from "./resetProgress";
 import { createGitHubClient } from "./services/github";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import { clearItemThreadCache } from "./services/itemThread";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
+import { tracePerf, tracePerfOnce } from "./services/perfTrace";
 import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
 import {
   commentDocumentContents,
@@ -86,6 +103,28 @@ import {
 
 interface AppProps {
   initialOnline?: boolean;
+}
+
+const resetStepTemplates: Array<{
+  id: ResetApplicationStepId | "restore-defaults";
+  label: string;
+}> = [
+  { id: "session-tokens", label: "Sign out saved GitHub sessions" },
+  { id: "runtime-caches", label: "Clear in-memory notification and thread caches" },
+  { id: "local-storage", label: "Clear local settings and browser caches" },
+  { id: "vault-cache", label: "Clear vault index, avatar, and search caches" },
+  { id: "restore-defaults", label: "Restore app preferences to defaults" }
+];
+
+function createResetProgress(): ResetProgressState {
+  return {
+    status: "running",
+    message: "Resetting settings and caches...",
+    steps: resetStepTemplates.map((step) => ({
+      ...step,
+      status: "pending"
+    }))
+  };
 }
 
 function createOperationId(prefix: string): string {
@@ -159,11 +198,27 @@ export default function App({ initialOnline }: AppProps) {
   const [appSnackbar, setAppSnackbar] = useState<string | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
+  const [resetProgress, setResetProgress] =
+    useState<ResetProgressState>(idleResetProgress);
   const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+
+  useEffect(() => {
+    tracePerfOnce("app-mounted", "app_mounted", {
+      online,
+      selectedServer: servers.selectedUrl
+    });
+  }, [online, servers.selectedUrl]);
+
+  useEffect(() => {
+    tracePerf(`auth_gate_${authGate.state}`, {
+      signedIn: auth.signedIn,
+      restoringSession: auth.restoringSession
+    });
+  }, [authGate.state, auth.restoringSession, auth.signedIn]);
 
   // Session caches hold per-connection data; switching servers or tokens
   // must not leak the previous session's threads, notifications, or images.
@@ -183,6 +238,8 @@ export default function App({ initialOnline }: AppProps) {
   // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
     let cancelled = false;
+    const startedAt = performance.now();
+    tracePerf("vault_load_start", { vaultRoot });
     void loadVaultState(vaultRoot)
       .then((state) => {
         if (cancelled) {
@@ -190,9 +247,18 @@ export default function App({ initialOnline }: AppProps) {
         }
         setDrafts(state.items);
         setOutbox(state.outbox);
+        tracePerf("vault_load_done", {
+          items: state.items.length,
+          outbox: state.outbox.length,
+          durationMs: performance.now() - startedAt
+        });
       })
       .catch((error) => {
         console.error("Failed to load vault state", error);
+        tracePerf("vault_load_error", {
+          message: error instanceof Error ? error.message : String(error),
+          durationMs: performance.now() - startedAt
+        });
       });
     return () => {
       cancelled = true;
@@ -295,10 +361,13 @@ export default function App({ initialOnline }: AppProps) {
     involvedRepoNames,
     involvementReady && !repositoryGroups.loading
   );
+  const selectedRepositoryForCounts =
+    showSettings || showNotifications ? null : repositoryFilter;
   const visibleRepositoryCounts = useRepositoryOpenCounts(
     auth.connection,
     online,
-    projectVisibility.visibleGroups
+    projectVisibility.visibleGroups,
+    selectedRepositoryForCounts
   );
   // Notifications follow the Projects 표시 selection: repositories the user
   // unchecked are filtered out; repositories we do not manage stay visible.
@@ -327,6 +396,26 @@ export default function App({ initialOnline }: AppProps) {
   });
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
+  useEffect(() => {
+    if (!showNotifications) {
+      return;
+    }
+    if (notifications.notifications.length === 0 && notifications.loading) {
+      return;
+    }
+    tracePerfOnce("notifications-list-visible", "notifications_list_visible", {
+      count: notifications.notifications.length,
+      unreadCount: notifications.unreadCount,
+      loading: notifications.loading,
+      demoMode: notifications.demoMode
+    });
+  }, [
+    showNotifications,
+    notifications.notifications.length,
+    notifications.unreadCount,
+    notifications.loading,
+    notifications.demoMode
+  ]);
   const notificationDetail = useNotificationDetail(
     selectedNotification,
     auth.connection,
@@ -494,7 +583,10 @@ export default function App({ initialOnline }: AppProps) {
     setShowOutbox(true);
   }
 
-  function openSettings() {
+  function openSettings(section?: SettingsSection) {
+    if (section) {
+      setSettingsSection(section);
+    }
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
@@ -874,11 +966,93 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
+  function updateResetStep(
+    id: ResetProgressItem["id"],
+    status: ResetProgressStepStatus,
+    detail?: string
+  ) {
+    setResetProgress((current) => ({
+      ...current,
+      steps: current.steps.map((step) =>
+        step.id === id
+          ? {
+              ...step,
+              status,
+              detail: detail ?? step.detail
+            }
+          : step
+      )
+    }));
+  }
+
+  function failCurrentResetStep(message: string) {
+    setResetProgress((current) => ({
+      status: "failed",
+      message: `Reset failed: ${message}`,
+      steps: current.steps.map((step) =>
+        step.status === "running"
+          ? {
+              ...step,
+              status: "failed",
+              detail: message
+            }
+          : step
+      )
+    }));
+  }
+
+  async function resetAllSettingsAndCaches() {
+    setResetProgress(createResetProgress());
+    setSettingsStatus("Resetting...");
+    try {
+      await resetApplicationData({
+        vaultRoot,
+        serverUrls: servers.urls,
+        onStep: ({ id, status }) => {
+          updateResetStep(id, status === "complete" ? "done" : "running");
+        }
+      });
+      updateResetStep("restore-defaults", "running");
+      auth.logout();
+      servers.reset();
+      projectVisibility.reset();
+      setThemeMode("system");
+      setSettings(defaultSettings);
+      setDrafts([]);
+      setOutbox([]);
+      setSelectedPath(null);
+      setSelectedNotification(null);
+      setQuery("");
+      setFilter("all");
+      setItemStateFilter("open");
+      setRepositoryFilter(null);
+      setShowNewIssue(false);
+      setShowNotifications(false);
+      setDraftIssue({ title: "", body: "", repositoryKey: "" });
+      setCommentDraft("");
+      updateResetStep("restore-defaults", "done");
+      setSettingsStatus("Settings and caches reset");
+      setResetProgress((current) => ({
+        ...current,
+        status: "done",
+        message: "Reset complete. Vault Markdown files and outbox documents were kept."
+      }));
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      failCurrentResetStep(message);
+      setSettingsStatus(`Reset failed: ${message}`);
+      setAppSnackbar(`Reset failed: ${message}`);
+    }
+  }
+
+  const showingResetResult =
+    showSettings && settingsSection === "reset" && resetProgress.status !== "idle";
+
   if (authGate.state === "checking") {
     return <AuthRestorePage />;
   }
 
-  if (authGate.state === "required") {
+  if (authGate.state === "required" && !showingResetResult) {
     return (
       <LoginPage
         servers={servers}
@@ -892,6 +1066,7 @@ export default function App({ initialOnline }: AppProps) {
 
   return (
     <GithubConnectionContext.Provider value={auth.connection}>
+    <VaultRootContext.Provider value={vaultRoot}>
     <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
       <TitleBar />
       <Sidebar
@@ -918,6 +1093,7 @@ export default function App({ initialOnline }: AppProps) {
         counts={filterCounts}
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
+        onOpenProjectSettings={() => openSettings("projects")}
         notificationsOpen={showNotifications}
         onOpenNotifications={openNotifications}
         unreadNotificationCount={
@@ -999,6 +1175,7 @@ export default function App({ initialOnline }: AppProps) {
               section={settingsSection}
               settings={settings}
               status={settingsStatus}
+              resetProgress={resetProgress}
               themeMode={themeMode}
               onThemeModeChange={setThemeMode}
               servers={servers}
@@ -1007,6 +1184,7 @@ export default function App({ initialOnline }: AppProps) {
               projectVisibility={projectVisibility}
               onUpdate={updateSetting}
               onSave={saveSettings}
+              onResetAll={resetAllSettingsAndCaches}
               onClose={() => setShowSettings(false)}
             />
           </Suspense>
@@ -1059,6 +1237,7 @@ export default function App({ initialOnline }: AppProps) {
         </div>
       )}
     </main>
+    </VaultRootContext.Provider>
     </GithubConnectionContext.Provider>
   );
 }

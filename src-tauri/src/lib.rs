@@ -1,4 +1,5 @@
-use serde::Serialize;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -18,6 +19,22 @@ pub struct VaultPaths {
 pub struct VaultMarkdownFile {
     pub relative_path: String,
     pub contents: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultDocumentHashRecord {
+    pub relative_path: String,
+    pub content_hash: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CachedAvatarImage {
+    pub src: String,
+    pub data_url: String,
+    pub hash: String,
+    pub checked_at: String,
+    pub updated_at: String,
 }
 
 fn display_path(path: PathBuf) -> String {
@@ -47,6 +64,143 @@ pub fn vault_paths(vault_path: impl AsRef<Path>) -> VaultPaths {
         metadata_dir: display_path(metadata_dir),
         outbox_dir: display_path(outbox_dir),
     }
+}
+
+fn metadata_dir(vault_path: &str) -> PathBuf {
+    expand_vault_path(vault_path).join(".yonalist")
+}
+
+fn index_db_path(vault_path: &str) -> PathBuf {
+    metadata_dir(vault_path).join("index.sqlite")
+}
+
+fn connect_index_db(vault_path: &str) -> Result<Connection, String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+    let metadata = metadata_dir(vault_path);
+    fs::create_dir_all(&metadata).map_err(|error| error.to_string())?;
+    let connection =
+        Connection::open(index_db_path(vault_path)).map_err(|error| error.to_string())?;
+    initialize_index_db(&connection)?;
+    Ok(connection)
+}
+
+fn initialize_index_db(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            PRAGMA journal_mode = WAL;
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS document_hashes (
+              vault_root TEXT NOT NULL,
+              relative_path TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              size INTEGER NOT NULL,
+              updated_at TEXT NOT NULL,
+              last_seen_at TEXT NOT NULL,
+              PRIMARY KEY (vault_root, relative_path)
+            );
+
+            CREATE TABLE IF NOT EXISTS avatar_cache (
+              host TEXT NOT NULL,
+              login TEXT NOT NULL,
+              source_url TEXT NOT NULL,
+              local_path TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              media_type TEXT NOT NULL,
+              checked_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (host, login)
+            );
+
+            CREATE TABLE IF NOT EXISTS item_index (
+              host TEXT NOT NULL,
+              owner TEXT NOT NULL,
+              repo TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              number INTEGER NOT NULL,
+              title TEXT NOT NULL,
+              state TEXT NOT NULL,
+              favorite INTEGER NOT NULL DEFAULT 0,
+              comment_count INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL,
+              relative_path TEXT NOT NULL,
+              PRIMARY KEY (host, owner, repo, kind, number)
+            );
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn now_unix_string() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .to_string()
+}
+
+fn safe_cache_segment(value: &str) -> String {
+    let safe = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let safe = safe.trim_matches('.');
+    if safe.is_empty() {
+        "_".to_string()
+    } else {
+        safe.to_string()
+    }
+}
+
+fn media_type_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/svg+xml" => "svg",
+        "image/avif" => "avif",
+        _ => "png",
+    }
+}
+
+fn parse_image_data_url(data_url: &str) -> Result<(String, Vec<u8>), String> {
+    let Some(rest) = data_url.strip_prefix("data:") else {
+        return Err("Avatar image must be a data URL.".to_string());
+    };
+    let Some((metadata, encoded)) = rest.split_once(',') else {
+        return Err("Avatar data URL is malformed.".to_string());
+    };
+    let metadata_lower = metadata.to_ascii_lowercase();
+    if !metadata_lower.ends_with(";base64") {
+        return Err("Avatar data URL must be base64 encoded.".to_string());
+    }
+    let media_type = metadata[..metadata.len() - ";base64".len()].to_string();
+    if !media_type.starts_with("image/") {
+        return Err("Avatar data URL must contain an image media type.".to_string());
+    }
+
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| error.to_string())?;
+    Ok((media_type, bytes))
+}
+
+fn image_file_to_data_url(path: &Path, media_type: &str) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(format!("data:{media_type};base64,{encoded}"))
 }
 
 /// Resolves a vault-relative file path, rejecting absolute paths and any
@@ -207,6 +361,332 @@ fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, Str
     collect_markdown_files(root, root, &mut files)?;
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
+}
+
+#[tauri::command]
+fn get_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+) -> Result<Option<String>, String> {
+    let connection = connect_index_db(&vault_path)?;
+    connection
+        .query_row(
+            "SELECT content_hash FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+            params![vault_path, relative_path],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn upsert_vault_document_hash(
+    vault_path: String,
+    relative_path: String,
+    content_hash: String,
+    size: u64,
+) -> Result<(), String> {
+    let connection = connect_index_db(&vault_path)?;
+    let now = now_unix_string();
+    connection
+        .execute(
+            r#"
+            INSERT INTO document_hashes (
+              vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+            ON CONFLICT(vault_root, relative_path) DO UPDATE SET
+              content_hash = excluded.content_hash,
+              size = excluded.size,
+              updated_at = excluded.updated_at,
+              last_seen_at = excluded.last_seen_at
+            "#,
+            params![vault_path, relative_path, content_hash, size as i64, now],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn replace_vault_document_hashes(
+    vault_path: String,
+    documents: Vec<VaultDocumentHashRecord>,
+) -> Result<(), String> {
+    let mut connection = connect_index_db(&vault_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let now = now_unix_string();
+    transaction
+        .execute(
+            "DELETE FROM document_hashes WHERE vault_root = ?1",
+            params![vault_path],
+        )
+        .map_err(|error| error.to_string())?;
+    {
+        let mut statement = transaction
+            .prepare(
+                r#"
+                INSERT INTO document_hashes (
+                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+        for document in documents {
+            statement
+                .execute(params![
+                    vault_path,
+                    document.relative_path,
+                    document.content_hash,
+                    document.size as i64,
+                    now
+                ])
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_vault_document_hash(vault_path: String, relative_path: String) -> Result<(), String> {
+    let connection = connect_index_db(&vault_path)?;
+    connection
+        .execute(
+            "DELETE FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+            params![vault_path, relative_path],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn move_vault_document_hash(
+    vault_path: String,
+    from_relative_path: String,
+    to_relative_path: String,
+    content_hash: Option<String>,
+    size: Option<u64>,
+) -> Result<(), String> {
+    let connection = connect_index_db(&vault_path)?;
+    let now = now_unix_string();
+    let existing = connection
+        .query_row(
+            r#"
+            SELECT content_hash, size
+            FROM document_hashes
+            WHERE vault_root = ?1 AND relative_path = ?2
+            "#,
+            params![vault_path, from_relative_path],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let next_hash = content_hash.or_else(|| existing.as_ref().map(|entry| entry.0.clone()));
+    let next_size = size
+        .map(|value| value as i64)
+        .or_else(|| existing.as_ref().map(|entry| entry.1));
+
+    connection
+        .execute(
+            "DELETE FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+            params![vault_path, from_relative_path],
+        )
+        .map_err(|error| error.to_string())?;
+    if let (Some(next_hash), Some(next_size)) = (next_hash, next_size) {
+        connection
+            .execute(
+                r#"
+                INSERT INTO document_hashes (
+                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ON CONFLICT(vault_root, relative_path) DO UPDATE SET
+                  content_hash = excluded.content_hash,
+                  size = excluded.size,
+                  updated_at = excluded.updated_at,
+                  last_seen_at = excluded.last_seen_at
+                "#,
+                params![vault_path, to_relative_path, next_hash, next_size, now],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_vault_cache(vault_path: String) -> Result<(), String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+
+    let metadata = metadata_dir(&vault_path);
+    let db_path = index_db_path(&vault_path);
+    if db_path.exists() {
+        let connection = Connection::open(&db_path).map_err(|error| error.to_string())?;
+        initialize_index_db(&connection)?;
+        connection
+            .execute_batch(
+                r#"
+                DELETE FROM document_hashes;
+                DELETE FROM avatar_cache;
+                DELETE FROM item_index;
+                VACUUM;
+                "#,
+            )
+            .map_err(|error| error.to_string())?;
+    }
+
+    let cache_dir = metadata.join("cache");
+    match fs::remove_dir_all(cache_dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn load_cached_avatar_image(
+    vault_path: String,
+    host: String,
+    login: String,
+) -> Result<Option<CachedAvatarImage>, String> {
+    let connection = connect_index_db(&vault_path)?;
+    let row = connection
+        .query_row(
+            r#"
+            SELECT source_url, local_path, content_hash, media_type, checked_at, updated_at
+            FROM avatar_cache
+            WHERE host = ?1 AND login = ?2
+            "#,
+            params![host, login.to_ascii_lowercase()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((src, local_path, hash, media_type, checked_at, updated_at)) = row else {
+        return Ok(None);
+    };
+    let file_path = resolve_vault_file(&vault_path, &local_path)?;
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    let data_url = image_file_to_data_url(&file_path, &media_type)?;
+    Ok(Some(CachedAvatarImage {
+        src,
+        data_url,
+        hash,
+        checked_at,
+        updated_at,
+    }))
+}
+
+#[tauri::command]
+fn store_cached_avatar_image(
+    vault_path: String,
+    host: String,
+    login: String,
+    src: String,
+    data_url: String,
+    hash: String,
+    checked_at: String,
+    updated_at: String,
+) -> Result<CachedAvatarImage, String> {
+    let (media_type, bytes) = parse_image_data_url(&data_url)?;
+    let login_key = login.trim().to_ascii_lowercase();
+    let host_segment = safe_cache_segment(&host.to_ascii_lowercase());
+    let login_segment = safe_cache_segment(&login_key);
+    let extension = media_type_extension(&media_type);
+    let relative_path =
+        format!(".yonalist/cache/avatars/{host_segment}/{login_segment}.{extension}");
+    let file_path = resolve_vault_file(&vault_path, &relative_path)?;
+    ensure_parent(&file_path)?;
+    fs::write(&file_path, bytes).map_err(|error| error.to_string())?;
+
+    let connection = connect_index_db(&vault_path)?;
+    connection
+        .execute(
+            r#"
+            INSERT INTO avatar_cache (
+              host, login, source_url, local_path, content_hash,
+              media_type, checked_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            ON CONFLICT(host, login) DO UPDATE SET
+              source_url = excluded.source_url,
+              local_path = excluded.local_path,
+              content_hash = excluded.content_hash,
+              media_type = excluded.media_type,
+              checked_at = excluded.checked_at,
+              updated_at = excluded.updated_at
+            "#,
+            params![
+                host,
+                login_key,
+                src,
+                relative_path,
+                hash,
+                media_type,
+                checked_at,
+                updated_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(CachedAvatarImage {
+        src,
+        data_url,
+        hash,
+        checked_at,
+        updated_at,
+    })
+}
+
+#[tauri::command]
+fn touch_cached_avatar_image(
+    vault_path: String,
+    host: String,
+    login: String,
+    src: String,
+    checked_at: String,
+) -> Result<(), String> {
+    let connection = connect_index_db(&vault_path)?;
+    connection
+        .execute(
+            r#"
+            UPDATE avatar_cache
+            SET source_url = ?3, checked_at = ?4
+            WHERE host = ?1 AND login = ?2
+            "#,
+            params![host, login.to_ascii_lowercase(), src, checked_at],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn record_perf_event(name: String, elapsed_ms: f64, detail: Option<String>) -> Result<(), String> {
+    if env::var("YONALIST_PERF").ok().as_deref() == Some("1") {
+        eprintln!(
+            "YONALIST_PERF {}",
+            serde_json::json!({
+                "name": name,
+                "elapsed_ms": elapsed_ms,
+                "detail": detail.unwrap_or_else(|| "{}".to_string())
+            })
+        );
+    }
+    Ok(())
 }
 
 /// Loopback listener waiting for the OAuth authorization-code redirect,
@@ -629,15 +1109,19 @@ fn fetch_image_inner(
     Err(last_error.unwrap_or_else(|| "URL did not return an image.".to_string()))
 }
 
-/// Opens the OAuth authorization page in an app-owned webview so Enterprise
-/// session cookies are stored where comment avatars are rendered.
-#[tauri::command]
-async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+fn parse_http_url(url: &str) -> Result<tauri::Url, String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("Only http(s) URLs can be opened.".to_string());
     }
 
-    let parsed = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
+    tauri::Url::parse(url).map_err(|error| error.to_string())
+}
+
+/// Opens the OAuth authorization page in an app-owned webview so Enterprise
+/// session cookies are stored where comment avatars are rendered.
+#[tauri::command]
+async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed = parse_http_url(&url)?;
     if let Some(window) = app.get_webview_window("oauth-login") {
         window.navigate(parsed).map_err(|error| error.to_string())?;
         window.set_focus().map_err(|error| error.to_string())?;
@@ -651,6 +1135,13 @@ async fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     Ok(())
+}
+
+/// Opens item/notification links in the operating system's default browser.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let parsed = parse_http_url(&url)?;
+    open::that(parsed.as_str()).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -693,6 +1184,12 @@ pub fn run() {
             delete_text_file,
             move_text_file,
             list_markdown_files,
+            get_vault_document_hash,
+            upsert_vault_document_hash,
+            replace_vault_document_hashes,
+            delete_vault_document_hash,
+            move_vault_document_hash,
+            clear_vault_cache,
             store_token,
             load_token,
             delete_token,
@@ -700,7 +1197,12 @@ pub fn run() {
             oauth_wait,
             oauth_exchange,
             open_url,
-            fetch_image
+            open_external_url,
+            fetch_image,
+            load_cached_avatar_image,
+            store_cached_avatar_image,
+            touch_cached_avatar_image,
+            record_perf_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
@@ -728,6 +1230,103 @@ mod tests {
             paths.outbox_dir,
             format!("{home}/Yonalist/.yonalist/outbox")
         );
+    }
+
+    #[test]
+    fn document_hashes_are_stored_in_index_sqlite() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        upsert_vault_document_hash(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+            "abc123".to_string(),
+            42,
+        )
+        .expect("upsert hash");
+
+        let stored = get_vault_document_hash(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+        )
+        .expect("read hash");
+
+        assert_eq!(stored, Some("abc123".to_string()));
+        assert!(temp_dir.path().join(".yonalist/index.sqlite").exists());
+    }
+
+    #[test]
+    fn avatar_cache_uses_sqlite_metadata_and_vault_file_cache() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let data_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
+
+        store_cached_avatar_image(
+            vault_path.clone(),
+            "oss.navercorp.com".to_string(),
+            "Mona".to_string(),
+            "https://oss.navercorp.com/avatars/u/1.png".to_string(),
+            data_url.clone(),
+            "hash1".to_string(),
+            "2026-07-05T00:00:00Z".to_string(),
+            "2026-07-05T00:00:00Z".to_string(),
+        )
+        .expect("store avatar");
+
+        let cached = load_cached_avatar_image(
+            vault_path,
+            "oss.navercorp.com".to_string(),
+            "mona".to_string(),
+        )
+        .expect("load avatar")
+        .expect("cached avatar");
+
+        assert_eq!(cached.data_url, data_url);
+        assert_eq!(cached.hash, "hash1");
+        assert!(temp_dir
+            .path()
+            .join(".yonalist/cache/avatars/oss.navercorp.com/mona.png")
+            .exists());
+    }
+
+    #[test]
+    fn clear_vault_cache_removes_index_rows_and_cache_files_but_keeps_outbox() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let data_url = "data:image/png;base64,iVBORw0KGgo=".to_string();
+
+        upsert_vault_document_hash(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+            "abc123".to_string(),
+            42,
+        )
+        .expect("upsert hash");
+        store_cached_avatar_image(
+            vault_path.clone(),
+            "oss.navercorp.com".to_string(),
+            "Mona".to_string(),
+            "https://oss.navercorp.com/avatars/u/1.png".to_string(),
+            data_url,
+            "hash1".to_string(),
+            "2026-07-05T00:00:00Z".to_string(),
+            "2026-07-05T00:00:00Z".to_string(),
+        )
+        .expect("store avatar");
+        let outbox_file = temp_dir.path().join(".yonalist/outbox/op.md");
+        write_text_file_inner(&outbox_file, "---\nkind: outbox_operation\n---\n")
+            .expect("write outbox");
+
+        clear_vault_cache(vault_path.clone()).expect("clear cache");
+
+        let stored = get_vault_document_hash(
+            vault_path.clone(),
+            "github.com/acme/app/issues/1/issue.md".to_string(),
+        )
+        .expect("read hash");
+        assert_eq!(stored, None);
+        assert!(!temp_dir.path().join(".yonalist/cache").exists());
+        assert!(outbox_file.exists());
     }
 
     #[test]
@@ -826,6 +1425,14 @@ mod tests {
     fn fetch_image_rejects_non_http_urls() {
         assert!(fetch_image_inner(&[], "file:///etc/passwd".to_string(), None).is_err());
         assert!(fetch_image_inner(&[], "data:image/png;base64,AAAA".to_string(), None).is_err());
+    }
+
+    #[test]
+    fn parse_http_url_accepts_only_http_links_for_opening() {
+        assert!(parse_http_url("https://github.com/acme/app/issues/1").is_ok());
+        assert!(parse_http_url("http://localhost:1420/auth").is_ok());
+        assert!(parse_http_url("file:///etc/passwd").is_err());
+        assert!(parse_http_url("javascript:alert(1)").is_err());
     }
 
     #[test]
@@ -955,9 +1562,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
 
-        let handle = std::thread::spawn(move || {
-            accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT)
-        });
+        let handle =
+            std::thread::spawn(move || accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT));
 
         let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
         client
@@ -992,9 +1598,8 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = listener.local_addr().expect("addr").port();
 
-        let handle = std::thread::spawn(move || {
-            accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT)
-        });
+        let handle =
+            std::thread::spawn(move || accept_oauth_callback(listener, OAUTH_CALLBACK_TIMEOUT));
 
         let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
         let huge_query = "x".repeat((MAX_REQUEST_LINE_BYTES as usize) + 1024);
@@ -1010,7 +1615,10 @@ mod tests {
     #[test]
     fn oauth_exchange_posts_form_and_returns_body() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let token_url = format!("http://{}/login/oauth/access_token", listener.local_addr().expect("addr"));
+        let token_url = format!(
+            "http://{}/login/oauth/access_token",
+            listener.local_addr().expect("addr")
+        );
 
         let handle = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept");
@@ -1075,8 +1683,12 @@ mod tests {
 
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault = display_path(temp_dir.path().to_path_buf());
-        write_text_file(vault.clone(), "drafts/issue.md".to_string(), "draft".to_string())
-            .expect("write draft");
+        write_text_file(
+            vault.clone(),
+            "drafts/issue.md".to_string(),
+            "draft".to_string(),
+        )
+        .expect("write draft");
 
         // Make the source directory read-only so removing the file fails.
         let drafts_dir = temp_dir.path().join("drafts");

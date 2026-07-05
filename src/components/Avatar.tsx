@@ -1,8 +1,11 @@
 import { useContext, useEffect, useRef, useState } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
+import { VaultRootContext } from "../VaultRootContext";
 import {
+  loadCachedAvatarImage,
+  loadCachedAvatarImageAsync,
   needsAuthenticatedFetch,
-  resolveAuthenticatedImage
+  resolveAvatarImage
 } from "../services/imageProxy";
 
 interface AvatarProps {
@@ -48,6 +51,7 @@ export function Avatar({
   showFallback = true
 }: AvatarProps) {
   const connection = useContext(GithubConnectionContext);
+  const vaultRoot = useContext(VaultRootContext);
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const proxyAttempted = useRef(false);
@@ -63,24 +67,35 @@ export function Avatar({
       setSrc(null);
       return;
     }
-    if (!needsAuthenticatedFetch(displayUrl, connection)) {
+    const cached = loadCachedAvatarImage(login, connection);
+    if (cached) {
+      setSrc(cached.dataUrl);
+    } else if (!needsAuthenticatedFetch(displayUrl, connection)) {
       setSrc(displayUrl);
-      return;
+    } else {
+      setSrc(null);
     }
 
-    proxyAttempted.current = true;
-    setSrc(null);
-    void resolveAuthenticatedImage(displayUrl, connection).then((resolved) => {
+    proxyAttempted.current = needsAuthenticatedFetch(displayUrl, connection);
+    void loadCachedAvatarImageAsync(login, connection, vaultRoot).then(
+      (asyncCached) => {
+        if (requestSeq.current !== seq || !asyncCached) {
+          return;
+        }
+        setSrc(asyncCached.dataUrl);
+      }
+    );
+    void resolveAvatarImage(login, displayUrl, connection, vaultRoot).then((resolved) => {
       if (requestSeq.current !== seq) {
         return;
       }
       if (resolved) {
         setSrc(resolved);
-      } else {
+      } else if (!cached && needsAuthenticatedFetch(displayUrl, connection)) {
         setFailed(true);
       }
     });
-  }, [displayUrl, connection.webBaseUrl, connection.token]);
+  }, [displayUrl, login, connection.webBaseUrl, connection.token, vaultRoot]);
 
   const style = { width: size, height: size };
 
@@ -98,7 +113,7 @@ export function Avatar({
     const seq = ++requestSeq.current;
     setFailed(false);
     setSrc(null);
-    void resolveAuthenticatedImage(displayUrl, connection).then((resolved) => {
+    void resolveAvatarImage(login, displayUrl, connection, vaultRoot).then((resolved) => {
       if (requestSeq.current !== seq) {
         return;
       }

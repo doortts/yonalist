@@ -28,6 +28,7 @@ interface SidebarProps {
   counts: Record<ListFilter, number>;
   settingsOpen: boolean;
   onOpenSettings: () => void;
+  onOpenProjectSettings: () => void;
   notificationsOpen: boolean;
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
@@ -59,6 +60,7 @@ export function Sidebar({
   counts,
   settingsOpen,
   onOpenSettings,
+  onOpenProjectSettings,
   notificationsOpen,
   onOpenNotifications,
   unreadNotificationCount,
@@ -83,7 +85,7 @@ export function Sidebar({
               type="button"
               aria-label="Login required"
               title="Sign in required"
-              onClick={onOpenSettings}
+              onClick={() => onOpenSettings()}
             >
               <LogIn size={17} />
             </button>
@@ -141,7 +143,18 @@ export function Sidebar({
       </section>
 
       <section className="nav-section">
-        <h2>Projects</h2>
+        <div className="nav-section-heading">
+          <h2>Repository</h2>
+          <button
+            className="nav-section-icon-button"
+            type="button"
+            aria-label="Open repository filter settings"
+            title="Repository filter settings"
+            onClick={onOpenProjectSettings}
+          >
+            <Settings size={13} />
+          </button>
+        </div>
         {repositoriesLoading && repositoryGroups.length === 0 && (
           <p className="nav-note">Loading repositories...</p>
         )}
@@ -177,7 +190,7 @@ export function Sidebar({
         <button
           className={settingsOpen ? "nav-item active" : "nav-item"}
           type="button"
-          onClick={onOpenSettings}
+          onClick={() => onOpenSettings()}
         >
           <Settings size={16} />
           <span>Settings</span>
