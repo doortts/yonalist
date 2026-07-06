@@ -64,6 +64,7 @@ import type {
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
+import { useAppBadge } from "./hooks/useAppBadge";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
@@ -469,6 +470,9 @@ export default function App({ initialOnline }: AppProps) {
     notifications: filteredNotificationItems,
     unreadCount: filteredUnreadNotificationCount
   };
+  const displayedUnreadNotificationCount =
+    repositoryGroups.loaded ? notifications.unreadCount : 0;
+  useAppBadge(authGate.state === "passed" ? displayedUnreadNotificationCount : 0);
   useDesktopNotifications({
     notifications: notifications.notifications,
     viewedAt: notifications.viewedAt,
@@ -1262,7 +1266,7 @@ export default function App({ initialOnline }: AppProps) {
         unreadNotificationCount={
           // Until the repository filter basis has loaded, the raw unread
           // count would flash (e.g. 300 → 15); hold the badge back instead.
-          repositoryGroups.loaded ? notifications.unreadCount : 0
+          displayedUnreadNotificationCount
         }
         notificationsLoading={
           notifications.loading || (!notifications.demoMode && !repositoryGroups.loaded)
