@@ -262,17 +262,17 @@
 }
 
 /* ---------- Scrollbars ----------
-   Shared by every scrollable area: a slim 6px gutter whose thumb appears
-   while the pointer hovers the scrolling region or while the region scrolls. */
+   Hide native gutters and draw a slim overlay thumb while the pointer hovers
+   the scrolling region or while the region scrolls. */
 
 * {
-  scrollbar-width: thin;
+  scrollbar-width: none;
   scrollbar-color: transparent transparent;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 0;
+  height: 0;
 }
 
 ::-webkit-scrollbar-track,
@@ -285,20 +285,26 @@
   background: transparent;
 }
 
-/* The hovered scroll container is tagged by useScrollbarHover — WebKit
-   does not repaint scrollbars on ancestor :hover changes. */
-.scrollbar-hover,
-.scrollbar-active {
-  scrollbar-color: var(--scrollbar-thumb) transparent;
+.scrollbar-overlay {
+  position: relative;
 }
 
-.scrollbar-hover::-webkit-scrollbar-thumb,
-.scrollbar-active::-webkit-scrollbar-thumb {
+.scrollbar-overlay.scrollbar-hover::after,
+.scrollbar-overlay.scrollbar-active::after {
+  content: "";
+  position: absolute;
+  z-index: 30;
+  top: var(--scrollbar-overlay-top, 0);
+  right: 4px;
+  width: 6px;
+  height: var(--scrollbar-overlay-height, 24px);
+  border-radius: 999px;
   background: var(--scrollbar-thumb);
+  pointer-events: none;
 }
 
-.scrollbar-hover::-webkit-scrollbar-thumb:hover,
-.scrollbar-active::-webkit-scrollbar-thumb:hover {
+.scrollbar-overlay.scrollbar-hover:hover::after,
+.scrollbar-overlay.scrollbar-active::after {
   background: var(--scrollbar-thumb-hover);
 }
 
@@ -974,6 +980,8 @@ body.is-resizing-pane {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-y: overlay;
+  scrollbar-gutter: auto;
 }
 
 .item-list.virtualized {
@@ -1132,6 +1140,8 @@ body.is-resizing-pane {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+  overflow-y: overlay;
+  scrollbar-gutter: auto;
 }
 
 .detail-header {
@@ -2820,6 +2830,8 @@ body.is-resizing-pane {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overflow-y: overlay;
+  scrollbar-gutter: auto;
   padding: 4px 0 20px;
 }
 

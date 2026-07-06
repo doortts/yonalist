@@ -1,13 +1,46 @@
 import { useEffect } from "react";
 
 const SCROLLBAR_ACTIVE_MS = 800;
+const MIN_SCROLLBAR_THUMB_PX = 24;
+
+function isScrollableOverflow(value: string) {
+  return value === "auto" || value === "scroll" || value === "overlay";
+}
+
+function updateScrollbarOverlay(element: HTMLElement) {
+  if (element.scrollHeight <= element.clientHeight) {
+    return;
+  }
+
+  const thumbHeight = Math.max(
+    MIN_SCROLLBAR_THUMB_PX,
+    Math.round((element.clientHeight / element.scrollHeight) * element.clientHeight)
+  );
+  const maxScrollTop = element.scrollHeight - element.clientHeight;
+  const maxThumbViewportTop = element.clientHeight - thumbHeight;
+  const thumbViewportTop =
+    maxScrollTop > 0 ? (element.scrollTop / maxScrollTop) * maxThumbViewportTop : 0;
+
+  element.classList.add("scrollbar-overlay");
+  element.style.setProperty("--scrollbar-overlay-height", `${thumbHeight}px`);
+  element.style.setProperty(
+    "--scrollbar-overlay-top",
+    `${Math.round(element.scrollTop + thumbViewportTop)}px`
+  );
+}
+
+function resetScrollbarOverlay(element: HTMLElement) {
+  element.classList.remove("scrollbar-overlay", "scrollbar-hover", "scrollbar-active");
+  element.style.removeProperty("--scrollbar-overlay-height");
+  element.style.removeProperty("--scrollbar-overlay-top");
+}
 
 function findScrollable(start: Element | null): HTMLElement | null {
   let node = start as HTMLElement | null;
   while (node && node !== document.body) {
     const style = getComputedStyle(node);
     if (
-      (style.overflowY === "auto" || style.overflowY === "scroll") &&
+      isScrollableOverflow(style.overflowY) &&
       node.scrollHeight > node.clientHeight
     ) {
       return node;
@@ -37,14 +70,26 @@ export function useScrollbarHover() {
   useEffect(() => {
     let current: HTMLElement | null = null;
     const activeTimers = new Map<HTMLElement, number>();
+    const overlayElements = new Set<HTMLElement>();
+
+    function markOverlay(element: HTMLElement) {
+      overlayElements.add(element);
+      updateScrollbarOverlay(element);
+    }
 
     function setCurrent(next: HTMLElement | null) {
       if (next === current) {
+        if (next) {
+          markOverlay(next);
+        }
         return;
       }
       current?.classList.remove("scrollbar-hover");
       current = next;
-      current?.classList.add("scrollbar-hover");
+      if (current) {
+        markOverlay(current);
+        current.classList.add("scrollbar-hover");
+      }
     }
 
     function markActive(element: HTMLElement | null) {
@@ -53,6 +98,7 @@ export function useScrollbarHover() {
       }
 
       element.classList.add("scrollbar-active");
+      markOverlay(element);
       const previous = activeTimers.get(element);
       if (previous !== undefined) {
         window.clearTimeout(previous);
@@ -101,9 +147,12 @@ export function useScrollbarHover() {
       setCurrent(null);
       for (const [element, timer] of activeTimers) {
         window.clearTimeout(timer);
-        element.classList.remove("scrollbar-active");
       }
       activeTimers.clear();
+      for (const element of overlayElements) {
+        resetScrollbarOverlay(element);
+      }
+      overlayElements.clear();
     };
   }, []);
 }
