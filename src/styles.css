@@ -997,7 +997,12 @@ body.is-resizing-pane {
   background: var(--bg-list);
 }
 
+.item-state-line {
+  display: none;
+}
+
 .item-state-tab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1048,10 +1053,44 @@ body.is-resizing-pane {
   background: var(--nav-list-hover-bg, var(--state-tab-hover-bg));
 }
 
+:root[data-theme="yonal-light"] .item-state-row {
+  --yonal-state-row-line: color-mix(
+    in srgb,
+    var(--nav-list-selected-border, var(--state-tab-active-border)) 62%,
+    var(--border)
+  );
+  gap: 0;
+  padding-right: 0;
+  padding-left: 0;
+  border-bottom: 0;
+}
+
+:root[data-theme="yonal-light"] .item-state-line {
+  display: block;
+  flex: 0 0 16px;
+  align-self: flex-end;
+  height: 1px;
+  background: var(--yonal-state-row-line);
+}
+
+:root[data-theme="yonal-light"] .item-state-line-between {
+  flex-basis: 6px;
+}
+
+:root[data-theme="yonal-light"] .item-state-line-end {
+  flex: 1 1 auto;
+}
+
+:root[data-theme="yonal-light"] .item-state-tab {
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--yonal-state-row-line);
+}
+
 :root[data-theme="yonal-light"] .item-state-tab.active {
   border-color: var(--nav-list-selected-border, var(--state-tab-active-border));
+  border-bottom-color: transparent;
   background: var(--nav-list-selected-bg, var(--state-tab-active-bg));
-  box-shadow: var(--nav-list-selected-elevation, var(--state-tab-active-shadow));
+  box-shadow: none;
 }
 
 .item-list {

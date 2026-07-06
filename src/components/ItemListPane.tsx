@@ -166,6 +166,7 @@ export function ItemListPane({
       </div>
 
       <div className="item-state-row" role="group" aria-label="Item state">
+        <span className="item-state-line item-state-line-start" aria-hidden="true" />
         <button
           type="button"
           className={
@@ -177,6 +178,7 @@ export function ItemListPane({
           <span>Open</span>
           <span className="item-state-count">{counts.open}</span>
         </button>
+        <span className="item-state-line item-state-line-between" aria-hidden="true" />
         <button
           type="button"
           className={
@@ -188,6 +190,7 @@ export function ItemListPane({
           <span>Closed</span>
           <span className="item-state-count">{counts.closed}</span>
         </button>
+        <span className="item-state-line item-state-line-end" aria-hidden="true" />
       </div>
 
       {demoMode && (
