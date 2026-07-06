@@ -4,6 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import { MarkdownBody } from "./MarkdownBody";
 
+const openExternalMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+vi.mock("../services/browser", () => ({
+  openExternal: openExternalMock
+}));
+
 const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text";
 
 describe("MarkdownBody", () => {
@@ -50,6 +56,17 @@ describe("MarkdownBody", () => {
     expect(screen.getByRole("img", { name: "Original size" })).toHaveAttribute(
       "src",
       "https://example.com/roadmap.png"
+    );
+  });
+
+  it("opens markdown links in the OS default browser", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body="[Open issue](https://github.com/acme/app/issues/1)" />);
+
+    await user.click(await screen.findByRole("link", { name: "Open issue" }));
+
+    expect(openExternalMock).toHaveBeenCalledWith(
+      "https://github.com/acme/app/issues/1"
     );
   });
 
@@ -117,6 +134,7 @@ describe("MarkdownBody", () => {
   });
 
   afterEach(() => {
+    openExternalMock.mockReset();
     vi.unstubAllGlobals();
   });
 

@@ -14,6 +14,7 @@ import {
   needsAuthenticatedFetch,
   resolveAuthenticatedImage
 } from "../services/imageProxy";
+import { openExternal } from "../services/browser";
 
 interface MarkdownBodyProps {
   body: string;
@@ -109,6 +110,16 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
 
   function handleClick(event: MouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
+    const link = target.closest<HTMLAnchorElement>("a[href]");
+    if (link) {
+      const href = link.href;
+      if (href.startsWith("http://") || href.startsWith("https://")) {
+        event.preventDefault();
+        event.stopPropagation();
+        void openExternal(href);
+        return;
+      }
+    }
     if (target.tagName === "IMG") {
       setLightboxSrc((target as HTMLImageElement).src);
     }
