@@ -170,6 +170,97 @@
   --scrollbar-thumb-hover: rgb(255 255 255 / 40%);
 }
 
+/* Yonal Dark — drawn from the app icon's purple→magenta→orange gradient:
+   violet-tinted dark surfaces, a magenta-violet accent, warm orange highlights. */
+:root[data-theme="yona-dark"] {
+  color-scheme: dark;
+
+  --bg-app: #14101c;
+  --bg-sidebar: #1a1426;
+  --bg-list: #161519;
+  --bg-detail: #1a1426;
+  --bg-card: #130f1b;
+  --bg-hover: rgb(198 141 255 / 8%);
+  --bg-active: rgb(198 141 255 / 14%);
+  --bg-input: #201936;
+  --bg-quiet: rgb(255 255 255 / 3%);
+  --comment-header: #2a2139;
+
+  --border: #2f2540;
+  --border-strong: #43335a;
+
+  --text-1: #ece7f4;
+  --text-2: #b0a3c4;
+  --text-3: #7f7291;
+
+  --accent: #c07af0;
+  --accent-strong: #d79bff;
+  --accent-soft: rgb(192 122 240 / 16%);
+  --accent-contrast: #1a1020;
+  --favorite: #ff8a3d;
+  --danger: #f47067;
+  --danger-hover: #f78b84;
+  --danger-soft: rgb(244 112 103 / 12%);
+  --reason-mention: #c8a6ff;
+  --reason-comment: #4dd0c4;
+  --reason-author: #ff9a5a;
+  --reason-team: #9a8cff;
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 16%);
+  --warning-border: rgb(251 191 36 / 46%);
+  --success: #57ab5a;
+  --yona-comment: #53a63e;
+  --yona-link: #c79bff;
+  --yona-code-bg: #241c33;
+  --yona-table-border: #3d3151;
+  --yona-table-head: #241c33;
+
+  --shadow-modal: 0 20px 70px rgb(10 4 20 / 62%);
+  --scrollbar-thumb: rgb(198 141 255 / 26%);
+  --scrollbar-thumb-hover: rgb(198 141 255 / 46%);
+
+  /* The icon's purple→magenta→orange sweep, at three intensities. */
+  --yonal-gradient: linear-gradient(135deg, #8a3ae0 0%, #c144cf 52%, #f9793c 100%);
+  --yonal-gradient-bright: linear-gradient(135deg, #9a4ef0 0%, #d055de 52%, #ff8a4d 100%);
+  --yonal-gradient-soft: linear-gradient(
+    135deg,
+    rgb(154 74 240 / 18%) 0%,
+    rgb(249 121 60 / 14%) 100%
+  );
+}
+
+/* Yonal Dark gradient accents — solid accent surfaces take on the icon's sweep. */
+:root[data-theme="yona-dark"] .primary-button {
+  background: var(--yonal-gradient);
+  color: #ffffff;
+}
+
+:root[data-theme="yona-dark"] .primary-button:hover {
+  background: var(--yonal-gradient-bright);
+}
+
+:root[data-theme="yona-dark"] .primary-button.comment-button {
+  background: #238636;
+}
+
+:root[data-theme="yona-dark"] .primary-button.comment-button:hover {
+  background: #2ea043;
+}
+
+:root[data-theme="yona-dark"] .nav-item strong.nav-badge {
+  background: var(--yonal-gradient);
+  color: #ffffff;
+}
+
+:root[data-theme="yona-dark"] .notification-unread-dot {
+  background: var(--yonal-gradient);
+}
+
+:root[data-theme="yona-dark"] .item-card.selected,
+:root[data-theme="yona-dark"] .category-item.active {
+  background: var(--yonal-gradient-soft);
+}
+
 /* ---------- Scrollbars ----------
    Shared by every scrollable area: a slim 6px gutter whose thumb appears
    while the pointer hovers the scrolling region or while the region scrolls. */

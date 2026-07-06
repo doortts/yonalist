@@ -52,7 +52,8 @@ const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
 ];
 
 const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
-  { value: "dark", label: "Default" }
+  { value: "dark", label: "Default" },
+  { value: "yona-dark", label: "Yonal Dark" }
 ];
 
 const resetStepStatusLabels: Record<ResetProgressStepStatus, string> = {
