@@ -40,6 +40,23 @@ describe("outbox operations", () => {
     expect(operation.frontMatter.target.number).toBe(10);
   });
 
+  it("marks issue comments that should close the issue after syncing", () => {
+    const operation = createCommentOutboxOperation({
+      id: "op-3",
+      host: "github.com",
+      owner: "openai",
+      repo: "codex",
+      itemKind: "issue",
+      number: 10,
+      closeAfterComment: true,
+      localFilePath:
+        "/vault/github.com/openai/codex/issues/10/comments/_drafts/local-3.md",
+      createdAt: "2026-07-02T00:00:00Z"
+    });
+
+    expect(operation.frontMatter.close_after_comment).toBe(true);
+  });
+
   it("blocks operations that reference unresolved local attachments", () => {
     expect(
       hasUnresolvedLocalAttachments([

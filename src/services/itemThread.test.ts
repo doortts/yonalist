@@ -214,7 +214,17 @@ describe("fetchItemThread", () => {
                     databaseId: 2,
                     body: "Reply",
                     author: { login: "mona", name: "Mona Lisa" },
-                    createdAt: "2026-07-02T00:00:00Z"
+                    createdAt: "2026-07-02T00:00:00Z",
+                    replies: {
+                      nodes: [
+                        {
+                          databaseId: 3,
+                          body: "Nested reply",
+                          author: { login: "octocat", name: "The Octocat" },
+                          createdAt: "2026-07-02T01:00:00Z"
+                        }
+                      ]
+                    }
                   }
                 ]
               }
@@ -235,6 +245,10 @@ describe("fetchItemThread", () => {
 
       expect(thread.state).toBe("open");
       expect(thread.comments[0].authorName).toBe("Mona Lisa");
+      expect(thread.comments[0].replies?.[0]).toMatchObject({
+        body: "Nested reply",
+        authorName: "The Octocat"
+      });
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.unstubAllGlobals();

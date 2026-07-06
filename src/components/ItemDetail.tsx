@@ -1,11 +1,12 @@
-import { Bookmark, Globe, Inbox, Loader2, Send } from "lucide-react";
-import { type FormEvent, useContext } from "react";
+import { Bookmark, Globe, Inbox, Loader2 } from "lucide-react";
+import { useContext } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import { itemWebUrl } from "../domain/itemLinks";
 import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
 import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
+import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
@@ -17,7 +18,7 @@ interface ItemDetailProps {
   online: boolean;
   commentDraft: string;
   onCommentDraftChange: (draft: string) => void;
-  onQueueComment: (event: FormEvent) => void;
+  onQueueComment: (action: CommentSubmitAction) => void;
   onToggleFavorite: () => void;
 }
 
@@ -144,29 +145,15 @@ export function ItemDetail({
         <CommentThread comments={comments} subjectAuthor={item.frontMatter.author} />
       </div>
 
-      <form className="comment-composer" onSubmit={onQueueComment}>
-        <textarea
-          id="comment-draft"
-          aria-label="Write a comment"
-          placeholder="Write a comment..."
-          value={commentDraft}
-          onChange={(event) => onCommentDraftChange(event.target.value)}
+      {item.frontMatter.number > 0 && (
+        <CommentComposer
+          draft={commentDraft}
+          online={online}
+          canClose={item.frontMatter.kind === "issue" && state === "open"}
+          onDraftChange={onCommentDraftChange}
+          onSubmit={onQueueComment}
         />
-        <div className="composer-actions">
-          <span>
-            {online
-              ? "Comments are queued first, then synced."
-              : "Offline comment will wait in the outbox."}
-          </span>
-          <button
-            className={online ? "primary-button comment-button" : "primary-button"}
-            type="submit"
-          >
-            <Send size={16} />
-            {online ? "Comment" : "Queue comment"}
-          </button>
-        </div>
-      </form>
+      )}
     </>
   );
 }

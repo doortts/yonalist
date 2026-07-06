@@ -54,13 +54,16 @@ import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
 import {
   isReadAndQuiet,
   notificationWebUrl,
+  subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
 import type {
   CommentDocument,
+  ItemKind,
   ItemDocument,
   OutboxOperationDocument
 } from "./domain/types";
+import type { CommentSubmitAction } from "./components/CommentComposer";
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
@@ -119,6 +122,14 @@ interface AppProps {
   initialOnline?: boolean;
 }
 
+interface CommentTarget {
+  host: string;
+  owner: string;
+  repo: string;
+  kind: ItemKind;
+  number: number;
+}
+
 const resetStepTemplates: Array<{
   id: ResetApplicationStepId | "restore-defaults";
   label: string;
@@ -147,6 +158,29 @@ function createOperationId(prefix: string): string {
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${unique}`;
+}
+
+function hostFromWebBaseUrl(webBaseUrl: string): string {
+  try {
+    return new URL(webBaseUrl).host;
+  } catch {
+    return webBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  }
+}
+
+function notificationSubjectKind(
+  notification: GitHubNotification
+): ItemKind | null {
+  switch (notification.subject.type) {
+    case "Issue":
+      return "issue";
+    case "PullRequest":
+      return "pull";
+    case "Discussion":
+      return "discussion";
+    default:
+      return null;
+  }
 }
 
 function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
@@ -508,6 +542,23 @@ export default function App({ initialOnline }: AppProps) {
     auth.connection,
     online
   );
+  const selectedNotificationCommentTarget = useMemo<CommentTarget | null>(() => {
+    if (!selectedNotification) {
+      return null;
+    }
+    const kind = notificationSubjectKind(selectedNotification);
+    const number = subjectNumber(selectedNotification.subject);
+    if (!kind || number === null) {
+      return null;
+    }
+    return {
+      host: hostFromWebBaseUrl(auth.connection.webBaseUrl),
+      owner: selectedNotification.repository.owner.login,
+      repo: selectedNotification.repository.name,
+      kind,
+      number
+    };
+  }, [selectedNotification, auth.connection.webBaseUrl]);
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -989,6 +1040,16 @@ export default function App({ initialOnline }: AppProps) {
     return parts.join(" · ");
   }
 
+  function refreshAfterSync(outcome: SyncOutcome) {
+    if (outcome.synced === 0) {
+      return;
+    }
+    clearItemThreadCache();
+    clearNotificationDetailCache();
+    workItems.refresh();
+    notifications.refresh();
+  }
+
   async function syncSelectedOutbox() {
     const selected = outbox.filter((operation) =>
       selectedOutboxIds.has(operation.frontMatter.id)
@@ -997,6 +1058,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!outcome) {
       return;
     }
+    refreshAfterSync(outcome);
     setSyncFeedback(describeSyncOutcome(outcome));
     if (outcome.failed === 0 && outcome.blocked === 0) {
       setShowOutbox(false);
@@ -1009,6 +1071,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!outcome) {
       return;
     }
+    refreshAfterSync(outcome);
     setSyncFeedback(describeSyncOutcome(outcome));
     if (outcome.failed > 0 || outcome.blocked > 0) {
       // Leave nothing preselected: blocked entries should not be one-click
@@ -1018,31 +1081,36 @@ export default function App({ initialOnline }: AppProps) {
     }
   }
 
-  function queueComment(event: FormEvent) {
-    event.preventDefault();
+  function queueCommentForTarget(
+    target: CommentTarget | null,
+    action: CommentSubmitAction
+  ) {
     const body = commentDraft.trim();
-    if (!body || !selectedItem) {
+    if (!body || !target) {
       return;
     }
 
     const id = createOperationId("comment");
+    const createdAt = new Date().toISOString();
+    const closeAfterComment = action === "comment-and-close" && target.kind === "issue";
     const operation = createCommentOutboxOperation({
       id,
-      host: selectedItem.frontMatter.host,
-      owner: selectedItem.frontMatter.owner,
-      repo: selectedItem.frontMatter.repo,
-      itemKind: selectedItem.frontMatter.kind,
-      number: selectedItem.frontMatter.number,
+      host: target.host,
+      owner: target.owner,
+      repo: target.repo,
+      itemKind: target.kind,
+      number: target.number,
+      closeAfterComment,
       localFilePath: commentFilePath(vaultRoot, {
-        kind: selectedItem.frontMatter.kind,
-        host: selectedItem.frontMatter.host,
-        owner: selectedItem.frontMatter.owner,
-        repo: selectedItem.frontMatter.repo,
-        number: selectedItem.frontMatter.number,
-        created_at: new Date().toISOString(),
+        kind: target.kind,
+        host: target.host,
+        owner: target.owner,
+        repo: target.repo,
+        number: target.number,
+        created_at: createdAt,
         local_id: id
       }),
-      createdAt: new Date().toISOString(),
+      createdAt,
       vaultRoot
     });
     const comment: CommentDocument = {
@@ -1051,8 +1119,8 @@ export default function App({ initialOnline }: AppProps) {
       frontMatter: {
         kind: "issue_comment",
         author: "local",
-        created_at: operation.frontMatter.created_at,
-        updated_at: operation.frontMatter.created_at,
+        created_at: createdAt,
+        updated_at: createdAt,
         sync: { status: "pending" }
       }
     };
@@ -1062,6 +1130,29 @@ export default function App({ initialOnline }: AppProps) {
     void persistOutboxOperation(vaultRoot, queuedOperation);
     setOutbox((current) => [...current, queuedOperation]);
     setCommentDraft("");
+    if (closeAfterComment) {
+      setAppSnackbar("Comment and close queued.");
+    }
+  }
+
+  function queueItemComment(action: CommentSubmitAction) {
+    if (!selectedItem) {
+      return;
+    }
+    queueCommentForTarget(
+      {
+        host: selectedItem.frontMatter.host,
+        owner: selectedItem.frontMatter.owner,
+        repo: selectedItem.frontMatter.repo,
+        kind: selectedItem.frontMatter.kind,
+        number: selectedItem.frontMatter.number
+      },
+      action
+    );
+  }
+
+  function queueNotificationComment(action: CommentSubmitAction) {
+    queueCommentForTarget(selectedNotificationCommentTarget, action);
   }
 
   function queueIssue(event: FormEvent) {
@@ -1383,7 +1474,11 @@ export default function App({ initialOnline }: AppProps) {
           <NotificationDetail
             notification={selectedNotification}
             state={notificationDetail}
+            online={online}
+            commentDraft={commentDraft}
             onOpenInBrowser={notifications.openNotification}
+            onCommentDraftChange={setCommentDraft}
+            onQueueComment={queueNotificationComment}
           />
         ) : (
           <ItemDetail
@@ -1392,7 +1487,7 @@ export default function App({ initialOnline }: AppProps) {
             online={online}
             commentDraft={commentDraft}
             onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueComment}
+            onQueueComment={queueItemComment}
             onToggleFavorite={onToggleFavorite}
           />
         )}

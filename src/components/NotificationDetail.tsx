@@ -3,6 +3,7 @@ import { subjectNumber, type GitHubNotification } from "../domain/notifications"
 import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
+import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
@@ -10,7 +11,11 @@ import { StateBadge } from "./StateBadge";
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
   state: UseNotificationDetailResult;
+  online: boolean;
+  commentDraft: string;
   onOpenInBrowser: (notification: GitHubNotification) => void;
+  onCommentDraftChange: (draft: string) => void;
+  onQueueComment: (action: CommentSubmitAction) => void;
 }
 
 function subjectTypeLabel(type: string): string {
@@ -39,7 +44,11 @@ function subjectKind(type: string): ItemKind {
 export function NotificationDetail({
   notification,
   state,
-  onOpenInBrowser
+  online,
+  commentDraft,
+  onOpenInBrowser,
+  onCommentDraftChange,
+  onQueueComment
 }: NotificationDetailProps) {
   if (!notification) {
     return (
@@ -58,6 +67,10 @@ export function NotificationDetail({
       ? null
       : subjectNumber(notification.subject);
   const { detail, loading, error } = state;
+  const canComment = notification.subject.type !== "Release" && number !== null;
+  const canClose =
+    notification.subject.type === "Issue" &&
+    (detail?.state ?? "open") === "open";
 
   return (
     <>
@@ -133,6 +146,16 @@ export function NotificationDetail({
           />
           <CommentThread comments={detail.comments} subjectAuthor={detail.author} />
         </div>
+      )}
+
+      {canComment && (
+        <CommentComposer
+          draft={commentDraft}
+          online={online}
+          canClose={canClose}
+          onDraftChange={onCommentDraftChange}
+          onSubmit={onQueueComment}
+        />
       )}
     </>
   );

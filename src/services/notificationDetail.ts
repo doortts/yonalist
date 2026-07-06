@@ -62,6 +62,7 @@ interface CommentResponse {
   author_association?: string;
   reactions?: Record<string, unknown>;
   created_at?: string;
+  replies?: CommentResponse[];
 }
 
 interface ReleaseResponse {
@@ -120,6 +121,7 @@ function mapComments(
 ): ConversationComment[] {
   return comments.map((comment) => {
     const authorName = displayNameForUser(comment.user, profiles);
+    const replies = mapComments(comment.replies ?? [], profiles);
     return {
       id: String(comment.id ?? ""),
       author: comment.user?.login ?? "unknown",
@@ -128,9 +130,17 @@ function mapComments(
       authorAssociation: comment.author_association,
       created_at: comment.created_at ?? "",
       body: comment.body ?? "",
-      reactions: summarizeReactions(comment.reactions)
+      reactions: summarizeReactions(comment.reactions),
+      ...(replies.length > 0 ? { replies } : {})
     };
   });
+}
+
+function flattenComments(comments: CommentResponse[]): CommentResponse[] {
+  return comments.flatMap((comment) => [
+    comment,
+    ...flattenComments(comment.replies ?? [])
+  ]);
 }
 
 const detailCache = new LruCache<NotificationDetailContent>(50);
@@ -156,7 +166,9 @@ async function userProfilesForDetail(
     },
     [
       loginNeedingProfile(item.user),
-      ...(comments ?? []).map((comment) => loginNeedingProfile(comment.user))
+      ...flattenComments(comments ?? []).map((comment) =>
+        loginNeedingProfile(comment.user)
+      )
     ]
   );
 }

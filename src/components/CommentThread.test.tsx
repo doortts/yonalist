@@ -50,6 +50,33 @@ describe("CommentThread", () => {
     expect(screen.queryByText("Yogno Koo yogno-koo")).not.toBeInTheDocument();
   });
 
+  it("renders nested discussion replies below their parent comment", async () => {
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent discussion comment",
+            replies: [
+              {
+                id: "reply",
+                author: "octocat",
+                created_at: "2026-07-02T01:00:00Z",
+                body: "threaded discussion reply"
+              }
+            ]
+          }
+        ]}
+      />
+    );
+
+    expect(await screen.findByText("parent discussion comment")).toBeInTheDocument();
+    const replies = screen.getByLabelText("Replies");
+    expect(within(replies).getByText("threaded discussion reply")).toBeInTheDocument();
+  });
+
   it("renders nothing when there are no comments", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();

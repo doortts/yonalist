@@ -51,6 +51,83 @@ describe("GitHub client", () => {
     );
   });
 
+  it("closes issues through the shared issues endpoint", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ state: "closed" }));
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock
+    });
+
+    await client.closeIssue("openai", "codex", 7);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/openai/codex/issues/7",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ state: "closed" })
+      })
+    );
+  });
+
+  it("creates discussion comments through GraphQL", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (payload.query?.includes("discussion(number")) {
+        return jsonResponse({
+          data: {
+            repository: {
+              discussion: {
+                id: "D_kwDO",
+                title: "Weekly",
+                comments: { nodes: [] }
+              }
+            }
+          }
+        });
+      }
+      return jsonResponse({
+        data: {
+          addDiscussionComment: {
+            comment: {
+              id: "DC_kwDO",
+              databaseId: 123,
+              body: payload.variables?.body,
+              createdAt: "2026-07-02T00:00:00Z"
+            }
+          }
+        }
+      });
+    });
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    const created = await client.createDiscussionComment(
+      "openai",
+      "codex",
+      7,
+      "Discussion reply"
+    );
+
+    expect(created).toMatchObject({
+      id: 123,
+      node_id: "DC_kwDO",
+      body: "Discussion reply"
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      variables: { discussionId: "D_kwDO", body: "Discussion reply" }
+    });
+  });
+
   it("starts OAuth device flow with the web base URL", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({
