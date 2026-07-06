@@ -691,6 +691,25 @@ body.is-resizing-pane {
   color: var(--accent);
 }
 
+:root[data-theme="yonal-light"] .nav-item:hover {
+  background: var(--nav-list-hover-bg, var(--bg-hover));
+}
+
+:root[data-theme="yonal-light"] .nav-item.active {
+  background: var(--nav-list-selected-bg, var(--list-selected-bg));
+  background-blend-mode: multiply;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  box-shadow:
+    inset 2px 0 0 var(--nav-list-selected-border, var(--list-selected-border)),
+    var(--nav-list-selected-elevation, 0 0 0 transparent);
+}
+
+:root[data-theme="yonal-light"] .nav-item.active svg {
+  color: var(--nav-list-selected-border, var(--accent));
+}
+
 .nav-item span {
   overflow: hidden;
   text-overflow: ellipsis;
