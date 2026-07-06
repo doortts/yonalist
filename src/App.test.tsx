@@ -952,16 +952,20 @@ describe("Yonalist app shell", () => {
       }
       if (target.includes("/api/graphql")) {
         const body = JSON.parse(String(init?.body ?? "{}"));
-        if (String(body.query).includes("RepositoryOpenItemCounts")) {
+        if (String(body.query).includes("RepositoryItemStateCounts")) {
           countQueries.push(String(body.query));
           countVariables.push(body.variables as Record<string, unknown>);
           return new Response(
             JSON.stringify({
               data: {
                 r0: {
-                  issues: { totalCount: 1 },
-                  pullRequests: { totalCount: 1 },
-                  discussions: { totalCount: 1 }
+                  issuesOpen: { totalCount: 1 },
+                  pullRequestsOpen: { totalCount: 1 },
+                  discussionsOpen: { totalCount: 1 },
+                  issuesClosed: { totalCount: 2 },
+                  pullRequestsClosed: { totalCount: 2 },
+                  pullRequestsMerged: { totalCount: 4 },
+                  discussionsClosed: { totalCount: 2 }
                 }
               }
             }),
@@ -1034,6 +1038,13 @@ describe("Yonalist app shell", () => {
       await waitFor(() => expect(countQueries).toHaveLength(1));
       expect(JSON.stringify(countVariables)).toContain("visible");
       expect(JSON.stringify(countVariables)).not.toContain("hidden");
+      const list = screen.getByLabelText("Items");
+      expect(
+        await within(list).findByRole("button", { name: "Open 3" })
+      ).toBeInTheDocument();
+      expect(
+        within(list).getByRole("button", { name: "Closed 10" })
+      ).toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1222,15 +1233,15 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const list = screen.getByLabelText("Items");
-    expect(within(list).getByRole("button", { name: "Opened" })).toHaveAttribute(
+    expect(within(list).getByRole("button", { name: /^Open \d+$/ })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
     expect(within(list).queryByText("Closed local issue")).not.toBeInTheDocument();
 
-    await user.click(within(list).getByRole("button", { name: "Closed" }));
+    await user.click(within(list).getByRole("button", { name: /^Closed \d+$/ }));
 
-    expect(within(list).getByRole("button", { name: "Closed" })).toHaveAttribute(
+    expect(within(list).getByRole("button", { name: /^Closed \d+$/ })).toHaveAttribute(
       "aria-pressed",
       "true"
     );

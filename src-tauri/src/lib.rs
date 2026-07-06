@@ -28,6 +28,19 @@ pub struct VaultDocumentHashRecord {
     pub size: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct VaultPersistDocument {
+    pub relative_path: String,
+    pub contents: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct VaultPersistResult {
+    pub checked: usize,
+    pub written: usize,
+    pub skipped: usize,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct CachedAvatarImage {
     pub src: String,
@@ -141,6 +154,15 @@ fn now_unix_string() -> String {
         .unwrap_or_default()
         .as_secs()
         .to_string()
+}
+
+fn hash_text(value: &str) -> String {
+    let mut hash: u32 = 0x811c9dc5;
+    for unit in value.encode_utf16() {
+        hash ^= unit as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    format!("{hash:08x}")
 }
 
 fn safe_cache_segment(value: &str) -> String {
@@ -448,6 +470,84 @@ fn replace_vault_document_hashes(
     }
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn persist_vault_documents(
+    vault_path: String,
+    documents: Vec<VaultPersistDocument>,
+) -> Result<VaultPersistResult, String> {
+    if documents.is_empty() {
+        return Ok(VaultPersistResult {
+            checked: 0,
+            written: 0,
+            skipped: 0,
+        });
+    }
+
+    let mut connection = connect_index_db(&vault_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let now = now_unix_string();
+    let mut result = VaultPersistResult {
+        checked: 0,
+        written: 0,
+        skipped: 0,
+    };
+
+    for document in documents {
+        result.checked += 1;
+        let path = resolve_vault_file(&vault_path, &document.relative_path)?;
+        let content_hash = hash_text(&document.contents);
+        let existing = transaction
+            .query_row(
+                "SELECT content_hash FROM document_hashes WHERE vault_root = ?1 AND relative_path = ?2",
+                params![&vault_path, &document.relative_path],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+
+        if existing.as_deref() == Some(content_hash.as_str()) {
+            result.skipped += 1;
+            transaction
+                .execute(
+                    "UPDATE document_hashes SET last_seen_at = ?3 WHERE vault_root = ?1 AND relative_path = ?2",
+                    params![&vault_path, &document.relative_path, &now],
+                )
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+
+        write_text_file_inner(&path, &document.contents)?;
+        transaction
+            .execute(
+                r#"
+                INSERT INTO document_hashes (
+                  vault_root, relative_path, content_hash, size, updated_at, last_seen_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+                ON CONFLICT(vault_root, relative_path) DO UPDATE SET
+                  content_hash = excluded.content_hash,
+                  size = excluded.size,
+                  updated_at = excluded.updated_at,
+                  last_seen_at = excluded.last_seen_at
+                "#,
+                params![
+                    &vault_path,
+                    &document.relative_path,
+                    &content_hash,
+                    document.contents.len() as i64,
+                    &now
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        result.written += 1;
+    }
+
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(result)
 }
 
 #[tauri::command]
@@ -1187,6 +1287,7 @@ pub fn run() {
             get_vault_document_hash,
             upsert_vault_document_hash,
             replace_vault_document_hashes,
+            persist_vault_documents,
             delete_vault_document_hash,
             move_vault_document_hash,
             clear_vault_cache,
@@ -1253,6 +1354,58 @@ mod tests {
 
         assert_eq!(stored, Some("abc123".to_string()));
         assert!(temp_dir.path().join(".yonalist/index.sqlite").exists());
+    }
+
+    #[test]
+    fn persist_vault_documents_writes_only_changed_documents() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let unchanged_path = "github.com/acme/app/issues/1/issue.md";
+        let changed_path = "github.com/acme/app/issues/2/issue.md";
+        let unchanged_contents = "---\nstate: open\n---\nbody";
+        let changed_contents = "---\nstate: closed\n---\nbody";
+
+        write_text_file_inner(&temp_dir.path().join(unchanged_path), unchanged_contents)
+            .expect("write unchanged file");
+        upsert_vault_document_hash(
+            vault_path.clone(),
+            unchanged_path.to_string(),
+            hash_text(unchanged_contents),
+            unchanged_contents.len() as u64,
+        )
+        .expect("upsert unchanged hash");
+
+        let result = persist_vault_documents(
+            vault_path.clone(),
+            vec![
+                VaultPersistDocument {
+                    relative_path: unchanged_path.to_string(),
+                    contents: unchanged_contents.to_string(),
+                },
+                VaultPersistDocument {
+                    relative_path: changed_path.to_string(),
+                    contents: changed_contents.to_string(),
+                },
+            ],
+        )
+        .expect("persist documents");
+
+        assert_eq!(
+            result,
+            VaultPersistResult {
+                checked: 2,
+                written: 1,
+                skipped: 1
+            }
+        );
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join(changed_path)).expect("read changed"),
+            changed_contents
+        );
+        assert_eq!(
+            get_vault_document_hash(vault_path, changed_path.to_string()).expect("read hash"),
+            Some(hash_text(changed_contents))
+        );
     }
 
     #[test]

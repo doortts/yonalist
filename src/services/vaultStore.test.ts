@@ -5,6 +5,7 @@ import { serializeMarkdownDocument } from "../domain/markdown";
 import {
   loadVaultState,
   persistItemDocument,
+  persistItemDocuments,
   persistOutboxOperation
 } from "./vaultStore";
 
@@ -70,6 +71,40 @@ describe("vaultStore", () => {
     await persistItemDocument(vaultRoot, draftIssue);
 
     expect(setItemSpy.mock.calls.length).toBe(firstWriteCount);
+  });
+
+  it("rewrites item documents when only the front matter state changes", async () => {
+    await persistItemDocument(vaultRoot, draftIssue);
+    const closedIssue: ItemDocument = {
+      ...draftIssue,
+      frontMatter: {
+        ...draftIssue.frontMatter,
+        state: "closed"
+      }
+    };
+
+    await persistItemDocument(vaultRoot, closedIssue);
+
+    const raw = window.localStorage.getItem("yonalist.vaultDocuments.v1");
+    expect(raw).toContain("state: closed");
+  });
+
+  it("bulk persists item documents and skips unchanged repeats", async () => {
+    const setItemSpy = vi.spyOn(window.localStorage, "setItem");
+
+    const first = await persistItemDocuments(vaultRoot, [draftIssue]);
+    const writesAfterFirst = setItemSpy.mock.calls.filter(
+      ([key]) => key === "yonalist.vaultDocuments.v1"
+    ).length;
+    const second = await persistItemDocuments(vaultRoot, [draftIssue]);
+
+    expect(first).toEqual({ checked: 1, written: 1, skipped: 0 });
+    expect(second).toEqual({ checked: 1, written: 0, skipped: 1 });
+    expect(
+      setItemSpy.mock.calls.filter(
+        ([key]) => key === "yonalist.vaultDocuments.v1"
+      ).length
+    ).toBe(writesAfterFirst);
   });
 
   it("records hashes while loading local vault documents so identical refreshes do not rewrite", async () => {

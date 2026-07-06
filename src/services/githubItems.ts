@@ -63,6 +63,18 @@ interface RepositoryOpenCounts {
   issues?: { totalCount?: number };
   pullRequests?: { totalCount?: number };
   discussions?: { totalCount?: number };
+  issuesOpen?: { totalCount?: number };
+  issuesClosed?: { totalCount?: number };
+  pullRequestsOpen?: { totalCount?: number };
+  pullRequestsClosed?: { totalCount?: number };
+  pullRequestsMerged?: { totalCount?: number };
+  discussionsOpen?: { totalCount?: number };
+  discussionsClosed?: { totalCount?: number };
+}
+
+export interface RepositoryItemStateCounts {
+  open: number;
+  closed: number;
 }
 
 interface DiscussionSearchNode {
@@ -461,9 +473,13 @@ function repositoryCountQuery(repositories: RepositorySummary[]): {
     variables[repoVariable] = repository.name;
     return `
       r${index}: repository(owner: $${ownerVariable}, name: $${repoVariable}) {
-        issues(states: OPEN) { totalCount }
-        pullRequests(states: OPEN) { totalCount }
-        discussions(states: OPEN) { totalCount }
+        issuesOpen: issues(states: OPEN) { totalCount }
+        issuesClosed: issues(states: CLOSED) { totalCount }
+        pullRequestsOpen: pullRequests(states: OPEN) { totalCount }
+        pullRequestsClosed: pullRequests(states: CLOSED) { totalCount }
+        pullRequestsMerged: pullRequests(states: MERGED) { totalCount }
+        discussionsOpen: discussions(states: OPEN) { totalCount }
+        discussionsClosed: discussions(states: CLOSED) { totalCount }
       }
     `;
   });
@@ -472,17 +488,38 @@ function repositoryCountQuery(repositories: RepositorySummary[]): {
     .join(", ");
 
   return {
-    query: `query RepositoryOpenItemCounts(${declarations}) {${fields.join("\n")}}`,
+    query: `query RepositoryItemStateCounts(${declarations}) {${fields.join("\n")}}`,
     variables
   };
 }
 
-function openItemCount(counts: RepositoryOpenCounts | null | undefined): number {
-  return (
+function itemStateCount(
+  counts: RepositoryOpenCounts | null | undefined
+): RepositoryItemStateCounts {
+  const openFromAliases =
+    (counts?.issuesOpen?.totalCount ?? 0) +
+    (counts?.pullRequestsOpen?.totalCount ?? 0) +
+    (counts?.discussionsOpen?.totalCount ?? 0);
+  const openFromLegacyFields =
     (counts?.issues?.totalCount ?? 0) +
     (counts?.pullRequests?.totalCount ?? 0) +
-    (counts?.discussions?.totalCount ?? 0)
-  );
+    (counts?.discussions?.totalCount ?? 0);
+  const open =
+    counts?.issuesOpen || counts?.pullRequestsOpen || counts?.discussionsOpen
+      ? openFromAliases
+      : openFromLegacyFields;
+  return {
+    open,
+    closed:
+      (counts?.issuesClosed?.totalCount ?? 0) +
+      (counts?.pullRequestsClosed?.totalCount ?? 0) +
+      (counts?.pullRequestsMerged?.totalCount ?? 0) +
+      (counts?.discussionsClosed?.totalCount ?? 0)
+  };
+}
+
+function openItemCount(counts: RepositoryOpenCounts | null | undefined): number {
+  return itemStateCount(counts).open;
 }
 
 async function enrichRepositoriesWithOpenItemCounts(
@@ -531,6 +568,16 @@ export async function fetchRepositoryOpenItemCounts(
   connection: GithubConnection,
   repositories: RepositorySummary[]
 ): Promise<Record<string, number>> {
+  const stateCounts = await fetchRepositoryItemStateCounts(connection, repositories);
+  return Object.fromEntries(
+    Object.entries(stateCounts).map(([fullName, counts]) => [fullName, counts.open])
+  );
+}
+
+export async function fetchRepositoryItemStateCounts(
+  connection: GithubConnection,
+  repositories: RepositorySummary[]
+): Promise<Record<string, RepositoryItemStateCounts>> {
   if (repositories.length === 0) {
     return {};
   }
@@ -548,16 +595,16 @@ export async function fetchRepositoryOpenItemCounts(
         query,
         variables
       );
-      const counts: Record<string, number> = {};
+      const counts: Record<string, RepositoryItemStateCounts> = {};
       batch.forEach((repository, index) => {
-        counts[repository.fullName] = openItemCount(data[`r${index}`]);
+        counts[repository.fullName] = itemStateCount(data[`r${index}`]);
       });
       return counts;
     }),
     REPO_COUNT_CONCURRENCY
   );
 
-  return Object.assign({}, ...parts) as Record<string, number>;
+  return Object.assign({}, ...parts) as Record<string, RepositoryItemStateCounts>;
 }
 
 /**

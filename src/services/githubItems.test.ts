@@ -5,6 +5,7 @@ import {
   fetchMyRepositories,
   fetchMyWorkItems,
   fetchRepoWorkItems,
+  fetchRepositoryItemStateCounts,
   fetchRepositoryOpenItemCounts,
   groupRepositoriesByOwner
 } from "./githubItems";
@@ -214,21 +215,25 @@ describe("fetchMyRepositories", () => {
     ).toBe(false);
   });
 
-  it("fetches exact open item counts only for the repositories supplied", async () => {
+  it("fetches exact remote item state counts only for the repositories supplied", async () => {
     const flags = { participating: true, watched: false, orgMember: false };
     const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
       if (target.includes("/graphql")) {
         const body = JSON.parse(String(init?.body ?? "{}"));
-        expect(String(body.query)).toContain("RepositoryOpenItemCounts");
+        expect(String(body.query)).toContain("RepositoryItemStateCounts");
         expect(JSON.stringify(body.variables)).toContain("acme");
         expect(JSON.stringify(body.variables)).not.toContain("hidden");
         return jsonResponse({
           data: {
             r0: {
-              issues: { totalCount: 1 },
-              pullRequests: { totalCount: 2 },
-              discussions: { totalCount: 3 }
+              issuesOpen: { totalCount: 1 },
+              pullRequestsOpen: { totalCount: 2 },
+              discussionsOpen: { totalCount: 3 },
+              issuesClosed: { totalCount: 4 },
+              pullRequestsClosed: { totalCount: 5 },
+              pullRequestsMerged: { totalCount: 7 },
+              discussionsClosed: { totalCount: 6 }
             }
           }
         });
@@ -237,7 +242,17 @@ describe("fetchMyRepositories", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const counts = await fetchRepositoryOpenItemCounts(connection, [
+    const stateCounts = await fetchRepositoryItemStateCounts(connection, [
+      {
+        owner: "acme",
+        name: "visible",
+        fullName: "acme/visible",
+        openIssuesCount: 0,
+        pushedAt: "",
+        ...flags
+      }
+    ]);
+    const openCounts = await fetchRepositoryOpenItemCounts(connection, [
       {
         owner: "acme",
         name: "visible",
@@ -248,7 +263,8 @@ describe("fetchMyRepositories", () => {
       }
     ]);
 
-    expect(counts).toEqual({ "acme/visible": 6 });
+    expect(stateCounts).toEqual({ "acme/visible": { open: 6, closed: 22 } });
+    expect(openCounts).toEqual({ "acme/visible": 6 });
   });
 
   it("tags repositories by access source and merges duplicates", async () => {

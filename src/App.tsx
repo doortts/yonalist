@@ -103,6 +103,7 @@ import {
   moveVaultDocument,
   persistCommentDocument,
   persistItemDocument,
+  persistItemDocuments,
   persistOutboxOperation
 } from "./services/vaultStore";
 
@@ -343,10 +344,9 @@ export default function App({ initialOnline }: AppProps) {
     }
 
     return scheduleIdleTask(() => {
-      void Promise.all(
-        workItems.items.map((item) =>
-          persistItemDocument(vaultRoot, withVaultItemPath(vaultRoot, item))
-        )
+      void persistItemDocuments(
+        vaultRoot,
+        workItems.items.map((item) => withVaultItemPath(vaultRoot, item))
       );
     });
   }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
@@ -504,13 +504,10 @@ export default function App({ initialOnline }: AppProps) {
     [inboxItems]
   );
 
-  const filteredItems = useMemo(() => {
+  const stateScopedItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return items.filter((item) => {
       if (!repositoryFilter && !matchesFilter(item, filter)) {
-        return false;
-      }
-      if (!matchesStateFilter(item, itemStateFilter)) {
         return false;
       }
       if (
@@ -534,7 +531,37 @@ export default function App({ initialOnline }: AppProps) {
         .toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [items, filter, itemStateFilter, repositoryFilter, query]);
+  }, [items, filter, repositoryFilter, query]);
+
+  const itemStateCounts = useMemo(
+    () =>
+      stateScopedItems.reduce(
+        (counts, item) => {
+          if (item.frontMatter.state === "open") {
+            counts.open += 1;
+          } else if (
+            item.frontMatter.state === "closed" ||
+            item.frontMatter.state === "merged"
+          ) {
+            counts.closed += 1;
+          }
+          return counts;
+        },
+        { open: 0, closed: 0 }
+      ),
+    [stateScopedItems]
+  );
+
+  const filteredItems = useMemo(
+    () =>
+      stateScopedItems.filter((item) => matchesStateFilter(item, itemStateFilter)),
+    [stateScopedItems, itemStateFilter]
+  );
+
+  const displayedItemStateCounts =
+    repositoryFilter && visibleRepositoryCounts.selectedStateCounts
+      ? visibleRepositoryCounts.selectedStateCounts
+      : itemStateCounts;
 
   const selectedItem =
     filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
@@ -1187,6 +1214,7 @@ export default function App({ initialOnline }: AppProps) {
           items={filteredItems}
           selectedPath={selectedItem?.path ?? null}
           stateFilter={itemStateFilter}
+          stateCounts={displayedItemStateCounts}
           query={query}
           loading={workItems.loading}
           error={workItems.error}

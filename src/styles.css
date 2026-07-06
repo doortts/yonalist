@@ -834,20 +834,38 @@ body.is-resizing-pane {
 .item-state-row {
   display: flex;
   gap: 6px;
-  padding: 8px 16px;
+  align-items: flex-end;
+  padding: 8px 16px 0;
   border-bottom: 1px solid var(--border);
   background: var(--bg-list);
 }
 
 .item-state-tab {
-  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 31px;
+  margin-bottom: -1px;
   padding: 4px 12px;
   border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: transparent;
   color: var(--text-2);
   font-size: 12.5px;
   font-weight: 650;
+  line-height: 1;
+}
+
+.item-state-count {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.item-state-tab.active .item-state-count {
+  color: var(--text-2);
 }
 
 .item-state-tab:hover {
@@ -858,7 +876,7 @@ body.is-resizing-pane {
   border-color: var(--border-strong);
   background: var(--bg-card);
   color: var(--text-1);
-  box-shadow: 0 1px 2px rgb(17 24 39 / 8%);
+  box-shadow: none;
 }
 
 .item-list {

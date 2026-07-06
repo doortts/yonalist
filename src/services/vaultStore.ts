@@ -30,9 +30,61 @@ interface TauriVaultFile {
   contents: string;
 }
 
+interface PersistVaultDocumentInput {
+  relative_path: string;
+  contents: string;
+}
+
+export interface PersistVaultDocumentsResult {
+  checked: number;
+  written: number;
+  skipped: number;
+}
+
 export interface VaultState {
   items: ItemDocument[];
   outbox: OutboxOperationDocument[];
+}
+
+const vaultHashMemoryCache = new Map<string, Map<string, string>>();
+
+function memoryHashesForVault(vaultRoot: string): Map<string, string> {
+  let hashes = vaultHashMemoryCache.get(vaultRoot);
+  if (!hashes) {
+    hashes = new Map();
+    vaultHashMemoryCache.set(vaultRoot, hashes);
+  }
+  return hashes;
+}
+
+function memoryDocumentHash(
+  vaultRoot: string,
+  documentRelativePath: string
+): string | undefined {
+  return vaultHashMemoryCache.get(vaultRoot)?.get(documentRelativePath);
+}
+
+function rememberMemoryDocumentHash(
+  vaultRoot: string,
+  documentRelativePath: string,
+  hash: string
+) {
+  memoryHashesForVault(vaultRoot).set(documentRelativePath, hash);
+}
+
+function replaceMemoryDocumentHashes(
+  vaultRoot: string,
+  documents: Array<{ relativePath: string; contents: string }>
+) {
+  const hashes = new Map<string, string>();
+  for (const document of documents) {
+    hashes.set(document.relativePath, hashString(document.contents));
+  }
+  vaultHashMemoryCache.set(vaultRoot, hashes);
+}
+
+export function clearVaultDocumentHashMemoryCache() {
+  vaultHashMemoryCache.clear();
 }
 
 function isTauri(): boolean {
@@ -115,13 +167,25 @@ async function getStoredDocumentHash(
   vaultRoot: string,
   documentRelativePath: string
 ): Promise<string | null> {
+  const cached = memoryDocumentHash(vaultRoot, documentRelativePath);
+  if (cached !== undefined) {
+    return cached;
+  }
   if (isTauri()) {
-    return invokeTauri<string | null>("get_vault_document_hash", {
+    const stored = await invokeTauri<string | null>("get_vault_document_hash", {
       vaultPath: vaultRoot,
       relativePath: documentRelativePath
     });
+    if (stored !== null) {
+      rememberMemoryDocumentHash(vaultRoot, documentRelativePath, stored);
+    }
+    return stored;
   }
-  return loadStoredVaultHashes()[vaultRoot]?.[documentRelativePath] ?? null;
+  const stored = loadStoredVaultHashes()[vaultRoot]?.[documentRelativePath] ?? null;
+  if (stored !== null) {
+    rememberMemoryDocumentHash(vaultRoot, documentRelativePath, stored);
+  }
+  return stored;
 }
 
 async function rememberDocumentHash(
@@ -130,6 +194,7 @@ async function rememberDocumentHash(
   hash: string,
   size: number
 ) {
+  rememberMemoryDocumentHash(vaultRoot, documentRelativePath, hash);
   if (isTauri()) {
     await invokeTauri("upsert_vault_document_hash", {
       vaultPath: vaultRoot,
@@ -154,6 +219,7 @@ async function rememberDocumentHashes(
   vaultRoot: string,
   documents: Array<{ relativePath: string; contents: string }>
 ) {
+  replaceMemoryDocumentHashes(vaultRoot, documents);
   if (isTauri()) {
     const records: NativeVaultDocumentHashRecord[] = documents.map((document) => ({
       relative_path: document.relativePath,
@@ -188,6 +254,7 @@ async function rememberDocumentHashes(
 }
 
 async function forgetDocumentHash(vaultRoot: string, documentRelativePath: string) {
+  vaultHashMemoryCache.get(vaultRoot)?.delete(documentRelativePath);
   if (isTauri()) {
     await invokeTauri("delete_vault_document_hash", {
       vaultPath: vaultRoot,
@@ -212,6 +279,7 @@ async function moveDocumentHash(
   toRelativePath: string,
   contents?: string
 ) {
+  vaultHashMemoryCache.get(vaultRoot)?.delete(fromRelativePath);
   if (isTauri()) {
     await invokeTauri("move_vault_document_hash", {
       vaultPath: vaultRoot,
@@ -220,6 +288,9 @@ async function moveDocumentHash(
       contentHash: typeof contents === "string" ? hashString(contents) : null,
       size: typeof contents === "string" ? contents.length : null
     });
+    if (typeof contents === "string") {
+      rememberMemoryDocumentHash(vaultRoot, toRelativePath, hashString(contents));
+    }
     return;
   }
 
@@ -232,6 +303,7 @@ async function moveDocumentHash(
   delete documents[fromRelativePath];
   if (nextHash) {
     documents[toRelativePath] = nextHash;
+    rememberMemoryDocumentHash(vaultRoot, toRelativePath, nextHash);
   }
   hashes[vaultRoot] = documents;
   persistStoredVaultHashes(hashes);
@@ -287,6 +359,90 @@ async function writeVaultFile(
   vaults[vaultRoot] = { ...(vaults[vaultRoot] ?? {}), [relative]: contents };
   persistStoredVaults(vaults);
   await rememberDocumentHash(vaultRoot, relative, nextHash, contents.length);
+}
+
+async function persistVaultDocuments(
+  vaultRoot: string,
+  documents: PersistVaultDocumentInput[]
+): Promise<PersistVaultDocumentsResult> {
+  if (documents.length === 0) {
+    return { checked: 0, written: 0, skipped: 0 };
+  }
+
+  if (isTauri()) {
+    const result = await invokeTauri<PersistVaultDocumentsResult>(
+      "persist_vault_documents",
+      {
+        vaultPath: vaultRoot,
+        documents
+      }
+    );
+    for (const document of documents) {
+      rememberMemoryDocumentHash(
+        vaultRoot,
+        document.relative_path,
+        hashString(document.contents)
+      );
+    }
+    return result;
+  }
+
+  const vaults = loadStoredVaults();
+  const existingDocuments = vaults[vaultRoot] ?? {};
+  const storedHashes = loadStoredVaultHashes();
+  const documentHashes = { ...(storedHashes[vaultRoot] ?? {}) };
+  let nextDocuments = existingDocuments;
+  let documentsChanged = false;
+  let hashesChanged = false;
+  const result: PersistVaultDocumentsResult = {
+    checked: 0,
+    written: 0,
+    skipped: 0
+  };
+
+  for (const document of documents) {
+    result.checked += 1;
+    const relative = document.relative_path;
+    const nextHash = hashString(document.contents);
+    const cachedHash = memoryDocumentHash(vaultRoot, relative) ?? documentHashes[relative];
+    if (cachedHash === nextHash) {
+      rememberMemoryDocumentHash(vaultRoot, relative, nextHash);
+      result.skipped += 1;
+      continue;
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(existingDocuments, relative) &&
+      hashString(existingDocuments[relative]) === nextHash
+    ) {
+      documentHashes[relative] = nextHash;
+      hashesChanged = true;
+      rememberMemoryDocumentHash(vaultRoot, relative, nextHash);
+      result.skipped += 1;
+      continue;
+    }
+
+    if (!documentsChanged) {
+      nextDocuments = { ...existingDocuments };
+      documentsChanged = true;
+    }
+    nextDocuments[relative] = document.contents;
+    documentHashes[relative] = nextHash;
+    hashesChanged = true;
+    rememberMemoryDocumentHash(vaultRoot, relative, nextHash);
+    result.written += 1;
+  }
+
+  if (documentsChanged) {
+    vaults[vaultRoot] = nextDocuments;
+    persistStoredVaults(vaults);
+  }
+  if (hashesChanged) {
+    storedHashes[vaultRoot] = documentHashes;
+    persistStoredVaultHashes(storedHashes);
+  }
+
+  return result;
 }
 
 export async function deleteVaultDocument(vaultRoot: string, documentPath: string) {
@@ -355,6 +511,19 @@ export function commentDocumentContents(comment: CommentDocument): string {
 
 export async function persistItemDocument(vaultRoot: string, item: ItemDocument) {
   await writeVaultFile(vaultRoot, item.path, serializeItem(item));
+}
+
+export async function persistItemDocuments(
+  vaultRoot: string,
+  items: ItemDocument[]
+): Promise<PersistVaultDocumentsResult> {
+  return persistVaultDocuments(
+    vaultRoot,
+    items.map((item) => ({
+      relative_path: relativePath(vaultRoot, item.path),
+      contents: serializeItem(item)
+    }))
+  );
 }
 
 export async function persistOutboxOperation(

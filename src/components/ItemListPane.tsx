@@ -14,10 +14,16 @@ import { timeAgo } from "../timeFormat";
 
 export type ItemStateFilter = "open" | "closed";
 
+interface ItemStateCounts {
+  open: number;
+  closed: number;
+}
+
 interface ItemListPaneProps {
   items: ItemDocument[];
   selectedPath: string | null;
   stateFilter: ItemStateFilter;
+  stateCounts?: ItemStateCounts;
   query: string;
   loading: boolean;
   error: string | null;
@@ -71,6 +77,7 @@ export function ItemListPane({
   items,
   selectedPath,
   stateFilter,
+  stateCounts,
   query,
   loading,
   error,
@@ -81,6 +88,23 @@ export function ItemListPane({
   onNewIssue,
   onRefresh
 }: ItemListPaneProps) {
+  const counts =
+    stateCounts ??
+    items.reduce<ItemStateCounts>(
+      (result, item) => {
+        if (item.frontMatter.state === "open") {
+          result.open += 1;
+        } else if (
+          item.frontMatter.state === "closed" ||
+          item.frontMatter.state === "merged"
+        ) {
+          result.closed += 1;
+        }
+        return result;
+      },
+      { open: 0, closed: 0 }
+    );
+
   return (
     <section className="list-pane" aria-label="Items">
       <div className="pane-titlebar-spacer" />
@@ -116,7 +140,8 @@ export function ItemListPane({
           aria-pressed={stateFilter === "open"}
           onClick={() => onStateFilterChange("open")}
         >
-          Opened
+          <span>Open</span>
+          <span className="item-state-count">{counts.open}</span>
         </button>
         <button
           type="button"
@@ -126,7 +151,8 @@ export function ItemListPane({
           aria-pressed={stateFilter === "closed"}
           onClick={() => onStateFilterChange("closed")}
         >
-          Closed
+          <span>Closed</span>
+          <span className="item-state-count">{counts.closed}</span>
         </button>
       </div>
 

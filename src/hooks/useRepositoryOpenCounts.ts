@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  fetchRepositoryOpenItemCounts,
+  fetchRepositoryItemStateCounts,
+  type RepositoryItemStateCounts,
   type OwnerGroup,
   type RepositorySummary
 } from "../services/githubItems";
@@ -13,6 +14,7 @@ import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseRepositoryOpenCountsResult {
   groups: OwnerGroup[];
+  selectedStateCounts?: RepositoryItemStateCounts;
   loading: boolean;
   error: string | null;
 }
@@ -44,6 +46,7 @@ export function useRepositoryOpenCounts(
   const [counts, setCounts] = useState<Record<string, number>>(() =>
     loadCachedRepositoryOpenCounts(connection.apiBaseUrl)
   );
+  const [stateCounts, setStateCounts] = useState<Record<string, RepositoryItemStateCounts>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requested = useRef<Set<string>>(new Set());
@@ -54,6 +57,7 @@ export function useRepositoryOpenCounts(
     requestSeq.current += 1;
     requested.current = new Set();
     setCounts(loadCachedRepositoryOpenCounts(connection.apiBaseUrl));
+    setStateCounts({});
     setError(null);
   }, [connection.apiBaseUrl, token]);
 
@@ -101,7 +105,7 @@ export function useRepositoryOpenCounts(
       apiBaseUrl: connection.apiBaseUrl
     });
     setLoading(true);
-    fetchRepositoryOpenItemCounts(connection, repositories)
+    fetchRepositoryItemStateCounts(connection, repositories)
       .then((nextCounts) => {
         if (requestSeq.current !== seq) {
           repositories.forEach((repository) =>
@@ -114,15 +118,22 @@ export function useRepositoryOpenCounts(
             visibleNames.current.has(fullName)
           )
         );
+        setStateCounts((current) => ({ ...current, ...visibleCounts }));
         setCounts((current) => {
-          const merged = { ...current, ...visibleCounts };
+          const openCounts = Object.fromEntries(
+            Object.entries(visibleCounts).map(([fullName, counts]) => [
+              fullName,
+              counts.open
+            ])
+          );
+          const merged = { ...current, ...openCounts };
           persistCachedRepositoryOpenCounts(connection.apiBaseUrl, merged);
           return merged;
         });
         setError(null);
         tracePerf("repository_count_remote_done", {
           fullName: selectedRepository.fullName,
-          count: visibleCounts[selectedRepository.fullName],
+          count: visibleCounts[selectedRepository.fullName]?.open,
           durationMs: performance.now() - startedAt
         });
       })
@@ -150,6 +161,9 @@ export function useRepositoryOpenCounts(
 
   return {
     groups: withCounts(groups, counts),
+    selectedStateCounts: selectedRepositoryFullName
+      ? stateCounts[selectedRepositoryFullName]
+      : undefined,
     loading,
     error
   };

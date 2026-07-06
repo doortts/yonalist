@@ -72,12 +72,13 @@ describe("ItemListPane", () => {
     expect(container.querySelector(".yona-comment-icon")).not.toBeNull();
   });
 
-  it("shows opened and closed state tabs above the item list", () => {
+  it("shows open and closed state tabs with counts above the item list", () => {
     render(
       <ItemListPane
         items={[baseItem]}
         selectedPath={null}
         stateFilter="closed"
+        stateCounts={{ open: 3, closed: 2 }}
         query=""
         loading={false}
         error={null}
@@ -90,11 +91,11 @@ describe("ItemListPane", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Opened" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Open 3" })).toHaveAttribute(
       "aria-pressed",
       "false"
     );
-    expect(screen.getByRole("button", { name: "Closed" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Closed 2" })).toHaveAttribute(
       "aria-pressed",
       "true"
     );
