@@ -99,63 +99,76 @@ export function useRepositoryOpenCounts(
     const repositories = [selectedRepository];
     repositories.forEach((repository) => requested.current.add(repository.fullName));
     const seq = requestSeq.current;
-    const startedAt = performance.now();
-    tracePerf("repository_count_remote_start", {
-      fullName: selectedRepository.fullName,
-      apiBaseUrl: connection.apiBaseUrl
-    });
-    setLoading(true);
-    fetchRepositoryItemStateCounts(connection, repositories)
-      .then((nextCounts) => {
-        if (requestSeq.current !== seq) {
+    let started = false;
+    const timer = window.setTimeout(() => {
+      started = true;
+      const startedAt = performance.now();
+      tracePerf("repository_count_remote_start", {
+        fullName: selectedRepository.fullName,
+        apiBaseUrl: connection.apiBaseUrl
+      });
+      setLoading(true);
+      fetchRepositoryItemStateCounts(connection, repositories)
+        .then((nextCounts) => {
+          if (requestSeq.current !== seq) {
+            repositories.forEach((repository) =>
+              requested.current.delete(repository.fullName)
+            );
+            return;
+          }
+          const visibleCounts = Object.fromEntries(
+            Object.entries(nextCounts).filter(([fullName]) =>
+              visibleNames.current.has(fullName)
+            )
+          );
+          setStateCounts((current) => ({ ...current, ...visibleCounts }));
+          setCounts((current) => {
+            const openCounts = Object.fromEntries(
+              Object.entries(visibleCounts).map(([fullName, counts]) => [
+                fullName,
+                counts.open
+              ])
+            );
+            const merged = { ...current, ...openCounts };
+            persistCachedRepositoryOpenCounts(connection.apiBaseUrl, merged);
+            return merged;
+          });
+          setError(null);
+          tracePerf("repository_count_remote_done", {
+            fullName: selectedRepository.fullName,
+            count: visibleCounts[selectedRepository.fullName]?.open,
+            durationMs: performance.now() - startedAt
+          });
+        })
+        .catch((cause) => {
           repositories.forEach((repository) =>
             requested.current.delete(repository.fullName)
           );
-          return;
-        }
-        const visibleCounts = Object.fromEntries(
-          Object.entries(nextCounts).filter(([fullName]) =>
-            visibleNames.current.has(fullName)
-          )
-        );
-        setStateCounts((current) => ({ ...current, ...visibleCounts }));
-        setCounts((current) => {
-          const openCounts = Object.fromEntries(
-            Object.entries(visibleCounts).map(([fullName, counts]) => [
-              fullName,
-              counts.open
-            ])
-          );
-          const merged = { ...current, ...openCounts };
-          persistCachedRepositoryOpenCounts(connection.apiBaseUrl, merged);
-          return merged;
+          if (requestSeq.current === seq) {
+            const detail = cause instanceof Error ? cause.message : String(cause);
+            setError(`Could not refresh project counts: ${detail}`);
+            tracePerf("repository_count_remote_error", {
+              fullName: selectedRepository.fullName,
+              message: detail,
+              durationMs: performance.now() - startedAt
+            });
+          }
+        })
+        .finally(() => {
+          if (requestSeq.current === seq) {
+            setLoading(false);
+          }
         });
-        setError(null);
-        tracePerf("repository_count_remote_done", {
-          fullName: selectedRepository.fullName,
-          count: visibleCounts[selectedRepository.fullName]?.open,
-          durationMs: performance.now() - startedAt
-        });
-      })
-      .catch((cause) => {
+    }, 500);
+
+    return () => {
+      window.clearTimeout(timer);
+      if (!started) {
         repositories.forEach((repository) =>
           requested.current.delete(repository.fullName)
         );
-        if (requestSeq.current === seq) {
-          const detail = cause instanceof Error ? cause.message : String(cause);
-          setError(`Could not refresh project counts: ${detail}`);
-          tracePerf("repository_count_remote_error", {
-            fullName: selectedRepository.fullName,
-            message: detail,
-            durationMs: performance.now() - startedAt
-          });
-        }
-      })
-      .finally(() => {
-        if (requestSeq.current === seq) {
-          setLoading(false);
-        }
-      });
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, online, connection.apiBaseUrl, visibleKey, selectedRepository]);
 

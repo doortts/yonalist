@@ -63,9 +63,10 @@ function avatarCacheKey(login: string, connection: GithubConnection): string {
 function avatarInflightKey(
   login: string,
   connection: GithubConnection,
-  vaultRoot = ""
+  vaultRoot = "",
+  src = ""
 ): string {
-  return `${avatarCacheKey(login, connection)}\n${vaultRoot}`;
+  return `${avatarCacheKey(login, connection)}\n${vaultRoot}\n${src}`;
 }
 
 function toCachedAvatarImage(
@@ -395,7 +396,7 @@ export function resolveAvatarImage(
   connection: GithubConnection,
   vaultRoot = ""
 ): Promise<string | null> {
-  const key = avatarInflightKey(login, connection, vaultRoot);
+  const key = avatarInflightKey(login, connection, vaultRoot, src);
   const running = avatarInflight.get(key);
   if (running) {
     return running;

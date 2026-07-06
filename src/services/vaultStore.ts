@@ -1,4 +1,5 @@
 import { parseMarkdownDocument, serializeMarkdownDocument } from "../domain/markdown";
+import { itemMergeKey, withVaultItemPath } from "../domain/items";
 import type {
   CommentDocument,
   ItemDocument,
@@ -727,6 +728,54 @@ async function loadIndexedItems(vaultRoot: string): Promise<ItemDocument[]> {
   return records.map((record) => itemFromIndexRecord(vaultRoot, record));
 }
 
+function preferIndexedItem(left: ItemDocument, right: ItemDocument): ItemDocument {
+  const winner =
+    right.frontMatter.updated_at.localeCompare(left.frontMatter.updated_at) > 0
+      ? right
+      : left;
+  const fallback = winner === right ? left : right;
+  return {
+    ...winner,
+    frontMatter: {
+      ...winner.frontMatter,
+      comments_count:
+        winner.frontMatter.comments_count ?? fallback.frontMatter.comments_count,
+      local: {
+        ...winner.frontMatter.local,
+        favorite:
+          winner.frontMatter.local.favorite ||
+          fallback.frontMatter.local.favorite
+      }
+    }
+  };
+}
+
+function parseVaultItemsFromDocuments(
+  vaultRoot: string,
+  documents: VaultSourceDocument[]
+): ItemDocument[] {
+  const byIdentity = new Map<string, ItemDocument>();
+
+  for (const document of documents) {
+    const parsed = parseMarkdownDocument<unknown>(document.contents);
+    if (!isItemFrontMatter(parsed.frontMatter)) {
+      continue;
+    }
+    const item = withVaultItemPath(vaultRoot, {
+      path: document.path,
+      frontMatter: parsed.frontMatter,
+      body: ""
+    });
+    const key = itemMergeKey(item);
+    const current = byIdentity.get(key);
+    byIdentity.set(key, current ? preferIndexedItem(current, item) : item);
+  }
+
+  return [...byIdentity.values()].sort((left, right) =>
+    right.frontMatter.updated_at.localeCompare(left.frontMatter.updated_at)
+  );
+}
+
 function isItemFrontMatter(value: unknown): value is ItemFrontMatter {
   return (
     typeof value === "object" &&
@@ -759,26 +808,23 @@ export async function loadVaultState(vaultRoot: string): Promise<VaultState> {
   }
 
   const documents = await readVaultDocuments(vaultRoot);
-  const items: ItemDocument[] = [];
-
-  for (const document of documents) {
-    const parsed = parseMarkdownDocument<unknown>(document.contents);
-    if (isItemFrontMatter(parsed.frontMatter)) {
-      items.push({
-        path: document.path,
-        frontMatter: parsed.frontMatter,
-        body: parsed.body
-      });
-    }
-  }
-
-  const sortedItems = items.sort((left, right) =>
-    right.frontMatter.updated_at.localeCompare(left.frontMatter.updated_at)
-  );
+  const sortedItems = parseVaultItemsFromDocuments(vaultRoot, documents);
   await replaceNativeItemIndex(vaultRoot, sortedItems);
 
   return {
     items: sortedItems,
+    outbox: parseOutboxDocuments(documents)
+  };
+}
+
+export async function rebuildVaultStateFromMarkdown(
+  vaultRoot: string
+): Promise<VaultState> {
+  const documents = await readVaultDocuments(vaultRoot);
+  const items = parseVaultItemsFromDocuments(vaultRoot, documents);
+  await replaceNativeItemIndex(vaultRoot, items);
+  return {
+    items,
     outbox: parseOutboxDocuments(documents)
   };
 }

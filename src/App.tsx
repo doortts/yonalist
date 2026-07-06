@@ -72,7 +72,11 @@ import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
 import { useRepositoryOpenCounts } from "./hooks/useRepositoryOpenCounts";
 import { useRepositories } from "./hooks/useRepositories";
-import { useWorkItems, type WorkScope } from "./hooks/useWorkItems";
+import {
+  clearWorkItemsCache,
+  useWorkItems,
+  type WorkScope
+} from "./hooks/useWorkItems";
 import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
@@ -105,7 +109,8 @@ import {
   persistCommentDocument,
   persistItemDocument,
   persistItemDocuments,
-  persistOutboxOperation
+  persistOutboxOperation,
+  rebuildVaultStateFromMarkdown
 } from "./services/vaultStore";
 
 interface AppProps {
@@ -238,6 +243,7 @@ export default function App({ initialOnline }: AppProps) {
       clearItemThreadCache();
       clearNotificationDetailCache();
       clearImageProxyCache();
+      clearWorkItemsCache();
     }
     previousConnectionKey.current = key;
   }, [auth.connection.apiBaseUrl, auth.connection.token]);
@@ -272,6 +278,42 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
     };
   }, [vaultRoot]);
+
+  const rebuiltVaultRoot = useRef<string | null>(null);
+  useEffect(() => {
+    if (authGate.state !== "passed" || rebuiltVaultRoot.current === vaultRoot) {
+      return;
+    }
+    rebuiltVaultRoot.current = vaultRoot;
+    let cancelled = false;
+    const cancelIdle = scheduleIdleTask(() => {
+      const startedAt = performance.now();
+      tracePerf("vault_rebuild_start", { vaultRoot });
+      void rebuildVaultStateFromMarkdown(vaultRoot)
+        .then((state) => {
+          if (cancelled) {
+            return;
+          }
+          setDrafts(state.items);
+          setOutbox(state.outbox);
+          tracePerf("vault_rebuild_done", {
+            items: state.items.length,
+            outbox: state.outbox.length,
+            durationMs: performance.now() - startedAt
+          });
+        })
+        .catch((error) => {
+          tracePerf("vault_rebuild_error", {
+            message: error instanceof Error ? error.message : String(error),
+            durationMs: performance.now() - startedAt
+          });
+        });
+    }, 2500);
+    return () => {
+      cancelled = true;
+      cancelIdle();
+    };
+  }, [authGate.state, vaultRoot]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
@@ -566,7 +608,8 @@ export default function App({ initialOnline }: AppProps) {
       : itemStateCounts;
 
   const selectedItem =
-    filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
+    filteredItems.find((item) => item.path === selectedPath) ??
+    (repositoryFilter ? undefined : filteredItems[0]);
   const selectedItemWithBody = useMemo(() => {
     if (!selectedItem) {
       return selectedItem;

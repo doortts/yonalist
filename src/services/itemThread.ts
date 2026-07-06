@@ -69,6 +69,14 @@ function threadCacheKey(
   ].join("|");
 }
 
+export function getCachedItemThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  version = ""
+): ItemThread | null {
+  return threadCache.get(threadCacheKey(connection, target, version)) ?? null;
+}
+
 interface UserResponse {
   login?: string;
   name?: string | null;

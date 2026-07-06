@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
+import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import * as windowDrag from "./windowDrag";
 
 function installLocalStorageMock() {
@@ -34,6 +35,7 @@ function installLocalStorageMock() {
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
+    clearWorkItemsCache();
     // Existing shell tests assume the app is past the startup login gate.
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
   });

@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import type { ItemDocument } from "../domain/types";
 import { isSampleItem, sampleItemThread } from "../fixtures/sampleItems";
-import { fetchItemThread, type ItemThread } from "../services/itemThread";
+import {
+  fetchItemThread,
+  getCachedItemThread,
+  type ItemThread
+} from "../services/itemThread";
 import type { GithubConnection } from "./useGithubAuth";
 
 export interface UseItemThreadResult {
@@ -59,18 +63,36 @@ export function useItemThread(
 
     let cancelled = false;
     const controller = new AbortController();
+    const target = {
+      kind: item.frontMatter.kind,
+      owner: item.frontMatter.owner,
+      repo: item.frontMatter.repo,
+      number
+    };
+    const version = item.frontMatter.updated_at;
+    const cached = getCachedItemThread(connection, target, version);
+    if (cached) {
+      setThread(cached);
+      setLoading(false);
+      setError(null);
+      return () => {
+        cancelled = true;
+        controller.abort();
+      };
+    }
+    setThread({
+      state: item.frontMatter.state,
+      draft: false,
+      labels: [],
+      comments: []
+    });
     setLoading(true);
     setError(null);
     fetchItemThread(
       connection,
-      {
-        kind: item.frontMatter.kind,
-        owner: item.frontMatter.owner,
-        repo: item.frontMatter.repo,
-        number
-      },
+      target,
       // Reselecting an unchanged item is served from the session cache.
-      { version: item.frontMatter.updated_at, signal: controller.signal }
+      { version, signal: controller.signal }
     )
       .then((result) => {
         if (!cancelled) {
@@ -95,6 +117,11 @@ export function useItemThread(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     item?.path,
+    item?.frontMatter.kind,
+    item?.frontMatter.owner,
+    item?.frontMatter.repo,
+    item?.frontMatter.state,
+    item?.frontMatter.updated_at,
     number,
     token,
     online,

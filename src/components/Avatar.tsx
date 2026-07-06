@@ -52,37 +52,52 @@ export function Avatar({
 }: AvatarProps) {
   const connection = useContext(GithubConnectionContext);
   const vaultRoot = useContext(VaultRootContext);
-  const [src, setSrc] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [resolved, setResolved] = useState<{
+    key: string;
+    src: string;
+  } | null>(null);
+  const [failed, setFailed] = useState<{ key: string; value: boolean } | null>(
+    null
+  );
   const proxyAttempted = useRef(false);
   const requestSeq = useRef(0);
   const displayUrl =
     avatarUrl ?? inferredAvatarUrl(login, connection.webBaseUrl, size);
+  const avatarKey = [
+    connection.webBaseUrl,
+    connection.apiBaseUrl,
+    login.trim().toLowerCase(),
+    displayUrl ?? ""
+  ].join("\n");
 
   useEffect(() => {
     const seq = ++requestSeq.current;
     proxyAttempted.current = false;
-    setFailed(false);
+    setFailed(null);
     if (!displayUrl) {
-      setSrc(null);
+      setResolved(null);
       return;
     }
     const cached = loadCachedAvatarImage(login, connection);
-    if (cached) {
-      setSrc(cached.dataUrl);
+    if (cached?.src === displayUrl) {
+      setResolved({ key: avatarKey, src: cached.dataUrl });
     } else if (!needsAuthenticatedFetch(displayUrl, connection)) {
-      setSrc(displayUrl);
+      setResolved({ key: avatarKey, src: displayUrl });
     } else {
-      setSrc(null);
+      setResolved(null);
     }
 
     proxyAttempted.current = needsAuthenticatedFetch(displayUrl, connection);
     void loadCachedAvatarImageAsync(login, connection, vaultRoot).then(
       (asyncCached) => {
-        if (requestSeq.current !== seq || !asyncCached) {
+        if (
+          requestSeq.current !== seq ||
+          !asyncCached ||
+          asyncCached.src !== displayUrl
+        ) {
           return;
         }
-        setSrc(asyncCached.dataUrl);
+        setResolved({ key: avatarKey, src: asyncCached.dataUrl });
       }
     );
     void resolveAvatarImage(login, displayUrl, connection, vaultRoot).then((resolved) => {
@@ -90,14 +105,24 @@ export function Avatar({
         return;
       }
       if (resolved) {
-        setSrc(resolved);
+        setResolved({ key: avatarKey, src: resolved });
       } else if (!cached && needsAuthenticatedFetch(displayUrl, connection)) {
-        setFailed(true);
+        setFailed({ key: avatarKey, value: true });
       }
     });
-  }, [displayUrl, login, connection.webBaseUrl, connection.token, vaultRoot]);
+  }, [
+    avatarKey,
+    displayUrl,
+    login,
+    connection.apiBaseUrl,
+    connection.webBaseUrl,
+    connection.token,
+    vaultRoot
+  ]);
 
   const style = { width: size, height: size };
+  const visibleSrc = resolved?.key === avatarKey ? resolved.src : null;
+  const visibleFailed = failed?.key === avatarKey ? failed.value : false;
 
   function handleError() {
     if (
@@ -105,32 +130,32 @@ export function Avatar({
       proxyAttempted.current ||
       !needsAuthenticatedFetch(displayUrl, connection)
     ) {
-      setFailed(true);
+      setFailed({ key: avatarKey, value: true });
       return;
     }
 
     proxyAttempted.current = true;
     const seq = ++requestSeq.current;
-    setFailed(false);
-    setSrc(null);
+    setFailed(null);
+    setResolved(null);
     void resolveAvatarImage(login, displayUrl, connection, vaultRoot).then((resolved) => {
       if (requestSeq.current !== seq) {
         return;
       }
       if (resolved) {
-        setSrc(resolved);
+        setResolved({ key: avatarKey, src: resolved });
       } else {
-        setFailed(true);
+        setFailed({ key: avatarKey, value: true });
       }
     });
   }
 
-  if (src && !failed) {
+  if (visibleSrc && !visibleFailed) {
     return (
       <img
         className="avatar avatar-image"
         style={style}
-        src={src}
+        src={visibleSrc}
         alt={login}
         onError={handleError}
       />

@@ -12,6 +12,10 @@ import { createGitHubTransport, encodePathSegment } from "./githubTransport";
 const VAULT_ROOT = "/vault";
 const PAGE_SIZE = 50;
 
+interface WorkItemsFetchOptions {
+  signal?: AbortSignal;
+}
+
 export interface RepositorySummary {
   owner: string;
   name: string;
@@ -186,10 +190,14 @@ function ownerRepoFromRepositoryUrl(repositoryUrl: string | undefined): {
 
 async function searchIssues(
   connection: GithubConnection,
-  query: string
+  query: string,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const transport = createGitHubTransport(connection);
+  const transport = createGitHubTransport({
+    ...connection,
+    signal: options.signal
+  });
   const params = new URLSearchParams({
     q: query,
     sort: "updated",
@@ -226,10 +234,14 @@ async function searchIssues(
 async function listRepoIssuesAndPulls(
   connection: GithubConnection,
   owner: string,
-  repo: string
+  repo: string,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const transport = createGitHubTransport(connection);
+  const transport = createGitHubTransport({
+    ...connection,
+    signal: options.signal
+  });
   const params = new URLSearchParams({
     state: "all",
     sort: "updated",
@@ -305,10 +317,14 @@ query ($owner: String!, $repo: String!, $first: Int!) {
 
 async function searchDiscussions(
   connection: GithubConnection,
-  query: string
+  query: string,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const data = await createGitHubTransport(connection).graphql<{
+  const data = await createGitHubTransport({
+    ...connection,
+    signal: options.signal
+  }).graphql<{
     search: { nodes: DiscussionSearchNode[] };
   }>(DISCUSSION_SEARCH_QUERY, { q: query, first: PAGE_SIZE });
 
@@ -339,10 +355,14 @@ async function searchDiscussions(
 async function listRepoDiscussions(
   connection: GithubConnection,
   owner: string,
-  repo: string
+  repo: string,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
-  const data = await createGitHubTransport(connection).graphql<{
+  const data = await createGitHubTransport({
+    ...connection,
+    signal: options.signal
+  }).graphql<{
     repository?: { discussions?: { nodes?: DiscussionSearchNode[] } } | null;
   }>(REPO_DISCUSSIONS_QUERY, { owner, repo, first: PAGE_SIZE });
 
@@ -376,12 +396,13 @@ function sortByUpdatedDesc(items: ItemDocument[]): ItemDocument[] {
 
 /** Issues + PRs + discussions the signed-in user is involved in. */
 export async function fetchMyWorkItems(
-  connection: GithubConnection
+  connection: GithubConnection,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const [issuePulls, discussions] = await Promise.all([
-    searchIssues(connection, "involves:@me"),
+    searchIssues(connection, "involves:@me", options),
     // Discussion search needs GraphQL; older GHE instances may lack it.
-    searchDiscussions(connection, "involves:@me").catch(() => [])
+    searchDiscussions(connection, "involves:@me", options).catch(() => [])
   ]);
   return sortByUpdatedDesc([...issuePulls, ...discussions]);
 }
@@ -390,11 +411,12 @@ export async function fetchMyWorkItems(
 export async function fetchRepoWorkItems(
   connection: GithubConnection,
   owner: string,
-  repo: string
+  repo: string,
+  options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const [issuePulls, discussions] = await Promise.all([
-    listRepoIssuesAndPulls(connection, owner, repo),
-    listRepoDiscussions(connection, owner, repo).catch(() => [])
+    listRepoIssuesAndPulls(connection, owner, repo, options),
+    listRepoDiscussions(connection, owner, repo, options).catch(() => [])
   ]);
   return sortByUpdatedDesc([...issuePulls, ...discussions]);
 }

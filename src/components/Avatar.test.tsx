@@ -97,6 +97,83 @@ describe("Avatar", () => {
     );
   });
 
+  it("does not show a cached avatar when it belongs to a different avatar URL", async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const fetchMock = vi.fn(async () =>
+      new Response(bytes, {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    persistCachedAvatarImage(
+      "hyeonseo-kim",
+      connection,
+      "https://oss.navercorp.com/avatars/u/old.png",
+      {
+        dataUrl: "data:image/png;base64,old",
+        checkedAt: new Date("2026-07-01T00:00:00Z")
+      }
+    );
+
+    renderWithConnection(
+      <Avatar
+        login="hyeonseo-kim"
+        avatarUrl="https://oss.navercorp.com/avatars/u/new.png"
+      />
+    );
+
+    expect(screen.queryByRole("img", { name: "hyeonseo-kim" })).toBeNull();
+    await waitFor(() => {
+      expect(screen.getByRole("img", { name: "hyeonseo-kim" })).toHaveAttribute(
+        "src",
+        expect.not.stringContaining("old")
+      );
+    });
+  });
+
+  it("does not keep the previous user's image while a new avatar resolves", async () => {
+    const firstBytes = new Uint8Array([137, 80, 78, 71, 1]);
+    const secondBytes = new Uint8Array([137, 80, 78, 71, 2]);
+    const pendingSecond = new Promise<Response>(() => {});
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/old.png")) {
+        return new Response(firstBytes, {
+          status: 200,
+          headers: { "content-type": "image/png" }
+        });
+      }
+      if (String(url).includes("/new.png")) {
+        return pendingSecond;
+      }
+      return new Response(secondBytes, {
+        status: 200,
+        headers: { "content-type": "image/png" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = renderWithConnection(
+      <Avatar login="old-user" avatarUrl="https://oss.navercorp.com/avatars/u/old.png" />
+    );
+
+    const oldImage = await screen.findByRole("img", { name: "old-user" });
+    expect(oldImage).toHaveAttribute("src", expect.stringMatching(/^data:image\/png/));
+
+    rerender(
+      <GithubConnectionContext.Provider value={connection}>
+        <Avatar
+          login="new-user"
+          avatarUrl="https://oss.navercorp.com/avatars/u/new.png"
+        />
+      </GithubConnectionContext.Provider>
+    );
+
+    expect(screen.queryByRole("img", { name: "new-user" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "old-user" })).toBeNull();
+    expect(screen.getByLabelText("new-user")).toHaveTextContent("N");
+  });
+
   it("does not retry the direct Enterprise URL after the auth proxy fails", async () => {
     const fetchMock = vi.fn(
       async () =>

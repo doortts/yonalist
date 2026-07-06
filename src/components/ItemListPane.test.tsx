@@ -25,24 +25,41 @@ const baseItem: ItemDocument = {
   }
 };
 
+function itemAt(index: number): ItemDocument {
+  return {
+    ...baseItem,
+    path: `/vault/github.com/acme/app/issues/${index}/issue.md`,
+    frontMatter: {
+      ...baseItem.frontMatter,
+      number: index,
+      title: `Issue ${index}`,
+      updated_at: `2026-07-${String((index % 28) + 1).padStart(2, "0")}T00:00:00Z`
+    }
+  };
+}
+
+function renderPane(items: ItemDocument[]) {
+  return render(
+    <ItemListPane
+      items={items}
+      selectedPath={null}
+      stateFilter="open"
+      query=""
+      loading={false}
+      error={null}
+      demoMode={false}
+      onStateFilterChange={vi.fn()}
+      onQueryChange={vi.fn()}
+      onSelect={vi.fn()}
+      onNewIssue={vi.fn()}
+      onRefresh={vi.fn()}
+    />
+  );
+}
+
 describe("ItemListPane", () => {
   it("paints labels in the list with their GitHub label colors", () => {
-    render(
-      <ItemListPane
-        items={[baseItem]}
-        selectedPath={null}
-        stateFilter="open"
-        query=""
-        loading={false}
-        error={null}
-        demoMode={false}
-        onStateFilterChange={vi.fn()}
-        onQueryChange={vi.fn()}
-        onSelect={vi.fn()}
-        onNewIssue={vi.fn()}
-        onRefresh={vi.fn()}
-      />
-    );
+    renderPane([baseItem]);
 
     expect(screen.getByText("bug")).toHaveStyle({
       backgroundColor: "#b60205",
@@ -52,22 +69,7 @@ describe("ItemListPane", () => {
   });
 
   it("marks the comment count icon for Yona-styled presentation", () => {
-    const { container } = render(
-      <ItemListPane
-        items={[baseItem]}
-        selectedPath={null}
-        stateFilter="open"
-        query=""
-        loading={false}
-        error={null}
-        demoMode={false}
-        onStateFilterChange={vi.fn()}
-        onQueryChange={vi.fn()}
-        onSelect={vi.fn()}
-        onNewIssue={vi.fn()}
-        onRefresh={vi.fn()}
-      />
-    );
+    const { container } = renderPane([baseItem]);
 
     expect(container.querySelector(".yona-comment-icon")).not.toBeNull();
   });
@@ -99,5 +101,46 @@ describe("ItemListPane", () => {
       "aria-pressed",
       "true"
     );
+  });
+
+  it("keeps the scroll position when items are re-created with the same paths", () => {
+    const items = Array.from({ length: 100 }, (_, index) => itemAt(index + 1));
+    const { container, rerender } = render(
+      <ItemListPane
+        items={items}
+        selectedPath={items[50].path}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+    const list = container.querySelector(".item-list") as HTMLDivElement;
+    list.scrollTop = 720;
+
+    rerender(
+      <ItemListPane
+        items={items.map((item) => ({ ...item }))}
+        selectedPath={items[51].path}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    expect(list.scrollTop).toBe(720);
   });
 });

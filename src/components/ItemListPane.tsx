@@ -95,6 +95,10 @@ export function ItemListPane({
   const listRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const listIdentity = useMemo(
+    () => items.map((item) => item.path).join("\n"),
+    [items]
+  );
   const counts =
     stateCounts ??
     items.reduce<ItemStateCounts>(
@@ -133,7 +137,7 @@ export function ItemListPane({
       node.scrollTop = 0;
     }
     setScrollTop(0);
-  }, [items, query, stateFilter]);
+  }, [listIdentity, query, stateFilter]);
 
   return (
     <section className="list-pane" aria-label="Items">

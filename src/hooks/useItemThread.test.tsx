@@ -2,16 +2,18 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { sampleItems } from "../fixtures/sampleItems";
 import type { ItemDocument } from "../domain/types";
+import { clearItemThreadCache } from "../services/itemThread";
 import { useItemThread } from "./useItemThread";
 
 interface ThreadHarnessProps {
   token: string;
-  item?: ItemDocument;
+  item?: ItemDocument | null;
 }
 
-function ThreadHarness({ token, item = sampleItems[0] }: ThreadHarnessProps) {
+function ThreadHarness({ token, item }: ThreadHarnessProps) {
+  const selectedItem = item === undefined ? sampleItems[0] : item;
   const state = useItemThread(
-    item,
+    selectedItem,
     {
       apiBaseUrl: "https://api.github.com",
       webBaseUrl: "https://github.com",
@@ -48,8 +50,31 @@ const cachedVaultItem: ItemDocument = {
   }
 };
 
+function item(number: number, title: string): ItemDocument {
+  return {
+    path: `/vault/github.com/acme/app/pulls/${number}/pull.md`,
+    body: title,
+    frontMatter: {
+      kind: "pull",
+      host: "github.com",
+      owner: "acme",
+      repo: "app",
+      number,
+      title,
+      state: "open",
+      author: `author-${number}`,
+      labels: [],
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: `2026-07-0${number}T00:00:00Z`,
+      local: { favorite: false },
+      sync: { status: "synced" }
+    }
+  };
+}
+
 describe("useItemThread", () => {
   afterEach(() => {
+    clearItemThreadCache();
     vi.unstubAllGlobals();
   });
 
@@ -88,5 +113,97 @@ describe("useItemThread", () => {
     expect(
       screen.queryByText("Sample reply so the conversation thread layout is visible offline.")
     ).not.toBeInTheDocument();
+  });
+
+  it("shows a cached thread immediately when reselecting an unchanged item", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              body: "cached comment",
+              user: { login: "mona" },
+              created_at: "2026-07-02T00:00:00Z"
+            }
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (target.includes("/users/mona")) {
+        return new Response(JSON.stringify({ login: "mona" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ state: "open" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<ThreadHarness token="ghp_test" />);
+
+    await screen.findByText("cached comment");
+    await waitFor(() => {
+      expect(screen.getByText("idle")).toBeInTheDocument();
+    });
+    const callsAfterFirstLoad = fetchMock.mock.calls.length;
+
+    rerender(<ThreadHarness token="ghp_test" item={undefined} />);
+    rerender(<ThreadHarness token="ghp_test" />);
+
+    expect(screen.getByText("cached comment")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirstLoad);
+  });
+
+  it("clears the previous thread while a different item is loading", async () => {
+    const firstItem = item(1, "first");
+    const secondItem = item(2, "second");
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/pulls/1")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: {
+              login: "first-author",
+              avatar_url: "https://avatars.example.com/first.png"
+            }
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (target.includes("/issues/1/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              body: "first item comment",
+              user: { login: "first-commenter" },
+              created_at: "2026-07-02T00:00:00Z"
+            }
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (target.includes("/pulls/2") || target.includes("/issues/2/comments")) {
+        return new Promise<Response>(() => {});
+      }
+      return new Response(JSON.stringify({ login: "user" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<ThreadHarness token="ghp_test" item={firstItem} />);
+
+    await screen.findByText("first item comment");
+
+    rerender(<ThreadHarness token="ghp_test" item={secondItem} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("loading")).toBeInTheDocument();
+    });
+    expect(screen.getByText("no-comments")).toBeInTheDocument();
+    expect(screen.queryByText("first item comment")).not.toBeInTheDocument();
   });
 });
