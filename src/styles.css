@@ -1020,10 +1020,13 @@ body.is-resizing-pane {
 }
 
 .item-state-count {
+  display: inline-block;
+  min-width: 3ch;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
   font-size: inherit;
   font-weight: inherit;
+  text-align: right;
 }
 
 .item-state-tab.active .item-state-count {
