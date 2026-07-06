@@ -69,6 +69,7 @@ import { useGithubServers } from "./hooks/useGithubServers";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
+import { useNavigationListAccent } from "./hooks/useNavigationListAccent";
 import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
 import { useRepositoryOpenCounts } from "./hooks/useRepositoryOpenCounts";
@@ -605,6 +606,14 @@ export default function App({ initialOnline }: AppProps) {
       stateScopedItems.filter((item) => matchesStateFilter(item, itemStateFilter)),
     [stateScopedItems, itemStateFilter]
   );
+  const activeNavigationKey = showSettings
+    ? "app:settings"
+    : showNotifications
+      ? "github:notifications"
+      : repositoryFilter
+        ? `repository:${repositoryFilter}`
+        : `inbox:${filter}`;
+  const navigationListAccentStyle = useNavigationListAccent(activeNavigationKey);
 
   const displayedItemStateCounts =
     repositoryFilter && visibleRepositoryCounts.selectedStateCounts
@@ -668,6 +677,7 @@ export default function App({ initialOnline }: AppProps) {
   );
 
   const layoutStyle = {
+    ...navigationListAccentStyle,
     "--sidebar-width": `${paneWidths.sidebar}px`,
     "--list-width": `${paneWidths.list}px`
   } as CSSProperties;

@@ -103,4 +103,15 @@ describe("useTheme", () => {
 
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
+
+  it("restores the Yonal Light theme from storage", () => {
+    installLocalStorageMock();
+    installMatchMediaMock(false);
+    window.localStorage.setItem("yonalist.themeMode.v1", "light");
+    window.localStorage.setItem("yonalist.lightTheme.v1", "yonal-light");
+
+    render(<ThemeProbe />);
+
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
+  });
 });

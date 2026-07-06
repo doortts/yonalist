@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type LightTheme = "default" | "yona";
+export type LightTheme = "default" | "yona" | "yonal-light";
 export type DarkTheme = "dark" | "yona-dark";
 export type ResolvedTheme = LightTheme | DarkTheme;
 
@@ -38,7 +38,7 @@ function loadThemeMode(): ThemeMode {
 
 function loadLightTheme(): LightTheme {
   const stored = readStoredValue(lightThemeStorageKey);
-  if (stored === "default" || stored === "yona") {
+  if (stored === "default" || stored === "yona" || stored === "yonal-light") {
     return stored;
   }
   return readStoredValue(themeModeStorageKey) === "yona" ? "yona" : "default";

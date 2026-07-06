@@ -1562,9 +1562,14 @@ describe("Yonalist app shell", () => {
     expect(document.documentElement.dataset.theme).toBe("default");
     expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("default");
 
+    await user.click(screen.getByRole("radio", { name: "Yonal Light light theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
+    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("yonal-light");
+
     await user.click(screen.getByRole("radio", { name: "System mode" }));
 
-    expect(document.documentElement.dataset.theme).toBe("default");
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
     expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
   });
 

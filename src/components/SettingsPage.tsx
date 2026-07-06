@@ -48,7 +48,8 @@ const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
 
 const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
   { value: "default", label: "Default" },
-  { value: "yona", label: "Yona" }
+  { value: "yona", label: "Yona" },
+  { value: "yonal-light", label: "Yonal Light" }
 ];
 
 const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
