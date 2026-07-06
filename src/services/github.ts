@@ -9,6 +9,7 @@ interface GitHubClientOptions {
   apiBaseUrl: string;
   webBaseUrl: string;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 interface CreateIssueInput {

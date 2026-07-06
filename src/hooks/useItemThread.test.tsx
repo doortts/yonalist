@@ -54,7 +54,16 @@ describe("useItemThread", () => {
   });
 
   it("clears a stale loading state when switching from a live request to demo comments", async () => {
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(() => {})));
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+        if (init?.signal) {
+          signals.push(init.signal);
+        }
+        return new Promise<Response>(() => {});
+      })
+    );
 
     const { rerender } = render(<ThreadHarness token="ghp_test" />);
 
@@ -65,6 +74,7 @@ describe("useItemThread", () => {
     await waitFor(() => {
       expect(screen.getByText("idle")).toBeInTheDocument();
     });
+    expect(signals.some((signal) => signal.aborted)).toBe(true);
     expect(
       screen.getByText("Sample reply so the conversation thread layout is visible offline.")
     ).toBeInTheDocument();

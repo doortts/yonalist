@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -39,6 +39,27 @@ pub struct VaultPersistResult {
     pub checked: usize,
     pub written: usize,
     pub skipped: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VaultItemIndexRecord {
+    pub relative_path: String,
+    pub host: String,
+    pub owner: String,
+    pub repo: String,
+    pub kind: String,
+    pub number: i64,
+    pub title: String,
+    pub state: String,
+    pub author: String,
+    pub labels_json: String,
+    pub label_colors_json: String,
+    pub comment_count: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub html_url: Option<String>,
+    pub favorite: bool,
+    pub sync_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -145,6 +166,16 @@ fn initialize_index_db(connection: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|error| error.to_string())?;
+    for statement in [
+        "ALTER TABLE item_index ADD COLUMN author TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE item_index ADD COLUMN labels_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE item_index ADD COLUMN label_colors_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE item_index ADD COLUMN created_at TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE item_index ADD COLUMN html_url TEXT",
+        "ALTER TABLE item_index ADD COLUMN sync_status TEXT NOT NULL DEFAULT 'synced'",
+    ] {
+        let _ = connection.execute(statement, []);
+    }
     Ok(())
 }
 
@@ -383,6 +414,149 @@ fn list_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, Str
     collect_markdown_files(root, root, &mut files)?;
     files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(files)
+}
+
+#[tauri::command]
+fn list_outbox_markdown_files(vault_path: String) -> Result<Vec<VaultMarkdownFile>, String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+
+    let expanded = expand_vault_path(&vault_path);
+    let root = expanded.as_path();
+    let outbox_dir = root.join(".yonalist").join("outbox");
+    let mut files = Vec::new();
+    collect_markdown_files(root, &outbox_dir, &mut files)?;
+    files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(files)
+}
+
+#[tauri::command]
+fn list_vault_item_index(vault_path: String) -> Result<Vec<VaultItemIndexRecord>, String> {
+    let connection = connect_index_db(&vault_path)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT
+              relative_path, host, owner, repo, kind, number, title, state,
+              author, labels_json, label_colors_json, comment_count, created_at,
+              updated_at, html_url, favorite, sync_status
+            FROM item_index
+            ORDER BY updated_at DESC
+            "#,
+        )
+        .map_err(|error| error.to_string())?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(VaultItemIndexRecord {
+                relative_path: row.get(0)?,
+                host: row.get(1)?,
+                owner: row.get(2)?,
+                repo: row.get(3)?,
+                kind: row.get(4)?,
+                number: row.get(5)?,
+                title: row.get(6)?,
+                state: row.get(7)?,
+                author: row.get(8)?,
+                labels_json: row.get(9)?,
+                label_colors_json: row.get(10)?,
+                comment_count: row.get(11)?,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+                html_url: row.get(14)?,
+                favorite: row.get::<_, i64>(15)? != 0,
+                sync_status: row.get(16)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn upsert_item_index_record(
+    transaction: &Transaction<'_>,
+    record: &VaultItemIndexRecord,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO item_index (
+              host, owner, repo, kind, number, title, state, favorite,
+              comment_count, updated_at, relative_path, author, labels_json,
+              label_colors_json, created_at, html_url, sync_status
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+            ON CONFLICT(host, owner, repo, kind, number) DO UPDATE SET
+              title = excluded.title,
+              state = excluded.state,
+              favorite = excluded.favorite,
+              comment_count = excluded.comment_count,
+              updated_at = excluded.updated_at,
+              relative_path = excluded.relative_path,
+              author = excluded.author,
+              labels_json = excluded.labels_json,
+              label_colors_json = excluded.label_colors_json,
+              created_at = excluded.created_at,
+              html_url = excluded.html_url,
+              sync_status = excluded.sync_status
+            "#,
+            params![
+                &record.host,
+                &record.owner,
+                &record.repo,
+                &record.kind,
+                record.number,
+                &record.title,
+                &record.state,
+                if record.favorite { 1 } else { 0 },
+                record.comment_count,
+                &record.updated_at,
+                &record.relative_path,
+                &record.author,
+                &record.labels_json,
+                &record.label_colors_json,
+                &record.created_at,
+                &record.html_url,
+                &record.sync_status
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn replace_vault_item_index(
+    vault_path: String,
+    records: Vec<VaultItemIndexRecord>,
+) -> Result<(), String> {
+    let mut connection = connect_index_db(&vault_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    transaction
+        .execute("DELETE FROM item_index", [])
+        .map_err(|error| error.to_string())?;
+    for record in &records {
+        upsert_item_index_record(&transaction, record)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn upsert_vault_item_index(
+    vault_path: String,
+    records: Vec<VaultItemIndexRecord>,
+) -> Result<(), String> {
+    let mut connection = connect_index_db(&vault_path)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    for record in &records {
+        upsert_item_index_record(&transaction, record)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1284,6 +1458,10 @@ pub fn run() {
             delete_text_file,
             move_text_file,
             list_markdown_files,
+            list_outbox_markdown_files,
+            list_vault_item_index,
+            replace_vault_item_index,
+            upsert_vault_item_index,
             get_vault_document_hash,
             upsert_vault_document_hash,
             replace_vault_document_hashes,
@@ -1405,6 +1583,37 @@ mod tests {
         assert_eq!(
             get_vault_document_hash(vault_path, changed_path.to_string()).expect("read hash"),
             Some(hash_text(changed_contents))
+        );
+    }
+
+    #[test]
+    fn vault_item_index_round_trips_metadata_without_body() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let record = VaultItemIndexRecord {
+            relative_path: "github.com/acme/app/issues/42/issue.md".to_string(),
+            host: "github.com".to_string(),
+            owner: "acme".to_string(),
+            repo: "app".to_string(),
+            kind: "issue".to_string(),
+            number: 42,
+            title: "Indexed issue".to_string(),
+            state: "open".to_string(),
+            author: "mona".to_string(),
+            labels_json: r#"["bug"]"#.to_string(),
+            label_colors_json: r#"{"bug":"d73a4a"}"#.to_string(),
+            comment_count: Some(2),
+            created_at: "2026-07-03T00:00:00Z".to_string(),
+            updated_at: "2026-07-04T00:00:00Z".to_string(),
+            html_url: Some("https://github.com/acme/app/issues/42".to_string()),
+            favorite: true,
+            sync_status: "synced".to_string(),
+        };
+
+        replace_vault_item_index(vault_path.clone(), vec![record.clone()]).expect("replace index");
+        assert_eq!(
+            list_vault_item_index(vault_path).expect("list index"),
+            vec![record]
         );
     }
 

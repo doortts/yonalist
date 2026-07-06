@@ -7,12 +7,16 @@ import {
   RefreshCw,
   Search
 } from "lucide-react";
-import type { CSSProperties } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
 
 export type ItemStateFilter = "open" | "closed";
+
+const VIRTUALIZE_AT = 80;
+const ITEM_ROW_HEIGHT = 122;
+const ITEM_OVERSCAN = 6;
 
 interface ItemStateCounts {
   open: number;
@@ -88,6 +92,9 @@ export function ItemListPane({
   onNewIssue,
   onRefresh
 }: ItemListPaneProps) {
+  const listRef = useRef<HTMLDivElement>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
   const counts =
     stateCounts ??
     items.reduce<ItemStateCounts>(
@@ -104,6 +111,29 @@ export function ItemListPane({
       },
       { open: 0, closed: 0 }
     );
+
+  useEffect(() => {
+    updateViewportHeight();
+    const node = listRef.current;
+    if (!node) {
+      return;
+    }
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", updateViewportHeight);
+      return () => window.removeEventListener("resize", updateViewportHeight);
+    }
+    const observer = new ResizeObserver(updateViewportHeight);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const node = listRef.current;
+    if (node) {
+      node.scrollTop = 0;
+    }
+    setScrollTop(0);
+  }, [items, query, stateFilter]);
 
   return (
     <section className="list-pane" aria-label="Items">
@@ -161,18 +191,88 @@ export function ItemListPane({
       )}
       {error && <p className="list-error">{error}</p>}
 
-      <div className="item-list">
+      <div
+        className={items.length > VIRTUALIZE_AT ? "item-list virtualized" : "item-list"}
+        ref={listRef}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+      >
         {items.length === 0 && !loading && (
           <p className="empty-copy list-empty">No items match this view.</p>
         )}
         {items.length === 0 && loading && (
           <p className="empty-copy list-empty">Loading items...</p>
         )}
-        {items.map((item) => (
+        <ItemRows
+          items={items}
+          selectedPath={selectedPath}
+          scrollTop={scrollTop}
+          viewportHeight={viewportHeight}
+          onSelect={onSelect}
+        />
+      </div>
+    </section>
+  );
+
+  function updateViewportHeight() {
+    setViewportHeight(listRef.current?.clientHeight ?? 0);
+  }
+}
+
+interface ItemRowsProps {
+  items: ItemDocument[];
+  selectedPath: string | null;
+  scrollTop: number;
+  viewportHeight: number;
+  onSelect: (path: string) => void;
+}
+
+function ItemRows({
+  items,
+  selectedPath,
+  scrollTop,
+  viewportHeight,
+  onSelect
+}: ItemRowsProps) {
+  const shouldVirtualize = items.length > VIRTUALIZE_AT && viewportHeight > 0;
+  const range = useMemo(() => {
+    if (!shouldVirtualize) {
+      return { start: 0, end: items.length };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / ITEM_ROW_HEIGHT) - ITEM_OVERSCAN);
+    const end = Math.min(
+      items.length,
+      Math.ceil((scrollTop + viewportHeight) / ITEM_ROW_HEIGHT) + ITEM_OVERSCAN
+    );
+    return { start, end };
+  }, [items.length, scrollTop, shouldVirtualize, viewportHeight]);
+
+  const visibleItems = shouldVirtualize
+    ? items.slice(range.start, range.end)
+    : items;
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  const rows = visibleItems.map((item, offset) => {
+    const index = range.start + offset;
+    const virtualStyle = shouldVirtualize
+      ? ({
+          height: ITEM_ROW_HEIGHT,
+          transform: `translateY(${index * ITEM_ROW_HEIGHT}px)`
+        } as CSSProperties)
+      : undefined;
+    return (
           <button
             type="button"
-            className={item.path === selectedPath ? "item-card selected" : "item-card"}
+            className={[
+              item.path === selectedPath ? "item-card selected" : "item-card",
+              shouldVirtualize ? "virtual-row" : ""
+            ]
+              .filter(Boolean)
+              .join(" ")}
             key={item.path}
+            style={virtualStyle}
             onClick={() => onSelect(item.path)}
           >
             <span className="item-meta">
@@ -217,8 +317,19 @@ export function ItemListPane({
               )}
             </span>
           </button>
-        ))}
-      </div>
-    </section>
+    );
+  });
+
+  if (!shouldVirtualize) {
+    return <>{rows}</>;
+  }
+
+  return (
+    <div
+      className="item-list-virtual-space"
+      style={{ height: items.length * ITEM_ROW_HEIGHT }}
+    >
+      {rows}
+    </div>
   );
 }

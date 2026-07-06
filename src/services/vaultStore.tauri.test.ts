@@ -3,6 +3,7 @@ import { serializeMarkdownDocument } from "../domain/markdown";
 import type { ItemDocument } from "../domain/types";
 import {
   clearVaultDocumentHashMemoryCache,
+  loadItemDocumentBody,
   loadVaultState,
   persistItemDocument,
   persistItemDocuments
@@ -61,6 +62,9 @@ describe("vaultStore in Tauri", () => {
       if (command === "get_vault_document_hash") {
         return hashString(contents);
       }
+      if (command === "upsert_vault_item_index") {
+        return undefined;
+      }
       throw new Error(`Unexpected command: ${command}`);
     });
 
@@ -96,6 +100,9 @@ describe("vaultStore in Tauri", () => {
       if (command === "write_text_file" || command === "upsert_vault_document_hash") {
         return undefined;
       }
+      if (command === "upsert_vault_item_index") {
+        return undefined;
+      }
       throw new Error(`Unexpected command: ${command}`);
     });
 
@@ -117,6 +124,9 @@ describe("vaultStore in Tauri", () => {
   it("rebuilds SQLite document hashes after reading native vault files", async () => {
     const contents = serializeMarkdownDocument(item.frontMatter, item.body);
     invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_vault_item_index") {
+        return [];
+      }
       if (command === "list_markdown_files") {
         return [
           {
@@ -126,6 +136,12 @@ describe("vaultStore in Tauri", () => {
         ];
       }
       if (command === "replace_vault_document_hashes") {
+        return undefined;
+      }
+      if (command === "replace_vault_item_index") {
+        return undefined;
+      }
+      if (command === "upsert_vault_item_index") {
         return undefined;
       }
       throw new Error(`Unexpected command: ${command}`);
@@ -146,9 +162,71 @@ describe("vaultStore in Tauri", () => {
     });
   });
 
+  it("loads item metadata from the native index without scanning markdown files", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_vault_item_index") {
+        return [
+          {
+            relative_path: "github.com/acme/app/issues/42/issue.md",
+            host: "github.com",
+            owner: "acme",
+            repo: "app",
+            kind: "issue",
+            number: 42,
+            title: "Indexed issue",
+            state: "open",
+            author: "mona",
+            labels_json: JSON.stringify(["bug"]),
+            label_colors_json: JSON.stringify({ bug: "d73a4a" }),
+            comment_count: 2,
+            created_at: "2026-07-03T00:00:00Z",
+            updated_at: "2026-07-04T00:00:00Z",
+            html_url: "https://github.com/acme/app/issues/42",
+            favorite: true,
+            sync_status: "synced"
+          }
+        ];
+      }
+      if (command === "list_outbox_markdown_files") {
+        return [];
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const state = await loadVaultState(vaultRoot);
+
+    expect(state.items).toHaveLength(1);
+    expect(state.items[0].body).toBe("");
+    expect(state.items[0].frontMatter.title).toBe("Indexed issue");
+    expect(state.items[0].frontMatter.labels).toEqual(["bug"]);
+    expect(state.items[0].frontMatter.comments_count).toBe(2);
+    expect(invokeMock).not.toHaveBeenCalledWith("list_markdown_files", expect.anything());
+  });
+
+  it("loads an indexed item's markdown body only when requested", async () => {
+    const contents = serializeMarkdownDocument(item.frontMatter, "Lazy body");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "read_text_file") {
+        return contents;
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    const body = await loadItemDocumentBody(vaultRoot, { ...item, body: "" });
+
+    expect(body).toBe("Lazy body");
+    expect(invokeMock).toHaveBeenCalledWith("read_text_file", {
+      vaultPath: vaultRoot,
+      relativePath: "github.com/acme/app/issues/42/issue.md"
+    });
+  });
+
   it("uses the in-memory hash cache after reading native vault files", async () => {
     const contents = serializeMarkdownDocument(item.frontMatter, item.body);
     invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_vault_item_index") {
+        return [];
+      }
       if (command === "list_markdown_files") {
         return [
           {
@@ -160,6 +238,12 @@ describe("vaultStore in Tauri", () => {
       if (command === "replace_vault_document_hashes") {
         return undefined;
       }
+      if (command === "replace_vault_item_index") {
+        return undefined;
+      }
+      if (command === "upsert_vault_item_index") {
+        return undefined;
+      }
       throw new Error(`Unexpected command: ${command}`);
     });
 
@@ -168,7 +252,11 @@ describe("vaultStore in Tauri", () => {
 
     await persistItemDocument(vaultRoot, item);
 
-    expect(invokeMock).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("upsert_vault_item_index", {
+      vaultPath: vaultRoot,
+      records: expect.any(Array)
+    });
   });
 
   it("persists native item documents with one bulk command", async () => {
@@ -183,13 +271,16 @@ describe("vaultStore in Tauri", () => {
       if (command === "persist_vault_documents") {
         return { checked: 2, written: 1, skipped: 1 };
       }
+      if (command === "upsert_vault_item_index") {
+        return undefined;
+      }
       throw new Error(`Unexpected command: ${command}`);
     });
 
     const result = await persistItemDocuments(vaultRoot, [item, closedItem]);
 
     expect(result).toEqual({ checked: 2, written: 1, skipped: 1 });
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
     expect(invokeMock).toHaveBeenCalledWith("persist_vault_documents", {
       vaultPath: vaultRoot,
       documents: [

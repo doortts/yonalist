@@ -885,6 +885,22 @@ body.is-resizing-pane {
   overflow-y: auto;
 }
 
+.item-list.virtualized {
+  position: relative;
+}
+
+.item-list-virtual-space {
+  position: relative;
+  width: 100%;
+}
+
+.item-card.virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  min-height: auto;
+}
+
 .item-card {
   display: grid;
   gap: 4px;

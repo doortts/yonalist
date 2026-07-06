@@ -42,6 +42,7 @@ export interface FetchItemThreadOptions {
    * same version are served from the session cache; a new version refetches.
    */
   version?: string;
+  signal?: AbortSignal;
 }
 
 const threadCache = new LruCache<ItemThread>(50);
@@ -180,13 +181,15 @@ function threadFrom(
 async function userProfilesForThread(
   connection: GithubConnection,
   item: StateResponse,
-  comments: CommentResponse[] | null
+  comments: CommentResponse[] | null,
+  signal?: AbortSignal
 ): Promise<ProfileMap> {
   return fetchUserProfiles(
     {
       token: connection.token,
       apiBaseUrl: connection.apiBaseUrl,
-      webBaseUrl: connection.webBaseUrl
+      webBaseUrl: connection.webBaseUrl,
+      signal
     },
     [
       loginNeedingProfile(item.user),
@@ -216,7 +219,7 @@ export async function fetchItemThread(
     return running;
   }
 
-  const request = fetchItemThreadUncached(connection, target)
+  const request = fetchItemThreadUncached(connection, target, options.signal)
     .then((thread) => {
       if (!thread.commentsError) {
         threadCache.set(key, thread);
@@ -232,14 +235,17 @@ export async function fetchItemThread(
 
 async function fetchItemThreadUncached(
   connection: GithubConnection,
-  target: ItemThreadTarget
+  target: ItemThreadTarget,
+  signal?: AbortSignal
 ): Promise<ItemThread> {
   const client = createGitHubClient({
     token: connection.token,
     apiBaseUrl: connection.apiBaseUrl,
-    webBaseUrl: connection.webBaseUrl
+    webBaseUrl: connection.webBaseUrl,
+    signal
   });
   const { owner, repo, number } = target;
+  signal?.throwIfAborted();
 
   if (target.kind === "discussion") {
     const { discussion, comments } = (await client.getDiscussionWithComments(
@@ -247,7 +253,9 @@ async function fetchItemThreadUncached(
       repo,
       number
     )) as { discussion: StateResponse; comments: CommentResponse[] };
-    const profiles = await userProfilesForThread(connection, discussion, comments);
+    signal?.throwIfAborted();
+    const profiles = await userProfilesForThread(connection, discussion, comments, signal);
+    signal?.throwIfAborted();
     return threadFrom(
       discussion,
       comments,
@@ -263,7 +271,9 @@ async function fetchItemThreadUncached(
         .listIssueComments(owner, repo, number)
         .catch(() => null) as Promise<CommentResponse[] | null>
     ]);
-    const profiles = await userProfilesForThread(connection, pull, comments);
+    signal?.throwIfAborted();
+    const profiles = await userProfilesForThread(connection, pull, comments, signal);
+    signal?.throwIfAborted();
     return threadFrom(
       pull,
       comments,
@@ -278,6 +288,8 @@ async function fetchItemThreadUncached(
       .listIssueComments(owner, repo, number)
       .catch(() => null) as Promise<CommentResponse[] | null>
   ]);
-  const profiles = await userProfilesForThread(connection, issue, comments);
+  signal?.throwIfAborted();
+  const profiles = await userProfilesForThread(connection, issue, comments, signal);
+  signal?.throwIfAborted();
   return threadFrom(issue, comments, normalizeState(issue.state), profiles);
 }

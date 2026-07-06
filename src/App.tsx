@@ -99,6 +99,7 @@ import {
   commentDocumentContents,
   deleteVaultDocument,
   itemDocumentContents,
+  loadItemDocumentBody,
   loadVaultState,
   moveVaultDocument,
   persistCommentDocument,
@@ -202,6 +203,7 @@ export default function App({ initialOnline }: AppProps) {
   const [syncing, setSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [appSnackbar, setAppSnackbar] = useState<string | null>(null);
+  const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const [resetProgress, setResetProgress] =
@@ -525,13 +527,13 @@ export default function App({ initialOnline }: AppProps) {
         item.frontMatter.repo,
         `#${item.frontMatter.number}`,
         item.frontMatter.labels.join(" "),
-        item.body
+        item.body || loadedItemBodies[item.path] || ""
       ]
         .join(" ")
         .toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [items, filter, repositoryFilter, query]);
+  }, [items, filter, repositoryFilter, query, loadedItemBodies]);
 
   const itemStateCounts = useMemo(
     () =>
@@ -565,6 +567,47 @@ export default function App({ initialOnline }: AppProps) {
 
   const selectedItem =
     filteredItems.find((item) => item.path === selectedPath) ?? filteredItems[0];
+  const selectedItemWithBody = useMemo(() => {
+    if (!selectedItem) {
+      return selectedItem;
+    }
+    const loadedBody = loadedItemBodies[selectedItem.path];
+    if (selectedItem.body || loadedBody === undefined) {
+      return selectedItem;
+    }
+    return { ...selectedItem, body: loadedBody };
+  }, [selectedItem, loadedItemBodies]);
+
+  useEffect(() => {
+    if (
+      !selectedItem ||
+      selectedItem.body ||
+      loadedItemBodies[selectedItem.path] !== undefined
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void loadItemDocumentBody(vaultRoot, selectedItem)
+      .then((body) => {
+        if (!cancelled) {
+          setLoadedItemBodies((current) => ({
+            ...current,
+            [selectedItem.path]: body
+          }));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLoadedItemBodies((current) => ({
+            ...current,
+            [selectedItem.path]: ""
+          }));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedItem, loadedItemBodies, vaultRoot]);
 
   const detailVisible =
     authGate.state === "passed" &&
@@ -572,7 +615,7 @@ export default function App({ initialOnline }: AppProps) {
     !showNewIssue &&
     !showNotifications;
   const itemThread = useItemThread(
-    detailVisible ? selectedItem ?? null : null,
+    detailVisible ? selectedItemWithBody ?? null : null,
     auth.connection,
     online
   );
@@ -1287,7 +1330,7 @@ export default function App({ initialOnline }: AppProps) {
           />
         ) : (
           <ItemDetail
-            item={selectedItem}
+            item={selectedItemWithBody}
             thread={itemThread}
             online={online}
             commentDraft={commentDraft}

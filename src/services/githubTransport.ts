@@ -3,6 +3,7 @@ export interface GitHubTransportOptions {
   apiBaseUrl: string;
   webBaseUrl: string;
   fetch?: typeof fetch;
+  signal?: AbortSignal;
 }
 
 export class GitHubRequestError extends Error {
@@ -67,6 +68,7 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
 
     const response = await fetcher(`${apiBaseUrl}${path}`, {
       ...init,
+      signal: init.signal ?? options.signal,
       headers
     });
 
@@ -94,6 +96,7 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   ): Promise<TResponse> {
     const response = await fetcher(`${webBaseUrl}${path}`, {
       method: "POST",
+      signal: options.signal,
       headers: {
         Accept: "application/json",
         "Content-Type": "application/x-www-form-urlencoded"
@@ -117,6 +120,7 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   ): Promise<TResponse> {
     const response = await fetcher(graphqlUrl(apiBaseUrl), {
       method: "POST",
+      signal: options.signal,
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: options.token ? `Bearer ${options.token}` : "",

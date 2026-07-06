@@ -58,6 +58,7 @@ export function useItemThread(
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
     fetchItemThread(
@@ -69,7 +70,7 @@ export function useItemThread(
         number
       },
       // Reselecting an unchanged item is served from the session cache.
-      { version: item.frontMatter.updated_at }
+      { version: item.frontMatter.updated_at, signal: controller.signal }
     )
       .then((result) => {
         if (!cancelled) {
@@ -89,6 +90,7 @@ export function useItemThread(
       });
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

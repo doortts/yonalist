@@ -7,10 +7,10 @@ import { MarkdownBody } from "./MarkdownBody";
 const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text";
 
 describe("MarkdownBody", () => {
-  it("renders markdown images inside the body", () => {
+  it("renders markdown images inside the body", async () => {
     const { container } = render(<MarkdownBody body={imageMarkdown} />);
 
-    const image = screen.getByRole("img", { name: "roadmap" });
+    const image = await screen.findByRole("img", { name: "roadmap" });
     expect(image).toHaveAttribute("src", "https://example.com/roadmap.png");
     expect(container.querySelector(".markdown-body-github")).not.toBeNull();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -22,11 +22,28 @@ describe("MarkdownBody", () => {
     expect(container.querySelector(".markdown-body-yona")).not.toBeNull();
   });
 
+  it("keeps rendered markdown stable when only surrounding props change", async () => {
+    const { container, rerender } = render(
+      <MarkdownBody body="**Memoized** body" variant="github" />
+    );
+    await waitFor(() =>
+      expect(container.querySelector(".markdown-body")?.innerHTML).toContain(
+        "<strong>Memoized</strong>"
+      )
+    );
+    const body = container.querySelector(".markdown-body");
+
+    rerender(<MarkdownBody body="**Memoized** body" variant="yona" />);
+
+    expect(container.querySelector(".markdown-body-yona")).not.toBeNull();
+    expect(container.querySelector(".markdown-body")?.innerHTML).toBe(body?.innerHTML);
+  });
+
   it("opens the original image in a lightbox when clicked", async () => {
     const user = userEvent.setup();
     render(<MarkdownBody body={imageMarkdown} />);
 
-    await user.click(screen.getByRole("img", { name: "roadmap" }));
+    await user.click(await screen.findByRole("img", { name: "roadmap" }));
 
     const viewer = screen.getByRole("dialog", { name: "Image viewer" });
     expect(viewer).toBeInTheDocument();
@@ -63,7 +80,7 @@ describe("MarkdownBody", () => {
         </GithubConnectionContext.Provider>
       );
 
-      const image = screen.getByRole("img", { name: "attachment" });
+      const image = await screen.findByRole("img", { name: "attachment" });
       await waitFor(() =>
         expect(image.getAttribute("src")).toMatch(/^data:image\/png;base64,/)
       );
@@ -89,7 +106,7 @@ describe("MarkdownBody", () => {
         </GithubConnectionContext.Provider>
       );
 
-      expect(screen.getByRole("img", { name: "ext" })).toHaveAttribute(
+      expect(await screen.findByRole("img", { name: "ext" })).toHaveAttribute(
         "src",
         "https://example.com/pic.png"
       );
@@ -107,16 +124,16 @@ describe("MarkdownBody", () => {
     const user = userEvent.setup();
     render(<MarkdownBody body={imageMarkdown} />);
 
-    await user.click(screen.getByRole("img", { name: "roadmap" }));
+    await user.click(await screen.findByRole("img", { name: "roadmap" }));
     await user.click(screen.getByRole("button", { name: "Close image viewer" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("img", { name: "roadmap" }));
+    await user.click(await screen.findByRole("img", { name: "roadmap" }));
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
 
     // Clicking the enlarged image itself keeps the viewer open.
-    await user.click(screen.getByRole("img", { name: "roadmap" }));
+    await user.click(await screen.findByRole("img", { name: "roadmap" }));
     await user.click(screen.getByRole("img", { name: "Original size" }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });

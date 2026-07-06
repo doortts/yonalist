@@ -357,7 +357,7 @@ describe("Yonalist app shell", () => {
     expect(within(detail).getByText("Open")).toHaveClass("state-open");
     const comments = within(detail).getByLabelText("Comments");
     expect(
-      within(comments).getByText(/Sample reply so the conversation thread/)
+      await within(comments).findByText(/Sample reply so the conversation thread/)
     ).toBeInTheDocument();
     expect(within(detail).getByText(/댓글 2/)).toBeInTheDocument();
   });

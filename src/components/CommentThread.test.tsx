@@ -21,11 +21,11 @@ const comments: ConversationComment[] = [
 ];
 
 describe("CommentThread", () => {
-  it("renders each comment with its author-association badge", () => {
+  it("renders each comment with its author-association badge", async () => {
     render(<CommentThread comments={comments} subjectAuthor="doortts" />);
 
     const thread = screen.getByLabelText("Comments");
-    expect(within(thread).getByText("first reply")).toBeInTheDocument();
+    expect(await within(thread).findByText("first reply")).toBeInTheDocument();
     expect(within(thread).getByText("Member")).toBeInTheDocument();
     // doortts is the subject author → "Author" badge overrides Owner.
     expect(within(thread).getByText("Author")).toBeInTheDocument();
@@ -57,7 +57,7 @@ describe("CommentThread", () => {
 });
 
 describe("OpeningPost", () => {
-  it("renders the post full width without an initial-letter avatar", () => {
+  it("renders the post full width without an initial-letter avatar", async () => {
     const { container } = render(
       <OpeningPost
         author={{ login: "octocat" }}
@@ -68,7 +68,7 @@ describe("OpeningPost", () => {
 
     expect(screen.getByText("octocat")).toBeInTheDocument();
     expect(screen.getByText("Issue · opened 1d ago")).toBeInTheDocument();
-    expect(screen.getByText("hello")).toBeInTheDocument();
+    expect(await screen.findByText("hello")).toBeInTheDocument();
     // No initial-letter avatar fallback is rendered.
     expect(container.querySelector(".avatar")).toBeNull();
   });

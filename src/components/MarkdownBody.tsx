@@ -1,9 +1,15 @@
 import { X } from "lucide-react";
-import { type MouseEvent, useContext, useEffect, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import { MarkdownStyleContext } from "../MarkdownStyleContext";
 import type { MarkdownStyle } from "../appSettings";
-import { renderMarkdown } from "../markdownRender";
 import {
   needsAuthenticatedFetch,
   resolveAuthenticatedImage
@@ -12,6 +18,17 @@ import {
 interface MarkdownBodyProps {
   body: string;
   variant?: MarkdownStyle;
+}
+
+type RenderedMarkdown = { __html: string };
+
+const emptyMarkdown: RenderedMarkdown = { __html: "" };
+const renderedMarkdownCache = new Map<string, RenderedMarkdown>();
+let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
+
+function loadMarkdownRenderer() {
+  rendererPromise ??= import("../markdownRender");
+  return rendererPromise;
 }
 
 /**
@@ -26,6 +43,34 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
   const styleVariant = variant ?? defaultVariant;
   const containerRef = useRef<HTMLDivElement>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const cachedMarkdown = useMemo(
+    () => renderedMarkdownCache.get(body) ?? emptyMarkdown,
+    [body]
+  );
+  const [renderedMarkdown, setRenderedMarkdown] =
+    useState<RenderedMarkdown>(cachedMarkdown);
+
+  useEffect(() => {
+    const cached = renderedMarkdownCache.get(body);
+    if (cached) {
+      setRenderedMarkdown(cached);
+      return;
+    }
+
+    let cancelled = false;
+    setRenderedMarkdown(emptyMarkdown);
+    void loadMarkdownRenderer().then(({ renderMarkdown }) => {
+      if (cancelled) {
+        return;
+      }
+      const rendered = renderMarkdown(body);
+      renderedMarkdownCache.set(body, rendered);
+      setRenderedMarkdown(rendered);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [body]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -47,7 +92,7 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
     return () => {
       cancelled = true;
     };
-  }, [body, connection]);
+  }, [renderedMarkdown, connection]);
 
   useEffect(() => {
     if (!lightboxSrc) {
@@ -75,7 +120,7 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
         ref={containerRef}
         className={`markdown-body markdown-body-${styleVariant}`}
         onClick={handleClick}
-        dangerouslySetInnerHTML={renderMarkdown(body)}
+        dangerouslySetInnerHTML={renderedMarkdown}
       />
       {lightboxSrc && (
         <div
