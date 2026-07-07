@@ -9,6 +9,7 @@ interface OutboxModalProps {
   /** Operations whose remote target changed after they were queued. */
   remoteChangedIds?: Set<string>;
   onToggleSelection: (id: string) => void;
+  onOpenTarget?: (operation: OutboxOperationDocument) => void;
   onSync: () => void;
   onClose: () => void;
 }
@@ -20,6 +21,7 @@ export function OutboxModal({
   syncing,
   remoteChangedIds,
   onToggleSelection,
+  onOpenTarget,
   onSync,
   onClose
 }: OutboxModalProps) {
@@ -56,7 +58,13 @@ export function OutboxModal({
                     checked={selectedIds.has(operation.frontMatter.id)}
                     onChange={() => onToggleSelection(operation.frontMatter.id)}
                   />
-                  <div>
+                  <button
+                    className="outbox-target-button"
+                    type="button"
+                    aria-label={`Open target for ${operation.frontMatter.operation}`}
+                    onClick={() => onOpenTarget?.(operation)}
+                    disabled={!onOpenTarget}
+                  >
                     <strong>{operation.frontMatter.operation.replace("_", " ")}</strong>
                     <p>{operation.body || operation.frontMatter.local_file_path}</p>
                     {operation.frontMatter.status === "failed" && (
@@ -76,7 +84,7 @@ export function OutboxModal({
                         Target changed remotely since this was queued.
                       </p>
                     )}
-                  </div>
+                  </button>
                 </article>
               ))}
             </div>

@@ -20,6 +20,7 @@ export interface UseWorkItemsResult {
   loading: boolean;
   error: string | null;
   demoMode: boolean;
+  lastFetchDurationMs: number | null;
   refresh: () => void;
   toggleFavorite: (path: string) => void;
 }
@@ -112,6 +113,7 @@ export function useWorkItems(
   const [fetched, setFetched] = useState<ItemDocument[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastFetchDurationMs, setLastFetchDurationMs] = useState<number | null>(null);
   const [favorites, setFavorites] = useState<FavoritesMap>(() => loadFavorites());
   const requestSeq = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -152,6 +154,7 @@ export function useWorkItems(
     request
       .then((items) => {
         if (requestSeq.current === seq && !controller.signal.aborted) {
+          const durationMs = performance.now() - startedAt;
           workItemsCache.set(cacheKey, {
             items,
             fetchedAt: Date.now(),
@@ -159,10 +162,11 @@ export function useWorkItems(
           });
           setFetched(items);
           setError(null);
+          setLastFetchDurationMs(durationMs);
           tracePerf("work_items_remote_done", {
             scope: scopeKey,
             count: items.length,
-            durationMs: performance.now() - startedAt
+            durationMs
           });
         }
       })
@@ -171,11 +175,13 @@ export function useWorkItems(
           return;
         }
         if (requestSeq.current === seq) {
+          const durationMs = performance.now() - startedAt;
           setError(cause instanceof Error ? cause.message : String(cause));
+          setLastFetchDurationMs(durationMs);
           tracePerf("work_items_remote_error", {
             scope: scopeKey,
             message: cause instanceof Error ? cause.message : String(cause),
-            durationMs: performance.now() - startedAt
+            durationMs
           });
         }
       })
@@ -241,6 +247,7 @@ export function useWorkItems(
     loading: enabled ? loading : false,
     error: enabled ? error : null,
     demoMode,
+    lastFetchDurationMs: enabled ? lastFetchDurationMs : null,
     refresh: () => load(true),
     toggleFavorite
   };

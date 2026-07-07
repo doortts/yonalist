@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { itemThreadVersion } from "../domain/itemThreadVersion";
 import type { ItemDocument } from "../domain/types";
 import { isSampleItem, sampleItemThread } from "../fixtures/sampleItems";
 import {
@@ -18,7 +19,8 @@ export interface UseItemThreadResult {
 export function useItemThread(
   item: ItemDocument | null,
   connection: GithubConnection,
-  online: boolean
+  online: boolean,
+  refreshKey = 0
 ): UseItemThreadResult {
   const [thread, setThread] = useState<ItemThread | null>(null);
   const [loading, setLoading] = useState(false);
@@ -69,7 +71,7 @@ export function useItemThread(
       repo: item.frontMatter.repo,
       number
     };
-    const version = item.frontMatter.updated_at;
+    const version = itemThreadVersion(item, refreshKey);
     const cached = getCachedItemThread(connection, target, version);
     if (cached) {
       setThread(cached);
@@ -125,6 +127,7 @@ export function useItemThread(
     number,
     token,
     online,
+    refreshKey,
     connection.apiBaseUrl,
     connection.webBaseUrl
   ]);

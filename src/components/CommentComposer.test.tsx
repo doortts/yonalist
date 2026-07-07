@@ -16,11 +16,41 @@ describe("CommentComposer", () => {
       />
     );
 
-    await user.click(screen.getByRole("tab", { name: /preview/i }));
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Preview" }));
 
     const preview = screen.getByLabelText("Comment preview");
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(preview.querySelector("strong")).toHaveTextContent("hello");
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
+  });
+
+  it("shows the preview toggle only after the user starts typing", async () => {
+    const user = userEvent.setup();
+    function WrappedComposer() {
+      const [draft, setDraft] = useState("");
+      return (
+        <CommentComposer
+          draft={draft}
+          online
+          onDraftChange={setDraft}
+          onSubmit={vi.fn()}
+        />
+      );
+    }
+    render(<WrappedComposer />);
+
+    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Write a comment"), "hello");
+
+    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
   });
 
   it("grows the textarea to fit wrapped content", async () => {

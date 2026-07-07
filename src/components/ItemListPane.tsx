@@ -35,6 +35,7 @@ interface ItemListPaneProps {
   onStateFilterChange: (filter: ItemStateFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
+  onVisibleItemsChange?: (items: ItemDocument[]) => void;
   onNewIssue: () => void;
   onRefresh: () => void;
 }
@@ -77,6 +78,12 @@ function labelColorStyle(
   };
 }
 
+function itemListSignature(items: ItemDocument[]): string {
+  return items
+    .map((item) => `${item.path}|${item.frontMatter.updated_at}`)
+    .join("\n");
+}
+
 export function ItemListPane({
   items,
   selectedPath,
@@ -89,6 +96,7 @@ export function ItemListPane({
   onStateFilterChange,
   onQueryChange,
   onSelect,
+  onVisibleItemsChange,
   onNewIssue,
   onRefresh
 }: ItemListPaneProps) {
@@ -215,6 +223,7 @@ export function ItemListPane({
           scrollTop={scrollTop}
           viewportHeight={viewportHeight}
           onSelect={onSelect}
+          onVisibleItemsChange={onVisibleItemsChange}
         />
       </div>
     </section>
@@ -231,6 +240,7 @@ interface ItemRowsProps {
   scrollTop: number;
   viewportHeight: number;
   onSelect: (path: string) => void;
+  onVisibleItemsChange?: (items: ItemDocument[]) => void;
 }
 
 function ItemRows({
@@ -238,9 +248,25 @@ function ItemRows({
   selectedPath,
   scrollTop,
   viewportHeight,
-  onSelect
+  onSelect,
+  onVisibleItemsChange
 }: ItemRowsProps) {
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const [measuredViewportItems, setMeasuredViewportItems] = useState<
+    ItemDocument[] | null
+  >(null);
   const shouldVirtualize = items.length > VIRTUALIZE_AT && viewportHeight > 0;
+  const viewportRange = useMemo(() => {
+    if (viewportHeight <= 0) {
+      return { start: 0, end: items.length };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / ITEM_ROW_HEIGHT));
+    const end = Math.min(
+      items.length,
+      Math.max(start + 1, Math.ceil((scrollTop + viewportHeight) / ITEM_ROW_HEIGHT))
+    );
+    return { start, end };
+  }, [items.length, scrollTop, viewportHeight]);
   const range = useMemo(() => {
     if (!shouldVirtualize) {
       return { start: 0, end: items.length };
@@ -256,6 +282,50 @@ function ItemRows({
   const visibleItems = shouldVirtualize
     ? items.slice(range.start, range.end)
     : items;
+  const estimatedViewportItems = useMemo(
+    () => items.slice(viewportRange.start, viewportRange.end),
+    [items, viewportRange.end, viewportRange.start]
+  );
+  const estimatedViewportSignature = itemListSignature(estimatedViewportItems);
+  const viewportItems = shouldVirtualize
+    ? estimatedViewportItems
+    : (measuredViewportItems ?? estimatedViewportItems);
+  const viewportSignature = itemListSignature(viewportItems);
+
+  useEffect(() => {
+    if (shouldVirtualize || viewportHeight <= 0) {
+      setMeasuredViewportItems((current) => (current === null ? current : null));
+      return;
+    }
+
+    const viewportBottom = scrollTop + viewportHeight;
+    const next = items.filter((item) => {
+      const row = rowRefs.current.get(item.path);
+      if (!row || row.offsetHeight <= 0) {
+        return false;
+      }
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      return bottom > scrollTop && top < viewportBottom;
+    });
+    const visibleByDom = next.length > 0 ? next : estimatedViewportItems;
+    const nextSignature = itemListSignature(visibleByDom);
+    setMeasuredViewportItems((current) =>
+      current && itemListSignature(current) === nextSignature ? current : visibleByDom
+    );
+  }, [
+    estimatedViewportItems,
+    estimatedViewportSignature,
+    items,
+    scrollTop,
+    shouldVirtualize,
+    viewportHeight
+  ]);
+
+  useEffect(() => {
+    onVisibleItemsChange?.(viewportItems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onVisibleItemsChange, viewportSignature]);
 
   if (items.length === 0) {
     return null;
@@ -279,6 +349,13 @@ function ItemRows({
               .filter(Boolean)
               .join(" ")}
             key={item.path}
+            ref={(node) => {
+              if (node) {
+                rowRefs.current.set(item.path, node);
+              } else {
+                rowRefs.current.delete(item.path);
+              }
+            }}
             style={virtualStyle}
             onClick={() => onSelect(item.path)}
           >

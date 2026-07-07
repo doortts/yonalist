@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600" role="img" aria-labelledby="title desc">
+  <title id="title">Yonalist Overall Architecture</title>
+  <desc id="desc">Yonalist architecture map showing React UI, hooks, services, domain model, Tauri commands, local vault, GitHub APIs, browser storage, keychain, and notification plugin.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 46px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 800; fill: #132033; }
+      .subtitle { font: 24px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #46566e; }
+      .layer { fill: #ffffff; stroke: #2f3b52; stroke-width: 3; rx: 18; }
+      .ui { fill: #eef2ff; stroke: #5168aa; stroke-width: 2.6; rx: 13; }
+      .hook { fill: #eefaf2; stroke: #3d8655; stroke-width: 2.6; rx: 13; }
+      .service { fill: #fff4d6; stroke: #b7791f; stroke-width: 2.6; rx: 13; }
+      .domain { fill: #f2ecff; stroke: #7252ad; stroke-width: 2.6; rx: 13; }
+      .native { fill: #fff0f0; stroke: #b75656; stroke-width: 2.6; rx: 13; }
+      .external { fill: #edf7f8; stroke: #4c7d86; stroke-width: 2.6; rx: 13; }
+      .h1 { font: 32px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 760; fill: #172033; }
+      .h2 { font: 25px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 730; fill: #172033; }
+      .text { font: 21px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #314158; }
+      .muted { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .tiny { font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .edge { stroke: #40516e; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .edge2 { stroke: #7d8ca5; stroke-width: 2.5; fill: none; stroke-dasharray: 9 8; marker-end: url(#arrowSoft); }
+      .edgeHot { stroke: #b7791f; stroke-width: 3.4; fill: none; marker-end: url(#arrowHot); }
+      .edgeNative { stroke: #b75656; stroke-width: 3.2; fill: none; marker-end: url(#arrowRed); }
+      .labelBg { fill: #152033; rx: 8; }
+      .label { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #ffffff; font-weight: 650; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#40516e"/></marker>
+    <marker id="arrowSoft" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#7d8ca5"/></marker>
+    <marker id="arrowHot" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b7791f"/></marker>
+    <marker id="arrowRed" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b75656"/></marker>
+  </defs>
+
+  <rect class="bg" width="2400" height="1600"/>
+  <text class="title" x="82" y="88">Yonalist 전체 아키텍처</text>
+  <text class="subtitle" x="84" y="130">Offline-first GitHub inbox: 원격 GitHub 데이터를 로컬 Markdown vault와 병합하고, 새 작업은 outbox로 큐잉한 뒤 온라인에서 동기화한다.</text>
+
+  <rect class="layer" x="70" y="190" width="2260" height="235"/>
+  <text class="h1" x="105" y="240">UI Shell and Screens</text>
+  <rect class="ui" x="105" y="275" width="330" height="95"/>
+  <text class="h2" x="132" y="315">App.tsx</text>
+  <text class="muted" x="132" y="346">state orchestration, routing flags</text>
+  <rect class="ui" x="475" y="275" width="300" height="95"/>
+  <text class="h2" x="502" y="315">Sidebar</text>
+  <text class="muted" x="502" y="346">navigation, repo groups</text>
+  <rect class="ui" x="815" y="275" width="300" height="95"/>
+  <text class="h2" x="842" y="315">ItemListPane</text>
+  <text class="muted" x="842" y="346">search, state filters, viewport</text>
+  <rect class="ui" x="1155" y="275" width="300" height="95"/>
+  <text class="h2" x="1182" y="315">ItemDetail</text>
+  <text class="muted" x="1182" y="346">body, comments, composer</text>
+  <rect class="ui" x="1495" y="275" width="300" height="95"/>
+  <text class="h2" x="1522" y="315">Notifications</text>
+  <text class="muted" x="1522" y="346">pane and detail</text>
+  <rect class="ui" x="1835" y="275" width="300" height="95"/>
+  <text class="h2" x="1862" y="315">Settings / Outbox</text>
+  <text class="muted" x="1862" y="346">preferences, queued work</text>
+
+  <rect class="layer" x="70" y="485" width="2260" height="250"/>
+  <text class="h1" x="105" y="535">React Hooks: app state adapters</text>
+  <rect class="hook" x="105" y="570" width="335" height="95"/>
+  <text class="h2" x="132" y="610">Auth hooks</text>
+  <text class="muted" x="132" y="641">useGithubAuth, useAuthGate</text>
+  <rect class="hook" x="480" y="570" width="335" height="95"/>
+  <text class="h2" x="507" y="610">Work item hooks</text>
+  <text class="muted" x="507" y="641">useWorkItems, useItemThread</text>
+  <rect class="hook" x="855" y="570" width="335" height="95"/>
+  <text class="h2" x="882" y="610">Notification hooks</text>
+  <text class="muted" x="882" y="641">polling, detail, desktop alerts</text>
+  <rect class="hook" x="1230" y="570" width="335" height="95"/>
+  <text class="h2" x="1257" y="610">Repository hooks</text>
+  <text class="muted" x="1257" y="641">repos, visibility, counts</text>
+  <rect class="hook" x="1605" y="570" width="335" height="95"/>
+  <text class="h2" x="1632" y="610">UX hooks</text>
+  <text class="muted" x="1632" y="641">theme, panes, online, prefetch</text>
+  <rect class="hook" x="1980" y="570" width="300" height="95"/>
+  <text class="h2" x="2007" y="610">Context</text>
+  <text class="muted" x="2007" y="641">GitHub, vault, markdown style</text>
+
+  <rect class="layer" x="70" y="795" width="2260" height="260"/>
+  <text class="h1" x="105" y="845">Services: IO, cache, sync, transport</text>
+  <rect class="service" x="105" y="880" width="360" height="105"/>
+  <text class="h2" x="132" y="920">GitHub API layer</text>
+  <text class="muted" x="132" y="951">githubTransport, github, githubItems</text>
+  <rect class="service" x="515" y="880" width="360" height="105"/>
+  <text class="h2" x="542" y="920">Vault store</text>
+  <text class="muted" x="542" y="951">Markdown, hashes, Tauri fallback</text>
+  <rect class="service" x="925" y="880" width="360" height="105"/>
+  <text class="h2" x="952" y="920">Outbox sync</text>
+  <text class="muted" x="952" y="951">retry, permanent failure mapping</text>
+  <rect class="service" x="1335" y="880" width="360" height="105"/>
+  <text class="h2" x="1362" y="920">Caches</text>
+  <text class="muted" x="1362" y="951">notifications, threads, avatars, repos</text>
+  <rect class="service" x="1745" y="880" width="360" height="105"/>
+  <text class="h2" x="1772" y="920">App services</text>
+  <text class="muted" x="1772" y="951">browser, badge, reset, perf trace</text>
+
+  <rect class="layer" x="70" y="1115" width="1045" height="235"/>
+  <text class="h1" x="105" y="1165">Domain: local document model</text>
+  <rect class="domain" x="105" y="1200" width="295" height="90"/>
+  <text class="h2" x="132" y="1238">types</text>
+  <text class="muted" x="132" y="1268">Item, Comment, Outbox</text>
+  <rect class="domain" x="430" y="1200" width="295" height="90"/>
+  <text class="h2" x="457" y="1238">paths</text>
+  <text class="muted" x="457" y="1268">vault path strategy</text>
+  <rect class="domain" x="755" y="1200" width="295" height="90"/>
+  <text class="h2" x="782" y="1238">markdown/outbox</text>
+  <text class="muted" x="782" y="1268">front matter serialization</text>
+
+  <rect class="layer" x="1190" y="1115" width="1140" height="235"/>
+  <text class="h1" x="1225" y="1165">Native Tauri boundary</text>
+  <rect class="native" x="1225" y="1200" width="330" height="90"/>
+  <text class="h2" x="1252" y="1238">Vault commands</text>
+  <text class="muted" x="1252" y="1268">safe paths, atomic writes</text>
+  <rect class="native" x="1595" y="1200" width="330" height="90"/>
+  <text class="h2" x="1622" y="1238">SQLite index/cache</text>
+  <text class="muted" x="1622" y="1268">item index, hashes, avatars</text>
+  <rect class="native" x="1965" y="1200" width="320" height="90"/>
+  <text class="h2" x="1992" y="1238">OAuth / OS APIs</text>
+  <text class="muted" x="1992" y="1268">loopback, keychain, browser</text>
+
+  <rect class="layer" x="70" y="1410" width="2260" height="130"/>
+  <text class="h1" x="105" y="1460">External and durable stores</text>
+  <rect class="external" x="450" y="1450" width="285" height="62"/>
+  <text class="h2" x="480" y="1489">GitHub REST</text>
+  <rect class="external" x="775" y="1450" width="285" height="62"/>
+  <text class="h2" x="805" y="1489">GitHub GraphQL</text>
+  <rect class="external" x="1100" y="1450" width="285" height="62"/>
+  <text class="h2" x="1130" y="1489">Markdown vault</text>
+  <rect class="external" x="1425" y="1450" width="285" height="62"/>
+  <text class="h2" x="1455" y="1489">localStorage</text>
+  <rect class="external" x="1750" y="1450" width="285" height="62"/>
+  <text class="h2" x="1780" y="1489">OS keychain</text>
+
+  <path class="edgeHot" d="M270 370 C270 455 272 500 272 570"/>
+  <path class="edge" d="M965 370 C965 455 1022 500 1022 570"/>
+  <path class="edge" d="M1645 370 C1645 455 1022 500 1022 570"/>
+  <path class="edge" d="M1985 370 C1985 455 1772 500 1772 570"/>
+  <path class="edgeHot" d="M647 665 C647 760 285 785 285 880"/>
+  <path class="edgeHot" d="M647 665 C647 760 695 785 695 880"/>
+  <path class="edge" d="M1022 665 C1022 775 1515 770 1515 880"/>
+  <path class="edge" d="M1397 665 C1397 770 1515 770 1515 880"/>
+  <path class="edge2" d="M1772 665 C1772 765 1925 785 1925 880"/>
+  <path class="edgeHot" d="M695 985 C695 1090 578 1120 578 1200"/>
+  <path class="edge" d="M285 985 C285 1390 592 1390 592 1450"/>
+  <path class="edge" d="M285 985 C285 1390 917 1390 917 1450"/>
+  <path class="edgeNative" d="M695 985 C695 1085 1390 1085 1390 1200"/>
+  <path class="edgeNative" d="M1515 985 C1515 1085 1760 1085 1760 1200"/>
+  <path class="edgeNative" d="M1925 985 C1925 1085 2125 1085 2125 1200"/>
+  <path class="edgeNative" d="M1390 1290 C1390 1370 1242 1370 1242 1450"/>
+  <path class="edgeNative" d="M1760 1290 C1760 1370 1567 1370 1567 1450"/>
+  <path class="edgeNative" d="M2125 1290 C2125 1370 1892 1370 1892 1450"/>
+
+  <rect class="labelBg" x="1175" y="1030" width="410" height="38"/>
+  <text class="label" x="1198" y="1055">Browser preview uses localStorage fallback; desktop uses Tauri commands</text>
+</svg>

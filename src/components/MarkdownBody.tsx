@@ -15,6 +15,11 @@ import {
   resolveAuthenticatedImage
 } from "../services/imageProxy";
 import { openExternal } from "../services/browser";
+import {
+  estimateTextBytes,
+  type CacheSizeStats
+} from "../services/cacheStats";
+import { LruCache } from "../services/lruCache";
 
 interface MarkdownBodyProps {
   body: string;
@@ -24,12 +29,44 @@ interface MarkdownBodyProps {
 type RenderedMarkdown = { __html: string };
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
-const renderedMarkdownCache = new Map<string, RenderedMarkdown>();
+const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200);
 let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
 
 function loadMarkdownRenderer() {
   rendererPromise ??= import("../markdownRender");
   return rendererPromise;
+}
+
+export async function warmMarkdownBodies(bodies: string[]) {
+  const missingBodies = bodies.filter(
+    (body) => body && !renderedMarkdownCache.has(body)
+  );
+  if (missingBodies.length === 0) {
+    return;
+  }
+  const { renderMarkdown } = await loadMarkdownRenderer();
+  for (const body of missingBodies) {
+    if (!renderedMarkdownCache.has(body)) {
+      renderedMarkdownCache.set(body, renderMarkdown(body));
+    }
+  }
+}
+
+export function clearMarkdownRenderCache() {
+  renderedMarkdownCache.clear();
+}
+
+export function getMarkdownRenderCacheStats(): CacheSizeStats {
+  return renderedMarkdownCache.entries().reduce<CacheSizeStats>(
+    (stats, [body, rendered]) => ({
+      entries: stats.entries + 1,
+      bytes:
+        stats.bytes +
+        estimateTextBytes(body) +
+        estimateTextBytes(rendered.__html)
+    }),
+    { entries: 0, bytes: 0 }
+  );
 }
 
 /**

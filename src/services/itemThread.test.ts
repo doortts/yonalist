@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GithubConnection } from "../hooks/useGithubAuth";
-import { clearItemThreadCache, fetchItemThread } from "./itemThread";
+import {
+  clearItemThreadCache,
+  deleteCachedItemThread,
+  fetchItemThread,
+  getItemThreadCacheStats
+} from "./itemThread";
 
 const connection: GithubConnection = {
   apiBaseUrl: "https://api.github.com",
@@ -153,6 +158,40 @@ describe("fetchItemThread", () => {
     }
   });
 
+  it("reports the current thread cache entry count and approximate size", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([
+          {
+            id: 1,
+            body: "Cached comment",
+            user: { login: "mona" },
+            created_at: "2026-07-02T00:00:00Z"
+          }
+        ]);
+      }
+      if (String(url).includes("/users/mona")) {
+        return jsonResponse({ login: "mona", name: "Mona Lisa" });
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await fetchItemThread(
+        connection,
+        { kind: "issue", owner: "acme", repo: "app", number: 42 },
+        { version: "v1" }
+      );
+
+      const stats = getItemThreadCacheStats();
+      expect(stats.entries).toBe(1);
+      expect(stats.bytes).toBeGreaterThan(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("refetches when the item's version changes", async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       if (String(url).includes("/comments")) {
@@ -169,6 +208,32 @@ describe("fetchItemThread", () => {
       await fetchItemThread(connection, target, { version: "v2" });
 
       expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("can evict one cached thread without clearing the whole thread cache", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = { kind: "issue" as const, owner: "acme", repo: "app", number: 1 };
+    const second = { kind: "issue" as const, owner: "acme", repo: "app", number: 2 };
+    try {
+      await fetchItemThread(connection, first, { version: "v1" });
+      await fetchItemThread(connection, second, { version: "v1" });
+      const callsAfterWarmup = fetchMock.mock.calls.length;
+
+      deleteCachedItemThread(connection, first, "v1");
+      await fetchItemThread(connection, first, { version: "v1" });
+      await fetchItemThread(connection, second, { version: "v1" });
+
+      expect(fetchMock.mock.calls.length).toBe(callsAfterWarmup + 2);
     } finally {
       vi.unstubAllGlobals();
     }

@@ -6,6 +6,11 @@ import {
 } from "../domain/conversation";
 import type { ItemKind, ItemState } from "../domain/types";
 import type { GithubConnection } from "../hooks/useGithubAuth";
+import {
+  estimateJsonBytes,
+  estimateTextBytes,
+  type CacheSizeStats
+} from "./cacheStats";
 import { createGitHubClient } from "./github";
 import { LruCache } from "./lruCache";
 import {
@@ -54,6 +59,17 @@ export function clearItemThreadCache() {
   clearUserProfileCache();
 }
 
+export function getItemThreadCacheStats(): CacheSizeStats {
+  return threadCache.entries().reduce<CacheSizeStats>(
+    (stats, [key, thread]) => ({
+      entries: stats.entries + 1,
+      bytes:
+        stats.bytes + estimateTextBytes(key) + estimateJsonBytes(thread)
+    }),
+    { entries: 0, bytes: 0 }
+  );
+}
+
 function threadCacheKey(
   connection: GithubConnection,
   target: ItemThreadTarget,
@@ -75,6 +91,16 @@ export function getCachedItemThread(
   version = ""
 ): ItemThread | null {
   return threadCache.get(threadCacheKey(connection, target, version)) ?? null;
+}
+
+export function deleteCachedItemThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  version = ""
+): boolean {
+  const key = threadCacheKey(connection, target, version);
+  inflightThreads.delete(key);
+  return threadCache.delete(key);
 }
 
 interface UserResponse {

@@ -14,6 +14,7 @@ interface AvatarProps {
   size?: number;
   /** When false, render nothing (instead of the initial) if no image loads. */
   showFallback?: boolean;
+  loading?: boolean;
 }
 
 function inferredAvatarUrl(
@@ -48,7 +49,8 @@ export function Avatar({
   login,
   avatarUrl,
   size = 36,
-  showFallback = true
+  showFallback = true,
+  loading = false
 }: AvatarProps) {
   const connection = useContext(GithubConnectionContext);
   const vaultRoot = useContext(VaultRootContext);
@@ -163,6 +165,15 @@ export function Avatar({
   }
 
   if (!showFallback) {
+    if ((displayUrl || loading) && !visibleFailed) {
+      return (
+        <span
+          className="avatar-skeleton"
+          style={style}
+          aria-label={`Loading avatar for ${login}`}
+        />
+      );
+    }
     return null;
   }
 

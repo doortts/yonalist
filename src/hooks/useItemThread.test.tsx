@@ -8,9 +8,10 @@ import { useItemThread } from "./useItemThread";
 interface ThreadHarnessProps {
   token: string;
   item?: ItemDocument | null;
+  refreshKey?: number;
 }
 
-function ThreadHarness({ token, item }: ThreadHarnessProps) {
+function ThreadHarness({ token, item, refreshKey = 0 }: ThreadHarnessProps) {
   const selectedItem = item === undefined ? sampleItems[0] : item;
   const state = useItemThread(
     selectedItem,
@@ -19,7 +20,8 @@ function ThreadHarness({ token, item }: ThreadHarnessProps) {
       webBaseUrl: "https://github.com",
       token
     },
-    true
+    true,
+    refreshKey
   );
 
   return (
@@ -155,6 +157,50 @@ describe("useItemThread", () => {
     expect(screen.getByText("cached comment")).toBeInTheDocument();
     expect(screen.getByText("idle")).toBeInTheDocument();
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirstLoad);
+  });
+
+  it("reloads the remote thread when the refresh key changes", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.includes("/comments")) {
+        const commentBody =
+          fetchMock.mock.calls.filter(([calledUrl]) =>
+            String(calledUrl).includes("/comments")
+          ).length === 1
+            ? "old comment"
+            : "new synced comment";
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1,
+              body: commentBody,
+              user: { login: "mona" },
+              created_at: "2026-07-02T00:00:00Z"
+            }
+          ]),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (target.includes("/users/mona")) {
+        return new Response(JSON.stringify({ login: "mona" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ state: "open" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<ThreadHarness token="ghp_test" refreshKey={0} />);
+
+    await screen.findByText("old comment");
+
+    rerender(<ThreadHarness token="ghp_test" refreshKey={1} />);
+
+    expect(await screen.findByText("new synced comment")).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.filter(([url]) => String(url).includes("/comments"))
+    ).toHaveLength(2);
   });
 
   it("clears the previous thread while a different item is loading", async () => {

@@ -1,5 +1,5 @@
 import { render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import { useDesktopNotifications } from "./useDesktopNotifications";
 
@@ -10,6 +10,13 @@ vi.mock("../services/desktopNotifications", () => ({
   sendDesktopNotification: vi.fn(async (n: { title: string; body: string }) => {
     sent.push(n);
   })
+}));
+
+const fetchUnreadNotificationUpdates = vi.fn();
+
+vi.mock("../services/notifications", () => ({
+  fetchUnreadNotificationUpdates: (...args: unknown[]) =>
+    fetchUnreadNotificationUpdates(...args)
 }));
 
 function notification(id: string, title = `n${id}`): GitHubNotification {
@@ -25,60 +32,96 @@ function notification(id: string, title = `n${id}`): GitHubNotification {
 }
 
 function Harness({
-  notifications,
   enabled = true,
-  demoMode = false
+  demoMode = false,
+  online = true,
+  isRepoVisible
 }: {
-  notifications: GitHubNotification[];
   enabled?: boolean;
   demoMode?: boolean;
+  online?: boolean;
+  isRepoVisible?: (repositoryFullName: string) => boolean;
 }) {
   useDesktopNotifications({
-    notifications,
+    connection: {
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      token: "ghp_test"
+    },
     viewedAt: {},
-    webBaseUrl: "https://github.com",
+    online,
     enabled,
-    demoMode
+    demoMode,
+    isRepoVisible
   });
   return null;
 }
 
+beforeEach(() => {
+  vi.useFakeTimers();
+  fetchUnreadNotificationUpdates.mockResolvedValue([]);
+});
+
 afterEach(() => {
   sent.length = 0;
+  vi.useRealTimers();
+  vi.clearAllMocks();
 });
 
 describe("useDesktopNotifications", () => {
-  it("seeds silently on first load, then notifies for new unread items", () => {
-    const { rerender } = render(
-      <Harness notifications={[notification("1"), notification("2")]} />
-    );
+  it("sends OS notifications from the unread Notifications feed", async () => {
+    fetchUnreadNotificationUpdates.mockResolvedValueOnce([
+      notification("1", "Fresh notification")
+    ]);
+
+    render(<Harness />);
+
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0]).toEqual({ title: "acme/app", body: "Fresh notification" });
+    expect(fetchUnreadNotificationUpdates).toHaveBeenCalledWith({
+      token: "ghp_test",
+      apiBaseUrl: "https://api.github.com"
+    });
+  });
+
+  it("filters desktop notifications by the Notifications repository visibility", async () => {
+    fetchUnreadNotificationUpdates.mockResolvedValueOnce([notification("1")]);
+
+    render(<Harness isRepoVisible={() => false} />);
+
+    await vi.waitFor(() => expect(fetchUnreadNotificationUpdates).toHaveBeenCalled());
     expect(sent).toHaveLength(0);
-
-    rerender(
-      <Harness
-        notifications={[notification("3"), notification("1"), notification("2")]}
-      />
-    );
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toEqual({ title: "acme/app", body: "n3" });
   });
 
-  it("sends a single summary when more than five arrive at once", () => {
-    const { rerender } = render(<Harness notifications={[notification("seed")]} />);
-    const many = Array.from({ length: 6 }, (_, index) =>
-      notification(`new-${index}`)
-    );
-    rerender(<Harness notifications={[...many, notification("seed")]} />);
+  it("polls unread notification updates every minute", async () => {
+    fetchUnreadNotificationUpdates
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([notification("2")]);
 
+    render(<Harness />);
+
+    await vi.waitFor(() => expect(fetchUnreadNotificationUpdates).toHaveBeenCalledTimes(1));
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await vi.waitFor(() => expect(fetchUnreadNotificationUpdates).toHaveBeenCalledTimes(2));
     expect(sent).toHaveLength(1);
-    expect(sent[0].body).toBe("6 new GitHub notifications");
+    expect(sent[0].body).toBe("n2");
   });
 
-  it("does not notify in demo mode", () => {
-    const { rerender } = render(
-      <Harness notifications={[notification("1")]} demoMode />
-    );
-    rerender(<Harness notifications={[notification("2"), notification("1")]} demoMode />);
+  it("does not poll or notify in demo mode", async () => {
+    render(<Harness demoMode />);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchUnreadNotificationUpdates).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+  });
+
+  it("ignores unread polling failures because native notifications are best effort", async () => {
+    fetchUnreadNotificationUpdates.mockRejectedValueOnce(new Error("offline"));
+
+    render(<Harness />);
+
+    await vi.waitFor(() => expect(fetchUnreadNotificationUpdates).toHaveBeenCalled());
     expect(sent).toHaveLength(0);
   });
 });

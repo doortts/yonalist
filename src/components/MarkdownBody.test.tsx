@@ -2,7 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
-import { MarkdownBody } from "./MarkdownBody";
+import {
+  clearMarkdownRenderCache,
+  getMarkdownRenderCacheStats,
+  MarkdownBody,
+  warmMarkdownBodies
+} from "./MarkdownBody";
 
 const openExternalMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 
@@ -134,8 +139,22 @@ describe("MarkdownBody", () => {
   });
 
   afterEach(() => {
+    clearMarkdownRenderCache();
     openExternalMock.mockReset();
     vi.unstubAllGlobals();
+  });
+
+  it("keeps the rendered markdown cache bounded to 200 entries", async () => {
+    const bodies = Array.from(
+      { length: 201 },
+      (_, index) => `# Cached markdown ${index}\n\nBody ${index}`
+    );
+
+    await warmMarkdownBodies(bodies);
+
+    const stats = getMarkdownRenderCacheStats();
+    expect(stats.entries).toBe(200);
+    expect(stats.bytes).toBeGreaterThan(0);
   });
 
   it("closes the lightbox from the backdrop, close button, and Escape", async () => {

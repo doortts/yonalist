@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ItemDocument } from "../domain/types";
 import { ItemListPane } from "./ItemListPane";
@@ -142,5 +142,79 @@ describe("ItemListPane", () => {
     );
 
     expect(list.scrollTop).toBe(720);
+  });
+
+  it("reports the items currently visible in the list viewport", async () => {
+    const items = [itemAt(1), itemAt(2)];
+    const onVisibleItemsChange = vi.fn();
+    render(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onVisibleItemsChange={onVisibleItemsChange}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(onVisibleItemsChange).toHaveBeenCalled();
+    });
+    expect(onVisibleItemsChange).toHaveBeenLastCalledWith(items);
+  });
+
+  it("uses actual row positions for non-virtualized visible item reporting", async () => {
+    const items = [itemAt(1), itemAt(2), itemAt(3), itemAt(4)];
+    const onVisibleItemsChange = vi.fn();
+    const { container } = render(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onVisibleItemsChange={onVisibleItemsChange}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+    const list = container.querySelector(".item-list") as HTMLDivElement;
+    Object.defineProperty(list, "clientHeight", {
+      configurable: true,
+      value: 100
+    });
+    container.querySelectorAll(".item-card").forEach((row, index) => {
+      Object.defineProperty(row, "offsetTop", {
+        configurable: true,
+        value: index * 100
+      });
+      Object.defineProperty(row, "offsetHeight", {
+        configurable: true,
+        value: 100
+      });
+    });
+
+    fireEvent(window, new Event("resize"));
+    fireEvent.scroll(list, { target: { scrollTop: 250 } });
+
+    await waitFor(() => {
+      expect(onVisibleItemsChange).toHaveBeenLastCalledWith([
+        items[2],
+        items[3]
+      ]);
+    });
   });
 });

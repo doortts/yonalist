@@ -37,7 +37,15 @@ export class LruCache<V> {
     return this.map.has(key);
   }
 
+  delete(key: string): boolean {
+    return this.map.delete(key);
+  }
+
   clear(): void {
     this.map.clear();
+  }
+
+  entries(): Array<[string, V]> {
+    return Array.from(this.map.entries());
   }
 }

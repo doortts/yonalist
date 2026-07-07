@@ -276,6 +276,17 @@ export function SettingsPage({
               </label>
               <label className="settings-check">
                 <input
+                  aria-label="Prefetch visible conversations"
+                  type="checkbox"
+                  checked={settings.prefetchVisibleItems !== false}
+                  onChange={(event) =>
+                    onUpdate("prefetchVisibleItems", event.target.checked)
+                  }
+                />
+                <span>Prefetch visible conversations</span>
+              </label>
+              <label className="settings-check">
+                <input
                   aria-label="Desktop notifications for new items"
                   type="checkbox"
                   checked={settings.desktopNotifications}

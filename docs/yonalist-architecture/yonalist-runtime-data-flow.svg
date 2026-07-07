@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1700" viewBox="0 0 2400 1700" role="img" aria-labelledby="title desc">
+  <title id="title">Yonalist Runtime Data Flow</title>
+  <desc id="desc">Runtime data flow from startup through authentication, vault load, remote fetch, merge, UI selection, prefetch, and sync feedback.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfcfe; }
+      .title { font: 46px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 800; fill: #132033; }
+      .subtitle { font: 24px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #46566e; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 3; rx: 16; }
+      .start { fill: #eef2ff; stroke: #5168aa; stroke-width: 3; rx: 16; }
+      .store { fill: #eefaf2; stroke: #3d8655; stroke-width: 3; rx: 16; }
+      .remote { fill: #fff4d6; stroke: #b7791f; stroke-width: 3; rx: 16; }
+      .native { fill: #fff0f0; stroke: #b75656; stroke-width: 3; rx: 16; }
+      .view { fill: #f2ecff; stroke: #7252ad; stroke-width: 3; rx: 16; }
+      .decision { fill: #fff7ed; stroke: #c2410c; stroke-width: 3; }
+      .h { font: 27px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 760; fill: #172033; }
+      .t { font: 21px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .m { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .edge { stroke: #40516e; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .edgeHot { stroke: #b7791f; stroke-width: 3.5; fill: none; marker-end: url(#arrowHot); }
+      .edgeRed { stroke: #b75656; stroke-width: 3.2; fill: none; marker-end: url(#arrowRed); }
+      .edgeSoft { stroke: #7d8ca5; stroke-width: 2.5; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrowSoft); }
+      .labelBg { fill: #152033; rx: 8; }
+      .label { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #fff; font-weight: 650; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#40516e"/></marker>
+    <marker id="arrowHot" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b7791f"/></marker>
+    <marker id="arrowRed" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b75656"/></marker>
+    <marker id="arrowSoft" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#7d8ca5"/></marker>
+  </defs>
+
+  <rect class="bg" width="2400" height="1700"/>
+  <text class="title" x="82" y="88">Yonalist 런타임 데이터 흐름</text>
+  <text class="subtitle" x="84" y="130">앱 시작, 인증 게이트, vault 로드, 원격 fetch, 병합, detail 로드, 프리패치, outbox 동기화가 동시에 돌아가는 구조.</text>
+
+  <rect class="start" x="90" y="220" width="360" height="130"/>
+  <text class="h" x="125" y="266">main.tsx</text>
+  <text class="t" x="125" y="300">dynamic import App</text>
+  <text class="m" x="125" y="328">startup error fallback</text>
+
+  <rect class="start" x="555" y="220" width="410" height="130"/>
+  <text class="h" x="590" y="266">App bootstrap</text>
+  <text class="t" x="590" y="300">load settings, servers, auth hooks</text>
+  <text class="m" x="590" y="328">theme, panes, online status</text>
+
+  <polygon class="decision" points="1230,220 1445,285 1230,350 1015,285"/>
+  <text class="h" x="1151" y="278">Auth gate</text>
+  <text class="m" x="1124" y="310">checking / required / passed</text>
+
+  <rect class="view" x="1570" y="220" width="340" height="130"/>
+  <text class="h" x="1605" y="266">LoginPage</text>
+  <text class="t" x="1605" y="300">server picker</text>
+  <text class="m" x="1605" y="328">OAuth or personal token</text>
+
+  <rect class="store" x="1995" y="220" width="320" height="130"/>
+  <text class="h" x="2030" y="266">App shell</text>
+  <text class="t" x="2030" y="300">offline-first render</text>
+  <text class="m" x="2030" y="328">notifications as landing view</text>
+
+  <path class="edgeHot" d="M450 285 L555 285"/>
+  <path class="edgeHot" d="M965 285 L1015 285"/>
+  <path class="edgeRed" d="M1445 285 L1570 285"/>
+  <path class="edgeHot" d="M1445 285 C1585 380 1940 380 2055 350"/>
+  <rect class="labelBg" x="1480" y="360" width="122" height="34"/>
+  <text class="label" x="1505" y="384">passed</text>
+  <rect class="labelBg" x="1482" y="245" width="112" height="34"/>
+  <text class="label" x="1504" y="269">required</text>
+
+  <rect class="store" x="90" y="500" width="430" height="150"/>
+  <text class="h" x="125" y="548">loadVaultState</text>
+  <text class="t" x="125" y="584">SQLite index first in Tauri</text>
+  <text class="m" x="125" y="616">fallback: scan Markdown documents</text>
+
+  <rect class="native" x="630" y="500" width="430" height="150"/>
+  <text class="h" x="665" y="548">Tauri vault commands</text>
+  <text class="t" x="665" y="584">list, read, write, move</text>
+  <text class="m" x="665" y="616">safe relative paths + atomic writes</text>
+
+  <rect class="store" x="1170" y="500" width="430" height="150"/>
+  <text class="h" x="1205" y="548">Local documents</text>
+  <text class="t" x="1205" y="584">ItemDocument[] + outbox[]</text>
+  <text class="m" x="1205" y="616">front matter is the typed contract</text>
+
+  <rect class="remote" x="90" y="780" width="430" height="150"/>
+  <text class="h" x="125" y="828">useWorkItems</text>
+  <text class="t" x="125" y="864">inbox or repository scope</text>
+  <text class="m" x="125" y="896">smart TTL cache + AbortController</text>
+
+  <rect class="remote" x="630" y="780" width="430" height="150"/>
+  <text class="h" x="665" y="828">GitHub item fetch</text>
+  <text class="t" x="665" y="864">REST search/issues + GraphQL discussions</text>
+  <text class="m" x="665" y="896">normalizes into ItemDocument</text>
+
+  <rect class="box" x="1170" y="780" width="430" height="150"/>
+  <text class="h" x="1205" y="828">mergeItemDocuments</text>
+  <text class="t" x="1205" y="864">remote over local</text>
+  <text class="m" x="1205" y="896">keeps pending drafts and favorite flags</text>
+
+  <rect class="view" x="1710" y="780" width="430" height="150"/>
+  <text class="h" x="1745" y="828">List UI</text>
+  <text class="t" x="1745" y="864">filters, search, open/closed counts</text>
+  <text class="m" x="1745" y="896">visible rows feed prefetch</text>
+
+  <rect class="remote" x="90" y="1060" width="430" height="150"/>
+  <text class="h" x="125" y="1108">useNotifications</text>
+  <text class="t" x="125" y="1144">60s polling + cached snapshot</text>
+  <text class="m" x="125" y="1176">conditional probe avoids full download</text>
+
+  <rect class="remote" x="630" y="1060" width="430" height="150"/>
+  <text class="h" x="665" y="1108">useRepositories</text>
+  <text class="t" x="665" y="1144">owner/collab, watched, org member</text>
+  <text class="m" x="665" y="1176">visibility defaults from involvement</text>
+
+  <rect class="view" x="1170" y="1060" width="430" height="150"/>
+  <text class="h" x="1205" y="1108">Sidebar / notification list</text>
+  <text class="t" x="1205" y="1144">repo visibility gates what is shown</text>
+  <text class="m" x="1205" y="1176">badge held until basis loads</text>
+
+  <rect class="remote" x="1710" y="1060" width="430" height="150"/>
+  <text class="h" x="1745" y="1108">Detail loaders</text>
+  <text class="t" x="1745" y="1144">item thread or notification detail</text>
+  <text class="m" x="1745" y="1176">LRU + inflight coalescing</text>
+
+  <rect class="store" x="360" y="1345" width="500" height="150"/>
+  <text class="h" x="395" y="1393">useVisibleItemPrefetch</text>
+  <text class="t" x="395" y="1429">dwell timer, concurrency limit, eviction</text>
+  <text class="m" x="395" y="1461">persists body + comments through vault store</text>
+
+  <rect class="remote" x="980" y="1345" width="500" height="150"/>
+  <text class="h" x="1015" y="1393">queue issue/comment</text>
+  <text class="t" x="1015" y="1429">write draft Markdown and outbox op</text>
+  <text class="m" x="1015" y="1461">auto-sync when token and online exist</text>
+
+  <rect class="store" x="1600" y="1345" width="500" height="150"/>
+  <text class="h" x="1635" y="1393">sync reconciliation</text>
+  <text class="t" x="1635" y="1429">move draft to remote issue path</text>
+  <text class="m" x="1635" y="1461">delete outbox op, refresh thread/list/notifications</text>
+
+  <path class="edgeHot" d="M2055 350 C2055 445 305 430 305 500"/>
+  <path class="edgeRed" d="M520 575 L630 575"/>
+  <path class="edge" d="M1060 575 L1170 575"/>
+  <path class="edgeHot" d="M305 650 L305 780"/>
+  <path class="edgeHot" d="M520 855 L630 855"/>
+  <path class="edgeHot" d="M1060 855 L1170 855"/>
+  <path class="edgeHot" d="M1600 855 L1710 855"/>
+  <path class="edgeSoft" d="M1385 930 C1385 1000 1925 995 1925 1060"/>
+  <path class="edge" d="M305 930 L305 1060"/>
+  <path class="edge" d="M845 930 L845 1060"/>
+  <path class="edge" d="M520 1135 L630 1135"/>
+  <path class="edgeHot" d="M1060 1135 L1170 1135"/>
+  <path class="edgeHot" d="M1600 1135 L1710 1135"/>
+  <path class="edgeSoft" d="M1925 930 L1925 1060"/>
+  <path class="edge" d="M1925 1210 C1925 1295 610 1280 610 1345"/>
+  <path class="edge" d="M1925 1210 C1925 1285 1230 1285 1230 1345"/>
+  <path class="edgeHot" d="M1480 1420 L1600 1420"/>
+  <path class="edgeRed" d="M610 1495 C610 1580 1385 1580 1850 1495"/>
+
+  <rect class="labelBg" x="93" y="1540" width="1995" height="44"/>
+  <text class="label" x="125" y="1569">핵심 흐름: remote data is not the source of truth alone. Vault Markdown, SQLite cache, localStorage fallbacks, and in-memory caches all cooperate to keep the app usable offline.</text>
+</svg>

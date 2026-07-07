@@ -1,6 +1,7 @@
 import { Eye, Pencil, Send } from "lucide-react";
 import {
   type FormEvent,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState
@@ -30,6 +31,12 @@ export function CommentComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const hasDraft = draft.trim().length > 0;
 
+  useEffect(() => {
+    if (!hasDraft && mode === "preview") {
+      setMode("write");
+    }
+  }, [hasDraft, mode]);
+
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea || mode !== "write") {
@@ -56,28 +63,29 @@ export function CommentComposer({
 
   return (
     <form className="comment-composer" onSubmit={submit}>
-      <div className="composer-tabs" role="tablist" aria-label="Comment editor">
-        <button
-          type="button"
-          className={mode === "write" ? "composer-tab active" : "composer-tab"}
-          aria-selected={mode === "write"}
-          role="tab"
-          onClick={() => setMode("write")}
-        >
-          <Pencil size={14} />
-          Write
-        </button>
-        <button
-          type="button"
-          className={mode === "preview" ? "composer-tab active" : "composer-tab"}
-          aria-selected={mode === "preview"}
-          role="tab"
-          onClick={() => setMode("preview")}
-        >
-          <Eye size={14} />
-          Preview
-        </button>
-      </div>
+      {hasDraft && (
+        <div className="composer-preview-toggle-row">
+          {mode === "write" ? (
+            <button
+              type="button"
+              className="composer-preview-toggle"
+              onClick={() => setMode("preview")}
+            >
+              <Eye size={14} />
+              Preview
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="composer-preview-toggle"
+              onClick={() => setMode("write")}
+            >
+              <Pencil size={14} />
+              Edit
+            </button>
+          )}
+        </div>
+      )}
 
       {mode === "write" ? (
         <textarea

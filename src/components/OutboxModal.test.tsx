@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { createCommentOutboxOperation } from "../domain/outbox";
 import type { OutboxOperationDocument } from "../domain/types";
@@ -67,5 +68,27 @@ describe("OutboxModal", () => {
     expect(
       screen.getAllByText("Target changed remotely since this was queued.")
     ).toHaveLength(1);
+  });
+
+  it("opens the queued operation target from the card body", async () => {
+    const queued = operation("op-1", "pending");
+    const onOpenTarget = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <OutboxModal
+        outbox={[queued]}
+        selectedIds={new Set()}
+        online
+        syncing={false}
+        onToggleSelection={vi.fn()}
+        onOpenTarget={onOpenTarget}
+        onSync={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Open target/ }));
+
+    expect(onOpenTarget).toHaveBeenCalledWith(queued);
   });
 });

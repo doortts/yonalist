@@ -29,6 +29,7 @@ interface EntryAuthor {
   avatarUrl?: string;
   association?: string;
   isAuthor?: boolean;
+  loading?: boolean;
 }
 
 function AssociationBadge({ author }: { author: EntryAuthor }) {
@@ -43,13 +44,28 @@ function AssociationBadge({ author }: { author: EntryAuthor }) {
 function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   const hasDisplayName = Boolean(author.name && author.name !== author.login);
   const displayName = hasDisplayName ? author.name : author.login;
+  const showAuthorSkeleton = Boolean(author.loading && !author.name);
 
   return (
     <>
-      <strong className="comment-author" title={hasDisplayName ? author.login : undefined}>
-        {displayName}
-      </strong>
-      <AssociationBadge author={author} />
+      <span className="comment-author-cluster">
+        {showAuthorSkeleton ? (
+          <span
+            className="comment-author-skeleton"
+            aria-label={`Loading author for ${author.login}`}
+          />
+        ) : (
+          <>
+            <strong
+              className="comment-author"
+              title={hasDisplayName ? author.login : undefined}
+            >
+              {displayName}
+            </strong>
+            <AssociationBadge author={author} />
+          </>
+        )}
+      </span>
       <span className="comment-time">{meta}</span>
     </>
   );
@@ -58,12 +74,15 @@ function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
 function EntryMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   return (
     <>
-      <Avatar
-        login={author.login}
-        avatarUrl={author.avatarUrl}
-        size={20}
-        showFallback={false}
-      />
+      <span className="entry-avatar-slot">
+        <Avatar
+          login={author.login}
+          avatarUrl={author.avatarUrl}
+          size={20}
+          showFallback={false}
+          loading={author.loading}
+        />
+      </span>
       <HeaderMeta author={author} meta={meta} />
     </>
   );

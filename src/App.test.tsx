@@ -402,14 +402,181 @@ describe("Yonalist app shell", () => {
     expect(screen.getByText(/I can write this offline/)).toBeInTheDocument();
   });
 
-  it("shows the app-wide outbox below the GitHub Inbox title", async () => {
+  it("opens the target item when a queued outbox comment is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Return to this item.");
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    expect(screen.getByLabelText("Empty notification detail")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    await user.click(screen.getByRole("button", { name: /Open target/ }));
+
+    const detail = screen.getByLabelText("Detail");
+    expect(within(detail).getByRole("heading", { name: "Design offline issue reading" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+  });
+
+  it("syncs a comment immediately when online and signed in", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    let postedCommentBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (
+        target.endsWith("/repos/acme/app/issues/2/comments") &&
+        init?.method === "POST"
+      ) {
+        postedCommentBody = JSON.parse(String(init.body)).body;
+        return new Response(
+          JSON.stringify({
+            id: 9001,
+            node_id: "IC_9001",
+            body: postedCommentBody,
+            html_url: "https://oss.navercorp.com/acme/app/issues/2#issuecomment-9001",
+            created_at: "2026-07-07T01:00:00Z",
+            updated_at: "2026-07-07T01:00:00Z"
+          }),
+          { status: 201 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 2,
+                title: "Online issue",
+                state: "open",
+                body: "Fetched from GitHub",
+                user: { login: "alice" },
+                labels: [],
+                comments: 0,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/2",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 1,
+              pushed_at: "2026-07-06T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions") || target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/2/comments")) {
+        return new Response(
+          JSON.stringify(
+            postedCommentBody
+              ? [
+                  {
+                    id: 9001,
+                    body: postedCommentBody,
+                    user: { login: "alice", name: "Alice" },
+                    author_association: "OWNER",
+                    created_at: "2026-07-07T01:00:00Z",
+                    updated_at: "2026-07-07T01:00:00Z"
+                  }
+                ]
+              : []
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/2")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "alice", name: "Alice" },
+            labels: [],
+            body: "Fetched from GitHub",
+            created_at: "2026-07-06T00:00:00Z",
+            updated_at: "2026-07-06T01:00:00Z"
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/users/alice")) {
+        return new Response(
+          JSON.stringify({ login: "alice", name: "Alice", avatar_url: "" }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Online issue")).length).toBeGreaterThan(0);
+
+      await user.type(screen.getByLabelText("Write a comment"), "Ship it now.");
+      await user.click(screen.getByRole("button", { name: "Comment" }));
+
+      await waitFor(() => {
+        expect(
+          fetchMock.mock.calls.some(
+            ([url, init]) =>
+              String(url).endsWith("/repos/acme/app/issues/2/comments") &&
+              (init as RequestInit | undefined)?.method === "POST"
+          )
+        ).toBe(true);
+      });
+      expect(
+        await screen.findByRole("button", {
+          name: "Open outbox, 0 pending changes"
+        })
+      ).toBeInTheDocument();
+      expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
+      expect(await screen.findByText("Ship it now.")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the app-wide outbox in the bottom status bar", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const navigation = screen.getByLabelText("Navigation");
-    const outboxButton = within(navigation).getByRole("button", {
+    const statusBar = screen.getByLabelText("Status bar");
+    const outboxButton = within(statusBar).getByRole("button", {
       name: "Open outbox, 0 pending changes"
     });
     expect(outboxButton).toHaveTextContent("Outbox 0");
@@ -418,10 +585,158 @@ describe("Yonalist app shell", () => {
       "Outbox stores offline issues and comments waiting to sync to GitHub."
     );
     expect(
+      within(navigation).queryByRole("button", {
+        name: /Open outbox/
+      })
+    ).not.toBeInTheDocument();
+    expect(
       within(screen.getByLabelText("Detail")).queryByRole("button", {
         name: /outbox/i
       })
     ).not.toBeInTheDocument();
+  });
+
+  it("updates the status bar when visible signed-in items are prefetched", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 10,
+                title: "Issue with comments",
+                state: "open",
+                body: "Large body",
+                user: { login: "alice" },
+                labels: [],
+                comments: 2,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/10",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              },
+              {
+                number: 11,
+                title: "Second visible issue",
+                state: "open",
+                body: "Second body",
+                user: { login: "bob" },
+                labels: [],
+                comments: 1,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T02:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/11",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 2,
+              pushed_at: "2026-07-06T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions") || target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/10/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1001,
+              body: "First comment",
+              user: { login: "alice", name: "Alice" },
+              created_at: "2026-07-06T03:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/issues/11/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1101,
+              body: "Second comment",
+              user: { login: "bob", name: "Bob" },
+              created_at: "2026-07-06T04:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/10")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "alice", name: "Alice" },
+            labels: []
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/11")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "bob", name: "Bob" },
+            labels: []
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+
+      await user.click(await screen.findByRole("button", { name: /^Issues/ }));
+      expect(await screen.findByText("Issue with comments")).toBeInTheDocument();
+
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+          /Prefetch \d+ visible · [1-9]\d* done/
+        );
+      });
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/issues/11/comments"))
+      ).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("opens the new issue composer as the full right pane", async () => {

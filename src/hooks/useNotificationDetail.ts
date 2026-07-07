@@ -17,7 +17,8 @@ export interface UseNotificationDetailResult {
 export function useNotificationDetail(
   notification: GitHubNotification | null,
   connection: GithubConnection,
-  online: boolean
+  online: boolean,
+  refreshKey = 0
 ): UseNotificationDetailResult {
   const [detail, setDetail] = useState<NotificationDetailContent | null>(null);
   const [loading, setLoading] = useState(false);
@@ -75,7 +76,8 @@ export function useNotificationDetail(
     token,
     online,
     connection.apiBaseUrl,
-    connection.webBaseUrl
+    connection.webBaseUrl,
+    refreshKey
   ]);
 
   return { detail, loading, error };
