@@ -11,3 +11,17 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Repo name now rides the meta line right after "Issue #2". The dot separator
+   matches the muted meta text; the repo shrinks with an ellipsis so a long
+   name never pushes the right-aligned time off the row. */
+.item-meta-dot {
+  color: var(--text-3);
+  font-weight: 400;
+}
+
+.item-meta .item-repo {
+  min-width: 0;
+  max-width: 55%;
+  flex: 0 1 auto;
+}

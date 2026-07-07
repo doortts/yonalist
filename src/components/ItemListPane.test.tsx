@@ -1,7 +1,21 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { ItemDocument } from "../domain/types";
+import type { GithubConnection } from "../hooks/useGithubAuth";
 import { ItemListPane } from "./ItemListPane";
+
+const fetchUserProfilesMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/userProfiles", () => ({
+  fetchUserProfiles: fetchUserProfilesMock
+}));
+
+const signedInConnection: GithubConnection = {
+  apiBaseUrl: "https://api.github.com",
+  webBaseUrl: "https://github.com",
+  token: "ghp_test"
+};
 
 const baseItem: ItemDocument = {
   path: "/vault/github.com/acme/app/issues/42/issue.md",
@@ -57,7 +71,43 @@ function renderPane(items: ItemDocument[]) {
   );
 }
 
+function renderPaneWith(
+  items: ItemDocument[],
+  overrides: {
+    connection?: GithubConnection;
+    demoMode?: boolean;
+    online?: boolean;
+  } = {}
+) {
+  return render(
+    <GithubConnectionContext.Provider
+      value={overrides.connection ?? signedInConnection}
+    >
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={overrides.demoMode ?? false}
+        online={overrides.online ?? true}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    </GithubConnectionContext.Provider>
+  );
+}
+
 describe("ItemListPane", () => {
+  beforeEach(() => {
+    fetchUserProfilesMock.mockReset();
+    fetchUserProfilesMock.mockResolvedValue({});
+  });
+
   it("paints labels in the list with their GitHub label colors", () => {
     renderPane([baseItem]);
 
@@ -241,6 +291,97 @@ describe("ItemListPane", () => {
 
     expect(container.querySelector(".item-author")).toBeNull();
     expect(screen.queryByText("unknown")).toBeNull();
+  });
+
+  it("shows the repo name without its owner on the meta line, after the number", () => {
+    const { container } = renderPane([baseItem]);
+
+    const meta = container.querySelector(".item-meta") as HTMLElement;
+    expect(meta).toHaveTextContent("Issue #42");
+    expect(meta.querySelector(".item-repo")).toHaveTextContent("app");
+    expect(meta.textContent).not.toContain("acme/app");
+
+    // The number must come before the repo on the meta line.
+    const metaText = meta.textContent ?? "";
+    expect(metaText.indexOf("#42")).toBeLessThan(metaText.indexOf("app"));
+  });
+
+  it("no longer renders the owner/repo slug in the footer", () => {
+    const { container } = renderPane([baseItem]);
+
+    const footer = container.querySelector(".item-footer") as HTMLElement;
+    // baseItem has comments, so the footer still renders (comments + bookmark).
+    expect(footer).not.toBeNull();
+    expect(footer.querySelector(".item-repo")).toBeNull();
+    expect(footer.textContent).not.toContain("acme");
+    expect(footer.textContent).not.toContain("app");
+  });
+
+  it("does not render a footer when there are no comments and no bookmark", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        comments_count: 0,
+        local: { favorite: false }
+      }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-footer")).toBeNull();
+  });
+
+  it("renders a footer with only the bookmark when a favorite has no comments", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        comments_count: 0,
+        local: { favorite: true }
+      }
+    };
+    const { container } = renderPane([item]);
+
+    const footer = container.querySelector(".item-footer") as HTMLElement;
+    expect(footer).not.toBeNull();
+    expect(footer.querySelector(".small-bookmark")).not.toBeNull();
+    expect(footer.querySelector(".item-comments")).toBeNull();
+  });
+
+  it("shows the author's display name from their profile on the author line", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: { login: "mona", name: "Mona Lisa" }
+    });
+
+    const { container } = renderPaneWith([baseItem]);
+
+    await waitFor(() => {
+      expect(container.querySelector(".item-author")).toHaveTextContent(
+        "Mona Lisa"
+      );
+    });
+    expect(screen.queryByText("mona")).toBeNull();
+    expect(fetchUserProfilesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the login on the author line when no profile name is available", async () => {
+    fetchUserProfilesMock.mockResolvedValue({});
+
+    const { container } = renderPaneWith([baseItem]);
+
+    await waitFor(() => {
+      expect(fetchUserProfilesMock).toHaveBeenCalled();
+    });
+    expect(container.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("does not fetch profiles in demo mode (no signed-in token)", async () => {
+    const { container } = renderPaneWith([baseItem], { demoMode: true });
+
+    await Promise.resolve();
+    expect(fetchUserProfilesMock).not.toHaveBeenCalled();
+    // Author line still falls back to the login.
+    expect(container.querySelector(".item-author")).toHaveTextContent("mona");
   });
 
   it("uses actual row positions for non-virtualized visible item reporting", async () => {

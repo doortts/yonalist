@@ -1683,6 +1683,7 @@ export default function App({ initialOnline }: AppProps) {
           loading={workItems.loading}
           error={workItems.error}
           demoMode={workItems.demoMode}
+          online={online}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
           onSelect={(path) => {

@@ -19,6 +19,7 @@ import {
 } from "react";
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
+import { useAuthorNames } from "../hooks/useAuthorNames";
 import { timeAgo } from "../timeFormat";
 import "./ItemListPane.css";
 import "./ui/tabs.css";
@@ -26,8 +27,12 @@ import "./ui/tabs.css";
 export type ItemStateFilter = "open" | "closed";
 
 const VIRTUALIZE_AT = 80;
-// Fixed virtualized row height. Covers the 4–5 line row: meta, title,
-// author, optional labels, footer. Bumped ~+18px from 122 for the author line.
+// Fixed virtualized row height. Covers the tallest row: meta (kind · repo ·
+// time), title, author, optional labels, and an optional footer (comments +
+// bookmark). The footer and labels are now conditional, so rows never exceed
+// this height — a row that drops its footer just leaves slack, which the fixed
+// slot absorbs without layout drift. Kept at 140 (was bumped +18px for the
+// author line); relocating the repo onto the meta line adds no new line.
 const ITEM_ROW_HEIGHT = 140;
 const ITEM_OVERSCAN = 6;
 
@@ -45,6 +50,7 @@ interface ItemListPaneProps {
   loading: boolean;
   error: string | null;
   demoMode: boolean;
+  online?: boolean;
   onStateFilterChange: (filter: ItemStateFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
@@ -106,6 +112,7 @@ export function ItemListPane({
   loading,
   error,
   demoMode,
+  online = true,
   onStateFilterChange,
   onQueryChange,
   onSelect,
@@ -114,6 +121,9 @@ export function ItemListPane({
   onRefresh
 }: ItemListPaneProps) {
   const listRef = useRef<HTMLDivElement>(null);
+  // Login → display name for the authors in view. Demo/offline sessions skip
+  // the fetch and fall back to the raw login (see useAuthorNames).
+  const authorNames = useAuthorNames(items, { enabled: !demoMode && online });
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const listIdentity = useMemo(
@@ -243,6 +253,7 @@ export function ItemListPane({
         )}
         <ItemRows
           items={items}
+          authorNames={authorNames}
           selectedPath={selectedPath}
           scrollTop={scrollTop}
           viewportHeight={viewportHeight}
@@ -260,6 +271,7 @@ export function ItemListPane({
 
 interface ItemRowsProps {
   items: ItemDocument[];
+  authorNames: ReadonlyMap<string, string>;
   selectedPath: string | null;
   scrollTop: number;
   viewportHeight: number;
@@ -269,6 +281,7 @@ interface ItemRowsProps {
 
 function ItemRows({
   items,
+  authorNames,
   selectedPath,
   scrollTop,
   viewportHeight,
@@ -367,10 +380,16 @@ function ItemRows({
 
   const rows = visibleItems.map((item, offset) => {
     const index = range.start + offset;
+    const author = item.frontMatter.author;
+    // Resolve to a stable string so the memoized row only re-renders when the
+    // display name actually changes (login stays referentially identical until
+    // its profile name loads).
+    const authorName = (author && authorNames.get(author)) || author;
     return (
       <ItemRow
         key={item.path}
         item={item}
+        authorName={authorName}
         selected={item.path === selectedPath}
         virtualized={shouldVirtualize}
         top={shouldVirtualize ? index * ITEM_ROW_HEIGHT : null}
@@ -396,6 +415,7 @@ function ItemRows({
 
 interface ItemRowProps {
   item: ItemDocument;
+  authorName: string;
   selected: boolean;
   virtualized: boolean;
   top: number | null;
@@ -405,6 +425,7 @@ interface ItemRowProps {
 
 const ItemRow = memo(function ItemRow({
   item,
+  authorName,
   selected,
   virtualized,
   top,
@@ -418,6 +439,10 @@ const ItemRow = memo(function ItemRow({
           transform: `translateY(${top}px)`
         } as CSSProperties)
       : undefined;
+  const commentCount = item.frontMatter.comments_count ?? 0;
+  const showComments = commentCount > 0;
+  const showBookmark = item.frontMatter.local.favorite;
+  const showFooter = showComments || showBookmark;
   return (
     <button
       type="button"
@@ -434,6 +459,14 @@ const ItemRow = memo(function ItemRow({
       <span className="item-meta">
         {kindIcon(item)}
         {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+        {item.frontMatter.repo && (
+          <>
+            <span className="item-meta-dot" aria-hidden="true">
+              ·
+            </span>
+            <span className="item-repo">{item.frontMatter.repo}</span>
+          </>
+        )}
         {item.frontMatter.sync.status === "pending" && (
           <span className="item-sync-pending">Pending</span>
         )}
@@ -442,7 +475,7 @@ const ItemRow = memo(function ItemRow({
       <span className="item-title">{item.frontMatter.title}</span>
       {item.frontMatter.author &&
         item.frontMatter.author !== "unknown" && (
-          <span className="item-author">{item.frontMatter.author}</span>
+          <span className="item-author">{authorName}</span>
         )}
       {item.frontMatter.labels.length > 0 && (
         <span className="item-labels">
@@ -461,21 +494,19 @@ const ItemRow = memo(function ItemRow({
           ))}
         </span>
       )}
-      <span className="item-footer">
-        <span className="item-repo">
-          {item.frontMatter.owner}/{item.frontMatter.repo}
-        </span>
-        {item.frontMatter.comments_count !== undefined &&
-          item.frontMatter.comments_count > 0 && (
+      {showFooter && (
+        <span className="item-footer">
+          {showComments && (
             <span className="item-comments">
               <span className="yona-comment-icon" aria-hidden="true" />
-              {item.frontMatter.comments_count}
+              {commentCount}
             </span>
           )}
-        {item.frontMatter.local.favorite && (
-          <Bookmark className="small-bookmark" size={14} fill="currentColor" />
-        )}
-      </span>
+          {showBookmark && (
+            <Bookmark className="small-bookmark" size={14} fill="currentColor" />
+          )}
+        </span>
+      )}
     </button>
   );
 });
