@@ -1,3 +1,4 @@
+import { Tabs } from "@base-ui/react/tabs";
 import {
   Bookmark,
   CircleDot,
@@ -11,6 +12,7 @@ import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react"
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
+import "./ui/tabs.css";
 
 export type ItemStateFilter = "open" | "closed";
 
@@ -173,33 +175,44 @@ export function ItemListPane({
         </button>
       </div>
 
-      <div className="item-state-row" role="group" aria-label="Item state">
-        <span className="item-state-line item-state-line-start" aria-hidden="true" />
-        <button
-          type="button"
-          className={
-            stateFilter === "open" ? "item-state-tab active" : "item-state-tab"
-          }
-          aria-pressed={stateFilter === "open"}
-          onClick={() => onStateFilterChange("open")}
-        >
-          <span>Open</span>
-          <span className="item-state-count">{counts.open}</span>
-        </button>
-        <span className="item-state-line item-state-line-between" aria-hidden="true" />
-        <button
-          type="button"
-          className={
-            stateFilter === "closed" ? "item-state-tab active" : "item-state-tab"
-          }
-          aria-pressed={stateFilter === "closed"}
-          onClick={() => onStateFilterChange("closed")}
-        >
-          <span>Closed</span>
-          <span className="item-state-count">{counts.closed}</span>
-        </button>
-        <span className="item-state-line item-state-line-end" aria-hidden="true" />
-      </div>
+      <Tabs.Root
+        className="item-state-tabs-root"
+        value={stateFilter}
+        onValueChange={(value) => onStateFilterChange(value as ItemStateFilter)}
+      >
+        <Tabs.List className="item-state-row" aria-label="Item state">
+          <span
+            className="item-state-line item-state-line-start"
+            aria-hidden="true"
+          />
+          <Tabs.Tab
+            value="open"
+            className={(state) =>
+              state.active ? "item-state-tab active" : "item-state-tab"
+            }
+          >
+            <span>Open</span>
+            <span className="item-state-count">{counts.open}</span>
+          </Tabs.Tab>
+          <span
+            className="item-state-line item-state-line-between"
+            aria-hidden="true"
+          />
+          <Tabs.Tab
+            value="closed"
+            className={(state) =>
+              state.active ? "item-state-tab active" : "item-state-tab"
+            }
+          >
+            <span>Closed</span>
+            <span className="item-state-count">{counts.closed}</span>
+          </Tabs.Tab>
+          <span
+            className="item-state-line item-state-line-end"
+            aria-hidden="true"
+          />
+        </Tabs.List>
+      </Tabs.Root>
 
       {demoMode && (
         <p className="list-note">Sample items. Sign in from Settings to load yours.</p>

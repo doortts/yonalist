@@ -1,3 +1,4 @@
+import type React from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -41,6 +42,21 @@ function renderModal(
       onToggleSelection={vi.fn()}
       onSync={vi.fn()}
       onClose={vi.fn()}
+    />
+  );
+}
+
+function renderWith(props: Partial<React.ComponentProps<typeof OutboxModal>>) {
+  return render(
+    <OutboxModal
+      outbox={[operation("op-1", "pending")]}
+      selectedIds={new Set()}
+      online
+      syncing={false}
+      onToggleSelection={vi.fn()}
+      onSync={vi.fn()}
+      onClose={vi.fn()}
+      {...props}
     />
   );
 }
@@ -90,5 +106,34 @@ describe("OutboxModal", () => {
     await user.click(screen.getByRole("button", { name: /Open target/ }));
 
     expect(onOpenTarget).toHaveBeenCalledWith(queued);
+  });
+
+  it("reflects selection state and toggles a queued operation", async () => {
+    const onToggleSelection = vi.fn();
+    const user = userEvent.setup();
+    renderWith({ selectedIds: new Set(["op-1"]), onToggleSelection });
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: /Select create_comment/
+    });
+    expect(checkbox).toBeChecked();
+
+    await user.click(checkbox);
+
+    expect(onToggleSelection).toHaveBeenCalledWith("op-1");
+  });
+
+  it("closes via the close control and the Escape key", async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderWith({ onClose });
+
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Close outbox/ }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    await user.keyboard("{Escape}");
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });

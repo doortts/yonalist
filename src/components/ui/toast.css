@@ -1,0 +1,30 @@
+/*
+ * Base UI Toast wiring for the app feedback snackbar.
+ *
+ * Visual parity is preserved by keeping the existing `.app-snackbar` class on
+ * `Toast.Root` (styled by the global styles.css). This file only owns the
+ * Base UI-specific viewport container so stacked toasts sit in the same
+ * bottom-right corner the legacy fixed snackbar used.
+ */
+.app-toast-viewport {
+  position: fixed;
+  right: 20px;
+  bottom: calc(var(--statusbar-height) + 20px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* Let clicks fall through the empty viewport region to the app beneath. */
+  pointer-events: none;
+}
+
+/*
+ * The legacy `.app-snackbar` is `position: fixed`; inside the flex viewport it
+ * should flow normally so multiple toasts stack instead of overlapping.
+ */
+.app-toast-viewport .app-snackbar {
+  position: static;
+  right: auto;
+  bottom: auto;
+  pointer-events: auto;
+}

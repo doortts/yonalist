@@ -1,12 +1,17 @@
+import { Checkbox } from "@base-ui/react/checkbox";
+import { Radio } from "@base-ui/react/radio";
+import { RadioGroup } from "@base-ui/react/radio-group";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Circle,
   Loader2,
   RotateCcw,
   X
 } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
+import "./ui/form-controls.css";
 import type { AppSettings } from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
@@ -77,6 +82,35 @@ function ResetStepIcon({ status }: { status: ResetProgressStepStatus }) {
   return <Circle size={16} />;
 }
 
+function SettingsCheck({
+  label,
+  checked,
+  onCheckedChange,
+  children
+}: {
+  label: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <Checkbox.Root
+      className="settings-check"
+      render={<label />}
+      aria-label={label}
+      checked={checked}
+      onCheckedChange={(next) => onCheckedChange(next)}
+    >
+      <span className="ui-checkbox" aria-hidden="true">
+        <Checkbox.Indicator className="ui-checkbox-indicator">
+          <Check size={12} strokeWidth={3} />
+        </Checkbox.Indicator>
+      </span>
+      <span>{children}</span>
+    </Checkbox.Root>
+  );
+}
+
 export function SettingsPage({
   section,
   settings,
@@ -124,92 +158,89 @@ export function SettingsPage({
             <section className="settings-section">
               <div className="theme-settings-group">
                 <h3>Theme mode</h3>
-                <div
+                <RadioGroup
                   className="theme-options"
-                  role="radiogroup"
                   aria-label="Theme mode"
+                  value={themeMode}
+                  onValueChange={(value) => onThemeModeChange(value as ThemeMode)}
                 >
                   {themeModeOptions.map((option) => (
-                    <label
+                    <Radio.Root
                       key={option.value}
+                      value={option.value}
+                      render={<label />}
+                      aria-label={`${option.label} mode`}
                       className={
                         themeMode === option.value
                           ? "theme-option active"
                           : "theme-option"
                       }
                     >
-                      <input
-                        type="radio"
-                        name="theme-mode"
-                        aria-label={`${option.label} mode`}
-                        value={option.value}
-                        checked={themeMode === option.value}
-                        onChange={() => onThemeModeChange(option.value)}
-                      />
+                      <span className="ui-radio" aria-hidden="true">
+                        <Radio.Indicator className="ui-radio-indicator" />
+                      </span>
                       <span>{option.label}</span>
-                    </label>
+                    </Radio.Root>
                   ))}
-                </div>
+                </RadioGroup>
               </div>
 
               <div className="theme-settings-group">
                 <h3>Light theme</h3>
-                <div
+                <RadioGroup
                   className="theme-options"
-                  role="radiogroup"
                   aria-label="Light theme"
+                  value={lightTheme}
+                  onValueChange={(value) => onLightThemeChange(value as LightTheme)}
                 >
                   {lightThemeOptions.map((option) => (
-                    <label
+                    <Radio.Root
                       key={option.value}
+                      value={option.value}
+                      render={<label />}
+                      aria-label={`${option.label} light theme`}
                       className={
                         lightTheme === option.value
                           ? "theme-option active"
                           : "theme-option"
                       }
                     >
-                      <input
-                        type="radio"
-                        name="light-theme"
-                        aria-label={`${option.label} light theme`}
-                        value={option.value}
-                        checked={lightTheme === option.value}
-                        onChange={() => onLightThemeChange(option.value)}
-                      />
+                      <span className="ui-radio" aria-hidden="true">
+                        <Radio.Indicator className="ui-radio-indicator" />
+                      </span>
                       <span>{option.label}</span>
-                    </label>
+                    </Radio.Root>
                   ))}
-                </div>
+                </RadioGroup>
               </div>
 
               <div className="theme-settings-group">
                 <h3>Dark theme</h3>
-                <div
+                <RadioGroup
                   className="theme-options"
-                  role="radiogroup"
                   aria-label="Dark theme"
+                  value={darkTheme}
+                  onValueChange={(value) => onDarkThemeChange(value as DarkTheme)}
                 >
                   {darkThemeOptions.map((option) => (
-                    <label
+                    <Radio.Root
                       key={option.value}
+                      value={option.value}
+                      render={<label />}
+                      aria-label={`${option.label} dark theme`}
                       className={
                         darkTheme === option.value
                           ? "theme-option active"
                           : "theme-option"
                       }
                     >
-                      <input
-                        type="radio"
-                        name="dark-theme"
-                        aria-label={`${option.label} dark theme`}
-                        value={option.value}
-                        checked={darkTheme === option.value}
-                        onChange={() => onDarkThemeChange(option.value)}
-                      />
+                      <span className="ui-radio" aria-hidden="true">
+                        <Radio.Indicator className="ui-radio-indicator" />
+                      </span>
                       <span>{option.label}</span>
-                    </label>
+                    </Radio.Root>
                   ))}
-                </div>
+                </RadioGroup>
               </div>
             </section>
             <MarkdownStyleComparison
@@ -241,61 +272,43 @@ export function SettingsPage({
               />
             </label>
             <div className="settings-checks">
-              <label className="settings-check">
-                <input
-                  aria-label="Sync queued changes when online"
-                  type="checkbox"
-                  checked={settings.syncQueuedOnReconnect}
-                  onChange={(event) =>
-                    onUpdate("syncQueuedOnReconnect", event.target.checked)
-                  }
-                />
-                <span>Sync queued changes when online</span>
-              </label>
-              <label className="settings-check">
-                <input
-                  aria-label="Cache linked attachments"
-                  type="checkbox"
-                  checked={settings.cacheLinkedAttachments}
-                  onChange={(event) =>
-                    onUpdate("cacheLinkedAttachments", event.target.checked)
-                  }
-                />
-                <span>Cache linked attachments</span>
-              </label>
-              <label className="settings-check">
-                <input
-                  aria-label="Download comments while syncing"
-                  type="checkbox"
-                  checked={settings.downloadCommentsWhileSyncing}
-                  onChange={(event) =>
-                    onUpdate("downloadCommentsWhileSyncing", event.target.checked)
-                  }
-                />
-                <span>Download comments while syncing</span>
-              </label>
-              <label className="settings-check">
-                <input
-                  aria-label="Prefetch visible conversations"
-                  type="checkbox"
-                  checked={settings.prefetchVisibleItems !== false}
-                  onChange={(event) =>
-                    onUpdate("prefetchVisibleItems", event.target.checked)
-                  }
-                />
-                <span>Prefetch visible conversations</span>
-              </label>
-              <label className="settings-check">
-                <input
-                  aria-label="Desktop notifications for new items"
-                  type="checkbox"
-                  checked={settings.desktopNotifications}
-                  onChange={(event) =>
-                    onUpdate("desktopNotifications", event.target.checked)
-                  }
-                />
-                <span>Desktop notifications for new items</span>
-              </label>
+              <SettingsCheck
+                label="Sync queued changes when online"
+                checked={settings.syncQueuedOnReconnect}
+                onCheckedChange={(next) => onUpdate("syncQueuedOnReconnect", next)}
+              >
+                Sync queued changes when online
+              </SettingsCheck>
+              <SettingsCheck
+                label="Cache linked attachments"
+                checked={settings.cacheLinkedAttachments}
+                onCheckedChange={(next) => onUpdate("cacheLinkedAttachments", next)}
+              >
+                Cache linked attachments
+              </SettingsCheck>
+              <SettingsCheck
+                label="Download comments while syncing"
+                checked={settings.downloadCommentsWhileSyncing}
+                onCheckedChange={(next) =>
+                  onUpdate("downloadCommentsWhileSyncing", next)
+                }
+              >
+                Download comments while syncing
+              </SettingsCheck>
+              <SettingsCheck
+                label="Prefetch visible conversations"
+                checked={settings.prefetchVisibleItems !== false}
+                onCheckedChange={(next) => onUpdate("prefetchVisibleItems", next)}
+              >
+                Prefetch visible conversations
+              </SettingsCheck>
+              <SettingsCheck
+                label="Desktop notifications for new items"
+                checked={settings.desktopNotifications}
+                onCheckedChange={(next) => onUpdate("desktopNotifications", next)}
+              >
+                Desktop notifications for new items
+              </SettingsCheck>
             </div>
           </section>
         )}

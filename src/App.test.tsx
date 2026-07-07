@@ -1155,7 +1155,8 @@ describe("Yonalist app shell", () => {
       "https://ghe.example.com/api/v3"
     );
     await user.type(within(section).getByLabelText("별칭"), "사내 GHE");
-    await user.click(within(section).getByRole("radio", { name: "개인 토큰" }));
+    // Auth method is a Base UI ToggleGroup; its segments render as toggle buttons.
+    await user.click(within(section).getByRole("button", { name: "개인 토큰" }));
     await user.type(
       within(section).getByLabelText("Personal Access Token"),
       "ghp_test_token"
@@ -1394,9 +1395,10 @@ describe("Yonalist app shell", () => {
     try {
       render(<App />);
 
-      expect(
-        await screen.findByText(/Could not load repositories/i)
-      ).toHaveClass("app-snackbar");
+      // The message renders inside a Base UI Toast whose root carries the
+      // legacy `.app-snackbar` class for visual parity.
+      const message = await screen.findByText(/Could not load repositories/i);
+      expect(message.closest(".app-snackbar")).not.toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }

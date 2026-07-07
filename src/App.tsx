@@ -8,6 +8,8 @@ import {
   useRef,
   useState
 } from "react";
+import { Toast } from "@base-ui/react/toast";
+import "./components/ui/toast.css";
 import {
   defaultSettings,
   loadSettings,
@@ -129,6 +131,28 @@ import {
   persistOutboxOperation,
   rebuildVaultStateFromMarkdown
 } from "./services/vaultStore";
+
+// Auto-dismiss timing matches the legacy fixed snackbar (6s).
+const APP_SNACKBAR_TIMEOUT_MS = 6000;
+
+// A standalone manager lets feedback fire from effects and event handlers in
+// the App body without needing the `useToastManager` hook (which must run
+// under a Toast.Provider that App itself renders).
+const appToastManager = Toast.createToastManager();
+
+function showAppSnackbar(message: string) {
+  appToastManager.add({ title: message, timeout: APP_SNACKBAR_TIMEOUT_MS });
+}
+
+// Renders the queued toasts inside the provider using the shared manager.
+function AppSnackbarToasts() {
+  const { toasts } = Toast.useToastManager();
+  return toasts.map((toast) => (
+    <Toast.Root key={toast.id} toast={toast} className="app-snackbar">
+      <Toast.Title />
+    </Toast.Root>
+  ));
+}
 
 interface AppProps {
   initialOnline?: boolean;
@@ -255,7 +279,6 @@ export default function App({ initialOnline }: AppProps) {
   const [showNotifications, setShowNotifications] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
-  const [appSnackbar, setAppSnackbar] = useState<string | null>(null);
   const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
   const [visiblePrefetchItems, setVisiblePrefetchItems] = useState<ItemDocument[]>([]);
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
@@ -884,31 +907,22 @@ export default function App({ initialOnline }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, outbox, settings.syncQueuedOnReconnect]);
 
-  // Sync feedback toast auto-dismisses.
+  // Sync feedback surfaces as an auto-dismissing toast. Reset the state after
+  // queuing so an identical follow-up message re-fires the toast.
   useEffect(() => {
     if (!syncFeedback) {
       return;
     }
-    setAppSnackbar(syncFeedback);
+    showAppSnackbar(syncFeedback);
+    setSyncFeedback(null);
   }, [syncFeedback]);
 
   useEffect(() => {
     const message = repositoryGroups.error ?? visibleRepositoryCounts.error;
     if (message) {
-      setAppSnackbar(message);
+      showAppSnackbar(message);
     }
   }, [repositoryGroups.error, visibleRepositoryCounts.error]);
-
-  useEffect(() => {
-    if (!appSnackbar) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setAppSnackbar(null);
-      setSyncFeedback(null);
-    }, 6000);
-    return () => window.clearTimeout(timer);
-  }, [appSnackbar]);
 
   function onToggleFavorite() {
     if (!selectedItem) {
@@ -1323,7 +1337,7 @@ export default function App({ initialOnline }: AppProps) {
       persistOutboxOperation(vaultRoot, queuedOperation)
     ]).then(() => syncQueuedOperation(queuedOperation));
     if (closeAfterComment) {
-      setAppSnackbar("Comment and close queued.");
+      showAppSnackbar("Comment and close queued.");
     }
   }
 
@@ -1498,7 +1512,7 @@ export default function App({ initialOnline }: AppProps) {
       const message = cause instanceof Error ? cause.message : String(cause);
       failCurrentResetStep(message);
       setSettingsStatus(`Reset failed: ${message}`);
-      setAppSnackbar(`Reset failed: ${message}`);
+      showAppSnackbar(`Reset failed: ${message}`);
     }
   }
 
@@ -1714,11 +1728,16 @@ export default function App({ initialOnline }: AppProps) {
           onClose={() => setShowOutbox(false)}
         />
       )}
-      {appSnackbar && (
-        <div className="app-snackbar" role="status">
-          {appSnackbar}
-        </div>
-      )}
+      <Toast.Provider
+        toastManager={appToastManager}
+        timeout={APP_SNACKBAR_TIMEOUT_MS}
+      >
+        <Toast.Portal>
+          <Toast.Viewport className="app-toast-viewport" aria-label="App messages">
+            <AppSnackbarToasts />
+          </Toast.Viewport>
+        </Toast.Portal>
+      </Toast.Provider>
     </main>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>

@@ -93,14 +93,47 @@ describe("ItemListPane", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Open 3" })).toHaveAttribute(
-      "aria-pressed",
+    expect(screen.getByRole("tab", { name: "Open 3" })).toHaveAttribute(
+      "aria-selected",
       "false"
     );
-    expect(screen.getByRole("button", { name: "Closed 2" })).toHaveAttribute(
-      "aria-pressed",
+    expect(screen.getByRole("tab", { name: "Closed 2" })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
+  });
+
+  it("switches state filter when a tab is activated and moves focus with arrow keys", async () => {
+    const onStateFilterChange = vi.fn();
+    render(
+      <ItemListPane
+        items={[baseItem]}
+        selectedPath={null}
+        stateFilter="open"
+        stateCounts={{ open: 3, closed: 2 }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={onStateFilterChange}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    const openTab = screen.getByRole("tab", { name: "Open 3" });
+    const closedTab = screen.getByRole("tab", { name: "Closed 2" });
+
+    fireEvent.click(closedTab);
+    expect(onStateFilterChange).toHaveBeenCalledWith("closed");
+
+    openTab.focus();
+    fireEvent.keyDown(openTab, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(closedTab).toHaveFocus();
+    });
   });
 
   it("keeps the scroll position when items are re-created with the same paths", () => {

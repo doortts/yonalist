@@ -1,3 +1,7 @@
+import { Radio } from "@base-ui/react/radio";
+import { RadioGroup } from "@base-ui/react/radio-group";
+import { Toggle } from "@base-ui/react/toggle";
+import { ToggleGroup } from "@base-ui/react/toggle-group";
 import {
   Eye,
   EyeOff,
@@ -13,6 +17,7 @@ import {
 import { type FormEvent, useState } from "react";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
+import "./ui/form-controls.css";
 
 interface GithubServersSectionProps {
   servers: UseGithubServersResult;
@@ -146,7 +151,12 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
         <h3>GitHub 서버</h3>
       </div>
 
-      <div className="server-list" role="radiogroup" aria-label="GitHub server">
+      <RadioGroup
+        className="server-list"
+        aria-label="GitHub server"
+        value={servers.selectedUrl}
+        onValueChange={(url) => handleSelect(url as string)}
+      >
         {servers.urls.map((url) => (
           <div
             key={url}
@@ -154,14 +164,15 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
               url === servers.selectedUrl ? "server-row selected" : "server-row"
             }
           >
-            <label className="server-radio">
-              <input
-                type="radio"
-                name="github-server"
-                aria-label={servers.labelOf(url)}
-                checked={url === servers.selectedUrl}
-                onChange={() => handleSelect(url)}
-              />
+            <Radio.Root
+              value={url}
+              render={<label />}
+              className="server-radio"
+              aria-label={servers.labelOf(url)}
+            >
+              <span className="ui-radio" aria-hidden="true">
+                <Radio.Indicator className="ui-radio-indicator" />
+              </span>
               <span className="server-label">
                 <span className="server-alias">
                   {servers.state.aliases[url] ?? url}
@@ -170,7 +181,7 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
                   <span className="server-url">{url}</span>
                 )}
               </span>
-            </label>
+            </Radio.Root>
             {servers.usesToken(url) && <span className="chip">개인 토큰</span>}
             <button
               type="button"
@@ -192,7 +203,7 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
             </button>
           </div>
         ))}
-      </div>
+      </RadioGroup>
 
       <div className="server-list-actions">
         <button type="button" className="text-button" onClick={openAdd}>
@@ -240,40 +251,27 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
 
           <div className="server-auth-method">
             <span>인증 방식</span>
-            <div className="segmented" role="radiogroup" aria-label="인증 방식">
-              <label
-                className={
-                  editor.usePersonalToken ? "segment" : "segment active"
+            <ToggleGroup
+              className="segmented"
+              aria-label="인증 방식"
+              value={[editor.usePersonalToken ? "token" : "oauth"]}
+              onValueChange={(groupValue) => {
+                const next = groupValue[0];
+                if (!next) {
+                  // Preserve radio-like behavior: keep the current choice
+                  // rather than allowing an empty (deselected) state.
+                  return;
                 }
-              >
-                <input
-                  type="radio"
-                  name="auth-method"
-                  aria-label="OAuth"
-                  checked={!editor.usePersonalToken}
-                  onChange={() =>
-                    setEditor({ ...editor, usePersonalToken: false })
-                  }
-                />
+                setEditor({ ...editor, usePersonalToken: next === "token" });
+              }}
+            >
+              <Toggle value="oauth" className="segment" aria-label="OAuth">
                 OAuth
-              </label>
-              <label
-                className={
-                  editor.usePersonalToken ? "segment active" : "segment"
-                }
-              >
-                <input
-                  type="radio"
-                  name="auth-method"
-                  aria-label="개인 토큰"
-                  checked={editor.usePersonalToken}
-                  onChange={() =>
-                    setEditor({ ...editor, usePersonalToken: true })
-                  }
-                />
+              </Toggle>
+              <Toggle value="token" className="segment" aria-label="개인 토큰">
                 개인 토큰
-              </label>
-            </div>
+              </Toggle>
+            </ToggleGroup>
           </div>
 
           {editor.usePersonalToken && (
