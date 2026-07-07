@@ -1,5 +1,7 @@
-import { Send, X } from "lucide-react";
+import { Send, X, ChevronDown, Check } from "lucide-react";
 import type { FormEvent } from "react";
+import { Select } from "@base-ui/react/select";
+import "./ui/select.css";
 
 export interface RepositoryEntry {
   key: string;
@@ -53,19 +55,55 @@ export function NewIssuePage({
         {repositories.length > 1 && (
           <label className="issue-repo-field">
             <span>Repository</span>
-            <select
-              aria-label="Target repository"
+            <Select.Root
               value={draft.repositoryKey}
-              onChange={(event) =>
-                onChange({ ...draft, repositoryKey: event.target.value })
+              onValueChange={(value) =>
+                onChange({ ...draft, repositoryKey: value ?? "" })
               }
             >
-              {repositories.map((repository) => (
-                <option key={repository.key} value={repository.key}>
-                  {repository.owner}/{repository.repo}
-                </option>
-              ))}
-            </select>
+              <Select.Trigger
+                className="select-trigger"
+                aria-label="Target repository"
+              >
+                <Select.Value className="select-value">
+                  {(value) => {
+                    const selected = repositories.find(
+                      (repository) => repository.key === value
+                    );
+                    return selected
+                      ? `${selected.owner}/${selected.repo}`
+                      : "";
+                  }}
+                </Select.Value>
+                <Select.Icon className="select-icon">
+                  <ChevronDown size={16} />
+                </Select.Icon>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Positioner
+                  className="select-positioner"
+                  sideOffset={4}
+                  alignItemWithTrigger={false}
+                >
+                  <Select.Popup className="select-popup">
+                    {repositories.map((repository) => (
+                      <Select.Item
+                        key={repository.key}
+                        value={repository.key}
+                        className="select-item"
+                      >
+                        <Select.ItemIndicator className="select-item-indicator">
+                          <Check size={14} />
+                        </Select.ItemIndicator>
+                        <Select.ItemText className="select-item-text">
+                          {repository.owner}/{repository.repo}
+                        </Select.ItemText>
+                      </Select.Item>
+                    ))}
+                  </Select.Popup>
+                </Select.Positioner>
+              </Select.Portal>
+            </Select.Root>
           </label>
         )}
         <label className="issue-title-field">

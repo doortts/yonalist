@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIssueOutboxOperation } from "../domain/outbox";
-import type { ItemDocument } from "../domain/types";
+import type { CommentDocument, ItemDocument } from "../domain/types";
 import { serializeMarkdownDocument } from "../domain/markdown";
 import {
   loadVaultState,
+  persistCommentDocuments,
   persistItemDocument,
   persistItemDocuments,
   persistOutboxOperation
@@ -28,6 +29,19 @@ const draftIssue: ItemDocument = {
     updated_at: "2026-07-03T00:00:00Z",
     local: { favorite: false },
     sync: { status: "pending" }
+  }
+};
+
+const syncedComment: CommentDocument = {
+  path: "/Users/doortts/Yonalist/github.com/acme/app/issues/42/comments/20260703T000000Z-1001.md",
+  body: "Cached from prefetch",
+  frontMatter: {
+    kind: "issue_comment",
+    remote_id: 1001,
+    author: "mona",
+    created_at: "2026-07-03T00:00:00Z",
+    updated_at: "2026-07-03T00:00:00Z",
+    sync: { status: "synced" }
   }
 };
 
@@ -105,6 +119,14 @@ describe("vaultStore", () => {
         ([key]) => key === "yonalist.vaultDocuments.v1"
       ).length
     ).toBe(writesAfterFirst);
+  });
+
+  it("bulk persists prefetched comment documents and skips unchanged repeats", async () => {
+    const first = await persistCommentDocuments(vaultRoot, [syncedComment]);
+    const second = await persistCommentDocuments(vaultRoot, [syncedComment]);
+
+    expect(first).toEqual({ checked: 1, written: 1, skipped: 0 });
+    expect(second).toEqual({ checked: 1, written: 0, skipped: 1 });
   });
 
   it("records hashes while loading local vault documents so identical refreshes do not rewrite", async () => {

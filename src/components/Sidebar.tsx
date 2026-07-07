@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import type { OwnerGroup } from "../services/githubItems";
 import { LoadingDots } from "./LoadingDots";
+import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions";
 
@@ -26,11 +27,9 @@ interface SidebarProps {
   repositoryGroups: OwnerGroup[];
   repositoriesLoading: boolean;
   counts: Record<ListFilter, number>;
-  outboxCount: number;
   settingsOpen: boolean;
   onOpenSettings: () => void;
   onOpenProjectSettings: () => void;
-  onOpenOutbox: () => void;
   notificationsOpen: boolean;
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
@@ -60,11 +59,9 @@ export function Sidebar({
   repositoryGroups,
   repositoriesLoading,
   counts,
-  outboxCount,
   settingsOpen,
   onOpenSettings,
   onOpenProjectSettings,
-  onOpenOutbox,
   notificationsOpen,
   onOpenNotifications,
   unreadNotificationCount,
@@ -74,6 +71,7 @@ export function Sidebar({
   const projectsActive = !settingsOpen && !notificationsOpen;
 
   return (
+    <TooltipProvider>
     <aside className="sidebar" aria-label="Navigation">
       <div className="pane-titlebar-spacer" />
       <div className="sidebar-scroll">
@@ -81,41 +79,31 @@ export function Sidebar({
         <div className="brand-copy">
           <p className="eyebrow">Yonalist</p>
           <h1>GitHub Inbox</h1>
-          <button
-            className="global-outbox-button"
-            type="button"
-            aria-label={`Open outbox, ${outboxCount} pending ${
-              outboxCount === 1 ? "change" : "changes"
-            }`}
-            title="Outbox stores offline issues and comments waiting to sync to GitHub."
-            onClick={onOpenOutbox}
-          >
-            <Inbox size={14} />
-            <span>Outbox {outboxCount}</span>
-          </button>
         </div>
         <div className="brand-actions">
           {loginRequired && (
-            <button
-              className="icon-button login-required-button"
-              type="button"
-              aria-label="Login required"
-              title="Sign in required"
-              onClick={() => onOpenSettings()}
-            >
-              <LogIn size={17} />
-            </button>
+            <IconTooltip label="Sign in required">
+              <button
+                className="icon-button login-required-button"
+                type="button"
+                aria-label="Login required"
+                onClick={() => onOpenSettings()}
+              >
+                <LogIn size={17} />
+              </button>
+            </IconTooltip>
           )}
           {!online && (
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="Go online"
-              title="오프라인 — 클릭하면 온라인으로 전환"
-              onClick={onToggleOnline}
-            >
-              <WifiOff size={18} />
-            </button>
+            <IconTooltip label="오프라인 — 클릭하면 온라인으로 전환">
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="Go online"
+                onClick={onToggleOnline}
+              >
+                <WifiOff size={18} />
+              </button>
+            </IconTooltip>
           )}
         </div>
       </div>
@@ -161,15 +149,16 @@ export function Sidebar({
       <section className="nav-section">
         <div className="nav-section-heading">
           <h2>Repository</h2>
-          <button
-            className="nav-section-icon-button"
-            type="button"
-            aria-label="Open repository filter settings"
-            title="Repository filter settings"
-            onClick={onOpenProjectSettings}
-          >
-            <Settings size={13} />
-          </button>
+          <IconTooltip label="Repository filter settings">
+            <button
+              className="nav-section-icon-button"
+              type="button"
+              aria-label="Open repository filter settings"
+              onClick={onOpenProjectSettings}
+            >
+              <Settings size={13} />
+            </button>
+          </IconTooltip>
         </div>
         {repositoriesLoading && repositoryGroups.length === 0 && (
           <p className="nav-note">Loading repositories...</p>
@@ -214,5 +203,6 @@ export function Sidebar({
       </section>
       </div>
     </aside>
+    </TooltipProvider>
   );
 }

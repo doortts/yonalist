@@ -17,14 +17,33 @@ interface CacheEntry {
   notifications: GitHubNotification[];
 }
 
+interface UnreadUpdateCacheEntry {
+  lastModified: string | null;
+  seenUpdatedAtById: Map<string, string>;
+}
+
 // The notifications endpoint caps per_page at 50 (unlike most list APIs'
 // 100), so pagination must follow the Link header instead of assuming a
 // short page means the end.
 const MAX_PAGES = 20;
 const PER_PAGE = 50;
 
-// Conditional-request cache so a 304 skips re-downloading every page.
+// Full-list cache for the Notifications pane. Refreshes always read the first
+// page unconditionally; if it matches the cached first page, pagination can be
+// skipped without trusting a potentially stale 304.
 const cache = new Map<string, CacheEntry>();
+// Native OS toasts use a separate unread-only conditional probe so their
+// low-cost polling cannot affect the full app list.
+const unreadUpdateCache = new Map<string, UnreadUpdateCacheEntry>();
+
+// Number of consecutive 304 probe responses tolerated before the next probe is
+// skipped and a full unread first page is fetched unconditionally. A broken
+// proxy fingerprint can keep returning 304 forever off a stale Last-Modified,
+// which would silently suppress toasts; this bounds that failure.
+const MAX_CONSECUTIVE_PROBE_NOT_MODIFIED = 5;
+// Consecutive-304 counters per unread-probe cache key. Reset in
+// clearNotificationCache alongside the caches they guard.
+const consecutiveProbeNotModified = new Map<string, number>();
 
 function cacheKey(options: FetchNotificationsOptions): string {
   return [
@@ -40,7 +59,9 @@ const inflight = new Map<string, Promise<GitHubNotification[]>>();
 
 export function clearNotificationCache() {
   cache.clear();
+  unreadUpdateCache.clear();
   inflight.clear();
+  consecutiveProbeNotModified.clear();
 }
 
 export function fetchNotifications(
@@ -56,6 +77,40 @@ export function fetchNotifications(
   });
   inflight.set(key, request);
   return request;
+}
+
+function sameNotificationSnapshot(
+  left: GitHubNotification,
+  right: GitHubNotification
+): boolean {
+  return (
+    left.id === right.id &&
+    left.unread === right.unread &&
+    left.updated_at === right.updated_at &&
+    left.last_read_at === right.last_read_at &&
+    left.subject.title === right.subject.title &&
+    left.subject.type === right.subject.type &&
+    left.repository.full_name === right.repository.full_name
+  );
+}
+
+function firstPageMatchesCached(
+  pageItems: GitHubNotification[],
+  cached: GitHubNotification[]
+): boolean {
+  if (cached.length === 0) {
+    return pageItems.length === 0;
+  }
+  if (pageItems.length === 0) {
+    return false;
+  }
+  const cachedFirstPageLength = Math.min(PER_PAGE, cached.length);
+  if (pageItems.length !== cachedFirstPageLength) {
+    return false;
+  }
+  return pageItems.every((item, index) =>
+    sameNotificationSnapshot(item, cached[index])
+  );
 }
 
 async function doFetchNotifications(
@@ -78,39 +133,6 @@ async function doFetchNotifications(
     "X-GitHub-Api-Version": "2022-11-28"
   };
 
-  // Conditional requests on this endpoint return only the notifications
-  // updated since the given time — replacing the list with that delta would
-  // wipe everything older. So the conditional check (If-Modified-Since and/or
-  // If-None-Match — some GHE setups only send ETags) runs as a cheap one-item
-  // probe, and any change triggers an unconditional full refetch.
-  if (cached && (cached.lastModified || cached.etag)) {
-    params.set("per_page", "1");
-    params.set("page", "1");
-    const conditionalHeaders: Record<string, string> = { ...baseHeaders };
-    if (cached.lastModified) {
-      conditionalHeaders["If-Modified-Since"] = cached.lastModified;
-    }
-    if (cached.etag) {
-      conditionalHeaders["If-None-Match"] = cached.etag;
-    }
-    const probeStartedAt = performance.now();
-    tracePerf("notifications_probe_start", {});
-    const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
-      headers: conditionalHeaders
-    });
-    tracePerf("notifications_probe_done", {
-      status: probe.status,
-      durationMs: performance.now() - probeStartedAt
-    });
-    if (probe.status === 304) {
-      options.onPartialResult?.(cached.notifications);
-      return cached.notifications;
-    }
-    if (!probe.ok) {
-      throw new GitHubRequestError(probe.status, "");
-    }
-  }
-
   params.set("per_page", String(PER_PAGE));
 
   const notifications: GitHubNotification[] = [];
@@ -123,6 +145,10 @@ async function doFetchNotifications(
     const pageStartedAt = performance.now();
     tracePerf("notifications_page_start", { page });
     const response = await fetcher(`${base}/notifications?${params.toString()}`, {
+      // The app maintains its own snapshot/localStorage cache, so an
+      // additional WebView HTTP cache adds no benefit and risks a stale proxy
+      // 304 being surfaced as a fresh 200 body. Bypass it entirely.
+      cache: "no-store",
       headers: baseHeaders
     });
 
@@ -144,8 +170,21 @@ async function doFetchNotifications(
     tracePerf("notifications_page_done", {
       page,
       items: pageItems.length,
-      durationMs: performance.now() - pageStartedAt
+      durationMs: performance.now() - pageStartedAt,
+      // Surfacing the first-page validators lets a perf trace compare the
+      // "last 304 fingerprint" against the current one when diagnosing
+      // stale-proxy staleness.
+      ...(page === 1 ? { lastModified, etag } : {})
     });
+    if (page === 1 && cached && firstPageMatchesCached(pageItems, cached.notifications)) {
+      options.onPartialResult?.(cached.notifications);
+      cache.set(key, {
+        lastModified: lastModified ?? cached.lastModified,
+        etag: etag ?? cached.etag,
+        notifications: cached.notifications
+      });
+      return cached.notifications;
+    }
     notifications.push(...pageItems);
     options.onPartialResult?.([...notifications]);
 
@@ -162,6 +201,137 @@ async function doFetchNotifications(
   return notifications;
 }
 
+function seenMapFor(notifications: GitHubNotification[]): Map<string, string> {
+  return new Map(
+    notifications.map((notification) => [
+      notification.id,
+      notification.updated_at
+    ])
+  );
+}
+
+function isNewOrUpdated(
+  notification: GitHubNotification,
+  seenUpdatedAtById: Map<string, string>
+): boolean {
+  const seenUpdatedAt = seenUpdatedAtById.get(notification.id);
+  if (!seenUpdatedAt) {
+    return true;
+  }
+  return Date.parse(notification.updated_at) > Date.parse(seenUpdatedAt);
+}
+
+function unreadUpdatesCacheKey(options: FetchNotificationsOptions): string {
+  return [
+    cacheKey({ ...options, all: false }),
+    options.token
+  ].join("|");
+}
+
+async function fetchUnreadFirstPage(
+  options: FetchNotificationsOptions,
+  headers: Record<string, string>
+): Promise<Response> {
+  const fetcher = options.fetchImpl ?? fetch;
+  const base = options.apiBaseUrl.replace(/\/+$/, "");
+  const params = new URLSearchParams();
+  params.set("all", "false");
+  if (options.participating) {
+    params.set("participating", "true");
+  }
+  params.set("per_page", String(PER_PAGE));
+  params.set("page", "1");
+  return fetcher(`${base}/notifications?${params.toString()}`, {
+    cache: "no-store",
+    headers
+  });
+}
+
+export async function fetchUnreadNotificationUpdates(
+  options: FetchNotificationsOptions
+): Promise<GitHubNotification[]> {
+  const fetcher = options.fetchImpl ?? fetch;
+  const base = options.apiBaseUrl.replace(/\/+$/, "");
+  const key = unreadUpdatesCacheKey(options);
+  const cached = unreadUpdateCache.get(key);
+  const baseHeaders: Record<string, string> = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${options.token}`,
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+
+  const skipProbe =
+    (consecutiveProbeNotModified.get(key) ?? 0) >=
+    MAX_CONSECUTIVE_PROBE_NOT_MODIFIED;
+  if (skipProbe) {
+    // A broken proxy fingerprint can keep answering 304 off a stale
+    // Last-Modified indefinitely, which would suppress toasts forever. After
+    // enough consecutive 304s, drop the conditional probe and force a full
+    // unread first page so we resynchronize.
+    tracePerf("notifications_unread_probe_skipped", {
+      consecutiveNotModified: consecutiveProbeNotModified.get(key) ?? 0
+    });
+    consecutiveProbeNotModified.set(key, 0);
+  }
+
+  if (cached?.lastModified && !skipProbe) {
+    const params = new URLSearchParams();
+    params.set("all", "false");
+    if (options.participating) {
+      params.set("participating", "true");
+    }
+    params.set("per_page", "1");
+    params.set("page", "1");
+    const probeStartedAt = performance.now();
+    tracePerf("notifications_unread_probe_start", {});
+    const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
+      cache: "no-store",
+      headers: {
+        ...baseHeaders,
+        "If-Modified-Since": cached.lastModified
+      }
+    });
+    tracePerf("notifications_unread_probe_done", {
+      status: probe.status,
+      durationMs: performance.now() - probeStartedAt
+    });
+    if (probe.status === 304) {
+      consecutiveProbeNotModified.set(
+        key,
+        (consecutiveProbeNotModified.get(key) ?? 0) + 1
+      );
+      return [];
+    }
+    if (!probe.ok) {
+      throw new GitHubRequestError(probe.status, "");
+    }
+    consecutiveProbeNotModified.set(key, 0);
+  }
+
+  const pageStartedAt = performance.now();
+  tracePerf("notifications_unread_page_start", {});
+  const response = await fetchUnreadFirstPage(options, baseHeaders);
+  tracePerf("notifications_unread_page_done", {
+    status: response.status,
+    durationMs: performance.now() - pageStartedAt
+  });
+  if (!response.ok) {
+    throw new GitHubRequestError(response.status, "");
+  }
+
+  const pageItems = (await response.json()) as GitHubNotification[];
+  const fresh = cached
+    ? pageItems.filter((notification) =>
+        isNewOrUpdated(notification, cached.seenUpdatedAtById)
+      )
+    : [];
+  unreadUpdateCache.set(key, {
+    lastModified: response.headers.get("Last-Modified") ?? cached?.lastModified ?? null,
+    seenUpdatedAtById: seenMapFor(pageItems)
+  });
+  return fresh;
+}
+
 export async function markNotificationRead(options: {
   token: string;
   apiBaseUrl: string;
@@ -174,6 +344,7 @@ export async function markNotificationRead(options: {
     `${base}/notifications/threads/${encodeURIComponent(options.threadId)}`,
     {
       method: "PATCH",
+      cache: "no-store",
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${options.token}`,

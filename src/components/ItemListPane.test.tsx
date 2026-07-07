@@ -1,7 +1,21 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { ItemDocument } from "../domain/types";
+import type { GithubConnection } from "../hooks/useGithubAuth";
 import { ItemListPane } from "./ItemListPane";
+
+const fetchUserProfilesMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../services/userProfiles", () => ({
+  fetchUserProfiles: fetchUserProfilesMock
+}));
+
+const signedInConnection: GithubConnection = {
+  apiBaseUrl: "https://api.github.com",
+  webBaseUrl: "https://github.com",
+  token: "ghp_test"
+};
 
 const baseItem: ItemDocument = {
   path: "/vault/github.com/acme/app/issues/42/issue.md",
@@ -57,7 +71,43 @@ function renderPane(items: ItemDocument[]) {
   );
 }
 
+function renderPaneWith(
+  items: ItemDocument[],
+  overrides: {
+    connection?: GithubConnection;
+    demoMode?: boolean;
+    online?: boolean;
+  } = {}
+) {
+  return render(
+    <GithubConnectionContext.Provider
+      value={overrides.connection ?? signedInConnection}
+    >
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={overrides.demoMode ?? false}
+        online={overrides.online ?? true}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    </GithubConnectionContext.Provider>
+  );
+}
+
 describe("ItemListPane", () => {
+  beforeEach(() => {
+    fetchUserProfilesMock.mockReset();
+    fetchUserProfilesMock.mockResolvedValue({});
+  });
+
   it("paints labels in the list with their GitHub label colors", () => {
     renderPane([baseItem]);
 
@@ -93,14 +143,47 @@ describe("ItemListPane", () => {
       />
     );
 
-    expect(screen.getByRole("button", { name: "Open 3" })).toHaveAttribute(
-      "aria-pressed",
+    expect(screen.getByRole("tab", { name: "Open 3" })).toHaveAttribute(
+      "aria-selected",
       "false"
     );
-    expect(screen.getByRole("button", { name: "Closed 2" })).toHaveAttribute(
-      "aria-pressed",
+    expect(screen.getByRole("tab", { name: "Closed 2" })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
+  });
+
+  it("switches state filter when a tab is activated and moves focus with arrow keys", async () => {
+    const onStateFilterChange = vi.fn();
+    render(
+      <ItemListPane
+        items={[baseItem]}
+        selectedPath={null}
+        stateFilter="open"
+        stateCounts={{ open: 3, closed: 2 }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={onStateFilterChange}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    const openTab = screen.getByRole("tab", { name: "Open 3" });
+    const closedTab = screen.getByRole("tab", { name: "Closed 2" });
+
+    fireEvent.click(closedTab);
+    expect(onStateFilterChange).toHaveBeenCalledWith("closed");
+
+    openTab.focus();
+    fireEvent.keyDown(openTab, { key: "ArrowRight" });
+    await waitFor(() => {
+      expect(closedTab).toHaveFocus();
+    });
   });
 
   it("keeps the scroll position when items are re-created with the same paths", () => {
@@ -142,5 +225,209 @@ describe("ItemListPane", () => {
     );
 
     expect(list.scrollTop).toBe(720);
+  });
+
+  it("reports the items currently visible in the list viewport", async () => {
+    const items = [itemAt(1), itemAt(2)];
+    const onVisibleItemsChange = vi.fn();
+    render(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onVisibleItemsChange={onVisibleItemsChange}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(onVisibleItemsChange).toHaveBeenCalled();
+    });
+    expect(onVisibleItemsChange).toHaveBeenLastCalledWith(items);
+  });
+
+  it("renders the author name as the third line, after the title and before labels", () => {
+    const { container } = renderPane([baseItem]);
+
+    expect(screen.getByText("mona")).toBeInTheDocument();
+
+    const card = container.querySelector(".item-card") as HTMLElement;
+    const rows = Array.from(card.children).map((node) =>
+      node.className.split(" ")[0]
+    );
+    const titleIndex = rows.indexOf("item-title");
+    const authorIndex = rows.indexOf("item-author");
+    const labelsIndex = rows.indexOf("item-labels");
+
+    expect(authorIndex).toBe(titleIndex + 1);
+    expect(authorIndex).toBeLessThan(labelsIndex);
+    expect(card.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("does not render an author line when the author is an empty string", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: { ...baseItem.frontMatter, author: "" }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-author")).toBeNull();
+  });
+
+  it("does not render an author line when the author is unknown", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: { ...baseItem.frontMatter, author: "unknown" }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-author")).toBeNull();
+    expect(screen.queryByText("unknown")).toBeNull();
+  });
+
+  it("shows the repo name without its owner on the meta line, after the number", () => {
+    const { container } = renderPane([baseItem]);
+
+    const meta = container.querySelector(".item-meta") as HTMLElement;
+    expect(meta).toHaveTextContent("Issue #42");
+    expect(meta.querySelector(".item-repo")).toHaveTextContent("app");
+    expect(meta.textContent).not.toContain("acme/app");
+
+    // The number must come before the repo on the meta line.
+    const metaText = meta.textContent ?? "";
+    expect(metaText.indexOf("#42")).toBeLessThan(metaText.indexOf("app"));
+  });
+
+  it("no longer renders the owner/repo slug in the footer", () => {
+    const { container } = renderPane([baseItem]);
+
+    const footer = container.querySelector(".item-footer") as HTMLElement;
+    // baseItem has comments, so the footer still renders (comments + bookmark).
+    expect(footer).not.toBeNull();
+    expect(footer.querySelector(".item-repo")).toBeNull();
+    expect(footer.textContent).not.toContain("acme");
+    expect(footer.textContent).not.toContain("app");
+  });
+
+  it("does not render a footer when there are no comments and no bookmark", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        comments_count: 0,
+        local: { favorite: false }
+      }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-footer")).toBeNull();
+  });
+
+  it("renders a footer with only the bookmark when a favorite has no comments", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        comments_count: 0,
+        local: { favorite: true }
+      }
+    };
+    const { container } = renderPane([item]);
+
+    const footer = container.querySelector(".item-footer") as HTMLElement;
+    expect(footer).not.toBeNull();
+    expect(footer.querySelector(".small-bookmark")).not.toBeNull();
+    expect(footer.querySelector(".item-comments")).toBeNull();
+  });
+
+  it("shows the author's display name from their profile on the author line", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: { login: "mona", name: "Mona Lisa" }
+    });
+
+    const { container } = renderPaneWith([baseItem]);
+
+    await waitFor(() => {
+      expect(container.querySelector(".item-author")).toHaveTextContent(
+        "Mona Lisa"
+      );
+    });
+    expect(screen.queryByText("mona")).toBeNull();
+    expect(fetchUserProfilesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the login on the author line when no profile name is available", async () => {
+    fetchUserProfilesMock.mockResolvedValue({});
+
+    const { container } = renderPaneWith([baseItem]);
+
+    await waitFor(() => {
+      expect(fetchUserProfilesMock).toHaveBeenCalled();
+    });
+    expect(container.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("does not fetch profiles in demo mode (no signed-in token)", async () => {
+    const { container } = renderPaneWith([baseItem], { demoMode: true });
+
+    await Promise.resolve();
+    expect(fetchUserProfilesMock).not.toHaveBeenCalled();
+    // Author line still falls back to the login.
+    expect(container.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("uses actual row positions for non-virtualized visible item reporting", async () => {
+    const items = [itemAt(1), itemAt(2), itemAt(3), itemAt(4)];
+    const onVisibleItemsChange = vi.fn();
+    const { container } = render(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onVisibleItemsChange={onVisibleItemsChange}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+    const list = container.querySelector(".item-list") as HTMLDivElement;
+    Object.defineProperty(list, "clientHeight", {
+      configurable: true,
+      value: 100
+    });
+    container.querySelectorAll(".item-card").forEach((row, index) => {
+      Object.defineProperty(row, "offsetTop", {
+        configurable: true,
+        value: index * 100
+      });
+      Object.defineProperty(row, "offsetHeight", {
+        configurable: true,
+        value: 100
+      });
+    });
+
+    fireEvent(window, new Event("resize"));
+    fireEvent.scroll(list, { target: { scrollTop: 250 } });
+
+    await waitFor(() => {
+      expect(onVisibleItemsChange).toHaveBeenLastCalledWith([
+        items[2],
+        items[3]
+      ]);
+    });
   });
 });

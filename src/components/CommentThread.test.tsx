@@ -50,6 +50,33 @@ describe("CommentThread", () => {
     expect(screen.queryByText("Yogno Koo yogno-koo")).not.toBeInTheDocument();
   });
 
+  it("renders nested discussion replies below their parent comment", async () => {
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent discussion comment",
+            replies: [
+              {
+                id: "reply",
+                author: "octocat",
+                created_at: "2026-07-02T01:00:00Z",
+                body: "threaded discussion reply"
+              }
+            ]
+          }
+        ]}
+      />
+    );
+
+    expect(await screen.findByText("parent discussion comment")).toBeInTheDocument();
+    const replies = screen.getByLabelText("Replies");
+    expect(within(replies).getByText("threaded discussion reply")).toBeInTheDocument();
+  });
+
   it("renders nothing when there are no comments", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();
@@ -69,8 +96,45 @@ describe("OpeningPost", () => {
     expect(screen.getByText("octocat")).toBeInTheDocument();
     expect(screen.getByText("Issue · opened 1d ago")).toBeInTheDocument();
     expect(await screen.findByText("hello")).toBeInTheDocument();
+    expect(container.querySelector(".entry-avatar-slot")).not.toBeNull();
     // No initial-letter avatar fallback is rendered.
     expect(container.querySelector(".avatar")).toBeNull();
+  });
+
+  it("keeps the opening post kind and date in the right-side meta area", () => {
+    const { container } = render(
+      <OpeningPost
+        author={{ login: "octocat", name: "The Octocat" }}
+        subtitle="Discussion · opened 1d ago"
+        body="hello"
+      />
+    );
+
+    const header = container.querySelector(".opening-post-header");
+    const authorCluster = container.querySelector(".comment-author-cluster");
+    const time = screen.getByText("Discussion · opened 1d ago");
+
+    expect(header).toContainElement(authorCluster as HTMLElement);
+    expect(time).toHaveClass("comment-time");
+  });
+
+  it("shows wireframe placeholders while opening post author details load", () => {
+    const { container } = render(
+      <OpeningPost
+        author={{ login: "octocat", loading: true }}
+        subtitle="Issue · opened 1d ago"
+        body="hello"
+      />
+    );
+
+    expect(screen.getByLabelText("Loading author for octocat")).toHaveClass(
+      "comment-author-skeleton"
+    );
+    expect(screen.getByLabelText("Loading avatar for octocat")).toHaveClass(
+      "avatar-skeleton"
+    );
+    expect(screen.queryByText("octocat")).not.toBeInTheDocument();
+    expect(container.querySelector(".entry-avatar-slot")).not.toBeNull();
   });
 
   it("shows only the opening post author's display name and keeps the login in a tooltip", () => {

@@ -1,4 +1,6 @@
+import { Tabs } from "@base-ui/react/tabs";
 import { FolderTree, HardDrive, RotateCcw, Server, SunMoon } from "lucide-react";
+import "./ui/category-tabs.css";
 
 export type SettingsSection =
   | "appearance"
@@ -59,23 +61,30 @@ export function SettingsCategoryPane({ section, onSelect }: SettingsCategoryPane
         <p className="eyebrow">Preferences</p>
         <h2>Settings</h2>
       </div>
-      <nav className="settings-category-list">
-        {settingsSections.map(({ key, label, description, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            className={section === key ? "category-item active" : "category-item"}
-            aria-pressed={section === key}
-            onClick={() => onSelect(key)}
-          >
-            <Icon size={17} />
-            <span className="category-label">
-              {label}
-              <em>{description}</em>
-            </span>
-          </button>
-        ))}
-      </nav>
+      <Tabs.Root
+        className="settings-category-tabs-root"
+        value={section}
+        onValueChange={(value) => onSelect(value as SettingsSection)}
+        orientation="vertical"
+      >
+        <Tabs.List className="settings-category-list" activateOnFocus>
+          {settingsSections.map(({ key, label, description, icon: Icon }) => (
+            <Tabs.Tab
+              key={key}
+              value={key}
+              className={(state) =>
+                state.active ? "category-item active" : "category-item"
+              }
+            >
+              <Icon size={17} />
+              <span className="category-label">
+                {label}
+                <em>{description}</em>
+              </span>
+            </Tabs.Tab>
+          ))}
+        </Tabs.List>
+      </Tabs.Root>
     </section>
   );
 }

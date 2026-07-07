@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
+  notificationsEqual,
   notificationWebUrl,
+  reconcileNotifications,
   subjectNumber,
   type GitHubNotification
 } from "./notifications";
@@ -105,5 +107,135 @@ describe("groupNotificationsByDate", () => {
 
     expect(groups.map((group) => group.label)).toEqual(["Today", "2026.07.01"]);
     expect(groups[0].notifications.map((item) => item.id)).toEqual(["a", "c"]);
+  });
+});
+
+describe("notificationsEqual", () => {
+  it("treats identical references as equal", () => {
+    const item = notification();
+    expect(notificationsEqual(item, item)).toBe(true);
+  });
+
+  it("treats field-wise identical notifications as equal", () => {
+    expect(notificationsEqual(notification(), notification())).toBe(true);
+  });
+
+  it("detects changes in every render-affecting field", () => {
+    const base = notification();
+    expect(notificationsEqual(base, notification({ id: "2" }))).toBe(false);
+    expect(notificationsEqual(base, notification({ unread: false }))).toBe(false);
+    expect(notificationsEqual(base, notification({ reason: "comment" }))).toBe(false);
+    expect(
+      notificationsEqual(base, notification({ updated_at: "2026-07-03T10:00:00Z" }))
+    ).toBe(false);
+    expect(
+      notificationsEqual(base, notification({ last_read_at: "2026-07-03T10:00:00Z" }))
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          subject: { ...base.subject, title: "Renamed" }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          subject: { ...base.subject, url: null }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          subject: { ...base.subject, type: "PullRequest" }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          repository: { ...base.repository, full_name: "other/repo" }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          repository: { ...base.repository, name: "renamed" }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          repository: {
+            ...base.repository,
+            owner: { login: "someone-else" }
+          }
+        })
+      )
+    ).toBe(false);
+    expect(
+      notificationsEqual(
+        base,
+        notification({
+          repository: {
+            ...base.repository,
+            owner: { login: base.repository.owner.login, avatar_url: "https://x/y.png" }
+          }
+        })
+      )
+    ).toBe(false);
+  });
+});
+
+describe("reconcileNotifications", () => {
+  it("returns next verbatim when there is no previous list", () => {
+    const next = [notification({ id: "a" })];
+    expect(reconcileNotifications(null, next)).toBe(next);
+  });
+
+  it("keeps the previous array reference when nothing changed", () => {
+    const previous = [notification({ id: "a" }), notification({ id: "b" })];
+    const next = [notification({ id: "a" }), notification({ id: "b" })];
+    expect(reconcileNotifications(previous, next)).toBe(previous);
+  });
+
+  it("reuses unchanged element references while returning a new array on change", () => {
+    const previous = [notification({ id: "a" }), notification({ id: "b" })];
+    const next = [
+      notification({ id: "a" }),
+      notification({ id: "b", updated_at: "2026-07-05T10:00:00Z" })
+    ];
+    const reconciled = reconcileNotifications(previous, next);
+    expect(reconciled).not.toBe(previous);
+    // The unchanged first element keeps its previous identity.
+    expect(reconciled[0]).toBe(previous[0]);
+    // The changed second element takes the fresh object.
+    expect(reconciled[1]).toBe(next[1]);
+  });
+
+  it("returns a new array when length changes even if shared elements match", () => {
+    const previous = [notification({ id: "a" })];
+    const next = [notification({ id: "a" }), notification({ id: "b" })];
+    const reconciled = reconcileNotifications(previous, next);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled[0]).toBe(previous[0]);
+    expect(reconciled).toHaveLength(2);
+  });
+
+  it("returns a new array when the order changes", () => {
+    const previous = [notification({ id: "a" }), notification({ id: "b" })];
+    const next = [notification({ id: "b" }), notification({ id: "a" })];
+    const reconciled = reconcileNotifications(previous, next);
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled.map((item) => item.id)).toEqual(["b", "a"]);
   });
 });

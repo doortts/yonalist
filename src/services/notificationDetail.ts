@@ -8,6 +8,12 @@ import { subjectNumber, type GitHubNotification } from "../domain/notifications"
 import { createGitHubClient } from "./github";
 import { LruCache } from "./lruCache";
 import {
+  clearPersistedNotificationDetails,
+  loadLatestPersistedNotificationDetail,
+  loadPersistedNotificationDetail,
+  persistNotificationDetail
+} from "./notificationStores";
+import {
   clearUserProfileCache,
   displayNameForLogin,
   fetchUserProfiles,
@@ -62,6 +68,7 @@ interface CommentResponse {
   author_association?: string;
   reactions?: Record<string, unknown>;
   created_at?: string;
+  replies?: CommentResponse[];
 }
 
 interface ReleaseResponse {
@@ -120,6 +127,7 @@ function mapComments(
 ): ConversationComment[] {
   return comments.map((comment) => {
     const authorName = displayNameForUser(comment.user, profiles);
+    const replies = mapComments(comment.replies ?? [], profiles);
     return {
       id: String(comment.id ?? ""),
       author: comment.user?.login ?? "unknown",
@@ -128,18 +136,112 @@ function mapComments(
       authorAssociation: comment.author_association,
       created_at: comment.created_at ?? "",
       body: comment.body ?? "",
-      reactions: summarizeReactions(comment.reactions)
+      reactions: summarizeReactions(comment.reactions),
+      ...(replies.length > 0 ? { replies } : {})
     };
   });
 }
 
+function flattenComments(comments: CommentResponse[]): CommentResponse[] {
+  return comments.flatMap((comment) => [
+    comment,
+    ...flattenComments(comment.replies ?? [])
+  ]);
+}
+
 const detailCache = new LruCache<NotificationDetailContent>(50);
 const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
+/**
+ * The most recently cached detail per subject, keyed independently of the
+ * version marker. Lets consumers show the previous conversation immediately
+ * while a newer version is fetched, instead of falling back to a skeleton.
+ */
+const latestDetails = new Map<string, NotificationDetailContent>();
 
 export function clearNotificationDetailCache() {
+  resetNotificationDetailMemoryCache();
+  clearPersistedNotificationDetails();
+  clearUserProfileCache();
+}
+
+/**
+ * Drops the in-memory caches but keeps the persisted store, mirroring an app
+ * restart where localStorage survives. Exposed mainly for tests that exercise
+ * the persistence-restore path.
+ */
+export function resetNotificationDetailMemoryCache() {
   detailCache.clear();
   inflightDetails.clear();
-  clearUserProfileCache();
+  latestDetails.clear();
+}
+
+/**
+ * Just enough of the fetch options to key the detail cache. The synchronous
+ * peek APIs accept this subset so callers can look before deciding to fetch.
+ */
+export interface NotificationDetailCacheKeyOptions {
+  apiBaseUrl: string;
+  notification: GitHubNotification;
+}
+
+function detailSubjectKey(
+  options: NotificationDetailCacheKeyOptions
+): string {
+  const { notification } = options;
+  return [
+    options.apiBaseUrl,
+    notification.subject.url ??
+      `${notification.repository.full_name}#${notification.id}`
+  ].join("|");
+}
+
+/**
+ * Synchronous cache peek for the notification's current version. Checks the
+ * in-memory cache first and, on a miss, restores a matching entry from the
+ * persisted store (surviving app restarts). Returns null when nothing matches
+ * the current version.
+ */
+export function getCachedNotificationDetail(
+  options: NotificationDetailCacheKeyOptions
+): NotificationDetailContent | null {
+  const cached = detailCache.get(detailCacheKey(options));
+  if (cached) {
+    return cached;
+  }
+  const persisted = loadPersistedNotificationDetail(
+    options.apiBaseUrl,
+    options.notification
+  );
+  if (persisted) {
+    // Warm the memory cache so subsequent peeks are pointer-cheap and the
+    // latest pointer is populated for stale-while-revalidate.
+    detailCache.set(detailCacheKey(options), persisted);
+    latestDetails.set(detailSubjectKey(options), persisted);
+  }
+  return persisted;
+}
+
+/**
+ * Returns the most recently cached detail for a subject, regardless of which
+ * version it was cached under. Used to keep the previously seen conversation
+ * on screen while a newer version is fetched. Falls back to the persisted
+ * store so a restart still shows a stale conversation.
+ */
+export function getLatestCachedNotificationDetail(
+  options: NotificationDetailCacheKeyOptions
+): NotificationDetailContent | null {
+  const inMemory = latestDetails.get(detailSubjectKey(options));
+  if (inMemory) {
+    return inMemory;
+  }
+  const persisted = loadLatestPersistedNotificationDetail(
+    options.apiBaseUrl,
+    options.notification
+  );
+  if (persisted) {
+    latestDetails.set(detailSubjectKey(options), persisted);
+  }
+  return persisted;
 }
 
 async function userProfilesForDetail(
@@ -156,16 +258,17 @@ async function userProfilesForDetail(
     },
     [
       loginNeedingProfile(item.user),
-      ...(comments ?? []).map((comment) => loginNeedingProfile(comment.user))
+      ...flattenComments(comments ?? []).map((comment) =>
+        loginNeedingProfile(comment.user)
+      )
     ]
   );
 }
 
-function detailCacheKey(options: FetchNotificationDetailOptions): string {
+function detailCacheKey(options: NotificationDetailCacheKeyOptions): string {
   const { notification } = options;
   return [
-    options.apiBaseUrl,
-    notification.subject.url,
+    detailSubjectKey(options),
     // A new activity bumps updated_at, invalidating the cached conversation.
     notification.updated_at
   ].join("|");
@@ -194,6 +297,8 @@ export async function fetchNotificationDetail(
     .then((detail) => {
       if (!detail.commentsError) {
         detailCache.set(key, detail);
+        latestDetails.set(detailSubjectKey(options), detail);
+        persistNotificationDetail(options.apiBaseUrl, options.notification, detail);
       }
       return detail;
     })

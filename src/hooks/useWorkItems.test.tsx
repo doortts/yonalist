@@ -167,6 +167,19 @@ describe("useWorkItems", () => {
     expect(fetchRepoWorkItemsMock).not.toHaveBeenCalled();
   });
 
+  it("records the latest remote list fetch duration", async () => {
+    fetchMyWorkItemsMock.mockResolvedValue([item("Remote inbox item")]);
+
+    const { result } = renderWorkItems({ type: "inbox" });
+
+    await waitFor(() =>
+      expect(result.current.items.map((current) => current.frontMatter.title)).toEqual([
+        "Remote inbox item"
+      ])
+    );
+    expect(result.current.lastFetchDurationMs).toEqual(expect.any(Number));
+  });
+
   it("aborts an in-flight repository refresh when another repository is selected", async () => {
     const signals: AbortSignal[] = [];
     fetchRepoWorkItemsMock.mockImplementation(

@@ -17,6 +17,7 @@ interface CreateCommentOperationInput extends RepositoryIdentity {
   id: string;
   itemKind: ItemKind;
   number: number;
+  closeAfterComment?: boolean;
   localFilePath: string;
   createdAt: string;
   vaultRoot?: string;
@@ -61,6 +62,7 @@ export function createCommentOutboxOperation(
         kind: input.itemKind,
         number: input.number
       },
+      ...(input.closeAfterComment ? { close_after_comment: true } : {}),
       local_file_path: input.localFilePath,
       created_at: input.createdAt,
       status: "pending"

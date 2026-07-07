@@ -3,14 +3,21 @@ import { subjectNumber, type GitHubNotification } from "../domain/notifications"
 import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
+import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { StickyTitle } from "./ui/StickyTitle";
+import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
   state: UseNotificationDetailResult;
+  online: boolean;
+  commentDraft: string;
   onOpenInBrowser: (notification: GitHubNotification) => void;
+  onCommentDraftChange: (draft: string) => void;
+  onQueueComment: (action: CommentSubmitAction) => void;
 }
 
 function subjectTypeLabel(type: string): string {
@@ -39,7 +46,11 @@ function subjectKind(type: string): ItemKind {
 export function NotificationDetail({
   notification,
   state,
-  onOpenInBrowser
+  online,
+  commentDraft,
+  onOpenInBrowser,
+  onCommentDraftChange,
+  onQueueComment
 }: NotificationDetailProps) {
   if (!notification) {
     return (
@@ -57,52 +68,65 @@ export function NotificationDetail({
     notification.subject.type === "Release"
       ? null
       : subjectNumber(notification.subject);
-  const { detail, loading, error } = state;
+  const { detail, loading, error, refreshing } = state;
+  // Only show the full-height skeleton before any conversation is available;
+  // once a (possibly stale) detail is on screen we keep it visible and swap
+  // in the fresh version in the background (stale-while-revalidate).
+  const showSkeleton = loading && !detail;
+  const canComment = notification.subject.type !== "Release" && number !== null;
+  const canClose =
+    notification.subject.type === "Issue" &&
+    (detail?.state ?? "open") === "open";
 
   return (
     <>
-      <header className="detail-header">
-        <div className="detail-title-row">
-          <div>
-            <p className="eyebrow">
-              {notification.repository.full_name} ·{" "}
-              {subjectTypeLabel(notification.subject.type)}
-              {number !== null && ` #${number}`}
-            </p>
-            <h2>{detail?.title ?? notification.subject.title}</h2>
+      <StickyTitle title={detail?.title ?? notification.subject.title} number={number}>
+        <header className="detail-header">
+          <div className="detail-title-row">
+            <div>
+              <p className="eyebrow">
+                {notification.repository.full_name} ·{" "}
+                {subjectTypeLabel(notification.subject.type)}
+                {number !== null && ` #${number}`}
+              </p>
+              <h2>{detail?.title ?? notification.subject.title}</h2>
+            </div>
+            <div className="detail-header-actions">
+              <TooltipProvider>
+                <IconTooltip label="브라우저에서 열기">
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label="Open in browser"
+                    onClick={() => onOpenInBrowser(notification)}
+                  >
+                    <Globe size={16} />
+                  </button>
+                </IconTooltip>
+              </TooltipProvider>
+            </div>
           </div>
-          <div className="detail-header-actions">
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="Open in browser"
-              title="브라우저에서 열기"
-              onClick={() => onOpenInBrowser(notification)}
-            >
-              <Globe size={16} />
-            </button>
-          </div>
-        </div>
-        <div className="detail-actions">
-          {detail &&
-            (notification.subject.type === "Release" ? (
-              <span className="chip">{detail.state}</span>
-            ) : (
-              <StateBadge
-                kind={subjectKind(notification.subject.type)}
-                state={detail.state}
-              />
+          <div className="detail-actions">
+            {detail &&
+              (notification.subject.type === "Release" ? (
+                <span className="chip">{detail.state}</span>
+              ) : (
+                <StateBadge
+                  kind={subjectKind(notification.subject.type)}
+                  state={detail.state}
+                />
+              ))}
+            {detail?.labels.map((label) => (
+              <LabelChip key={label.name} label={label} />
             ))}
-          {detail?.labels.map((label) => (
-            <LabelChip key={label.name} label={label} />
-          ))}
-          <span className="detail-connection">
-            {notification.reason.replace(/_/g, " ")}
-          </span>
-        </div>
-      </header>
+            <span className="detail-connection">
+              {notification.reason.replace(/_/g, " ")}
+            </span>
+          </div>
+        </header>
+      </StickyTitle>
 
-      {loading && (
+      {showSkeleton && (
         <div className="detail-loading" aria-label="Loading conversation">
           <Loader2 size={20} className="spinning" />
           <span>Loading conversation...</span>
@@ -116,8 +140,14 @@ export function NotificationDetail({
         </p>
       )}
 
-      {detail && !loading && (
+      {detail && (
         <div className="conversation">
+          {refreshing && (
+            <div className="detail-loading" aria-label="Refreshing conversation">
+              <Loader2 size={16} className="spinning" />
+              <span>Refreshing…</span>
+            </div>
+          )}
           <OpeningPost
             author={{
               login: detail.author,
@@ -133,6 +163,16 @@ export function NotificationDetail({
           />
           <CommentThread comments={detail.comments} subjectAuthor={detail.author} />
         </div>
+      )}
+
+      {canComment && (
+        <CommentComposer
+          draft={commentDraft}
+          online={online}
+          canClose={canClose}
+          onDraftChange={onCommentDraftChange}
+          onSubmit={onQueueComment}
+        />
       )}
     </>
   );

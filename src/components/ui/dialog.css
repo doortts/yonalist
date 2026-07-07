@@ -1,0 +1,71 @@
+/*
+ * Base UI Dialog adjustments for OutboxModal.
+ *
+ * The legacy markup nested `.modal` inside `.modal-backdrop`, so the backdrop's
+ * `display: grid; place-items: center` centered the card. With Base UI the
+ * Backdrop and Popup are siblings inside the portal, so the popup must center
+ * itself. These rules restore that layout without touching the global
+ * styles.css (which still owns the card's look via `.modal`).
+ */
+
+/* Backdrop overlay stacking. `.modal-backdrop` (styles.css) already supplies
+ * position/inset/background; only the z-index needs to sit above app chrome. */
+.modal-backdrop {
+  z-index: 20;
+}
+
+/* Center the popup card in the viewport, matching the old grid-centered layout
+ * and the backdrop's 24px inset padding. */
+.modal.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  z-index: 21;
+  max-width: calc(100vw - 48px);
+  transform: translate(-50%, -50%);
+}
+
+/* Base UI Checkbox root replaces the native <input>; match the 16px accented
+ * look the legacy `.outbox-card input` rule provided. */
+.outbox-checkbox {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.outbox-checkbox:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.outbox-checkbox[data-checked] {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.outbox-checkbox[data-disabled] {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.outbox-checkbox-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+.outbox-checkbox-indicator[data-unchecked] {
+  visibility: hidden;
+}

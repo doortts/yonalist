@@ -1,3 +1,4 @@
+import { Tabs } from "@base-ui/react/tabs";
 import {
   Bookmark,
   CircleDot,
@@ -7,15 +8,32 @@ import {
   RefreshCw,
   Search
 } from "lucide-react";
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
+import { useAuthorNames } from "../hooks/useAuthorNames";
 import { timeAgo } from "../timeFormat";
+import "./ItemListPane.css";
+import "./ui/tabs.css";
 
 export type ItemStateFilter = "open" | "closed";
 
 const VIRTUALIZE_AT = 80;
-const ITEM_ROW_HEIGHT = 122;
+// Fixed virtualized row height. Covers the tallest row: meta (kind · repo ·
+// time), title, author, optional labels, and an optional footer (comments +
+// bookmark). The footer and labels are now conditional, so rows never exceed
+// this height — a row that drops its footer just leaves slack, which the fixed
+// slot absorbs without layout drift. Kept at 140 (was bumped +18px for the
+// author line); relocating the repo onto the meta line adds no new line.
+const ITEM_ROW_HEIGHT = 140;
 const ITEM_OVERSCAN = 6;
 
 interface ItemStateCounts {
@@ -32,9 +50,11 @@ interface ItemListPaneProps {
   loading: boolean;
   error: string | null;
   demoMode: boolean;
+  online?: boolean;
   onStateFilterChange: (filter: ItemStateFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
+  onVisibleItemsChange?: (items: ItemDocument[]) => void;
   onNewIssue: () => void;
   onRefresh: () => void;
 }
@@ -77,6 +97,12 @@ function labelColorStyle(
   };
 }
 
+function itemListSignature(items: ItemDocument[]): string {
+  return items
+    .map((item) => `${item.path}|${item.frontMatter.updated_at}`)
+    .join("\n");
+}
+
 export function ItemListPane({
   items,
   selectedPath,
@@ -86,13 +112,18 @@ export function ItemListPane({
   loading,
   error,
   demoMode,
+  online = true,
   onStateFilterChange,
   onQueryChange,
   onSelect,
+  onVisibleItemsChange,
   onNewIssue,
   onRefresh
 }: ItemListPaneProps) {
   const listRef = useRef<HTMLDivElement>(null);
+  // Login → display name for the authors in view. Demo/offline sessions skip
+  // the fetch and fall back to the raw login (see useAuthorNames).
+  const authorNames = useAuthorNames(items, { enabled: !demoMode && online });
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const listIdentity = useMemo(
@@ -165,30 +196,44 @@ export function ItemListPane({
         </button>
       </div>
 
-      <div className="item-state-row" role="group" aria-label="Item state">
-        <button
-          type="button"
-          className={
-            stateFilter === "open" ? "item-state-tab active" : "item-state-tab"
-          }
-          aria-pressed={stateFilter === "open"}
-          onClick={() => onStateFilterChange("open")}
-        >
-          <span>Open</span>
-          <span className="item-state-count">{counts.open}</span>
-        </button>
-        <button
-          type="button"
-          className={
-            stateFilter === "closed" ? "item-state-tab active" : "item-state-tab"
-          }
-          aria-pressed={stateFilter === "closed"}
-          onClick={() => onStateFilterChange("closed")}
-        >
-          <span>Closed</span>
-          <span className="item-state-count">{counts.closed}</span>
-        </button>
-      </div>
+      <Tabs.Root
+        className="item-state-tabs-root"
+        value={stateFilter}
+        onValueChange={(value) => onStateFilterChange(value as ItemStateFilter)}
+      >
+        <Tabs.List className="item-state-row" aria-label="Item state">
+          <span
+            className="item-state-line item-state-line-start"
+            aria-hidden="true"
+          />
+          <Tabs.Tab
+            value="open"
+            className={(state) =>
+              state.active ? "item-state-tab active" : "item-state-tab"
+            }
+          >
+            <span>Open</span>
+            <span className="item-state-count">{counts.open}</span>
+          </Tabs.Tab>
+          <span
+            className="item-state-line item-state-line-between"
+            aria-hidden="true"
+          />
+          <Tabs.Tab
+            value="closed"
+            className={(state) =>
+              state.active ? "item-state-tab active" : "item-state-tab"
+            }
+          >
+            <span>Closed</span>
+            <span className="item-state-count">{counts.closed}</span>
+          </Tabs.Tab>
+          <span
+            className="item-state-line item-state-line-end"
+            aria-hidden="true"
+          />
+        </Tabs.List>
+      </Tabs.Root>
 
       {demoMode && (
         <p className="list-note">Sample items. Sign in from Settings to load yours.</p>
@@ -208,10 +253,12 @@ export function ItemListPane({
         )}
         <ItemRows
           items={items}
+          authorNames={authorNames}
           selectedPath={selectedPath}
           scrollTop={scrollTop}
           viewportHeight={viewportHeight}
           onSelect={onSelect}
+          onVisibleItemsChange={onVisibleItemsChange}
         />
       </div>
     </section>
@@ -224,20 +271,49 @@ export function ItemListPane({
 
 interface ItemRowsProps {
   items: ItemDocument[];
+  authorNames: ReadonlyMap<string, string>;
   selectedPath: string | null;
   scrollTop: number;
   viewportHeight: number;
   onSelect: (path: string) => void;
+  onVisibleItemsChange?: (items: ItemDocument[]) => void;
 }
 
 function ItemRows({
   items,
+  authorNames,
   selectedPath,
   scrollTop,
   viewportHeight,
-  onSelect
+  onSelect,
+  onVisibleItemsChange
 }: ItemRowsProps) {
+  const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const registerRow = useCallback(
+    (path: string, node: HTMLButtonElement | null) => {
+      if (node) {
+        rowRefs.current.set(path, node);
+      } else {
+        rowRefs.current.delete(path);
+      }
+    },
+    []
+  );
+  const [measuredViewportItems, setMeasuredViewportItems] = useState<
+    ItemDocument[] | null
+  >(null);
   const shouldVirtualize = items.length > VIRTUALIZE_AT && viewportHeight > 0;
+  const viewportRange = useMemo(() => {
+    if (viewportHeight <= 0) {
+      return { start: 0, end: items.length };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / ITEM_ROW_HEIGHT));
+    const end = Math.min(
+      items.length,
+      Math.max(start + 1, Math.ceil((scrollTop + viewportHeight) / ITEM_ROW_HEIGHT))
+    );
+    return { start, end };
+  }, [items.length, scrollTop, viewportHeight]);
   const range = useMemo(() => {
     if (!shouldVirtualize) {
       return { start: 0, end: items.length };
@@ -253,6 +329,50 @@ function ItemRows({
   const visibleItems = shouldVirtualize
     ? items.slice(range.start, range.end)
     : items;
+  const estimatedViewportItems = useMemo(
+    () => items.slice(viewportRange.start, viewportRange.end),
+    [items, viewportRange.end, viewportRange.start]
+  );
+  const estimatedViewportSignature = itemListSignature(estimatedViewportItems);
+  const viewportItems = shouldVirtualize
+    ? estimatedViewportItems
+    : (measuredViewportItems ?? estimatedViewportItems);
+  const viewportSignature = itemListSignature(viewportItems);
+
+  useEffect(() => {
+    if (shouldVirtualize || viewportHeight <= 0) {
+      setMeasuredViewportItems((current) => (current === null ? current : null));
+      return;
+    }
+
+    const viewportBottom = scrollTop + viewportHeight;
+    const next = items.filter((item) => {
+      const row = rowRefs.current.get(item.path);
+      if (!row || row.offsetHeight <= 0) {
+        return false;
+      }
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      return bottom > scrollTop && top < viewportBottom;
+    });
+    const visibleByDom = next.length > 0 ? next : estimatedViewportItems;
+    const nextSignature = itemListSignature(visibleByDom);
+    setMeasuredViewportItems((current) =>
+      current && itemListSignature(current) === nextSignature ? current : visibleByDom
+    );
+  }, [
+    estimatedViewportItems,
+    estimatedViewportSignature,
+    items,
+    scrollTop,
+    shouldVirtualize,
+    viewportHeight
+  ]);
+
+  useEffect(() => {
+    onVisibleItemsChange?.(viewportItems);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onVisibleItemsChange, viewportSignature]);
 
   if (items.length === 0) {
     return null;
@@ -260,67 +380,22 @@ function ItemRows({
 
   const rows = visibleItems.map((item, offset) => {
     const index = range.start + offset;
-    const virtualStyle = shouldVirtualize
-      ? ({
-          height: ITEM_ROW_HEIGHT,
-          transform: `translateY(${index * ITEM_ROW_HEIGHT}px)`
-        } as CSSProperties)
-      : undefined;
+    const author = item.frontMatter.author;
+    // Resolve to a stable string so the memoized row only re-renders when the
+    // display name actually changes (login stays referentially identical until
+    // its profile name loads).
+    const authorName = (author && authorNames.get(author)) || author;
     return (
-          <button
-            type="button"
-            className={[
-              item.path === selectedPath ? "item-card selected" : "item-card",
-              shouldVirtualize ? "virtual-row" : ""
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            key={item.path}
-            style={virtualStyle}
-            onClick={() => onSelect(item.path)}
-          >
-            <span className="item-meta">
-              {kindIcon(item)}
-              {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
-              {item.frontMatter.sync.status === "pending" && (
-                <span className="item-sync-pending">Pending</span>
-              )}
-              <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
-            </span>
-            <span className="item-title">{item.frontMatter.title}</span>
-            {item.frontMatter.labels.length > 0 && (
-              <span className="item-labels">
-                {item.frontMatter.labels.slice(0, 4).map((label) => (
-                  <span
-                    className={
-                      item.frontMatter.label_colors?.[label]
-                        ? "item-label colored"
-                        : "item-label"
-                    }
-                    key={label}
-                    style={labelColorStyle(item, label)}
-                  >
-                    {label}
-                  </span>
-                ))}
-              </span>
-            )}
-            <span className="item-footer">
-              <span className="item-repo">
-                {item.frontMatter.owner}/{item.frontMatter.repo}
-              </span>
-              {item.frontMatter.comments_count !== undefined &&
-                item.frontMatter.comments_count > 0 && (
-                  <span className="item-comments">
-                    <span className="yona-comment-icon" aria-hidden="true" />
-                    {item.frontMatter.comments_count}
-                  </span>
-                )}
-              {item.frontMatter.local.favorite && (
-                <Bookmark className="small-bookmark" size={14} fill="currentColor" />
-              )}
-            </span>
-          </button>
+      <ItemRow
+        key={item.path}
+        item={item}
+        authorName={authorName}
+        selected={item.path === selectedPath}
+        virtualized={shouldVirtualize}
+        top={shouldVirtualize ? index * ITEM_ROW_HEIGHT : null}
+        onSelect={onSelect}
+        registerRow={registerRow}
+      />
     );
   });
 
@@ -337,3 +412,101 @@ function ItemRows({
     </div>
   );
 }
+
+interface ItemRowProps {
+  item: ItemDocument;
+  authorName: string;
+  selected: boolean;
+  virtualized: boolean;
+  top: number | null;
+  onSelect: (path: string) => void;
+  registerRow: (path: string, node: HTMLButtonElement | null) => void;
+}
+
+const ItemRow = memo(function ItemRow({
+  item,
+  authorName,
+  selected,
+  virtualized,
+  top,
+  onSelect,
+  registerRow
+}: ItemRowProps) {
+  const virtualStyle =
+    virtualized && top !== null
+      ? ({
+          height: ITEM_ROW_HEIGHT,
+          transform: `translateY(${top}px)`
+        } as CSSProperties)
+      : undefined;
+  const commentCount = item.frontMatter.comments_count ?? 0;
+  const showComments = commentCount > 0;
+  const showBookmark = item.frontMatter.local.favorite;
+  const showFooter = showComments || showBookmark;
+  return (
+    <button
+      type="button"
+      className={[
+        selected ? "item-card selected" : "item-card",
+        virtualized ? "virtual-row" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      ref={(node) => registerRow(item.path, node)}
+      style={virtualStyle}
+      onClick={() => onSelect(item.path)}
+    >
+      <span className="item-meta">
+        {kindIcon(item)}
+        {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+        {item.frontMatter.repo && (
+          <>
+            <span className="item-meta-dot" aria-hidden="true">
+              ·
+            </span>
+            <span className="item-repo">{item.frontMatter.repo}</span>
+          </>
+        )}
+        {item.frontMatter.sync.status === "pending" && (
+          <span className="item-sync-pending">Pending</span>
+        )}
+        <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
+      </span>
+      <span className="item-title">{item.frontMatter.title}</span>
+      {item.frontMatter.author &&
+        item.frontMatter.author !== "unknown" && (
+          <span className="item-author">{authorName}</span>
+        )}
+      {item.frontMatter.labels.length > 0 && (
+        <span className="item-labels">
+          {item.frontMatter.labels.slice(0, 4).map((label) => (
+            <span
+              className={
+                item.frontMatter.label_colors?.[label]
+                  ? "item-label colored"
+                  : "item-label"
+              }
+              key={label}
+              style={labelColorStyle(item, label)}
+            >
+              {label}
+            </span>
+          ))}
+        </span>
+      )}
+      {showFooter && (
+        <span className="item-footer">
+          {showComments && (
+            <span className="item-comments">
+              <span className="yona-comment-icon" aria-hidden="true" />
+              {commentCount}
+            </span>
+          )}
+          {showBookmark && (
+            <Bookmark className="small-bookmark" size={14} fill="currentColor" />
+          )}
+        </span>
+      )}
+    </button>
+  );
+});

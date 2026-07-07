@@ -1,39 +1,42 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   isReadAndQuiet,
   notificationWebUrl,
   type GitHubNotification
 } from "../domain/notifications";
+import { fetchUnreadNotificationUpdates } from "../services/notifications";
 import {
   ensureNotificationPermission,
   sendDesktopNotification
 } from "../services/desktopNotifications";
 import type { ViewedAtMap } from "../services/notificationStores";
+import type { GithubConnection } from "./useGithubAuth";
 
-const SUMMARY_THRESHOLD = 5;
+const POLL_INTERVAL_MS = 60 * 1000;
 
 interface UseDesktopNotificationsInput {
-  notifications: GitHubNotification[];
+  connection: GithubConnection;
   viewedAt: ViewedAtMap;
-  webBaseUrl: string;
+  online: boolean;
   enabled: boolean;
   demoMode: boolean;
+  isRepoVisible?: (repositoryFullName: string) => boolean;
 }
 
 /**
- * Fires OS notifications when new unread items arrive, mirroring the Flutter
- * client: the very first populated list only seeds the baseline (no toast);
- * afterwards, unseen unread notifications trigger a toast — one per item up
- * to five, or a single summary beyond that.
+ * Fires OS notifications from the GitHub Notifications feed only. The app list
+ * can keep its full all=true cache strategy while this hook performs a small
+ * unread-only conditional check for native toasts.
  */
 export function useDesktopNotifications({
-  notifications,
+  connection,
   viewedAt,
-  webBaseUrl,
+  online,
   enabled,
-  demoMode
+  demoMode,
+  isRepoVisible
 }: UseDesktopNotificationsInput) {
-  const knownIds = useRef<Set<string> | null>(null);
+  const running = useRef(false);
 
   useEffect(() => {
     if (enabled && !demoMode) {
@@ -41,49 +44,76 @@ export function useDesktopNotifications({
     }
   }, [enabled, demoMode]);
 
+  const notify = useCallback(
+    async (updates: GitHubNotification[]) => {
+      for (const notification of updates) {
+        if (
+          isRepoVisible &&
+          !isRepoVisible(notification.repository.full_name)
+        ) {
+          continue;
+        }
+        if (
+          isReadAndQuiet(
+            notification,
+            viewedAt[notificationWebUrl(notification, connection.webBaseUrl)]
+          )
+        ) {
+          continue;
+        }
+        await sendDesktopNotification({
+          title: notification.repository.full_name,
+          body: notification.subject.title
+        });
+      }
+    },
+    [connection.webBaseUrl, isRepoVisible, viewedAt]
+  );
+
+  const checkForUnreadUpdates = useCallback(async () => {
+    if (
+      running.current ||
+      !enabled ||
+      demoMode ||
+      !online ||
+      !connection.token.trim()
+    ) {
+      return;
+    }
+    running.current = true;
+    try {
+      const updates = await fetchUnreadNotificationUpdates({
+        token: connection.token,
+        apiBaseUrl: connection.apiBaseUrl
+      });
+      await notify(updates);
+    } catch {
+      // Native notifications are best-effort; the main Notifications pane owns
+      // user-visible loading and error states.
+    } finally {
+      running.current = false;
+    }
+  }, [
+    connection.apiBaseUrl,
+    connection.token,
+    demoMode,
+    enabled,
+    notify,
+    online
+  ]);
+
   useEffect(() => {
-    if (!enabled || demoMode) {
-      // Keep the baseline in sync so re-enabling doesn't replay old items.
-      knownIds.current = new Set(notifications.map((item) => item.id));
+    if (!enabled || demoMode || !online || !connection.token.trim()) {
       return;
     }
-
-    // First populated list: seed the baseline silently.
-    if (knownIds.current === null) {
-      knownIds.current = new Set(notifications.map((item) => item.id));
-      return;
-    }
-
-    const seen = knownIds.current;
-    const fresh = notifications.filter(
-      (notification) =>
-        !seen.has(notification.id) &&
-        !isReadAndQuiet(
-          notification,
-          viewedAt[notificationWebUrl(notification, webBaseUrl)]
-        )
-    );
-
-    // Update the baseline to the current set regardless of what we notify.
-    knownIds.current = new Set(notifications.map((item) => item.id));
-
-    if (fresh.length === 0) {
-      return;
-    }
-
-    if (fresh.length > SUMMARY_THRESHOLD) {
-      void sendDesktopNotification({
-        title: "Yonalist",
-        body: `${fresh.length} new GitHub notifications`
-      });
-      return;
-    }
-
-    for (const notification of fresh) {
-      void sendDesktopNotification({
-        title: notification.repository.full_name,
-        body: notification.subject.title
-      });
-    }
-  }, [notifications, viewedAt, webBaseUrl, enabled, demoMode]);
+    void checkForUnreadUpdates();
+    const interval = window.setInterval(checkForUnreadUpdates, POLL_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [
+    checkForUnreadUpdates,
+    connection.token,
+    demoMode,
+    enabled,
+    online
+  ]);
 }

@@ -21,11 +21,9 @@ function renderSidebar() {
         pulls: 3,
         discussions: 2
       }}
-      outboxCount={0}
       settingsOpen={false}
       onOpenSettings={vi.fn()}
       onOpenProjectSettings={vi.fn()}
-      onOpenOutbox={vi.fn()}
       notificationsOpen={false}
       onOpenNotifications={vi.fn()}
       unreadNotificationCount={0}

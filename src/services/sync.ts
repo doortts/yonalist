@@ -85,6 +85,7 @@ export type SyncedRemote =
       body?: string;
       created_at?: string;
       updated_at?: string;
+      closedIssue?: boolean;
     };
 
 interface CreatedIssueResponse {
@@ -161,16 +162,37 @@ export async function syncOutboxOperations(
         }
         const created = (await attemptWithRetry(
           () =>
-            client.createIssueComment(
-              target.owner,
-              target.repo,
-              target.number as number,
-              operation.body
-            ),
+            target.kind === "discussion"
+              ? client.createDiscussionComment(
+                  target.owner,
+                  target.repo,
+                  target.number as number,
+                  operation.body
+                )
+              : client.createIssueComment(
+                  target.owner,
+                  target.repo,
+                  target.number as number,
+                  operation.body
+                ),
           retryDelays
         )) as CreatedCommentResponse;
         if (created.id === undefined) {
           throw new Error("GitHub did not return the created comment id.");
+        }
+        if (
+          operation.frontMatter.close_after_comment &&
+          target.kind === "issue"
+        ) {
+          await attemptWithRetry(
+            () =>
+              client.closeIssue(
+                target.owner,
+                target.repo,
+                target.number as number
+              ),
+            retryDelays
+          );
         }
         results.push({
           operation,
@@ -182,7 +204,10 @@ export async function syncOutboxOperations(
             html_url: created.html_url,
             body: created.body,
             created_at: created.created_at,
-            updated_at: created.updated_at
+            updated_at: created.updated_at,
+            ...(operation.frontMatter.close_after_comment && target.kind === "issue"
+              ? { closedIssue: true }
+              : {})
           }
         });
       }

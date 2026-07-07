@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1700" viewBox="0 0 2400 1700" role="img" aria-labelledby="title desc">
+  <title id="title">Yonalist Techniques and Improvement Map</title>
+  <desc id="desc">A map of techniques used by Yonalist and improvement opportunities discovered from source analysis.</desc>
+  <defs>
+    <style>
+      .bg { fill: #fbfcfe; }
+      .title { font: 46px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 800; fill: #132033; }
+      .subtitle { font: 24px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #46566e; }
+      .center { fill: #fff4d6; stroke: #a66a00; stroke-width: 4; rx: 24; }
+      .tech { fill: #eefaf2; stroke: #3d8655; stroke-width: 3; rx: 16; }
+      .tech2 { fill: #eef2ff; stroke: #5168aa; stroke-width: 3; rx: 16; }
+      .risk { fill: #fff0f0; stroke: #b75656; stroke-width: 3; rx: 16; }
+      .todo { fill: #f2ecff; stroke: #7252ad; stroke-width: 3; rx: 16; }
+      .h { font: 27px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 760; fill: #172033; }
+      .t { font: 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .m { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .edge { stroke: #40516e; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .edgeSoft { stroke: #7d8ca5; stroke-width: 2.4; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrowSoft); }
+      .edgeHot { stroke: #b7791f; stroke-width: 3.2; fill: none; marker-end: url(#arrowHot); }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#40516e"/></marker>
+    <marker id="arrowSoft" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#7d8ca5"/></marker>
+    <marker id="arrowHot" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b7791f"/></marker>
+  </defs>
+
+  <rect class="bg" width="2400" height="1700"/>
+  <text class="title" x="82" y="88">사용한 기법과 개선 포인트 맵</text>
+  <text class="subtitle" x="84" y="130">현재 코드는 offline-first, 캐시, 안전한 파일 IO, 원격 API 정규화가 강점이고, 다음 단계는 조율자 계층을 더 작게 나누는 쪽이다.</text>
+
+  <rect class="center" x="815" y="640" width="770" height="260"/>
+  <text class="h" x="875" y="705">Yonalist architecture style</text>
+  <text class="t" x="875" y="747">React shell coordinates typed domain documents</text>
+  <text class="t" x="875" y="783">Services isolate IO and remote APIs</text>
+  <text class="t" x="875" y="819">Tauri owns privileged desktop capabilities</text>
+  <text class="m" x="875" y="855">Design center: local Markdown vault remains useful without network</text>
+
+  <rect class="tech" x="90" y="230" width="470" height="155"/>
+  <text class="h" x="125" y="278">Offline-first vault</text>
+  <text class="t" x="125" y="314">Markdown + YAML front matter</text>
+  <text class="t" x="125" y="346">local draft/outbox documents</text>
+
+  <rect class="tech2" x="675" y="230" width="470" height="155"/>
+  <text class="h" x="710" y="278">Typed normalization</text>
+  <text class="t" x="710" y="314">GitHub REST/GraphQL → ItemDocument</text>
+  <text class="t" x="710" y="346">domain types drive UI consistently</text>
+
+  <rect class="tech2" x="1260" y="230" width="470" height="155"/>
+  <text class="h" x="1295" y="278">Cache layering</text>
+  <text class="t" x="1295" y="314">LRU, inflight coalescing, smart TTL</text>
+  <text class="t" x="1295" y="346">SQLite item index and hash cache</text>
+
+  <rect class="tech" x="1845" y="230" width="470" height="155"/>
+  <text class="h" x="1880" y="278">Safe native boundary</text>
+  <text class="t" x="1880" y="314">vault-relative path guard</text>
+  <text class="t" x="1880" y="346">atomic sibling temp-file writes</text>
+
+  <rect class="tech2" x="90" y="500" width="470" height="155"/>
+  <text class="h" x="125" y="548">Optimistic auth gate</text>
+  <text class="t" x="125" y="584">restored credentials render app first</text>
+  <text class="t" x="125" y="616">invalid token returns to login</text>
+
+  <rect class="tech" x="1845" y="500" width="470" height="155"/>
+  <text class="h" x="1880" y="548">Viewport prefetch</text>
+  <text class="t" x="1880" y="584">dwell, concurrency, eviction</text>
+  <text class="t" x="1880" y="616">persists bodies and comments</text>
+
+  <rect class="tech2" x="90" y="890" width="470" height="155"/>
+  <text class="h" x="125" y="938">Conditional notifications</text>
+  <text class="t" x="125" y="974">304 probe before full refetch</text>
+  <text class="t" x="125" y="1006">partial results shown while loading</text>
+
+  <rect class="tech" x="1845" y="890" width="470" height="155"/>
+  <text class="h" x="1880" y="938">Retry-aware sync</text>
+  <text class="t" x="1880" y="974">transient backoff</text>
+  <text class="t" x="1880" y="1006">permanent failures become blocked</text>
+
+  <rect class="risk" x="90" y="1200" width="505" height="170"/>
+  <text class="h" x="125" y="1248">Improve: split App orchestration</text>
+  <text class="t" x="125" y="1284">App.tsx is 1705 lines</text>
+  <text class="m" x="125" y="1316">extract app mode, vault boot, outbox sync, notification VM</text>
+
+  <rect class="risk" x="680" y="1200" width="505" height="170"/>
+  <text class="h" x="715" y="1248">Improve: single notification filter</text>
+  <text class="t" x="715" y="1284">hook accepts repo visibility already</text>
+  <text class="m" x="715" y="1316">App currently rewraps list and unread count</text>
+
+  <rect class="risk" x="1270" y="1200" width="505" height="170"/>
+  <text class="h" x="1305" y="1248">Improve: central request policy</text>
+  <text class="t" x="1305" y="1284">page limits, TTLs, poll interval scattered</text>
+  <text class="m" x="1305" y="1316">make tunable per GitHub host and rate budget</text>
+
+  <rect class="risk" x="1860" y="1200" width="455" height="170"/>
+  <text class="h" x="1895" y="1248">Improve: split Tauri lib</text>
+  <text class="t" x="1895" y="1284">lib.rs is 2081 lines</text>
+  <text class="m" x="1895" y="1316">vault, sqlite, oauth, image, keychain modules</text>
+
+  <rect class="todo" x="370" y="1460" width="740" height="130"/>
+  <text class="h" x="405" y="1508">Next refactor target</text>
+  <text class="t" x="405" y="1544">Create a small app coordinator layer</text>
+  <text class="m" x="405" y="1576">UI components receive view-model props instead of raw orchestration logic</text>
+
+  <rect class="todo" x="1290" y="1460" width="740" height="130"/>
+  <text class="h" x="1325" y="1508">Next reliability target</text>
+  <text class="t" x="1325" y="1544">Document GitHub host capability matrix</text>
+  <text class="m" x="1325" y="1576">GraphQL discussions, repo page caps, OAuth support, notification cache behavior</text>
+
+  <path class="edge" d="M560 307 C705 440 815 565 970 640"/>
+  <path class="edge" d="M910 385 C990 500 1070 580 1110 640"/>
+  <path class="edge" d="M1495 385 C1435 510 1340 590 1290 640"/>
+  <path class="edge" d="M1845 307 C1705 430 1585 560 1430 640"/>
+  <path class="edge" d="M560 577 C690 610 765 630 815 705"/>
+  <path class="edge" d="M1845 577 C1705 610 1610 630 1585 705"/>
+  <path class="edge" d="M560 967 C700 910 760 875 815 820"/>
+  <path class="edge" d="M1845 967 C1680 900 1620 865 1585 820"/>
+  <path class="edgeHot" d="M1000 900 C820 1025 460 1065 342 1200"/>
+  <path class="edgeHot" d="M1100 900 C1040 1035 940 1080 932 1200"/>
+  <path class="edgeHot" d="M1300 900 C1390 1035 1515 1080 1522 1200"/>
+  <path class="edgeHot" d="M1430 900 C1640 1025 1970 1065 2087 1200"/>
+  <path class="edgeSoft" d="M342 1370 C410 1435 585 1435 740 1460"/>
+  <path class="edgeSoft" d="M932 1370 C900 1425 830 1430 740 1460"/>
+  <path class="edgeSoft" d="M1522 1370 C1550 1425 1600 1430 1660 1460"/>
+  <path class="edgeSoft" d="M2087 1370 C2000 1435 1815 1435 1660 1460"/>
+</svg>

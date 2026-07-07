@@ -2,7 +2,18 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
-import { MarkdownBody } from "./MarkdownBody";
+import {
+  clearMarkdownRenderCache,
+  getMarkdownRenderCacheStats,
+  MarkdownBody,
+  warmMarkdownBodies
+} from "./MarkdownBody";
+
+const openExternalMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+vi.mock("../services/browser", () => ({
+  openExternal: openExternalMock
+}));
 
 const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text";
 
@@ -50,6 +61,17 @@ describe("MarkdownBody", () => {
     expect(screen.getByRole("img", { name: "Original size" })).toHaveAttribute(
       "src",
       "https://example.com/roadmap.png"
+    );
+  });
+
+  it("opens markdown links in the OS default browser", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body="[Open issue](https://github.com/acme/app/issues/1)" />);
+
+    await user.click(await screen.findByRole("link", { name: "Open issue" }));
+
+    expect(openExternalMock).toHaveBeenCalledWith(
+      "https://github.com/acme/app/issues/1"
     );
   });
 
@@ -117,24 +139,88 @@ describe("MarkdownBody", () => {
   });
 
   afterEach(() => {
+    clearMarkdownRenderCache();
+    openExternalMock.mockReset();
     vi.unstubAllGlobals();
   });
 
-  it("closes the lightbox from the backdrop, close button, and Escape", async () => {
+  it("keeps the rendered markdown cache bounded to 200 entries", async () => {
+    const bodies = Array.from(
+      { length: 201 },
+      (_, index) => `# Cached markdown ${index}\n\nBody ${index}`
+    );
+
+    await warmMarkdownBodies(bodies);
+
+    const stats = getMarkdownRenderCacheStats();
+    expect(stats.entries).toBe(200);
+    expect(stats.bytes).toBeGreaterThan(0);
+  });
+
+  it("closes the lightbox with the close button", async () => {
     const user = userEvent.setup();
     render(<MarkdownBody body={imageMarkdown} />);
 
     await user.click(await screen.findByRole("img", { name: "roadmap" }));
+    expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "Close image viewer" }));
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    );
+  });
+
+  it("closes the lightbox on Escape", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body={imageMarkdown} />);
 
     await user.click(await screen.findByRole("img", { name: "roadmap" }));
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeInTheDocument();
 
-    // Clicking the enlarged image itself keeps the viewer open.
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    );
+  });
+
+  it("closes the lightbox when the backdrop overlay is clicked", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body={imageMarkdown} />);
+
+    await user.click(await screen.findByRole("img", { name: "roadmap" }));
+    const viewer = screen.getByRole("dialog", { name: "Image viewer" });
+    expect(viewer).toBeInTheDocument();
+
+    // Clicking the overlay (outside the enlarged image) dismisses the viewer.
+    await user.click(viewer);
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    );
+  });
+
+  it("keeps the lightbox open when the enlarged image itself is clicked", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body={imageMarkdown} />);
+
     await user.click(await screen.findByRole("img", { name: "roadmap" }));
     await user.click(screen.getByRole("img", { name: "Original size" }));
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeInTheDocument();
+  });
+
+  it("restores focus to the triggering body image after the lightbox closes", async () => {
+    const user = userEvent.setup();
+    render(<MarkdownBody body={imageMarkdown} />);
+
+    const trigger = await screen.findByRole("img", { name: "roadmap" });
+    trigger.focus();
+    await user.click(trigger);
+    expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeInTheDocument();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    );
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

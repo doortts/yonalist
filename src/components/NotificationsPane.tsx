@@ -1,7 +1,9 @@
+import { Checkbox } from "@base-ui/react/checkbox";
 import {
   AlertCircle,
   AtSign,
   Bot,
+  Check,
   ExternalLink,
   GitPullRequest,
   Mail,
@@ -11,7 +13,8 @@ import {
   Search,
   Users
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
+import "./ui/form-controls.css";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
@@ -22,6 +25,7 @@ import {
 } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
 import { timeAgo } from "../timeFormat";
+import { IconTooltip } from "./ui/Tooltip";
 
 interface NotificationsPaneProps {
   state: UseNotificationsResult;
@@ -74,6 +78,75 @@ function subtitle(
   return parts.join(", ");
 }
 
+interface NotificationRowProps {
+  notification: GitHubNotification;
+  selected: boolean;
+  quiet: boolean;
+  /** Locally viewed timestamp (or undefined) used only for the subtitle. */
+  viewedAtValue: string | undefined;
+  onSelect: (notification: GitHubNotification) => void;
+}
+
+/**
+ * A single notification row. Extracted and memoized so that a poll returning
+ * identical data (see reconcileNotifications) leaves every prop reference
+ * stable and React can skip re-rendering the row. Props are intentionally
+ * primitives plus a stable `onSelect` callback.
+ */
+const NotificationRow = memo(function NotificationRow({
+  notification,
+  selected,
+  quiet,
+  viewedAtValue,
+  onSelect
+}: NotificationRowProps) {
+  const number =
+    notification.subject.type === "Release"
+      ? null
+      : subjectNumber(notification.subject);
+  const reason = reasonPresentation(notification.reason);
+  const ReasonIcon = reason.icon;
+  const SubjectIcon =
+    notification.subject.type === "PullRequest"
+      ? GitPullRequest
+      : notification.subject.type === "Discussion"
+        ? MessagesSquare
+        : null;
+  const rowClasses = ["notification-row", quiet ? "quiet" : "", selected ? "selected" : ""]
+    .filter(Boolean)
+    .join(" ");
+
+  return (
+    <div className={rowClasses}>
+      <span className="notification-lead">
+        <span
+          className={`notification-reason ${reason.className}`}
+          aria-label={reason.label}
+          title={reason.label}
+        >
+          {SubjectIcon ? <SubjectIcon size={17} /> : <ReasonIcon size={17} />}
+        </span>
+      </span>
+      <button
+        type="button"
+        className="notification-main"
+        onClick={() => onSelect(notification)}
+      >
+        <span className="notification-title">
+          {notification.subject.title}
+          {number !== null && (
+            <span className="notification-number"> #{number}</span>
+          )}
+        </span>
+        <span className="notification-subtitle">
+          {subtitle(notification, viewedAtValue)}
+        </span>
+      </button>
+      {!quiet && <span className="notification-unread-dot" aria-label="Unread" />}
+    </div>
+  );
+});
+
 export function NotificationsPane({
   state,
   webBaseUrl,
@@ -106,6 +179,13 @@ export function NotificationsPane({
   }, [state.notifications, query, onlyNew, state.viewedAt, webBaseUrl]);
 
   const groups = useMemo(() => groupNotificationsByDate(visible), [visible]);
+
+  // Stable identity so memoized rows only re-render when their own data or
+  // selection changes, not because the pane re-created the handler.
+  const handleSelect = useCallback(
+    (notification: GitHubNotification) => onSelect(notification),
+    [onSelect]
+  );
 
   function openAll(notifications: GitHubNotification[]) {
     for (const notification of notifications) {
@@ -140,15 +220,20 @@ export function NotificationsPane({
       </div>
 
       <div className="notifications-filters">
-        <label className="settings-check notifications-toggle">
-          <input
-            type="checkbox"
-            aria-label="Only new notifications"
-            checked={onlyNew}
-            onChange={(event) => setOnlyNew(event.target.checked)}
-          />
+        <Checkbox.Root
+          className="settings-check notifications-toggle"
+          render={<label />}
+          aria-label="Only new notifications"
+          checked={onlyNew}
+          onCheckedChange={(next) => setOnlyNew(next)}
+        >
+          <span className="ui-checkbox" aria-hidden="true">
+            <Checkbox.Indicator className="ui-checkbox-indicator">
+              <Check size={12} strokeWidth={3} />
+            </Checkbox.Indicator>
+          </span>
           <span>Only new</span>
-        </label>
+        </Checkbox.Root>
       </div>
 
       {state.demoMode && (
@@ -169,67 +254,28 @@ export function NotificationsPane({
           <section key={group.key} aria-label={`Notifications for ${group.label}`}>
             <div className="notifications-date-row">
               <h3>{group.label}</h3>
-              <button
-                type="button"
-                className="notifications-open-all"
-                aria-label={`Open all notifications for ${group.label}`}
-                title="Open all in browser"
-                onClick={() => openAll(group.notifications)}
-              >
-                <ExternalLink size={15} />
-              </button>
+              <IconTooltip label="Open all in browser">
+                <button
+                  type="button"
+                  className="notifications-open-all"
+                  aria-label={`Open all notifications for ${group.label}`}
+                  onClick={() => openAll(group.notifications)}
+                >
+                  <ExternalLink size={15} />
+                </button>
+              </IconTooltip>
             </div>
             {group.notifications.map((notification) => {
               const url = notificationWebUrl(notification, webBaseUrl);
-              const quiet = isReadAndQuiet(notification, state.viewedAt[url]);
-              const number =
-                notification.subject.type === "Release"
-                  ? null
-                  : subjectNumber(notification.subject);
-              const reason = reasonPresentation(notification.reason);
-              const ReasonIcon = reason.icon;
-              const SubjectIcon =
-                notification.subject.type === "PullRequest"
-                  ? GitPullRequest
-                  : notification.subject.type === "Discussion"
-                    ? MessagesSquare
-                    : null;
-              const rowClasses = [
-                "notification-row",
-                quiet ? "quiet" : "",
-                notification.id === selectedId ? "selected" : ""
-              ]
-                .filter(Boolean)
-                .join(" ");
-
               return (
-                <div className={rowClasses} key={notification.id}>
-                  <span className="notification-lead">
-                    <span
-                      className={`notification-reason ${reason.className}`}
-                      aria-label={reason.label}
-                      title={reason.label}
-                    >
-                      {SubjectIcon ? <SubjectIcon size={17} /> : <ReasonIcon size={17} />}
-                    </span>
-                  </span>
-                  <button
-                    type="button"
-                    className="notification-main"
-                    onClick={() => onSelect(notification)}
-                  >
-                    <span className="notification-title">
-                      {notification.subject.title}
-                      {number !== null && (
-                        <span className="notification-number"> #{number}</span>
-                      )}
-                    </span>
-                    <span className="notification-subtitle">
-                      {subtitle(notification, state.viewedAt[url])}
-                    </span>
-                  </button>
-                  {!quiet && <span className="notification-unread-dot" aria-label="Unread" />}
-                </div>
+                <NotificationRow
+                  key={notification.id}
+                  notification={notification}
+                  selected={notification.id === selectedId}
+                  quiet={isReadAndQuiet(notification, state.viewedAt[url])}
+                  viewedAtValue={state.viewedAt[url]}
+                  onSelect={handleSelect}
+                />
               );
             })}
           </section>

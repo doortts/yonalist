@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1450" viewBox="0 0 2400 1450" role="img" aria-labelledby="title desc">
+  <title id="title">Yonalist Outbox Sync Flow</title>
+  <desc id="desc">Outbox state machine for creating issues and comments offline, storing Markdown files, syncing to GitHub, classifying failures, and reconciling local files.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 46px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 800; fill: #132033; }
+      .subtitle { font: 24px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #46566e; }
+      .box { fill: #ffffff; stroke: #334155; stroke-width: 3; rx: 16; }
+      .draft { fill: #eef2ff; stroke: #5168aa; stroke-width: 3; rx: 16; }
+      .store { fill: #eefaf2; stroke: #3d8655; stroke-width: 3; rx: 16; }
+      .remote { fill: #fff4d6; stroke: #b7791f; stroke-width: 3; rx: 16; }
+      .bad { fill: #fff0f0; stroke: #b75656; stroke-width: 3; rx: 16; }
+      .done { fill: #ecfdf5; stroke: #047857; stroke-width: 3; rx: 16; }
+      .decision { fill: #fff7ed; stroke: #c2410c; stroke-width: 3; }
+      .h { font: 28px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; font-weight: 760; fill: #172033; }
+      .t { font: 21px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #334155; }
+      .m { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #64748b; }
+      .edge { stroke: #40516e; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .edgeHot { stroke: #b7791f; stroke-width: 3.5; fill: none; marker-end: url(#arrowHot); }
+      .edgeRed { stroke: #b75656; stroke-width: 3.2; fill: none; marker-end: url(#arrowRed); }
+      .edgeSoft { stroke: #7d8ca5; stroke-width: 2.5; fill: none; stroke-dasharray: 8 8; marker-end: url(#arrowSoft); }
+      .labelBg { fill: #152033; rx: 8; }
+      .label { font: 18px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #fff; font-weight: 650; }
+    </style>
+    <marker id="arrow" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#40516e"/></marker>
+    <marker id="arrowHot" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b7791f"/></marker>
+    <marker id="arrowRed" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#b75656"/></marker>
+    <marker id="arrowSoft" markerWidth="14" markerHeight="14" refX="11" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L12,5 L0,10 z" fill="#7d8ca5"/></marker>
+  </defs>
+
+  <rect class="bg" width="2400" height="1450"/>
+  <text class="title" x="82" y="88">Outbox / Offline Sync 구조</text>
+  <text class="subtitle" x="84" y="130">Yonalist의 핵심 UX: 입력은 먼저 로컬 vault에 안전하게 남기고, 네트워크/토큰 상태가 맞으면 GitHub로 내보낸다.</text>
+
+  <rect class="draft" x="90" y="230" width="390" height="130"/>
+  <text class="h" x="125" y="278">User action</text>
+  <text class="t" x="125" y="314">new issue or comment</text>
+  <text class="m" x="125" y="342">comment-and-close supported for issues</text>
+
+  <rect class="box" x="595" y="230" width="390" height="130"/>
+  <text class="h" x="630" y="278">Create operation</text>
+  <text class="t" x="630" y="314">createIssueOutboxOperation</text>
+  <text class="m" x="630" y="342">createCommentOutboxOperation</text>
+
+  <rect class="store" x="1110" y="230" width="390" height="130"/>
+  <text class="h" x="1145" y="278">Persist locally</text>
+  <text class="t" x="1145" y="314">draft/comment Markdown</text>
+  <text class="m" x="1145" y="342">.yonalist/outbox/*.md</text>
+
+  <polygon class="decision" points="1810,225 2030,295 1810,365 1590,295"/>
+  <text class="h" x="1738" y="287">Can sync?</text>
+  <text class="m" x="1713" y="319">online + token + retryable</text>
+
+  <rect class="store" x="90" y="535" width="390" height="130"/>
+  <text class="h" x="125" y="583">OutboxModal</text>
+  <text class="t" x="125" y="619">review queued operations</text>
+  <text class="m" x="125" y="647">blocked entries require user choice</text>
+
+  <rect class="remote" x="595" y="535" width="390" height="130"/>
+  <text class="h" x="630" y="583">performSync</text>
+  <text class="t" x="630" y="619">creates GitHub client</text>
+  <text class="m" x="630" y="647">selected or retryable queue</text>
+
+  <rect class="remote" x="1110" y="535" width="390" height="130"/>
+  <text class="h" x="1145" y="583">syncOutboxOperations</text>
+  <text class="t" x="1145" y="619">independent operation attempts</text>
+  <text class="m" x="1145" y="647">500ms, 1500ms transient retries</text>
+
+  <rect class="remote" x="1625" y="535" width="390" height="130"/>
+  <text class="h" x="1660" y="583">GitHub API</text>
+  <text class="t" x="1660" y="619">create issue/comment</text>
+  <text class="m" x="1660" y="647">optionally close issue after comment</text>
+
+  <polygon class="decision" points="2140,535 2320,600 2140,665 1960,600"/>
+  <text class="h" x="2075" y="593">Result?</text>
+  <text class="m" x="2070" y="624">ok / failed / blocked</text>
+
+  <rect class="done" x="330" y="850" width="410" height="140"/>
+  <text class="h" x="365" y="898">Success reconcile</text>
+  <text class="t" x="365" y="934">move draft to remote path</text>
+  <text class="m" x="365" y="964">write synced comment, delete outbox op</text>
+
+  <rect class="bad" x="845" y="850" width="410" height="140"/>
+  <text class="h" x="880" y="898">Transient failure</text>
+  <text class="t" x="880" y="934">status: failed</text>
+  <text class="m" x="880" y="964">retryable after reconnect/manual sync</text>
+
+  <rect class="bad" x="1360" y="850" width="410" height="140"/>
+  <text class="h" x="1395" y="898">Permanent failure</text>
+  <text class="t" x="1395" y="934">status: blocked</text>
+  <text class="m" x="1395" y="964">404/410/422 or non-rate-limit 403</text>
+
+  <rect class="store" x="1875" y="850" width="410" height="140"/>
+  <text class="h" x="1910" y="898">Refresh UI</text>
+  <text class="t" x="1910" y="934">thread cache, notification detail</text>
+  <text class="m" x="1910" y="964">work items + notifications refresh</text>
+
+  <rect class="box" x="90" y="1160" width="620" height="130"/>
+  <text class="h" x="125" y="1208">Reconnect behavior</text>
+  <text class="t" x="125" y="1244">previousOnline detects offline to online transition</text>
+  <text class="m" x="125" y="1272">auto-flush retryable work when syncQueuedOnReconnect is enabled</text>
+
+  <rect class="box" x="890" y="1160" width="620" height="130"/>
+  <text class="h" x="925" y="1208">Conflict hint</text>
+  <text class="t" x="925" y="1244">queued comment target changed remotely</text>
+  <text class="m" x="925" y="1272">user can re-read before syncing</text>
+
+  <rect class="box" x="1690" y="1160" width="620" height="130"/>
+  <text class="h" x="1725" y="1208">Prototype escape hatch</text>
+  <text class="t" x="1725" y="1244">no token drains selected queue locally</text>
+  <text class="m" x="1725" y="1272">useful for sample/offline prototype mode</text>
+
+  <path class="edgeHot" d="M480 295 L595 295"/>
+  <path class="edgeHot" d="M985 295 L1110 295"/>
+  <path class="edgeHot" d="M1500 295 L1590 295"/>
+  <path class="edgeSoft" d="M1810 365 C1810 460 285 440 285 535"/>
+  <rect class="labelBg" x="1540" y="410" width="230" height="34"/>
+  <text class="label" x="1560" y="434">not now: keep queued</text>
+  <path class="edgeHot" d="M1810 365 C1810 470 790 430 790 535"/>
+  <rect class="labelBg" x="1620" y="484" width="86" height="34"/>
+  <text class="label" x="1640" y="508">yes</text>
+  <path class="edgeHot" d="M985 600 L1110 600"/>
+  <path class="edgeHot" d="M1500 600 L1625 600"/>
+  <path class="edgeHot" d="M2015 600 L1960 600"/>
+  <path class="edgeHot" d="M2140 665 C2140 760 535 765 535 850"/>
+  <path class="edgeRed" d="M2140 665 C2140 780 1050 760 1050 850"/>
+  <path class="edgeRed" d="M2140 665 C2140 780 1565 760 1565 850"/>
+  <path class="edgeHot" d="M740 920 L1875 920"/>
+  <path class="edgeSoft" d="M1050 990 C1050 1080 400 1080 400 1160"/>
+  <path class="edgeSoft" d="M1565 990 C1565 1090 1200 1080 1200 1160"/>
+  <path class="edgeSoft" d="M285 665 C285 1090 2000 1090 2000 1160"/>
+
+  <rect class="labelBg" x="90" y="1350" width="2185" height="44"/>
+  <text class="label" x="124" y="1379">설계 포인트: 사용자의 입력은 GitHub 성공 여부와 분리되어 즉시 vault에 남는다. 실패도 outbox 상태로 모델링해서 자동 재시도와 수동 검토를 구분한다.</text>
+</svg>

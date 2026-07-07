@@ -1,7 +1,9 @@
-import { ChevronDown, ChevronRight, FolderTree, Search } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { Checkbox } from "@base-ui/react/checkbox";
+import { Check, ChevronDown, ChevronRight, FolderTree, Search } from "lucide-react";
+import { useMemo, useState } from "react";
 import type { OwnerGroup, RepositorySummary } from "../services/githubItems";
 import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
+import "./ui/form-controls.css";
 
 interface ProjectsVisibilitySectionProps {
   groups: OwnerGroup[];
@@ -31,22 +33,24 @@ function OwnerCheckbox({
 }) {
   const visibleCount = group.repositories.filter(visibility.isVisible).length;
   const allVisible = visibleCount === group.repositories.length;
-  const ref = useRef<HTMLInputElement>(null);
-  if (ref.current) {
-    ref.current.indeterminate = visibleCount > 0 && !allVisible;
-  }
+  const indeterminate = visibleCount > 0 && !allVisible;
 
   return (
-    <label className="settings-check project-owner-check">
-      <input
-        ref={ref}
-        type="checkbox"
-        aria-label={`Show ${group.owner} projects`}
-        checked={allVisible && group.repositories.length > 0}
-        onChange={(event) => visibility.setOwnerVisible(group, event.target.checked)}
-      />
+    <Checkbox.Root
+      className="settings-check project-owner-check"
+      render={<label />}
+      aria-label={`Show ${group.owner} projects`}
+      checked={allVisible && group.repositories.length > 0}
+      indeterminate={indeterminate}
+      onCheckedChange={(next) => visibility.setOwnerVisible(group, next)}
+    >
+      <span className="ui-checkbox" aria-hidden="true">
+        <Checkbox.Indicator className="ui-checkbox-indicator">
+          <Check size={12} strokeWidth={3} />
+        </Checkbox.Indicator>
+      </span>
       <span>{group.owner}</span>
-    </label>
+    </Checkbox.Root>
   );
 }
 
@@ -146,27 +150,27 @@ export function ProjectsVisibilitySection({
               </div>
               {expanded &&
                 group.repositories.map((repository) => (
-                  <label
-                    className="settings-check project-repo-check"
+                  <Checkbox.Root
                     key={repository.fullName}
+                    className="settings-check project-repo-check"
+                    render={<label />}
+                    aria-label={`Show ${repository.fullName}`}
+                    checked={visibility.isVisible(repository)}
+                    onCheckedChange={(next) => {
+                      keepOpen(group.owner);
+                      visibility.setRepositoryVisible(repository.fullName, next);
+                    }}
                   >
-                    <input
-                      type="checkbox"
-                      aria-label={`Show ${repository.fullName}`}
-                      checked={visibility.isVisible(repository)}
-                      onChange={(event) => {
-                        keepOpen(group.owner);
-                        visibility.setRepositoryVisible(
-                          repository.fullName,
-                          event.target.checked
-                        );
-                      }}
-                    />
+                    <span className="ui-checkbox" aria-hidden="true">
+                      <Checkbox.Indicator className="ui-checkbox-indicator">
+                        <Check size={12} strokeWidth={3} />
+                      </Checkbox.Indicator>
+                    </span>
                     <span>
                       {repository.name}
                       <em className="project-repo-source">{sourceLabel(repository)}</em>
                     </span>
-                  </label>
+                  </Checkbox.Root>
                 ))}
             </div>
           );

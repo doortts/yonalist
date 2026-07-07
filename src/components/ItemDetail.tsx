@@ -1,15 +1,19 @@
-import { Bookmark, Globe, Inbox, Loader2, Send } from "lucide-react";
-import { type FormEvent, useContext } from "react";
+import { Toggle } from "@base-ui/react/toggle";
+import { Bookmark, Globe, Inbox, Loader2 } from "lucide-react";
+import { useContext } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import { itemWebUrl } from "../domain/itemLinks";
 import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
 import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
+import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { StickyTitle } from "./ui/StickyTitle";
+import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
@@ -17,7 +21,7 @@ interface ItemDetailProps {
   online: boolean;
   commentDraft: string;
   onCommentDraftChange: (draft: string) => void;
-  onQueueComment: (event: FormEvent) => void;
+  onQueueComment: (action: CommentSubmitAction) => void;
   onToggleFavorite: () => void;
 }
 
@@ -57,56 +61,68 @@ export function ItemDetail({
 
   return (
     <>
-      <header className="detail-header">
-        <div className="detail-title-row">
-          <div>
-            <p className="eyebrow">
-              {item.frontMatter.owner}/{item.frontMatter.repo} ·{" "}
-              {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
-            </p>
-            <h2>{item.frontMatter.title}</h2>
+      <StickyTitle title={item.frontMatter.title} number={item.frontMatter.number}>
+        <header className="detail-header">
+          <div className="detail-title-row">
+            <div>
+              <p className="eyebrow">
+                {item.frontMatter.owner}/{item.frontMatter.repo} ·{" "}
+                {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+              </p>
+              <h2>{item.frontMatter.title}</h2>
+            </div>
+            <div className="detail-header-actions">
+              <TooltipProvider>
+                <IconTooltip label="브라우저에서 열기">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Open in browser"
+                    onClick={() =>
+                      void openExternal(itemWebUrl(item, connection.webBaseUrl))
+                    }
+                  >
+                    <Globe size={16} />
+                  </button>
+                </IconTooltip>
+                <IconTooltip
+                  label={
+                    item.frontMatter.local.favorite
+                      ? "Remove from favorites"
+                      : "Add to favorites"
+                  }
+                >
+                  <Toggle
+                    className={(state) =>
+                      state.pressed ? "favorite-button active" : "favorite-button"
+                    }
+                    aria-label="Toggle favorite"
+                    pressed={item.frontMatter.local.favorite}
+                    onPressedChange={() => onToggleFavorite()}
+                  >
+                    <Bookmark size={18} fill="currentColor" />
+                  </Toggle>
+                </IconTooltip>
+              </TooltipProvider>
+            </div>
           </div>
-          <div className="detail-header-actions">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Open in browser"
-              title="브라우저에서 열기"
-              onClick={() => void openExternal(itemWebUrl(item, connection.webBaseUrl))}
-            >
-              <Globe size={16} />
-            </button>
-            <button
-              type="button"
-              className={
-                item.frontMatter.local.favorite
-                  ? "favorite-button active"
-                  : "favorite-button"
-              }
-              aria-label="Toggle favorite"
-              aria-pressed={item.frontMatter.local.favorite}
-              onClick={onToggleFavorite}
-            >
-              <Bookmark size={18} fill="currentColor" />
-            </button>
+          <div className="detail-actions">
+            <StateBadge
+              kind={item.frontMatter.kind}
+              state={state}
+              draft={thread.thread?.draft}
+            />
+            {labels.map((label) => (
+              <LabelChip key={label.name} label={label} />
+            ))}
+            <span className="chip chip-status">{item.frontMatter.sync.status}</span>
+            <span className="detail-connection">
+              {comments.length > 0 && `댓글 ${comments.length} · `}
+              {online ? "Online" : "Offline queue enabled"}
+            </span>
           </div>
-        </div>
-        <div className="detail-actions">
-          <StateBadge
-            kind={item.frontMatter.kind}
-            state={state}
-            draft={thread.thread?.draft}
-          />
-          {labels.map((label) => (
-            <LabelChip key={label.name} label={label} />
-          ))}
-          <span className="chip chip-status">{item.frontMatter.sync.status}</span>
-          <span className="detail-connection">
-            {comments.length > 0 && `댓글 ${comments.length} · `}
-            {online ? "Online" : "Offline queue enabled"}
-          </span>
-        </div>
-      </header>
+        </header>
+      </StickyTitle>
 
       <div className="conversation">
         <OpeningPost
@@ -114,7 +130,8 @@ export function ItemDetail({
             login: item.frontMatter.author,
             name: thread.thread?.authorName,
             avatarUrl: thread.thread?.authorAvatarUrl,
-            association: thread.thread?.authorAssociation
+            association: thread.thread?.authorAssociation,
+            loading: thread.loading
           }}
           subtitle={`${itemTypeLabel(item)} · ${
             item.frontMatter.created_at
@@ -144,29 +161,15 @@ export function ItemDetail({
         <CommentThread comments={comments} subjectAuthor={item.frontMatter.author} />
       </div>
 
-      <form className="comment-composer" onSubmit={onQueueComment}>
-        <textarea
-          id="comment-draft"
-          aria-label="Write a comment"
-          placeholder="Write a comment..."
-          value={commentDraft}
-          onChange={(event) => onCommentDraftChange(event.target.value)}
+      {item.frontMatter.number > 0 && (
+        <CommentComposer
+          draft={commentDraft}
+          online={online}
+          canClose={item.frontMatter.kind === "issue" && state === "open"}
+          onDraftChange={onCommentDraftChange}
+          onSubmit={onQueueComment}
         />
-        <div className="composer-actions">
-          <span>
-            {online
-              ? "Comments are queued first, then synced."
-              : "Offline comment will wait in the outbox."}
-          </span>
-          <button
-            className={online ? "primary-button comment-button" : "primary-button"}
-            type="submit"
-          >
-            <Send size={16} />
-            {online ? "Comment" : "Queue comment"}
-          </button>
-        </div>
-      </form>
+      )}
     </>
   );
 }

@@ -103,4 +103,55 @@ describe("useTheme", () => {
 
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
+
+  it("restores the Yonal Light theme from storage", () => {
+    installLocalStorageMock();
+    installMatchMediaMock(false);
+    window.localStorage.setItem("yonalist.themeMode.v1", "light");
+    window.localStorage.setItem("yonalist.lightTheme.v1", "yonal-light");
+
+    render(<ThemeProbe />);
+
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
+  });
+
+  it("restores the Base Light theme from storage", () => {
+    installLocalStorageMock();
+    installMatchMediaMock(false);
+    window.localStorage.setItem("yonalist.themeMode.v1", "light");
+    window.localStorage.setItem("yonalist.lightTheme.v1", "base-light");
+
+    render(<ThemeProbe />);
+
+    expect(document.documentElement.dataset.theme).toBe("base-light");
+  });
+
+  it("restores the Base Dark theme from storage", () => {
+    installLocalStorageMock();
+    installMatchMediaMock(false);
+    window.localStorage.setItem("yonalist.themeMode.v1", "dark");
+    window.localStorage.setItem("yonalist.darkTheme.v1", "base-dark");
+
+    render(<ThemeProbe />);
+
+    expect(document.documentElement.dataset.theme).toBe("base-dark");
+  });
+
+  it("applies the Base themes for each mode under system preference", () => {
+    installLocalStorageMock();
+    const media = installMatchMediaMock(false);
+    window.localStorage.setItem("yonalist.themeMode.v1", "system");
+    window.localStorage.setItem("yonalist.lightTheme.v1", "base-light");
+    window.localStorage.setItem("yonalist.darkTheme.v1", "base-dark");
+
+    render(<ThemeProbe />);
+
+    expect(document.documentElement.dataset.theme).toBe("base-light");
+
+    act(() => {
+      media.setDark(true);
+    });
+
+    expect(document.documentElement.dataset.theme).toBe("base-dark");
+  });
 });

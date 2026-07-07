@@ -656,6 +656,19 @@ export async function persistCommentDocument(
   await writeVaultFile(vaultRoot, comment.path, serializeComment(comment));
 }
 
+export async function persistCommentDocuments(
+  vaultRoot: string,
+  comments: CommentDocument[]
+): Promise<PersistVaultDocumentsResult> {
+  return persistVaultDocuments(
+    vaultRoot,
+    comments.map((comment) => ({
+      relative_path: relativePath(vaultRoot, comment.path),
+      contents: serializeComment(comment)
+    }))
+  );
+}
+
 export async function readVaultDocuments(
   vaultRoot: string
 ): Promise<VaultSourceDocument[]> {

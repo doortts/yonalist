@@ -231,7 +231,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -337,16 +337,32 @@ describe("Yonalist app shell", () => {
       "button",
       { name: "Open in browser" }
     );
-    expect(notificationOpen).toHaveAttribute("title", "브라우저에서 열기");
+    // The notification detail button now uses a Base UI Tooltip: no native
+    // `title`, the visible label lives in a portalled `.tooltip-popup` that only
+    // appears once the button is focused. The accessible name stays on
+    // `aria-label`.
+    expect(notificationOpen).not.toHaveAttribute("title");
     expect(notificationOpen.textContent).toBe("");
+    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
+    notificationOpen.focus();
+    const notificationTip = await screen.findByText("브라우저에서 열기");
+    expect(notificationTip).toHaveClass("tooltip-popup");
 
-    // Item detail
+    // Item detail: the visible label now lives in a Base UI Tooltip popup, not
+    // a native `title`; the accessible name is still carried by `aria-label`.
     await user.click(screen.getByRole("button", { name: /^All items/ }));
     const itemOpen = within(screen.getByLabelText("Detail")).getByRole("button", {
       name: "Open in browser"
     });
-    expect(itemOpen).toHaveAttribute("title", "브라우저에서 열기");
+    expect(itemOpen).not.toHaveAttribute("title");
     expect(itemOpen.textContent).toBe("");
+    // Keyboard focus opens the Base UI tooltip instantly (focus opens skip the
+    // hover delay), portalling the label into a `.tooltip-popup` element that
+    // is absent before the button is focused.
+    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
+    itemOpen.focus();
+    const itemTip = await screen.findByText("브라우저에서 열기");
+    expect(itemTip).toHaveClass("tooltip-popup");
   });
 
   it("shows the item state and its comment thread in the detail pane", async () => {
@@ -362,6 +378,79 @@ describe("Yonalist app shell", () => {
       await within(comments).findByText(/Sample reply so the conversation thread/)
     ).toBeInTheDocument();
     expect(within(detail).getByText(/댓글 2/)).toBeInTheDocument();
+  });
+
+  it("resets the detail pane scroll to the top when a different work item is selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+    const items = screen.getByLabelText("Items");
+
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    // jsdom performs no layout, but scrollTop is a real settable/readable
+    // property here, so we can simulate the user having scrolled the detail
+    // pane down before switching to another item.
+    detailScroll!.scrollTop = 480;
+    expect(detailScroll!.scrollTop).toBe(480);
+
+    await user.click(
+      within(items).getByRole("button", { name: /v0\.1\.0 packaging checklist/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(0);
+  });
+
+  it("resets the detail pane scroll to the top when a different notification is selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+
+    // The notifications feed is the default landing view.
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+
+    detailScroll!.scrollTop = 480;
+    expect(detailScroll!.scrollTop).toBe(480);
+
+    await user.click(
+      screen.getByRole("button", { name: /Cache linked attachments in the vault/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(0);
+  });
+
+  it("keeps the detail pane scroll position when the same work item is re-selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+    const items = screen.getByLabelText("Items");
+
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    detailScroll!.scrollTop = 480;
+    // Re-clicking the already-selected item keeps the reset key unchanged, so
+    // the effect must not fire and the scroll offset should be preserved.
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(480);
   });
 
   it("shows a green Comment button online and Queue comment offline", async () => {
@@ -402,26 +491,346 @@ describe("Yonalist app shell", () => {
     expect(screen.getByText(/I can write this offline/)).toBeInTheDocument();
   });
 
-  it("shows the app-wide outbox below the GitHub Inbox title", async () => {
+  it("opens the target item when a queued outbox comment is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Return to this item.");
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    expect(screen.getByLabelText("Empty notification detail")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    await user.click(screen.getByRole("button", { name: /Open target/ }));
+
+    const detail = screen.getByLabelText("Detail");
+    expect(within(detail).getByRole("heading", { name: "Design offline issue reading" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+  });
+
+  it("syncs a comment immediately when online and signed in", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    let postedCommentBody: string | null = null;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (
+        target.endsWith("/repos/acme/app/issues/2/comments") &&
+        init?.method === "POST"
+      ) {
+        postedCommentBody = JSON.parse(String(init.body)).body;
+        return new Response(
+          JSON.stringify({
+            id: 9001,
+            node_id: "IC_9001",
+            body: postedCommentBody,
+            html_url: "https://oss.navercorp.com/acme/app/issues/2#issuecomment-9001",
+            created_at: "2026-07-07T01:00:00Z",
+            updated_at: "2026-07-07T01:00:00Z"
+          }),
+          { status: 201 }
+        );
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 2,
+                title: "Online issue",
+                state: "open",
+                body: "Fetched from GitHub",
+                user: { login: "alice" },
+                labels: [],
+                comments: 0,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/2",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 1,
+              pushed_at: "2026-07-06T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions") || target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/2/comments")) {
+        return new Response(
+          JSON.stringify(
+            postedCommentBody
+              ? [
+                  {
+                    id: 9001,
+                    body: postedCommentBody,
+                    user: { login: "alice", name: "Alice" },
+                    author_association: "OWNER",
+                    created_at: "2026-07-07T01:00:00Z",
+                    updated_at: "2026-07-07T01:00:00Z"
+                  }
+                ]
+              : []
+          ),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/2")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "alice", name: "Alice" },
+            labels: [],
+            body: "Fetched from GitHub",
+            created_at: "2026-07-06T00:00:00Z",
+            updated_at: "2026-07-06T01:00:00Z"
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/users/alice")) {
+        return new Response(
+          JSON.stringify({ login: "alice", name: "Alice", avatar_url: "" }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Online issue")).length).toBeGreaterThan(0);
+
+      await user.type(screen.getByLabelText("Write a comment"), "Ship it now.");
+      await user.click(screen.getByRole("button", { name: "Comment" }));
+
+      await waitFor(() => {
+        expect(
+          fetchMock.mock.calls.some(
+            ([url, init]) =>
+              String(url).endsWith("/repos/acme/app/issues/2/comments") &&
+              (init as RequestInit | undefined)?.method === "POST"
+          )
+        ).toBe(true);
+      });
+      expect(
+        await screen.findByRole("button", {
+          name: "Open outbox, 0 pending changes"
+        })
+      ).toBeInTheDocument();
+      expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
+      expect(await screen.findByText("Ship it now.")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("shows the app-wide outbox in the bottom status bar", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const navigation = screen.getByLabelText("Navigation");
-    const outboxButton = within(navigation).getByRole("button", {
+    const statusBar = screen.getByLabelText("Status bar");
+    const outboxButton = within(statusBar).getByRole("button", {
       name: "Open outbox, 0 pending changes"
     });
     expect(outboxButton).toHaveTextContent("Outbox 0");
-    expect(outboxButton).toHaveAttribute(
-      "title",
-      "Outbox stores offline issues and comments waiting to sync to GitHub."
-    );
+    // The explanatory text moved from a native `title` to a Base UI Tooltip
+    // that opens on hover/focus and portals its popup into the document. It is
+    // absent until the button gains focus, then surfaces in `.tooltip-popup`.
+    const outboxTip =
+      "Outbox stores offline issues and comments waiting to sync to GitHub.";
+    expect(outboxButton).not.toHaveAttribute("title");
+    expect(screen.queryByText(outboxTip)).toBeNull();
+    outboxButton.focus();
+    expect(await screen.findByText(outboxTip)).toHaveClass("tooltip-popup");
+    expect(
+      within(navigation).queryByRole("button", {
+        name: /Open outbox/
+      })
+    ).not.toBeInTheDocument();
     expect(
       within(screen.getByLabelText("Detail")).queryByRole("button", {
         name: /outbox/i
       })
     ).not.toBeInTheDocument();
+  });
+
+  it("updates the status bar when visible signed-in items are prefetched", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 10,
+                title: "Issue with comments",
+                state: "open",
+                body: "Large body",
+                user: { login: "alice" },
+                labels: [],
+                comments: 2,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T01:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/10",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              },
+              {
+                number: 11,
+                title: "Second visible issue",
+                state: "open",
+                body: "Second body",
+                user: { login: "bob" },
+                labels: [],
+                comments: 1,
+                created_at: "2026-07-06T00:00:00Z",
+                updated_at: "2026-07-06T02:00:00Z",
+                html_url: "https://oss.navercorp.com/acme/app/issues/11",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 2,
+              pushed_at: "2026-07-06T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/subscriptions") || target.includes("/notifications")) {
+        return new Response("[]", { status: 200 });
+      }
+      if (target.includes("/issues/10/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1001,
+              body: "First comment",
+              user: { login: "alice", name: "Alice" },
+              created_at: "2026-07-06T03:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/issues/11/comments")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: 1101,
+              body: "Second comment",
+              user: { login: "bob", name: "Bob" },
+              created_at: "2026-07-06T04:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/10")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "alice", name: "Alice" },
+            labels: []
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.endsWith("/repos/acme/app/issues/11")) {
+        return new Response(
+          JSON.stringify({
+            state: "open",
+            user: { login: "bob", name: "Bob" },
+            labels: []
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App initialOnline />);
+
+      await user.click(await screen.findByRole("button", { name: /^Issues/ }));
+      expect(await screen.findByText("Issue with comments")).toBeInTheDocument();
+
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+
+      await waitFor(() => {
+        expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+          /Prefetch \d+ visible · [1-9]\d* done/
+        );
+      });
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/issues/11/comments"))
+      ).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("opens the new issue composer as the full right pane", async () => {
@@ -720,7 +1129,7 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Vault and sync/
       })
     );
@@ -758,13 +1167,13 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Reset/
       })
     );
     await user.click(screen.getByRole("button", { name: "Reset settings and caches" }));
-    const dialog = await screen.findByRole("dialog", {
-      name: "Confirm reset settings and caches"
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Reset all settings and caches?"
     });
     expect(dialog).toHaveTextContent("Vault Markdown files and outbox documents");
 
@@ -793,7 +1202,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /GitHub 서버/
       })
     );
@@ -827,7 +1236,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /GitHub 서버/
       })
     );
@@ -840,7 +1249,8 @@ describe("Yonalist app shell", () => {
       "https://ghe.example.com/api/v3"
     );
     await user.type(within(section).getByLabelText("별칭"), "사내 GHE");
-    await user.click(within(section).getByRole("radio", { name: "개인 토큰" }));
+    // Auth method is a Base UI ToggleGroup; its segments render as toggle buttons.
+    await user.click(within(section).getByRole("button", { name: "개인 토큰" }));
     await user.type(
       within(section).getByLabelText("Personal Access Token"),
       "ghp_test_token"
@@ -1042,10 +1452,10 @@ describe("Yonalist app shell", () => {
       expect(JSON.stringify(countVariables)).not.toContain("hidden");
       const list = screen.getByLabelText("Items");
       expect(
-        await within(list).findByRole("button", { name: "Open 3" })
+        await within(list).findByRole("tab", { name: "Open 3" })
       ).toBeInTheDocument();
       expect(
-        within(list).getByRole("button", { name: "Closed 10" })
+        within(list).getByRole("tab", { name: "Closed 10" })
       ).toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
@@ -1079,9 +1489,10 @@ describe("Yonalist app shell", () => {
     try {
       render(<App />);
 
-      expect(
-        await screen.findByText(/Could not load repositories/i)
-      ).toHaveClass("app-snackbar");
+      // The message renders inside a Base UI Toast whose root carries the
+      // legacy `.app-snackbar` class for visual parity.
+      const message = await screen.findByText(/Could not load repositories/i);
+      expect(message.closest(".app-snackbar")).not.toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1235,16 +1646,16 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const list = screen.getByLabelText("Items");
-    expect(within(list).getByRole("button", { name: /^Open \d+$/ })).toHaveAttribute(
-      "aria-pressed",
+    expect(within(list).getByRole("tab", { name: /^Open \d+$/ })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
     expect(within(list).queryByText("Closed local issue")).not.toBeInTheDocument();
 
-    await user.click(within(list).getByRole("button", { name: /^Closed \d+$/ }));
+    await user.click(within(list).getByRole("tab", { name: /^Closed \d+$/ }));
 
-    expect(within(list).getByRole("button", { name: /^Closed \d+$/ })).toHaveAttribute(
-      "aria-pressed",
+    expect(within(list).getByRole("tab", { name: /^Closed \d+$/ })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
     expect(await within(list).findByText("Closed local issue")).toBeInTheDocument();
@@ -1375,7 +1786,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1413,8 +1824,8 @@ describe("Yonalist app shell", () => {
 
     const settingsSections = await screen.findByLabelText("Settings sections");
     expect(
-      within(settingsSections).getByRole("button", { name: /Projects 표시/ })
-    ).toHaveAttribute("aria-pressed", "true");
+      within(settingsSections).getByRole("tab", { name: /Projects 표시/ })
+    ).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByLabelText("Project visibility")).toBeInTheDocument();
   });
 
@@ -1424,7 +1835,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1460,7 +1871,7 @@ describe("Yonalist app shell", () => {
     // Uncheck doortts/blog in Settings → Projects 표시.
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1562,9 +1973,14 @@ describe("Yonalist app shell", () => {
     expect(document.documentElement.dataset.theme).toBe("default");
     expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("default");
 
+    await user.click(screen.getByRole("radio", { name: "Yonal Light light theme" }));
+
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
+    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("yonal-light");
+
     await user.click(screen.getByRole("radio", { name: "System mode" }));
 
-    expect(document.documentElement.dataset.theme).toBe("default");
+    expect(document.documentElement.dataset.theme).toBe("yonal-light");
     expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
   });
 

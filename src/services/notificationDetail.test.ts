@@ -2,8 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import {
   clearNotificationDetailCache,
-  fetchNotificationDetail
+  fetchNotificationDetail,
+  getCachedNotificationDetail,
+  getLatestCachedNotificationDetail,
+  resetNotificationDetailMemoryCache
 } from "./notificationDetail";
+import { persistNotificationDetail } from "./notificationStores";
 
 function notification(
   type: string,
@@ -259,5 +263,162 @@ describe("fetchNotificationDetail", () => {
     expect(detail.title).toBe("v0.1.0");
     expect(detail.state).toBe("v0.1.0");
     expect(detail.body).toBe("Notes");
+  });
+});
+
+describe("synchronous notification detail cache peek", () => {
+  beforeEach(() => {
+    clearNotificationDetailCache();
+    window.localStorage.clear();
+  });
+
+  const issue = notification(
+    "Issue",
+    "https://api.github.com/repos/acme/app/issues/7"
+  );
+
+  function issueFetch(title: string) {
+    return vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title, state: "open", user: { login: "mona" } });
+    });
+  }
+
+  it("returns null before anything is cached", () => {
+    expect(
+      getCachedNotificationDetail({ ...baseOptions, notification: issue })
+    ).toBeNull();
+  });
+
+  it("returns the cached detail synchronously for the same version", async () => {
+    const fetchMock = issueFetch("Peeked");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    const peeked = getCachedNotificationDetail({ ...baseOptions, notification: issue });
+
+    expect(peeked?.title).toBe("Peeked");
+  });
+
+  it("does not return a synchronous hit for a different version", async () => {
+    const fetchMock = issueFetch("V1");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    const newer = { ...issue, updated_at: "2026-07-03T00:00:00Z" };
+    expect(
+      getCachedNotificationDetail({ ...baseOptions, notification: newer })
+    ).toBeNull();
+  });
+
+  it("exposes the latest cached detail regardless of version", async () => {
+    const fetchMock = issueFetch("Latest");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    const newer = { ...issue, updated_at: "2026-07-03T00:00:00Z" };
+    // Versioned peek misses, but the version-independent latest pointer hits.
+    expect(
+      getCachedNotificationDetail({ ...baseOptions, notification: newer })
+    ).toBeNull();
+    expect(
+      getLatestCachedNotificationDetail({ ...baseOptions, notification: newer })
+        ?.title
+    ).toBe("Latest");
+  });
+
+  it("clears the latest pointer when the cache is cleared", async () => {
+    const fetchMock = issueFetch("Gone");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    clearNotificationDetailCache();
+
+    expect(
+      getLatestCachedNotificationDetail({ ...baseOptions, notification: issue })
+    ).toBeNull();
+  });
+
+  it("persists a fetched detail so a fresh memory cache can restore it", async () => {
+    const fetchMock = issueFetch("Persisted");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    // Simulate an app restart: the in-memory cache is empty but localStorage
+    // still holds the detail. A synchronous peek restores it from storage.
+    resetNotificationDetailMemoryCache();
+
+    const restored = getCachedNotificationDetail({ ...baseOptions, notification: issue });
+    expect(restored?.title).toBe("Persisted");
+  });
+
+  it("restores a persisted detail as the latest pointer after a restart", async () => {
+    const fetchMock = issueFetch("StoredLatest");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    resetNotificationDetailMemoryCache();
+
+    const newer = { ...issue, updated_at: "2026-07-09T00:00:00Z" };
+    expect(
+      getLatestCachedNotificationDetail({ ...baseOptions, notification: newer })
+        ?.title
+    ).toBe("StoredLatest");
+  });
+
+  it("does not persist details whose comments failed to load", async () => {
+    let commentCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        commentCalls += 1;
+        return new Response("{}", { status: 500 });
+      }
+      return jsonResponse({ title: "Broken", state: "open", user: { login: "mona" } });
+    });
+
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: issue,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    resetNotificationDetailMemoryCache();
+
+    expect(commentCalls).toBe(1);
+    expect(
+      getCachedNotificationDetail({ ...baseOptions, notification: issue })
+    ).toBeNull();
+  });
+
+  it("peeks a directly persisted detail even without a prior fetch", () => {
+    persistNotificationDetail(baseOptions.apiBaseUrl, issue, {
+      title: "Direct",
+      state: "open",
+      author: "mona",
+      body: "hi",
+      labels: [],
+      comments: []
+    });
+
+    expect(
+      getCachedNotificationDetail({ ...baseOptions, notification: issue })?.title
+    ).toBe("Direct");
   });
 });

@@ -1,0 +1,18 @@
+/*
+ * Base UI Tabs adjustments for the item-list state filter.
+ *
+ * The state tabs were previously a direct flex child of `.list-pane`
+ * (a `display: flex; flex-direction: column` column). Base UI's
+ * `Tabs.Root` wraps `Tabs.List` in an extra `<div>`. Collapsing that
+ * wrapper with `display: contents` keeps `.item-state-row` a direct
+ * flex child of `.list-pane`, preserving the original layout so the
+ * virtualized list still receives the remaining vertical space.
+ *
+ * The `.item-state-tab.active` visual state is applied via the
+ * className callback in ItemListPane.tsx (state.active -> "active"),
+ * so the existing styles.css rules continue to style the selected tab
+ * with no new CSS needed here.
+ */
+.list-pane > .item-state-tabs-root {
+  display: contents;
+}

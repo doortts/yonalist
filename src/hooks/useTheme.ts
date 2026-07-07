@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type LightTheme = "default" | "yona";
-export type DarkTheme = "dark";
+export type LightTheme = "default" | "yona" | "yonal-light" | "base-light";
+export type DarkTheme = "dark" | "yona-dark" | "base-dark";
 export type ResolvedTheme = LightTheme | DarkTheme;
 
 const themeModeStorageKey = "yonalist.themeMode.v1";
@@ -38,14 +38,23 @@ function loadThemeMode(): ThemeMode {
 
 function loadLightTheme(): LightTheme {
   const stored = readStoredValue(lightThemeStorageKey);
-  if (stored === "default" || stored === "yona") {
+  if (
+    stored === "default" ||
+    stored === "yona" ||
+    stored === "yonal-light" ||
+    stored === "base-light"
+  ) {
     return stored;
   }
   return readStoredValue(themeModeStorageKey) === "yona" ? "yona" : "default";
 }
 
 function loadDarkTheme(): DarkTheme {
-  return readStoredValue(darkThemeStorageKey) === "dark" ? "dark" : "dark";
+  const stored = readStoredValue(darkThemeStorageKey);
+  if (stored === "dark" || stored === "yona-dark" || stored === "base-dark") {
+    return stored;
+  }
+  return "dark";
 }
 
 function systemPrefersDark(): boolean {

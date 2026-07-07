@@ -1,5 +1,8 @@
+import { Radio } from "@base-ui/react/radio";
+import { RadioGroup } from "@base-ui/react/radio-group";
 import type { MarkdownStyle } from "../appSettings";
 import { MarkdownBody } from "./MarkdownBody";
+import "./ui/form-controls.css";
 
 interface MarkdownStyleComparisonProps {
   value: MarkdownStyle;
@@ -53,33 +56,32 @@ export function MarkdownStyleComparison({
       <div className="settings-section-title">
         <h3>Markdown rendering</h3>
       </div>
-      <div
+      <RadioGroup
         className="theme-options markdown-style-options"
-        role="radiogroup"
         aria-label="Markdown style"
+        value={value}
+        onValueChange={(next) => onChange(next as MarkdownStyle)}
       >
         {styleOptions.map((option) => (
-          <label
+          <Radio.Root
             key={option.value}
+            value={option.value}
+            render={<label />}
+            aria-label={`${option.label} markdown style`}
             className={
               value === option.value ? "theme-option active" : "theme-option"
             }
           >
-            <input
-              type="radio"
-              name="markdown-style"
-              aria-label={`${option.label} markdown style`}
-              value={option.value}
-              checked={value === option.value}
-              onChange={() => onChange(option.value)}
-            />
+            <span className="ui-radio" aria-hidden="true">
+              <Radio.Indicator className="ui-radio-indicator" />
+            </span>
             <span>
               {option.label}
               <em>{option.description}</em>
             </span>
-          </label>
+          </Radio.Root>
         ))}
-      </div>
+      </RadioGroup>
 
       <div className="markdown-comparison-grid" aria-label="Markdown rendering samples">
         <article className="markdown-comparison-panel">

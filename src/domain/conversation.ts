@@ -44,6 +44,7 @@ export interface ConversationComment {
   created_at: string;
   body: string;
   reactions?: ReactionSummary;
+  replies?: ConversationComment[];
 }
 
 /**

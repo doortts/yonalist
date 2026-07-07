@@ -1,0 +1,36 @@
+/*
+ * Base UI Dialog adjustments for the MarkdownBody image lightbox.
+ *
+ * The legacy markup was a single fixed overlay (`.image-lightbox`) that painted
+ * the dark background AND laid out (flex + padding) the enlarged image and close
+ * button. With Base UI the Backdrop and Popup are siblings inside the portal, so
+ * the responsibilities split:
+ *   - Backdrop paints the dark overlay (matching the old background).
+ *   - Popup reuses `.image-lightbox` for the fullscreen flex layout + padding +
+ *     zoom-out cursor that centers the image, but must be transparent so the
+ *     backdrop shows through. It also receives the dismiss click for "click
+ *     outside the image closes".
+ * These rules restore the old look without touching the global styles.css
+ * (which still owns `.image-lightbox`, `.image-lightbox-image`, and
+ * `.image-lightbox-close`).
+ */
+
+/* Dark overlay, matching the background the legacy `.image-lightbox` painted. */
+.image-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgb(10 13 18 / 78%);
+}
+
+/* The popup reuses `.image-lightbox` (styles.css) for layout, but sits above the
+ * backdrop and stays transparent so the backdrop's dark wash remains visible. */
+.image-lightbox.image-lightbox {
+  z-index: 41;
+  background: transparent;
+}
+
+/* Keep the close button above the popup's own stacking context. */
+.image-lightbox .image-lightbox-close {
+  z-index: 42;
+}

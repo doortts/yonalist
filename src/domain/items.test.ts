@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { mergeItemDocuments } from "./items";
+import { mergeItemDocuments, reconcileItems } from "./items";
 import type { ItemDocument } from "./types";
 
 function item(overrides: Partial<ItemDocument["frontMatter"]> = {}): ItemDocument {
+  const number = overrides.number ?? 88;
   return {
-    path: "/vault/github.com/acme/app/discussions/88/discussion.md",
+    path: `/vault/github.com/acme/app/discussions/${number}/discussion.md`,
     body: "Body",
     frontMatter: {
       kind: "discussion",
@@ -35,5 +36,86 @@ describe("mergeItemDocuments", () => {
     );
 
     expect(merged.frontMatter.comments_count).toBe(4);
+  });
+
+  it("preserves the local object reference for an unchanged item", () => {
+    const local = item();
+    const remote = item();
+
+    const [merged] = mergeItemDocuments([local], [remote], "/vault");
+
+    expect(merged).toBe(local);
+  });
+
+  it("returns a new object reference for a changed item", () => {
+    const local = item({ title: "Planning", updated_at: "2026-07-02T00:00:00Z" });
+    const remote = item({ title: "Renamed", updated_at: "2026-07-03T00:00:00Z" });
+
+    const [merged] = mergeItemDocuments([local], [remote], "/vault");
+
+    expect(merged).not.toBe(local);
+    expect(merged.frontMatter.title).toBe("Renamed");
+  });
+
+  it("preserves the previous array reference for a fully unchanged list", () => {
+    const first = item({ number: 1, title: "First", updated_at: "2026-07-05T00:00:00Z" });
+    const second = item({ number: 2, title: "Second", updated_at: "2026-07-04T00:00:00Z" });
+    const localItems = [first, second];
+    const remoteItems = [
+      item({ number: 1, title: "First", updated_at: "2026-07-05T00:00:00Z" }),
+      item({ number: 2, title: "Second", updated_at: "2026-07-04T00:00:00Z" })
+    ];
+
+    const merged = mergeItemDocuments(localItems, remoteItems, "/vault");
+
+    expect(merged).toBe(localItems);
+  });
+
+  it("returns a new array when at least one item changed", () => {
+    const first = item({ number: 1, title: "First", updated_at: "2026-07-05T00:00:00Z" });
+    const second = item({ number: 2, title: "Second", updated_at: "2026-07-04T00:00:00Z" });
+    const localItems = [first, second];
+
+    const merged = mergeItemDocuments(
+      localItems,
+      [
+        item({ number: 1, title: "First", updated_at: "2026-07-05T00:00:00Z" }),
+        item({ number: 2, title: "Renamed", updated_at: "2026-07-04T00:00:00Z" })
+      ],
+      "/vault"
+    );
+
+    expect(merged).not.toBe(localItems);
+    expect(merged[0]).toBe(first);
+    expect(merged[1]).not.toBe(second);
+    expect(merged[1].frontMatter.title).toBe("Renamed");
+  });
+});
+
+describe("reconcileItems", () => {
+  it("keeps the previous object reference for an unchanged item", () => {
+    const previous = [item({ number: 1, title: "One" })];
+    const next = [item({ number: 1, title: "One" })];
+
+    const reconciled = reconcileItems(previous, next);
+
+    expect(reconciled).toBe(previous);
+    expect(reconciled[0]).toBe(previous[0]);
+  });
+
+  it("returns a new object reference for a changed item", () => {
+    const previous = [item({ number: 1, title: "One" })];
+    const next = [item({ number: 1, title: "Renamed" })];
+
+    const reconciled = reconcileItems(previous, next);
+
+    expect(reconciled).not.toBe(previous);
+    expect(reconciled[0]).toBe(next[0]);
+  });
+
+  it("returns the next array when there is no previous state", () => {
+    const next = [item()];
+
+    expect(reconcileItems(null, next)).toBe(next);
   });
 });

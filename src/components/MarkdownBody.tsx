@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { Dialog } from "@base-ui/react/dialog";
 import {
   type MouseEvent,
   useContext,
@@ -14,6 +15,13 @@ import {
   needsAuthenticatedFetch,
   resolveAuthenticatedImage
 } from "../services/imageProxy";
+import { openExternal } from "../services/browser";
+import {
+  estimateTextBytes,
+  type CacheSizeStats
+} from "../services/cacheStats";
+import { LruCache } from "../services/lruCache";
+import "./ui/lightbox.css";
 
 interface MarkdownBodyProps {
   body: string;
@@ -23,12 +31,44 @@ interface MarkdownBodyProps {
 type RenderedMarkdown = { __html: string };
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
-const renderedMarkdownCache = new Map<string, RenderedMarkdown>();
+const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200);
 let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
 
 function loadMarkdownRenderer() {
   rendererPromise ??= import("../markdownRender");
   return rendererPromise;
+}
+
+export async function warmMarkdownBodies(bodies: string[]) {
+  const missingBodies = bodies.filter(
+    (body) => body && !renderedMarkdownCache.has(body)
+  );
+  if (missingBodies.length === 0) {
+    return;
+  }
+  const { renderMarkdown } = await loadMarkdownRenderer();
+  for (const body of missingBodies) {
+    if (!renderedMarkdownCache.has(body)) {
+      renderedMarkdownCache.set(body, renderMarkdown(body));
+    }
+  }
+}
+
+export function clearMarkdownRenderCache() {
+  renderedMarkdownCache.clear();
+}
+
+export function getMarkdownRenderCacheStats(): CacheSizeStats {
+  return renderedMarkdownCache.entries().reduce<CacheSizeStats>(
+    (stats, [body, rendered]) => ({
+      entries: stats.entries + 1,
+      bytes:
+        stats.bytes +
+        estimateTextBytes(body) +
+        estimateTextBytes(rendered.__html)
+    }),
+    { entries: 0, bytes: 0 }
+  );
 }
 
 /**
@@ -42,6 +82,7 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
   const defaultVariant = useContext(MarkdownStyleContext);
   const styleVariant = variant ?? defaultVariant;
   const containerRef = useRef<HTMLDivElement>(null);
+  const lightboxTriggerRef = useRef<HTMLImageElement | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const cachedMarkdown = useMemo(
     () => renderedMarkdownCache.get(body) ?? emptyMarkdown,
@@ -94,23 +135,27 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
     };
   }, [renderedMarkdown, connection]);
 
-  useEffect(() => {
-    if (!lightboxSrc) {
-      return;
-    }
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setLightboxSrc(null);
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [lightboxSrc]);
-
   function handleClick(event: MouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement;
+    const link = target.closest<HTMLAnchorElement>("a[href]");
+    if (link) {
+      const href = link.href;
+      if (href.startsWith("http://") || href.startsWith("https://")) {
+        event.preventDefault();
+        event.stopPropagation();
+        void openExternal(href);
+        return;
+      }
+    }
     if (target.tagName === "IMG") {
-      setLightboxSrc((target as HTMLImageElement).src);
+      const image = target as HTMLImageElement;
+      // Remember the body image so Base UI can return focus to it on close.
+      // A plain <img> is not focusable, so make it programmatically focusable.
+      if (!image.hasAttribute("tabindex")) {
+        image.tabIndex = -1;
+      }
+      lightboxTriggerRef.current = image;
+      setLightboxSrc(image.src);
     }
   }
 
@@ -122,30 +167,39 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
         onClick={handleClick}
         dangerouslySetInnerHTML={renderedMarkdown}
       />
-      {lightboxSrc && (
-        <div
-          className="image-lightbox"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Image viewer"
-          onClick={() => setLightboxSrc(null)}
-        >
-          <button
-            type="button"
-            className="icon-button image-lightbox-close"
-            aria-label="Close image viewer"
+      <Dialog.Root
+        open={!!lightboxSrc}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setLightboxSrc(null);
+          }
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Backdrop className="image-lightbox-backdrop" />
+          <Dialog.Popup
+            className="image-lightbox"
+            aria-label="Image viewer"
+            finalFocus={lightboxTriggerRef}
             onClick={() => setLightboxSrc(null)}
           >
-            <X size={18} />
-          </button>
-          <img
-            className="image-lightbox-image"
-            src={lightboxSrc}
-            alt="Original size"
-            onClick={(event) => event.stopPropagation()}
-          />
-        </div>
-      )}
+            <Dialog.Close
+              className="icon-button image-lightbox-close"
+              aria-label="Close image viewer"
+            >
+              <X size={18} />
+            </Dialog.Close>
+            {lightboxSrc && (
+              <img
+                className="image-lightbox-image"
+                src={lightboxSrc}
+                alt="Original size"
+                onClick={(event) => event.stopPropagation()}
+              />
+            )}
+          </Dialog.Popup>
+        </Dialog.Portal>
+      </Dialog.Root>
     </>
   );
 }

@@ -32,6 +32,7 @@ interface ListOptions {
 }
 
 interface GraphQLDiscussionNode {
+  id?: string;
   title?: string;
   body?: string;
   closed?: boolean;
@@ -54,6 +55,9 @@ interface GraphQLDiscussionCommentNode {
   authorAssociation?: string;
   createdAt?: string;
   updatedAt?: string;
+  replies?: {
+    nodes?: GraphQLDiscussionCommentNode[];
+  };
 }
 
 export interface DeviceCodeResponse {
@@ -78,6 +82,7 @@ const DISCUSSION_DETAIL_QUERY = `
 query ($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
     discussion(number: $number) {
+      id
       title
       body
       closed
@@ -96,8 +101,35 @@ query ($owner: String!, $repo: String!, $number: Int!) {
           authorAssociation
           createdAt
           updatedAt
+          replies(first: 100) {
+            nodes {
+              id
+              databaseId
+              body
+              author { login ... on User { name } avatarUrl }
+              authorAssociation
+              createdAt
+              updatedAt
+            }
+          }
         }
       }
+    }
+  }
+}`;
+
+const ADD_DISCUSSION_COMMENT_MUTATION = `
+mutation ($discussionId: ID!, $body: String!) {
+  addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
+    comment {
+      id
+      databaseId
+      body
+      createdAt
+      updatedAt
+      url
+      author { login ... on User { name } avatarUrl }
+      authorAssociation
     }
   }
 }`;
@@ -113,6 +145,7 @@ function mapDiscussion(node: GraphQLDiscussionNode | null | undefined) {
     throw new Error("Discussion was not found.");
   }
   return {
+    node_id: node.id,
     title: node.title,
     state: node.closed ? "closed" : "open",
     body: node.body,
@@ -135,7 +168,30 @@ function mapDiscussionComments(
   if (!node) {
     throw new Error("Discussion was not found.");
   }
-  return (node.comments?.nodes ?? []).map((comment) => ({
+  function mapComment(comment: GraphQLDiscussionCommentNode): Record<string, unknown> {
+    return {
+      id: comment.databaseId ?? comment.id,
+      node_id: comment.id,
+      body: comment.body,
+      user: {
+        login: comment.author?.login,
+        name: comment.author?.name,
+        avatar_url: comment.author?.avatarUrl
+      },
+      author_association: comment.authorAssociation,
+      created_at: comment.createdAt,
+      updated_at: comment.updatedAt,
+      replies: (comment.replies?.nodes ?? []).map(mapComment)
+    };
+  }
+  return (node.comments?.nodes ?? []).map(mapComment);
+}
+
+function mapDiscussionComment(comment: GraphQLDiscussionCommentNode | null | undefined) {
+  if (!comment) {
+    throw new Error("Discussion comment was not returned.");
+  }
+  return {
     id: comment.databaseId ?? comment.id,
     node_id: comment.id,
     body: comment.body,
@@ -147,7 +203,7 @@ function mapDiscussionComments(
     author_association: comment.authorAssociation,
     created_at: comment.createdAt,
     updated_at: comment.updatedAt
-  }));
+  };
 }
 
 export function createGitHubClient(options: GitHubClientOptions) {
@@ -185,6 +241,16 @@ export function createGitHubClient(options: GitHubClientOptions) {
       );
     },
 
+    closeIssue(owner: string, repo: string, number: number) {
+      return transport.requestJson(
+        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ state: "closed" })
+        }
+      );
+    },
+
     getIssue(owner: string, repo: string, number: number) {
       return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`,
@@ -216,6 +282,30 @@ export function createGitHubClient(options: GitHubClientOptions) {
         repository?: { discussion?: GraphQLDiscussionNode | null } | null;
       }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
       return mapDiscussion(data.repository?.discussion);
+    },
+
+    async createDiscussionComment(
+      owner: string,
+      repo: string,
+      number: number,
+      body: string
+    ) {
+      const discussionData = await transport.graphql<{
+        repository?: { discussion?: GraphQLDiscussionNode | null } | null;
+      }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
+      const discussionId = discussionData.repository?.discussion?.id;
+      if (!discussionId) {
+        throw new Error("Discussion node id was not returned.");
+      }
+      const data = await transport.graphql<{
+        addDiscussionComment?: {
+          comment?: GraphQLDiscussionCommentNode | null;
+        } | null;
+      }>(ADD_DISCUSSION_COMMENT_MUTATION, {
+        discussionId,
+        body
+      });
+      return mapDiscussionComment(data.addDiscussionComment?.comment);
     },
 
     async listDiscussionComments(

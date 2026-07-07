@@ -60,6 +60,7 @@ export interface OutboxOperationFrontMatter {
   operation: OutboxOperationKind;
   id: string;
   target: OutboxTarget;
+  close_after_comment?: boolean;
   local_file_path: string;
   created_at: string;
   status: OutboxStatus;

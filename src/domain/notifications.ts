@@ -89,6 +89,77 @@ export function isReadAndQuiet(
   return new Date(viewedAt).valueOf() >= new Date(notification.updated_at).valueOf();
 }
 
+/**
+ * Compares two notifications on every field the list rows, grouping, unread
+ * dot, subtitle, and reason icon depend on. When this returns true the objects
+ * are interchangeable, so the caller may keep the existing reference to
+ * preserve object identity (which lets `React.memo` rows skip re-rendering).
+ * Superset of `sameNotificationSnapshot` in services/notifications.ts: it adds
+ * the render-affecting fields (reason, repository name/owner, subject url).
+ */
+export function notificationsEqual(
+  left: GitHubNotification,
+  right: GitHubNotification
+): boolean {
+  if (left === right) {
+    return true;
+  }
+  return (
+    left.id === right.id &&
+    left.unread === right.unread &&
+    left.reason === right.reason &&
+    left.updated_at === right.updated_at &&
+    left.last_read_at === right.last_read_at &&
+    left.subject.title === right.subject.title &&
+    left.subject.url === right.subject.url &&
+    left.subject.type === right.subject.type &&
+    left.repository.full_name === right.repository.full_name &&
+    left.repository.name === right.repository.name &&
+    left.repository.owner.login === right.repository.owner.login &&
+    left.repository.owner.avatar_url === right.repository.owner.avatar_url
+  );
+}
+
+/**
+ * Returns `next` unless it is element-wise equal to `previous` (same order,
+ * same render-affecting fields), in which case the `previous` array reference
+ * is returned so downstream `useState`/memo consumers can bail out. For
+ * notifications present in both, the previous object reference is reused when
+ * unchanged. Matched by notification id, mirroring `reconcileItems`.
+ */
+export function reconcileNotifications(
+  previous: GitHubNotification[] | null | undefined,
+  next: GitHubNotification[]
+): GitHubNotification[] {
+  if (!previous) {
+    return next;
+  }
+  const previousById = new Map<string, GitHubNotification>();
+  for (const notification of previous) {
+    previousById.set(notification.id, notification);
+  }
+
+  let changed = false;
+  const reconciled = next.map((notification) => {
+    const prior = previousById.get(notification.id);
+    if (prior && notificationsEqual(prior, notification)) {
+      return prior;
+    }
+    changed = true;
+    return notification;
+  });
+
+  if (changed || reconciled.length !== previous.length) {
+    return reconciled;
+  }
+  for (let index = 0; index < reconciled.length; index += 1) {
+    if (reconciled[index] !== previous[index]) {
+      return reconciled;
+    }
+  }
+  return previous;
+}
+
 export interface NotificationGroup {
   key: string;
   label: string;

@@ -1,0 +1,30 @@
+/*
+ * Base UI Tabs adjustments for the comment composer's Write/Preview toggle.
+ *
+ * The composer body (`.comment-composer`) is a `display: grid` column whose
+ * direct children — the toggle row, the textarea/preview, and the action bar —
+ * stack with no gap. Base UI's `Tabs.Root` inserts an extra wrapping `<div>`
+ * around the tab list and the editing surface. Collapsing that wrapper with
+ * `display: contents` keeps `.composer-preview-toggle-row` and the textarea /
+ * `.comment-preview` as direct grid children of `.comment-composer`, so the
+ * original layout is preserved with no new spacing.
+ *
+ * The `.composer-preview-toggle.active` visual state is applied via the
+ * className callback in CommentComposer.tsx (state.active -> "active"); the
+ * base pill styling still comes from styles.css. Only the selected-tab accent
+ * and the inter-tab gap (now that both Write and Preview render side by side)
+ * live here.
+ */
+.comment-composer > .composer-tabs-root {
+  display: contents;
+}
+
+.composer-tabs-root .composer-preview-toggle-row {
+  gap: 6px;
+}
+
+.composer-tabs-root .composer-preview-toggle.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-1);
+}

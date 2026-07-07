@@ -8,15 +8,23 @@ import {
   useRef,
   useState
 } from "react";
+import { Toast } from "@base-ui/react/toast";
+import "./components/ui/toast.css";
 import {
   defaultSettings,
   loadSettings,
+  normalizeSettings,
   persistSettings,
+  settingsNeedNormalization,
   type AppSettings
 } from "./appSettings";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
 import { VaultRootContext } from "./VaultRootContext";
+import {
+  AppStatusBar,
+  type StatusBarMetrics
+} from "./components/AppStatusBar";
 import { ItemDetail } from "./components/ItemDetail";
 import {
   ItemListPane,
@@ -44,6 +52,7 @@ const SettingsPage = lazy(() =>
 );
 import { Sidebar, type ListFilter } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
+import { getMarkdownRenderCacheStats } from "./components/MarkdownBody";
 import { toggleFavorite } from "./domain/favorites";
 import {
   createCommentOutboxOperation,
@@ -54,20 +63,25 @@ import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
 import {
   isReadAndQuiet,
   notificationWebUrl,
+  subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
 import type {
   CommentDocument,
+  ItemKind,
   ItemDocument,
   OutboxOperationDocument
 } from "./domain/types";
+import type { CommentSubmitAction } from "./components/CommentComposer";
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
+import { useAppBadge } from "./hooks/useAppBadge";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
+import { useNavigationListAccent } from "./hooks/useNavigationListAccent";
 import { useNotifications } from "./hooks/useNotifications";
 import { useProjectVisibility } from "./hooks/useProjectVisibility";
 import { useRepositoryOpenCounts } from "./hooks/useRepositoryOpenCounts";
@@ -81,6 +95,8 @@ import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
+import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
+import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
 import {
   resetApplicationData,
   type ResetApplicationStepId
@@ -94,7 +110,11 @@ import {
 import { createGitHubClient } from "./services/github";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
-import { clearItemThreadCache } from "./services/itemThread";
+import {
+  clearItemThreadCache,
+  getItemThreadCacheStats
+} from "./services/itemThread";
+import { estimateRecordBytes } from "./services/cacheStats";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
@@ -113,8 +133,43 @@ import {
   rebuildVaultStateFromMarkdown
 } from "./services/vaultStore";
 
+// Auto-dismiss timing matches the legacy fixed snackbar (6s).
+const APP_SNACKBAR_TIMEOUT_MS = 6000;
+
+// How many of the newest notifications to warm ahead of a click. The
+// Notifications pane is not virtualized, so this caps the top-of-feed slice we
+// prefetch rather than a measured viewport window.
+const NOTIFICATION_PREFETCH_CAP = 20;
+
+// A standalone manager lets feedback fire from effects and event handlers in
+// the App body without needing the `useToastManager` hook (which must run
+// under a Toast.Provider that App itself renders).
+const appToastManager = Toast.createToastManager();
+
+function showAppSnackbar(message: string) {
+  appToastManager.add({ title: message, timeout: APP_SNACKBAR_TIMEOUT_MS });
+}
+
+// Renders the queued toasts inside the provider using the shared manager.
+function AppSnackbarToasts() {
+  const { toasts } = Toast.useToastManager();
+  return toasts.map((toast) => (
+    <Toast.Root key={toast.id} toast={toast} className="app-snackbar">
+      <Toast.Title />
+    </Toast.Root>
+  ));
+}
+
 interface AppProps {
   initialOnline?: boolean;
+}
+
+interface CommentTarget {
+  host: string;
+  owner: string;
+  repo: string;
+  kind: ItemKind;
+  number: number;
 }
 
 const resetStepTemplates: Array<{
@@ -145,6 +200,29 @@ function createOperationId(prefix: string): string {
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return `${prefix}-${unique}`;
+}
+
+function hostFromWebBaseUrl(webBaseUrl: string): string {
+  try {
+    return new URL(webBaseUrl).host;
+  } catch {
+    return webBaseUrl.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  }
+}
+
+function notificationSubjectKind(
+  notification: GitHubNotification
+): ItemKind | null {
+  switch (notification.subject.type) {
+    case "Issue":
+      return "issue";
+    case "PullRequest":
+      return "pull";
+    case "Discussion":
+      return "discussion";
+    default:
+      return null;
+  }
 }
 
 function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
@@ -207,8 +285,11 @@ export default function App({ initialOnline }: AppProps) {
   const [showNotifications, setShowNotifications] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
-  const [appSnackbar, setAppSnackbar] = useState<string | null>(null);
   const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
+  const [visiblePrefetchItems, setVisiblePrefetchItems] = useState<ItemDocument[]>([]);
+  const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
+  const [detailDisplayDurationMs, setDetailDisplayDurationMs] =
+    useState<number | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const [resetProgress, setResetProgress] =
@@ -218,6 +299,12 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+
+  useEffect(() => {
+    setSettings((current) =>
+      settingsNeedNormalization(current) ? normalizeSettings(current) : current
+    );
+  }, []);
 
   useEffect(() => {
     tracePerfOnce("app-mounted", "app_mounted", {
@@ -469,12 +556,16 @@ export default function App({ initialOnline }: AppProps) {
     notifications: filteredNotificationItems,
     unreadCount: filteredUnreadNotificationCount
   };
+  const displayedUnreadNotificationCount =
+    repositoryGroups.loaded ? notifications.unreadCount : 0;
+  useAppBadge(authGate.state === "passed" ? displayedUnreadNotificationCount : 0);
   useDesktopNotifications({
-    notifications: notifications.notifications,
+    connection: auth.connection,
     viewedAt: notifications.viewedAt,
-    webBaseUrl: auth.connection.webBaseUrl,
+    online,
     enabled: settings.desktopNotifications && authGate.state === "passed",
-    demoMode: notifications.demoMode
+    demoMode: notifications.demoMode,
+    isRepoVisible: notificationRepoFilter
   });
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
@@ -501,8 +592,26 @@ export default function App({ initialOnline }: AppProps) {
   const notificationDetail = useNotificationDetail(
     selectedNotification,
     auth.connection,
-    online
+    online,
+    conversationRefreshKey
   );
+  const selectedNotificationCommentTarget = useMemo<CommentTarget | null>(() => {
+    if (!selectedNotification) {
+      return null;
+    }
+    const kind = notificationSubjectKind(selectedNotification);
+    const number = subjectNumber(selectedNotification.subject);
+    if (!kind || number === null) {
+      return null;
+    }
+    return {
+      host: hostFromWebBaseUrl(auth.connection.webBaseUrl),
+      owner: selectedNotification.repository.owner.login,
+      repo: selectedNotification.repository.name,
+      kind,
+      number
+    };
+  }, [selectedNotification, auth.connection.webBaseUrl]);
   const {
     mode: themeMode,
     setMode: setThemeMode,
@@ -601,6 +710,14 @@ export default function App({ initialOnline }: AppProps) {
       stateScopedItems.filter((item) => matchesStateFilter(item, itemStateFilter)),
     [stateScopedItems, itemStateFilter]
   );
+  const activeNavigationKey = showSettings
+    ? "app:settings"
+    : showNotifications
+      ? "github:notifications"
+      : repositoryFilter
+        ? `repository:${repositoryFilter}`
+        : `inbox:${filter}`;
+  const navigationListAccentStyle = useNavigationListAccent(activeNavigationKey);
 
   const displayedItemStateCounts =
     repositoryFilter && visibleRepositoryCounts.selectedStateCounts
@@ -660,10 +777,174 @@ export default function App({ initialOnline }: AppProps) {
   const itemThread = useItemThread(
     detailVisible ? selectedItemWithBody ?? null : null,
     auth.connection,
-    online
+    online,
+    conversationRefreshKey
+  );
+
+  const prefetchStats = useVisibleItemPrefetch({
+    visibleItems: detailVisible ? visiblePrefetchItems : [],
+    selectedPath: selectedItem?.path ?? null,
+    vaultRoot,
+    connection: auth.connection,
+    online,
+    enabled:
+      detailVisible &&
+      settings.prefetchVisibleItems !== false &&
+      authGate.state === "passed" &&
+      !workItems.demoMode &&
+      !showSettings &&
+      !showNewIssue &&
+      !showNotifications,
+    loadedBodies: loadedItemBodies,
+    refreshKey: conversationRefreshKey,
+    onBodyPrefetched: (path, body) => {
+      setLoadedItemBodies((current) =>
+        current[path] === undefined ? { ...current, [path]: body } : current
+      );
+    },
+    onBodyInvalidated: (path) => {
+      setLoadedItemBodies((current) => {
+        if (current[path] === undefined) {
+          return current;
+        }
+        const next = { ...current };
+        delete next[path];
+        return next;
+      });
+    },
+    onError: (message) => {
+      tracePerf("visible_item_prefetch_error", { message });
+    }
+  });
+
+  // The Notifications pane is not virtualized and its rows are cheap, so rather
+  // than measure a scroll viewport we warm the top slice of the newest-first
+  // filtered feed — the rows the user is most likely to click first. The cap
+  // bounds concurrent detail fetches; the prefetch hook further limits them.
+  const notificationPrefetchTargets = useMemo(
+    () => notifications.notifications.slice(0, NOTIFICATION_PREFETCH_CAP),
+    [notifications.notifications]
+  );
+  const notificationPrefetchEnabled =
+    showNotifications &&
+    settings.prefetchVisibleItems !== false &&
+    authGate.state === "passed" &&
+    !notifications.demoMode &&
+    !showSettings &&
+    !showNewIssue;
+  const notificationPrefetchStats = useVisibleNotificationPrefetch({
+    visibleNotifications: notificationPrefetchEnabled
+      ? notificationPrefetchTargets
+      : [],
+    selectedId: selectedNotification?.id ?? null,
+    connection: auth.connection,
+    online,
+    enabled: notificationPrefetchEnabled,
+    onError: (message) => {
+      tracePerf("visible_notification_prefetch_error", { message });
+    }
+  });
+  const activeDetailKey = showNotifications
+    ? selectedNotification
+      ? `notification:${selectedNotification.id}`
+      : null
+    : detailVisible && selectedItem
+      ? `item:${selectedItem.path}`
+      : null;
+  const detailStartedAt = useRef<number | null>(null);
+  // Identifies what the shared `.detail-scroll` container is currently showing.
+  // The same DOM node is reused across every selection and content mode, so a
+  // change here means the pane switched targets and its scroll must snap back
+  // to the top (see the reset effect below). Same-target re-clicks leave this
+  // key unchanged, so the previous scroll position is preserved.
+  const detailScrollResetKey = showSettings
+    ? `settings:${settingsSection}`
+    : showNewIssue
+      ? "new-issue"
+      : showNotifications
+        ? `notification:${selectedNotification?.id ?? "none"}`
+        : `item:${selectedItem?.path ?? "none"}`;
+  const detailScrollRef = useRef<HTMLDivElement>(null);
+
+  // Snap the detail pane back to the top whenever it switches to a different
+  // work item, notification, or content mode. Because the scroll container is
+  // reused across selections, the previous target's offset would otherwise
+  // carry over into the newly opened detail.
+  useEffect(() => {
+    const node = detailScrollRef.current;
+    if (!node) {
+      return;
+    }
+    // jsdom implements `scrollTop` but not `scrollTo`; prefer `scrollTo` in
+    // real browsers and fall back to assigning `scrollTop` when it is absent.
+    if (typeof node.scrollTo === "function") {
+      node.scrollTo({ top: 0, left: 0 });
+    } else {
+      node.scrollTop = 0;
+    }
+  }, [detailScrollResetKey]);
+
+  const selectedBodyReady =
+    !selectedItem ||
+    Boolean(selectedItem.body) ||
+    loadedItemBodies[selectedItem.path] !== undefined;
+  const detailReady = showNotifications
+    ? Boolean(selectedNotification && notificationDetail.detail && !notificationDetail.loading)
+    : Boolean(selectedItem && selectedBodyReady && !itemThread.loading);
+
+  useEffect(() => {
+    if (!activeDetailKey) {
+      detailStartedAt.current = null;
+      setDetailDisplayDurationMs(null);
+      return;
+    }
+    if (detailStartedAt.current === null) {
+      detailStartedAt.current =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+    }
+    setDetailDisplayDurationMs(null);
+  }, [activeDetailKey]);
+
+  useEffect(() => {
+    if (!activeDetailKey || !detailReady || detailStartedAt.current === null) {
+      return;
+    }
+    const finishedAt =
+      typeof performance === "undefined" ? Date.now() : performance.now();
+    setDetailDisplayDurationMs(finishedAt - detailStartedAt.current);
+    detailStartedAt.current = null;
+  }, [activeDetailKey, detailReady]);
+
+  const statusMetrics = useMemo<StatusBarMetrics>(
+    () => {
+      const bodyStats = estimateRecordBytes(loadedItemBodies);
+      const threadStats = getItemThreadCacheStats();
+      const markdownStats = getMarkdownRenderCacheStats();
+      return {
+        listFetchDurationMs: workItems.lastFetchDurationMs,
+        detailDisplayDurationMs,
+        // Surface whichever prefetcher is active for the current view.
+        prefetch: showNotifications ? notificationPrefetchStats : prefetchStats,
+        caches: [
+          { label: "Bodies", ...bodyStats },
+          { label: "Threads", ...threadStats },
+          { label: "Markdown", ...markdownStats }
+        ]
+      };
+    },
+    [
+      detailDisplayDurationMs,
+      itemThread.thread,
+      loadedItemBodies,
+      notificationPrefetchStats,
+      prefetchStats,
+      showNotifications,
+      workItems.lastFetchDurationMs
+    ]
   );
 
   const layoutStyle = {
+    ...navigationListAccentStyle,
     "--sidebar-width": `${paneWidths.sidebar}px`,
     "--list-width": `${paneWidths.list}px`
   } as CSSProperties;
@@ -695,31 +976,22 @@ export default function App({ initialOnline }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [online, outbox, settings.syncQueuedOnReconnect]);
 
-  // Sync feedback toast auto-dismisses.
+  // Sync feedback surfaces as an auto-dismissing toast. Reset the state after
+  // queuing so an identical follow-up message re-fires the toast.
   useEffect(() => {
     if (!syncFeedback) {
       return;
     }
-    setAppSnackbar(syncFeedback);
+    showAppSnackbar(syncFeedback);
+    setSyncFeedback(null);
   }, [syncFeedback]);
 
   useEffect(() => {
     const message = repositoryGroups.error ?? visibleRepositoryCounts.error;
     if (message) {
-      setAppSnackbar(message);
+      showAppSnackbar(message);
     }
   }, [repositoryGroups.error, visibleRepositoryCounts.error]);
-
-  useEffect(() => {
-    if (!appSnackbar) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      setAppSnackbar(null);
-      setSyncFeedback(null);
-    }, 6000);
-    return () => window.clearTimeout(timer);
-  }, [appSnackbar]);
 
   function onToggleFavorite() {
     if (!selectedItem) {
@@ -916,19 +1188,30 @@ export default function App({ initialOnline }: AppProps) {
           .map((result) => [result.operation.frontMatter.id, result])
       );
 
-      const failedOperations = outbox
-        .filter((operation) => failures.has(operation.frontMatter.id))
-        .map((operation) => {
-          const failure = failures.get(operation.frontMatter.id);
-          return {
-            ...operation,
-            frontMatter: {
-              ...operation.frontMatter,
-              status: failure?.permanent ? ("blocked" as const) : ("failed" as const),
-              last_error: failure?.error ?? "Sync failed."
+      const operationsById = new Map(
+        outbox.map((operation) => [operation.frontMatter.id, operation])
+      );
+      for (const operation of selected) {
+        operationsById.set(operation.frontMatter.id, operation);
+      }
+      const failedOperations = Array.from(failures.entries()).flatMap(
+        ([id, failure]) => {
+          const operation = operationsById.get(id);
+          if (!operation) {
+            return [];
+          }
+          return [
+            {
+              ...operation,
+              frontMatter: {
+                ...operation.frontMatter,
+                status: failure.permanent ? ("blocked" as const) : ("failed" as const),
+                last_error: failure.error ?? "Sync failed."
+              }
             }
-          };
-        });
+          ];
+        }
+      );
       await Promise.all(
         failedOperations.map((operation) =>
           persistOutboxOperation(vaultRoot, operation)
@@ -975,6 +1258,17 @@ export default function App({ initialOnline }: AppProps) {
     return parts.join(" · ");
   }
 
+  function refreshAfterSync(outcome: SyncOutcome) {
+    if (outcome.synced === 0) {
+      return;
+    }
+    clearItemThreadCache();
+    clearNotificationDetailCache();
+    setConversationRefreshKey((current) => current + 1);
+    workItems.refresh();
+    notifications.refresh();
+  }
+
   async function syncSelectedOutbox() {
     const selected = outbox.filter((operation) =>
       selectedOutboxIds.has(operation.frontMatter.id)
@@ -983,10 +1277,48 @@ export default function App({ initialOnline }: AppProps) {
     if (!outcome) {
       return;
     }
+    refreshAfterSync(outcome);
     setSyncFeedback(describeSyncOutcome(outcome));
     if (outcome.failed === 0 && outcome.blocked === 0) {
       setShowOutbox(false);
     }
+  }
+
+  function openOutboxTarget(operation: OutboxOperationDocument) {
+    const { target } = operation.frontMatter;
+    if (!target.kind || typeof target.number !== "number") {
+      return;
+    }
+
+    const match = [...items, ...inboxItems, ...drafts].find(
+      (item) =>
+        item.frontMatter.host === target.host &&
+        item.frontMatter.owner === target.owner &&
+        item.frontMatter.repo === target.repo &&
+        item.frontMatter.kind === target.kind &&
+        item.frontMatter.number === target.number
+    );
+    const fallbackPath = itemMainPath(vaultRoot, {
+      host: target.host,
+      owner: target.owner,
+      repo: target.repo,
+      kind: target.kind,
+      number: target.number
+    });
+
+    setSelectedPath(match?.path ?? fallbackPath);
+    setRepositoryFilter(`${target.owner}/${target.repo}`);
+    setFilter("all");
+    setQuery("");
+    setItemStateFilter(
+      match?.frontMatter.state === "closed" || match?.frontMatter.state === "merged"
+        ? "closed"
+        : "open"
+    );
+    setShowSettings(false);
+    setShowNewIssue(false);
+    setShowNotifications(false);
+    setShowOutbox(false);
   }
 
   /** Reconnect flush: sync everything retryable without asking, then report. */
@@ -995,6 +1327,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!outcome) {
       return;
     }
+    refreshAfterSync(outcome);
     setSyncFeedback(describeSyncOutcome(outcome));
     if (outcome.failed > 0 || outcome.blocked > 0) {
       // Leave nothing preselected: blocked entries should not be one-click
@@ -1004,31 +1337,53 @@ export default function App({ initialOnline }: AppProps) {
     }
   }
 
-  function queueComment(event: FormEvent) {
-    event.preventDefault();
+  async function syncQueuedOperation(operation: OutboxOperationDocument) {
+    if (!online || !auth.connection.token.trim()) {
+      return;
+    }
+
+    const outcome = await performSync([operation]);
+    if (!outcome) {
+      return;
+    }
+    refreshAfterSync(outcome);
+    setSyncFeedback(describeSyncOutcome(outcome));
+    if (outcome.failed > 0 || outcome.blocked > 0) {
+      setSelectedOutboxIds(new Set([operation.frontMatter.id]));
+      setShowOutbox(true);
+    }
+  }
+
+  function queueCommentForTarget(
+    target: CommentTarget | null,
+    action: CommentSubmitAction
+  ) {
     const body = commentDraft.trim();
-    if (!body || !selectedItem) {
+    if (!body || !target) {
       return;
     }
 
     const id = createOperationId("comment");
+    const createdAt = new Date().toISOString();
+    const closeAfterComment = action === "comment-and-close" && target.kind === "issue";
     const operation = createCommentOutboxOperation({
       id,
-      host: selectedItem.frontMatter.host,
-      owner: selectedItem.frontMatter.owner,
-      repo: selectedItem.frontMatter.repo,
-      itemKind: selectedItem.frontMatter.kind,
-      number: selectedItem.frontMatter.number,
+      host: target.host,
+      owner: target.owner,
+      repo: target.repo,
+      itemKind: target.kind,
+      number: target.number,
+      closeAfterComment,
       localFilePath: commentFilePath(vaultRoot, {
-        kind: selectedItem.frontMatter.kind,
-        host: selectedItem.frontMatter.host,
-        owner: selectedItem.frontMatter.owner,
-        repo: selectedItem.frontMatter.repo,
-        number: selectedItem.frontMatter.number,
-        created_at: new Date().toISOString(),
+        kind: target.kind,
+        host: target.host,
+        owner: target.owner,
+        repo: target.repo,
+        number: target.number,
+        created_at: createdAt,
         local_id: id
       }),
-      createdAt: new Date().toISOString(),
+      createdAt,
       vaultRoot
     });
     const comment: CommentDocument = {
@@ -1037,17 +1392,42 @@ export default function App({ initialOnline }: AppProps) {
       frontMatter: {
         kind: "issue_comment",
         author: "local",
-        created_at: operation.frontMatter.created_at,
-        updated_at: operation.frontMatter.created_at,
+        created_at: createdAt,
+        updated_at: createdAt,
         sync: { status: "pending" }
       }
     };
     const queuedOperation = { ...operation, body };
 
-    void persistCommentDocument(vaultRoot, comment);
-    void persistOutboxOperation(vaultRoot, queuedOperation);
     setOutbox((current) => [...current, queuedOperation]);
     setCommentDraft("");
+    void Promise.all([
+      persistCommentDocument(vaultRoot, comment),
+      persistOutboxOperation(vaultRoot, queuedOperation)
+    ]).then(() => syncQueuedOperation(queuedOperation));
+    if (closeAfterComment) {
+      showAppSnackbar("Comment and close queued.");
+    }
+  }
+
+  function queueItemComment(action: CommentSubmitAction) {
+    if (!selectedItem) {
+      return;
+    }
+    queueCommentForTarget(
+      {
+        host: selectedItem.frontMatter.host,
+        owner: selectedItem.frontMatter.owner,
+        repo: selectedItem.frontMatter.repo,
+        kind: selectedItem.frontMatter.kind,
+        number: selectedItem.frontMatter.number
+      },
+      action
+    );
+  }
+
+  function queueNotificationComment(action: CommentSubmitAction) {
+    queueCommentForTarget(selectedNotificationCommentTarget, action);
   }
 
   function queueIssue(event: FormEvent) {
@@ -1201,7 +1581,7 @@ export default function App({ initialOnline }: AppProps) {
       const message = cause instanceof Error ? cause.message : String(cause);
       failCurrentResetStep(message);
       setSettingsStatus(`Reset failed: ${message}`);
-      setAppSnackbar(`Reset failed: ${message}`);
+      showAppSnackbar(`Reset failed: ${message}`);
     }
   }
 
@@ -1252,17 +1632,15 @@ export default function App({ initialOnline }: AppProps) {
         repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
         counts={filterCounts}
-        outboxCount={outbox.length}
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
         onOpenProjectSettings={() => openSettings("projects")}
-        onOpenOutbox={openOutbox}
         notificationsOpen={showNotifications}
         onOpenNotifications={openNotifications}
         unreadNotificationCount={
           // Until the repository filter basis has loaded, the raw unread
           // count would flash (e.g. 300 → 15); hold the badge back instead.
-          repositoryGroups.loaded ? notifications.unreadCount : 0
+          displayedUnreadNotificationCount
         }
         notificationsLoading={
           notifications.loading || (!notifications.demoMode && !repositoryGroups.loaded)
@@ -1305,13 +1683,23 @@ export default function App({ initialOnline }: AppProps) {
           loading={workItems.loading}
           error={workItems.error}
           demoMode={workItems.demoMode}
+          online={online}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
           onSelect={(path) => {
+            const startedAt =
+              typeof performance !== "undefined" ? performance.now() : Date.now();
+            detailStartedAt.current = startedAt;
+            setDetailDisplayDurationMs(null);
+            if (path === selectedItem?.path && detailReady) {
+              setDetailDisplayDurationMs(0);
+              detailStartedAt.current = null;
+            }
             setSelectedPath(path);
             setShowNewIssue(false);
             setShowSettings(false);
           }}
+          onVisibleItemsChange={setVisiblePrefetchItems}
           onNewIssue={openNewIssue}
           onRefresh={workItems.refresh}
         />
@@ -1332,7 +1720,7 @@ export default function App({ initialOnline }: AppProps) {
 
       <section className="detail-pane" aria-label="Detail">
         <div className="pane-titlebar-spacer" />
-        <div className="detail-scroll">
+        <div className="detail-scroll" ref={detailScrollRef}>
         {showSettings ? (
           <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
             <SettingsPage
@@ -1369,7 +1757,11 @@ export default function App({ initialOnline }: AppProps) {
           <NotificationDetail
             notification={selectedNotification}
             state={notificationDetail}
+            online={online}
+            commentDraft={commentDraft}
             onOpenInBrowser={notifications.openNotification}
+            onCommentDraftChange={setCommentDraft}
+            onQueueComment={queueNotificationComment}
           />
         ) : (
           <ItemDetail
@@ -1378,12 +1770,20 @@ export default function App({ initialOnline }: AppProps) {
             online={online}
             commentDraft={commentDraft}
             onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueComment}
+            onQueueComment={queueItemComment}
             onToggleFavorite={onToggleFavorite}
           />
         )}
         </div>
       </section>
+
+      <AppStatusBar
+        outboxCount={outbox.length}
+        online={online}
+        syncing={syncing}
+        metrics={statusMetrics}
+        onOpenOutbox={openOutbox}
+      />
 
       {showOutbox && (
         <OutboxModal
@@ -1393,15 +1793,21 @@ export default function App({ initialOnline }: AppProps) {
           syncing={syncing}
           remoteChangedIds={remoteChangedOutboxIds}
           onToggleSelection={toggleOutboxSelection}
+          onOpenTarget={openOutboxTarget}
           onSync={() => void syncSelectedOutbox()}
           onClose={() => setShowOutbox(false)}
         />
       )}
-      {appSnackbar && (
-        <div className="app-snackbar" role="status">
-          {appSnackbar}
-        </div>
-      )}
+      <Toast.Provider
+        toastManager={appToastManager}
+        timeout={APP_SNACKBAR_TIMEOUT_MS}
+      >
+        <Toast.Portal>
+          <Toast.Viewport className="app-toast-viewport" aria-label="App messages">
+            <AppSnackbarToasts />
+          </Toast.Viewport>
+        </Toast.Portal>
+      </Toast.Provider>
     </main>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>
