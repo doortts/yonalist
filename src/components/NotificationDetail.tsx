@@ -80,7 +80,7 @@ export function NotificationDetail({
 
   return (
     <>
-      <StickyTitle title={detail?.title ?? notification.subject.title}>
+      <StickyTitle title={detail?.title ?? notification.subject.title} number={number}>
         <header className="detail-header">
           <div className="detail-title-row">
             <div>

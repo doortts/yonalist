@@ -87,10 +87,10 @@ function makeThread(): UseItemThreadResult {
 
 const noop = () => {};
 
-function renderDetail() {
+function renderDetail(item: ItemDocument = makeItem()) {
   return render(
     <ItemDetail
-      item={makeItem()}
+      item={item}
       thread={makeThread()}
       online
       commentDraft=""
@@ -139,5 +139,29 @@ describe("ItemDetail sticky title", () => {
 
     fireHeaderVisible(true);
     expect(container.querySelector(".sticky-title-bar")).toBeNull();
+  });
+
+  it("appends the issue number after the title in the muted number tone", () => {
+    const { container } = renderDetail();
+    fireHeaderVisible(false);
+
+    const bar = container.querySelector(".sticky-title-bar");
+    const number = bar!.querySelector(".sticky-title-number");
+    expect(number).not.toBeNull();
+    expect(number).toHaveTextContent("#42");
+    // The number sits after the title text within the bar.
+    expect(bar).toHaveTextContent(`${TITLE}#42`);
+  });
+
+  it("shows no number for a draft item (number 0)", () => {
+    const draft = makeItem();
+    draft.frontMatter.number = 0;
+    const { container } = renderDetail(draft);
+    fireHeaderVisible(false);
+
+    const bar = container.querySelector(".sticky-title-bar");
+    expect(bar).not.toBeNull();
+    expect(bar).toHaveTextContent(TITLE);
+    expect(bar!.querySelector(".sticky-title-number")).toBeNull();
   });
 });

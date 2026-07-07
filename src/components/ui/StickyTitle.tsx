@@ -22,6 +22,12 @@ function findScrollParent(node: HTMLElement | null): HTMLElement | null {
 interface StickyTitleProps {
   /** Title text shown in the thin bar once the header scrolls away. */
   title: string;
+  /**
+   * Issue/PR/discussion number appended after the title as a muted `#42`.
+   * Only rendered when positive, so a draft (0) or a numberless subject
+   * (null/undefined) shows the title alone.
+   */
+  number?: number | null;
   /** The original detail header; rendered in normal flow above the sentinel. */
   children: ReactNode;
 }
@@ -37,7 +43,7 @@ interface StickyTitleProps {
  * visible). A zero-height sentinel placed just below the header is observed;
  * when it leaves the scroll root, the header is gone and the bar is shown.
  */
-export function StickyTitle({ title, children }: StickyTitleProps) {
+export function StickyTitle({ title, number, children }: StickyTitleProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
 
@@ -66,6 +72,9 @@ export function StickyTitle({ title, children }: StickyTitleProps) {
         {visible && (
           <div className="sticky-title-bar">
             <span className="sticky-title-text">{title}</span>
+            {typeof number === "number" && number > 0 && (
+              <span className="sticky-title-number">#{number}</span>
+            )}
           </div>
         )}
       </div>

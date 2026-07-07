@@ -23,6 +23,9 @@
 }
 
 .sticky-title-text {
+  /* min-width: 0 lets the flex child shrink below its content width so the
+     ellipsis engages, keeping the number sibling visible. */
+  min-width: 0;
   overflow: hidden;
   font-size: 14px;
   font-weight: 600;
@@ -30,6 +33,17 @@
   color: var(--text-1);
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+/* Trailing issue number in the same muted tone as the list meta / detail
+   eyebrow. Never shrinks, so the title ellipsis absorbs the overflow. */
+.sticky-title-number {
+  flex-shrink: 0;
+  margin-left: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-3);
 }
 
 .sticky-title-sentinel {

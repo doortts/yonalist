@@ -79,10 +79,10 @@ function makeState(): UseNotificationDetailResult {
 
 const noop = () => {};
 
-function renderDetail() {
+function renderDetail(notification: GitHubNotification = makeNotification()) {
   return render(
     <NotificationDetail
-      notification={makeNotification()}
+      notification={notification}
       state={makeState()}
       online
       commentDraft=""
@@ -127,5 +127,33 @@ describe("NotificationDetail sticky title", () => {
 
     fireHeaderVisible(true);
     expect(container.querySelector(".sticky-title-bar")).toBeNull();
+  });
+
+  it("appends the subject number after the title in the muted number tone", () => {
+    const { container } = renderDetail();
+    fireHeaderVisible(false);
+
+    const bar = container.querySelector(".sticky-title-bar");
+    const number = bar!.querySelector(".sticky-title-number");
+    expect(number).not.toBeNull();
+    // subject.url ends in /issues/7 → number 7.
+    expect(number).toHaveTextContent("#7");
+    expect(bar).toHaveTextContent(`${TITLE}#7`);
+  });
+
+  it("shows no number for a numberless subject (Release)", () => {
+    const release = makeNotification();
+    release.subject = {
+      title: "v2.0.0",
+      url: "https://api.github.com/repos/acme/widgets/releases/99",
+      type: "Release"
+    };
+    const { container } = renderDetail(release);
+    fireHeaderVisible(false);
+
+    const bar = container.querySelector(".sticky-title-bar");
+    expect(bar).not.toBeNull();
+    expect(bar).toHaveTextContent("v2.0.0");
+    expect(bar!.querySelector(".sticky-title-number")).toBeNull();
   });
 });

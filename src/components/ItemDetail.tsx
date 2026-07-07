@@ -61,7 +61,7 @@ export function ItemDetail({
 
   return (
     <>
-      <StickyTitle title={item.frontMatter.title}>
+      <StickyTitle title={item.frontMatter.title} number={item.frontMatter.number}>
         <header className="detail-header">
           <div className="detail-title-row">
             <div>
