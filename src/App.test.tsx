@@ -231,7 +231,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1056,7 +1056,7 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Settings page")).toBeInTheDocument();
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Vault and sync/
       })
     );
@@ -1094,7 +1094,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Reset/
       })
     );
@@ -1129,7 +1129,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /GitHub 서버/
       })
     );
@@ -1163,7 +1163,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /GitHub 서버/
       })
     );
@@ -1713,7 +1713,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1751,8 +1751,8 @@ describe("Yonalist app shell", () => {
 
     const settingsSections = await screen.findByLabelText("Settings sections");
     expect(
-      within(settingsSections).getByRole("button", { name: /Projects 표시/ })
-    ).toHaveAttribute("aria-pressed", "true");
+      within(settingsSections).getByRole("tab", { name: /Projects 표시/ })
+    ).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByLabelText("Project visibility")).toBeInTheDocument();
   });
 
@@ -1762,7 +1762,7 @@ describe("Yonalist app shell", () => {
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );
@@ -1798,7 +1798,7 @@ describe("Yonalist app shell", () => {
     // Uncheck doortts/blog in Settings → Projects 표시.
     await user.click(screen.getByRole("button", { name: "Settings" }));
     await user.click(
-      within(await screen.findByLabelText("Settings sections")).getByRole("button", {
+      within(await screen.findByLabelText("Settings sections")).getByRole("tab", {
         name: /Projects 표시/
       })
     );

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CommentComposer } from "./CommentComposer";
 
 describe("CommentComposer", () => {
-  it("previews the rendered markdown draft", async () => {
+  it("previews the rendered markdown draft from the Preview tab", async () => {
     const user = userEvent.setup();
     render(
       <CommentComposer
@@ -16,22 +16,36 @@ describe("CommentComposer", () => {
       />
     );
 
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Edit" })).not.toBeInTheDocument();
+    // With a draft present the Write/Preview tabs render, Write active first.
+    expect(screen.getByRole("tab", { name: "Write" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
+      "aria-selected",
+      "false"
+    );
+    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Preview" }));
+    await user.click(screen.getByRole("tab", { name: "Preview" }));
 
     const preview = screen.getByLabelText("Comment preview");
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(preview.querySelector("strong")).toHaveTextContent("hello");
-    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.queryByLabelText("Write a comment")).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("tab", { name: "Write" }));
 
     expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
   });
 
-  it("shows the preview toggle only after the user starts typing", async () => {
+  it("shows the Write/Preview tabs only after the user starts typing", async () => {
     const user = userEvent.setup();
     function WrappedComposer() {
       const [draft, setDraft] = useState("");
@@ -46,11 +60,43 @@ describe("CommentComposer", () => {
     }
     render(<WrappedComposer />);
 
-    expect(screen.queryByRole("button", { name: "Preview" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Write a comment"), "hello");
 
-    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Write" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Preview" })).toBeInTheDocument();
+  });
+
+  it("moves between the Write and Preview tabs with the arrow keys", async () => {
+    const user = userEvent.setup();
+    render(
+      <CommentComposer
+        draft={"**hi**"}
+        online
+        onDraftChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    const writeTab = screen.getByRole("tab", { name: "Write" });
+    writeTab.focus();
+
+    await user.keyboard("{ArrowRight}");
+
+    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByLabelText("Comment preview")).toBeInTheDocument();
+
+    await user.keyboard("{ArrowLeft}");
+
+    expect(screen.getByRole("tab", { name: "Write" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
   });
 
   it("grows the textarea to fit wrapped content", async () => {

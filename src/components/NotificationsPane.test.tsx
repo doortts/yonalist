@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
@@ -113,6 +114,65 @@ describe("NotificationsPane", () => {
       />
     );
     expect(screen.queryByLabelText("Unread")).toBeNull();
+  });
+
+  it("exposes the Only new filter as a Base UI checkbox that keeps its accessible name and hides read items", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [
+            makeNotification({
+              id: "1",
+              unread: true,
+              subject: {
+                title: "New unread thing",
+                url: "https://api.github.com/repos/acme/widgets/issues/1",
+                type: "Issue"
+              }
+            }),
+            makeNotification({
+              id: "2",
+              unread: false,
+              subject: {
+                title: "Old read thing",
+                url: "https://api.github.com/repos/acme/widgets/issues/2",
+                type: "Issue"
+              }
+            })
+          ]
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    // Base UI Checkbox exposes the control through role=checkbox; the previous
+    // native accessible name and label class hooks are preserved.
+    const onlyNew = screen.getByRole("checkbox", { name: "Only new notifications" });
+    expect(onlyNew).not.toBeChecked();
+    const toggle = onlyNew.closest(".settings-check.notifications-toggle");
+    expect(toggle).not.toBeNull();
+    // Base UI renders a decorative box (native checkbox has none) and tracks
+    // checked state as a data-attribute on the Root/label.
+    expect(toggle?.querySelector(".ui-checkbox")).not.toBeNull();
+    expect(toggle).not.toHaveAttribute("data-checked");
+    // With the filter off both notifications are visible.
+    expect(screen.getByText("New unread thing")).toBeTruthy();
+    expect(screen.getByText("Old read thing")).toBeTruthy();
+
+    await user.click(onlyNew);
+
+    // Toggling the checkbox hides the read (quiet) notification.
+    expect(onlyNew).toBeChecked();
+    expect(onlyNew).toHaveAccessibleName("Only new notifications");
+    expect(toggle).toHaveAttribute("data-checked");
+    // The checked indicator mounts once the box is ticked.
+    expect(toggle?.querySelector(".ui-checkbox-indicator")).not.toBeNull();
+    expect(screen.getByText("New unread thing")).toBeTruthy();
+    expect(screen.queryByText("Old read thing")).toBeNull();
   });
 
   it("shows the demo-mode note in demo mode", () => {

@@ -1,3 +1,4 @@
+import { Tabs } from "@base-ui/react/tabs";
 import { Eye, Pencil, Send } from "lucide-react";
 import {
   type FormEvent,
@@ -7,6 +8,9 @@ import {
   useState
 } from "react";
 import { MarkdownBody } from "./MarkdownBody";
+import "./ui/composer-tabs.css";
+
+type ComposerMode = "write" | "preview";
 
 export type CommentSubmitAction = "comment" | "comment-and-close";
 
@@ -27,7 +31,7 @@ export function CommentComposer({
   onDraftChange,
   onSubmit
 }: CommentComposerProps) {
-  const [mode, setMode] = useState<"write" | "preview">("write");
+  const [mode, setMode] = useState<ComposerMode>("write");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const hasDraft = draft.trim().length > 0;
 
@@ -63,50 +67,59 @@ export function CommentComposer({
 
   return (
     <form className="comment-composer" onSubmit={submit}>
-      {hasDraft && (
-        <div className="composer-preview-toggle-row">
-          {mode === "write" ? (
-            <button
-              type="button"
-              className="composer-preview-toggle"
-              onClick={() => setMode("preview")}
+      <Tabs.Root
+        className="composer-tabs-root"
+        value={mode}
+        onValueChange={(value) => setMode(value as ComposerMode)}
+      >
+        {hasDraft && (
+          <Tabs.List className="composer-preview-toggle-row" activateOnFocus>
+            <Tabs.Tab
+              value="write"
+              className={(state) =>
+                state.active
+                  ? "composer-preview-toggle active"
+                  : "composer-preview-toggle"
+              }
+            >
+              <Pencil size={14} />
+              Write
+            </Tabs.Tab>
+            <Tabs.Tab
+              value="preview"
+              className={(state) =>
+                state.active
+                  ? "composer-preview-toggle active"
+                  : "composer-preview-toggle"
+              }
             >
               <Eye size={14} />
               Preview
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="composer-preview-toggle"
-              onClick={() => setMode("write")}
-            >
-              <Pencil size={14} />
-              Edit
-            </button>
-          )}
-        </div>
-      )}
+            </Tabs.Tab>
+          </Tabs.List>
+        )}
 
-      {mode === "write" ? (
-        <textarea
-          ref={textareaRef}
-          id="comment-draft"
-          aria-label="Write a comment"
-          placeholder="Write a comment..."
-          value={draft}
-          disabled={disabled}
-          rows={4}
-          onChange={(event) => onDraftChange(event.target.value)}
-        />
-      ) : (
-        <div className="comment-preview" aria-label="Comment preview">
-          {hasDraft ? (
-            <MarkdownBody body={draft} />
-          ) : (
-            <p className="comment-preview-empty">Nothing to preview.</p>
-          )}
-        </div>
-      )}
+        {mode === "write" ? (
+          <textarea
+            ref={textareaRef}
+            id="comment-draft"
+            aria-label="Write a comment"
+            placeholder="Write a comment..."
+            value={draft}
+            disabled={disabled}
+            rows={4}
+            onChange={(event) => onDraftChange(event.target.value)}
+          />
+        ) : (
+          <div className="comment-preview" aria-label="Comment preview">
+            {hasDraft ? (
+              <MarkdownBody body={draft} />
+            ) : (
+              <p className="comment-preview-empty">Nothing to preview.</p>
+            )}
+          </div>
+        )}
+      </Tabs.Root>
 
       <div className="composer-actions">
         <span>

@@ -1,3 +1,4 @@
+import { Toggle } from "@base-ui/react/toggle";
 import { Bookmark, Globe, Inbox, Loader2 } from "lucide-react";
 import { useContext } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
@@ -89,19 +90,16 @@ export function ItemDetail({
                     : "Add to favorites"
                 }
               >
-                <button
-                  type="button"
-                  className={
-                    item.frontMatter.local.favorite
-                      ? "favorite-button active"
-                      : "favorite-button"
+                <Toggle
+                  className={(state) =>
+                    state.pressed ? "favorite-button active" : "favorite-button"
                   }
                   aria-label="Toggle favorite"
-                  aria-pressed={item.frontMatter.local.favorite}
-                  onClick={onToggleFavorite}
+                  pressed={item.frontMatter.local.favorite}
+                  onPressedChange={() => onToggleFavorite()}
                 >
                   <Bookmark size={18} fill="currentColor" />
-                </button>
+                </Toggle>
               </IconTooltip>
             </TooltipProvider>
           </div>

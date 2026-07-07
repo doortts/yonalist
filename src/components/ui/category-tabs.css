@@ -1,0 +1,18 @@
+/*
+ * Base UI Tabs adjustments for the vertical settings category list.
+ *
+ * The category list was previously a direct flex child (`<nav>`) of the
+ * `.settings-category-pane` column (a `display: flex; flex-direction: column`
+ * pane). Base UI's `Tabs.Root` wraps `Tabs.List` in an extra `<div>`.
+ * Collapsing that wrapper with `display: contents` keeps
+ * `.settings-category-list` a direct flex child of the pane, preserving the
+ * original layout.
+ *
+ * The `.category-item.active` visual state is applied via the className
+ * callback in SettingsCategoryPane.tsx (state.active -> "active"), so the
+ * existing styles.css rules continue to style the selected category with no
+ * new CSS needed here.
+ */
+.settings-category-pane > .settings-category-tabs-root {
+  display: contents;
+}

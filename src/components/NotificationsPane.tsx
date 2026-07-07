@@ -1,7 +1,9 @@
+import { Checkbox } from "@base-ui/react/checkbox";
 import {
   AlertCircle,
   AtSign,
   Bot,
+  Check,
   ExternalLink,
   GitPullRequest,
   Mail,
@@ -12,6 +14,7 @@ import {
   Users
 } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
+import "./ui/form-controls.css";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
@@ -217,15 +220,20 @@ export function NotificationsPane({
       </div>
 
       <div className="notifications-filters">
-        <label className="settings-check notifications-toggle">
-          <input
-            type="checkbox"
-            aria-label="Only new notifications"
-            checked={onlyNew}
-            onChange={(event) => setOnlyNew(event.target.checked)}
-          />
+        <Checkbox.Root
+          className="settings-check notifications-toggle"
+          render={<label />}
+          aria-label="Only new notifications"
+          checked={onlyNew}
+          onCheckedChange={(next) => setOnlyNew(next)}
+        >
+          <span className="ui-checkbox" aria-hidden="true">
+            <Checkbox.Indicator className="ui-checkbox-indicator">
+              <Check size={12} strokeWidth={3} />
+            </Checkbox.Indicator>
+          </span>
           <span>Only new</span>
-        </label>
+        </Checkbox.Root>
       </div>
 
       {state.demoMode && (
