@@ -2523,17 +2523,6 @@ body.is-resizing-pane {
   padding-top: 14px;
 }
 
-.issue-repo-field select {
-  min-height: 36px;
-  margin-top: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--bg-input);
-  color: var(--text-1);
-  justify-self: start;
-}
-
 .issue-create-body input,
 .issue-create-body textarea {
   width: 100%;
@@ -2822,14 +2811,6 @@ body.is-resizing-pane {
   cursor: pointer;
 }
 
-.server-radio input {
-  width: 14px;
-  height: 14px;
-  flex-shrink: 0;
-  margin: 0;
-  accent-color: var(--accent);
-}
-
 .server-label {
   display: grid;
   min-width: 0;
@@ -2919,15 +2900,6 @@ body.is-resizing-pane {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
-}
-
-.segment input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: 0;
-  opacity: 0;
-  pointer-events: none;
 }
 
 .token-input {
@@ -3117,11 +3089,6 @@ body.is-resizing-pane {
 .theme-option.active {
   border-color: var(--accent);
   background: var(--accent-soft);
-}
-
-.theme-option input {
-  margin: 0;
-  accent-color: var(--accent);
 }
 
 .theme-option span {
@@ -3561,13 +3528,13 @@ body.is-resizing-pane {
 
 /* ---------- Modal ---------- */
 
+/* Overlay only. With Base UI the Dialog popup is a sibling of the backdrop (not
+   a child), so it centers itself via ui/dialog.css; the old grid-centering /
+   padding here had no child to act on. */
 .modal-backdrop {
   position: fixed;
   inset: 0;
   z-index: 20;
-  display: grid;
-  place-items: center;
-  padding: 24px;
   background: rgb(15 20 28 / 40%);
 }
 
@@ -3683,12 +3650,9 @@ body.is-resizing-pane {
   text-transform: uppercase;
 }
 
-/* App feedback snackbar */
+/* App feedback snackbar card. Placement (fixed, bottom-right, stacking) is owned
+   by ui/toast.css via `.app-toast-viewport`; this rule only styles the card. */
 .app-snackbar {
-  position: fixed;
-  right: 20px;
-  bottom: calc(var(--statusbar-height) + 20px);
-  z-index: 60;
   padding: 10px 16px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
