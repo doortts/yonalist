@@ -1,3 +1,8 @@
+/* Pure Base UI component overrides for the base-light / base-dark themes.
+   Must precede all other rules (CSS @import ordering). Scoped entirely to
+   [data-theme="base-*"], so no other theme is affected. */
+@import "./themes/base-ui-pure.css";
+
 :root {
   color-scheme: light;
 

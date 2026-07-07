@@ -1,0 +1,362 @@
+/*
+ * Pure Base UI theme overrides.
+ *
+ * The `base-light` / `base-dark` themes defined in styles.css only re-map the
+ * *color* tokens to base-ui.com's neutral palette; every component still wears
+ * the app's own decorations (rounded pill tabs, soft-accent selection tints,
+ * solid colored badges, big-radius cards, large drop shadows). This file strips
+ * those decorations so the two Base themes read like base-ui.com's actual
+ * component demos:
+ *
+ *   - small, uniform radius (~5px)               (base-ui hero demos are sharp;
+ *     we soften just slightly per the theme spec)
+ *   - crisp 1px neutral borders, no pill shapes
+ *   - monochrome surfaces — selection/active states use neutral gray + a
+ *     foreground indicator instead of the blue accent
+ *   - blue reserved for the single base-ui accent role: focus rings & links
+ *   - minimal shadows (popups only, and faint)
+ *   - solid-neutral primary button, bordered-neutral everything else
+ *
+ * Every rule is scoped under :root[data-theme="base-light"] /
+ * :root[data-theme="base-dark"] so no other theme is touched. Values are driven
+ * off the theme's own CSS variables wherever possible, so one rule serves both
+ * light and dark. Reference: base-ui.com component hero demos (Tabs, Select,
+ * Checkbox, Dialog) — near-black/near-white foreground on white/near-black
+ * surfaces, 1px borders, `outline: 2px` focus, popups with a faint shadow.
+ *
+ * NOTE ON CASCADE: this file is @imported at the very top of styles.css, so it
+ * sorts *first*. Overrides therefore rely on specificity, not source order:
+ * a `:root[data-theme="base-*"] .foo` selector (0,3,0) always beats the plain
+ * `.foo` (0,1,0) it targets. Radius tokens are the exception — they are only
+ * defined on the root `:root {}` block (0,1,0), never inside the base theme
+ * blocks, so re-declaring them at `:root[data-theme="base-*"]` (0,2,0) wins and
+ * cascades to every component that reads `var(--radius*)`.
+ */
+
+/* ------------------------------------------------------------------ *
+ * 1. Shape — shrink the global radius tokens for the Base themes only.
+ *    Cascades to buttons, inputs, cards, modals, chips (via the tokens).
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"],
+:root[data-theme="base-dark"] {
+  --radius-sm: 4px;
+  --radius: 5px;
+  --radius-lg: 6px;
+}
+
+/* ------------------------------------------------------------------ *
+ * 2. Buttons — base-ui demo button look.
+ *    Primary = solid foreground fill (dark-on-light / light-on-dark).
+ *    Secondary / icon keep their existing bordered-neutral look (only the
+ *    radius shrinks via the tokens). Text button goes monochrome. Danger
+ *    becomes a restrained bordered button. Focus rings unified to blue.
+ * ------------------------------------------------------------------ */
+
+/* Primary: solid neutral. `--text-1` is dark in light mode / light in dark
+ * mode, and `--bg-card` is its exact contrast, so one rule covers both. */
+:root[data-theme="base-light"] .primary-button,
+:root[data-theme="base-dark"] .primary-button {
+  border-color: var(--text-1);
+  background: var(--text-1);
+  color: var(--bg-card);
+}
+
+:root[data-theme="base-light"] .primary-button:hover,
+:root[data-theme="base-dark"] .primary-button:hover {
+  border-color: var(--text-1);
+  background: color-mix(in srgb, var(--text-1) 85%, var(--bg-card));
+}
+
+/* Text button: drop the accent color for neutral foreground + quiet hover. */
+:root[data-theme="base-light"] .text-button,
+:root[data-theme="base-dark"] .text-button {
+  color: var(--text-1);
+}
+
+:root[data-theme="base-light"] .text-button:hover,
+:root[data-theme="base-dark"] .text-button:hover {
+  background: var(--bg-hover);
+}
+
+/* Danger: bordered destructive button (base-ui keeps destructive actions
+ * restrained rather than a solid red fill). */
+:root[data-theme="base-light"] .danger-button,
+:root[data-theme="base-dark"] .danger-button {
+  border-color: var(--danger);
+  background: transparent;
+  color: var(--danger);
+}
+
+:root[data-theme="base-light"] .danger-button:hover,
+:root[data-theme="base-dark"] .danger-button:hover {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* Unified focus ring: a single blue outline for the whole button family. */
+:root[data-theme="base-light"] .primary-button:focus-visible,
+:root[data-theme="base-light"] .secondary-button:focus-visible,
+:root[data-theme="base-light"] .danger-button:focus-visible,
+:root[data-theme="base-light"] .text-button:focus-visible,
+:root[data-theme="base-light"] .icon-button:focus-visible,
+:root[data-theme="base-dark"] .primary-button:focus-visible,
+:root[data-theme="base-dark"] .secondary-button:focus-visible,
+:root[data-theme="base-dark"] .danger-button:focus-visible,
+:root[data-theme="base-dark"] .text-button:focus-visible,
+:root[data-theme="base-dark"] .icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. Item-state tabs — pill "folder" tabs become minimal base-ui Tabs:
+ *    plain text, muted → foreground on hover/active, foreground underline
+ *    as the active indicator. (Keeps the 1px transparent border so widths
+ *    don't shift.)
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"] .item-state-tab,
+:root[data-theme="base-dark"] .item-state-tab {
+  border-color: transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-2);
+  box-shadow: none;
+}
+
+:root[data-theme="base-light"] .item-state-tab:hover,
+:root[data-theme="base-dark"] .item-state-tab:hover {
+  background: transparent;
+  color: var(--text-1);
+}
+
+:root[data-theme="base-light"] .item-state-tab.active,
+:root[data-theme="base-dark"] .item-state-tab.active {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-1);
+  box-shadow: inset 0 -2px 0 var(--text-1);
+}
+
+:root[data-theme="base-light"] .item-state-tab:focus-visible,
+:root[data-theme="base-dark"] .item-state-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. Selection / active states — soft blue tints become neutral gray with a
+ *    foreground indicator (base-ui shows selection with foreground, not the
+ *    accent hue; the accent stays reserved for focus & links).
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"] .item-card.selected,
+:root[data-theme="base-dark"] .item-card.selected,
+:root[data-theme="base-light"] .category-item.active,
+:root[data-theme="base-dark"] .category-item.active,
+:root[data-theme="base-light"] .notification-row.selected,
+:root[data-theme="base-dark"] .notification-row.selected {
+  background: var(--bg-active);
+  box-shadow: inset 2px 0 0 var(--text-1);
+}
+
+:root[data-theme="base-light"] .category-item.active svg,
+:root[data-theme="base-dark"] .category-item.active svg,
+:root[data-theme="base-light"] .nav-item.active svg,
+:root[data-theme="base-dark"] .nav-item.active svg {
+  color: var(--text-1);
+}
+
+/* Settings server rows + theme picker cards: neutralize the accent selection. */
+:root[data-theme="base-light"] .server-row.selected,
+:root[data-theme="base-dark"] .server-row.selected,
+:root[data-theme="base-light"] .theme-option.active,
+:root[data-theme="base-dark"] .theme-option.active {
+  border-color: var(--text-1);
+  background: var(--bg-active);
+}
+
+/* ------------------------------------------------------------------ *
+ * 5. Chips & badges — flat, no colored pills.
+ * ------------------------------------------------------------------ */
+
+/* Accent chip → flat neutral. Colored label chips carry inline colors (inline
+ * styles win), we only reset the border they'd otherwise inherit below. */
+:root[data-theme="base-light"] .chip,
+:root[data-theme="base-dark"] .chip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-quiet);
+  color: var(--text-2);
+}
+
+:root[data-theme="base-light"] .label-chip,
+:root[data-theme="base-dark"] .label-chip {
+  border-color: transparent;
+}
+
+/* State badge: solid colored pill → flat bordered badge with the state hue as
+ * text, preserving open/closed/merged/draft meaning without the raised pill. */
+:root[data-theme="base-light"] .state-badge,
+:root[data-theme="base-dark"] .state-badge {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-quiet);
+  color: var(--text-1);
+}
+
+:root[data-theme="base-light"] .state-open,
+:root[data-theme="base-dark"] .state-open {
+  color: var(--success);
+}
+
+:root[data-theme="base-light"] .state-closed,
+:root[data-theme="base-dark"] .state-closed {
+  color: var(--danger);
+}
+
+:root[data-theme="base-light"] .state-merged {
+  color: #8250df;
+}
+
+:root[data-theme="base-dark"] .state-merged {
+  color: #a371f7;
+}
+
+:root[data-theme="base-light"] .state-draft,
+:root[data-theme="base-dark"] .state-draft {
+  color: var(--text-3);
+}
+
+/* Nav unread badge: drop the accent fill for a flat neutral count. */
+:root[data-theme="base-light"] .nav-item strong.nav-badge,
+:root[data-theme="base-dark"] .nav-item strong.nav-badge {
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+/* Remaining pill decorations → small radius. */
+:root[data-theme="base-light"] .item-label,
+:root[data-theme="base-light"] .comment-association,
+:root[data-theme="base-light"] .reaction,
+:root[data-theme="base-light"] .item-sync-pending,
+:root[data-theme="base-light"] .offline-badge,
+:root[data-theme="base-dark"] .item-label,
+:root[data-theme="base-dark"] .comment-association,
+:root[data-theme="base-dark"] .reaction,
+:root[data-theme="base-dark"] .item-sync-pending,
+:root[data-theme="base-dark"] .offline-badge {
+  border-radius: var(--radius-sm);
+}
+
+/* ------------------------------------------------------------------ *
+ * 6. Radio / checkbox / toggle indicators — accent blue → foreground neutral,
+ *    matching base-ui's foreground-filled checked state.
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"] .theme-option[data-checked] .ui-radio,
+:root[data-theme="base-light"] .server-radio[data-checked] .ui-radio,
+:root[data-theme="base-dark"] .theme-option[data-checked] .ui-radio,
+:root[data-theme="base-dark"] .server-radio[data-checked] .ui-radio {
+  border-color: var(--text-1);
+}
+
+:root[data-theme="base-light"] .ui-radio-indicator,
+:root[data-theme="base-dark"] .ui-radio-indicator {
+  background: var(--text-1);
+}
+
+:root[data-theme="base-light"] .settings-check[data-checked] .ui-checkbox,
+:root[data-theme="base-light"] .settings-check[data-indeterminate] .ui-checkbox,
+:root[data-theme="base-dark"] .settings-check[data-checked] .ui-checkbox,
+:root[data-theme="base-dark"] .settings-check[data-indeterminate] .ui-checkbox {
+  border-color: var(--text-1);
+  background: var(--text-1);
+}
+
+:root[data-theme="base-light"] .ui-checkbox-indicator,
+:root[data-theme="base-dark"] .ui-checkbox-indicator {
+  color: var(--bg-card);
+}
+
+:root[data-theme="base-light"] .ui-checkbox-indicator[data-indeterminate]::after,
+:root[data-theme="base-dark"] .ui-checkbox-indicator[data-indeterminate]::after {
+  background: var(--bg-card);
+}
+
+/* Outbox dialog checkbox. */
+:root[data-theme="base-light"] .outbox-checkbox,
+:root[data-theme="base-dark"] .outbox-checkbox {
+  color: var(--bg-card);
+}
+
+:root[data-theme="base-light"] .outbox-checkbox[data-checked],
+:root[data-theme="base-dark"] .outbox-checkbox[data-checked] {
+  border-color: var(--text-1);
+  background: var(--text-1);
+}
+
+/* Segmented control (auth method) active segment → neutral. Covers both the
+ * Base UI Toggle button and the legacy label variant. */
+:root[data-theme="base-light"] .settings-section button.segment[data-pressed],
+:root[data-theme="base-dark"] .settings-section button.segment[data-pressed],
+:root[data-theme="base-light"] .segment.active,
+:root[data-theme="base-dark"] .segment.active {
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+/* Composer Write/Preview toggle active → neutral. */
+:root[data-theme="base-light"] .composer-tabs-root .composer-preview-toggle.active,
+:root[data-theme="base-dark"] .composer-tabs-root .composer-preview-toggle.active {
+  border-color: var(--border-strong);
+  background: var(--bg-active);
+  color: var(--text-1);
+}
+
+/* ------------------------------------------------------------------ *
+ * 7. Select popup — neutral selected item + neutral check indicator.
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"] .select-item[data-selected],
+:root[data-theme="base-dark"] .select-item[data-selected] {
+  background: var(--bg-active);
+}
+
+:root[data-theme="base-light"] .select-item-indicator,
+:root[data-theme="base-dark"] .select-item-indicator {
+  color: var(--text-1);
+}
+
+/* ------------------------------------------------------------------ *
+ * 8. Popups & floating surfaces — minimal shadows, crisp 1px borders.
+ *    base-ui popups sit on a faint shadow (light) or lean on the border
+ *    alone (dark).
+ * ------------------------------------------------------------------ */
+:root[data-theme="base-light"] .modal,
+:root[data-theme="base-light"] .app-snackbar {
+  border: 1px solid var(--border-strong);
+}
+
+:root[data-theme="base-light"] .modal {
+  box-shadow: 0 12px 32px rgb(0 0 0 / 12%);
+}
+
+:root[data-theme="base-light"] .select-popup,
+:root[data-theme="base-light"] .tooltip-popup {
+  box-shadow: 0 4px 16px rgb(0 0 0 / 10%);
+}
+
+:root[data-theme="base-light"] .app-snackbar {
+  box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+}
+
+:root[data-theme="base-dark"] .modal,
+:root[data-theme="base-dark"] .app-snackbar {
+  border: 1px solid var(--border-strong);
+}
+
+:root[data-theme="base-dark"] .modal,
+:root[data-theme="base-dark"] .select-popup,
+:root[data-theme="base-dark"] .tooltip-popup,
+:root[data-theme="base-dark"] .app-snackbar {
+  box-shadow: 0 8px 28px rgb(0 0 0 / 55%);
+}
