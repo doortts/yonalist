@@ -53,7 +53,7 @@ export function CommentComposer({
 }: CommentComposerProps) {
   const [mode, setMode] = useState<ComposerMode>("write");
   // Focus lives anywhere within the composer; `settled` means the dock sentinel
-  // (rendered just after the composer's natural flow position) has scrolled
+  // (rendered just *before* the composer's natural flow position) has scrolled
   // into the detail viewport — i.e. the reader hit the end of the thread.
   const [focused, setFocused] = useState(false);
   // Without an IntersectionObserver we cannot detect the settle point, so fall
@@ -106,7 +106,19 @@ export function CommentComposer({
           setSettled(entry.isIntersecting);
         }
       },
-      { root: findScrollParent(sentinel), threshold: 0 }
+      {
+        root: findScrollParent(sentinel),
+        // The collapsed bar (~55px) is sticky and paints over the bottom edge of
+        // the scroll container. Inset the observation rect's bottom so the
+        // sentinel only counts as visible once it has risen most of the way past
+        // that bar — i.e. the reader is genuinely at the thread's end, not just
+        // peeking behind the docked bar. Kept below the ~55px bar height on
+        // purpose: while collapsed the only content beneath the sentinel is the
+        // bar itself, so a full 55–56px inset would keep the sentinel from ever
+        // clearing it and the composer could never expand at the bottom.
+        rootMargin: "0px 0px -44px 0px",
+        threshold: 0
+      }
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
@@ -137,6 +149,18 @@ export function CommentComposer({
 
   return (
     <>
+      {/* The settle sentinel marks the end of the thread's content flow,
+       * immediately *before* the sticky composer. Because the composer's flow
+       * box stacks below this anchor, expanding/collapsing it grows or shrinks
+       * the document *below* the sentinel and never moves the sentinel itself.
+       * That keeps the observed geometry independent of the height it toggles,
+       * so there is no feedback loop (an after-the-form sentinel rode on the
+       * composer height and flickered expand<->collapse near the bottom). */}
+      <div
+        ref={sentinelRef}
+        className="composer-dock-sentinel"
+        aria-hidden="true"
+      />
       <form
         className={`comment-composer ${expanded ? "is-expanded" : "is-collapsed"}`}
         data-expanded={expanded ? "true" : "false"}
@@ -233,11 +257,6 @@ export function CommentComposer({
           </div>
         )}
       </form>
-      <div
-        ref={sentinelRef}
-        className="composer-dock-sentinel"
-        aria-hidden="true"
-      />
     </>
   );
 }

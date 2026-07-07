@@ -67,8 +67,10 @@
   backdrop-filter: blur(3px);
 }
 
-/* Zero-ish height marker just after the composer's natural flow position; when
- * it enters the scroll viewport the composer has settled at the thread's end. */
+/* Zero-ish height marker just before the composer's natural flow position (the
+ * end of the thread content); when it enters the scroll viewport the reader has
+ * settled at the thread's end. Anchoring it before the composer keeps its
+ * geometry independent of the composer height, so settle detection can't loop. */
 .composer-dock-sentinel {
   flex: 0 0 auto;
   height: 1px;

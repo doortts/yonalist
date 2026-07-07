@@ -345,17 +345,50 @@ describe("CommentComposer", () => {
     );
   });
 
-  it("renders a settle sentinel after the composer form", () => {
+  it("renders the settle sentinel just before the composer form", () => {
     const { container } = render(<ControlledComposer />);
 
     const sentinel = container.querySelector(".composer-dock-sentinel");
     expect(sentinel).not.toBeNull();
 
     const form = container.querySelector(".comment-composer");
+    // The sentinel anchors the end of the thread content, immediately *before*
+    // the sticky composer. Anchoring it after the form (its old position) made
+    // its geometry ride on the composer height it toggles, which fed back into
+    // an expand/collapse loop; before the form the anchor is height-independent.
+    expect(form!.previousElementSibling).toBe(sentinel);
     expect(
       form!.compareDocumentPosition(sentinel!) &
-        Node.DOCUMENT_POSITION_FOLLOWING
+        Node.DOCUMENT_POSITION_PRECEDING
     ).toBeTruthy();
+  });
+
+  it("keeps the sentinel anchored before the form across expand/collapse", () => {
+    const { container } = render(<ControlledComposer />);
+
+    const sentinel = container.querySelector(".composer-dock-sentinel")!;
+    const form = () => container.querySelector(".comment-composer")!;
+
+    // Collapsed: sentinel is the form's previous sibling.
+    expect(form()).toHaveClass("is-collapsed");
+    expect(form().previousElementSibling).toBe(sentinel);
+
+    // Settling expands the composer (grows it by ~180px)...
+    fireSettle(true);
+    expect(form()).toHaveClass("is-expanded");
+    // ...but that growth happens *below* the sentinel, so the sentinel's DOM
+    // position is unchanged. This structural invariant is what breaks the
+    // feedback loop: the observed geometry never depends on the toggled height.
+    expect(form().previousElementSibling).toBe(sentinel);
+    expect(
+      form().compareDocumentPosition(sentinel) &
+        Node.DOCUMENT_POSITION_PRECEDING
+    ).toBeTruthy();
+
+    // Collapsing back keeps the same anchor.
+    fireSettle(false);
+    expect(form()).toHaveClass("is-collapsed");
+    expect(form().previousElementSibling).toBe(sentinel);
   });
 
   it("renders the Write/Preview tab row as an overlay so typing does not shift the form", () => {
