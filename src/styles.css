@@ -464,17 +464,16 @@
   background: transparent;
 }
 
-.scrollbar-overlay {
-  position: relative;
-}
-
 .scrollbar-overlay.scrollbar-hover::after,
 .scrollbar-overlay.scrollbar-active::after {
   content: "";
-  position: absolute;
+  /* Fixed (viewport-anchored) so the thumb never travels with the scrolling
+     content — that coupling caused a push/snap-back bounce every frame.
+     The hook feeds viewport coordinates via the custom properties below. */
+  position: fixed;
   z-index: 30;
   top: var(--scrollbar-overlay-top, 0);
-  right: 4px;
+  left: var(--scrollbar-overlay-left, 0);
   width: 6px;
   height: var(--scrollbar-overlay-height, 24px);
   border-radius: 999px;

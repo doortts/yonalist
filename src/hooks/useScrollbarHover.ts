@@ -2,6 +2,10 @@ import { useEffect } from "react";
 
 const SCROLLBAR_ACTIVE_MS = 800;
 const MIN_SCROLLBAR_THUMB_PX = 24;
+// Visual placement of the thumb relative to the container's right edge:
+// 4px inset + 6px wide (mirrors the CSS width below).
+const SCROLLBAR_THUMB_RIGHT_INSET_PX = 4;
+const SCROLLBAR_THUMB_WIDTH_PX = 6;
 
 function isScrollableOverflow(value: string) {
   return value === "auto" || value === "scroll" || value === "overlay";
@@ -9,6 +13,9 @@ function isScrollableOverflow(value: string) {
 
 function updateScrollbarOverlay(element: HTMLElement) {
   if (element.scrollHeight <= element.clientHeight) {
+    // The element used to overflow but no longer does — drop any stale thumb
+    // so a resize/content change doesn't leave an orphaned overlay behind.
+    resetScrollbarOverlay(element);
     return;
   }
 
@@ -21,11 +28,20 @@ function updateScrollbarOverlay(element: HTMLElement) {
   const thumbViewportTop =
     maxScrollTop > 0 ? (element.scrollTop / maxScrollTop) * maxThumbViewportTop : 0;
 
+  // The thumb is drawn as a position: fixed pseudo-element, so it lives outside
+  // the scrolling content and cannot bounce with it. Anchor it to the
+  // container's current viewport rect rather than its scroll offset.
+  const rect = element.getBoundingClientRect();
+
   element.classList.add("scrollbar-overlay");
   element.style.setProperty("--scrollbar-overlay-height", `${thumbHeight}px`);
   element.style.setProperty(
     "--scrollbar-overlay-top",
-    `${Math.round(element.scrollTop + thumbViewportTop)}px`
+    `${Math.round(rect.top + thumbViewportTop)}px`
+  );
+  element.style.setProperty(
+    "--scrollbar-overlay-left",
+    `${Math.round(rect.right - SCROLLBAR_THUMB_RIGHT_INSET_PX - SCROLLBAR_THUMB_WIDTH_PX)}px`
   );
 }
 
@@ -33,6 +49,7 @@ function resetScrollbarOverlay(element: HTMLElement) {
   element.classList.remove("scrollbar-overlay", "scrollbar-hover", "scrollbar-active");
   element.style.removeProperty("--scrollbar-overlay-height");
   element.style.removeProperty("--scrollbar-overlay-top");
+  element.style.removeProperty("--scrollbar-overlay-left");
 }
 
 function findScrollable(start: Element | null): HTMLElement | null {
@@ -97,8 +114,11 @@ export function useScrollbarHover() {
         return;
       }
 
-      element.classList.add("scrollbar-active");
+      // Refresh geometry before tagging the class: if the element quietly
+      // stopped overflowing, markOverlay resets it and we must not re-add the
+      // active class on a non-scrollable element.
       markOverlay(element);
+      element.classList.add("scrollbar-active");
       const previous = activeTimers.get(element);
       if (previous !== undefined) {
         window.clearTimeout(previous);
@@ -133,17 +153,28 @@ export function useScrollbarHover() {
       setCurrent(null);
     }
 
+    function handleResize() {
+      // Viewport-anchored thumbs drift when the container moves or resizes
+      // without a scroll event (window/pane resize). Re-solve every tracked
+      // overlay against its fresh rect.
+      for (const element of overlayElements) {
+        updateScrollbarOverlay(element);
+      }
+    }
+
     document.addEventListener("pointerover", handleOver, true);
     document.addEventListener("pointermove", handleMove, true);
     document.addEventListener("scroll", handleScroll, true);
     document.addEventListener("wheel", handleWheel, true);
     document.addEventListener("pointerleave", handleLeave);
+    window.addEventListener("resize", handleResize);
     return () => {
       document.removeEventListener("pointerover", handleOver, true);
       document.removeEventListener("pointermove", handleMove, true);
       document.removeEventListener("scroll", handleScroll, true);
       document.removeEventListener("wheel", handleWheel, true);
       document.removeEventListener("pointerleave", handleLeave);
+      window.removeEventListener("resize", handleResize);
       setCurrent(null);
       for (const [element, timer] of activeTimers) {
         window.clearTimeout(timer);

@@ -25,6 +25,24 @@ function makeScrollable(element: HTMLElement) {
   });
 }
 
+function setBoundingRect(
+  element: HTMLElement,
+  rect: Partial<DOMRect> & { top: number; right: number }
+) {
+  const full: DOMRect = {
+    top: rect.top,
+    right: rect.right,
+    bottom: rect.bottom ?? rect.top + 120,
+    left: rect.left ?? rect.right - 500,
+    width: rect.width ?? 500,
+    height: rect.height ?? 120,
+    x: rect.x ?? rect.left ?? rect.right - 500,
+    y: rect.y ?? rect.top,
+    toJSON: () => ""
+  };
+  element.getBoundingClientRect = () => full;
+}
+
 describe("useScrollbarHover", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -46,10 +64,12 @@ describe("useScrollbarHover", () => {
     expect(pane).not.toHaveClass("scrollbar-active");
   });
 
-  it("stores overlay scrollbar metrics without using the native gutter", () => {
+  it("positions the overlay thumb in viewport coordinates, not scroll offset", () => {
     const { getByTestId } = render(<ScrollbarHarness />);
     const pane = getByTestId("pane");
     makeScrollable(pane);
+    // The scroll container sits 100px down the viewport with its right edge at 500.
+    setBoundingRect(pane, { top: 100, right: 500 });
     Object.defineProperty(pane, "scrollTop", {
       configurable: true,
       value: 140
@@ -58,8 +78,58 @@ describe("useScrollbarHover", () => {
     fireEvent.scroll(pane);
 
     expect(pane).toHaveClass("scrollbar-overlay");
+    // thumbHeight = round((120 / 400) * 120) = 36
     expect(pane.style.getPropertyValue("--scrollbar-overlay-height")).toBe("36px");
-    expect(pane.style.getPropertyValue("--scrollbar-overlay-top")).toBe("182px");
+    // thumbViewportTop = (140 / 280) * (120 - 36) = 42
+    // viewport top = rect.top + thumbViewportTop = 100 + 42 = 142
+    // (the old, buggy formula added scrollTop and would yield 182)
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-top")).toBe("142px");
+    // left = rect.right - 4px inset - 6px width = 500 - 10 = 490
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-left")).toBe("490px");
+  });
+
+  it("recomputes overlay position on window resize", () => {
+    const { getByTestId } = render(<ScrollbarHarness />);
+    const pane = getByTestId("pane");
+    makeScrollable(pane);
+    setBoundingRect(pane, { top: 100, right: 500 });
+    Object.defineProperty(pane, "scrollTop", {
+      configurable: true,
+      value: 0
+    });
+
+    fireEvent.scroll(pane);
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-top")).toBe("100px");
+
+    // The pane moved/resized: its viewport rect changed but no scroll happened.
+    setBoundingRect(pane, { top: 60, right: 420 });
+    fireEvent(window, new Event("resize"));
+
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-top")).toBe("60px");
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-left")).toBe("410px");
+  });
+
+  it("clears stale overlay artifacts when a pane stops being scrollable", () => {
+    const { getByTestId } = render(<ScrollbarHarness />);
+    const pane = getByTestId("pane");
+    makeScrollable(pane);
+    setBoundingRect(pane, { top: 100, right: 500 });
+
+    fireEvent.scroll(pane);
+    expect(pane).toHaveClass("scrollbar-overlay");
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-height")).toBe("36px");
+
+    // Content shrinks so the pane no longer overflows.
+    Object.defineProperty(pane, "scrollHeight", {
+      configurable: true,
+      value: 120
+    });
+    fireEvent(window, new Event("resize"));
+
+    expect(pane).not.toHaveClass("scrollbar-overlay");
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-height")).toBe("");
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-top")).toBe("");
+    expect(pane.style.getPropertyValue("--scrollbar-overlay-left")).toBe("");
   });
 
   it("treats overlay overflow panes as scrollable", () => {
