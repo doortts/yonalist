@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { GithubConnection } from "../hooks/useGithubAuth";
 import {
@@ -15,6 +15,45 @@ const connection: GithubConnection = {
   token: "ghp_token"
 };
 
+// Base UI's Avatar.Image resolves its load state with a detached `new Image()`,
+// which jsdom never fires. Substitute a controllable Image so the load-status
+// machine (loaded -> <img>, error -> fallback) actually runs in tests. Any src
+// listed in `failImageSrcs` (substring match) reports an error; everything else
+// reports a successful load on the next microtask.
+const failImageSrcs: string[] = [];
+
+class MockImage {
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  complete = false;
+  naturalWidth = 0;
+  crossOrigin: string | null = null;
+  referrerPolicy = "";
+  sizes = "";
+  srcset = "";
+  private currentSrc = "";
+
+  set src(value: string) {
+    this.currentSrc = value;
+    queueMicrotask(() => {
+      if (this.currentSrc !== value) {
+        return;
+      }
+      if (failImageSrcs.some((token) => value.includes(token))) {
+        this.onerror?.();
+        return;
+      }
+      this.complete = true;
+      this.naturalWidth = 1;
+      this.onload?.();
+    });
+  }
+
+  get src() {
+    return this.currentSrc;
+  }
+}
+
 function renderWithConnection(ui: ReactElement) {
   return render(
     <GithubConnectionContext.Provider value={connection}>
@@ -23,13 +62,18 @@ function renderWithConnection(ui: ReactElement) {
   );
 }
 
+beforeEach(() => {
+  failImageSrcs.length = 0;
+  vi.stubGlobal("Image", MockImage);
+});
+
 afterEach(() => {
   clearImageProxyCache();
   vi.unstubAllGlobals();
 });
 
 describe("Avatar", () => {
-  it("renders public avatar URLs directly", () => {
+  it("renders public avatar URLs directly", async () => {
     renderWithConnection(
       <Avatar
         login="octocat"
@@ -37,7 +81,7 @@ describe("Avatar", () => {
       />
     );
 
-    expect(screen.getByRole("img", { name: "octocat" })).toHaveAttribute(
+    expect(await screen.findByRole("img", { name: "octocat" })).toHaveAttribute(
       "src",
       "https://avatars.githubusercontent.com/u/1?v=4"
     );
@@ -71,7 +115,7 @@ describe("Avatar", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("renders a cached avatar immediately while stale checks happen in the background", () => {
+  it("renders a cached avatar immediately while stale checks happen in the background", async () => {
     const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
     vi.stubGlobal("fetch", fetchMock);
     persistCachedAvatarImage(
@@ -91,10 +135,11 @@ describe("Avatar", () => {
       />
     );
 
-    expect(screen.getByRole("img", { name: "hyeonseo-kim" })).toHaveAttribute(
-      "src",
-      "data:image/png;base64,cached"
-    );
+    // The cached data URL is used without waiting on the (never-resolving)
+    // background fetch.
+    expect(
+      await screen.findByRole("img", { name: "hyeonseo-kim" })
+    ).toHaveAttribute("src", "data:image/png;base64,cached");
   });
 
   it("does not show a cached avatar when it belongs to a different avatar URL", async () => {
@@ -216,5 +261,79 @@ describe("Avatar", () => {
         expect.stringMatching(/^data:image\/png;base64,/)
       );
     });
+  });
+
+  it("renders the fallback initial when a public image fails to load", async () => {
+    // Make Base UI's load-status machine report an error for this src.
+    failImageSrcs.push("avatars.githubusercontent.com");
+
+    renderWithConnection(
+      <Avatar
+        login="octocat"
+        avatarUrl="https://avatars.githubusercontent.com/u/1?v=4"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("octocat")).toHaveTextContent("O");
+    });
+    expect(screen.queryByRole("img", { name: "octocat" })).toBeNull();
+  });
+
+  it("renders nothing when showFallback is false and there is no image", () => {
+    const { container } = renderWithConnection(
+      <Avatar login="unknown" showFallback={false} />
+    );
+
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole("img")).toBeNull();
+  });
+
+  it("shows a loading skeleton (no fallback initial) while an image resolves", () => {
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderWithConnection(
+      <Avatar
+        login="hyeonseo-kim"
+        avatarUrl="https://oss.navercorp.com/avatars/u/pending.png"
+        showFallback={false}
+      />
+    );
+
+    expect(
+      screen.getByLabelText("Loading avatar for hyeonseo-kim")
+    ).toBeTruthy();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.queryByText("H")).toBeNull();
+  });
+
+  it("renders nothing (no lingering skeleton) when showFallback is false and the auth image is unavailable", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<html>login</html>", {
+          status: 429,
+          headers: { "content-type": "text/html" }
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderWithConnection(
+      <Avatar
+        login="hyeonseo-kim"
+        avatarUrl={`https://oss.navercorp.com/avatars/u/${Math.random()}.png`}
+        showFallback={false}
+      />
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByLabelText("Loading avatar for hyeonseo-kim")
+      ).toBeNull();
+    });
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole("img")).toBeNull();
+    // Never the initial letter for showFallback=false.
+    expect(screen.queryByText("H")).toBeNull();
   });
 });

@@ -23,6 +23,7 @@ import { GithubServersSection } from "./GithubServersSection";
 import { MarkdownStyleComparison } from "./MarkdownStyleComparison";
 import { ProjectsVisibilitySection } from "./ProjectsVisibilitySection";
 import { settingsSections, type SettingsSection } from "./SettingsCategoryPane";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
 
 interface SettingsPageProps {
   section: SettingsSection;
@@ -335,41 +336,16 @@ export function SettingsPage({
               <RotateCcw size={16} />
               {resetRunning ? "Resetting..." : "Reset settings and caches"}
             </button>
-            {showResetConfirm && (
-              <div
-                className="reset-confirm-card"
-                role="dialog"
-                aria-label="Confirm reset settings and caches"
-              >
-                <div>
-                  <strong>Reset all settings and caches?</strong>
-                  <p>
-                    This signs out saved GitHub sessions and clears local caches.
-                    Vault Markdown files and outbox documents will be kept.
-                  </p>
-                </div>
-                <div className="reset-confirm-actions">
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    onClick={() => setShowResetConfirm(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="danger-button"
-                    type="button"
-                    onClick={() => {
-                      setShowResetConfirm(false);
-                      void onResetAll();
-                    }}
-                  >
-                    <RotateCcw size={16} />
-                    Yes, reset everything
-                  </button>
-                </div>
-              </div>
-            )}
+            <ConfirmDialog
+              open={showResetConfirm}
+              onOpenChange={setShowResetConfirm}
+              title="Reset all settings and caches?"
+              description="This signs out saved GitHub sessions and clears local caches. Vault Markdown files and outbox documents will be kept."
+              confirmLabel="Yes, reset everything"
+              cancelLabel="Cancel"
+              danger
+              onConfirm={() => void onResetAll()}
+            />
             {resetProgress.steps.length > 0 && (
               <div
                 className={`reset-progress reset-progress-${resetProgress.status}`}

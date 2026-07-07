@@ -127,4 +127,31 @@ describe("NotificationsPane", () => {
     );
     expect(screen.getByText(/sample notifications/i)).toBeTruthy();
   });
+
+  it("exposes the open-all action as a tooltip trigger without a native title", async () => {
+    render(
+      <NotificationsPane
+        state={makeState()}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    const openAll = screen.getByRole("button", {
+      name: /Open all notifications/
+    });
+    // The explanatory text moved from a native `title` to a Base UI Tooltip
+    // whose label is portalled into a `.tooltip-popup` on focus. The accessible
+    // name stays on `aria-label`.
+    expect(openAll).not.toHaveAttribute("title");
+    expect(screen.queryByText("Open all in browser")).toBeNull();
+
+    openAll.focus();
+
+    expect(await screen.findByText("Open all in browser")).toHaveClass(
+      "tooltip-popup"
+    );
+  });
 });

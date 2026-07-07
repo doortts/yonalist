@@ -17,6 +17,8 @@ import {
 import { type FormEvent, useState } from "react";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
+import { IconTooltip } from "./ui/Tooltip";
 import "./ui/form-controls.css";
 
 interface GithubServersSectionProps {
@@ -56,6 +58,8 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
   const [formError, setFormError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [showToken, setShowToken] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
 
   const selectedUsesToken = servers.usesToken(servers.selectedUrl);
 
@@ -123,22 +127,15 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
     setStatusMessage("서버를 변경했습니다. 새 서버로 다시 로그인하세요.");
   }
 
-  function handleRemove(url: string) {
-    if (!window.confirm(`${servers.labelOf(url)}\n\n이 URL을 목록에서 삭제할까요?`)) {
+  function confirmRemove() {
+    if (!removeTarget) {
       return;
     }
-    servers.remove(url);
+    servers.remove(removeTarget);
     setStatusMessage("URL을 삭제했습니다.");
   }
 
-  function handleReset() {
-    if (
-      !window.confirm(
-        "추가한 URL, 별칭, 저장된 토큰이 모두 삭제되고 기본 목록으로 돌아갑니다. 계속할까요?"
-      )
-    ) {
-      return;
-    }
+  function performReset() {
     servers.reset();
     setEditor(null);
     setStatusMessage("기본값으로 되돌렸습니다.");
@@ -183,24 +180,26 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
               </span>
             </Radio.Root>
             {servers.usesToken(url) && <span className="chip">개인 토큰</span>}
-            <button
-              type="button"
-              className="icon-button server-action"
-              aria-label={`Edit ${url}`}
-              title="편집"
-              onClick={() => openEdit(url)}
-            >
-              <Pencil size={14} />
-            </button>
-            <button
-              type="button"
-              className="icon-button server-action"
-              aria-label={`Remove ${url}`}
-              title="삭제"
-              onClick={() => handleRemove(url)}
-            >
-              <Trash2 size={14} />
-            </button>
+            <IconTooltip label="편집">
+              <button
+                type="button"
+                className="icon-button server-action"
+                aria-label={`Edit ${url}`}
+                onClick={() => openEdit(url)}
+              >
+                <Pencil size={14} />
+              </button>
+            </IconTooltip>
+            <IconTooltip label="삭제">
+              <button
+                type="button"
+                className="icon-button server-action"
+                aria-label={`Remove ${url}`}
+                onClick={() => setRemoveTarget(url)}
+              >
+                <Trash2 size={14} />
+              </button>
+            </IconTooltip>
           </div>
         ))}
       </RadioGroup>
@@ -210,7 +209,11 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
           <Plus size={15} />
           URL 추가
         </button>
-        <button type="button" className="text-button" onClick={handleReset}>
+        <button
+          type="button"
+          className="text-button"
+          onClick={() => setConfirmReset(true)}
+        >
           <RotateCcw size={14} />
           기본값으로 초기화
         </button>
@@ -362,6 +365,41 @@ export function GithubServersSection({ servers, auth }: GithubServersSectionProp
 
       {auth.error && <p className="notifications-error">{auth.error}</p>}
       {statusMessage && <p className="server-status-message">{statusMessage}</p>}
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemoveTarget(null);
+          }
+        }}
+        title="URL을 삭제할까요?"
+        description={
+          removeTarget ? (
+            <>
+              <strong className="confirm-dialog-target">
+                {servers.labelOf(removeTarget)}
+              </strong>
+              이 URL을 목록에서 삭제할까요?
+            </>
+          ) : (
+            ""
+          )
+        }
+        confirmLabel="삭제"
+        danger
+        onConfirm={confirmRemove}
+      />
+
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title="기본값으로 초기화할까요?"
+        description="추가한 URL, 별칭, 저장된 토큰이 모두 삭제되고 기본 목록으로 돌아갑니다. 계속할까요?"
+        confirmLabel="초기화"
+        danger
+        onConfirm={performReset}
+      />
     </section>
   );
 }

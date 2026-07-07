@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { UseProjectVisibilityResult } from "../hooks/useProjectVisibility";
@@ -6,6 +6,7 @@ import type { OwnerGroup, RepositorySummary } from "../services/githubItems";
 import { GithubServersSection } from "./GithubServersSection";
 import { MarkdownStyleComparison } from "./MarkdownStyleComparison";
 import { ProjectsVisibilitySection } from "./ProjectsVisibilitySection";
+import { ConfirmDialog } from "./ui/ConfirmDialog";
 
 function makeRepo(overrides: Partial<RepositorySummary> = {}): RepositorySummary {
   return {
@@ -207,6 +208,238 @@ describe("GithubServersSection auth toggle (Base UI ToggleGroup)", () => {
     expect(
       screen.getByLabelText("Personal Access Token")
     ).toBeInTheDocument();
+  });
+});
+
+describe("ConfirmDialog (Base UI AlertDialog)", () => {
+  it("renders the title, description and labelled buttons when open", () => {
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={() => {}}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        onConfirm={() => {}}
+      />
+    );
+
+    const dialog = screen.getByRole("alertdialog", { name: "Delete server?" });
+    expect(dialog).toHaveTextContent("This removes the URL from the list.");
+    expect(within(dialog).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    // Cancel label defaults when not provided.
+    expect(within(dialog).getByRole("button", { name: "취소" })).toBeInTheDocument();
+  });
+
+  it("does not render its popup while closed", () => {
+    render(
+      <ConfirmDialog
+        open={false}
+        onOpenChange={() => {}}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        onConfirm={() => {}}
+      />
+    );
+
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("calls onConfirm and closes when the confirm button is pressed", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const onOpenChange = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={onOpenChange}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        onConfirm={onConfirm}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("closes without confirming when the cancel button is pressed", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const onOpenChange = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={onOpenChange}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        onConfirm={onConfirm}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("closes on Escape without confirming", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const onOpenChange = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={onOpenChange}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        onConfirm={onConfirm}
+      />
+    );
+
+    await user.keyboard("{Escape}");
+
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("applies the danger class to the confirm button when danger is set", () => {
+    render(
+      <ConfirmDialog
+        open
+        onOpenChange={() => {}}
+        title="Delete server?"
+        description="This removes the URL from the list."
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => {}}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Delete" })).toHaveClass("danger-button");
+  });
+});
+
+describe("GithubServersSection remove confirmation (Base UI AlertDialog)", () => {
+  function makeServers(
+    overrides: Partial<UseGithubServersResultLike> = {}
+  ): UseGithubServersResultLike {
+    return {
+      urls: ["https://ghe.example.com/api/v3"],
+      selectedUrl: "https://ghe.example.com/api/v3",
+      state: { aliases: {} },
+      labelOf: (url: string) => url,
+      usesToken: () => false,
+      tokenOf: () => "",
+      select: vi.fn(),
+      upsert: vi.fn(),
+      remove: vi.fn(),
+      reset: vi.fn(),
+      ...overrides
+    };
+  }
+
+  const auth = {
+    signedIn: false,
+    loggingIn: false,
+    authMethod: "oauth" as const,
+    error: null,
+    login: vi.fn(),
+    logout: vi.fn()
+  };
+
+  it("opens a confirmation dialog instead of window.confirm when removing a server", async () => {
+    const user = userEvent.setup();
+    const remove = vi.fn();
+    render(
+      <GithubServersSection
+        servers={makeServers({ remove }) as never}
+        auth={auth as never}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove https://ghe.example.com/api/v3" })
+    );
+
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "URL을 삭제할까요?"
+    });
+    expect(dialog).toHaveTextContent("이 URL을 목록에서 삭제할까요?");
+    // Nothing removed until the confirm button is pressed.
+    expect(remove).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "삭제" }));
+
+    expect(remove).toHaveBeenCalledWith("https://ghe.example.com/api/v3");
+  });
+
+  it("does not remove the server when the removal dialog is cancelled", async () => {
+    const user = userEvent.setup();
+    const remove = vi.fn();
+    render(
+      <GithubServersSection
+        servers={makeServers({ remove }) as never}
+        auth={auth as never}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Remove https://ghe.example.com/api/v3" })
+    );
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "URL을 삭제할까요?"
+    });
+    await user.click(within(dialog).getByRole("button", { name: "취소" }));
+
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("opens a confirmation dialog before resetting to defaults", async () => {
+    const user = userEvent.setup();
+    const reset = vi.fn();
+    render(
+      <GithubServersSection
+        servers={makeServers({ reset }) as never}
+        auth={auth as never}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "기본값으로 초기화" }));
+
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "기본값으로 초기화할까요?"
+    });
+    expect(reset).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole("button", { name: "초기화" }));
+
+    expect(reset).toHaveBeenCalledTimes(1);
+  });
+
+  it("decorates the edit and remove icon buttons with tooltips instead of native titles", () => {
+    render(
+      <GithubServersSection
+        servers={makeServers() as never}
+        auth={auth as never}
+      />
+    );
+
+    const editButton = screen.getByRole("button", {
+      name: "Edit https://ghe.example.com/api/v3"
+    });
+    const removeButton = screen.getByRole("button", {
+      name: "Remove https://ghe.example.com/api/v3"
+    });
+    expect(editButton).not.toHaveAttribute("title");
+    expect(removeButton).not.toHaveAttribute("title");
   });
 });
 

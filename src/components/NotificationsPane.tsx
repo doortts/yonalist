@@ -22,6 +22,7 @@ import {
 } from "../domain/notifications";
 import type { UseNotificationsResult } from "../hooks/useNotifications";
 import { timeAgo } from "../timeFormat";
+import { IconTooltip } from "./ui/Tooltip";
 
 interface NotificationsPaneProps {
   state: UseNotificationsResult;
@@ -245,15 +246,16 @@ export function NotificationsPane({
           <section key={group.key} aria-label={`Notifications for ${group.label}`}>
             <div className="notifications-date-row">
               <h3>{group.label}</h3>
-              <button
-                type="button"
-                className="notifications-open-all"
-                aria-label={`Open all notifications for ${group.label}`}
-                title="Open all in browser"
-                onClick={() => openAll(group.notifications)}
-              >
-                <ExternalLink size={15} />
-              </button>
+              <IconTooltip label="Open all in browser">
+                <button
+                  type="button"
+                  className="notifications-open-all"
+                  aria-label={`Open all notifications for ${group.label}`}
+                  onClick={() => openAll(group.notifications)}
+                >
+                  <ExternalLink size={15} />
+                </button>
+              </IconTooltip>
             </div>
             {group.notifications.map((notification) => {
               const url = notificationWebUrl(notification, webBaseUrl);

@@ -1099,8 +1099,8 @@ describe("Yonalist app shell", () => {
       })
     );
     await user.click(screen.getByRole("button", { name: "Reset settings and caches" }));
-    const dialog = await screen.findByRole("dialog", {
-      name: "Confirm reset settings and caches"
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Reset all settings and caches?"
     });
     expect(dialog).toHaveTextContent("Vault Markdown files and outbox documents");
 
