@@ -7,6 +7,7 @@ import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { StickyTitle } from "./ui/StickyTitle";
 import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface NotificationDetailProps {
@@ -79,49 +80,51 @@ export function NotificationDetail({
 
   return (
     <>
-      <header className="detail-header">
-        <div className="detail-title-row">
-          <div>
-            <p className="eyebrow">
-              {notification.repository.full_name} ·{" "}
-              {subjectTypeLabel(notification.subject.type)}
-              {number !== null && ` #${number}`}
-            </p>
-            <h2>{detail?.title ?? notification.subject.title}</h2>
+      <StickyTitle title={detail?.title ?? notification.subject.title}>
+        <header className="detail-header">
+          <div className="detail-title-row">
+            <div>
+              <p className="eyebrow">
+                {notification.repository.full_name} ·{" "}
+                {subjectTypeLabel(notification.subject.type)}
+                {number !== null && ` #${number}`}
+              </p>
+              <h2>{detail?.title ?? notification.subject.title}</h2>
+            </div>
+            <div className="detail-header-actions">
+              <TooltipProvider>
+                <IconTooltip label="브라우저에서 열기">
+                  <button
+                    className="icon-button"
+                    type="button"
+                    aria-label="Open in browser"
+                    onClick={() => onOpenInBrowser(notification)}
+                  >
+                    <Globe size={16} />
+                  </button>
+                </IconTooltip>
+              </TooltipProvider>
+            </div>
           </div>
-          <div className="detail-header-actions">
-            <TooltipProvider>
-              <IconTooltip label="브라우저에서 열기">
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label="Open in browser"
-                  onClick={() => onOpenInBrowser(notification)}
-                >
-                  <Globe size={16} />
-                </button>
-              </IconTooltip>
-            </TooltipProvider>
-          </div>
-        </div>
-        <div className="detail-actions">
-          {detail &&
-            (notification.subject.type === "Release" ? (
-              <span className="chip">{detail.state}</span>
-            ) : (
-              <StateBadge
-                kind={subjectKind(notification.subject.type)}
-                state={detail.state}
-              />
+          <div className="detail-actions">
+            {detail &&
+              (notification.subject.type === "Release" ? (
+                <span className="chip">{detail.state}</span>
+              ) : (
+                <StateBadge
+                  kind={subjectKind(notification.subject.type)}
+                  state={detail.state}
+                />
+              ))}
+            {detail?.labels.map((label) => (
+              <LabelChip key={label.name} label={label} />
             ))}
-          {detail?.labels.map((label) => (
-            <LabelChip key={label.name} label={label} />
-          ))}
-          <span className="detail-connection">
-            {notification.reason.replace(/_/g, " ")}
-          </span>
-        </div>
-      </header>
+            <span className="detail-connection">
+              {notification.reason.replace(/_/g, " ")}
+            </span>
+          </div>
+        </header>
+      </StickyTitle>
 
       {showSkeleton && (
         <div className="detail-loading" aria-label="Loading conversation">

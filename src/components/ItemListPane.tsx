@@ -20,12 +20,15 @@ import {
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
+import "./ItemListPane.css";
 import "./ui/tabs.css";
 
 export type ItemStateFilter = "open" | "closed";
 
 const VIRTUALIZE_AT = 80;
-const ITEM_ROW_HEIGHT = 122;
+// Fixed virtualized row height. Covers the 4–5 line row: meta, title,
+// author, optional labels, footer. Bumped ~+18px from 122 for the author line.
+const ITEM_ROW_HEIGHT = 140;
 const ITEM_OVERSCAN = 6;
 
 interface ItemStateCounts {
@@ -437,6 +440,10 @@ const ItemRow = memo(function ItemRow({
         <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
       </span>
       <span className="item-title">{item.frontMatter.title}</span>
+      {item.frontMatter.author &&
+        item.frontMatter.author !== "unknown" && (
+          <span className="item-author">{item.frontMatter.author}</span>
+        )}
       {item.frontMatter.labels.length > 0 && (
         <span className="item-labels">
           {item.frontMatter.labels.slice(0, 4).map((label) => (

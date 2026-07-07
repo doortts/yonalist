@@ -852,6 +852,38 @@ export default function App({ initialOnline }: AppProps) {
       ? `item:${selectedItem.path}`
       : null;
   const detailStartedAt = useRef<number | null>(null);
+  // Identifies what the shared `.detail-scroll` container is currently showing.
+  // The same DOM node is reused across every selection and content mode, so a
+  // change here means the pane switched targets and its scroll must snap back
+  // to the top (see the reset effect below). Same-target re-clicks leave this
+  // key unchanged, so the previous scroll position is preserved.
+  const detailScrollResetKey = showSettings
+    ? `settings:${settingsSection}`
+    : showNewIssue
+      ? "new-issue"
+      : showNotifications
+        ? `notification:${selectedNotification?.id ?? "none"}`
+        : `item:${selectedItem?.path ?? "none"}`;
+  const detailScrollRef = useRef<HTMLDivElement>(null);
+
+  // Snap the detail pane back to the top whenever it switches to a different
+  // work item, notification, or content mode. Because the scroll container is
+  // reused across selections, the previous target's offset would otherwise
+  // carry over into the newly opened detail.
+  useEffect(() => {
+    const node = detailScrollRef.current;
+    if (!node) {
+      return;
+    }
+    // jsdom implements `scrollTop` but not `scrollTo`; prefer `scrollTo` in
+    // real browsers and fall back to assigning `scrollTop` when it is absent.
+    if (typeof node.scrollTo === "function") {
+      node.scrollTo({ top: 0, left: 0 });
+    } else {
+      node.scrollTop = 0;
+    }
+  }, [detailScrollResetKey]);
+
   const selectedBodyReady =
     !selectedItem ||
     Boolean(selectedItem.body) ||
@@ -1687,7 +1719,7 @@ export default function App({ initialOnline }: AppProps) {
 
       <section className="detail-pane" aria-label="Detail">
         <div className="pane-titlebar-spacer" />
-        <div className="detail-scroll">
+        <div className="detail-scroll" ref={detailScrollRef}>
         {showSettings ? (
           <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
             <SettingsPage

@@ -1,0 +1,39 @@
+/* Thin, title-only bar that pins to the top of the detail scroll container
+   once the real header scrolls out of view. See StickyTitle.tsx. */
+
+/* Zero-height sticky slot: pins to the top but never takes layout space, so the
+   body is never pushed down while the header is visible. The bar inside
+   overflows the slot to overlay the scrolling conversation. */
+.sticky-title-slot {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  height: 0;
+  overflow: visible;
+}
+
+.sticky-title-bar {
+  display: flex;
+  align-items: center;
+  height: 38px;
+  /* Match the horizontal padding of .detail-header so the title lines up. */
+  padding: 0 28px;
+  background: var(--bg-detail);
+  border-bottom: 1px solid var(--border);
+}
+
+.sticky-title-text {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-1);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sticky-title-sentinel {
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}

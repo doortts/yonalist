@@ -204,6 +204,45 @@ describe("ItemListPane", () => {
     expect(onVisibleItemsChange).toHaveBeenLastCalledWith(items);
   });
 
+  it("renders the author name as the third line, after the title and before labels", () => {
+    const { container } = renderPane([baseItem]);
+
+    expect(screen.getByText("mona")).toBeInTheDocument();
+
+    const card = container.querySelector(".item-card") as HTMLElement;
+    const rows = Array.from(card.children).map((node) =>
+      node.className.split(" ")[0]
+    );
+    const titleIndex = rows.indexOf("item-title");
+    const authorIndex = rows.indexOf("item-author");
+    const labelsIndex = rows.indexOf("item-labels");
+
+    expect(authorIndex).toBe(titleIndex + 1);
+    expect(authorIndex).toBeLessThan(labelsIndex);
+    expect(card.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("does not render an author line when the author is an empty string", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: { ...baseItem.frontMatter, author: "" }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-author")).toBeNull();
+  });
+
+  it("does not render an author line when the author is unknown", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: { ...baseItem.frontMatter, author: "unknown" }
+    };
+    const { container } = renderPane([item]);
+
+    expect(container.querySelector(".item-author")).toBeNull();
+    expect(screen.queryByText("unknown")).toBeNull();
+  });
+
   it("uses actual row positions for non-virtualized visible item reporting", async () => {
     const items = [itemAt(1), itemAt(2), itemAt(3), itemAt(4)];
     const onVisibleItemsChange = vi.fn();

@@ -380,6 +380,79 @@ describe("Yonalist app shell", () => {
     expect(within(detail).getByText(/댓글 2/)).toBeInTheDocument();
   });
 
+  it("resets the detail pane scroll to the top when a different work item is selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+    const items = screen.getByLabelText("Items");
+
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    // jsdom performs no layout, but scrollTop is a real settable/readable
+    // property here, so we can simulate the user having scrolled the detail
+    // pane down before switching to another item.
+    detailScroll!.scrollTop = 480;
+    expect(detailScroll!.scrollTop).toBe(480);
+
+    await user.click(
+      within(items).getByRole("button", { name: /v0\.1\.0 packaging checklist/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(0);
+  });
+
+  it("resets the detail pane scroll to the top when a different notification is selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+
+    // The notifications feed is the default landing view.
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+
+    detailScroll!.scrollTop = 480;
+    expect(detailScroll!.scrollTop).toBe(480);
+
+    await user.click(
+      screen.getByRole("button", { name: /Cache linked attachments in the vault/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(0);
+  });
+
+  it("keeps the detail pane scroll position when the same work item is re-selected", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    const detailScroll = container.querySelector<HTMLDivElement>(".detail-scroll");
+    expect(detailScroll).not.toBeNull();
+    const items = screen.getByLabelText("Items");
+
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    detailScroll!.scrollTop = 480;
+    // Re-clicking the already-selected item keeps the reset key unchanged, so
+    // the effect must not fire and the scroll offset should be preserved.
+    await user.click(
+      within(items).getByRole("button", { name: /Refresh publishing notes/ })
+    );
+
+    expect(detailScroll!.scrollTop).toBe(480);
+  });
+
   it("shows a green Comment button online and Queue comment offline", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<App initialOnline />);

@@ -12,6 +12,7 @@ import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { StickyTitle } from "./ui/StickyTitle";
 import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface ItemDetailProps {
@@ -60,66 +61,68 @@ export function ItemDetail({
 
   return (
     <>
-      <header className="detail-header">
-        <div className="detail-title-row">
-          <div>
-            <p className="eyebrow">
-              {item.frontMatter.owner}/{item.frontMatter.repo} ·{" "}
-              {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
-            </p>
-            <h2>{item.frontMatter.title}</h2>
-          </div>
-          <div className="detail-header-actions">
-            <TooltipProvider>
-              <IconTooltip label="브라우저에서 열기">
-                <button
-                  type="button"
-                  className="icon-button"
-                  aria-label="Open in browser"
-                  onClick={() =>
-                    void openExternal(itemWebUrl(item, connection.webBaseUrl))
+      <StickyTitle title={item.frontMatter.title}>
+        <header className="detail-header">
+          <div className="detail-title-row">
+            <div>
+              <p className="eyebrow">
+                {item.frontMatter.owner}/{item.frontMatter.repo} ·{" "}
+                {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+              </p>
+              <h2>{item.frontMatter.title}</h2>
+            </div>
+            <div className="detail-header-actions">
+              <TooltipProvider>
+                <IconTooltip label="브라우저에서 열기">
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Open in browser"
+                    onClick={() =>
+                      void openExternal(itemWebUrl(item, connection.webBaseUrl))
+                    }
+                  >
+                    <Globe size={16} />
+                  </button>
+                </IconTooltip>
+                <IconTooltip
+                  label={
+                    item.frontMatter.local.favorite
+                      ? "Remove from favorites"
+                      : "Add to favorites"
                   }
                 >
-                  <Globe size={16} />
-                </button>
-              </IconTooltip>
-              <IconTooltip
-                label={
-                  item.frontMatter.local.favorite
-                    ? "Remove from favorites"
-                    : "Add to favorites"
-                }
-              >
-                <Toggle
-                  className={(state) =>
-                    state.pressed ? "favorite-button active" : "favorite-button"
-                  }
-                  aria-label="Toggle favorite"
-                  pressed={item.frontMatter.local.favorite}
-                  onPressedChange={() => onToggleFavorite()}
-                >
-                  <Bookmark size={18} fill="currentColor" />
-                </Toggle>
-              </IconTooltip>
-            </TooltipProvider>
+                  <Toggle
+                    className={(state) =>
+                      state.pressed ? "favorite-button active" : "favorite-button"
+                    }
+                    aria-label="Toggle favorite"
+                    pressed={item.frontMatter.local.favorite}
+                    onPressedChange={() => onToggleFavorite()}
+                  >
+                    <Bookmark size={18} fill="currentColor" />
+                  </Toggle>
+                </IconTooltip>
+              </TooltipProvider>
+            </div>
           </div>
-        </div>
-        <div className="detail-actions">
-          <StateBadge
-            kind={item.frontMatter.kind}
-            state={state}
-            draft={thread.thread?.draft}
-          />
-          {labels.map((label) => (
-            <LabelChip key={label.name} label={label} />
-          ))}
-          <span className="chip chip-status">{item.frontMatter.sync.status}</span>
-          <span className="detail-connection">
-            {comments.length > 0 && `댓글 ${comments.length} · `}
-            {online ? "Online" : "Offline queue enabled"}
-          </span>
-        </div>
-      </header>
+          <div className="detail-actions">
+            <StateBadge
+              kind={item.frontMatter.kind}
+              state={state}
+              draft={thread.thread?.draft}
+            />
+            {labels.map((label) => (
+              <LabelChip key={label.name} label={label} />
+            ))}
+            <span className="chip chip-status">{item.frontMatter.sync.status}</span>
+            <span className="detail-connection">
+              {comments.length > 0 && `댓글 ${comments.length} · `}
+              {online ? "Online" : "Offline queue enabled"}
+            </span>
+          </div>
+        </header>
+      </StickyTitle>
 
       <div className="conversation">
         <OpeningPost
