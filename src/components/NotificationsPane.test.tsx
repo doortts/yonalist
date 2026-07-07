@@ -175,6 +175,29 @@ describe("NotificationsPane", () => {
     expect(screen.queryByText("Old read thing")).toBeNull();
   });
 
+  it("places the Only new filter inside the header next to the title", () => {
+    render(
+      <NotificationsPane
+        state={makeState()}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    const onlyNew = screen.getByRole("checkbox", {
+      name: "Only new notifications"
+    });
+    // The toggle now shares the header container with the title rather than
+    // sitting in its own filters row below the search box.
+    const header = onlyNew.closest(".notifications-header");
+    expect(header).not.toBeNull();
+    expect(header?.querySelector("h2")?.textContent).toBe("Notifications");
+    // The dedicated filters row is gone.
+    expect(document.querySelector(".notifications-filters")).toBeNull();
+  });
+
   it("shows the demo-mode note in demo mode", () => {
     render(
       <NotificationsPane

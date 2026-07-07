@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import "./ui/form-controls.css";
+import "./NotificationsPane.css";
 import {
   groupNotificationsByDate,
   isReadAndQuiet,
@@ -197,7 +198,23 @@ export function NotificationsPane({
     <section className="notifications-pane" aria-label="Notifications">
       <div className="pane-titlebar-spacer" />
       <div className="notifications-header">
-        <h2>Notifications</h2>
+        <div className="notifications-header-lead">
+          <h2>Notifications</h2>
+          <Checkbox.Root
+            className="settings-check notifications-toggle"
+            render={<label />}
+            aria-label="Only new notifications"
+            checked={onlyNew}
+            onCheckedChange={(next) => setOnlyNew(next)}
+          >
+            <span className="ui-checkbox" aria-hidden="true">
+              <Checkbox.Indicator className="ui-checkbox-indicator">
+                <Check size={12} strokeWidth={3} />
+              </Checkbox.Indicator>
+            </span>
+            <span>Only new</span>
+          </Checkbox.Root>
+        </div>
         <button
           className="icon-button"
           type="button"
@@ -217,23 +234,6 @@ export function NotificationsPane({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-      </div>
-
-      <div className="notifications-filters">
-        <Checkbox.Root
-          className="settings-check notifications-toggle"
-          render={<label />}
-          aria-label="Only new notifications"
-          checked={onlyNew}
-          onCheckedChange={(next) => setOnlyNew(next)}
-        >
-          <span className="ui-checkbox" aria-hidden="true">
-            <Checkbox.Indicator className="ui-checkbox-indicator">
-              <Check size={12} strokeWidth={3} />
-            </Checkbox.Indicator>
-          </span>
-          <span>Only new</span>
-        </Checkbox.Root>
       </div>
 
       {state.demoMode && (
