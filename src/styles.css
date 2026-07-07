@@ -409,6 +409,11 @@ h2 {
 
 /* ---------- Layout ---------- */
 
+/* Keep Base UI popups (portalled to <body>) above everything in the app. */
+#root {
+  isolation: isolate;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns:
