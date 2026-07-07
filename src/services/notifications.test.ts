@@ -51,6 +51,30 @@ describe("fetchNotifications", () => {
     expect(url).toContain("per_page=50");
   });
 
+  it("bypasses the HTTP cache with cache: no-store on every page fetch", async () => {
+    const fullPage = Array.from({ length: 50 }, (_, index) =>
+      notification(String(index))
+    );
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(fullPage, {
+        Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+      })
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse([notification("last")]));
+
+    await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of fetchMock.mock.calls) {
+      expect((call[1] as RequestInit).cache).toBe("no-store");
+    }
+  });
+
   it("reuses the cached full list when the first page snapshot is unchanged", async () => {
     const options = {
       token: "token",
@@ -233,6 +257,88 @@ describe("fetchNotifications", () => {
     expect(second).toHaveBeenCalledTimes(1);
   });
 
+  it("bypasses the HTTP cache with cache: no-store on the unread probe and first page", async () => {
+    const options = { token: "token", apiBaseUrl: "https://api.github.com" };
+    const first = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      jsonResponse([notification("seed")], {
+        "Last-Modified": "Tue, 07 Jul 2026 08:30:44 GMT"
+      })
+    );
+    await fetchUnreadNotificationUpdates({
+      ...options,
+      fetchImpl: first as unknown as typeof fetch
+    });
+    expect((first.mock.calls[0][1] as RequestInit).cache).toBe("no-store");
+
+    const second = vi.fn(async (url: unknown, init?: RequestInit) => {
+      expect((init as RequestInit).cache).toBe("no-store");
+      if (String(url).includes("per_page=1")) {
+        return new Response(null, { status: 304 });
+      }
+      return jsonResponse([notification("seed")]);
+    });
+    await fetchUnreadNotificationUpdates({
+      ...options,
+      fetchImpl: second as unknown as typeof fetch
+    });
+    expect((second.mock.calls[0][1] as RequestInit).cache).toBe("no-store");
+  });
+
+  it("skips the probe and forces a full unread page after too many consecutive 304s", async () => {
+    const options = { token: "token", apiBaseUrl: "https://api.github.com" };
+    const seed = vi.fn(async () =>
+      jsonResponse([notification("seed")], {
+        "Last-Modified": "Tue, 07 Jul 2026 08:30:44 GMT"
+      })
+    );
+    await fetchUnreadNotificationUpdates({
+      ...options,
+      fetchImpl: seed as unknown as typeof fetch
+    });
+
+    // A broken proxy answers the conditional probe with 304 forever.
+    const alwaysNotModified = vi.fn(async (url: unknown) => {
+      if (String(url).includes("per_page=1")) {
+        return new Response(null, { status: 304 });
+      }
+      return jsonResponse([notification("seed")], {
+        "Last-Modified": "Tue, 07 Jul 2026 08:30:44 GMT"
+      });
+    });
+
+    // Five consecutive probes all return 304 and emit nothing; each performs a
+    // single probe request and no full-page fetch.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await fetchUnreadNotificationUpdates({
+        ...options,
+        fetchImpl: alwaysNotModified as unknown as typeof fetch
+      });
+      expect(result).toEqual([]);
+    }
+    expect(alwaysNotModified).toHaveBeenCalledTimes(5);
+    for (const call of alwaysNotModified.mock.calls) {
+      expect(String(call[0])).toContain("per_page=1");
+    }
+
+    // The sixth call skips the conditional probe entirely and fetches the full
+    // unread first page unconditionally, resynchronizing after the stale-proxy
+    // failure.
+    const resync = vi.fn(async (url: unknown) => {
+      return jsonResponse([notification("resync"), notification("seed")], {
+        "Last-Modified": "Tue, 07 Jul 2026 09:30:00 GMT"
+      });
+    });
+    const fresh = await fetchUnreadNotificationUpdates({
+      ...options,
+      fetchImpl: resync as unknown as typeof fetch
+    });
+
+    expect(resync).toHaveBeenCalledTimes(1);
+    expect(String(resync.mock.calls[0][0])).toContain("per_page=50");
+    expect(String(resync.mock.calls[0][0])).not.toContain("per_page=1");
+    expect(fresh.map((entry) => entry.id)).toEqual(["resync"]);
+  });
+
   it("fetches the unread first page after a changed probe and returns new or updated notification items", async () => {
     const options = { token: "token", apiBaseUrl: "https://api.github.com" };
     const old = notification("old");
@@ -388,7 +494,7 @@ describe("markNotificationRead", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.github.com/notifications/threads/123",
-      expect.objectContaining({ method: "PATCH" })
+      expect.objectContaining({ method: "PATCH", cache: "no-store" })
     );
   });
 });

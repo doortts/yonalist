@@ -52,10 +52,17 @@ export interface FetchItemThreadOptions {
 
 const threadCache = new LruCache<ItemThread>(50);
 const inflightThreads = new Map<string, Promise<ItemThread>>();
+/**
+ * The most recently cached thread per target, keyed independently of the
+ * version marker. Lets consumers show the previous conversation immediately
+ * while a newer version is fetched, instead of falling back to a skeleton.
+ */
+const latestThreads = new Map<string, ItemThread>();
 
 export function clearItemThreadCache() {
   threadCache.clear();
   inflightThreads.clear();
+  latestThreads.clear();
   clearUserProfileCache();
 }
 
@@ -70,19 +77,25 @@ export function getItemThreadCacheStats(): CacheSizeStats {
   );
 }
 
-function threadCacheKey(
+function threadTargetKey(
   connection: GithubConnection,
-  target: ItemThreadTarget,
-  version: string
+  target: ItemThreadTarget
 ): string {
   return [
     connection.apiBaseUrl,
     target.kind,
     target.owner,
     target.repo,
-    target.number,
-    version
+    target.number
   ].join("|");
+}
+
+function threadCacheKey(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  version: string
+): string {
+  return [threadTargetKey(connection, target), version].join("|");
 }
 
 export function getCachedItemThread(
@@ -93,6 +106,18 @@ export function getCachedItemThread(
   return threadCache.get(threadCacheKey(connection, target, version)) ?? null;
 }
 
+/**
+ * Returns the most recently cached thread for a target, regardless of which
+ * version it was cached under. Used to keep the previously seen conversation
+ * on screen while a newer version is fetched in the background.
+ */
+export function getLatestCachedItemThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget
+): ItemThread | null {
+  return latestThreads.get(threadTargetKey(connection, target)) ?? null;
+}
+
 export function deleteCachedItemThread(
   connection: GithubConnection,
   target: ItemThreadTarget,
@@ -100,7 +125,17 @@ export function deleteCachedItemThread(
 ): boolean {
   const key = threadCacheKey(connection, target, version);
   inflightThreads.delete(key);
-  return threadCache.delete(key);
+  const deleted = threadCache.delete(key);
+  // Drop the "latest" pointer only when no versioned entry for this target
+  // survives, keeping it consistent with the versioned cache and LRU eviction.
+  const targetKey = threadTargetKey(connection, target);
+  const hasSurvivingVersion = threadCache
+    .entries()
+    .some(([entryKey]) => entryKey.startsWith(`${targetKey}|`));
+  if (!hasSurvivingVersion) {
+    latestThreads.delete(targetKey);
+  }
+  return deleted;
 }
 
 interface UserResponse {
@@ -269,6 +304,7 @@ export async function fetchItemThread(
     .then((thread) => {
       if (!thread.commentsError) {
         threadCache.set(key, thread);
+        recordLatestThread(connection, target, thread);
       }
       return thread;
     })
@@ -277,6 +313,32 @@ export async function fetchItemThread(
     });
   inflightThreads.set(key, request);
   return request;
+}
+
+/**
+ * Marks a freshly cached thread as the latest for its target and drops any
+ * "latest" pointers whose only versioned entries were evicted by the LRU, so
+ * the version-independent map cannot outgrow the bounded versioned cache.
+ */
+function recordLatestThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  thread: ItemThread
+): void {
+  latestThreads.set(threadTargetKey(connection, target), thread);
+  if (latestThreads.size <= threadCache.size) {
+    return;
+  }
+  const liveTargetKeys = new Set(
+    threadCache
+      .entries()
+      .map(([entryKey]) => entryKey.slice(0, entryKey.lastIndexOf("|")))
+  );
+  for (const targetKey of latestThreads.keys()) {
+    if (!liveTargetKeys.has(targetKey)) {
+      latestThreads.delete(targetKey);
+    }
+  }
 }
 
 async function fetchItemThreadUncached(

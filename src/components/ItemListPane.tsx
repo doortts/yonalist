@@ -8,7 +8,15 @@ import {
   RefreshCw,
   Search
 } from "lucide-react";
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
 import { timeAgo } from "../timeFormat";
@@ -265,6 +273,16 @@ function ItemRows({
   onVisibleItemsChange
 }: ItemRowsProps) {
   const rowRefs = useRef(new Map<string, HTMLButtonElement>());
+  const registerRow = useCallback(
+    (path: string, node: HTMLButtonElement | null) => {
+      if (node) {
+        rowRefs.current.set(path, node);
+      } else {
+        rowRefs.current.delete(path);
+      }
+    },
+    []
+  );
   const [measuredViewportItems, setMeasuredViewportItems] = useState<
     ItemDocument[] | null
   >(null);
@@ -346,74 +364,16 @@ function ItemRows({
 
   const rows = visibleItems.map((item, offset) => {
     const index = range.start + offset;
-    const virtualStyle = shouldVirtualize
-      ? ({
-          height: ITEM_ROW_HEIGHT,
-          transform: `translateY(${index * ITEM_ROW_HEIGHT}px)`
-        } as CSSProperties)
-      : undefined;
     return (
-          <button
-            type="button"
-            className={[
-              item.path === selectedPath ? "item-card selected" : "item-card",
-              shouldVirtualize ? "virtual-row" : ""
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            key={item.path}
-            ref={(node) => {
-              if (node) {
-                rowRefs.current.set(item.path, node);
-              } else {
-                rowRefs.current.delete(item.path);
-              }
-            }}
-            style={virtualStyle}
-            onClick={() => onSelect(item.path)}
-          >
-            <span className="item-meta">
-              {kindIcon(item)}
-              {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
-              {item.frontMatter.sync.status === "pending" && (
-                <span className="item-sync-pending">Pending</span>
-              )}
-              <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
-            </span>
-            <span className="item-title">{item.frontMatter.title}</span>
-            {item.frontMatter.labels.length > 0 && (
-              <span className="item-labels">
-                {item.frontMatter.labels.slice(0, 4).map((label) => (
-                  <span
-                    className={
-                      item.frontMatter.label_colors?.[label]
-                        ? "item-label colored"
-                        : "item-label"
-                    }
-                    key={label}
-                    style={labelColorStyle(item, label)}
-                  >
-                    {label}
-                  </span>
-                ))}
-              </span>
-            )}
-            <span className="item-footer">
-              <span className="item-repo">
-                {item.frontMatter.owner}/{item.frontMatter.repo}
-              </span>
-              {item.frontMatter.comments_count !== undefined &&
-                item.frontMatter.comments_count > 0 && (
-                  <span className="item-comments">
-                    <span className="yona-comment-icon" aria-hidden="true" />
-                    {item.frontMatter.comments_count}
-                  </span>
-                )}
-              {item.frontMatter.local.favorite && (
-                <Bookmark className="small-bookmark" size={14} fill="currentColor" />
-              )}
-            </span>
-          </button>
+      <ItemRow
+        key={item.path}
+        item={item}
+        selected={item.path === selectedPath}
+        virtualized={shouldVirtualize}
+        top={shouldVirtualize ? index * ITEM_ROW_HEIGHT : null}
+        onSelect={onSelect}
+        registerRow={registerRow}
+      />
     );
   });
 
@@ -430,3 +390,85 @@ function ItemRows({
     </div>
   );
 }
+
+interface ItemRowProps {
+  item: ItemDocument;
+  selected: boolean;
+  virtualized: boolean;
+  top: number | null;
+  onSelect: (path: string) => void;
+  registerRow: (path: string, node: HTMLButtonElement | null) => void;
+}
+
+const ItemRow = memo(function ItemRow({
+  item,
+  selected,
+  virtualized,
+  top,
+  onSelect,
+  registerRow
+}: ItemRowProps) {
+  const virtualStyle =
+    virtualized && top !== null
+      ? ({
+          height: ITEM_ROW_HEIGHT,
+          transform: `translateY(${top}px)`
+        } as CSSProperties)
+      : undefined;
+  return (
+    <button
+      type="button"
+      className={[
+        selected ? "item-card selected" : "item-card",
+        virtualized ? "virtual-row" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      ref={(node) => registerRow(item.path, node)}
+      style={virtualStyle}
+      onClick={() => onSelect(item.path)}
+    >
+      <span className="item-meta">
+        {kindIcon(item)}
+        {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
+        {item.frontMatter.sync.status === "pending" && (
+          <span className="item-sync-pending">Pending</span>
+        )}
+        <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
+      </span>
+      <span className="item-title">{item.frontMatter.title}</span>
+      {item.frontMatter.labels.length > 0 && (
+        <span className="item-labels">
+          {item.frontMatter.labels.slice(0, 4).map((label) => (
+            <span
+              className={
+                item.frontMatter.label_colors?.[label]
+                  ? "item-label colored"
+                  : "item-label"
+              }
+              key={label}
+              style={labelColorStyle(item, label)}
+            >
+              {label}
+            </span>
+          ))}
+        </span>
+      )}
+      <span className="item-footer">
+        <span className="item-repo">
+          {item.frontMatter.owner}/{item.frontMatter.repo}
+        </span>
+        {item.frontMatter.comments_count !== undefined &&
+          item.frontMatter.comments_count > 0 && (
+            <span className="item-comments">
+              <span className="yona-comment-icon" aria-hidden="true" />
+              {item.frontMatter.comments_count}
+            </span>
+          )}
+        {item.frontMatter.local.favorite && (
+          <Bookmark className="small-bookmark" size={14} fill="currentColor" />
+        )}
+      </span>
+    </button>
+  );
+});

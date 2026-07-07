@@ -68,6 +68,10 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
 
     const response = await fetcher(`${apiBaseUrl}${path}`, {
       ...init,
+      // Bypass the WebView HTTP cache: the app caches results itself, and a
+      // stale proxy 304 surfaced as a fresh 200 body is the same staleness
+      // hazard that affects notifications. Applies to work-item reads too.
+      cache: "no-store",
       signal: init.signal ?? options.signal,
       headers
     });
@@ -120,6 +124,7 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   ): Promise<TResponse> {
     const response = await fetcher(graphqlUrl(apiBaseUrl), {
       method: "POST",
+      cache: "no-store",
       signal: options.signal,
       headers: {
         Accept: "application/vnd.github+json",

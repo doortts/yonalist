@@ -4,7 +4,8 @@ import {
   clearItemThreadCache,
   deleteCachedItemThread,
   fetchItemThread,
-  getItemThreadCacheStats
+  getItemThreadCacheStats,
+  getLatestCachedItemThread
 } from "./itemThread";
 
 const connection: GithubConnection = {
@@ -234,6 +235,104 @@ describe("fetchItemThread", () => {
       await fetchItemThread(connection, second, { version: "v1" });
 
       expect(fetchMock.mock.calls.length).toBe(callsAfterWarmup + 2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("exposes the latest cached thread regardless of the version key", async () => {
+    let call = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        call += 1;
+        return jsonResponse([
+          {
+            id: call,
+            body: call === 1 ? "old body" : "new body",
+            user: { login: "mona" },
+            created_at: "2026-07-02T00:00:00Z"
+          }
+        ]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      expect(getLatestCachedItemThread(connection, target)).toBeNull();
+
+      await fetchItemThread(connection, target, { version: "v1" });
+      const latestAfterV1 = getLatestCachedItemThread(connection, target);
+      expect(latestAfterV1?.comments[0]?.body).toBe("old body");
+
+      await fetchItemThread(connection, target, { version: "v2" });
+      const latestAfterV2 = getLatestCachedItemThread(connection, target);
+      expect(latestAfterV2?.comments[0]?.body).toBe("new body");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not record a latest thread whose comments failed to load", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return new Response("{}", { status: 500 });
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+      expect(getLatestCachedItemThread(connection, target)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("clears the latest cached thread alongside the versioned cache", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+      expect(getLatestCachedItemThread(connection, target)).not.toBeNull();
+
+      clearItemThreadCache();
+      expect(getLatestCachedItemThread(connection, target)).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("drops the latest pointer when the last versioned entry is deleted", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+      await fetchItemThread(connection, target, { version: "v2" });
+
+      deleteCachedItemThread(connection, target, "v1");
+      // A newer version is still cached, so the latest pointer survives.
+      expect(getLatestCachedItemThread(connection, target)).not.toBeNull();
+
+      deleteCachedItemThread(connection, target, "v2");
+      expect(getLatestCachedItemThread(connection, target)).toBeNull();
     } finally {
       vi.unstubAllGlobals();
     }

@@ -27,6 +27,7 @@ function ThreadHarness({ token, item, refreshKey = 0 }: ThreadHarnessProps) {
   return (
     <div>
       <span>{state.loading ? "loading" : "idle"}</span>
+      <span>{state.refreshing ? "refreshing" : "settled"}</span>
       <span>{state.thread?.comments[0]?.body ?? "no-comments"}</span>
     </div>
   );
@@ -70,6 +71,72 @@ function item(number: number, title: string): ItemDocument {
       updated_at: `2026-07-0${number}T00:00:00Z`,
       local: { favorite: false },
       sync: { status: "synced" }
+    }
+  };
+}
+
+function issueItem(updatedAt: string): ItemDocument {
+  return {
+    path: "/vault/github.com/acme/app/issues/7/issue.md",
+    body: "issue body",
+    frontMatter: {
+      kind: "issue",
+      host: "github.com",
+      owner: "acme",
+      repo: "app",
+      number: 7,
+      title: "An evolving issue",
+      state: "open",
+      author: "author-7",
+      labels: [],
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: updatedAt,
+      local: { favorite: false },
+      sync: { status: "synced" }
+    }
+  };
+}
+
+/** A fetch mock whose comment responses can be resolved on demand. */
+function deferredThreadFetch(commentBodies: string[]) {
+  const resolvers: Array<(body: string) => void> = [];
+  let commentCall = 0;
+  const fetchMock = vi.fn(async (url: string | URL | Request) => {
+    const target = String(url);
+    if (target.includes("/comments")) {
+      const index = commentCall;
+      commentCall += 1;
+      const body = await new Promise<string>((resolve) => {
+        resolvers[index] = resolve;
+      });
+      return new Response(
+        JSON.stringify([
+          {
+            id: index + 1,
+            body,
+            user: { login: "mona" },
+            created_at: "2026-07-02T00:00:00Z"
+          }
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }
+    if (target.includes("/users/mona")) {
+      return new Response(JSON.stringify({ login: "mona" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ state: "open" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  });
+  return {
+    fetchMock,
+    resolveComment: (index: number) => {
+      const resolve = resolvers[index];
+      if (!resolve) {
+        throw new Error(`No pending comment fetch at index ${index}`);
+      }
+      resolve(commentBodies[index]);
     }
   };
 }
@@ -251,5 +318,60 @@ describe("useItemThread", () => {
     });
     expect(screen.getByText("no-comments")).toBeInTheDocument();
     expect(screen.queryByText("first item comment")).not.toBeInTheDocument();
+  });
+
+  it("shows the previous cached thread while refreshing after a version change", async () => {
+    const { fetchMock, resolveComment } = deferredThreadFetch([
+      "old body",
+      "new body"
+    ]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <ThreadHarness token="ghp_test" item={issueItem("2026-07-01T00:00:00Z")} />
+    );
+
+    resolveComment(0);
+    await screen.findByText("old body");
+    await waitFor(() => {
+      expect(screen.getByText("idle")).toBeInTheDocument();
+    });
+
+    // A remote update bumps updated_at, changing the version key -> cache miss.
+    rerender(
+      <ThreadHarness token="ghp_test" item={issueItem("2026-07-05T00:00:00Z")} />
+    );
+
+    // The previously seen conversation stays on screen instead of a skeleton,
+    // and the hook reports it is refreshing in the background.
+    await waitFor(() => {
+      expect(screen.getByText("refreshing")).toBeInTheDocument();
+    });
+    expect(screen.getByText("old body")).toBeInTheDocument();
+    expect(screen.getByText("loading")).toBeInTheDocument();
+
+    resolveComment(1);
+
+    expect(await screen.findByText("new body")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("idle")).toBeInTheDocument();
+    });
+    expect(screen.getByText("settled")).toBeInTheDocument();
+  });
+
+  it("shows a placeholder skeleton when no previous cache exists", async () => {
+    const { fetchMock } = deferredThreadFetch(["first body"]);
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ThreadHarness token="ghp_test" item={issueItem("2026-07-01T00:00:00Z")} />
+    );
+
+    // No prior version cached: falls back to the placeholder + skeleton.
+    await waitFor(() => {
+      expect(screen.getByText("loading")).toBeInTheDocument();
+    });
+    expect(screen.getByText("no-comments")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
   });
 });

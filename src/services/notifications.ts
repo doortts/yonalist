@@ -36,6 +36,15 @@ const cache = new Map<string, CacheEntry>();
 // low-cost polling cannot affect the full app list.
 const unreadUpdateCache = new Map<string, UnreadUpdateCacheEntry>();
 
+// Number of consecutive 304 probe responses tolerated before the next probe is
+// skipped and a full unread first page is fetched unconditionally. A broken
+// proxy fingerprint can keep returning 304 forever off a stale Last-Modified,
+// which would silently suppress toasts; this bounds that failure.
+const MAX_CONSECUTIVE_PROBE_NOT_MODIFIED = 5;
+// Consecutive-304 counters per unread-probe cache key. Reset in
+// clearNotificationCache alongside the caches they guard.
+const consecutiveProbeNotModified = new Map<string, number>();
+
 function cacheKey(options: FetchNotificationsOptions): string {
   return [
     options.apiBaseUrl,
@@ -52,6 +61,7 @@ export function clearNotificationCache() {
   cache.clear();
   unreadUpdateCache.clear();
   inflight.clear();
+  consecutiveProbeNotModified.clear();
 }
 
 export function fetchNotifications(
@@ -135,6 +145,10 @@ async function doFetchNotifications(
     const pageStartedAt = performance.now();
     tracePerf("notifications_page_start", { page });
     const response = await fetcher(`${base}/notifications?${params.toString()}`, {
+      // The app maintains its own snapshot/localStorage cache, so an
+      // additional WebView HTTP cache adds no benefit and risks a stale proxy
+      // 304 being surfaced as a fresh 200 body. Bypass it entirely.
+      cache: "no-store",
       headers: baseHeaders
     });
 
@@ -156,7 +170,11 @@ async function doFetchNotifications(
     tracePerf("notifications_page_done", {
       page,
       items: pageItems.length,
-      durationMs: performance.now() - pageStartedAt
+      durationMs: performance.now() - pageStartedAt,
+      // Surfacing the first-page validators lets a perf trace compare the
+      // "last 304 fingerprint" against the current one when diagnosing
+      // stale-proxy staleness.
+      ...(page === 1 ? { lastModified, etag } : {})
     });
     if (page === 1 && cached && firstPageMatchesCached(pageItems, cached.notifications)) {
       options.onPartialResult?.(cached.notifications);
@@ -223,7 +241,10 @@ async function fetchUnreadFirstPage(
   }
   params.set("per_page", String(PER_PAGE));
   params.set("page", "1");
-  return fetcher(`${base}/notifications?${params.toString()}`, { headers });
+  return fetcher(`${base}/notifications?${params.toString()}`, {
+    cache: "no-store",
+    headers
+  });
 }
 
 export async function fetchUnreadNotificationUpdates(
@@ -239,7 +260,21 @@ export async function fetchUnreadNotificationUpdates(
     "X-GitHub-Api-Version": "2022-11-28"
   };
 
-  if (cached?.lastModified) {
+  const skipProbe =
+    (consecutiveProbeNotModified.get(key) ?? 0) >=
+    MAX_CONSECUTIVE_PROBE_NOT_MODIFIED;
+  if (skipProbe) {
+    // A broken proxy fingerprint can keep answering 304 off a stale
+    // Last-Modified indefinitely, which would suppress toasts forever. After
+    // enough consecutive 304s, drop the conditional probe and force a full
+    // unread first page so we resynchronize.
+    tracePerf("notifications_unread_probe_skipped", {
+      consecutiveNotModified: consecutiveProbeNotModified.get(key) ?? 0
+    });
+    consecutiveProbeNotModified.set(key, 0);
+  }
+
+  if (cached?.lastModified && !skipProbe) {
     const params = new URLSearchParams();
     params.set("all", "false");
     if (options.participating) {
@@ -250,6 +285,7 @@ export async function fetchUnreadNotificationUpdates(
     const probeStartedAt = performance.now();
     tracePerf("notifications_unread_probe_start", {});
     const probe = await fetcher(`${base}/notifications?${params.toString()}`, {
+      cache: "no-store",
       headers: {
         ...baseHeaders,
         "If-Modified-Since": cached.lastModified
@@ -260,11 +296,16 @@ export async function fetchUnreadNotificationUpdates(
       durationMs: performance.now() - probeStartedAt
     });
     if (probe.status === 304) {
+      consecutiveProbeNotModified.set(
+        key,
+        (consecutiveProbeNotModified.get(key) ?? 0) + 1
+      );
       return [];
     }
     if (!probe.ok) {
       throw new GitHubRequestError(probe.status, "");
     }
+    consecutiveProbeNotModified.set(key, 0);
   }
 
   const pageStartedAt = performance.now();
@@ -303,6 +344,7 @@ export async function markNotificationRead(options: {
     `${base}/notifications/threads/${encodeURIComponent(options.threadId)}`,
     {
       method: "PATCH",
+      cache: "no-store",
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${options.token}`,

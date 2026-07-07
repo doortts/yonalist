@@ -5,6 +5,7 @@ import { isSampleItem, sampleItemThread } from "../fixtures/sampleItems";
 import {
   fetchItemThread,
   getCachedItemThread,
+  getLatestCachedItemThread,
   type ItemThread
 } from "../services/itemThread";
 import type { GithubConnection } from "./useGithubAuth";
@@ -13,6 +14,11 @@ export interface UseItemThreadResult {
   thread: ItemThread | null;
   loading: boolean;
   error: string | null;
+  /**
+   * True while a stale (previous-version) thread is shown and a newer version
+   * is being fetched in the background. Consumers may ignore this field.
+   */
+  refreshing: boolean;
 }
 
 /** Loads the selected work item's live state and comment thread. */
@@ -25,6 +31,7 @@ export function useItemThread(
   const [thread, setThread] = useState<ItemThread | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const token = connection.token.trim();
 
   const number = item?.frontMatter.number ?? 0;
@@ -34,6 +41,7 @@ export function useItemThread(
       setThread(null);
       setLoading(false);
       setError(null);
+      setRefreshing(false);
       return;
     }
 
@@ -45,6 +53,7 @@ export function useItemThread(
       );
       setLoading(false);
       setError(null);
+      setRefreshing(false);
       return;
     }
 
@@ -53,6 +62,7 @@ export function useItemThread(
       setThread({ state: item.frontMatter.state, draft: false, labels: [], comments: [] });
       setLoading(false);
       setError(null);
+      setRefreshing(false);
       return;
     }
 
@@ -60,6 +70,7 @@ export function useItemThread(
       setThread(null);
       setLoading(false);
       setError(null);
+      setRefreshing(false);
       return;
     }
 
@@ -77,17 +88,29 @@ export function useItemThread(
       setThread(cached);
       setLoading(false);
       setError(null);
+      setRefreshing(false);
       return () => {
         cancelled = true;
         controller.abort();
       };
     }
-    setThread({
-      state: item.frontMatter.state,
-      draft: false,
-      labels: [],
-      comments: []
-    });
+    // Cache miss for the current version. If a previous version of this same
+    // thread is still cached, show it immediately (stale-while-revalidate) so
+    // the reader keeps the conversation instead of a skeleton, then swap in
+    // the fresh result when it arrives.
+    const stale = getLatestCachedItemThread(connection, target);
+    if (stale) {
+      setThread(stale);
+      setRefreshing(true);
+    } else {
+      setThread({
+        state: item.frontMatter.state,
+        draft: false,
+        labels: [],
+        comments: []
+      });
+      setRefreshing(false);
+    }
     setLoading(true);
     setError(null);
     fetchItemThread(
@@ -110,6 +133,7 @@ export function useItemThread(
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
+          setRefreshing(false);
         }
       });
     return () => {
@@ -132,5 +156,5 @@ export function useItemThread(
     connection.webBaseUrl
   ]);
 
-  return { thread, loading, error };
+  return { thread, loading, error, refreshing };
 }

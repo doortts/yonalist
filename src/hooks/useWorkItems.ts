@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { withVaultItemPath } from "../domain/items";
+import { reconcileItems, withVaultItemPath } from "../domain/items";
 import type { ItemDocument } from "../domain/types";
 import { sampleItems } from "../fixtures/sampleItems";
 import {
@@ -152,15 +152,19 @@ export function useWorkItems(
           })
         : fetchMyWorkItems(connection, { signal: controller.signal });
     request
-      .then((items) => {
+      .then((rawItems) => {
         if (requestSeq.current === seq && !controller.signal.aborted) {
           const durationMs = performance.now() - startedAt;
+          const items = reconcileItems(
+            workItemsCache.get(cacheKey)?.items,
+            rawItems
+          );
           workItemsCache.set(cacheKey, {
             items,
             fetchedAt: Date.now(),
             newestUpdatedAt: newestUpdatedAt(items)
           });
-          setFetched(items);
+          setFetched((prev) => reconcileItems(prev, items));
           setError(null);
           setLastFetchDurationMs(durationMs);
           tracePerf("work_items_remote_done", {
@@ -214,9 +218,10 @@ export function useWorkItems(
     persistFavorites(favorites);
   }, [favorites]);
 
+  const itemsRef = useRef<ItemDocument[]>([]);
   const items = useMemo(() => {
     const base = demoMode ? sampleItems : enabled ? fetched ?? [] : [];
-    return base.map((rawItem) => {
+    const next = base.map((rawItem) => {
       const item = withVaultItemPath(vaultRoot, rawItem);
       const favorite = favorites[item.path] ?? favorites[rawItem.path];
       return favorite === undefined
@@ -229,6 +234,9 @@ export function useWorkItems(
             }
           };
     });
+    const reconciled = reconcileItems(itemsRef.current, next);
+    itemsRef.current = reconciled;
+    return reconciled;
   }, [demoMode, enabled, fetched, favorites, vaultRoot]);
 
   const toggleFavorite = useCallback(
