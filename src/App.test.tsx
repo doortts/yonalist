@@ -337,16 +337,32 @@ describe("Yonalist app shell", () => {
       "button",
       { name: "Open in browser" }
     );
-    expect(notificationOpen).toHaveAttribute("title", "브라우저에서 열기");
+    // The notification detail button now uses a Base UI Tooltip: no native
+    // `title`, the visible label lives in a portalled `.tooltip-popup` that only
+    // appears once the button is focused. The accessible name stays on
+    // `aria-label`.
+    expect(notificationOpen).not.toHaveAttribute("title");
     expect(notificationOpen.textContent).toBe("");
+    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
+    notificationOpen.focus();
+    const notificationTip = await screen.findByText("브라우저에서 열기");
+    expect(notificationTip).toHaveClass("tooltip-popup");
 
-    // Item detail
+    // Item detail: the visible label now lives in a Base UI Tooltip popup, not
+    // a native `title`; the accessible name is still carried by `aria-label`.
     await user.click(screen.getByRole("button", { name: /^All items/ }));
     const itemOpen = within(screen.getByLabelText("Detail")).getByRole("button", {
       name: "Open in browser"
     });
-    expect(itemOpen).toHaveAttribute("title", "브라우저에서 열기");
+    expect(itemOpen).not.toHaveAttribute("title");
     expect(itemOpen.textContent).toBe("");
+    // Keyboard focus opens the Base UI tooltip instantly (focus opens skip the
+    // hover delay), portalling the label into a `.tooltip-popup` element that
+    // is absent before the button is focused.
+    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
+    itemOpen.focus();
+    const itemTip = await screen.findByText("브라우저에서 열기");
+    expect(itemTip).toHaveClass("tooltip-popup");
   });
 
   it("shows the item state and its comment thread in the detail pane", async () => {
@@ -580,10 +596,15 @@ describe("Yonalist app shell", () => {
       name: "Open outbox, 0 pending changes"
     });
     expect(outboxButton).toHaveTextContent("Outbox 0");
-    expect(outboxButton).toHaveAttribute(
-      "title",
-      "Outbox stores offline issues and comments waiting to sync to GitHub."
-    );
+    // The explanatory text moved from a native `title` to a Base UI Tooltip
+    // that opens on hover/focus and portals its popup into the document. It is
+    // absent until the button gains focus, then surfaces in `.tooltip-popup`.
+    const outboxTip =
+      "Outbox stores offline issues and comments waiting to sync to GitHub.";
+    expect(outboxButton).not.toHaveAttribute("title");
+    expect(screen.queryByText(outboxTip)).toBeNull();
+    outboxButton.focus();
+    expect(await screen.findByText(outboxTip)).toHaveClass("tooltip-popup");
     expect(
       within(navigation).queryByRole("button", {
         name: /Open outbox/
@@ -1358,10 +1379,10 @@ describe("Yonalist app shell", () => {
       expect(JSON.stringify(countVariables)).not.toContain("hidden");
       const list = screen.getByLabelText("Items");
       expect(
-        await within(list).findByRole("button", { name: "Open 3" })
+        await within(list).findByRole("tab", { name: "Open 3" })
       ).toBeInTheDocument();
       expect(
-        within(list).getByRole("button", { name: "Closed 10" })
+        within(list).getByRole("tab", { name: "Closed 10" })
       ).toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
@@ -1552,16 +1573,16 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const list = screen.getByLabelText("Items");
-    expect(within(list).getByRole("button", { name: /^Open \d+$/ })).toHaveAttribute(
-      "aria-pressed",
+    expect(within(list).getByRole("tab", { name: /^Open \d+$/ })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
     expect(within(list).queryByText("Closed local issue")).not.toBeInTheDocument();
 
-    await user.click(within(list).getByRole("button", { name: /^Closed \d+$/ }));
+    await user.click(within(list).getByRole("tab", { name: /^Closed \d+$/ }));
 
-    expect(within(list).getByRole("button", { name: /^Closed \d+$/ })).toHaveAttribute(
-      "aria-pressed",
+    expect(within(list).getByRole("tab", { name: /^Closed \d+$/ })).toHaveAttribute(
+      "aria-selected",
       "true"
     );
     expect(await within(list).findByText("Closed local issue")).toBeInTheDocument();

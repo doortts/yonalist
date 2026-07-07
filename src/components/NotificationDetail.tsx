@@ -7,6 +7,7 @@ import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
 import { CommentThread, OpeningPost } from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface NotificationDetailProps {
   notification: GitHubNotification | null;
@@ -85,15 +86,18 @@ export function NotificationDetail({
             <h2>{detail?.title ?? notification.subject.title}</h2>
           </div>
           <div className="detail-header-actions">
-            <button
-              className="icon-button"
-              type="button"
-              aria-label="Open in browser"
-              title="브라우저에서 열기"
-              onClick={() => onOpenInBrowser(notification)}
-            >
-              <Globe size={16} />
-            </button>
+            <TooltipProvider>
+              <IconTooltip label="브라우저에서 열기">
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="Open in browser"
+                  onClick={() => onOpenInBrowser(notification)}
+                >
+                  <Globe size={16} />
+                </button>
+              </IconTooltip>
+            </TooltipProvider>
           </div>
         </div>
         <div className="detail-actions">

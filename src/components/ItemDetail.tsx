@@ -11,6 +11,7 @@ import { CommentThread, OpeningPost } from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
+import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 interface ItemDetailProps {
   item: ItemDocument | undefined;
@@ -68,28 +69,41 @@ export function ItemDetail({
             <h2>{item.frontMatter.title}</h2>
           </div>
           <div className="detail-header-actions">
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="Open in browser"
-              title="브라우저에서 열기"
-              onClick={() => void openExternal(itemWebUrl(item, connection.webBaseUrl))}
-            >
-              <Globe size={16} />
-            </button>
-            <button
-              type="button"
-              className={
-                item.frontMatter.local.favorite
-                  ? "favorite-button active"
-                  : "favorite-button"
-              }
-              aria-label="Toggle favorite"
-              aria-pressed={item.frontMatter.local.favorite}
-              onClick={onToggleFavorite}
-            >
-              <Bookmark size={18} fill="currentColor" />
-            </button>
+            <TooltipProvider>
+              <IconTooltip label="브라우저에서 열기">
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Open in browser"
+                  onClick={() =>
+                    void openExternal(itemWebUrl(item, connection.webBaseUrl))
+                  }
+                >
+                  <Globe size={16} />
+                </button>
+              </IconTooltip>
+              <IconTooltip
+                label={
+                  item.frontMatter.local.favorite
+                    ? "Remove from favorites"
+                    : "Add to favorites"
+                }
+              >
+                <button
+                  type="button"
+                  className={
+                    item.frontMatter.local.favorite
+                      ? "favorite-button active"
+                      : "favorite-button"
+                  }
+                  aria-label="Toggle favorite"
+                  aria-pressed={item.frontMatter.local.favorite}
+                  onClick={onToggleFavorite}
+                >
+                  <Bookmark size={18} fill="currentColor" />
+                </button>
+              </IconTooltip>
+            </TooltipProvider>
           </div>
         </div>
         <div className="detail-actions">

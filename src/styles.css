@@ -322,6 +322,124 @@
   background: var(--yonal-gradient-soft);
 }
 
+/* Base Light — modeled on base-ui.com: near-white surfaces (#fcfcfc/#f9f9f9),
+   near-black text (#2e2e2e), pure neutral grays, faint alpha borders, and a
+   single restrained blue accent for links/focus. Shadows kept minimal. */
+:root[data-theme="base-light"] {
+  color-scheme: light;
+
+  --bg-app: #f9f9f9;
+  --bg-sidebar: #f3f3f3;
+  --bg-list: #fcfcfc;
+  --bg-detail: #f9f9f9;
+  --bg-card: #ffffff;
+  --bg-hover: rgb(0 0 0 / 4%);
+  --bg-active: rgb(0 0 0 / 6%);
+  --bg-input: #ffffff;
+  --bg-quiet: rgb(0 0 0 / 3%);
+  --comment-header: #f0f0f0;
+
+  --border: #e0e0e0;
+  --border-strong: #cfcfcf;
+
+  --text-1: #2e2e2e;
+  --text-2: #767676;
+  --text-3: #8c8c8c;
+
+  --accent: #2b7fff;
+  --accent-strong: #1447e6;
+  --accent-soft: rgb(43 127 255 / 10%);
+  --accent-contrast: #ffffff;
+  --list-hover-bg: var(--bg-hover);
+  --list-selected-bg: var(--accent-soft);
+  --list-selected-border: var(--accent);
+  --list-selected-shadow: inset 2px 0 0 var(--list-selected-border);
+  --state-tab-hover-bg: var(--bg-hover);
+  --state-tab-active-bg: var(--bg-card);
+  --state-tab-active-border: var(--border-strong);
+  --state-tab-active-shadow: none;
+  --favorite: #e75135;
+  --danger: #c10000;
+  --danger-hover: #a30000;
+  --danger-soft: rgb(193 0 0 / 8%);
+  --reason-mention: #6100b1;
+  --reason-comment: #0f6a31;
+  --reason-author: #c10007;
+  --reason-team: #1447e6;
+  --warning: #a16207;
+  --warning-soft: rgb(161 98 7 / 12%);
+  --warning-border: rgb(161 98 7 / 34%);
+  --success: #0f6a31;
+  --yona-comment: #767676;
+  --yona-link: #2b7fff;
+  --yona-code-bg: #f3f3f3;
+  --yona-table-border: #e0e0e0;
+  --yona-table-head: #f9f9f9;
+
+  --scrollbar-thumb: rgb(0 0 0 / 22%);
+  --scrollbar-thumb-hover: rgb(0 0 0 / 40%);
+  --shadow-modal: 0 16px 48px rgb(0 0 0 / 14%);
+}
+
+/* Base Dark — modeled on base-ui.com dark mode: black/near-black surfaces
+   (#0a0a0a/#131313/#1a1a1a), bright neutral-gray text (#e6e6e6), pure neutral
+   grays, faint white-alpha borders, and a lifted blue accent. */
+:root[data-theme="base-dark"] {
+  color-scheme: dark;
+
+  --bg-app: #0a0a0a;
+  --bg-sidebar: #131313;
+  --bg-list: #131313;
+  --bg-detail: #131313;
+  --bg-card: #1a1a1a;
+  --bg-hover: rgb(255 255 255 / 6%);
+  --bg-active: rgb(255 255 255 / 10%);
+  --bg-input: #1a1a1a;
+  --bg-quiet: rgb(255 255 255 / 3%);
+  --comment-header: #292929;
+
+  --border: #292929;
+  --border-strong: #3d3d3d;
+
+  --text-1: #e6e6e6;
+  --text-2: #b3b3b3;
+  --text-3: #8c8c8c;
+
+  --accent: #5a93ff;
+  --accent-strong: #82adff;
+  --accent-soft: rgb(90 147 255 / 15%);
+  --accent-contrast: #0a0a0a;
+  --list-hover-bg: var(--bg-hover);
+  --list-selected-bg: var(--accent-soft);
+  --list-selected-border: var(--accent);
+  --list-selected-shadow: inset 2px 0 0 var(--list-selected-border);
+  --state-tab-hover-bg: var(--bg-hover);
+  --state-tab-active-bg: var(--bg-card);
+  --state-tab-active-border: var(--border-strong);
+  --state-tab-active-shadow: none;
+  --favorite: #f0654a;
+  --danger: #ff7a5e;
+  --danger-hover: #ff9683;
+  --danger-soft: rgb(255 122 94 / 12%);
+  --reason-mention: #b39dff;
+  --reason-comment: #4dd0c4;
+  --reason-author: #ff8a65;
+  --reason-team: #82adff;
+  --warning: #fbbf24;
+  --warning-soft: rgb(251 191 36 / 16%);
+  --warning-border: rgb(251 191 36 / 46%);
+  --success: #57ab5a;
+  --yona-comment: #b3b3b3;
+  --yona-link: #5a93ff;
+  --yona-code-bg: #212121;
+  --yona-table-border: #3d3d3d;
+  --yona-table-head: #212121;
+
+  --shadow-modal: 0 20px 70px rgb(0 0 0 / 62%);
+  --scrollbar-thumb: rgb(255 255 255 / 22%);
+  --scrollbar-thumb-hover: rgb(255 255 255 / 40%);
+}
+
 /* ---------- Scrollbars ----------
    Hide native gutters and draw a slim overlay thumb while the pointer hovers
    the scrolling region or while the region scrolls. */

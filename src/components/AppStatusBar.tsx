@@ -1,4 +1,5 @@
 import { Inbox } from "lucide-react";
+import { IconTooltip } from "./ui/Tooltip";
 
 export interface StatusBarMetrics {
   listFetchDurationMs: number | null;
@@ -49,18 +50,19 @@ export function AppStatusBar({
         <span className="statusbar-state">
           {syncing ? "Syncing" : online ? "Online" : "Offline"}
         </span>
-        <button
-          className="status-outbox-button"
-          type="button"
-          aria-label={`Open outbox, ${outboxCount} pending ${
-            outboxCount === 1 ? "change" : "changes"
-          }`}
-          title="Outbox stores offline issues and comments waiting to sync to GitHub."
-          onClick={onOpenOutbox}
-        >
-          <Inbox size={14} />
-          <span>Outbox {outboxCount}</span>
-        </button>
+        <IconTooltip label="Outbox stores offline issues and comments waiting to sync to GitHub.">
+          <button
+            className="status-outbox-button"
+            type="button"
+            aria-label={`Open outbox, ${outboxCount} pending ${
+              outboxCount === 1 ? "change" : "changes"
+            }`}
+            onClick={onOpenOutbox}
+          >
+            <Inbox size={14} />
+            <span>Outbox {outboxCount}</span>
+          </button>
+        </IconTooltip>
       </div>
     </footer>
   );

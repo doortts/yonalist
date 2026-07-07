@@ -54,12 +54,14 @@ const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
 const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
   { value: "default", label: "Default" },
   { value: "yona", label: "Yona" },
-  { value: "yonal-light", label: "Yonal Light" }
+  { value: "yonal-light", label: "Yonal Light" },
+  { value: "base-light", label: "Base Light" }
 ];
 
 const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
   { value: "dark", label: "Default" },
-  { value: "yona-dark", label: "Yonal Dark" }
+  { value: "yona-dark", label: "Yonal Dark" },
+  { value: "base-dark", label: "Base Dark" }
 ];
 
 const resetStepStatusLabels: Record<ResetProgressStepStatus, string> = {
