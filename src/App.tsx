@@ -96,6 +96,7 @@ import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
 import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
+import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
 import {
   resetApplicationData,
   type ResetApplicationStepId
@@ -134,6 +135,11 @@ import {
 
 // Auto-dismiss timing matches the legacy fixed snackbar (6s).
 const APP_SNACKBAR_TIMEOUT_MS = 6000;
+
+// How many of the newest notifications to warm ahead of a click. The
+// Notifications pane is not virtualized, so this caps the top-of-feed slice we
+// prefetch rather than a measured viewport window.
+const NOTIFICATION_PREFETCH_CAP = 20;
 
 // A standalone manager lets feedback fire from effects and event handlers in
 // the App body without needing the `useToastManager` hook (which must run
@@ -810,6 +816,34 @@ export default function App({ initialOnline }: AppProps) {
       tracePerf("visible_item_prefetch_error", { message });
     }
   });
+
+  // The Notifications pane is not virtualized and its rows are cheap, so rather
+  // than measure a scroll viewport we warm the top slice of the newest-first
+  // filtered feed — the rows the user is most likely to click first. The cap
+  // bounds concurrent detail fetches; the prefetch hook further limits them.
+  const notificationPrefetchTargets = useMemo(
+    () => notifications.notifications.slice(0, NOTIFICATION_PREFETCH_CAP),
+    [notifications.notifications]
+  );
+  const notificationPrefetchEnabled =
+    showNotifications &&
+    settings.prefetchVisibleItems !== false &&
+    authGate.state === "passed" &&
+    !notifications.demoMode &&
+    !showSettings &&
+    !showNewIssue;
+  const notificationPrefetchStats = useVisibleNotificationPrefetch({
+    visibleNotifications: notificationPrefetchEnabled
+      ? notificationPrefetchTargets
+      : [],
+    selectedId: selectedNotification?.id ?? null,
+    connection: auth.connection,
+    online,
+    enabled: notificationPrefetchEnabled,
+    onError: (message) => {
+      tracePerf("visible_notification_prefetch_error", { message });
+    }
+  });
   const activeDetailKey = showNotifications
     ? selectedNotification
       ? `notification:${selectedNotification.id}`
@@ -857,7 +891,8 @@ export default function App({ initialOnline }: AppProps) {
       return {
         listFetchDurationMs: workItems.lastFetchDurationMs,
         detailDisplayDurationMs,
-        prefetch: prefetchStats,
+        // Surface whichever prefetcher is active for the current view.
+        prefetch: showNotifications ? notificationPrefetchStats : prefetchStats,
         caches: [
           { label: "Bodies", ...bodyStats },
           { label: "Threads", ...threadStats },
@@ -869,7 +904,9 @@ export default function App({ initialOnline }: AppProps) {
       detailDisplayDurationMs,
       itemThread.thread,
       loadedItemBodies,
+      notificationPrefetchStats,
       prefetchStats,
+      showNotifications,
       workItems.lastFetchDurationMs
     ]
   );

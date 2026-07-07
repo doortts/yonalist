@@ -205,6 +205,67 @@ describe("useNotifications", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("preserves the notifications array reference when a poll returns identical data", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async () => jsonResponse([makeNotification("n-1")]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useNotifications(connection, true, true));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(result.current.notifications).toHaveLength(1);
+    const firstArray = result.current.notifications;
+    const firstItem = firstArray[0];
+
+    // A poll returning the exact same payload must not create a new array or
+    // new element objects, so React.memo rows can bail out of re-rendering.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.notifications).toBe(firstArray);
+    expect(result.current.notifications[0]).toBe(firstItem);
+  });
+
+  it("reuses unchanged element references when only one notification changes", async () => {
+    vi.useFakeTimers();
+    let bumped = false;
+    const fetchMock = vi.fn(async () =>
+      jsonResponse([
+        makeNotification("n-1"),
+        {
+          ...makeNotification("n-2"),
+          updated_at: bumped ? "2026-07-02T00:00:00Z" : "2026-07-01T00:00:00Z"
+        }
+      ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useNotifications(connection, true, true));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const firstArray = result.current.notifications;
+    const stable = firstArray.find((n) => n.id === "n-1");
+    const changing = firstArray.find((n) => n.id === "n-2");
+
+    bumped = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(result.current.notifications).not.toBe(firstArray);
+    expect(result.current.notifications.find((n) => n.id === "n-1")).toBe(stable);
+    expect(result.current.notifications.find((n) => n.id === "n-2")).not.toBe(
+      changing
+    );
+    expect(
+      result.current.notifications.find((n) => n.id === "n-2")?.updated_at
+    ).toBe("2026-07-02T00:00:00Z");
+  });
+
   it("keeps previously loaded notifications when a refresh fails", async () => {
     let fail = false;
     const fetchMock = vi.fn(async () =>

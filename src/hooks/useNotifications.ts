@@ -3,6 +3,7 @@ import type { GithubConnection } from "./useGithubAuth";
 import {
   isReadAndQuiet,
   notificationWebUrl,
+  reconcileNotifications,
   type GitHubNotification
 } from "../domain/notifications";
 import { sampleNotifications } from "../fixtures/sampleNotifications";
@@ -79,7 +80,7 @@ export function useNotifications(
       apiBaseUrl: connection.apiBaseUrl,
       onPartialResult: (partial) => {
         if (requestSeq.current === seq) {
-          setFetched(partial);
+          setFetched((previous) => reconcileNotifications(previous, partial));
           persistCachedNotifications(connection.apiBaseUrl, partial);
           tracePerf("notifications_partial_result", {
             count: partial.length,
@@ -90,7 +91,7 @@ export function useNotifications(
     })
       .then((result) => {
         if (requestSeq.current === seq) {
-          setFetched(result);
+          setFetched((previous) => reconcileNotifications(previous, result));
           persistCachedNotifications(connection.apiBaseUrl, result);
           setError(null);
           tracePerf("notifications_remote_done", {

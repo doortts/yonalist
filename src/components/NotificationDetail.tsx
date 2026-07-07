@@ -67,7 +67,11 @@ export function NotificationDetail({
     notification.subject.type === "Release"
       ? null
       : subjectNumber(notification.subject);
-  const { detail, loading, error } = state;
+  const { detail, loading, error, refreshing } = state;
+  // Only show the full-height skeleton before any conversation is available;
+  // once a (possibly stale) detail is on screen we keep it visible and swap
+  // in the fresh version in the background (stale-while-revalidate).
+  const showSkeleton = loading && !detail;
   const canComment = notification.subject.type !== "Release" && number !== null;
   const canClose =
     notification.subject.type === "Issue" &&
@@ -119,7 +123,7 @@ export function NotificationDetail({
         </div>
       </header>
 
-      {loading && (
+      {showSkeleton && (
         <div className="detail-loading" aria-label="Loading conversation">
           <Loader2 size={20} className="spinning" />
           <span>Loading conversation...</span>
@@ -133,8 +137,14 @@ export function NotificationDetail({
         </p>
       )}
 
-      {detail && !loading && (
+      {detail && (
         <div className="conversation">
+          {refreshing && (
+            <div className="detail-loading" aria-label="Refreshing conversation">
+              <Loader2 size={16} className="spinning" />
+              <span>Refreshing…</span>
+            </div>
+          )}
           <OpeningPost
             author={{
               login: detail.author,
