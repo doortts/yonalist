@@ -36,7 +36,8 @@ import "./ui/tabs.css";
 
 export type ItemStateFilter = "open" | "closed";
 
-const VIRTUALIZE_AT = 80;
+const VIRTUALIZE_AT = 30;
+const INITIAL_VIRTUAL_VIEWPORT_HEIGHT = 900;
 // Virtualized rows use deterministic per-item heights so rows without labels do
 // not reserve the optional label line. These are intentionally estimates, not
 // measured layout, so scroll math stays cheap and stable.
@@ -295,7 +296,9 @@ export function ItemListPane({
   // the fetch and fall back to the raw login (see useAuthorNames).
   const authorNames = useAuthorNames(items, { enabled: !demoMode && online });
   const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(
+    INITIAL_VIRTUAL_VIEWPORT_HEIGHT
+  );
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const listIdentity = useMemo(
     () => items.map((item) => item.path).join("\n"),
@@ -472,7 +475,10 @@ export function ItemListPane({
   );
 
   function updateViewportHeight() {
-    setViewportHeight(listRef.current?.clientHeight ?? 0);
+    const measuredHeight = listRef.current?.clientHeight ?? 0;
+    if (measuredHeight > 0) {
+      setViewportHeight(measuredHeight);
+    }
   }
 }
 

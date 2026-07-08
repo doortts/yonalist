@@ -800,8 +800,6 @@ describe("ItemListPane", () => {
     renderPane(items);
 
     expect(screen.getByText("Issue 1")).toBeInTheDocument();
-    expect(screen.getByText("Issue 50")).toBeInTheDocument();
-    expect(screen.getByText("Issue 51")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Next page" })).toBeNull();
     expect(screen.queryByText("1-50 / 55")).toBeNull();
   });
@@ -851,6 +849,23 @@ describe("ItemListPane", () => {
         items[3]
       ]);
     });
+  });
+
+  it("virtualizes large lists on the first render before measuring the viewport", () => {
+    const items = Array.from({ length: 306 }, (_, index) => itemAt(index + 1));
+    const { container } = renderPane(items);
+
+    const renderedRows = container.querySelectorAll(".item-card");
+    expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(0);
+    expect(renderedRows.length).toBeLessThan(30);
+    expect(renderedRows.length).toBeGreaterThan(0);
+  });
+
+  it("uses 30 items as the threshold for virtualizing rows", () => {
+    const items = Array.from({ length: 31 }, (_, index) => itemAt(index + 1));
+    const { container } = renderPane(items);
+
+    expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(0);
   });
 
   it("does not reserve label-row height for virtualized items without labels", async () => {
