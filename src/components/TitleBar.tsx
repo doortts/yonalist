@@ -63,16 +63,16 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
             side="bottom"
           >
             <button
-              className="icon-button pane-toggle"
+              className="pane-toggle"
               type="button"
               aria-label="사이드바 접기/펼치기"
               aria-pressed={paneToggles.sidebarCollapsed}
               onClick={paneToggles.onToggleSidebar}
             >
               {paneToggles.sidebarCollapsed ? (
-                <PanelLeftOpen size={17} />
+                <PanelLeftOpen size={16} />
               ) : (
-                <PanelLeftClose size={17} />
+                <PanelLeftClose size={16} />
               )}
             </button>
           </IconTooltip>
@@ -81,13 +81,13 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
             side="bottom"
           >
             <button
-              className="icon-button pane-toggle"
+              className="pane-toggle"
               type="button"
               aria-label="목록 접기/펼치기"
               aria-pressed={paneToggles.listCollapsed}
               onClick={paneToggles.onToggleList}
             >
-              <Columns2 size={17} />
+              <Columns2 size={16} />
             </button>
           </IconTooltip>
         </div>

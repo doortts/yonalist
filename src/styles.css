@@ -654,31 +654,50 @@ body.is-resizing-pane {
   left: 78px;
   z-index: 20;
   display: flex;
+  /* Vertically centered in the titlebar so the glyphs line up with the
+     native macOS traffic lights, which sit on the titlebar's center line. */
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   height: var(--titlebar-height);
 }
 
-.pane-toggle.icon-button {
-  width: 30px;
-  min-height: 30px;
+/* Ghost icon buttons: no border or fill at rest so only the muted glyph reads
+   against the titlebar (à la the ChatGPT desktop app). A faint background with
+   a small radius appears on hover. Colors come from theme variables only, so
+   the buttons stay legible across the light/dark and base themes. Deliberately
+   NOT sharing the .icon-button class, whose bordered card style and per-theme
+   focus override would reintroduce the boxed look. */
+.pane-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-2);
+  /* The strip overlaps the window drag region; a default cursor keeps the
+     titlebar feeling draggable rather than like clickable text. */
   cursor: default;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
-.pane-toggle.icon-button:hover {
+.pane-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-1);
 }
 
-.pane-toggle.icon-button:focus-visible {
+.pane-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -1px;
 }
 
-.pane-toggle.icon-button[aria-pressed="true"] {
-  color: var(--accent);
+/* A collapsed pane darkens its glyph to the foreground tone (the sidebar
+   toggle also swaps to the "open" icon), keeping the pressed cue monochrome. */
+.pane-toggle[aria-pressed="true"] {
+  color: var(--text-1);
 }
 
 /* Collapsing is a desktop-only affordance: below 981px the responsive layouts
