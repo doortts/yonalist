@@ -3836,17 +3836,18 @@ body.is-resizing-pane {
 
 .notifications-date-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  min-height: 40px;
-  padding: 14px 12px 4px;
+  min-height: 34px;
+  padding: 6px 10px 2px;
 }
 
 .notifications-date-row h3 {
   color: var(--accent);
   font-size: 14px;
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .notifications-open-all {

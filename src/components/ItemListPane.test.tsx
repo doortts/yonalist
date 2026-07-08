@@ -674,6 +674,26 @@ describe("ItemListPane", () => {
     expect(dateRowStyle.padding).toBe("6px 10px 2px");
   });
 
+  it("uses the same date-group spacing as notifications", () => {
+    const itemDateRowStyle = cssDeclarationsFor(".item-date-row");
+    const notificationDateRowStyle = cssDeclarationsFor(".notifications-date-row");
+    const itemDateHeadingStyle = cssDeclarationsFor(".item-date-row h3");
+    const notificationDateHeadingStyle = cssDeclarationsFor(
+      ".notifications-date-row h3"
+    );
+
+    expect(notificationDateRowStyle["min-height"]).toBe(
+      itemDateRowStyle["min-height"]
+    );
+    expect(notificationDateRowStyle.padding).toBe(itemDateRowStyle.padding);
+    expect(notificationDateHeadingStyle["font-size"]).toBe(
+      itemDateHeadingStyle["font-size"]
+    );
+    expect(notificationDateHeadingStyle["line-height"]).toBe(
+      itemDateHeadingStyle["line-height"]
+    );
+  });
+
   it("keeps label and comment typography shared across themes", () => {
     const themeScopedItemRules = cssRulesContaining(
       ".item-",
