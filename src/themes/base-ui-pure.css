@@ -305,14 +305,6 @@
   color: var(--text-1);
 }
 
-/* Composer Write/Preview toggle active → neutral. */
-:root[data-theme="base-light"] .composer-tabs-root .composer-preview-toggle.active,
-:root[data-theme="base-dark"] .composer-tabs-root .composer-preview-toggle.active {
-  border-color: var(--border-strong);
-  background: var(--bg-active);
-  color: var(--text-1);
-}
-
 /* ------------------------------------------------------------------ *
  * 7. Select popup — neutral selected item + neutral check indicator.
  * ------------------------------------------------------------------ */

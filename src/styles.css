@@ -2324,7 +2324,9 @@ body.is-resizing-pane {
   border: none;
   border-radius: 0;
   background: var(--yona-code-bg);
-  font-size: 1em;
+  /* 1em rode the 14.3px body size; 0.9em lands near the 13px inline code
+     while still scaling down inside the settings comparison samples. */
+  font-size: 0.9em;
   line-height: 1.5;
 }
 
@@ -2485,12 +2487,6 @@ body.is-resizing-pane {
 .comment-composer textarea:focus {
   border-color: var(--accent);
   outline: 2px solid var(--accent-soft);
-}
-
-.composer-preview-toggle-row {
-  display: flex;
-  justify-content: flex-start;
-  padding-bottom: 6px;
 }
 
 .composer-preview-toggle {
