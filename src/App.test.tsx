@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
@@ -2375,5 +2375,112 @@ describe("Yonalist app shell", () => {
     fireEvent.pointerUp(window);
 
     expect(layout).toHaveStyle("--list-width: 320px");
+  });
+
+  // The detail maximize control moves between the header (inline, while the
+  // header is on screen) and the fixed titlebar corner (once the header scrolls
+  // away), so it never overlaps the header's own actions.
+  describe("detail maximize toggle placement", () => {
+    let ioCallback: IntersectionObserverCallback | null = null;
+    let ioInstance: IntersectionObserver;
+
+    class MockIntersectionObserver implements IntersectionObserver {
+      root: Element | Document | null = null;
+      rootMargin = "";
+      thresholds: ReadonlyArray<number> = [];
+      constructor(cb: IntersectionObserverCallback) {
+        ioCallback = cb;
+        ioInstance = this as unknown as IntersectionObserver;
+      }
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = () => [];
+    }
+
+    // isIntersecting reflects the header sentinel: true → header on screen.
+    function fireHeaderVisible(isIntersecting: boolean) {
+      act(() => {
+        ioCallback?.([{ isIntersecting } as IntersectionObserverEntry], ioInstance);
+      });
+    }
+
+    beforeEach(() => {
+      ioCallback = null;
+      vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("keeps the fixed corner toggle on the header-less landing view", () => {
+      render(<App />);
+      // The landing notification detail is empty (no header), so the fixed
+      // corner maximize toggle is the only one present.
+      const detailGroup = screen.getByRole("group", { name: "Detail layout" });
+      expect(
+        within(detailGroup).getByRole("button", { name: "상세 최대화" })
+      ).toBeInTheDocument();
+    });
+
+    it("hides the fixed corner toggle and shows it inline while the detail header is visible", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(
+        screen.getByRole("button", { name: /Design offline issue reading/ })
+      );
+
+      // The header is on screen, so the fixed corner group is gone and the
+      // toggle lives inline in the detail header actions instead.
+      expect(screen.queryByRole("group", { name: "Detail layout" })).toBeNull();
+      const detail = screen.getByLabelText("Detail");
+      expect(
+        within(detail).getByRole("button", { name: "상세 최대화" })
+      ).toBeInTheDocument();
+    });
+
+    it("restores the fixed corner toggle once the detail header scrolls out of view", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(
+        screen.getByRole("button", { name: /Design offline issue reading/ })
+      );
+      expect(screen.queryByRole("group", { name: "Detail layout" })).toBeNull();
+
+      // The header leaves the viewport → the fixed corner toggle returns.
+      fireHeaderVisible(false);
+
+      const detailGroup = await screen.findByRole("group", {
+        name: "Detail layout"
+      });
+      expect(
+        within(detailGroup).getByRole("button", { name: "상세 최대화" })
+      ).toBeInTheDocument();
+    });
+
+    it("maximizes the detail pane from the inline header toggle", async () => {
+      const user = userEvent.setup();
+      render(<App />);
+      const shell = await screen.findByLabelText("Yonalist layout");
+
+      await user.click(
+        screen.getByRole("button", { name: /Design offline issue reading/ })
+      );
+
+      const inlineMaximize = within(screen.getByLabelText("Detail")).getByRole(
+        "button",
+        { name: "상세 최대화" }
+      );
+      expect(inlineMaximize).toHaveAttribute("aria-pressed", "false");
+
+      await user.click(inlineMaximize);
+
+      expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+      expect(shell).toHaveAttribute("data-list-collapsed", "true");
+      expect(inlineMaximize).toHaveAttribute("aria-pressed", "true");
+    });
   });
 });

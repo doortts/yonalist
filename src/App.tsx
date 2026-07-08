@@ -311,6 +311,13 @@ export default function App({ initialOnline }: AppProps) {
     startResize,
     resizeWithKeyboard
   } = usePaneResize();
+  // Whether the currently shown detail's header is on screen. Detail panes lift
+  // this up via StickyTitle; the fixed titlebar maximize toggle is shown only
+  // when it is false (header scrolled away, or a header-less shell), because
+  // otherwise the same action is offered inline in the header. Defaults false
+  // so header-less views (settings, new issue, empty detail) keep the corner
+  // toggle.
+  const [detailHeaderVisible, setDetailHeaderVisible] = useState(false);
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
@@ -1659,7 +1666,8 @@ export default function App({ initialOnline }: AppProps) {
           sidebarCollapsed: paneCollapsed.sidebar,
           detailMaximized,
           onToggleSidebar: () => togglePaneCollapsed("sidebar"),
-          onToggleMaximize: toggleDetailMaximized
+          onToggleMaximize: toggleDetailMaximized,
+          showDetailMaximizeToggle: !detailHeaderVisible
         }}
       />
       <Sidebar
@@ -1811,6 +1819,9 @@ export default function App({ initialOnline }: AppProps) {
             state={notificationDetail}
             online={online}
             commentDraft={commentDraft}
+            detailMaximized={detailMaximized}
+            onToggleMaximize={toggleDetailMaximized}
+            onHeaderVisibilityChange={setDetailHeaderVisible}
             onOpenInBrowser={notifications.openNotification}
             onCommentDraftChange={setCommentDraft}
             onQueueComment={queueNotificationComment}
@@ -1821,6 +1832,9 @@ export default function App({ initialOnline }: AppProps) {
             thread={itemThread}
             online={online}
             commentDraft={commentDraft}
+            detailMaximized={detailMaximized}
+            onToggleMaximize={toggleDetailMaximized}
+            onHeaderVisibilityChange={setDetailHeaderVisible}
             onCommentDraftChange={setCommentDraft}
             onQueueComment={queueItemComment}
             onToggleFavorite={onToggleFavorite}

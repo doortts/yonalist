@@ -1,5 +1,5 @@
 import { Toggle } from "@base-ui/react/toggle";
-import { Bookmark, Globe, Inbox, Loader2 } from "lucide-react";
+import { Bookmark, Globe, Inbox, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { useContext } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import { itemWebUrl } from "../domain/itemLinks";
@@ -23,6 +23,13 @@ interface ItemDetailProps {
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
   onToggleFavorite: () => void;
+  /** Whether the detail pane is maximized (drives the inline toggle glyph). */
+  detailMaximized: boolean;
+  /** Toggles the maximized layout from the inline header control. */
+  onToggleMaximize: () => void;
+  /** Lifts the header's on-screen state so the app can move the maximize
+   * control between this inline slot and the fixed titlebar corner. */
+  onHeaderVisibilityChange: (headerVisible: boolean) => void;
 }
 
 export function ItemDetail({
@@ -32,7 +39,10 @@ export function ItemDetail({
   commentDraft,
   onCommentDraftChange,
   onQueueComment,
-  onToggleFavorite
+  onToggleFavorite,
+  detailMaximized,
+  onToggleMaximize,
+  onHeaderVisibilityChange
 }: ItemDetailProps) {
   const connection = useContext(GithubConnectionContext);
 
@@ -61,7 +71,11 @@ export function ItemDetail({
 
   return (
     <>
-      <StickyTitle title={item.frontMatter.title} number={item.frontMatter.number}>
+      <StickyTitle
+        title={item.frontMatter.title}
+        number={item.frontMatter.number}
+        onHeaderVisibilityChange={onHeaderVisibilityChange}
+      >
         <header className="detail-header">
           <div className="detail-title-row">
             <div>
@@ -73,6 +87,23 @@ export function ItemDetail({
             </div>
             <div className="detail-header-actions">
               <TooltipProvider>
+                <IconTooltip
+                  label={detailMaximized ? "상세 최대화 해제" : "상세 최대화"}
+                >
+                  <button
+                    type="button"
+                    className="icon-button detail-maximize-toggle"
+                    aria-label="상세 최대화"
+                    aria-pressed={detailMaximized}
+                    onClick={onToggleMaximize}
+                  >
+                    {detailMaximized ? (
+                      <Minimize2 size={16} />
+                    ) : (
+                      <Maximize2 size={16} />
+                    )}
+                  </button>
+                </IconTooltip>
                 <IconTooltip label="브라우저에서 열기">
                   <button
                     type="button"

@@ -9,6 +9,14 @@ export interface PaneToggleControls {
   detailMaximized: boolean;
   onToggleSidebar: () => void;
   onToggleMaximize: () => void;
+  /**
+   * Whether the fixed detail-maximize toggle is rendered in its top-right
+   * corner. It is suppressed while a detail header is on screen, because the
+   * same action is offered inline in that header (avoiding an overlap with the
+   * header's own actions). Header-less shells (settings, new issue, empty
+   * detail) keep it, so the control is always reachable.
+   */
+  showDetailMaximizeToggle: boolean;
 }
 
 interface TitleBarProps {
@@ -86,33 +94,35 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
               </button>
             </IconTooltip>
           </div>
-          <div
-            className="pane-toggle-group"
-            role="group"
-            aria-label="Detail layout"
-            data-position="detail-end"
-            style={{ right: "12px" }}
-            onPointerDown={(event) => event.stopPropagation()}
-          >
-            <IconTooltip
-              label={paneToggles.detailMaximized ? "본문 최대화 해제" : "본문만 크게 보기"}
-              side="bottom"
+          {paneToggles.showDetailMaximizeToggle && (
+            <div
+              className="pane-toggle-group"
+              role="group"
+              aria-label="Detail layout"
+              data-position="detail-end"
+              style={{ right: "12px" }}
+              onPointerDown={(event) => event.stopPropagation()}
             >
-              <button
-                className="pane-toggle"
-                type="button"
-                aria-label="상세 최대화"
-                aria-pressed={paneToggles.detailMaximized}
-                onClick={paneToggles.onToggleMaximize}
+              <IconTooltip
+                label={paneToggles.detailMaximized ? "본문 최대화 해제" : "본문만 크게 보기"}
+                side="bottom"
               >
-                {paneToggles.detailMaximized ? (
-                  <Minimize2 size={16} />
-                ) : (
-                  <Maximize2 size={16} />
-                )}
-              </button>
-            </IconTooltip>
-          </div>
+                <button
+                  className="pane-toggle"
+                  type="button"
+                  aria-label="상세 최대화"
+                  aria-pressed={paneToggles.detailMaximized}
+                  onClick={paneToggles.onToggleMaximize}
+                >
+                  {paneToggles.detailMaximized ? (
+                    <Minimize2 size={16} />
+                  ) : (
+                    <Maximize2 size={16} />
+                  )}
+                </button>
+              </IconTooltip>
+            </div>
+          )}
         </>
       )}
     </>

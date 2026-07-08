@@ -745,11 +745,12 @@ body.is-resizing-pane {
     flex-basis: var(--titlebar-height);
   }
 
-  /* The detail maximize toggle is pinned to the top-right of the titlebar band.
-     Reserve room in the detail-side headers so their right-aligned actions
-     (open-in-browser, favorite, close) never slide underneath it. Desktop-only,
-     matching the breakpoint where the toggles are shown. */
-  .detail-header,
+  /* The fixed detail maximize toggle is pinned to the top-right of the titlebar
+     band. Header-less shells keep it there, so their right-aligned actions need
+     room to clear it. The detail header is excluded: it hides the fixed toggle
+     while it is on screen and offers the same action inline in its own actions
+     row, so no reservation is needed. Desktop-only, matching the breakpoint
+     where the toggles are shown. */
   .issue-create-header,
   .settings-header {
     padding-right: 56px;
@@ -3795,8 +3796,11 @@ body.is-resizing-pane {
   }
 
   /* The responsive layouts collapse to two/one columns, so the pane toggles
-     have nothing meaningful to control below the desktop breakpoint. */
-  .pane-toggle-group {
+     have nothing meaningful to control below the desktop breakpoint. This
+     includes the inline detail-header maximize toggle, which drives the same
+     pane collapse. */
+  .pane-toggle-group,
+  .detail-maximize-toggle {
     display: none;
   }
 }

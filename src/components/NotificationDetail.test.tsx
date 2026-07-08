@@ -1,4 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
@@ -79,7 +80,16 @@ function makeState(): UseNotificationDetailResult {
 
 const noop = () => {};
 
-function renderDetail(notification: GitHubNotification = makeNotification()) {
+interface RenderOverrides {
+  detailMaximized?: boolean;
+  onToggleMaximize?: () => void;
+  onHeaderVisibilityChange?: (visible: boolean) => void;
+}
+
+function renderDetail(
+  notification: GitHubNotification = makeNotification(),
+  overrides: RenderOverrides = {}
+) {
   return render(
     <NotificationDetail
       notification={notification}
@@ -89,6 +99,9 @@ function renderDetail(notification: GitHubNotification = makeNotification()) {
       onOpenInBrowser={noop}
       onCommentDraftChange={noop}
       onQueueComment={noop}
+      detailMaximized={overrides.detailMaximized ?? false}
+      onToggleMaximize={overrides.onToggleMaximize ?? noop}
+      onHeaderVisibilityChange={overrides.onHeaderVisibilityChange ?? noop}
     />
   );
 }
@@ -155,5 +168,51 @@ describe("NotificationDetail sticky title", () => {
     expect(bar).not.toBeNull();
     expect(bar).toHaveTextContent("v2.0.0");
     expect(bar!.querySelector(".sticky-title-number")).toBeNull();
+  });
+});
+
+describe("NotificationDetail inline maximize toggle", () => {
+  it("renders the maximize toggle beside the open-in-browser button in the header actions", () => {
+    const { container } = renderDetail();
+    const actions = container.querySelector<HTMLElement>(".detail-header-actions");
+    expect(actions).not.toBeNull();
+
+    const maximize = within(actions!).getByRole("button", { name: "상세 최대화" });
+    const openInBrowser = within(actions!).getByRole("button", {
+      name: "Open in browser"
+    });
+    expect(maximize.parentElement).toBe(openInBrowser.parentElement);
+    expect(container.querySelector(".sticky-title-bar")).toBeNull();
+    expect(maximize).toHaveAttribute("aria-pressed", "false");
+    expect(maximize.querySelector("svg")).toHaveClass("lucide-maximize2");
+  });
+
+  it("calls onToggleMaximize when the inline maximize toggle is clicked", async () => {
+    const user = userEvent.setup();
+    const onToggleMaximize = vi.fn();
+    renderDetail(makeNotification(), { onToggleMaximize });
+
+    await user.click(screen.getByRole("button", { name: "상세 최대화" }));
+
+    expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the minimize glyph and a pressed toggle while maximized", () => {
+    renderDetail(makeNotification(), { detailMaximized: true });
+    const maximize = screen.getByRole("button", { name: "상세 최대화" });
+    expect(maximize).toHaveAttribute("aria-pressed", "true");
+    expect(maximize.querySelector("svg")).toHaveClass("lucide-minimize2");
+  });
+
+  it("reports header visibility through onHeaderVisibilityChange as the header scrolls", () => {
+    const onHeaderVisibilityChange = vi.fn();
+    renderDetail(makeNotification(), { onHeaderVisibilityChange });
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(true);
+
+    fireHeaderVisible(false);
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(false);
+
+    fireHeaderVisible(true);
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(true);
   });
 });

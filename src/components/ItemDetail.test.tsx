@@ -1,4 +1,5 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
@@ -87,7 +88,16 @@ function makeThread(): UseItemThreadResult {
 
 const noop = () => {};
 
-function renderDetail(item: ItemDocument = makeItem()) {
+interface RenderOverrides {
+  detailMaximized?: boolean;
+  onToggleMaximize?: () => void;
+  onHeaderVisibilityChange?: (visible: boolean) => void;
+}
+
+function renderDetail(
+  item: ItemDocument = makeItem(),
+  overrides: RenderOverrides = {}
+) {
   return render(
     <ItemDetail
       item={item}
@@ -97,6 +107,9 @@ function renderDetail(item: ItemDocument = makeItem()) {
       onCommentDraftChange={noop}
       onQueueComment={noop}
       onToggleFavorite={noop}
+      detailMaximized={overrides.detailMaximized ?? false}
+      onToggleMaximize={overrides.onToggleMaximize ?? noop}
+      onHeaderVisibilityChange={overrides.onHeaderVisibilityChange ?? noop}
     />
   );
 }
@@ -163,5 +176,57 @@ describe("ItemDetail sticky title", () => {
     expect(bar).not.toBeNull();
     expect(bar).toHaveTextContent(TITLE);
     expect(bar!.querySelector(".sticky-title-number")).toBeNull();
+  });
+});
+
+describe("ItemDetail inline maximize toggle", () => {
+  it("renders the maximize toggle beside the open-in-browser button in the header actions", () => {
+    const { container } = renderDetail();
+    const actions = container.querySelector<HTMLElement>(".detail-header-actions");
+    expect(actions).not.toBeNull();
+
+    const maximize = within(actions!).getByRole("button", { name: "상세 최대화" });
+    const openInBrowser = within(actions!).getByRole("button", {
+      name: "Open in browser"
+    });
+    // The maximize control lives inline in the header actions row, as a sibling
+    // of the globe (not inside the decorative sticky title bar).
+    expect(maximize.parentElement).toBe(openInBrowser.parentElement);
+    expect(container.querySelector(".sticky-title-bar")).toBeNull();
+    // Not maximized: shows the expand glyph.
+    expect(maximize).toHaveAttribute("aria-pressed", "false");
+    expect(maximize.querySelector("svg")).toHaveClass("lucide-maximize2");
+  });
+
+  it("calls onToggleMaximize when the inline maximize toggle is clicked", async () => {
+    const user = userEvent.setup();
+    const onToggleMaximize = vi.fn();
+    renderDetail(makeItem(), { onToggleMaximize });
+
+    await user.click(screen.getByRole("button", { name: "상세 최대화" }));
+
+    expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the minimize glyph and a pressed toggle while maximized", () => {
+    renderDetail(makeItem(), { detailMaximized: true });
+    const maximize = screen.getByRole("button", { name: "상세 최대화" });
+    expect(maximize).toHaveAttribute("aria-pressed", "true");
+    expect(maximize.querySelector("svg")).toHaveClass("lucide-minimize2");
+  });
+
+  it("reports header visibility through onHeaderVisibilityChange as the header scrolls", () => {
+    const onHeaderVisibilityChange = vi.fn();
+    renderDetail(makeItem(), { onHeaderVisibilityChange });
+    // The header is on screen at mount.
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(true);
+
+    // Sentinel leaves the scroll root → header gone.
+    fireHeaderVisible(false);
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(false);
+
+    // Sentinel back → header visible again.
+    fireHeaderVisible(true);
+    expect(onHeaderVisibilityChange).toHaveBeenLastCalledWith(true);
   });
 });

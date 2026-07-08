@@ -30,6 +30,15 @@ interface StickyTitleProps {
   number?: number | null;
   /** The original detail header; rendered in normal flow above the sentinel. */
   children: ReactNode;
+  /**
+   * Reports whether the wrapped header is currently on screen. Fires `true` on
+   * mount (the header starts at the top of the scroll container), flips to
+   * `false` when the header scrolls out (the bar appears) and back to `true`
+   * when it returns, and fires `false` on unmount. A parent that gates UI on
+   * header visibility (e.g. moving an action between the header and a fixed
+   * corner) can drive off this without reaching into the observer.
+   */
+  onHeaderVisibilityChange?: (headerVisible: boolean) => void;
 }
 
 /**
@@ -43,7 +52,12 @@ interface StickyTitleProps {
  * visible). A zero-height sentinel placed just below the header is observed;
  * when it leaves the scroll root, the header is gone and the bar is shown.
  */
-export function StickyTitle({ title, number, children }: StickyTitleProps) {
+export function StickyTitle({
+  title,
+  number,
+  children,
+  onHeaderVisibilityChange
+}: StickyTitleProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(false);
 
@@ -65,6 +79,16 @@ export function StickyTitle({ title, number, children }: StickyTitleProps) {
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, []);
+
+  // Mirror the header's on-screen state (the inverse of the bar's visibility)
+  // to the parent. Held in a ref so a changing callback identity does not
+  // re-run the mount/unmount effect below.
+  const notifyRef = useRef(onHeaderVisibilityChange);
+  notifyRef.current = onHeaderVisibilityChange;
+  useEffect(() => {
+    notifyRef.current?.(!visible);
+  }, [visible]);
+  useEffect(() => () => notifyRef.current?.(false), []);
 
   return (
     <>

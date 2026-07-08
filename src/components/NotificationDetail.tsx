@@ -1,4 +1,4 @@
-import { Bell, Globe, Loader2 } from "lucide-react";
+import { Bell, Globe, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
@@ -18,6 +18,13 @@ interface NotificationDetailProps {
   onOpenInBrowser: (notification: GitHubNotification) => void;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
+  /** Whether the detail pane is maximized (drives the inline toggle glyph). */
+  detailMaximized: boolean;
+  /** Toggles the maximized layout from the inline header control. */
+  onToggleMaximize: () => void;
+  /** Lifts the header's on-screen state so the app can move the maximize
+   * control between this inline slot and the fixed titlebar corner. */
+  onHeaderVisibilityChange: (headerVisible: boolean) => void;
 }
 
 function subjectTypeLabel(type: string): string {
@@ -50,7 +57,10 @@ export function NotificationDetail({
   commentDraft,
   onOpenInBrowser,
   onCommentDraftChange,
-  onQueueComment
+  onQueueComment,
+  detailMaximized,
+  onToggleMaximize,
+  onHeaderVisibilityChange
 }: NotificationDetailProps) {
   if (!notification) {
     return (
@@ -80,7 +90,11 @@ export function NotificationDetail({
 
   return (
     <>
-      <StickyTitle title={detail?.title ?? notification.subject.title} number={number}>
+      <StickyTitle
+        title={detail?.title ?? notification.subject.title}
+        number={number}
+        onHeaderVisibilityChange={onHeaderVisibilityChange}
+      >
         <header className="detail-header">
           <div className="detail-title-row">
             <div>
@@ -93,6 +107,23 @@ export function NotificationDetail({
             </div>
             <div className="detail-header-actions">
               <TooltipProvider>
+                <IconTooltip
+                  label={detailMaximized ? "상세 최대화 해제" : "상세 최대화"}
+                >
+                  <button
+                    type="button"
+                    className="icon-button detail-maximize-toggle"
+                    aria-label="상세 최대화"
+                    aria-pressed={detailMaximized}
+                    onClick={onToggleMaximize}
+                  >
+                    {detailMaximized ? (
+                      <Minimize2 size={16} />
+                    ) : (
+                      <Maximize2 size={16} />
+                    )}
+                  </button>
+                </IconTooltip>
                 <IconTooltip label="브라우저에서 열기">
                   <button
                     className="icon-button"
