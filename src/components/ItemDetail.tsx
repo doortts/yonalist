@@ -205,7 +205,7 @@ export function ItemDetail({
         <CommentComposer
           draft={commentDraft}
           online={online}
-          canClose={item.frontMatter.kind === "issue" && state === "open"}
+          closeKind={state === "open" ? item.frontMatter.kind : undefined}
           onDraftChange={onCommentDraftChange}
           onSubmit={onQueueComment}
         />

@@ -5,6 +5,7 @@ import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
+import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
 
@@ -38,6 +39,7 @@ describe("Yonalist app shell", () => {
     installLocalStorageMock();
     clearWorkItemsCache();
     clearNotificationCache();
+    clearNotificationDetailCache();
     // Existing shell tests assume the app is past the startup login gate.
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
   });
@@ -940,6 +942,14 @@ describe("Yonalist app shell", () => {
         name: /outbox/i
       })
     ).not.toBeInTheDocument();
+  });
+
+  it("shows notification cache stats while the Notifications tab is active", () => {
+    render(<App />);
+
+    expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+      /Cache Notifications 0\/0 B · Notification details 0\/0 B · Markdown/
+    );
   });
 
   it("updates the status bar when visible signed-in items are prefetched", async () => {

@@ -1,4 +1,9 @@
-import type { ItemDocument, OutboxOperationDocument } from "../domain/types";
+import type {
+  CommentCloseAction,
+  ItemDocument,
+  OutboxOperationDocument,
+  OutboxTarget
+} from "../domain/types";
 import type { GitHubClient } from "./github";
 import { GitHubRequestError } from "./githubTransport";
 
@@ -86,6 +91,8 @@ export type SyncedRemote =
       created_at?: string;
       updated_at?: string;
       closedIssue?: boolean;
+      closedPullRequest?: boolean;
+      closedDiscussion?: boolean;
     };
 
 interface CreatedIssueResponse {
@@ -110,6 +117,66 @@ function findDraftItem(
   items: ItemDocument[]
 ): ItemDocument | undefined {
   return items.find((item) => item.path === operation.frontMatter.local_file_path);
+}
+
+function closeActionForOperation(
+  operation: OutboxOperationDocument,
+  target: OutboxTarget
+): CommentCloseAction | null {
+  const closeAfterComment = operation.frontMatter.close_after_comment;
+  if (!closeAfterComment) {
+    return null;
+  }
+  if (closeAfterComment === true) {
+    return target.kind === "issue"
+      ? { kind: "issue", reason: "completed" }
+      : null;
+  }
+  return closeAfterComment;
+}
+
+async function closeTargetAfterComment(
+  client: GitHubClient,
+  target: OutboxTarget,
+  closeAction: CommentCloseAction,
+  retryDelays: number[]
+) {
+  if (target.number === undefined) {
+    throw new Error("Comment operation is missing a target number.");
+  }
+  if (closeAction.kind === "issue") {
+    await attemptWithRetry(
+      () =>
+        client.closeIssue(target.owner, target.repo, target.number as number, {
+          reason: closeAction.reason,
+          duplicateIssueId: closeAction.duplicate_issue_id
+        }),
+      retryDelays
+    );
+    return;
+  }
+  if (closeAction.kind === "pull") {
+    await attemptWithRetry(
+      () =>
+        client.closePullRequest(
+          target.owner,
+          target.repo,
+          target.number as number
+        ),
+      retryDelays
+    );
+    return;
+  }
+  await attemptWithRetry(
+    () =>
+      client.closeDiscussion(
+        target.owner,
+        target.repo,
+        target.number as number,
+        closeAction.reason
+      ),
+    retryDelays
+  );
 }
 
 /**
@@ -183,17 +250,12 @@ export async function syncOutboxOperations(
         if (created.id === undefined) {
           throw new Error("GitHub did not return the created comment id.");
         }
-        if (
-          operation.frontMatter.close_after_comment &&
-          target.kind === "issue"
-        ) {
-          await attemptWithRetry(
-            () =>
-              client.closeIssue(
-                target.owner,
-                target.repo,
-                target.number as number
-              ),
+        const closeAction = closeActionForOperation(operation, target);
+        if (closeAction) {
+          await closeTargetAfterComment(
+            client,
+            target,
+            closeAction,
             retryDelays
           );
         }
@@ -208,8 +270,14 @@ export async function syncOutboxOperations(
             body: created.body,
             created_at: created.created_at,
             updated_at: created.updated_at,
-            ...(operation.frontMatter.close_after_comment && target.kind === "issue"
+            ...(closeAction?.kind === "issue"
               ? { closedIssue: true }
+              : {}),
+            ...(closeAction?.kind === "pull"
+              ? { closedPullRequest: true }
+              : {}),
+            ...(closeAction?.kind === "discussion"
+              ? { closedDiscussion: true }
               : {})
           }
         });

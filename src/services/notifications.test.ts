@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import {
   clearNotificationCache,
+  getNotificationCacheStats,
   fetchUnreadNotificationUpdates,
   fetchNotifications,
   markNotificationRead
@@ -201,6 +202,54 @@ describe("fetchNotifications", () => {
 
     expect(result.map((entry) => entry.id)).toEqual(["new", "old-1", "old-2"]);
     expect(second).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes later pages when a cached multi-page feed has an unchanged first page", async () => {
+    const options = {
+      token: "token",
+      apiBaseUrl: "https://api.github.com"
+    };
+    const firstPage = Array.from({ length: 50 }, (_, index) =>
+      notification(`first-${index}`)
+    );
+    const first = vi.fn(async (url: unknown) =>
+      String(url).includes("page=1")
+        ? jsonResponse(firstPage, {
+            Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+          })
+        : jsonResponse([notification("old-tail")])
+    );
+    await fetchNotifications({ ...options, fetchImpl: first as unknown as typeof fetch });
+
+    const second = vi.fn(async (url: unknown) =>
+      String(url).includes("page=1")
+        ? jsonResponse(firstPage, {
+            Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+          })
+        : jsonResponse([notification("fresh-tail")])
+    );
+    const result = await fetchNotifications({
+      ...options,
+      fetchImpl: second as unknown as typeof fetch
+    });
+
+    expect(second).toHaveBeenCalledTimes(2);
+    expect(result.at(-1)?.id).toBe("fresh-tail");
+  });
+
+  it("reports the number and size of cached notification rows", async () => {
+    await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: vi.fn(async () =>
+        jsonResponse([notification("one"), notification("two")])
+      ) as unknown as typeof fetch
+    });
+
+    const stats = getNotificationCacheStats();
+
+    expect(stats.entries).toBe(2);
+    expect(stats.bytes).toBeGreaterThan(0);
   });
 
   it("seeds unread notification updates without emitting desktop items", async () => {

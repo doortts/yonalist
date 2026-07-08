@@ -71,6 +71,53 @@ describe("GitHub client", () => {
     );
   });
 
+  it("closes issues with a GitHub state reason", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ state: "closed" }));
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock
+    });
+
+    await client.closeIssue("openai", "codex", 7, {
+      reason: "duplicate",
+      duplicateIssueId: 123
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/openai/codex/issues/7",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          state: "closed",
+          state_reason: "duplicate",
+          duplicate_issue_id: 123
+        })
+      })
+    );
+  });
+
+  it("closes pull requests through the pull request endpoint", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ state: "closed" }));
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock
+    });
+
+    await client.closePullRequest("openai", "codex", 7);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.github.com/repos/openai/codex/pulls/7",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ state: "closed" })
+      })
+    );
+  });
+
   it("creates discussion comments through GraphQL", async () => {
     const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const payload = JSON.parse(String(init?.body ?? "{}")) as {
@@ -182,6 +229,54 @@ describe("GitHub client", () => {
         body: "Nested reply",
         replyToId: "DC_parent"
       }
+    });
+  });
+
+  it("closes discussions with a GraphQL close reason", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (payload.query?.includes("discussion(number")) {
+        return jsonResponse({
+          data: {
+            repository: {
+              discussion: {
+                id: "D_kwDO",
+                title: "Weekly",
+                comments: { nodes: [] }
+              }
+            }
+          }
+        });
+      }
+      return jsonResponse({
+        data: {
+          closeDiscussion: {
+            discussion: {
+              id: "D_kwDO",
+              closed: true
+            }
+          }
+        }
+      });
+    });
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.closeDiscussion("openai", "codex", 7, "outdated");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const closePayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(closePayload.query).toContain("closeDiscussion");
+    expect(closePayload.variables).toEqual({
+      discussionId: "D_kwDO",
+      reason: "OUTDATED"
     });
   });
 

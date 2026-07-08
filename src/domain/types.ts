@@ -3,6 +3,21 @@ export type ItemState = "open" | "closed" | "merged";
 export type SyncStatus = "synced" | "pending" | "dirty" | "error" | "blocked";
 export type OutboxOperationKind = "create_issue" | "create_comment";
 export type OutboxStatus = "pending" | "blocked" | "syncing" | "failed" | "synced";
+export type IssueCloseReason = "completed" | "not_planned" | "duplicate";
+export type DiscussionCloseReason = "resolved" | "outdated" | "duplicate";
+export type CommentCloseAction =
+  | {
+      kind: "issue";
+      reason: IssueCloseReason;
+      duplicate_issue_id?: number;
+    }
+  | {
+      kind: "discussion";
+      reason: DiscussionCloseReason;
+    }
+  | {
+      kind: "pull";
+    };
 
 export interface RepositoryIdentity {
   host: string;
@@ -64,7 +79,7 @@ export interface OutboxOperationFrontMatter {
   operation: OutboxOperationKind;
   id: string;
   target: OutboxTarget;
-  close_after_comment?: boolean;
+  close_after_comment?: boolean | CommentCloseAction;
   local_file_path: string;
   created_at: string;
   status: OutboxStatus;

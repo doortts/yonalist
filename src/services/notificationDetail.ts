@@ -5,6 +5,11 @@ import {
   type ReactionSummary
 } from "../domain/conversation";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
+import {
+  estimateJsonBytes,
+  estimateTextBytes,
+  type CacheSizeStats
+} from "./cacheStats";
 import { createGitHubClient } from "./github";
 import { LruCache } from "./lruCache";
 import {
@@ -175,6 +180,17 @@ export function resetNotificationDetailMemoryCache() {
   detailCache.clear();
   inflightDetails.clear();
   latestDetails.clear();
+}
+
+export function getNotificationDetailCacheStats(): CacheSizeStats {
+  return detailCache.entries().reduce<CacheSizeStats>(
+    (stats, [key, detail]) => ({
+      entries: stats.entries + 1,
+      bytes:
+        stats.bytes + estimateTextBytes(key) + estimateJsonBytes(detail)
+    }),
+    { entries: 0, bytes: 0 }
+  );
 }
 
 /**

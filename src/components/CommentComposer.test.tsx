@@ -252,24 +252,136 @@ describe("CommentComposer", () => {
     expect(onDraftChange).toHaveBeenCalledWith("hello\nworld");
   });
 
-  it("submits comment-and-close separately from a regular comment", async () => {
+  it("submits a completed issue close action separately from a regular comment", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
     render(
       <CommentComposer
         draft={"Done"}
         online
-        canClose
+        closeKind="issue"
         onDraftChange={vi.fn()}
         onSubmit={onSubmit}
       />
     );
 
-    await user.click(screen.getByRole("button", { name: "Comment and close" }));
+    await user.click(screen.getByRole("button", { name: "Close with comment" }));
     await user.click(screen.getByRole("button", { name: "Comment" }));
 
-    expect(onSubmit).toHaveBeenNthCalledWith(1, "comment-and-close");
-    expect(onSubmit).toHaveBeenNthCalledWith(2, "comment");
+    expect(onSubmit).toHaveBeenNthCalledWith(1, {
+      type: "comment-and-close",
+      close: { kind: "issue", reason: "completed" }
+    });
+    expect(onSubmit).toHaveBeenNthCalledWith(2, { type: "comment" });
+  });
+
+  it("lets issue close reason be selected from a GitHub-style menu", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft={"Won't ship"}
+        online
+        closeKind="issue"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close options" }));
+    expect(screen.getByRole("menuitem", { name: /Close as completed/ }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Close as not planned/ }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Close as duplicate/ }))
+      .toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitem", { name: /Close as not planned/ }));
+    await user.click(screen.getByRole("button", { name: "Close with comment" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "issue", reason: "not_planned" }
+    });
+  });
+
+  it("stores a duplicate issue number when selecting the duplicate issue close reason", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    const prompt = vi.spyOn(window, "prompt").mockReturnValue("123");
+    render(
+      <CommentComposer
+        draft={"Duplicate"}
+        online
+        closeKind="issue"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close options" }));
+    await user.click(screen.getByRole("menuitem", { name: /Close as duplicate/ }));
+    await user.click(screen.getByRole("button", { name: "Close with comment" }));
+
+    expect(prompt).toHaveBeenCalled();
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "issue", reason: "duplicate", duplicateIssueId: 123 }
+    });
+  });
+
+  it("lets discussion close reason be selected from a GitHub-style menu", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft={"Resolved"}
+        online
+        closeKind="discussion"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    expect(screen.getByRole("button", { name: "Close discussion" }))
+      .toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close options" }));
+    expect(screen.getByRole("menuitem", { name: /Close as resolved/ }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Close as outdated/ }))
+      .toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /Close as duplicate/ }))
+      .toBeInTheDocument();
+
+    await user.click(screen.getByRole("menuitem", { name: /Close as outdated/ }));
+    await user.click(screen.getByRole("button", { name: "Close discussion" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "discussion", reason: "outdated" }
+    });
+  });
+
+  it("renders pull request close as a single action without a reason menu", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft={"Closing this PR"}
+        online
+        closeKind="pull"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close pull request" }));
+
+    expect(screen.queryByRole("button", { name: "Close options" })).toBeNull();
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "pull" }
+    });
   });
 
   it("starts collapsed as a single-line bar with the action buttons hidden", () => {
@@ -288,7 +400,7 @@ describe("CommentComposer", () => {
       screen.queryByRole("button", { name: "Comment" })
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Comment and close" })
+      screen.queryByRole("button", { name: "Close with comment" })
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Preview" })

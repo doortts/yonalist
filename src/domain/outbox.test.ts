@@ -57,6 +57,64 @@ describe("outbox operations", () => {
     expect(operation.frontMatter.close_after_comment).toBe(true);
   });
 
+  it("stores the close reason for issue comments that close after syncing", () => {
+    const operation = createCommentOutboxOperation({
+      id: "op-3-reason",
+      host: "github.com",
+      owner: "openai",
+      repo: "codex",
+      itemKind: "issue",
+      number: 10,
+      closeAfterComment: {
+        kind: "issue",
+        reason: "duplicate",
+        duplicateIssueId: 99
+      },
+      localFilePath:
+        "/vault/github.com/openai/codex/issues/10/comments/_drafts/local-3.md",
+      createdAt: "2026-07-02T00:00:00Z"
+    });
+
+    expect(operation.frontMatter.close_after_comment).toEqual({
+      kind: "issue",
+      reason: "duplicate",
+      duplicate_issue_id: 99
+    });
+  });
+
+  it("stores discussion and pull request close actions for comments", () => {
+    const discussion = createCommentOutboxOperation({
+      id: "op-discussion-close",
+      host: "github.com",
+      owner: "openai",
+      repo: "codex",
+      itemKind: "discussion",
+      number: 10,
+      closeAfterComment: { kind: "discussion", reason: "outdated" },
+      localFilePath:
+        "/vault/github.com/openai/codex/discussions/10/comments/_drafts/local-4.md",
+      createdAt: "2026-07-02T00:00:00Z"
+    });
+    const pull = createCommentOutboxOperation({
+      id: "op-pull-close",
+      host: "github.com",
+      owner: "openai",
+      repo: "codex",
+      itemKind: "pull",
+      number: 10,
+      closeAfterComment: { kind: "pull" },
+      localFilePath:
+        "/vault/github.com/openai/codex/pulls/10/comments/_drafts/local-5.md",
+      createdAt: "2026-07-02T00:00:00Z"
+    });
+
+    expect(discussion.frontMatter.close_after_comment).toEqual({
+      kind: "discussion",
+      reason: "outdated"
+    });
+    expect(pull.frontMatter.close_after_comment).toEqual({ kind: "pull" });
+  });
+
   it("keeps the parent discussion comment node id for queued replies", () => {
     const operation = createCommentOutboxOperation({
       id: "op-4",

@@ -1,4 +1,9 @@
 import type { GitHubNotification } from "../domain/notifications";
+import {
+  estimateJsonBytes,
+  estimateTextBytes,
+  type CacheSizeStats
+} from "./cacheStats";
 import { GitHubRequestError } from "./github";
 import { tracePerf } from "./perfTrace";
 
@@ -62,6 +67,19 @@ export function clearNotificationCache() {
   unreadUpdateCache.clear();
   inflight.clear();
   consecutiveProbeNotModified.clear();
+}
+
+export function getNotificationCacheStats(): CacheSizeStats {
+  return [...cache.entries()].reduce<CacheSizeStats>(
+    (stats, [key, entry]) => ({
+      entries: stats.entries + entry.notifications.length,
+      bytes:
+        stats.bytes +
+        estimateTextBytes(key) +
+        estimateJsonBytes(entry.notifications)
+    }),
+    { entries: 0, bytes: 0 }
+  );
 }
 
 export function fetchNotifications(
@@ -176,7 +194,17 @@ async function doFetchNotifications(
       // stale-proxy staleness.
       ...(page === 1 ? { lastModified, etag } : {})
     });
-    if (page === 1 && cached && firstPageMatchesCached(pageItems, cached.notifications)) {
+    const link = response.headers.get("Link");
+    const hasNext = link
+      ? link.includes('rel="next"')
+      : pageItems.length === PER_PAGE;
+    if (
+      page === 1 &&
+      cached &&
+      cached.notifications.length === pageItems.length &&
+      !hasNext &&
+      firstPageMatchesCached(pageItems, cached.notifications)
+    ) {
       options.onPartialResult?.(cached.notifications);
       cache.set(key, {
         lastModified: lastModified ?? cached.lastModified,
@@ -188,10 +216,6 @@ async function doFetchNotifications(
     notifications.push(...pageItems);
     options.onPartialResult?.([...notifications]);
 
-    const link = response.headers.get("Link");
-    const hasNext = link
-      ? link.includes('rel="next"')
-      : pageItems.length === PER_PAGE;
     if (!hasNext) {
       break;
     }

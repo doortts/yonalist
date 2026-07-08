@@ -88,8 +88,9 @@ export function NotificationDetail({
   const showSkeleton = loading && !detail;
   const canComment = notification.subject.type !== "Release" && number !== null;
   const canClose =
-    notification.subject.type === "Issue" &&
+    canComment &&
     (detail?.state ?? "open") === "open";
+  const closeKind = canClose ? subjectKind(notification.subject.type) : undefined;
 
   return (
     <>
@@ -209,7 +210,7 @@ export function NotificationDetail({
         <CommentComposer
           draft={commentDraft}
           online={online}
-          canClose={canClose}
+          closeKind={closeKind}
           onDraftChange={onCommentDraftChange}
           onSubmit={onQueueComment}
         />

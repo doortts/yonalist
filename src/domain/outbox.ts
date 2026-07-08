@@ -1,6 +1,7 @@
 import { outboxOperationPath } from "./paths";
 import type {
   AttachmentManifestEntry,
+  CommentCloseAction,
   ItemKind,
   OutboxOperationDocument,
   RepositoryIdentity
@@ -19,10 +20,36 @@ interface CreateCommentOperationInput extends RepositoryIdentity {
   number: number;
   parentCommentId?: number | string;
   parentCommentNodeId?: string;
-  closeAfterComment?: boolean;
+  closeAfterComment?:
+    | boolean
+    | (Omit<Extract<CommentCloseAction, { kind: "issue" }>, "duplicate_issue_id"> & {
+        duplicateIssueId?: number;
+      })
+    | Extract<CommentCloseAction, { kind: "discussion" | "pull" }>;
   localFilePath: string;
   createdAt: string;
   vaultRoot?: string;
+}
+
+function closeAfterCommentFrontMatter(
+  closeAfterComment: CreateCommentOperationInput["closeAfterComment"]
+): boolean | CommentCloseAction | undefined {
+  if (!closeAfterComment) {
+    return undefined;
+  }
+  if (closeAfterComment === true) {
+    return true;
+  }
+  if (closeAfterComment.kind === "issue") {
+    return {
+      kind: "issue",
+      reason: closeAfterComment.reason,
+      ...(closeAfterComment.duplicateIssueId !== undefined
+        ? { duplicate_issue_id: closeAfterComment.duplicateIssueId }
+        : {})
+    };
+  }
+  return closeAfterComment;
 }
 
 export function createIssueOutboxOperation(
@@ -50,6 +77,9 @@ export function createIssueOutboxOperation(
 export function createCommentOutboxOperation(
   input: CreateCommentOperationInput
 ): OutboxOperationDocument {
+  const closeAfterComment = closeAfterCommentFrontMatter(
+    input.closeAfterComment
+  );
   return {
     path: outboxOperationPath(input.vaultRoot ?? "", input.id),
     body: "",
@@ -70,7 +100,9 @@ export function createCommentOutboxOperation(
           ? { parent_comment_node_id: input.parentCommentNodeId }
           : {})
       },
-      ...(input.closeAfterComment ? { close_after_comment: true } : {}),
+      ...(closeAfterComment
+        ? { close_after_comment: closeAfterComment }
+        : {}),
       local_file_path: input.localFilePath,
       created_at: input.createdAt,
       status: "pending"

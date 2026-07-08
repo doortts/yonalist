@@ -181,6 +181,48 @@ describe("CommentThread", () => {
     );
   });
 
+  it("uses the top-level discussion comment as the target when replying from an existing reply", async () => {
+    const user = userEvent.setup();
+    const onReplySubmit = vi.fn();
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            nodeId: "DC_parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent discussion comment",
+            replies: [
+              {
+                id: "reply",
+                nodeId: "DC_reply",
+                author: "octocat",
+                created_at: "2026-07-02T01:00:00Z",
+                body: "existing threaded reply"
+              }
+            ]
+          }
+        ]}
+        onReplySubmit={onReplySubmit}
+      />
+    );
+
+    const replies = screen.getByLabelText("Replies");
+    await user.click(within(replies).getByRole("button", { name: "대댓글 추가" }));
+    await user.type(screen.getByLabelText("대댓글 입력"), "reply to the thread");
+    await user.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(onReplySubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "parent", nodeId: "DC_parent" }),
+      "reply to the thread"
+    );
+    expect(onReplySubmit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ id: "reply", nodeId: "DC_reply" }),
+      expect.any(String)
+    );
+  });
+
   it("renders nothing when there are no comments", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();

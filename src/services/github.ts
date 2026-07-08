@@ -3,6 +3,10 @@ import {
   encodePathSegment,
   GitHubRequestError
 } from "./githubTransport";
+import type {
+  DiscussionCloseReason,
+  IssueCloseReason
+} from "../domain/types";
 
 interface GitHubClientOptions {
   token: string;
@@ -15,6 +19,11 @@ interface GitHubClientOptions {
 interface CreateIssueInput {
   title: string;
   body: string;
+}
+
+interface CloseIssueOptions {
+  reason?: IssueCloseReason;
+  duplicateIssueId?: number;
 }
 
 interface DeviceFlowInput {
@@ -134,6 +143,16 @@ mutation ($discussionId: ID!, $body: String!, $replyToId: ID) {
   }
 }`;
 
+const CLOSE_DISCUSSION_MUTATION = `
+mutation ($discussionId: ID!, $reason: DiscussionCloseReason!) {
+  closeDiscussion(input: { discussionId: $discussionId, reason: $reason }) {
+    discussion {
+      id
+      closed
+    }
+  }
+}`;
+
 function discussionLabels(
   node: GraphQLDiscussionNode
 ): Array<{ name?: string; color?: string }> {
@@ -241,9 +260,31 @@ export function createGitHubClient(options: GitHubClientOptions) {
       );
     },
 
-    closeIssue(owner: string, repo: string, number: number) {
+    closeIssue(
+      owner: string,
+      repo: string,
+      number: number,
+      options: CloseIssueOptions = {}
+    ) {
+      const body = {
+        state: "closed",
+        ...(options.reason ? { state_reason: options.reason } : {}),
+        ...(options.duplicateIssueId !== undefined
+          ? { duplicate_issue_id: options.duplicateIssueId }
+          : {})
+      };
       return transport.requestJson(
         `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify(body)
+        }
+      );
+    },
+
+    closePullRequest(owner: string, repo: string, number: number) {
+      return transport.requestJson(
+        `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/pulls/${encodePathSegment(number)}`,
         {
           method: "PATCH",
           body: JSON.stringify({ state: "closed" })
@@ -319,6 +360,25 @@ export function createGitHubClient(options: GitHubClientOptions) {
         repository?: { discussion?: GraphQLDiscussionNode | null } | null;
       }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
       return mapDiscussionComments(data.repository?.discussion);
+    },
+
+    async closeDiscussion(
+      owner: string,
+      repo: string,
+      number: number,
+      reason: DiscussionCloseReason
+    ) {
+      const discussionData = await transport.graphql<{
+        repository?: { discussion?: GraphQLDiscussionNode | null } | null;
+      }>(DISCUSSION_DETAIL_QUERY, { owner, repo, number });
+      const discussionId = discussionData.repository?.discussion?.id;
+      if (!discussionId) {
+        throw new Error("Discussion node id was not returned.");
+      }
+      return transport.graphql(CLOSE_DISCUSSION_MUTATION, {
+        discussionId,
+        reason: reason.toUpperCase()
+      });
     },
 
     async getDiscussionWithComments(owner: string, repo: string, number: number) {

@@ -4,6 +4,7 @@ import {
   clearNotificationDetailCache,
   fetchNotificationDetail,
   getCachedNotificationDetail,
+  getNotificationDetailCacheStats,
   getLatestCachedNotificationDetail,
   resetNotificationDetailMemoryCache
 } from "./notificationDetail";
@@ -61,6 +62,26 @@ describe("fetchNotificationDetail", () => {
 
     expect(cached.title).toBe("Cached");
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("reports the number and size of cached notification details", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title: "Cached", state: "open", user: { login: "mona" } });
+    });
+
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: notification("Issue", "https://api.github.com/repos/acme/app/issues/7"),
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    const stats = getNotificationDetailCacheStats();
+
+    expect(stats.entries).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(0);
   });
 
   it("refetches when the notification's updated_at changes", async () => {

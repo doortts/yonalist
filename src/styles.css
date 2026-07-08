@@ -1530,14 +1530,15 @@ body.is-resizing-pane {
 .item-label {
   display: inline-flex;
   align-items: center;
-  min-height: 18px;
+  height: 18px;
   padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
+  box-sizing: border-box;
   color: var(--text-2);
   font-size: 11px;
   font-weight: 500;
-  line-height: 1;
+  line-height: 18px;
 }
 
 .item-label.colored {
@@ -1555,9 +1556,9 @@ body.is-resizing-pane {
   align-items: center;
   gap: 3px;
   color: var(--yona-comment);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
-  line-height: 1;
+  line-height: 1.35;
 }
 
 .item-comments .yona-comment-icon {
@@ -2797,6 +2798,124 @@ body.is-resizing-pane {
 
 .secondary-danger-button:hover:not(:disabled) {
   background: var(--danger-soft);
+}
+
+.composer-close-split {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.secondary-danger-button.composer-close-main {
+  gap: 8px;
+  border-color: var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-1);
+}
+
+.secondary-danger-button.composer-close-main svg {
+  color: var(--danger);
+}
+
+.secondary-danger-button.composer-close-main:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.secondary-danger-button.composer-close-trigger {
+  width: 42px;
+  min-height: 36px;
+  padding: 0;
+  border-color: var(--border-strong);
+  border-left-width: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  background: var(--bg-card);
+  color: var(--text-2);
+}
+
+.composer-close-split .composer-close-main {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.secondary-danger-button.composer-close-trigger:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.composer-close-single {
+  min-width: 0;
+}
+
+.composer-close-menu {
+  z-index: 30;
+  min-width: min(440px, calc(100vw - 28px));
+  padding: 10px 0;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-modal);
+  color: var(--text-1);
+}
+
+.composer-close-menu-item {
+  display: grid;
+  grid-template-columns: 28px 28px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 74px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: default;
+  outline: none;
+}
+
+.composer-close-menu-item:last-child {
+  border-bottom: 0;
+}
+
+.composer-close-menu-item[data-highlighted] {
+  background: var(--bg-hover);
+}
+
+.composer-close-check {
+  display: inline-grid;
+  place-items: center;
+  color: var(--text-1);
+}
+
+.composer-close-option-icon {
+  display: inline-grid;
+  place-items: center;
+  color: var(--danger);
+}
+
+.composer-close-menu-discussion .composer-close-option-icon {
+  color: var(--accent);
+}
+
+.composer-close-option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.composer-close-option-copy strong {
+  color: var(--text-1);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.composer-close-option-copy span {
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.25;
+}
+
+.composer-close-duplicate-arrow {
+  rotate: -90deg;
+  color: var(--text-3);
 }
 
 .secondary-danger-button:disabled,

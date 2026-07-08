@@ -244,8 +244,11 @@ export function CommentThread({
     return Boolean(onReplySubmit && comment.nodeId);
   }
 
-  function renderReplyAction(comment: ConversationComment) {
-    if (!canReplyTo(comment)) {
+  function renderReplyAction(
+    comment: ConversationComment,
+    target: ConversationComment = comment
+  ) {
+    if (!canReplyTo(target)) {
       return null;
     }
     return (
@@ -261,22 +264,28 @@ export function CommentThread({
     );
   }
 
-  function renderInlineReplyComposer(comment: ConversationComment) {
-    if (activeReplyId !== comment.id || !canReplyTo(comment) || !onReplySubmit) {
+  function renderInlineReplyComposer(
+    comment: ConversationComment,
+    target: ConversationComment = comment
+  ) {
+    if (activeReplyId !== comment.id || !canReplyTo(target) || !onReplySubmit) {
       return null;
     }
     return (
       <InlineReplyComposer
         onCancel={() => setActiveReplyId(null)}
         onSubmit={(body) => {
-          onReplySubmit(comment, body);
+          onReplySubmit(target, body);
           setActiveReplyId(null);
         }}
       />
     );
   }
 
-  function renderReplyThread(replies: ConversationComment[]) {
+  function renderReplyThread(
+    replies: ConversationComment[],
+    target: ConversationComment
+  ) {
     return (
       <div className="comment-replies" aria-label="Replies">
         {replies.map((reply, index) => {
@@ -314,11 +323,11 @@ export function CommentThread({
                   <MarkdownBody body={reply.body} />
                   <Reactions reactions={reply.reactions} />
                 </div>
-                {renderReplyAction(reply)}
+                {renderReplyAction(reply, target)}
               </div>
-              {renderInlineReplyComposer(reply)}
+              {renderInlineReplyComposer(reply, target)}
               {reply.replies && reply.replies.length > 0 && (
-                renderReplyThread(reply.replies)
+                renderReplyThread(reply.replies, target)
               )}
             </article>
           );
@@ -351,7 +360,7 @@ export function CommentThread({
           </div>
           {renderInlineReplyComposer(comment)}
           {comment.replies && comment.replies.length > 0 && (
-            renderReplyThread(comment.replies)
+            renderReplyThread(comment.replies, comment)
           )}
         </div>
       </article>

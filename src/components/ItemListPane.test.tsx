@@ -20,17 +20,18 @@ const signedInConnection: GithubConnection = {
 };
 
 const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+const itemListStyles = readFileSync(
+  join(process.cwd(), "src/components/ItemListPane.css"),
+  "utf8"
+);
+const themeStyles = readFileSync(
+  join(process.cwd(), "src/themes/base-ui-pure.css"),
+  "utf8"
+);
 
-function cssDeclarationsFor(selector: string): Record<string, string> {
-  const start = appStyles.indexOf(`${selector} {`);
-  if (start === -1) {
-    throw new Error(`Missing CSS rule for ${selector}`);
-  }
-  const blockStart = appStyles.indexOf("{", start);
-  const blockEnd = appStyles.indexOf("}", blockStart);
+function parseCssDeclarations(block: string): Record<string, string> {
   return Object.fromEntries(
-    appStyles
-      .slice(blockStart + 1, blockEnd)
+    block
       .split(";")
       .map((declaration) => declaration.trim())
       .filter(Boolean)
@@ -42,6 +43,41 @@ function cssDeclarationsFor(selector: string): Record<string, string> {
         ];
       })
   );
+}
+
+function cssDeclarationsFor(
+  selector: string,
+  stylesheet = appStyles
+): Record<string, string> {
+  const start = stylesheet.indexOf(`${selector} {`);
+  if (start === -1) {
+    throw new Error(`Missing CSS rule for ${selector}`);
+  }
+  const blockStart = stylesheet.indexOf("{", start);
+  const blockEnd = stylesheet.indexOf("}", blockStart);
+  return parseCssDeclarations(stylesheet.slice(blockStart + 1, blockEnd));
+}
+
+function cssRulesContaining(
+  selector: string,
+  stylesheet: string
+): Array<{ selector: string; declarations: Record<string, string> }> {
+  const matches: Array<{
+    selector: string;
+    declarations: Record<string, string>;
+  }> = [];
+  const rulePattern = /([^{}]+)\{([^{}]+)\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = rulePattern.exec(stylesheet)) !== null) {
+    const ruleSelector = match[1].trim();
+    if (ruleSelector.includes(selector)) {
+      matches.push({
+        selector: ruleSelector,
+        declarations: parseCssDeclarations(match[2])
+      });
+    }
+  }
+  return matches;
 }
 
 const baseItem: ItemDocument = {
@@ -439,25 +475,56 @@ describe("ItemListPane", () => {
     expect(screen.getByText("bug")).toHaveClass("item-label");
     expect(labelStyle.display).toBe("inline-flex");
     expect(labelStyle["align-items"]).toBe("center");
-    expect(labelStyle["line-height"]).toBe("1");
+    expect(labelStyle.height).toBe("18px");
+    expect(labelStyle["line-height"]).toBe("18px");
     expect(labelStyle.padding).toBe("0 8px");
-    expect(labelStyle["min-height"]).toBe("18px");
   });
 
-  it("uses one text size for the comment icon and count", () => {
+  it("uses the author text metrics for the comment icon and count", () => {
     const { container } = renderPane([baseItem]);
 
     const comments = container.querySelector(".item-comments") as HTMLElement;
     const icon = comments.querySelector(".yona-comment-icon") as HTMLElement;
+    const authorStyle = cssDeclarationsFor(".item-author", itemListStyles);
     const commentsStyle = cssDeclarationsFor(".item-comments");
     const iconStyle = cssDeclarationsFor(".item-comments .yona-comment-icon");
 
     expect(comments).toHaveTextContent("3");
     expect(icon).toHaveClass("yona-comment-icon");
-    expect(commentsStyle["font-size"]).toBe("13px");
-    expect(commentsStyle["line-height"]).toBe("1");
+    expect(commentsStyle["font-size"]).toBe(authorStyle["font-size"]);
+    expect(commentsStyle["line-height"]).toBe(authorStyle["line-height"]);
     expect(iconStyle["font-size"]).toBe("inherit");
     expect(iconStyle["line-height"]).toBe("inherit");
+  });
+
+  it("keeps label and comment typography shared across themes", () => {
+    const themeScopedItemRules = cssRulesContaining(
+      ".item-",
+      `${appStyles}\n${themeStyles}`
+    ).filter((rule) => rule.selector.includes("[data-theme="));
+    const lockedProperties = [
+      "align-items",
+      "display",
+      "font-size",
+      "height",
+      "line-height",
+      "padding"
+    ];
+
+    expect(themeScopedItemRules.length).toBeGreaterThan(0);
+    for (const rule of themeScopedItemRules) {
+      if (
+        !rule.selector.includes(".item-label") &&
+        !rule.selector.includes(".item-comments") &&
+        !rule.selector.includes(".yona-comment-icon")
+      ) {
+        continue;
+      }
+
+      for (const property of lockedProperties) {
+        expect(rule.declarations).not.toHaveProperty(property);
+      }
+    }
   });
 
   it("does not render a footer when there are no comments and no bookmark", () => {

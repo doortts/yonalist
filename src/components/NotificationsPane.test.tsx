@@ -101,6 +101,81 @@ describe("NotificationsPane", () => {
     expect(screen.queryByText("Beta issue")).toBeNull();
   });
 
+  it("reports the search-filtered notifications for prefetch", () => {
+    const onVisibleNotificationsChange = vi.fn();
+    const alpha = makeNotification({
+      id: "1",
+      subject: {
+        title: "Alpha issue",
+        url: "https://api.github.com/repos/acme/widgets/issues/1",
+        type: "Issue"
+      }
+    });
+    const beta = makeNotification({
+      id: "2",
+      subject: {
+        title: "Beta issue",
+        url: "https://api.github.com/repos/acme/widgets/issues/2",
+        type: "Issue"
+      }
+    });
+    render(
+      <NotificationsPane
+        state={makeState({ notifications: [alpha, beta] })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+        onVisibleNotificationsChange={onVisibleNotificationsChange}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("Search notifications"), {
+      target: { value: "alpha" }
+    });
+
+    expect(onVisibleNotificationsChange).toHaveBeenLastCalledWith([alpha]);
+  });
+
+  it("reports only-new filtered notifications for prefetch", async () => {
+    const user = userEvent.setup();
+    const onVisibleNotificationsChange = vi.fn();
+    const unread = makeNotification({
+      id: "1",
+      unread: true,
+      subject: {
+        title: "Unread issue",
+        url: "https://api.github.com/repos/acme/widgets/issues/1",
+        type: "Issue"
+      }
+    });
+    const read = makeNotification({
+      id: "2",
+      unread: false,
+      subject: {
+        title: "Read issue",
+        url: "https://api.github.com/repos/acme/widgets/issues/2",
+        type: "Issue"
+      }
+    });
+    render(
+      <NotificationsPane
+        state={makeState({ notifications: [unread, read] })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+        onVisibleNotificationsChange={onVisibleNotificationsChange}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Only new notifications" })
+    );
+
+    expect(onVisibleNotificationsChange).toHaveBeenLastCalledWith([unread]);
+  });
+
   it("marks a read notification as quiet (no unread dot)", () => {
     render(
       <NotificationsPane

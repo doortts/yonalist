@@ -117,8 +117,14 @@ import {
   getItemThreadCacheStats
 } from "./services/itemThread";
 import { estimateRecordBytes } from "./services/cacheStats";
-import { clearNotificationDetailCache } from "./services/notificationDetail";
-import { clearNotificationCache } from "./services/notifications";
+import {
+  clearNotificationDetailCache,
+  getNotificationDetailCacheStats
+} from "./services/notificationDetail";
+import {
+  clearNotificationCache,
+  getNotificationCacheStats
+} from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
 import { isRemoteReachable } from "./services/remoteReachability";
 import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
@@ -296,6 +302,8 @@ export default function App({ initialOnline }: AppProps) {
   const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
   const [visiblePrefetchItems, setVisiblePrefetchItems] = useState<ItemDocument[]>([]);
+  const [visibleNotificationPrefetchItems, setVisibleNotificationPrefetchItems] =
+    useState<GitHubNotification[]>([]);
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
   const [detailDisplayDurationMs, setDetailDisplayDurationMs] =
     useState<number | null>(null);
@@ -832,13 +840,13 @@ export default function App({ initialOnline }: AppProps) {
     }
   });
 
-  // The Notifications pane is not virtualized and its rows are cheap, so rather
-  // than measure a scroll viewport we warm the top slice of the newest-first
-  // filtered feed — the rows the user is most likely to click first. The cap
-  // bounds concurrent detail fetches; the prefetch hook further limits them.
+  // The Notifications pane is not virtualized and its rows are cheap, so warm
+  // the pane's filtered rows — the rows the user can currently click after
+  // search/Only new are applied. The cap bounds concurrent detail fetches; the
+  // prefetch hook further limits them.
   const notificationPrefetchTargets = useMemo(
-    () => notifications.notifications.slice(0, NOTIFICATION_PREFETCH_CAP),
-    [notifications.notifications]
+    () => visibleNotificationPrefetchItems.slice(0, NOTIFICATION_PREFETCH_CAP),
+    [visibleNotificationPrefetchItems]
   );
   const notificationPrefetchEnabled =
     showNotifications &&
@@ -934,23 +942,33 @@ export default function App({ initialOnline }: AppProps) {
     () => {
       const bodyStats = estimateRecordBytes(loadedItemBodies);
       const threadStats = getItemThreadCacheStats();
+      const notificationStats = getNotificationCacheStats();
+      const notificationDetailStats = getNotificationDetailCacheStats();
       const markdownStats = getMarkdownRenderCacheStats();
       return {
         listFetchDurationMs: workItems.lastFetchDurationMs,
         detailDisplayDurationMs,
         // Surface whichever prefetcher is active for the current view.
         prefetch: showNotifications ? notificationPrefetchStats : prefetchStats,
-        caches: [
-          { label: "Bodies", ...bodyStats },
-          { label: "Threads", ...threadStats },
-          { label: "Markdown", ...markdownStats }
-        ]
+        caches: showNotifications
+          ? [
+              { label: "Notifications", ...notificationStats },
+              { label: "Notification details", ...notificationDetailStats },
+              { label: "Markdown", ...markdownStats }
+            ]
+          : [
+              { label: "Bodies", ...bodyStats },
+              { label: "Threads", ...threadStats },
+              { label: "Markdown", ...markdownStats }
+            ]
       };
     },
     [
       detailDisplayDurationMs,
       itemThread.thread,
       loadedItemBodies,
+      notificationDetail.detail,
+      notifications.notifications,
       notificationPrefetchStats,
       prefetchStats,
       showNotifications,
@@ -1411,7 +1429,8 @@ export default function App({ initialOnline }: AppProps) {
 
     const id = createOperationId("comment");
     const createdAt = new Date().toISOString();
-    const closeAfterComment = action === "comment-and-close" && target.kind === "issue";
+    const closeAfterComment =
+      action.type === "comment-and-close" ? action.close : undefined;
     const operation = createCommentOutboxOperation({
       id,
       host: target.host,
@@ -1460,7 +1479,7 @@ export default function App({ initialOnline }: AppProps) {
       persistOutboxOperation(vaultRoot, queuedOperation)
     ]).then(() => syncQueuedOperation(queuedOperation));
     if (closeAfterComment) {
-      showAppSnackbar("Comment and close queued.");
+      showAppSnackbar("Close with comment queued.");
     }
   }
 
@@ -1492,7 +1511,7 @@ export default function App({ initialOnline }: AppProps) {
         kind: selectedItem.frontMatter.kind,
         number: selectedItem.frontMatter.number
       },
-      "comment",
+      { type: "comment" },
       body,
       parent
     );
@@ -1508,7 +1527,7 @@ export default function App({ initialOnline }: AppProps) {
     }
     queueCommentForTarget(
       selectedNotificationCommentTarget,
-      "comment",
+      { type: "comment" },
       body,
       parent
     );
@@ -1771,6 +1790,7 @@ export default function App({ initialOnline }: AppProps) {
             setSelectedNotification(notification);
             notifications.markNotificationViewed(notification);
           }}
+          onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
         />
       ) : (
         <ItemListPane

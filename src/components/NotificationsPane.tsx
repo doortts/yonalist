@@ -13,7 +13,7 @@ import {
   Search,
   Users
 } from "lucide-react";
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import "./ui/form-controls.css";
 import "./NotificationsPane.css";
 import {
@@ -34,6 +34,7 @@ interface NotificationsPaneProps {
   online: boolean;
   selectedId: string | null;
   onSelect: (notification: GitHubNotification) => void;
+  onVisibleNotificationsChange?: (notifications: GitHubNotification[]) => void;
 }
 
 const reasonIcons: Record<
@@ -153,7 +154,8 @@ export function NotificationsPane({
   webBaseUrl,
   online,
   selectedId,
-  onSelect
+  onSelect,
+  onVisibleNotificationsChange
 }: NotificationsPaneProps) {
   const [query, setQuery] = useState("");
   const [onlyNew, setOnlyNew] = useState(false);
@@ -180,6 +182,10 @@ export function NotificationsPane({
   }, [state.notifications, query, onlyNew, state.viewedAt, webBaseUrl]);
 
   const groups = useMemo(() => groupNotificationsByDate(visible), [visible]);
+
+  useEffect(() => {
+    onVisibleNotificationsChange?.(visible);
+  }, [onVisibleNotificationsChange, visible]);
 
   // Stable identity so memoized rows only re-render when their own data or
   // selection changes, not because the pane re-created the handler.
