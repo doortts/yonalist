@@ -59,7 +59,12 @@ import {
   createCommentOutboxOperation,
   createIssueOutboxOperation
 } from "./domain/outbox";
-import { mergeItemDocuments, withVaultItemPath } from "./domain/items";
+import {
+  DEFAULT_ITEM_SORT,
+  mergeItemDocuments,
+  withVaultItemPath,
+  type ItemSort
+} from "./domain/items";
 import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
 import {
   isReadAndQuiet,
@@ -283,6 +288,7 @@ export default function App({ initialOnline }: AppProps) {
   const [filter, setFilter] = useState<ListFilter>("all");
   const [itemStateFilter, setItemStateFilter] =
     useState<ItemStateFilter>("open");
+  const [itemSort, setItemSort] = useState<ItemSort>(DEFAULT_ITEM_SORT);
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
@@ -447,23 +453,26 @@ export default function App({ initialOnline }: AppProps) {
     auth.connection,
     online,
     { type: "inbox" },
-    vaultRoot
+    vaultRoot,
+    true,
+    itemSort
   );
   const projectWorkItems = useWorkItems(
     auth.connection,
     online,
     repositoryScope,
     vaultRoot,
-    Boolean(repositoryFilter)
+    Boolean(repositoryFilter),
+    itemSort
   );
   const workItems = repositoryFilter ? projectWorkItems : inboxWorkItems;
   const inboxItems = useMemo(
-    () => mergeItemDocuments(drafts, inboxWorkItems.items, vaultRoot),
-    [drafts, inboxWorkItems.items, vaultRoot]
+    () => mergeItemDocuments(drafts, inboxWorkItems.items, vaultRoot, itemSort),
+    [drafts, inboxWorkItems.items, itemSort, vaultRoot]
   );
   const items = useMemo(
-    () => mergeItemDocuments(drafts, workItems.items, vaultRoot),
-    [drafts, workItems.items, vaultRoot]
+    () => mergeItemDocuments(drafts, workItems.items, vaultRoot, itemSort),
+    [drafts, itemSort, workItems.items, vaultRoot]
   );
   const unfilteredNotifications = useNotifications(
     auth.connection,
@@ -1912,11 +1921,13 @@ export default function App({ initialOnline }: AppProps) {
           selectedPath={selectedItem?.path ?? null}
           stateFilter={itemStateFilter}
           stateCounts={displayedItemStateCounts}
+          itemSort={itemSort}
           query={query}
           loading={workItems.loading}
           error={workItems.error}
           demoMode={workItems.demoMode}
           online={online}
+          onItemSortChange={setItemSort}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
           onSelect={(path) => {

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { reconcileItems, withVaultItemPath } from "../domain/items";
+import {
+  DEFAULT_ITEM_SORT,
+  reconcileItems,
+  withVaultItemPath,
+  type ItemSort
+} from "../domain/items";
 import type { ItemDocument } from "../domain/types";
 import { sampleItems } from "../fixtures/sampleItems";
 import {
@@ -35,6 +40,10 @@ const workItemsCache = new Map<string, WorkItemsCacheEntry>();
 
 function apiScopedCacheKey(apiBaseUrl: string, scopeKey: string): string {
   return `${apiBaseUrl}|${scopeKey}`;
+}
+
+function itemSortCacheKey(sort: ItemSort): string {
+  return `${sort.field}:${sort.direction}`;
 }
 
 function newestUpdatedAt(items: ItemDocument[]): string {
@@ -82,7 +91,12 @@ export function clearWorkItemsCache() {
 }
 
 function testCacheKey(key: string): string {
-  return key.includes("|") ? key : apiScopedCacheKey("https://api.github.com", key);
+  const scoped = key.includes("|")
+    ? key
+    : apiScopedCacheKey("https://api.github.com", key);
+  return scoped.includes("|sort:")
+    ? scoped
+    : `${scoped}|sort:${itemSortCacheKey(DEFAULT_ITEM_SORT)}`;
 }
 
 export function clearWorkItemsCacheForTests() {
@@ -105,7 +119,8 @@ export function useWorkItems(
   online: boolean,
   scope: WorkScope,
   vaultRoot = "/vault",
-  enabled = true
+  enabled = true,
+  sort: ItemSort = DEFAULT_ITEM_SORT
 ): UseWorkItemsResult {
   const token = connection.token.trim();
   const demoMode = !token;
@@ -120,7 +135,11 @@ export function useWorkItems(
 
   const scopeKey =
     scope.type === "repo" ? `repo:${scope.owner}/${scope.name}` : "inbox";
-  const cacheKey = apiScopedCacheKey(connection.apiBaseUrl, scopeKey);
+  const sortKey = itemSortCacheKey(sort);
+  const cacheKey = apiScopedCacheKey(
+    connection.apiBaseUrl,
+    `${scopeKey}|sort:${sortKey}`
+  );
 
   const load = useCallback((force = false) => {
     const cached = workItemsCache.get(cacheKey);
@@ -148,9 +167,10 @@ export function useWorkItems(
     const request =
       scope.type === "repo"
         ? fetchRepoWorkItems(connection, scope.owner, scope.name, {
-            signal: controller.signal
+            signal: controller.signal,
+            sort
           })
-        : fetchMyWorkItems(connection, { signal: controller.signal });
+        : fetchMyWorkItems(connection, { signal: controller.signal, sort });
     request
       .then((rawItems) => {
         if (requestSeq.current === seq && !controller.signal.aborted) {
@@ -198,7 +218,16 @@ export function useWorkItems(
         }
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, enabled, token, online, connection.apiBaseUrl, connection.webBaseUrl, scopeKey]);
+  }, [
+    cacheKey,
+    enabled,
+    token,
+    online,
+    connection.apiBaseUrl,
+    connection.webBaseUrl,
+    scopeKey,
+    sort
+  ]);
 
   useEffect(() => {
     const cached = workItemsCache.get(cacheKey);

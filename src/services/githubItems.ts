@@ -1,3 +1,8 @@
+import {
+  DEFAULT_ITEM_SORT,
+  sortItemDocuments,
+  type ItemSort
+} from "../domain/items";
 import type { ItemDocument, ItemKind, ItemState } from "../domain/types";
 import { itemMainPath } from "../domain/paths";
 import type { GithubConnection } from "../hooks/useGithubAuth";
@@ -12,8 +17,9 @@ import { createGitHubTransport, encodePathSegment } from "./githubTransport";
 const VAULT_ROOT = "/vault";
 const PAGE_SIZE = 50;
 
-interface WorkItemsFetchOptions {
+export interface WorkItemsFetchOptions {
   signal?: AbortSignal;
+  sort?: ItemSort;
 }
 
 export interface RepositorySummary {
@@ -188,20 +194,37 @@ function ownerRepoFromRepositoryUrl(repositoryUrl: string | undefined): {
   };
 }
 
+function workItemsSort(options: WorkItemsFetchOptions): ItemSort {
+  return options.sort ?? DEFAULT_ITEM_SORT;
+}
+
+function githubRestSortField(sort: ItemSort): "created" | "updated" {
+  return sort.field === "created" ? "created" : "updated";
+}
+
+function discussionOrderField(sort: ItemSort): "CREATED_AT" | "UPDATED_AT" {
+  return sort.field === "created" ? "CREATED_AT" : "UPDATED_AT";
+}
+
+function discussionOrderDirection(sort: ItemSort): "ASC" | "DESC" {
+  return sort.direction === "asc" ? "ASC" : "DESC";
+}
+
 async function searchIssues(
   connection: GithubConnection,
   query: string,
   options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
+  const sort = workItemsSort(options);
   const transport = createGitHubTransport({
     ...connection,
     signal: options.signal
   });
   const params = new URLSearchParams({
     q: query,
-    sort: "updated",
-    order: "desc",
+    sort: githubRestSortField(sort),
+    order: sort.direction,
     per_page: String(PAGE_SIZE)
   });
   const response = await transport.requestJson<SearchIssuesResponse>(
@@ -238,14 +261,15 @@ async function listRepoIssuesAndPulls(
   options: WorkItemsFetchOptions = {}
 ): Promise<ItemDocument[]> {
   const host = hostOf(connection);
+  const sort = workItemsSort(options);
   const transport = createGitHubTransport({
     ...connection,
     signal: options.signal
   });
   const params = new URLSearchParams({
     state: "all",
-    sort: "updated",
-    direction: "desc",
+    sort: githubRestSortField(sort),
+    direction: sort.direction,
     per_page: String(PAGE_SIZE)
   });
   const response = await transport.requestJson<SearchIssueItem[]>(
@@ -296,9 +320,18 @@ query ($q: String!, $first: Int!) {
 }`;
 
 const REPO_DISCUSSIONS_QUERY = `
-query ($owner: String!, $repo: String!, $first: Int!) {
+query (
+  $owner: String!,
+  $repo: String!,
+  $first: Int!,
+  $orderField: DiscussionOrderField!,
+  $orderDirection: OrderDirection!
+) {
   repository(owner: $owner, name: $repo) {
-    discussions(first: $first, orderBy: { field: UPDATED_AT, direction: DESC }) {
+    discussions(
+      first: $first,
+      orderBy: { field: $orderField, direction: $orderDirection }
+    ) {
       nodes {
         number
         title
@@ -364,7 +397,13 @@ async function listRepoDiscussions(
     signal: options.signal
   }).graphql<{
     repository?: { discussions?: { nodes?: DiscussionSearchNode[] } } | null;
-  }>(REPO_DISCUSSIONS_QUERY, { owner, repo, first: PAGE_SIZE });
+  }>(REPO_DISCUSSIONS_QUERY, {
+    owner,
+    repo,
+    first: PAGE_SIZE,
+    orderField: discussionOrderField(workItemsSort(options)),
+    orderDirection: discussionOrderDirection(workItemsSort(options))
+  });
 
   return (data.repository?.discussions?.nodes ?? []).map((item) => {
     const labels = labelInfo(item.labels?.nodes);
@@ -388,12 +427,6 @@ async function listRepoDiscussions(
   });
 }
 
-function sortByUpdatedDesc(items: ItemDocument[]): ItemDocument[] {
-  return items.sort((left, right) =>
-    right.frontMatter.updated_at.localeCompare(left.frontMatter.updated_at)
-  );
-}
-
 /** Issues + PRs + discussions the signed-in user is involved in. */
 export async function fetchMyWorkItems(
   connection: GithubConnection,
@@ -404,10 +437,10 @@ export async function fetchMyWorkItems(
     // Discussion search needs GraphQL; older GHE instances may lack it.
     searchDiscussions(connection, "involves:@me", options).catch(() => [])
   ]);
-  return sortByUpdatedDesc([...issuePulls, ...discussions]);
+  return sortItemDocuments([...issuePulls, ...discussions], workItemsSort(options));
 }
 
-/** Every issue, PR, and discussion of one repository, newest first. */
+/** Every issue, PR, and discussion of one repository in the requested sort. */
 export async function fetchRepoWorkItems(
   connection: GithubConnection,
   owner: string,
@@ -418,7 +451,7 @@ export async function fetchRepoWorkItems(
     listRepoIssuesAndPulls(connection, owner, repo, options),
     listRepoDiscussions(connection, owner, repo, options).catch(() => [])
   ]);
-  return sortByUpdatedDesc([...issuePulls, ...discussions]);
+  return sortItemDocuments([...issuePulls, ...discussions], workItemsSort(options));
 }
 
 function toSummaries(

@@ -1,6 +1,8 @@
+import { Menu } from "@base-ui/react/menu";
 import { Tabs } from "@base-ui/react/tabs";
 import {
   Bookmark,
+  Check,
   CircleDot,
   GitPullRequest,
   MessagesSquare,
@@ -18,6 +20,12 @@ import {
   useState
 } from "react";
 import { labelTextColor } from "../domain/conversation";
+import {
+  DEFAULT_ITEM_SORT,
+  type ItemSort,
+  type ItemSortDirection,
+  type ItemSortField
+} from "../domain/items";
 import type { ItemDocument } from "../domain/types";
 import { type AuthorProfile, useAuthorNames } from "../hooks/useAuthorNames";
 import { timeAgo } from "../timeFormat";
@@ -33,7 +41,35 @@ const VIRTUALIZE_AT = 80;
 // measured layout, so scroll math stays cheap and stable.
 const ITEM_ROW_HEIGHT_WITH_LABELS = 140;
 const ITEM_ROW_HEIGHT_COMPACT = 112;
+const ITEM_DATE_HEADER_HEIGHT = 52;
 const ITEM_OVERSCAN = 6;
+
+const ITEM_SORT_OPTIONS: Array<{
+  sort: ItemSort;
+  label: string;
+  ariaLabel: string;
+}> = [
+  {
+    sort: { field: "created", direction: "desc" },
+    label: "↓ Created",
+    ariaLabel: "Created descending"
+  },
+  {
+    sort: { field: "created", direction: "asc" },
+    label: "↑ Created",
+    ariaLabel: "Created ascending"
+  },
+  {
+    sort: { field: "updated", direction: "desc" },
+    label: "↓ Updated",
+    ariaLabel: "Updated descending"
+  },
+  {
+    sort: { field: "updated", direction: "asc" },
+    label: "↑ Updated",
+    ariaLabel: "Updated ascending"
+  }
+];
 
 interface ItemStateCounts {
   open: number;
@@ -45,11 +81,13 @@ interface ItemListPaneProps {
   selectedPath: string | null;
   stateFilter: ItemStateFilter;
   stateCounts?: ItemStateCounts;
+  itemSort?: ItemSort;
   query: string;
   loading: boolean;
   error: string | null;
   demoMode: boolean;
   online?: boolean;
+  onItemSortChange?: (sort: ItemSort) => void;
   onStateFilterChange: (filter: ItemStateFilter) => void;
   onQueryChange: (query: string) => void;
   onSelect: (path: string) => void;
@@ -105,7 +143,77 @@ function itemListSignature(items: ItemDocument[]): string {
     .join("\n");
 }
 
-function virtualRowHeightForItem(item: ItemDocument): number {
+function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
+  return left.field === right.field && left.direction === right.direction;
+}
+
+function sortFieldLabel(field: ItemSortField): string {
+  return field === "created" ? "Created" : "Updated";
+}
+
+function sortDirectionArrow(direction: ItemSortDirection): string {
+  return direction === "asc" ? "↑" : "↓";
+}
+
+function itemSortTriggerText(sort: ItemSort): string {
+  return `${sortDirectionArrow(sort.direction)}${sortFieldLabel(sort.field)}`;
+}
+
+function itemSortAriaLabel(sort: ItemSort): string {
+  return `Sort by ${sortFieldLabel(sort.field)} ${
+    sort.direction === "asc" ? "ascending" : "descending"
+  }`;
+}
+
+function itemDateValue(item: ItemDocument, sort: ItemSort): string {
+  return sort.field === "created"
+    ? item.frontMatter.created_at
+    : item.frontMatter.updated_at;
+}
+
+function dateKey(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.valueOf())) {
+    return "unknown";
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}.${month}.${day}`;
+}
+
+function dateLabel(key: string, now = new Date()): string {
+  return key === dateKey(now.toISOString()) ? "Today" : key;
+}
+
+type ItemListEntry =
+  | { type: "date"; key: string; label: string }
+  | { type: "item"; item: ItemDocument };
+
+function buildItemListEntries(
+  items: ItemDocument[],
+  sort: ItemSort
+): ItemListEntry[] {
+  const entries: ItemListEntry[] = [];
+  let previousDateKey: string | null = null;
+
+  for (const item of items) {
+    const key = dateKey(itemDateValue(item, sort));
+    if (key !== previousDateKey) {
+      entries.push({ type: "date", key, label: dateLabel(key) });
+      previousDateKey = key;
+    }
+    entries.push({ type: "item", item });
+  }
+
+  return entries;
+}
+
+function virtualRowHeightForEntry(entry: ItemListEntry): number {
+  if (entry.type === "date") {
+    return ITEM_DATE_HEADER_HEIGHT;
+  }
+  const item = entry.item;
   return item.frontMatter.labels.length > 0
     ? ITEM_ROW_HEIGHT_WITH_LABELS
     : ITEM_ROW_HEIGHT_COMPACT;
@@ -117,14 +225,14 @@ interface VirtualRowMetrics {
   totalHeight: number;
 }
 
-function buildVirtualRowMetrics(items: ItemDocument[]): VirtualRowMetrics {
+function buildVirtualRowMetrics(entries: ItemListEntry[]): VirtualRowMetrics {
   const heights: number[] = [];
   const offsets: number[] = [];
   let totalHeight = 0;
 
-  for (const item of items) {
+  for (const entry of entries) {
     offsets.push(totalHeight);
-    const height = virtualRowHeightForItem(item);
+    const height = virtualRowHeightForEntry(entry);
     heights.push(height);
     totalHeight += height;
   }
@@ -160,11 +268,13 @@ export function ItemListPane({
   selectedPath,
   stateFilter,
   stateCounts,
+  itemSort = DEFAULT_ITEM_SORT,
   query,
   loading,
   error,
   demoMode,
   online = true,
+  onItemSortChange,
   onStateFilterChange,
   onQueryChange,
   onSelect,
@@ -178,6 +288,7 @@ export function ItemListPane({
   const authorNames = useAuthorNames(items, { enabled: !demoMode && online });
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  const [sortMenuOpen, setSortMenuOpen] = useState(false);
   const listIdentity = useMemo(
     () => items.map((item) => item.path).join("\n"),
     [items]
@@ -284,6 +395,41 @@ export function ItemListPane({
             className="item-state-line item-state-line-end"
             aria-hidden="true"
           />
+          <span className="item-state-sort-spacer" aria-hidden="true" />
+          <Menu.Root open={sortMenuOpen} onOpenChange={setSortMenuOpen}>
+            <Menu.Trigger
+              className="item-sort-trigger"
+              type="button"
+              aria-label={itemSortAriaLabel(itemSort)}
+              onClick={() => setSortMenuOpen(true)}
+            >
+              {itemSortTriggerText(itemSort)}
+            </Menu.Trigger>
+            <Menu.Portal>
+              <Menu.Positioner side="bottom" align="end" sideOffset={6}>
+                <Menu.Popup className="item-sort-menu">
+                  {ITEM_SORT_OPTIONS.map((option) => {
+                    const selected = itemSortEquals(itemSort, option.sort);
+                    return (
+                      <Menu.Item
+                        key={`${option.sort.field}-${option.sort.direction}`}
+                        className="item-sort-menu-item"
+                        onClick={() => {
+                          onItemSortChange?.(option.sort);
+                          setSortMenuOpen(false);
+                        }}
+                      >
+                        <span className="item-sort-menu-check" aria-hidden="true">
+                          {selected && <Check size={15} />}
+                        </span>
+                        <span>{option.label}</span>
+                      </Menu.Item>
+                    );
+                  })}
+                </Menu.Popup>
+              </Menu.Positioner>
+            </Menu.Portal>
+          </Menu.Root>
         </Tabs.List>
       </Tabs.Root>
 
@@ -306,6 +452,7 @@ export function ItemListPane({
         <ItemRows
           items={items}
           authorNames={authorNames}
+          itemSort={itemSort}
           selectedPath={selectedPath}
           scrollTop={scrollTop}
           viewportHeight={viewportHeight}
@@ -324,6 +471,7 @@ export function ItemListPane({
 interface ItemRowsProps {
   items: ItemDocument[];
   authorNames: ReadonlyMap<string, AuthorProfile>;
+  itemSort: ItemSort;
   selectedPath: string | null;
   scrollTop: number;
   viewportHeight: number;
@@ -334,6 +482,7 @@ interface ItemRowsProps {
 function ItemRows({
   items,
   authorNames,
+  itemSort,
   selectedPath,
   scrollTop,
   viewportHeight,
@@ -354,39 +503,46 @@ function ItemRows({
   const [measuredViewportItems, setMeasuredViewportItems] = useState<
     ItemDocument[] | null
   >(null);
+  const entries = useMemo(
+    () => buildItemListEntries(items, itemSort),
+    [items, itemSort]
+  );
   const shouldVirtualize = items.length > VIRTUALIZE_AT && viewportHeight > 0;
-  const rowMetrics = useMemo(() => buildVirtualRowMetrics(items), [items]);
+  const rowMetrics = useMemo(() => buildVirtualRowMetrics(entries), [entries]);
   const viewportRange = useMemo(() => {
     if (viewportHeight <= 0) {
-      return { start: 0, end: items.length };
+      return { start: 0, end: entries.length };
     }
     const start = rowIndexForOffset(rowMetrics, scrollTop);
     const end = Math.min(
-      items.length,
+      entries.length,
       Math.max(start + 1, rowIndexForOffset(rowMetrics, scrollTop + viewportHeight) + 1)
     );
     return { start, end };
-  }, [items.length, rowMetrics, scrollTop, viewportHeight]);
+  }, [entries.length, rowMetrics, scrollTop, viewportHeight]);
   const range = useMemo(() => {
     if (!shouldVirtualize) {
-      return { start: 0, end: items.length };
+      return { start: 0, end: entries.length };
     }
     const visibleStart = rowIndexForOffset(rowMetrics, scrollTop);
     const visibleEnd = rowIndexForOffset(rowMetrics, scrollTop + viewportHeight) + 1;
     const start = Math.max(0, visibleStart - ITEM_OVERSCAN);
     const end = Math.min(
-      items.length,
+      entries.length,
       visibleEnd + ITEM_OVERSCAN
     );
     return { start, end };
-  }, [items.length, rowMetrics, scrollTop, shouldVirtualize, viewportHeight]);
+  }, [entries.length, rowMetrics, scrollTop, shouldVirtualize, viewportHeight]);
 
-  const visibleItems = shouldVirtualize
-    ? items.slice(range.start, range.end)
-    : items;
+  const visibleEntries = shouldVirtualize
+    ? entries.slice(range.start, range.end)
+    : entries;
   const estimatedViewportItems = useMemo(
-    () => items.slice(viewportRange.start, viewportRange.end),
-    [items, viewportRange.end, viewportRange.start]
+    () =>
+      entries
+        .slice(viewportRange.start, viewportRange.end)
+        .flatMap((entry) => (entry.type === "item" ? [entry.item] : [])),
+    [entries, viewportRange.end, viewportRange.start]
   );
   const estimatedViewportSignature = itemListSignature(estimatedViewportItems);
   const viewportItems = shouldVirtualize
@@ -433,8 +589,20 @@ function ItemRows({
     return null;
   }
 
-  const rows = visibleItems.map((item, offset) => {
+  const rows = visibleEntries.map((entry, offset) => {
     const index = range.start + offset;
+    if (entry.type === "date") {
+      return (
+        <ItemDateRow
+          key={`date-${entry.key}-${index}`}
+          label={entry.label}
+          virtualized={shouldVirtualize}
+          top={shouldVirtualize ? rowMetrics.offsets[index] : null}
+          height={shouldVirtualize ? rowMetrics.heights[index] : null}
+        />
+      );
+    }
+    const item = entry.item;
     const author = item.frontMatter.author;
     // Resolve to stable strings so the memoized row only re-renders when the
     // display name or avatar URL actually changes (login stays referentially
@@ -448,6 +616,7 @@ function ItemRows({
         item={item}
         authorName={authorName}
         authorAvatarUrl={authorAvatarUrl}
+        itemSort={itemSort}
         selected={item.path === selectedPath}
         virtualized={shouldVirtualize}
         top={shouldVirtualize ? rowMetrics.offsets[index] : null}
@@ -472,10 +641,38 @@ function ItemRows({
   );
 }
 
+interface ItemDateRowProps {
+  label: string;
+  virtualized: boolean;
+  top: number | null;
+  height: number | null;
+}
+
+function ItemDateRow({ label, virtualized, top, height }: ItemDateRowProps) {
+  const virtualStyle =
+    virtualized && top !== null && height !== null
+      ? ({
+          height,
+          transform: `translateY(${top}px)`
+        } as CSSProperties)
+      : undefined;
+  return (
+    <div
+      className={
+        virtualized ? "item-date-row virtual-date-row" : "item-date-row"
+      }
+      style={virtualStyle}
+    >
+      <h3>{label}</h3>
+    </div>
+  );
+}
+
 interface ItemRowProps {
   item: ItemDocument;
   authorName: string;
   authorAvatarUrl?: string;
+  itemSort: ItemSort;
   selected: boolean;
   virtualized: boolean;
   top: number | null;
@@ -488,6 +685,7 @@ const ItemRow = memo(function ItemRow({
   item,
   authorName,
   authorAvatarUrl,
+  itemSort,
   selected,
   virtualized,
   top,
@@ -503,6 +701,7 @@ const ItemRow = memo(function ItemRow({
         } as CSSProperties)
       : undefined;
   const commentCount = item.frontMatter.comments_count ?? 0;
+  const rowTime = itemDateValue(item, itemSort);
   const showComments = commentCount > 0;
   const showBookmark = item.frontMatter.local.favorite;
   const hasAuthor =
@@ -547,7 +746,7 @@ const ItemRow = memo(function ItemRow({
         {item.frontMatter.sync.status === "pending" && (
           <span className="item-sync-pending">Pending</span>
         )}
-        <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
+        <span className="item-time">{timeAgo(rowTime)}</span>
       </span>
       <span className="item-title">{item.frontMatter.title}</span>
       {hasAuthor && (

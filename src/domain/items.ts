@@ -1,6 +1,19 @@
 import { itemMainPath } from "./paths";
 import type { ItemDocument, ItemIdentity } from "./types";
 
+export type ItemSortField = "created" | "updated";
+export type ItemSortDirection = "asc" | "desc";
+
+export interface ItemSort {
+  field: ItemSortField;
+  direction: ItemSortDirection;
+}
+
+export const DEFAULT_ITEM_SORT: ItemSort = {
+  field: "created",
+  direction: "desc"
+};
+
 function identityParts(identity: ItemIdentity): string[] {
   return [
     identity.host.toLowerCase(),
@@ -168,10 +181,33 @@ export function reconcileItems(
   return previous;
 }
 
+function itemSortValue(item: ItemDocument, sort: ItemSort): string {
+  return sort.field === "created"
+    ? item.frontMatter.created_at
+    : item.frontMatter.updated_at;
+}
+
+export function compareItemDocuments(
+  left: ItemDocument,
+  right: ItemDocument,
+  sort: ItemSort = DEFAULT_ITEM_SORT
+): number {
+  const direction = sort.direction === "asc" ? 1 : -1;
+  return itemSortValue(left, sort).localeCompare(itemSortValue(right, sort)) * direction;
+}
+
+export function sortItemDocuments(
+  items: ItemDocument[],
+  sort: ItemSort = DEFAULT_ITEM_SORT
+): ItemDocument[] {
+  return [...items].sort((left, right) => compareItemDocuments(left, right, sort));
+}
+
 export function mergeItemDocuments(
   localItems: ItemDocument[],
   remoteItems: ItemDocument[],
-  vaultRoot: string
+  vaultRoot: string,
+  sort: ItemSort = DEFAULT_ITEM_SORT
 ): ItemDocument[] {
   const byIdentity = new Map<string, ItemDocument>();
 
@@ -194,9 +230,7 @@ export function mergeItemDocuments(
     byIdentity.set(key, itemsEqual(current, merged) ? current : merged);
   }
 
-  const merged = [...byIdentity.values()].sort((left, right) =>
-    right.frontMatter.updated_at.localeCompare(left.frontMatter.updated_at)
-  );
+  const merged = sortItemDocuments([...byIdentity.values()], sort);
 
   if (merged.length === localItems.length) {
     let identical = true;

@@ -1224,7 +1224,8 @@ describe("Yonalist app shell", () => {
       render(<App initialOnline />);
 
       await user.click(await screen.findByRole("button", { name: /^Issues/ }));
-      expect(await screen.findByText("Issue with comments")).toBeInTheDocument();
+      const list = screen.getByLabelText("Items");
+      expect(await within(list).findByText("Issue with comments")).toBeInTheDocument();
 
       await new Promise((resolve) => setTimeout(resolve, 2200));
 
@@ -1929,6 +1930,35 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: /^All items/ }));
       const list = screen.getByLabelText("Items");
       expect(await within(list).findByText("Real fetched issue")).toBeInTheDocument();
+      await waitFor(() => {
+        const initialIssueCall = fetchMock.mock.calls.find(([url]) => {
+          const target = String(url);
+          return (
+            target.includes("/search/issues") &&
+            target.includes("sort=created") &&
+            target.includes("order=desc")
+          );
+        });
+        expect(initialIssueCall).toBeTruthy();
+      });
+
+      await user.click(
+        within(list).getByRole("button", {
+          name: "Sort by Created descending"
+        })
+      );
+      await user.click(screen.getByRole("menuitem", { name: "↑ Updated" }));
+      await waitFor(() => {
+        const updatedAscendingIssueCall = fetchMock.mock.calls.find(([url]) => {
+          const target = String(url);
+          return (
+            target.includes("/search/issues") &&
+            target.includes("sort=updated") &&
+            target.includes("order=asc")
+          );
+        });
+        expect(updatedAscendingIssueCall).toBeTruthy();
+      });
       await waitFor(() =>
         expect(
           fetchMock.mock.calls.some(([url]) => String(url).includes("/notifications"))

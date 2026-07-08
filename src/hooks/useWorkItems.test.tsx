@@ -1,5 +1,6 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ItemSort } from "../domain/items";
 import type { ItemDocument, ItemKind, ItemState } from "../domain/types";
 import type { GithubConnection } from "./useGithubAuth";
 import {
@@ -146,6 +147,56 @@ describe("useWorkItems", () => {
       ])
     );
     expect(result.current.loading).toBe(false);
+  });
+
+  it("passes the requested sort to repository fetches and reloads when it changes", async () => {
+    fetchRepoWorkItemsMock
+      .mockResolvedValueOnce([item("Created sort")])
+      .mockResolvedValueOnce([item("Updated sort")]);
+
+    const { result, rerender } = renderHook(
+      ({ sort }: { sort: ItemSort }) =>
+        useWorkItems(
+          connection,
+          true,
+          { type: "repo", owner: "acme", name: "app" },
+          "/vault",
+          true,
+          sort
+        ),
+      {
+        initialProps: {
+          sort: { field: "created", direction: "desc" } as ItemSort
+        }
+      }
+    );
+
+    await waitFor(() => {
+      expect(result.current.items[0]?.frontMatter.title).toBe("Created sort");
+    });
+    expect(fetchRepoWorkItemsMock).toHaveBeenLastCalledWith(
+      connection,
+      "acme",
+      "app",
+      expect.objectContaining({
+        sort: { field: "created", direction: "desc" }
+      })
+    );
+
+    rerender({ sort: { field: "updated", direction: "asc" } });
+
+    await waitFor(() => {
+      expect(result.current.items[0]?.frontMatter.title).toBe("Updated sort");
+    });
+    expect(fetchRepoWorkItemsMock).toHaveBeenCalledTimes(2);
+    expect(fetchRepoWorkItemsMock).toHaveBeenLastCalledWith(
+      connection,
+      "acme",
+      "app",
+      expect.objectContaining({
+        sort: { field: "updated", direction: "asc" }
+      })
+    );
   });
 
   it("does not refetch a fresh cached repository scope on selection", async () => {

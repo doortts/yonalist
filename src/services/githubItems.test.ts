@@ -86,13 +86,13 @@ describe("fetchMyWorkItems", () => {
     const items = await fetchMyWorkItems(connection);
 
     expect(items.map((item) => item.frontMatter.kind)).toEqual([
-      "pull",
       "issue",
+      "pull",
       "discussion"
     ]);
-    expect(items[1].path).toBe("/vault/github.com/acme/app/issues/42/issue.md");
-    expect(items[1].frontMatter.labels).toEqual(["bug"]);
-    expect(items[1].frontMatter.label_colors).toEqual({ bug: "b60205" });
+    expect(items[0].path).toBe("/vault/github.com/acme/app/issues/42/issue.md");
+    expect(items[0].frontMatter.labels).toEqual(["bug"]);
+    expect(items[0].frontMatter.label_colors).toEqual({ bug: "b60205" });
     expect(items[2].frontMatter.label_colors).toEqual({ planning: "fef2c0" });
     expect(items[2].frontMatter.comments_count).toBe(6);
     expect(items[2].path).toBe(
@@ -102,6 +102,11 @@ describe("fetchMyWorkItems", () => {
       expect.stringContaining("/search/issues?q=involves%3A%40me"),
       expect.anything()
     );
+    const issueSearchCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/search/issues")
+    );
+    expect(String(issueSearchCall?.[0])).toContain("sort=created");
+    expect(String(issueSearchCall?.[0])).toContain("order=desc");
     const graphQlCall = fetchMock.mock.calls.find(([url]) =>
       String(url).includes("/graphql")
     );
@@ -174,10 +179,85 @@ describe("fetchRepoWorkItems", () => {
       expect.stringContaining("/repos/acme/app/issues?"),
       expect.anything()
     );
+    const repoIssuesCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/repos/acme/app/issues?")
+    );
+    expect(String(repoIssuesCall?.[0])).toContain("sort=created");
+    expect(String(repoIssuesCall?.[0])).toContain("direction=desc");
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.github.com/graphql",
       expect.objectContaining({ method: "POST" })
     );
+    const graphQlCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/graphql")
+    );
+    expect(String(graphQlCall?.[1]?.body)).toContain("CREATED_AT");
+    expect(String(graphQlCall?.[1]?.body)).toContain("DESC");
+  });
+
+  it("passes an updated ascending sort through repo fetches and final ordering", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/repos/acme/app/issues")) {
+        return jsonResponse([
+          {
+            number: 42,
+            title: "Updated later",
+            state: "open",
+            body: "Issue body",
+            user: { login: "mona" },
+            created_at: "2026-07-01T00:00:00Z",
+            updated_at: "2026-07-03T00:00:00Z",
+            html_url: "https://github.com/acme/app/issues/42"
+          }
+        ]);
+      }
+      if (target.includes("/graphql")) {
+        return jsonResponse({
+          data: {
+            repository: {
+              discussions: {
+                nodes: [
+                  {
+                    number: 9,
+                    title: "Updated earlier",
+                    closed: false,
+                    body: "Question",
+                    comments: { totalCount: 3 },
+                    author: { login: "mona" },
+                    createdAt: "2026-07-02T00:00:00Z",
+                    updatedAt: "2026-07-02T00:00:00Z",
+                    url: "https://github.com/acme/app/discussions/9",
+                    labels: { nodes: [] }
+                  }
+                ]
+              }
+            }
+          }
+        });
+      }
+      throw new Error(`Unexpected request: ${target}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const items = await fetchRepoWorkItems(connection, "acme", "app", {
+      sort: { field: "updated", direction: "asc" }
+    });
+
+    expect(items.map((item) => item.frontMatter.title)).toEqual([
+      "Updated earlier",
+      "Updated later"
+    ]);
+    const repoIssuesCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/repos/acme/app/issues?")
+    );
+    expect(String(repoIssuesCall?.[0])).toContain("sort=updated");
+    expect(String(repoIssuesCall?.[0])).toContain("direction=asc");
+    const graphQlCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/graphql")
+    );
+    expect(String(graphQlCall?.[1]?.body)).toContain("UPDATED_AT");
+    expect(String(graphQlCall?.[1]?.body)).toContain("ASC");
   });
 });
 

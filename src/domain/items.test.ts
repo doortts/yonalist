@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { mergeItemDocuments, reconcileItems } from "./items";
+import {
+  DEFAULT_ITEM_SORT,
+  mergeItemDocuments,
+  reconcileItems,
+  sortItemDocuments
+} from "./items";
 import type { ItemDocument } from "./types";
 
 function item(overrides: Partial<ItemDocument["frontMatter"]> = {}): ItemDocument {
@@ -36,6 +41,33 @@ describe("mergeItemDocuments", () => {
     );
 
     expect(merged.frontMatter.comments_count).toBe(4);
+  });
+
+  it("sorts merged items by created date descending by default", () => {
+    const olderCreatedNewerUpdated = item({
+      number: 1,
+      title: "Older created",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-08T00:00:00Z"
+    });
+    const newerCreatedOlderUpdated = item({
+      number: 2,
+      title: "Newer created",
+      created_at: "2026-07-05T00:00:00Z",
+      updated_at: "2026-07-06T00:00:00Z"
+    });
+
+    const merged = mergeItemDocuments(
+      [olderCreatedNewerUpdated, newerCreatedOlderUpdated],
+      [],
+      "/vault"
+    );
+
+    expect(DEFAULT_ITEM_SORT).toEqual({ field: "created", direction: "desc" });
+    expect(merged.map((mergedItem) => mergedItem.frontMatter.title)).toEqual([
+      "Newer created",
+      "Older created"
+    ]);
   });
 
   it("preserves the local object reference for an unchanged item", () => {
@@ -89,6 +121,54 @@ describe("mergeItemDocuments", () => {
     expect(merged[0]).toBe(first);
     expect(merged[1]).not.toBe(second);
     expect(merged[1].frontMatter.title).toBe("Renamed");
+  });
+});
+
+describe("sortItemDocuments", () => {
+  it("sorts by the requested field and direction", () => {
+    const olderCreatedNewerUpdated = item({
+      number: 1,
+      title: "Older created, newer updated",
+      created_at: "2026-07-01T00:00:00Z",
+      updated_at: "2026-07-08T00:00:00Z"
+    });
+    const newerCreatedOlderUpdated = item({
+      number: 2,
+      title: "Newer created, older updated",
+      created_at: "2026-07-05T00:00:00Z",
+      updated_at: "2026-07-06T00:00:00Z"
+    });
+    const items = [olderCreatedNewerUpdated, newerCreatedOlderUpdated];
+
+    expect(
+      sortItemDocuments(items, { field: "created", direction: "asc" }).map(
+        (sorted) => sorted.frontMatter.title
+      )
+    ).toEqual(["Older created, newer updated", "Newer created, older updated"]);
+    expect(
+      sortItemDocuments(items, { field: "updated", direction: "desc" }).map(
+        (sorted) => sorted.frontMatter.title
+      )
+    ).toEqual(["Older created, newer updated", "Newer created, older updated"]);
+  });
+
+  it("does not mutate the input list", () => {
+    const first = item({ number: 1, title: "First" });
+    const second = item({
+      number: 2,
+      title: "Second",
+      created_at: "2026-07-03T00:00:00Z"
+    });
+    const items = [first, second];
+
+    const sorted = sortItemDocuments(items, {
+      field: "created",
+      direction: "desc"
+    });
+
+    expect(sorted).not.toBe(items);
+    expect(items).toEqual([first, second]);
+    expect(sorted).toEqual([second, first]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { ItemDocument } from "../domain/types";
@@ -115,6 +116,27 @@ function itemAt(index: number): ItemDocument {
   };
 }
 
+function itemWithDates(
+  title: string,
+  createdAt: string,
+  updatedAt: string,
+  index: number
+): ItemDocument {
+  return {
+    ...baseItem,
+    path: `/vault/github.com/acme/app/issues/${index}/issue.md`,
+    frontMatter: {
+      ...baseItem.frontMatter,
+      number: index,
+      title,
+      labels: [],
+      label_colors: {},
+      created_at: createdAt,
+      updated_at: updatedAt
+    }
+  };
+}
+
 function renderPane(items: ItemDocument[]) {
   return render(
     <ItemListPane
@@ -214,6 +236,131 @@ describe("ItemListPane", () => {
       "aria-selected",
       "true"
     );
+  });
+
+  it("shows a sort trigger and lets the requested item sort be selected", async () => {
+    const user = userEvent.setup();
+    const onItemSortChange = vi.fn();
+    render(
+      <ItemListPane
+        items={[baseItem]}
+        selectedPath={null}
+        stateFilter="open"
+        stateCounts={{ open: 3, closed: 2 }}
+        itemSort={{ field: "created", direction: "desc" }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onItemSortChange={onItemSortChange}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Sort by Created descending" })
+    );
+    await user.click(screen.getByRole("menuitem", { name: "↑ Updated" }));
+
+    expect(onItemSortChange).toHaveBeenCalledWith({
+      field: "updated",
+      direction: "asc"
+    });
+  });
+
+  it("inserts date headers using the active sort field", () => {
+    const items = [
+      itemWithDates(
+        "Same created, newer updated",
+        "2026-07-01T00:00:00Z",
+        "2026-07-05T00:00:00Z",
+        1
+      ),
+      itemWithDates(
+        "Same created, older updated",
+        "2026-07-01T00:00:00Z",
+        "2026-07-04T00:00:00Z",
+        2
+      )
+    ];
+
+    const { container, rerender } = render(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        itemSort={{ field: "created", direction: "desc" }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onItemSortChange={vi.fn()}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    expect(container.querySelectorAll(".item-date-row")).toHaveLength(1);
+    expect(screen.getByText("2026.07.01")).toBeInTheDocument();
+
+    rerender(
+      <ItemListPane
+        items={items}
+        selectedPath={null}
+        stateFilter="open"
+        itemSort={{ field: "updated", direction: "desc" }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onItemSortChange={vi.fn()}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    expect(container.querySelectorAll(".item-date-row")).toHaveLength(2);
+    expect(screen.getByText("2026.07.05")).toBeInTheDocument();
+    expect(screen.getByText("2026.07.04")).toBeInTheDocument();
+  });
+
+  it("uses the active sort field for the row time label", () => {
+    const item = itemWithDates(
+      "Date basis",
+      "2026-07-01T00:00:00Z",
+      new Date().toISOString(),
+      1
+    );
+    const { container } = render(
+      <ItemListPane
+        items={[item]}
+        selectedPath={null}
+        stateFilter="open"
+        itemSort={{ field: "created", direction: "desc" }}
+        query=""
+        loading={false}
+        error={null}
+        demoMode={false}
+        onItemSortChange={vi.fn()}
+        onStateFilterChange={vi.fn()}
+        onQueryChange={vi.fn()}
+        onSelect={vi.fn()}
+        onNewIssue={vi.fn()}
+        onRefresh={vi.fn()}
+      />
+    );
+
+    expect(container.querySelector(".item-time")).not.toHaveTextContent("now");
   });
 
   it("switches state filter when a tab is activated and moves focus with arrow keys", async () => {

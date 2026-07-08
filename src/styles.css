@@ -1344,6 +1344,10 @@ body.is-resizing-pane {
   display: none;
 }
 
+.item-state-sort-spacer {
+  flex: 1 1 auto;
+}
+
 .item-state-tab {
   position: relative;
   display: inline-flex;
@@ -1387,6 +1391,65 @@ body.is-resizing-pane {
   box-shadow: var(--state-tab-active-shadow);
 }
 
+.item-sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 31px;
+  margin-bottom: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-1);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.item-sort-trigger:hover,
+.item-sort-trigger[data-popup-open] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text-1);
+}
+
+.item-sort-menu {
+  z-index: 30;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-modal);
+  color: var(--text-1);
+}
+
+.item-sort-menu-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 650;
+  outline: none;
+}
+
+.item-sort-menu-item[data-highlighted] {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.item-sort-menu-check {
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent);
+}
+
 :root[data-theme="yonal-light"] .item-state-tab.active,
 :root[data-theme="yonal-light"] .item-card.selected {
   background-blend-mode: multiply;
@@ -1427,6 +1490,10 @@ body.is-resizing-pane {
   flex: 1 1 auto;
 }
 
+:root[data-theme="yonal-light"] .item-state-sort-spacer {
+  display: none;
+}
+
 :root[data-theme="yonal-light"] .item-state-tab {
   margin-bottom: 0;
   border-bottom: 1px solid var(--yonal-state-row-line);
@@ -1456,11 +1523,33 @@ body.is-resizing-pane {
   width: 100%;
 }
 
+.item-date-row.virtual-date-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
 .item-card.virtual-row {
   position: absolute;
   top: 0;
   left: 0;
   min-height: auto;
+}
+
+.item-date-row {
+  display: flex;
+  align-items: flex-end;
+  min-height: 52px;
+  padding: 16px 16px 7px;
+  color: var(--accent);
+}
+
+.item-date-row h3 {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .item-card {
