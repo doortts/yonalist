@@ -5406,6 +5406,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "keyring",
+ "objc2-foundation",
  "open",
  "rusqlite",
  "serde",
