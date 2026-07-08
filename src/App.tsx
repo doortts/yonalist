@@ -62,6 +62,7 @@ import {
 import {
   DEFAULT_ITEM_SORT,
   mergeItemDocuments,
+  repositoryItemsWithInboxFallback,
   withVaultItemPath,
   type ItemSort
 } from "./domain/items";
@@ -493,6 +494,17 @@ export default function App({ initialOnline }: AppProps) {
     () => mergeItemDocuments(drafts, workItems.items, vaultRoot, itemSort),
     [drafts, itemSort, workItems.items, vaultRoot]
   );
+  const listItems = useMemo(
+    () =>
+      repositoryItemsWithInboxFallback(
+        items,
+        inboxItems,
+        repositoryFilter,
+        projectWorkItems.loading,
+        itemSort
+      ),
+    [inboxItems, itemSort, items, projectWorkItems.loading, repositoryFilter]
+  );
   const unfilteredNotifications = useNotifications(
     auth.connection,
     online,
@@ -712,7 +724,7 @@ export default function App({ initialOnline }: AppProps) {
 
   const stateScopedItems = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return items.filter((item) => {
+    return listItems.filter((item) => {
       if (!repositoryFilter && !matchesFilter(item, filter)) {
         return false;
       }
@@ -737,7 +749,7 @@ export default function App({ initialOnline }: AppProps) {
         .toLowerCase();
       return haystack.includes(normalizedQuery);
     });
-  }, [items, filter, repositoryFilter, query, loadedItemBodies]);
+  }, [listItems, filter, repositoryFilter, query, loadedItemBodies]);
 
   const itemStateCounts = useMemo(
     () =>

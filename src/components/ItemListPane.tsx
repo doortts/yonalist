@@ -716,8 +716,8 @@ const ItemRow = memo(function ItemRow({
     Boolean(item.frontMatter.author) && item.frontMatter.author !== "unknown";
   const hasLabels = item.frontMatter.labels.length > 0;
   const showActions = showComments || showBookmark;
-  const showActionsOnAuthor = showActions && hasAuthor && !hasLabels;
-  const showActionsOnLabels = showActions && hasLabels;
+  const showActionsOnAuthor = showActions && hasAuthor;
+  const showActionsOnLabels = showActions && !hasAuthor && hasLabels;
   const showFooter = showActions && !showActionsOnAuthor && !showActionsOnLabels;
   const rowActions = showActions ? (
     <span className="item-row-actions">

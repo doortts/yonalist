@@ -1983,6 +1983,135 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("shows cached inbox items when a repository fetch is still loading", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    let resolveRepoIssues: (response: Response) => void = () => undefined;
+    const repoIssues = new Promise<Response>((resolve) => {
+      resolveRepoIssues = resolve;
+    });
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (target.includes("/repos/acme/app/issues")) {
+        return repoIssues;
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(
+          JSON.stringify({
+            items: [
+              {
+                number: 101,
+                title: "Inbox cached issue",
+                state: "open",
+                body: "from the inbox cache",
+                user: { login: "doortts" },
+                labels: [],
+                created_at: "2026-07-01T00:00:00Z",
+                updated_at: "2026-07-02T00:00:00Z",
+                repository_url: "https://oss.navercorp.com/api/v3/repos/acme/app"
+              }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-app",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Inbox cached issue",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/101"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/user/repos")) {
+        return new Response(
+          JSON.stringify([
+            {
+              name: "app",
+              full_name: "acme/app",
+              owner: { login: "acme" },
+              open_issues_count: 1,
+              pushed_at: "2026-07-01T00:00:00Z"
+            }
+          ]),
+          { status: 200 }
+        );
+      }
+      if (target.includes("/api/graphql")) {
+        const body = JSON.parse(String(init?.body ?? "{}"));
+        if (String(body.query).includes("RepositoryItemStateCounts")) {
+          return new Response(
+            JSON.stringify({
+              data: {
+                r0: {
+                  issuesOpen: { totalCount: 1 },
+                  pullRequestsOpen: { totalCount: 0 },
+                  discussionsOpen: { totalCount: 0 },
+                  issuesClosed: { totalCount: 0 },
+                  pullRequestsClosed: { totalCount: 0 },
+                  pullRequestsMerged: { totalCount: 0 },
+                  discussionsClosed: { totalCount: 0 }
+                }
+              }
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      const navigation = screen.getByLabelText("Navigation");
+      await waitFor(() => {
+        expect(
+          fetchMock.mock.calls.some(([url]) => String(url).includes("/search/issues"))
+        ).toBe(true);
+      });
+
+      await user.click(await within(navigation).findByRole("button", { name: /^app/ }));
+
+      const list = screen.getByLabelText("Items");
+      expect(within(list).getByText("Inbox cached issue")).toBeInTheDocument();
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).includes("/repos/acme/app/issues")
+        )
+      ).toBe(true);
+    } finally {
+      resolveRepoIssues(new Response("[]", { status: 200 }));
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("requests exact project counts only after a project is selected", async () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",

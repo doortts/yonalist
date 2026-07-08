@@ -203,6 +203,39 @@ export function sortItemDocuments(
   return [...items].sort((left, right) => compareItemDocuments(left, right, sort));
 }
 
+function itemRepositoryFullName(item: ItemDocument): string {
+  return `${item.frontMatter.owner}/${item.frontMatter.repo}`;
+}
+
+export function repositoryItemsWithInboxFallback(
+  activeItems: ItemDocument[],
+  inboxItems: ItemDocument[],
+  repositoryFullName: string | null,
+  repositoryLoading: boolean,
+  sort: ItemSort = DEFAULT_ITEM_SORT
+): ItemDocument[] {
+  if (!repositoryFullName || !repositoryLoading) {
+    return activeItems;
+  }
+  if (activeItems.some((item) => itemRepositoryFullName(item) === repositoryFullName)) {
+    return activeItems;
+  }
+  const fallbackItems = inboxItems.filter(
+    (item) => itemRepositoryFullName(item) === repositoryFullName
+  );
+  if (fallbackItems.length === 0) {
+    return activeItems;
+  }
+
+  const activeKeys = new Set(activeItems.map(itemMergeKey));
+  const additions = fallbackItems.filter((item) => !activeKeys.has(itemMergeKey(item)));
+  if (additions.length === 0) {
+    return activeItems;
+  }
+
+  return sortItemDocuments([...activeItems, ...additions], sort);
+}
+
 export function mergeItemDocuments(
   localItems: ItemDocument[],
   remoteItems: ItemDocument[],

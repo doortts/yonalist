@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_ITEM_SORT,
   mergeItemDocuments,
+  repositoryItemsWithInboxFallback,
   reconcileItems,
   sortItemDocuments
 } from "./items";
@@ -169,6 +170,70 @@ describe("sortItemDocuments", () => {
     expect(sorted).not.toBe(items);
     expect(items).toEqual([first, second]);
     expect(sorted).toEqual([second, first]);
+  });
+});
+
+describe("repositoryItemsWithInboxFallback", () => {
+  it("returns same-repository inbox items while the repository list is loading", () => {
+    const inboxIssue = item({
+      owner: "acme",
+      repo: "app",
+      number: 101,
+      title: "Inbox cached issue"
+    });
+    const otherRepoIssue = item({
+      owner: "acme",
+      repo: "docs",
+      number: 202,
+      title: "Other repo"
+    });
+
+    expect(
+      repositoryItemsWithInboxFallback(
+        [],
+        [inboxIssue, otherRepoIssue],
+        "acme/app",
+        true
+      )
+    ).toEqual([inboxIssue]);
+  });
+
+  it("keeps repository results once they are available", () => {
+    const repositoryIssue = item({
+      owner: "acme",
+      repo: "app",
+      number: 303,
+      title: "Repository result"
+    });
+    const inboxIssue = item({
+      owner: "acme",
+      repo: "app",
+      number: 101,
+      title: "Inbox cached issue"
+    });
+
+    expect(
+      repositoryItemsWithInboxFallback(
+        [repositoryIssue],
+        [inboxIssue],
+        "acme/app",
+        true
+      )
+    ).toEqual([repositoryIssue]);
+  });
+
+  it("returns the active list when there is no loading repository scope", () => {
+    const inboxIssue = item({
+      owner: "acme",
+      repo: "app",
+      number: 101,
+      title: "Inbox cached issue"
+    });
+
+    expect(repositoryItemsWithInboxFallback([], [inboxIssue], "acme/app", false)).toEqual(
+      []
+    );
+    expect(repositoryItemsWithInboxFallback([], [inboxIssue], null, true)).toEqual([]);
   });
 });
 

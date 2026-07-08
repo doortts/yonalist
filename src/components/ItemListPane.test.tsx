@@ -617,12 +617,14 @@ describe("ItemListPane", () => {
     expect(container.querySelector(".item-footer")).toBeNull();
   });
 
-  it("aligns comment count to the right edge of the label line when labels are present", () => {
+  it("aligns comment count to the right edge of the author line when labels are present", () => {
     const { container } = renderPane([baseItem]);
 
     const labelLine = container.querySelector(".item-labels") as HTMLElement;
+    const authorLine = container.querySelector(".item-author") as HTMLElement;
     expect(labelLine.querySelector(".item-label")).toHaveTextContent("bug");
-    expect(labelLine.querySelector(".item-row-actions .item-comments")).toHaveTextContent(
+    expect(labelLine.querySelector(".item-row-actions")).toBeNull();
+    expect(authorLine.querySelector(".item-row-actions .item-comments")).toHaveTextContent(
       "3"
     );
     expect(container.querySelector(".item-footer")).toBeNull();
@@ -750,7 +752,9 @@ describe("ItemListPane", () => {
     const { container } = renderPane([item]);
 
     const labelLine = container.querySelector(".item-labels") as HTMLElement;
-    expect(labelLine.querySelector(".small-bookmark")).not.toBeNull();
+    const authorLine = container.querySelector(".item-author") as HTMLElement;
+    expect(labelLine.querySelector(".small-bookmark")).toBeNull();
+    expect(authorLine.querySelector(".small-bookmark")).not.toBeNull();
     expect(labelLine.querySelector(".item-comments")).toBeNull();
     expect(container.querySelector(".item-footer")).toBeNull();
   });
@@ -789,6 +793,17 @@ describe("ItemListPane", () => {
     expect(fetchUserProfilesMock).not.toHaveBeenCalled();
     // Author line still falls back to the login.
     expect(container.querySelector(".item-author")).toHaveTextContent("mona");
+  });
+
+  it("does not paginate item rows", () => {
+    const items = Array.from({ length: 55 }, (_, index) => itemAt(index + 1));
+    renderPane(items);
+
+    expect(screen.getByText("Issue 1")).toBeInTheDocument();
+    expect(screen.getByText("Issue 50")).toBeInTheDocument();
+    expect(screen.getByText("Issue 51")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next page" })).toBeNull();
+    expect(screen.queryByText("1-50 / 55")).toBeNull();
   });
 
   it("uses actual row positions for non-virtualized visible item reporting", async () => {
