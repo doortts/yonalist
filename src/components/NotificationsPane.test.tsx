@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -46,6 +47,12 @@ function makeState(
   };
 }
 
+function cssRule(selector: string): string {
+  const css = readFileSync("src/styles.css", "utf8");
+  const match = css.match(new RegExp(`${selector.replace(".", "\\.")}\\s*\\{([^}]*)\\}`));
+  return match?.[1] ?? "";
+}
+
 describe("NotificationsPane", () => {
   it("renders notification rows grouped and selects on click", () => {
     const onSelect = vi.fn();
@@ -67,6 +74,51 @@ describe("NotificationsPane", () => {
     expect(screen.getByLabelText("Unread")).toBeTruthy();
     // The subject number is surfaced.
     expect(screen.getByText(/#42/)).toBeTruthy();
+  });
+
+  it("shows only the repository name in row metadata", () => {
+    render(
+      <NotificationsPane
+        state={makeState()}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText((content) => content.startsWith("widgets, "))).toBeTruthy();
+    expect(screen.queryByText(/acme\/widgets/)).toBeNull();
+  });
+
+  it("styles long notification titles to wrap instead of truncating with ellipsis", () => {
+    render(
+      <NotificationsPane
+        state={makeState({
+          notifications: [
+            makeNotification({
+              subject: {
+                title:
+                  "This is a deliberately long notification title that should stay readable",
+                url: "https://api.github.com/repos/acme/widgets/issues/42",
+                type: "Issue"
+              }
+            })
+          ]
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText(/deliberately long notification title/)).toBeTruthy();
+
+    const titleRule = cssRule(".notification-title");
+    expect(titleRule).toContain("white-space: normal");
+    expect(titleRule).toContain("overflow-wrap: anywhere");
+    expect(titleRule).not.toContain("text-overflow: ellipsis");
   });
 
   it("filters rows by the search query", () => {

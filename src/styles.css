@@ -3854,13 +3854,12 @@ body.is-resizing-pane {
 }
 
 .notification-title {
-  overflow: hidden;
   color: var(--text-1);
   font-size: 14.5px;
   font-weight: 600;
   line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .notification-row.quiet .notification-title {

@@ -68,7 +68,7 @@ function subtitle(
   notification: GitHubNotification,
   viewedAt: string | undefined
 ): string {
-  const parts = [notification.repository.full_name];
+  const parts = [notification.repository.name];
   const updated = timeAgo(notification.updated_at);
   if (updated) {
     parts.push(updated);

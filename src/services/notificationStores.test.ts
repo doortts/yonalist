@@ -58,12 +58,12 @@ describe("viewed timestamps", () => {
     expect(loadViewedAt()[url]).toBe("2026-07-02T10:00:00.000Z");
   });
 
-  it("advances the timestamp on a later view", () => {
+  it("preserves the first viewed timestamp on later views", () => {
     const url = "https://github.com/acme/app/issues/1";
     markViewed(url, new Date("2026-07-01T00:00:00Z"));
     markViewed(url, new Date("2026-07-03T00:00:00Z"));
 
-    expect(loadViewedAt()[url]).toBe("2026-07-03T00:00:00.000Z");
+    expect(loadViewedAt()[url]).toBe("2026-07-01T00:00:00.000Z");
   });
 });
 

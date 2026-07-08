@@ -52,11 +52,11 @@ export function loadViewedAt(): ViewedAtMap {
   }
 }
 
-/** Records when a notification target URL was opened; never moves time backwards. */
+/** Records the first time a notification target URL was opened. */
 export function markViewed(url: string, at: Date = new Date()): ViewedAtMap {
   const map = loadViewedAt();
   const existing = map[url];
-  if (!existing || new Date(existing).valueOf() < at.valueOf()) {
+  if (!existing) {
     map[url] = at.toISOString();
     try {
       window.localStorage.setItem(viewedStorageKey, JSON.stringify(map));
