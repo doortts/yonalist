@@ -83,16 +83,16 @@ describe("useAuthorNames", () => {
     );
 
     await waitFor(() => {
-      expect(result.current.get("sw-chae")).toBe("Suwon Chae");
+      expect(result.current.get("sw-chae")?.name).toBe("Suwon Chae");
     });
-    expect(result.current.get("mona")).toBe("Mona Lisa");
+    expect(result.current.get("mona")?.name).toBe("Mona Lisa");
 
     expect(fetchUserProfilesMock).toHaveBeenCalledTimes(1);
     const [, logins] = fetchUserProfilesMock.mock.calls[0];
     expect([...logins].sort()).toEqual(["mona", "sw-chae"]);
   });
 
-  it("omits logins whose profile has no display name (caller falls back to login)", async () => {
+  it("omits logins whose profile has neither a name nor an avatar (caller falls back to login)", async () => {
     fetchUserProfilesMock.mockResolvedValue({
       mona: { login: "mona" }
     });
@@ -105,6 +105,44 @@ describe("useAuthorNames", () => {
       expect(fetchUserProfilesMock).toHaveBeenCalled();
     });
     expect(result.current.get("mona")).toBeUndefined();
+  });
+
+  it("exposes the avatar URL for author logins whose profile carries one", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: {
+        login: "mona",
+        name: "Mona Lisa",
+        avatarUrl: "https://avatars.example.com/mona.png"
+      }
+    });
+
+    const { result } = renderHook(() => useAuthorNames([itemBy("mona", 1)]), {
+      wrapper: wrapperFor(signedIn)
+    });
+
+    await waitFor(() => {
+      expect(result.current.get("mona")?.avatarUrl).toBe(
+        "https://avatars.example.com/mona.png"
+      );
+    });
+    expect(result.current.get("mona")?.name).toBe("Mona Lisa");
+  });
+
+  it("exposes the avatar URL even when the profile has no distinct display name", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: { login: "mona", avatarUrl: "https://avatars.example.com/mona.png" }
+    });
+
+    const { result } = renderHook(() => useAuthorNames([itemBy("mona", 1)]), {
+      wrapper: wrapperFor(signedIn)
+    });
+
+    await waitFor(() => {
+      expect(result.current.get("mona")?.avatarUrl).toBe(
+        "https://avatars.example.com/mona.png"
+      );
+    });
+    expect(result.current.get("mona")?.name).toBeUndefined();
   });
 
   it("does not fetch when disabled (demo mode / offline)", async () => {

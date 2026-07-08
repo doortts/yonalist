@@ -19,8 +19,9 @@ import {
 } from "react";
 import { labelTextColor } from "../domain/conversation";
 import type { ItemDocument } from "../domain/types";
-import { useAuthorNames } from "../hooks/useAuthorNames";
+import { type AuthorProfile, useAuthorNames } from "../hooks/useAuthorNames";
 import { timeAgo } from "../timeFormat";
+import { Avatar } from "./Avatar";
 import "./ItemListPane.css";
 import "./ui/tabs.css";
 
@@ -71,13 +72,16 @@ export function itemTypeLabel(item: ItemDocument): string {
 }
 
 function kindIcon(item: ItemDocument) {
+  // The kind text label was dropped from the meta line, so the icon carries the
+  // kind's accessible name on its own.
+  const label = itemTypeLabel(item);
   switch (item.frontMatter.kind) {
     case "pull":
-      return <GitPullRequest size={15} />;
+      return <GitPullRequest size={15} role="img" aria-label={label} />;
     case "discussion":
-      return <MessagesSquare size={15} />;
+      return <MessagesSquare size={15} role="img" aria-label={label} />;
     default:
-      return <CircleDot size={15} />;
+      return <CircleDot size={15} role="img" aria-label={label} />;
   }
 }
 
@@ -271,7 +275,7 @@ export function ItemListPane({
 
 interface ItemRowsProps {
   items: ItemDocument[];
-  authorNames: ReadonlyMap<string, string>;
+  authorNames: ReadonlyMap<string, AuthorProfile>;
   selectedPath: string | null;
   scrollTop: number;
   viewportHeight: number;
@@ -381,15 +385,18 @@ function ItemRows({
   const rows = visibleItems.map((item, offset) => {
     const index = range.start + offset;
     const author = item.frontMatter.author;
-    // Resolve to a stable string so the memoized row only re-renders when the
-    // display name actually changes (login stays referentially identical until
-    // its profile name loads).
-    const authorName = (author && authorNames.get(author)) || author;
+    // Resolve to stable strings so the memoized row only re-renders when the
+    // display name or avatar URL actually changes (login stays referentially
+    // identical until its profile loads).
+    const authorProfile = author ? authorNames.get(author) : undefined;
+    const authorName = authorProfile?.name || author;
+    const authorAvatarUrl = authorProfile?.avatarUrl;
     return (
       <ItemRow
         key={item.path}
         item={item}
         authorName={authorName}
+        authorAvatarUrl={authorAvatarUrl}
         selected={item.path === selectedPath}
         virtualized={shouldVirtualize}
         top={shouldVirtualize ? index * ITEM_ROW_HEIGHT : null}
@@ -416,6 +423,7 @@ function ItemRows({
 interface ItemRowProps {
   item: ItemDocument;
   authorName: string;
+  authorAvatarUrl?: string;
   selected: boolean;
   virtualized: boolean;
   top: number | null;
@@ -426,6 +434,7 @@ interface ItemRowProps {
 const ItemRow = memo(function ItemRow({
   item,
   authorName,
+  authorAvatarUrl,
   selected,
   virtualized,
   top,
@@ -458,15 +467,10 @@ const ItemRow = memo(function ItemRow({
     >
       <span className="item-meta">
         {kindIcon(item)}
-        {itemTypeLabel(item)} #{item.frontMatter.number || "draft"}
         {item.frontMatter.repo && (
-          <>
-            <span className="item-meta-dot" aria-hidden="true">
-              ·
-            </span>
-            <span className="item-repo">{item.frontMatter.repo}</span>
-          </>
+          <span className="item-repo">{item.frontMatter.repo}</span>
         )}
+        <span className="item-number">#{item.frontMatter.number || "draft"}</span>
         {item.frontMatter.sync.status === "pending" && (
           <span className="item-sync-pending">Pending</span>
         )}
@@ -475,7 +479,17 @@ const ItemRow = memo(function ItemRow({
       <span className="item-title">{item.frontMatter.title}</span>
       {item.frontMatter.author &&
         item.frontMatter.author !== "unknown" && (
-          <span className="item-author">{authorName}</span>
+          <span className="item-author">
+            {authorAvatarUrl && (
+              <Avatar
+                login={item.frontMatter.author}
+                avatarUrl={authorAvatarUrl}
+                size={16}
+                showFallback={false}
+              />
+            )}
+            <span className="item-author-name">{authorName}</span>
+          </span>
         )}
       {item.frontMatter.labels.length > 0 && (
         <span className="item-labels">

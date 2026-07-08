@@ -3,7 +3,15 @@ import { GithubConnectionContext } from "../GithubConnectionContext";
 import type { ItemDocument } from "../domain/types";
 import { fetchUserProfiles } from "../services/userProfiles";
 
-const EMPTY_NAMES: ReadonlyMap<string, string> = new Map();
+/** The subset of a fetched user profile the item list consumes per author. */
+export interface AuthorProfile {
+  /** Display name, present only when it differs from the login. */
+  name?: string;
+  /** Profile avatar URL, when the profile carries one. */
+  avatarUrl?: string;
+}
+
+const EMPTY_PROFILES: ReadonlyMap<string, AuthorProfile> = new Map();
 
 export interface UseAuthorNamesOptions {
   /**
@@ -15,14 +23,16 @@ export interface UseAuthorNamesOptions {
 }
 
 /**
- * Resolves the display names for the author logins of the given items.
+ * Resolves the display name and avatar URL for the author logins of the given
+ * items.
  *
  * The GitHub connection comes from {@link GithubConnectionContext}. Unique
  * author logins are batch-fetched through `fetchUserProfiles` (its own LRU +
  * in-flight dedup absorbs repeat lookups), and the result is a `login →
- * displayName` map that only contains logins whose profile actually carries a
- * distinct name. Callers fall back to the login for everything else, so the map
- * is safe to consume before (or without) any fetch.
+ * {@link AuthorProfile}` map that only contains logins whose profile actually
+ * carries a distinct name or an avatar URL. Callers fall back to the login (and
+ * render no avatar) for everything else, so the map is safe to consume before
+ * (or without) any fetch.
  *
  * Fetching is skipped when disabled, when there is no signed-in token, or when
  * there are no author logins to resolve. State updates are guarded against a
@@ -31,10 +41,11 @@ export interface UseAuthorNamesOptions {
 export function useAuthorNames(
   items: ItemDocument[],
   options: UseAuthorNamesOptions = {}
-): ReadonlyMap<string, string> {
+): ReadonlyMap<string, AuthorProfile> {
   const enabled = options.enabled ?? true;
   const connection = useContext(GithubConnectionContext);
-  const [names, setNames] = useState<ReadonlyMap<string, string>>(EMPTY_NAMES);
+  const [profiles, setProfiles] =
+    useState<ReadonlyMap<string, AuthorProfile>>(EMPTY_PROFILES);
 
   const hasToken = connection.token.trim().length > 0;
   const logins = useMemo(() => {
@@ -54,17 +65,24 @@ export function useAuthorNames(
       return;
     }
     let cancelled = false;
-    void fetchUserProfiles(connection, logins).then((profiles) => {
+    void fetchUserProfiles(connection, logins).then((fetched) => {
       if (cancelled) {
         return;
       }
-      setNames((previous) => {
+      setProfiles((previous) => {
         let changed = false;
         const next = new Map(previous);
         for (const login of logins) {
-          const name = profiles[login]?.name;
-          if (name && next.get(login) !== name) {
-            next.set(login, name);
+          const name = fetched[login]?.name;
+          const avatarUrl = fetched[login]?.avatarUrl;
+          // Skip logins with neither a distinct name nor an avatar: callers
+          // fall back to the raw login and render no avatar for those.
+          if (!name && !avatarUrl) {
+            continue;
+          }
+          const existing = next.get(login);
+          if (existing?.name !== name || existing?.avatarUrl !== avatarUrl) {
+            next.set(login, { name, avatarUrl });
             changed = true;
           }
         }
@@ -80,5 +98,5 @@ export function useAuthorNames(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, hasToken, connection.apiBaseUrl, connection.token, loginsKey]);
 
-  return names;
+  return profiles;
 }

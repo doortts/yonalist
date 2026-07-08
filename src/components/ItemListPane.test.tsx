@@ -293,17 +293,76 @@ describe("ItemListPane", () => {
     expect(screen.queryByText("unknown")).toBeNull();
   });
 
-  it("shows the repo name without its owner on the meta line, after the number", () => {
+  it("shows the repo name without its owner on the meta line, before the number", () => {
     const { container } = renderPane([baseItem]);
 
     const meta = container.querySelector(".item-meta") as HTMLElement;
-    expect(meta).toHaveTextContent("Issue #42");
+    // The kind text label is gone; the meta line leads with the repo name.
+    expect(meta.textContent).not.toContain("Issue");
     expect(meta.querySelector(".item-repo")).toHaveTextContent("app");
+    expect(meta.textContent).toContain("#42");
     expect(meta.textContent).not.toContain("acme/app");
 
-    // The number must come before the repo on the meta line.
+    // The repo now comes before the number on the meta line.
     const metaText = meta.textContent ?? "";
-    expect(metaText.indexOf("#42")).toBeLessThan(metaText.indexOf("app"));
+    expect(metaText.indexOf("app")).toBeLessThan(metaText.indexOf("#42"));
+  });
+
+  it("conveys the item kind through a labelled icon, not a text label", () => {
+    const { container } = renderPane([baseItem]);
+
+    const meta = container.querySelector(".item-meta") as HTMLElement;
+    expect(meta.textContent).not.toContain("Issue");
+    expect(meta.textContent).not.toContain("PR");
+    expect(meta.textContent).not.toContain("Discussion");
+
+    // The kind is still announced to assistive tech through the icon.
+    expect(screen.getByRole("img", { name: "Issue" })).toBeInTheDocument();
+  });
+
+  it("renders the author's avatar image before the name on the author line", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: {
+        login: "mona",
+        name: "Mona Lisa",
+        avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4"
+      }
+    });
+
+    const { container } = renderPaneWith([baseItem]);
+
+    const authorImg = await screen.findByRole("img", { name: "mona" });
+    const authorLine = container.querySelector(".item-author") as HTMLElement;
+    expect(authorLine).toContainElement(authorImg);
+    expect(authorImg).toHaveAttribute(
+      "src",
+      "https://avatars.githubusercontent.com/u/1?v=4"
+    );
+    expect(authorLine).toHaveTextContent("Mona Lisa");
+
+    // The avatar precedes the display name on the line.
+    const nameNode = screen.getByText("Mona Lisa");
+    expect(
+      authorImg.compareDocumentPosition(nameNode) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+  });
+
+  it("renders the author name without an avatar when the profile has no avatar URL", async () => {
+    fetchUserProfilesMock.mockResolvedValue({
+      mona: { login: "mona", name: "Mona Lisa" }
+    });
+
+    const { container } = renderPaneWith([baseItem]);
+
+    await waitFor(() => {
+      expect(container.querySelector(".item-author")).toHaveTextContent(
+        "Mona Lisa"
+      );
+    });
+    const authorLine = container.querySelector(".item-author") as HTMLElement;
+    expect(authorLine.querySelector("img")).toBeNull();
+    expect(authorLine.querySelector(".avatar-skeleton")).toBeNull();
   });
 
   it("no longer renders the owner/repo slug in the footer", () => {
