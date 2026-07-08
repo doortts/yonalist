@@ -108,6 +108,50 @@ describe("OutboxModal", () => {
     expect(onOpenTarget).toHaveBeenCalledWith(queued);
   });
 
+  it("calls the edit action for a queued operation", async () => {
+    const queued = operation("op-1", "pending");
+    const onEdit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <OutboxModal
+        outbox={[queued]}
+        selectedIds={new Set()}
+        online
+        syncing={false}
+        onToggleSelection={vi.fn()}
+        onEdit={onEdit}
+        onSync={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Edit create_comment/ }));
+
+    expect(onEdit).toHaveBeenCalledWith(queued);
+  });
+
+  it("calls the delete action for a queued operation", async () => {
+    const queued = operation("op-1", "pending");
+    const onDelete = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <OutboxModal
+        outbox={[queued]}
+        selectedIds={new Set()}
+        online
+        syncing={false}
+        onToggleSelection={vi.fn()}
+        onDelete={onDelete}
+        onSync={vi.fn()}
+        onClose={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /Delete create_comment/ }));
+
+    expect(onDelete).toHaveBeenCalledWith(queued);
+  });
+
   it("reflects selection state and toggles a queued operation", async () => {
     const onToggleSelection = vi.fn();
     const user = userEvent.setup();

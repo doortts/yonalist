@@ -33,6 +33,15 @@ function renderSidebar() {
 }
 
 describe("Sidebar", () => {
+  it("shows Notifications without a GitHub section heading", () => {
+    renderSidebar();
+
+    expect(screen.getByRole("button", { name: /^Notifications/ })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "GitHub" })
+    ).not.toBeInTheDocument();
+  });
+
   it("shows Favorites before All items in the Inbox section", () => {
     renderSidebar();
 

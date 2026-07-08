@@ -5,7 +5,11 @@ import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
 import { timeAgo } from "../timeFormat";
 import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
-import { CommentThread, OpeningPost } from "./CommentThread";
+import {
+  CommentThread,
+  OpeningPost,
+  type CommentReplyDraft
+} from "./CommentThread";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
 import { StickyTitle } from "./ui/StickyTitle";
@@ -16,6 +20,7 @@ interface NotificationDetailProps {
   state: UseNotificationDetailResult;
   online: boolean;
   commentDraft: string;
+  replyDraft?: CommentReplyDraft;
   onOpenInBrowser: (notification: GitHubNotification) => void;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
@@ -57,6 +62,7 @@ export function NotificationDetail({
   state,
   online,
   commentDraft,
+  replyDraft,
   onOpenInBrowser,
   onCommentDraftChange,
   onQueueComment,
@@ -199,6 +205,7 @@ export function NotificationDetail({
           <CommentThread
             comments={detail.comments}
             subjectAuthor={detail.author}
+            replyDraft={replyDraft}
             onReplySubmit={
               notification.subject.type === "Discussion" ? onQueueReply : undefined
             }

@@ -9,7 +9,11 @@ import type { UseItemThreadResult } from "../hooks/useItemThread";
 import { openExternal } from "../services/browser";
 import { timeAgo } from "../timeFormat";
 import { CommentComposer, type CommentSubmitAction } from "./CommentComposer";
-import { CommentThread, OpeningPost } from "./CommentThread";
+import {
+  CommentThread,
+  OpeningPost,
+  type CommentReplyDraft
+} from "./CommentThread";
 import { itemTypeLabel } from "./ItemListPane";
 import { LabelChip } from "./LabelChip";
 import { StateBadge } from "./StateBadge";
@@ -21,6 +25,7 @@ interface ItemDetailProps {
   thread: UseItemThreadResult;
   online: boolean;
   commentDraft: string;
+  replyDraft?: CommentReplyDraft;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
   onQueueReply?: (parent: ConversationComment, body: string) => void;
@@ -39,6 +44,7 @@ export function ItemDetail({
   thread,
   online,
   commentDraft,
+  replyDraft,
   onCommentDraftChange,
   onQueueComment,
   onQueueReply,
@@ -195,6 +201,7 @@ export function ItemDetail({
         <CommentThread
           comments={comments}
           subjectAuthor={item.frontMatter.author}
+          replyDraft={replyDraft}
           onReplySubmit={
             item.frontMatter.kind === "discussion" ? onQueueReply : undefined
           }

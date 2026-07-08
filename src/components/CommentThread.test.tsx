@@ -223,6 +223,30 @@ describe("CommentThread", () => {
     );
   });
 
+  it("opens an inline reply composer with a restored draft when a queued reply is edited", () => {
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            nodeId: "DC_parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent discussion comment"
+          }
+        ]}
+        onReplySubmit={vi.fn()}
+        replyDraft={{
+          parentNodeId: "DC_parent",
+          body: "restore this reply",
+          version: 1
+        }}
+      />
+    );
+
+    expect(screen.getByLabelText("대댓글 입력")).toHaveValue("restore this reply");
+  });
+
   it("renders nothing when there are no comments", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();

@@ -111,7 +111,6 @@ export function Sidebar({
       {!online && <span className="offline-badge">Offline</span>}
 
       <section className="nav-section">
-        <h2>GitHub</h2>
         <button
           className={notificationsOpen ? "nav-item active" : "nav-item"}
           type="button"

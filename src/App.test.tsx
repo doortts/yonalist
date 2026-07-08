@@ -741,6 +741,128 @@ describe("Yonalist app shell", () => {
     expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
   });
 
+  it("deletes a queued outbox comment from the queue and local draft storage", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Delete this queued draft.");
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+        "Delete this queued draft."
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    const outboxDialog = screen.getByRole("dialog", { name: "Outbox" });
+    await user.click(
+      within(outboxDialog).getByRole("button", { name: /Delete create_comment/ })
+    );
+
+    await waitFor(() => {
+      expect(within(outboxDialog).getByText("No queued changes.")).toBeInTheDocument();
+    });
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).not.toContain(
+      "Delete this queued draft."
+    );
+  });
+
+  it("returns a queued outbox comment to its original composer for editing", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.type(screen.getByLabelText("Write a comment"), "Edit before syncing.");
+    await user.click(screen.getByRole("button", { name: "Queue comment" }));
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    expect(screen.getByLabelText("Empty notification detail")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    const outboxDialog = screen.getByRole("dialog", { name: "Outbox" });
+    await user.click(
+      within(outboxDialog).getByRole("button", { name: /Edit create_comment/ })
+    );
+
+    const detail = screen.getByLabelText("Detail");
+    expect(
+      within(detail).getByRole("heading", { name: "Design offline issue reading" })
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Write a comment")).toHaveValue(
+      "Edit before syncing."
+    );
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).not.toContain(
+      "Edit before syncing."
+    );
+  });
+
+  it("returns a queued issue draft to the new issue composer for editing", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+    await user.type(screen.getByLabelText("Issue title"), "Edit queued issue");
+    await user.type(screen.getByLabelText("Issue body"), "Bring this draft back.");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+        "Bring this draft back."
+      );
+    });
+
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    const outboxDialog = screen.getByRole("dialog", { name: "Outbox" });
+    await user.click(
+      within(outboxDialog).getByRole("button", { name: /Edit create_issue/ })
+    );
+
+    expect(screen.getByLabelText("New issue composer")).toBeInTheDocument();
+    expect(screen.getByLabelText("Issue title")).toHaveValue("Edit queued issue");
+    expect(screen.getByLabelText("Issue body")).toHaveValue("Bring this draft back.");
+    expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).not.toContain(
+      "Bring this draft back."
+    );
+  });
+
+  it("loads a persisted queued issue body before returning it to the composer", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "New issue" }));
+    await user.type(screen.getByLabelText("Issue title"), "Restarted queued issue");
+    await user.type(screen.getByLabelText("Issue body"), "Persisted body survives.");
+    await user.click(screen.getByRole("button", { name: "Queue issue" }));
+
+    await waitFor(() => {
+      expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+        "Persisted body survives."
+      );
+    });
+
+    unmount();
+    render(<App initialOnline={false} />);
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: /outbox/i }));
+    const outboxDialog = screen.getByRole("dialog", { name: "Outbox" });
+    await user.click(
+      within(outboxDialog).getByRole("button", { name: /Edit create_issue/ })
+    );
+
+    expect(screen.getByLabelText("New issue composer")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Issue body")).toHaveValue(
+        "Persisted body survives."
+      );
+    });
+  });
+
   it("syncs a comment immediately when online and signed in", async () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",

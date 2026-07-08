@@ -75,6 +75,7 @@ import type {
   OutboxOperationDocument
 } from "./domain/types";
 import type { CommentSubmitAction } from "./components/CommentComposer";
+import type { CommentReplyDraft } from "./components/CommentThread";
 import { SAMPLE_VAULT_ROOT } from "./fixtures/sampleItems";
 import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
@@ -284,6 +285,7 @@ export default function App({ initialOnline }: AppProps) {
     useState<ItemStateFilter>("open");
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
+  const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
   const [selectedOutboxIds, setSelectedOutboxIds] = useState<Set<string>>(new Set());
   const [showOutbox, setShowOutbox] = useState(false);
@@ -1094,6 +1096,116 @@ export default function App({ initialOnline }: AppProps) {
     });
   }
 
+  function removeOutboxOperationFromState(operation: OutboxOperationDocument) {
+    const operationId = operation.frontMatter.id;
+    const localFilePath = operation.frontMatter.local_file_path;
+
+    setOutbox((current) =>
+      current.filter((entry) => entry.frontMatter.id !== operationId)
+    );
+    setSelectedOutboxIds((current) => {
+      const next = new Set(current);
+      next.delete(operationId);
+      return next;
+    });
+    if (operation.frontMatter.operation === "create_issue") {
+      setDrafts((current) =>
+        current.filter((draft) => draft.path !== localFilePath)
+      );
+    }
+    setLoadedItemBodies((current) => {
+      const next = { ...current };
+      delete next[localFilePath];
+      return next;
+    });
+  }
+
+  function removeOutboxOperationDocuments(operation: OutboxOperationDocument) {
+    return Promise.all([
+      deleteVaultDocument(vaultRoot, operation.path),
+      deleteVaultDocument(vaultRoot, operation.frontMatter.local_file_path)
+    ]);
+  }
+
+  function discardOutboxOperation(operation: OutboxOperationDocument) {
+    removeOutboxOperationDocuments(operation).catch(() => {
+      showAppSnackbar("Queued change could not be removed from disk.");
+    });
+    removeOutboxOperationFromState(operation);
+  }
+
+  function deleteOutboxOperation(operation: OutboxOperationDocument) {
+    discardOutboxOperation(operation);
+    showAppSnackbar("Queued change deleted.");
+  }
+
+  function editQueuedComment(operation: OutboxOperationDocument) {
+    const { target } = operation.frontMatter;
+
+    openOutboxTarget(operation);
+    if (target.parent_comment_id !== undefined || target.parent_comment_node_id) {
+      setCommentDraft("");
+      setReplyDraft({
+        parentId: target.parent_comment_id,
+        parentNodeId: target.parent_comment_node_id,
+        body: operation.body,
+        version: Date.now()
+      });
+    } else {
+      setReplyDraft(undefined);
+      setCommentDraft(operation.body);
+    }
+    discardOutboxOperation(operation);
+  }
+
+  function editQueuedIssue(operation: OutboxOperationDocument) {
+    const { target } = operation.frontMatter;
+    const localFilePath = operation.frontMatter.local_file_path;
+    const draft = [...drafts, ...items, ...inboxItems].find(
+      (item) => item.path === localFilePath
+    );
+    const title = draft?.frontMatter.title ?? operation.body;
+    const repositoryKey = `${target.owner}/${target.repo}`;
+
+    setDraftIssue({
+      title,
+      body: draft?.body ?? "",
+      repositoryKey
+    });
+    setReplyDraft(undefined);
+    setSelectedPath(localFilePath);
+    setRepositoryFilter(repositoryKey);
+    setFilter("all");
+    setQuery("");
+    setItemStateFilter("open");
+    setShowSettings(false);
+    setShowNotifications(false);
+    setShowOutbox(false);
+    setShowNewIssue(true);
+
+    if (draft && !draft.body) {
+      void loadItemDocumentBody(vaultRoot, draft)
+        .then((body) => {
+          setDraftIssue((current) =>
+            current.title === title && current.repositoryKey === repositoryKey
+              ? { ...current, body }
+              : current
+          );
+        })
+        .finally(() => discardOutboxOperation(operation));
+    } else {
+      discardOutboxOperation(operation);
+    }
+  }
+
+  function editOutboxOperation(operation: OutboxOperationDocument) {
+    if (operation.frontMatter.operation === "create_issue") {
+      editQueuedIssue(operation);
+      return;
+    }
+    editQueuedComment(operation);
+  }
+
   async function applySyncedOutboxResult(result: OutboxSyncResult) {
     const { operation, remote } = result;
     if (!remote) {
@@ -1503,6 +1615,7 @@ export default function App({ initialOnline }: AppProps) {
     if (!selectedItem || selectedItem.frontMatter.kind !== "discussion") {
       return;
     }
+    setReplyDraft(undefined);
     queueCommentForTarget(
       {
         host: selectedItem.frontMatter.host,
@@ -1525,6 +1638,7 @@ export default function App({ initialOnline }: AppProps) {
     if (selectedNotification?.subject.type !== "Discussion") {
       return;
     }
+    setReplyDraft(undefined);
     queueCommentForTarget(
       selectedNotificationCommentTarget,
       { type: "comment" },
@@ -1878,6 +1992,7 @@ export default function App({ initialOnline }: AppProps) {
             state={notificationDetail}
             online={online}
             commentDraft={commentDraft}
+            replyDraft={replyDraft}
             detailMaximized={detailMaximized}
             onToggleMaximize={toggleDetailMaximized}
             onHeaderVisibilityChange={setDetailHeaderVisible}
@@ -1892,6 +2007,7 @@ export default function App({ initialOnline }: AppProps) {
             thread={itemThread}
             online={online}
             commentDraft={commentDraft}
+            replyDraft={replyDraft}
             detailMaximized={detailMaximized}
             onToggleMaximize={toggleDetailMaximized}
             onHeaderVisibilityChange={setDetailHeaderVisible}
@@ -1921,6 +2037,8 @@ export default function App({ initialOnline }: AppProps) {
           remoteChangedIds={remoteChangedOutboxIds}
           onToggleSelection={toggleOutboxSelection}
           onOpenTarget={openOutboxTarget}
+          onEdit={editOutboxOperation}
+          onDelete={deleteOutboxOperation}
           onSync={() => void syncSelectedOutbox()}
           onClose={() => setShowOutbox(false)}
         />

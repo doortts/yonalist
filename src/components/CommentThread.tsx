@@ -1,6 +1,7 @@
 import {
   type FormEvent,
   type KeyboardEvent,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState
@@ -141,6 +142,7 @@ interface CommentThreadProps {
   comments: ConversationComment[];
   /** The opening post's author, so replies by them get an "Author" badge. */
   subjectAuthor?: string;
+  replyDraft?: CommentReplyDraft;
   /**
    * Called for GitHub Discussion replies. The parent must carry a GraphQL
    * node id; Issue/PR comments do not have a remote nested-reply endpoint.
@@ -148,15 +150,31 @@ interface CommentThreadProps {
   onReplySubmit?: (parent: ConversationComment, body: string) => void;
 }
 
+export interface CommentReplyDraft {
+  parentId?: number | string;
+  parentNodeId?: string;
+  body: string;
+  version: number;
+}
+
 interface InlineReplyComposerProps {
+  initialBody?: string;
   onCancel: () => void;
   onSubmit: (body: string) => void;
 }
 
-function InlineReplyComposer({ onCancel, onSubmit }: InlineReplyComposerProps) {
-  const [body, setBody] = useState("");
+function InlineReplyComposer({
+  initialBody = "",
+  onCancel,
+  onSubmit
+}: InlineReplyComposerProps) {
+  const [body, setBody] = useState(initialBody);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const hasBody = body.trim().length > 0;
+
+  useEffect(() => {
+    setBody(initialBody);
+  }, [initialBody]);
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -208,6 +226,49 @@ function InlineReplyComposer({ onCancel, onSubmit }: InlineReplyComposerProps) {
   );
 }
 
+function matchesReplyDraft(
+  comment: ConversationComment,
+  draft: CommentReplyDraft
+) {
+  const parentId =
+    draft.parentId === undefined ? undefined : String(draft.parentId);
+  return (
+    (parentId !== undefined && String(comment.id) === parentId) ||
+    (draft.parentNodeId !== undefined && comment.nodeId === draft.parentNodeId)
+  );
+}
+
+function findReplyDraftAnchor(
+  comments: ConversationComment[],
+  draft: CommentReplyDraft
+): { anchor: ConversationComment; target: ConversationComment } | null {
+  function findInReplies(
+    replies: ConversationComment[] | undefined
+  ): ConversationComment | null {
+    for (const reply of replies ?? []) {
+      if (matchesReplyDraft(reply, draft)) {
+        return reply;
+      }
+      const nested = findInReplies(reply.replies);
+      if (nested) {
+        return nested;
+      }
+    }
+    return null;
+  }
+
+  for (const comment of comments) {
+    if (matchesReplyDraft(comment, draft)) {
+      return { anchor: comment, target: comment };
+    }
+    const reply = findInReplies(comment.replies);
+    if (reply) {
+      return { anchor: reply, target: comment };
+    }
+  }
+  return null;
+}
+
 /**
  * Reply comments rendered as a GitHub-style timeline: each reply shows the
  * author's avatar in a left gutter beside a bordered speech bubble whose tail
@@ -216,9 +277,30 @@ function InlineReplyComposer({ onCancel, onSubmit }: InlineReplyComposerProps) {
 export function CommentThread({
   comments,
   subjectAuthor,
+  replyDraft,
   onReplySubmit
 }: CommentThreadProps) {
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
+  const [activeReplyDraftBody, setActiveReplyDraftBody] = useState("");
+
+  useEffect(() => {
+    if (!replyDraft || !onReplySubmit) {
+      return;
+    }
+    const match = findReplyDraftAnchor(comments, replyDraft);
+    if (!match || !match.target.nodeId) {
+      return;
+    }
+    setActiveReplyId(match.anchor.id);
+    setActiveReplyDraftBody(replyDraft.body);
+  }, [
+    comments,
+    onReplySubmit,
+    replyDraft?.body,
+    replyDraft?.parentId,
+    replyDraft?.parentNodeId,
+    replyDraft?.version
+  ]);
 
   if (comments.length === 0) {
     return null;
@@ -256,7 +338,10 @@ export function CommentThread({
         <button
           type="button"
           className="comment-inline-reply-button"
-          onClick={() => setActiveReplyId(comment.id)}
+          onClick={() => {
+            setActiveReplyDraftBody("");
+            setActiveReplyId(comment.id);
+          }}
         >
           대댓글 추가
         </button>
@@ -273,9 +358,14 @@ export function CommentThread({
     }
     return (
       <InlineReplyComposer
-        onCancel={() => setActiveReplyId(null)}
+        initialBody={activeReplyId === comment.id ? activeReplyDraftBody : ""}
+        onCancel={() => {
+          setActiveReplyDraftBody("");
+          setActiveReplyId(null);
+        }}
         onSubmit={(body) => {
           onReplySubmit(target, body);
+          setActiveReplyDraftBody("");
           setActiveReplyId(null);
         }}
       />
