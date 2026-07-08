@@ -272,66 +272,79 @@ describe("ItemListPane", () => {
     });
   });
 
-  it("inserts date headers using the active sort field", () => {
+  it("inserts compact date headers using the active sort field", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-06T12:00:00"));
     const items = [
       itemWithDates(
-        "Same created, newer updated",
-        "2026-07-01T00:00:00Z",
-        "2026-07-05T00:00:00Z",
+        "Same created, today updated",
+        "2026-07-04T00:00:00",
+        "2026-07-06T08:00:00",
         1
       ),
       itemWithDates(
-        "Same created, older updated",
-        "2026-07-01T00:00:00Z",
-        "2026-07-04T00:00:00Z",
+        "Same created, yesterday updated",
+        "2026-07-04T00:00:00",
+        "2026-07-05T09:00:00",
         2
+      ),
+      itemWithDates(
+        "Same created, previous year updated",
+        "2026-07-04T00:00:00",
+        "2025-12-31T09:00:00",
+        3
       )
     ];
 
-    const { container, rerender } = render(
-      <ItemListPane
-        items={items}
-        selectedPath={null}
-        stateFilter="open"
-        itemSort={{ field: "created", direction: "desc" }}
-        query=""
-        loading={false}
-        error={null}
-        demoMode={false}
-        onItemSortChange={vi.fn()}
-        onStateFilterChange={vi.fn()}
-        onQueryChange={vi.fn()}
-        onSelect={vi.fn()}
-        onNewIssue={vi.fn()}
-        onRefresh={vi.fn()}
-      />
-    );
+    try {
+      const { container, rerender } = render(
+        <ItemListPane
+          items={items}
+          selectedPath={null}
+          stateFilter="open"
+          itemSort={{ field: "created", direction: "desc" }}
+          query=""
+          loading={false}
+          error={null}
+          demoMode={false}
+          onItemSortChange={vi.fn()}
+          onStateFilterChange={vi.fn()}
+          onQueryChange={vi.fn()}
+          onSelect={vi.fn()}
+          onNewIssue={vi.fn()}
+          onRefresh={vi.fn()}
+        />
+      );
 
-    expect(container.querySelectorAll(".item-date-row")).toHaveLength(1);
-    expect(screen.getByText("2026.07.01")).toBeInTheDocument();
+      expect(container.querySelectorAll(".item-date-row")).toHaveLength(1);
+      expect(screen.getByText("07.04")).toBeInTheDocument();
 
-    rerender(
-      <ItemListPane
-        items={items}
-        selectedPath={null}
-        stateFilter="open"
-        itemSort={{ field: "updated", direction: "desc" }}
-        query=""
-        loading={false}
-        error={null}
-        demoMode={false}
-        onItemSortChange={vi.fn()}
-        onStateFilterChange={vi.fn()}
-        onQueryChange={vi.fn()}
-        onSelect={vi.fn()}
-        onNewIssue={vi.fn()}
-        onRefresh={vi.fn()}
-      />
-    );
+      rerender(
+        <ItemListPane
+          items={items}
+          selectedPath={null}
+          stateFilter="open"
+          itemSort={{ field: "updated", direction: "desc" }}
+          query=""
+          loading={false}
+          error={null}
+          demoMode={false}
+          onItemSortChange={vi.fn()}
+          onStateFilterChange={vi.fn()}
+          onQueryChange={vi.fn()}
+          onSelect={vi.fn()}
+          onNewIssue={vi.fn()}
+          onRefresh={vi.fn()}
+        />
+      );
 
-    expect(container.querySelectorAll(".item-date-row")).toHaveLength(2);
-    expect(screen.getByText("2026.07.05")).toBeInTheDocument();
-    expect(screen.getByText("2026.07.04")).toBeInTheDocument();
+      expect(container.querySelectorAll(".item-date-row")).toHaveLength(3);
+      expect(screen.getByText("Today")).toBeInTheDocument();
+      expect(screen.getByText("Yesterday")).toBeInTheDocument();
+      expect(screen.getByText("2025.12.31")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses the active sort field for the row time label", () => {
@@ -464,7 +477,7 @@ describe("ItemListPane", () => {
     expect(onVisibleItemsChange).toHaveBeenLastCalledWith(items);
   });
 
-  it("renders the author name as the third line, after the title and before labels", () => {
+  it("renders labels before the author line", () => {
     const { container } = renderPane([baseItem]);
 
     expect(screen.getByText("mona")).toBeInTheDocument();
@@ -477,8 +490,8 @@ describe("ItemListPane", () => {
     const authorIndex = rows.indexOf("item-author");
     const labelsIndex = rows.indexOf("item-labels");
 
-    expect(authorIndex).toBe(titleIndex + 1);
-    expect(authorIndex).toBeLessThan(labelsIndex);
+    expect(labelsIndex).toBe(titleIndex + 1);
+    expect(authorIndex).toBe(labelsIndex + 1);
     expect(card.querySelector(".item-author")).toHaveTextContent("mona");
   });
 
@@ -646,17 +659,19 @@ describe("ItemListPane", () => {
 
   it("uses compact item row spacing without per-item bottom lines", () => {
     const cardStyle = cssDeclarationsFor(".item-card");
+    const labelRowStyle = cssDeclarationsFor(".item-labels");
     const titleStyle = cssDeclarationsFor(".item-title");
     const authorStyle = cssDeclarationsFor(".item-author", itemListStyles);
     const dateRowStyle = cssDeclarationsFor(".item-date-row");
 
-    expect(cardStyle.gap).toBe("3px");
-    expect(cardStyle.padding).toBe("9px 16px");
+    expect(cardStyle.gap).toBe("2px");
+    expect(cardStyle.padding).toBe("5px 10px");
     expect(cardStyle["border-bottom"]).toBe("0");
+    expect(labelRowStyle.gap).toBe("3px");
     expect(titleStyle["line-height"]).toBe("1.25");
     expect(authorStyle["line-height"]).toBe("1.25");
-    expect(dateRowStyle["min-height"]).toBe("42px");
-    expect(dateRowStyle.padding).toBe("10px 16px 5px");
+    expect(dateRowStyle["min-height"]).toBe("34px");
+    expect(dateRowStyle.padding).toBe("6px 10px 2px");
   });
 
   it("keeps label and comment typography shared across themes", () => {
@@ -828,14 +843,58 @@ describe("ItemListPane", () => {
     fireEvent(window, new Event("resize"));
 
     await waitFor(() => {
-      expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(1);
+      expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(
+        1
+      );
     });
     const rows = Array.from(
       container.querySelectorAll(".virtual-row")
     ) as HTMLElement[];
 
-    expect(rows[0].style.height).toBe("118px");
-    expect(rows[1].style.height).toBe("92px");
+    expect(rows[0].style.height).toBe("104px");
+    expect(rows[1].style.height).toBe("80px");
     expect(rows[1].querySelector(".item-labels")).toBeNull();
+  });
+
+  it("increases virtualized item height when visible labels wrap", async () => {
+    const wrappedLabels: ItemDocument = {
+      ...itemAt(1),
+      frontMatter: {
+        ...itemAt(1).frontMatter,
+        labels: [
+          "frontend-platform",
+          "needs-design-review",
+          "customer-reported",
+          "release-blocker"
+        ],
+        label_colors: {}
+      }
+    };
+    const singleLineLabels = itemAt(2);
+    const items = [
+      wrappedLabels,
+      singleLineLabels,
+      ...Array.from({ length: 90 }, (_, index) => itemAt(index + 3))
+    ];
+    const { container } = renderPane(items);
+    const list = container.querySelector(".item-list") as HTMLDivElement;
+    Object.defineProperty(list, "clientHeight", {
+      configurable: true,
+      value: 360
+    });
+
+    fireEvent(window, new Event("resize"));
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(
+        1
+      );
+    });
+    const rows = Array.from(
+      container.querySelectorAll(".virtual-row")
+    ) as HTMLElement[];
+
+    expect(rows[0].style.height).toBe("148px");
+    expect(rows[1].style.height).toBe("104px");
   });
 });

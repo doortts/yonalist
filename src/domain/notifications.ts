@@ -1,3 +1,5 @@
+import { dateGroupLabel, localDateKey } from "./dateGroups";
+
 export type NotificationSubjectType =
   | "Issue"
   | "PullRequest"
@@ -166,23 +168,11 @@ export interface NotificationGroup {
   notifications: GitHubNotification[];
 }
 
-function dateKey(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.valueOf())) {
-    return "unknown";
-  }
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}.${month}.${day}`;
-}
-
-/** Groups notifications by local calendar day, newest first, "Today" labelled. */
+/** Groups notifications by local calendar day, newest first. */
 export function groupNotificationsByDate(
   notifications: GitHubNotification[],
   now: Date = new Date()
 ): NotificationGroup[] {
-  const todayKey = dateKey(now.toISOString());
   const groups = new Map<string, GitHubNotification[]>();
 
   const sorted = [...notifications].sort(
@@ -190,7 +180,7 @@ export function groupNotificationsByDate(
   );
 
   for (const notification of sorted) {
-    const key = dateKey(notification.updated_at);
+    const key = localDateKey(notification.updated_at);
     const group = groups.get(key) ?? [];
     group.push(notification);
     groups.set(key, group);
@@ -198,7 +188,7 @@ export function groupNotificationsByDate(
 
   return [...groups.entries()].map(([key, grouped]) => ({
     key,
-    label: key === todayKey ? "Today" : key,
+    label: dateGroupLabel(key, now),
     notifications: grouped
   }));
 }

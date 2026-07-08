@@ -2342,6 +2342,46 @@ describe("Yonalist app shell", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("remembers item sort separately for inbox tabs and repositories", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const navigation = screen.getByLabelText("Navigation");
+    const sortButton = () =>
+      within(screen.getByLabelText("Items")).getByRole("button", {
+        name: /Sort by/
+      });
+
+    await user.click(
+      within(navigation).getByRole("button", { name: /^All items/ })
+    );
+    expect(sortButton()).toHaveAccessibleName("Sort by Created descending");
+
+    await user.click(sortButton());
+    await user.click(screen.getByRole("menuitem", { name: "↑ Updated" }));
+    expect(sortButton()).toHaveAccessibleName("Sort by Updated ascending");
+
+    await user.click(
+      within(navigation).getByRole("button", { name: /^Issues/ })
+    );
+    expect(sortButton()).toHaveAccessibleName("Sort by Created descending");
+
+    await user.click(within(navigation).getByRole("button", { name: /^blog/ }));
+    expect(sortButton()).toHaveAccessibleName("Sort by Created descending");
+
+    await user.click(sortButton());
+    await user.click(screen.getByRole("menuitem", { name: "↓ Updated" }));
+    expect(sortButton()).toHaveAccessibleName("Sort by Updated descending");
+
+    await user.click(
+      within(navigation).getByRole("button", { name: /^All items/ })
+    );
+    expect(sortButton()).toHaveAccessibleName("Sort by Updated ascending");
+
+    await user.click(within(navigation).getByRole("button", { name: /^blog/ }));
+    expect(sortButton()).toHaveAccessibleName("Sort by Updated descending");
+  });
+
   it("shows a project when selected even if another item-type filter was active", async () => {
     const user = userEvent.setup();
     render(<App />);

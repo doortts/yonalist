@@ -262,6 +262,10 @@ function matchesStateFilter(item: ItemDocument, filter: ItemStateFilter): boolea
   return item.frontMatter.state === "closed" || item.frontMatter.state === "merged";
 }
 
+function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
+  return left.field === right.field && left.direction === right.direction;
+}
+
 function AuthRestorePage() {
   return (
     <main className="login-shell" aria-label="Restoring GitHub session">
@@ -288,7 +292,9 @@ export default function App({ initialOnline }: AppProps) {
   const [filter, setFilter] = useState<ListFilter>("all");
   const [itemStateFilter, setItemStateFilter] =
     useState<ItemStateFilter>("open");
-  const [itemSort, setItemSort] = useState<ItemSort>(DEFAULT_ITEM_SORT);
+  const [itemSortByScope, setItemSortByScope] = useState<
+    Record<string, ItemSort>
+  >({});
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
@@ -449,6 +455,19 @@ export default function App({ initialOnline }: AppProps) {
     }
     return { type: "inbox" };
   }, [repositoryFilter]);
+  const itemSortScopeKey = repositoryFilter
+    ? `repository:${repositoryFilter}`
+    : `inbox:${filter}`;
+  const itemSort = itemSortByScope[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
+  function setScopedItemSort(nextSort: ItemSort) {
+    setItemSortByScope((current) => {
+      const currentSort = current[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
+      if (itemSortEquals(currentSort, nextSort)) {
+        return current;
+      }
+      return { ...current, [itemSortScopeKey]: nextSort };
+    });
+  }
   const inboxWorkItems = useWorkItems(
     auth.connection,
     online,
@@ -1927,7 +1946,7 @@ export default function App({ initialOnline }: AppProps) {
           error={workItems.error}
           demoMode={workItems.demoMode}
           online={online}
-          onItemSortChange={setItemSort}
+          onItemSortChange={setScopedItemSort}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
           onSelect={(path) => {

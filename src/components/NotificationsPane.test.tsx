@@ -121,6 +121,14 @@ describe("NotificationsPane", () => {
     expect(titleRule).not.toContain("text-overflow: ellipsis");
   });
 
+  it("renders notification rows without per-row bottom lines", () => {
+    const rowRule = cssRule(".notification-row");
+
+    expect(rowRule).toContain("border-bottom: 0");
+    expect(rowRule).not.toContain("border-bottom: 1px");
+    expect(rowRule).toContain("padding: 5px 10px");
+  });
+
   it("filters rows by the search query", () => {
     render(
       <NotificationsPane

@@ -94,19 +94,25 @@ describe("isReadAndQuiet", () => {
 });
 
 describe("groupNotificationsByDate", () => {
-  it("groups by local day, newest first, labelling today", () => {
-    const now = new Date("2026-07-02T12:00:00");
+  it("groups by local day, newest first, with relative and compact date labels", () => {
+    const now = new Date("2026-07-03T12:00:00");
     const groups = groupNotificationsByDate(
       [
-        notification({ id: "a", updated_at: "2026-07-02T10:00:00" }),
-        notification({ id: "b", updated_at: "2026-07-01T09:00:00" }),
-        notification({ id: "c", updated_at: "2026-07-02T08:00:00" })
+        notification({ id: "a", updated_at: "2026-07-03T10:00:00" }),
+        notification({ id: "b", updated_at: "2026-07-02T09:00:00" }),
+        notification({ id: "c", updated_at: "2026-07-01T08:00:00" }),
+        notification({ id: "d", updated_at: "2025-12-31T08:00:00" })
       ],
       now
     );
 
-    expect(groups.map((group) => group.label)).toEqual(["Today", "2026.07.01"]);
-    expect(groups[0].notifications.map((item) => item.id)).toEqual(["a", "c"]);
+    expect(groups.map((group) => group.label)).toEqual([
+      "Today",
+      "Yesterday",
+      "07.01",
+      "2025.12.31"
+    ]);
+    expect(groups[0].notifications.map((item) => item.id)).toEqual(["a"]);
   });
 });
 

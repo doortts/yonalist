@@ -20,6 +20,7 @@ import {
   useState
 } from "react";
 import { labelTextColor } from "../domain/conversation";
+import { dateGroupLabel, localDateKey } from "../domain/dateGroups";
 import {
   DEFAULT_ITEM_SORT,
   type ItemSort,
@@ -39,9 +40,11 @@ const VIRTUALIZE_AT = 80;
 // Virtualized rows use deterministic per-item heights so rows without labels do
 // not reserve the optional label line. These are intentionally estimates, not
 // measured layout, so scroll math stays cheap and stable.
-const ITEM_ROW_HEIGHT_WITH_LABELS = 118;
-const ITEM_ROW_HEIGHT_COMPACT = 92;
-const ITEM_DATE_HEADER_HEIGHT = 42;
+const ITEM_ROW_HEIGHT_WITH_LABELS = 104;
+const ITEM_ROW_HEIGHT_COMPACT = 80;
+const ITEM_DATE_HEADER_HEIGHT = 34;
+const ITEM_LABEL_EXTRA_LINE_HEIGHT = 22;
+const ITEM_LABEL_TEXT_BUDGET_PER_LINE = 32;
 const ITEM_OVERSCAN = 6;
 
 const ITEM_SORT_OPTIONS: Array<{
@@ -171,21 +174,6 @@ function itemDateValue(item: ItemDocument, sort: ItemSort): string {
     : item.frontMatter.updated_at;
 }
 
-function dateKey(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.valueOf())) {
-    return "unknown";
-  }
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}.${month}.${day}`;
-}
-
-function dateLabel(key: string, now = new Date()): string {
-  return key === dateKey(now.toISOString()) ? "Today" : key;
-}
-
 type ItemListEntry =
   | { type: "date"; key: string; label: string }
   | { type: "item"; item: ItemDocument };
@@ -198,9 +186,9 @@ function buildItemListEntries(
   let previousDateKey: string | null = null;
 
   for (const item of items) {
-    const key = dateKey(itemDateValue(item, sort));
+    const key = localDateKey(itemDateValue(item, sort));
     if (key !== previousDateKey) {
-      entries.push({ type: "date", key, label: dateLabel(key) });
+      entries.push({ type: "date", key, label: dateGroupLabel(key) });
       previousDateKey = key;
     }
     entries.push({ type: "item", item });
@@ -209,14 +197,34 @@ function buildItemListEntries(
   return entries;
 }
 
+function estimatedVisibleLabelLines(labels: string[]): number {
+  const visibleLabels = labels.slice(0, 4);
+  if (visibleLabels.length === 0) {
+    return 0;
+  }
+  const estimatedUnits = visibleLabels.reduce(
+    (total, label) => total + Math.max(8, label.length + 4),
+    0
+  );
+  return Math.max(
+    1,
+    Math.ceil(estimatedUnits / ITEM_LABEL_TEXT_BUDGET_PER_LINE)
+  );
+}
+
 function virtualRowHeightForEntry(entry: ItemListEntry): number {
   if (entry.type === "date") {
     return ITEM_DATE_HEADER_HEIGHT;
   }
   const item = entry.item;
-  return item.frontMatter.labels.length > 0
-    ? ITEM_ROW_HEIGHT_WITH_LABELS
-    : ITEM_ROW_HEIGHT_COMPACT;
+  const labelLines = estimatedVisibleLabelLines(item.frontMatter.labels);
+  if (labelLines === 0) {
+    return ITEM_ROW_HEIGHT_COMPACT;
+  }
+  return (
+    ITEM_ROW_HEIGHT_WITH_LABELS +
+    (labelLines - 1) * ITEM_LABEL_EXTRA_LINE_HEIGHT
+  );
 }
 
 interface VirtualRowMetrics {
@@ -749,20 +757,6 @@ const ItemRow = memo(function ItemRow({
         <span className="item-time">{timeAgo(rowTime)}</span>
       </span>
       <span className="item-title">{item.frontMatter.title}</span>
-      {hasAuthor && (
-        <span className="item-author">
-          {authorAvatarUrl && (
-            <Avatar
-              login={item.frontMatter.author}
-              avatarUrl={authorAvatarUrl}
-              size={16}
-              showFallback={false}
-            />
-          )}
-          <span className="item-author-name">{authorName}</span>
-          {showActionsOnAuthor && rowActions}
-        </span>
-      )}
       {hasLabels && (
         <span className="item-labels">
           {item.frontMatter.labels.slice(0, 4).map((label) => (
@@ -779,6 +773,20 @@ const ItemRow = memo(function ItemRow({
             </span>
           ))}
           {showActionsOnLabels && rowActions}
+        </span>
+      )}
+      {hasAuthor && (
+        <span className="item-author">
+          {authorAvatarUrl && (
+            <Avatar
+              login={item.frontMatter.author}
+              avatarUrl={authorAvatarUrl}
+              size={16}
+              showFallback={false}
+            />
+          )}
+          <span className="item-author-name">{authorName}</span>
+          {showActionsOnAuthor && rowActions}
         </span>
       )}
       {showFooter && (
