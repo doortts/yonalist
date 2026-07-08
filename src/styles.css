@@ -645,13 +645,14 @@ body.is-resizing-pane {
   left: calc(var(--sidebar-width, 280px) + 1px);
 }
 
-/* Pane collapse toggles. Fixed in their own strip above the drag regions and
-   offset past the macOS traffic lights, so they stay reachable even when the
-   sidebar is collapsed to zero width. Not a drag region themselves. */
+/* Pane controls. Two fixed strips above the drag regions (not drag regions
+   themselves), so they stay reachable even when a pane is collapsed to zero
+   width. Horizontal placement is set inline per group: the sidebar toggle
+   anchors to the sidebar's right edge (or, once collapsed, a fixed offset past
+   the traffic lights), and the detail maximize toggle pins to the right edge. */
 .pane-toggle-group {
   position: fixed;
   top: 0;
-  left: 78px;
   z-index: 20;
   display: flex;
   /* Vertically centered in the titlebar so the glyphs line up with the
@@ -742,6 +743,16 @@ body.is-resizing-pane {
     > .detail-pane
     > .pane-titlebar-spacer {
     flex-basis: var(--titlebar-height);
+  }
+
+  /* The detail maximize toggle is pinned to the top-right of the titlebar band.
+     Reserve room in the detail-side headers so their right-aligned actions
+     (open-in-browser, favorite, close) never slide underneath it. Desktop-only,
+     matching the breakpoint where the toggles are shown. */
+  .detail-header,
+  .issue-create-header,
+  .settings-header {
+    padding-right: 56px;
   }
 }
 

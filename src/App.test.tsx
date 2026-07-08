@@ -338,25 +338,99 @@ describe("Yonalist app shell", () => {
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
   });
 
-  it("collapses the list pane independently of the sidebar pane", async () => {
+  it("anchors the sidebar toggle to the sidebar edge, then to the frontmost pane", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const shell = await screen.findByLabelText("Yonalist layout");
-    const listToggle = screen.getByRole("button", { name: "목록 접기/펼치기" });
+    await screen.findByLabelText("Yonalist layout");
+    const paneGroup = screen.getByRole("group", { name: "Pane layout" });
     const sidebarToggle = screen.getByRole("button", {
       name: "사이드바 접기/펼치기"
     });
 
-    await user.click(listToggle);
+    // Sidebar open: tucked inside the sidebar's right edge (its width, minus an
+    // inset), well clear of the macOS traffic lights.
+    expect(paneGroup).toHaveAttribute("data-position", "sidebar-end");
+    expect(paneGroup.style.left).toContain("var(--sidebar-width");
 
-    expect(shell).toHaveAttribute("data-list-collapsed", "true");
-    expect(shell.style.getPropertyValue("--list-width")).toBe("0px");
-    expect(listToggle).toHaveAttribute("aria-pressed", "true");
-    // The sibling pane is untouched.
+    await user.click(sidebarToggle);
+
+    // Sidebar collapsed: the pane is gone, so the toggle drops to the left of
+    // the now-frontmost pane at a fixed offset past the traffic lights.
+    expect(paneGroup).toHaveAttribute("data-position", "pane-start");
+    expect(paneGroup.style.left).toBe("78px");
+  });
+
+  it("puts a detail maximize toggle in its own right-aligned group", () => {
+    render(<App />);
+
+    const detailGroup = screen.getByRole("group", { name: "Detail layout" });
+    expect(
+      within(detailGroup).getByRole("button", { name: "상세 최대화" })
+    ).toBeInTheDocument();
+    // Anchored to the right edge of the window (the detail pane's right side).
+    expect(detailGroup.style.right).toBe("12px");
+    // The standalone list toggle is gone — collapsing the list is now folded
+    // into the maximize action.
+    expect(
+      screen.queryByRole("button", { name: "목록 접기/펼치기" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("maximizes the detail pane by collapsing both siblings and back again", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    const maximizeToggle = screen.getByRole("button", { name: "상세 최대화" });
+
+    expect(maximizeToggle).toHaveAttribute("aria-pressed", "false");
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
-    expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+    expect(shell).not.toHaveAttribute("data-list-collapsed");
+
+    await user.click(maximizeToggle);
+
+    expect(maximizeToggle).toHaveAttribute("aria-pressed", "true");
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).toHaveAttribute("data-list-collapsed", "true");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("0px");
+    expect(shell.style.getPropertyValue("--list-width")).toBe("0px");
+
+    await user.click(maximizeToggle);
+
+    expect(maximizeToggle).toHaveAttribute("aria-pressed", "false");
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    expect(shell).not.toHaveAttribute("data-list-collapsed");
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+    expect(shell.style.getPropertyValue("--list-width")).toBe("420px");
+  });
+
+  it("restores only the panes collapsed before the detail was maximized", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    const sidebarToggle = screen.getByRole("button", {
+      name: "사이드바 접기/펼치기"
+    });
+    const maximizeToggle = screen.getByRole("button", { name: "상세 최대화" });
+
+    // Pre-state: only the sidebar is collapsed.
+    await user.click(sidebarToggle);
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).not.toHaveAttribute("data-list-collapsed");
+
+    // Maximizing hides both siblings.
+    await user.click(maximizeToggle);
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).toHaveAttribute("data-list-collapsed", "true");
+
+    // Un-maximizing returns to the snapshot: sidebar still collapsed, list back.
+    await user.click(maximizeToggle);
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).not.toHaveAttribute("data-list-collapsed");
+    expect(maximizeToggle).toHaveAttribute("aria-pressed", "false");
+    expect(sidebarToggle).toHaveAttribute("aria-pressed", "true");
   });
 
   it("keeps both pane toggles reachable while a pane is collapsed", async () => {
@@ -374,8 +448,9 @@ describe("Yonalist app shell", () => {
     expect(
       screen.getByRole("button", { name: "사이드바 접기/펼치기" })
     ).toBeInTheDocument();
-    const listToggle = screen.getByRole("button", { name: "목록 접기/펼치기" });
-    expect(listToggle).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "상세 최대화" })
+    ).toBeInTheDocument();
 
     // ...and the sidebar toggle can still be used to expand it again.
     await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
@@ -389,11 +464,15 @@ describe("Yonalist app shell", () => {
     const first = render(<App />);
 
     await screen.findByLabelText("Yonalist layout");
-    await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
-    await user.click(screen.getByRole("button", { name: "목록 접기/펼치기" }));
+    // Maximizing the detail collapses both siblings, so their collapsed state
+    // is what should persist across a reload.
+    await user.click(screen.getByRole("button", { name: "상세 최대화" }));
 
     expect(window.localStorage.getItem("yonalist.paneCollapsed.v1")).toContain(
       "\"sidebar\":true"
+    );
+    expect(window.localStorage.getItem("yonalist.paneCollapsed.v1")).toContain(
+      "\"list\":true"
     );
 
     // Simulate a fresh launch against the same persisted storage.
@@ -415,8 +494,8 @@ describe("Yonalist app shell", () => {
     render(<App />);
 
     const shell = await screen.findByLabelText("Yonalist layout");
-    await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
-    await user.click(screen.getByRole("button", { name: "목록 접기/펼치기" }));
+    // Maximizing collapses both siblings in one action.
+    await user.click(screen.getByRole("button", { name: "상세 최대화" }));
 
     expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
     expect(shell).toHaveAttribute("data-list-collapsed", "true");

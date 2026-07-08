@@ -100,8 +100,19 @@ export function usePaneResize() {
   const [paneCollapsed, setPaneCollapsed] = useState<PaneCollapsed>(() =>
     loadPaneCollapsed()
   );
+  // Whether the detail pane is maximized (both siblings hidden). Memory-only:
+  // the collapse booleans themselves persist under their own key, so a reload
+  // lands on the collapsed layout without carrying this transient flag.
+  const [detailMaximized, setDetailMaximized] = useState(false);
   const paneWidthsRef = useRef(paneWidths);
   paneWidthsRef.current = paneWidths;
+  const paneCollapsedRef = useRef(paneCollapsed);
+  paneCollapsedRef.current = paneCollapsed;
+  const detailMaximizedRef = useRef(detailMaximized);
+  detailMaximizedRef.current = detailMaximized;
+  // Collapse layout captured when entering the maximized view and replayed on
+  // exit, so un-maximizing returns to exactly what the user had before.
+  const maximizeSnapshotRef = useRef<PaneCollapsed | null>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => () => cleanupRef.current?.(), []);
@@ -111,10 +122,28 @@ export function usePaneResize() {
   }, [paneCollapsed]);
 
   const togglePaneCollapsed = useCallback((pane: ResizablePane) => {
+    // A manual pane toggle takes over from the maximized view: drop the flag
+    // and its snapshot so the layout reflects exactly what the user set.
+    maximizeSnapshotRef.current = null;
+    setDetailMaximized(false);
     setPaneCollapsed((current) => ({
       ...current,
       [pane]: !current[pane]
     }));
+  }, []);
+
+  const toggleDetailMaximized = useCallback(() => {
+    if (detailMaximizedRef.current) {
+      // Exit: restore whatever was collapsed before maximizing.
+      setPaneCollapsed(maximizeSnapshotRef.current ?? defaultPaneCollapsed);
+      maximizeSnapshotRef.current = null;
+      setDetailMaximized(false);
+    } else {
+      // Enter: remember the current collapse layout, then hide both siblings.
+      maximizeSnapshotRef.current = paneCollapsedRef.current;
+      setPaneCollapsed({ sidebar: true, list: true });
+      setDetailMaximized(true);
+    }
   }, []);
 
   const updatePaneWidth = useCallback((pane: ResizablePane, width: number) => {
@@ -184,7 +213,9 @@ export function usePaneResize() {
   return {
     paneWidths,
     paneCollapsed,
+    detailMaximized,
     togglePaneCollapsed,
+    toggleDetailMaximized,
     startResize,
     resizeWithKeyboard
   };

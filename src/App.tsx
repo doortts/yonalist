@@ -302,8 +302,15 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsStatus, setSettingsStatus] = useState("");
   const [resetProgress, setResetProgress] =
     useState<ResetProgressState>(idleResetProgress);
-  const { paneWidths, paneCollapsed, togglePaneCollapsed, startResize, resizeWithKeyboard } =
-    usePaneResize();
+  const {
+    paneWidths,
+    paneCollapsed,
+    detailMaximized,
+    togglePaneCollapsed,
+    toggleDetailMaximized,
+    startResize,
+    resizeWithKeyboard
+  } = usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
@@ -1650,9 +1657,9 @@ export default function App({ initialOnline }: AppProps) {
       <TitleBar
         paneToggles={{
           sidebarCollapsed: paneCollapsed.sidebar,
-          listCollapsed: paneCollapsed.list,
+          detailMaximized,
           onToggleSidebar: () => togglePaneCollapsed("sidebar"),
-          onToggleList: () => togglePaneCollapsed("list")
+          onToggleMaximize: toggleDetailMaximized
         }}
       />
       <Sidebar
