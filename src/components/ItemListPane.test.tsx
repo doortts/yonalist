@@ -644,6 +644,21 @@ describe("ItemListPane", () => {
     expect(iconStyle["line-height"]).toBe("inherit");
   });
 
+  it("uses compact item row spacing without per-item bottom lines", () => {
+    const cardStyle = cssDeclarationsFor(".item-card");
+    const titleStyle = cssDeclarationsFor(".item-title");
+    const authorStyle = cssDeclarationsFor(".item-author", itemListStyles);
+    const dateRowStyle = cssDeclarationsFor(".item-date-row");
+
+    expect(cardStyle.gap).toBe("3px");
+    expect(cardStyle.padding).toBe("9px 16px");
+    expect(cardStyle["border-bottom"]).toBe("0");
+    expect(titleStyle["line-height"]).toBe("1.25");
+    expect(authorStyle["line-height"]).toBe("1.25");
+    expect(dateRowStyle["min-height"]).toBe("42px");
+    expect(dateRowStyle.padding).toBe("10px 16px 5px");
+  });
+
   it("keeps label and comment typography shared across themes", () => {
     const themeScopedItemRules = cssRulesContaining(
       ".item-",
@@ -819,8 +834,8 @@ describe("ItemListPane", () => {
       container.querySelectorAll(".virtual-row")
     ) as HTMLElement[];
 
-    expect(rows[0].style.height).toBe("140px");
-    expect(rows[1].style.height).toBe("112px");
+    expect(rows[0].style.height).toBe("118px");
+    expect(rows[1].style.height).toBe("92px");
     expect(rows[1].querySelector(".item-labels")).toBeNull();
   });
 });

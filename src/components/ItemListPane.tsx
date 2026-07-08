@@ -39,9 +39,9 @@ const VIRTUALIZE_AT = 80;
 // Virtualized rows use deterministic per-item heights so rows without labels do
 // not reserve the optional label line. These are intentionally estimates, not
 // measured layout, so scroll math stays cheap and stable.
-const ITEM_ROW_HEIGHT_WITH_LABELS = 140;
-const ITEM_ROW_HEIGHT_COMPACT = 112;
-const ITEM_DATE_HEADER_HEIGHT = 52;
+const ITEM_ROW_HEIGHT_WITH_LABELS = 118;
+const ITEM_ROW_HEIGHT_COMPACT = 92;
+const ITEM_DATE_HEADER_HEIGHT = 42;
 const ITEM_OVERSCAN = 6;
 
 const ITEM_SORT_OPTIONS: Array<{
