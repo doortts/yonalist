@@ -1446,11 +1446,74 @@ fn delete_token(service: String, account: String) -> Result<(), String> {
     }
 }
 
+/// Logical inset `(x, y)` for the macOS window controls ("traffic lights"),
+/// chosen from the detected macOS major version.
+///
+/// macOS Tahoe (major 26) reworked window chrome: the top-left corner uses a
+/// much larger radius (~26pt) drawn concentric with the red close button, and
+/// the controls themselves sit slightly higher in the bar. Reusing the older
+/// `(20, 15)` inset there leaves them visibly crammed into the rounded corner
+/// and a couple of points too high — the exact complaint driving this change.
+/// On Tahoe we nudge them right and down; Sequoia/Sonoma and earlier keep the
+/// original inset. Kept free of `cfg(target_os)` so it stays unit-testable on
+/// every platform (only the caller is macOS-gated).
+fn traffic_light_inset(macos_major: Option<u32>) -> (f64, f64) {
+    match macos_major {
+        Some(major) if major >= 26 => (22.0, 20.0),
+        _ => (20.0, 15.0),
+    }
+}
+
+/// Detected macOS major version via `NSProcessInfo`, e.g. `26` on Tahoe, `15`
+/// on Sequoia. `None` if the value does not fit a `u32` (never expected).
+#[cfg(target_os = "macos")]
+fn macos_major_version() -> Option<u32> {
+    use objc2_foundation::NSProcessInfo;
+    let version = NSProcessInfo::processInfo().operatingSystemVersion();
+    u32::try_from(version.majorVersion).ok()
+}
+
+/// Creates the app's main window in Rust rather than `tauri.conf.json` so the
+/// macOS traffic-light inset can be picked at launch from the OS version. The
+/// builder's `traffic_light_position` is the only officially supported hook in
+/// Tauri 2.8 (there is no runtime setter on `WebviewWindow`), and wry re-applies
+/// it across resize/fullscreen, unlike a manual `NSWindow` button nudge.
+fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
+    #[allow(unused_mut)]
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        app,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Yonalist")
+    .inner_size(1280.0, 820.0)
+    .min_inner_size(900.0, 650.0)
+    .decorations(true);
+
+    // Overlay title bar, hidden title and traffic-light placement are macOS-only
+    // concepts, so keep them off other platforms (the task's "no-op elsewhere").
+    #[cfg(target_os = "macos")]
+    {
+        let (x, y) = traffic_light_inset(macos_major_version());
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(x, y));
+    }
+
+    builder.build()?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .manage(OAuthServerState::default())
+        .setup(|app| {
+            build_main_window(app.handle())?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ensure_vault,
             read_text_file,
@@ -2068,6 +2131,30 @@ mod tests {
         fs::set_permissions(&drafts_dir, fs::Permissions::from_mode(0o755)).expect("chmod back");
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn traffic_light_inset_uses_larger_offset_on_tahoe() {
+        // macOS Tahoe (26) and anything newer get the roomier, lower inset.
+        assert_eq!(traffic_light_inset(Some(26)), (22.0, 20.0));
+        assert_eq!(traffic_light_inset(Some(27)), (22.0, 20.0));
+    }
+
+    #[test]
+    fn traffic_light_inset_keeps_legacy_offset_before_tahoe_and_when_unknown() {
+        assert_eq!(traffic_light_inset(Some(15)), (20.0, 15.0)); // Sequoia
+        assert_eq!(traffic_light_inset(Some(14)), (20.0, 15.0)); // Sonoma
+        assert_eq!(traffic_light_inset(None), (20.0, 15.0)); // undetectable
+    }
+
+    #[test]
+    fn traffic_light_inset_moves_controls_right_and_down_on_tahoe() {
+        // Encodes the user-facing requirement: on Tahoe the controls must sit
+        // further right and further down than on earlier macOS.
+        let (legacy_x, legacy_y) = traffic_light_inset(Some(15));
+        let (tahoe_x, tahoe_y) = traffic_light_inset(Some(26));
+        assert!(tahoe_x > legacy_x, "Tahoe controls should sit further right");
+        assert!(tahoe_y > legacy_y, "Tahoe controls should sit further down");
     }
 
     #[test]
