@@ -94,7 +94,27 @@ function ControlledComposer({ initial = "" }: { initial?: string }) {
 }
 
 describe("CommentComposer", () => {
-  it("previews the rendered markdown draft from the Preview tab", async () => {
+  it("shows only a Preview toggle while writing, never a Write button", () => {
+    render(
+      <CommentComposer
+        draft={"**hello**"}
+        online
+        onDraftChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    // Editing surface is up, so the single mode switch points at the opposite
+    // (Preview) mode. There is no redundant Write control while already writing.
+    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Write" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
+  });
+
+  it("swaps to only a Write button while previewing the rendered markdown", async () => {
     const user = userEvent.setup();
     render(
       <CommentComposer
@@ -105,36 +125,67 @@ describe("CommentComposer", () => {
       />
     );
 
-    // With a draft present the Write/Preview tabs render, Write active first.
-    expect(screen.getByRole("tab", { name: "Write" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
-      "aria-selected",
-      "false"
-    );
-    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Preview" }));
 
-    await user.click(screen.getByRole("tab", { name: "Preview" }));
+    // Previewing now: the switch flips to point back at Write, and no Preview
+    // control lingers.
+    expect(screen.getByRole("button", { name: "Write" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Preview" })
+    ).not.toBeInTheDocument();
 
+    // The markdown preview replaced the textarea.
     const preview = screen.getByLabelText("Comment preview");
     expect(await screen.findByText("hello")).toBeInTheDocument();
     expect(preview.querySelector("strong")).toHaveTextContent("hello");
-    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
     expect(screen.queryByLabelText("Write a comment")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Write" }));
-
-    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
   });
 
-  it("shows the Write/Preview tabs only after the user starts typing", async () => {
+  it("toggles write<->preview and restores textarea focus when returning to write", async () => {
+    const user = userEvent.setup();
+    render(
+      <CommentComposer
+        draft={"**hi**"}
+        online
+        onDraftChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Preview" }));
+    expect(screen.getByLabelText("Comment preview")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Write" }));
+
+    const textarea = screen.getByLabelText("Write a comment");
+    expect(textarea).toBeInTheDocument();
+    expect(screen.queryByLabelText("Comment preview")).not.toBeInTheDocument();
+    // Returning to write hands focus back to the editing surface so typing can
+    // resume immediately.
+    expect(document.activeElement).toBe(textarea);
+  });
+
+  it("uses a plain toggle button, exposing no tab or tablist roles", () => {
+    render(
+      <CommentComposer
+        draft={"hello"}
+        online
+        onDraftChange={vi.fn()}
+        onSubmit={vi.fn()}
+      />
+    );
+
+    // A one-item tablist would be ARIA-meaningless, so the switch is a button.
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+
+    // The visible label already names the action, so aria-pressed would be a
+    // conflicting second signal — it must not be set.
+    const toggle = screen.getByRole("button", { name: "Preview" });
+    expect(toggle).not.toHaveAttribute("aria-pressed");
+  });
+
+  it("shows the write/preview toggle only after the user starts typing", async () => {
     const user = userEvent.setup();
     function WrappedComposer() {
       const [draft, setDraft] = useState("");
@@ -149,43 +200,13 @@ describe("CommentComposer", () => {
     }
     render(<WrappedComposer />);
 
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Preview" })
+    ).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Write a comment"), "hello");
 
-    expect(screen.getByRole("tab", { name: "Write" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Preview" })).toBeInTheDocument();
-  });
-
-  it("moves between the Write and Preview tabs with the arrow keys", async () => {
-    const user = userEvent.setup();
-    render(
-      <CommentComposer
-        draft={"**hi**"}
-        online
-        onDraftChange={vi.fn()}
-        onSubmit={vi.fn()}
-      />
-    );
-
-    const writeTab = screen.getByRole("tab", { name: "Write" });
-    writeTab.focus();
-
-    await user.keyboard("{ArrowRight}");
-
-    expect(screen.getByRole("tab", { name: "Preview" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    expect(screen.getByLabelText("Comment preview")).toBeInTheDocument();
-
-    await user.keyboard("{ArrowLeft}");
-
-    expect(screen.getByRole("tab", { name: "Write" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
-    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
   });
 
   it("grows the textarea to fit wrapped content", async () => {
@@ -262,14 +283,19 @@ describe("CommentComposer", () => {
     // The one-line bar is the textarea itself; it stays reachable so a click
     // or focus can expand the composer.
     expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
-    // Collapsed hides the action buttons and the Write/Preview tabs.
+    // Collapsed hides the action buttons and the write/preview toggle.
     expect(
       screen.queryByRole("button", { name: "Comment" })
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Comment and close" })
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Preview" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Write" })
+    ).not.toBeInTheDocument();
   });
 
   it("expands and keeps focus when the collapsed bar is focused", async () => {
@@ -391,13 +417,12 @@ describe("CommentComposer", () => {
     expect(form().previousElementSibling).toBe(sentinel);
   });
 
-  it("renders the Write/Preview tab row as an overlay so typing does not shift the form", () => {
-    const { container } = render(<ControlledComposer initial="hello" />);
+  it("renders the write/preview toggle as an overlay so typing does not shift the form", () => {
+    render(<ControlledComposer initial="hello" />);
 
-    const toggleRow = container.querySelector(".composer-preview-toggle-row");
-    expect(toggleRow).not.toBeNull();
-    // The overlay class takes the tab row out of flow (absolute), so it no
-    // longer pushes the textarea down when it appears.
-    expect(toggleRow).toHaveClass("composer-tabs-overlay");
+    const toggle = screen.getByRole("button", { name: "Preview" });
+    // The overlay class takes the toggle out of flow (absolute), so it never
+    // pushes the textarea down when it appears the instant a draft exists.
+    expect(toggle).toHaveClass("composer-tabs-overlay");
   });
 });

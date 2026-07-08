@@ -50,21 +50,18 @@
 }
 
 /*
- * Write/Preview tab row as an overlay. Taking it out of flow (absolute) means
- * it no longer pushes the textarea down the instant a draft appears — the
- * editing surface keeps its position (no layout shift). The sticky form above
- * is the containing block. A translucent, blurred backdrop keeps the pills
- * legible over whatever text sits behind them.
+ * The single Write/Preview mode switch as an overlay. Taking it out of flow
+ * (absolute) means it no longer pushes the textarea down the instant a draft
+ * appears — the editing surface keeps its position (no layout shift). The
+ * sticky form above is the containing block. The button's own opaque pill
+ * styling (border + `--bg-card`) from styles.css keeps it legible over the
+ * text behind it, so no separate backdrop is needed here.
  */
-.composer-preview-toggle-row.composer-tabs-overlay {
+.composer-preview-toggle.composer-tabs-overlay {
   position: absolute;
   top: 8px;
   right: 8px;
   z-index: 3;
-  padding: 3px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--bg-input) 78%, transparent);
-  backdrop-filter: blur(3px);
 }
 
 /* Zero-ish height marker just before the composer's natural flow position (the

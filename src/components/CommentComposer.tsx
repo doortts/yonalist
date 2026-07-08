@@ -1,4 +1,3 @@
-import { Tabs } from "@base-ui/react/tabs";
 import { Eye, Pencil, Send } from "lucide-react";
 import {
   type FocusEvent,
@@ -9,7 +8,6 @@ import {
   useState
 } from "react";
 import { MarkdownBody } from "./MarkdownBody";
-import "./ui/composer-tabs.css";
 import "./ui/composer-dock.css";
 
 type ComposerMode = "write" | "preview";
@@ -64,6 +62,11 @@ export function CommentComposer({
   );
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Set when a toggle click lands the composer back on write, so the effect
+  // below can hand focus to the textarea once it remounts. Only a deliberate
+  // toggle sets it — the empty-draft force-back-to-write path leaves it false
+  // and never steals focus.
+  const restoreFocusRef = useRef(false);
   const hasDraft = draft.trim().length > 0;
   // A draft, active focus, or having settled at the thread's end each expand the
   // composer; otherwise it stays a thin one-line docked bar.
@@ -74,6 +77,21 @@ export function CommentComposer({
       setMode("write");
     }
   }, [hasDraft, mode]);
+
+  // After a toggle returns to write, the textarea has just remounted; restore
+  // focus so the reader can keep typing without a second click.
+  useEffect(() => {
+    if (mode === "write" && restoreFocusRef.current) {
+      restoreFocusRef.current = false;
+      textareaRef.current?.focus();
+    }
+  }, [mode]);
+
+  function toggleMode() {
+    const next = mode === "write" ? "preview" : "write";
+    restoreFocusRef.current = next === "write";
+    setMode(next);
+  }
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
@@ -168,62 +186,53 @@ export function CommentComposer({
         onFocus={() => setFocused(true)}
         onBlur={handleBlur}
       >
-        <Tabs.Root
-          className="composer-tabs-root"
-          value={mode}
-          onValueChange={(value) => setMode(value as ComposerMode)}
-        >
-          {hasDraft && (
-            <Tabs.List
-              className="composer-preview-toggle-row composer-tabs-overlay"
-              activateOnFocus
-            >
-              <Tabs.Tab
-                value="write"
-                className={(state) =>
-                  state.active
-                    ? "composer-preview-toggle active"
-                    : "composer-preview-toggle"
-                }
-              >
-                <Pencil size={14} />
-                Write
-              </Tabs.Tab>
-              <Tabs.Tab
-                value="preview"
-                className={(state) =>
-                  state.active
-                    ? "composer-preview-toggle active"
-                    : "composer-preview-toggle"
-                }
-              >
+        {/* A single mode switch that always points at the *opposite* surface
+         * (write -> Preview, preview -> Write), mirroring GitHub's Preview<->Edit
+         * swap. A two-tab tablist with only one meaningful choice would be
+         * ARIA-noise, so this is a plain button; its visible label is the
+         * action, so no aria-pressed (that would be a conflicting signal). It
+         * inherits the overlay placement so appearing on first keystroke never
+         * shifts the editing surface. */}
+        {hasDraft && (
+          <button
+            type="button"
+            className="composer-preview-toggle composer-tabs-overlay"
+            onClick={toggleMode}
+          >
+            {mode === "write" ? (
+              <>
                 <Eye size={14} />
                 Preview
-              </Tabs.Tab>
-            </Tabs.List>
-          )}
+              </>
+            ) : (
+              <>
+                <Pencil size={14} />
+                Write
+              </>
+            )}
+          </button>
+        )}
 
-          {mode === "write" ? (
-            <textarea
-              ref={textareaRef}
-              id="comment-draft"
-              aria-label="Write a comment"
-              placeholder="Write a comment..."
-              value={draft}
-              disabled={disabled}
-              rows={4}
-              onChange={(event) => onDraftChange(event.target.value)}
-            />
-          ) : (
-            <div className="comment-preview" aria-label="Comment preview">
-              {hasDraft ? (
-                <MarkdownBody body={draft} />
-              ) : (
-                <p className="comment-preview-empty">Nothing to preview.</p>
-              )}
-            </div>
-          )}
-        </Tabs.Root>
+        {mode === "write" ? (
+          <textarea
+            ref={textareaRef}
+            id="comment-draft"
+            aria-label="Write a comment"
+            placeholder="Write a comment..."
+            value={draft}
+            disabled={disabled}
+            rows={4}
+            onChange={(event) => onDraftChange(event.target.value)}
+          />
+        ) : (
+          <div className="comment-preview" aria-label="Comment preview">
+            {hasDraft ? (
+              <MarkdownBody body={draft} />
+            ) : (
+              <p className="comment-preview-empty">Nothing to preview.</p>
+            )}
+          </div>
+        )}
 
         {expanded && (
           <div className="composer-actions">
