@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
@@ -16,6 +18,31 @@ const signedInConnection: GithubConnection = {
   webBaseUrl: "https://github.com",
   token: "ghp_test"
 };
+
+const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+
+function cssDeclarationsFor(selector: string): Record<string, string> {
+  const start = appStyles.indexOf(`${selector} {`);
+  if (start === -1) {
+    throw new Error(`Missing CSS rule for ${selector}`);
+  }
+  const blockStart = appStyles.indexOf("{", start);
+  const blockEnd = appStyles.indexOf("}", blockStart);
+  return Object.fromEntries(
+    appStyles
+      .slice(blockStart + 1, blockEnd)
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separator = declaration.indexOf(":");
+        return [
+          declaration.slice(0, separator).trim(),
+          declaration.slice(separator + 1).trim()
+        ];
+      })
+  );
+}
 
 const baseItem: ItemDocument = {
   path: "/vault/github.com/acme/app/issues/42/issue.md",
@@ -403,6 +430,34 @@ describe("ItemListPane", () => {
       "3"
     );
     expect(container.querySelector(".item-footer")).toBeNull();
+  });
+
+  it("centers list label text with explicit pill metrics", () => {
+    renderPane([baseItem]);
+
+    const labelStyle = cssDeclarationsFor(".item-label");
+    expect(screen.getByText("bug")).toHaveClass("item-label");
+    expect(labelStyle.display).toBe("inline-flex");
+    expect(labelStyle["align-items"]).toBe("center");
+    expect(labelStyle["line-height"]).toBe("1");
+    expect(labelStyle.padding).toBe("0 8px");
+    expect(labelStyle["min-height"]).toBe("18px");
+  });
+
+  it("uses one text size for the comment icon and count", () => {
+    const { container } = renderPane([baseItem]);
+
+    const comments = container.querySelector(".item-comments") as HTMLElement;
+    const icon = comments.querySelector(".yona-comment-icon") as HTMLElement;
+    const commentsStyle = cssDeclarationsFor(".item-comments");
+    const iconStyle = cssDeclarationsFor(".item-comments .yona-comment-icon");
+
+    expect(comments).toHaveTextContent("3");
+    expect(icon).toHaveClass("yona-comment-icon");
+    expect(commentsStyle["font-size"]).toBe("13px");
+    expect(commentsStyle["line-height"]).toBe("1");
+    expect(iconStyle["font-size"]).toBe("inherit");
+    expect(iconStyle["line-height"]).toBe("inherit");
   });
 
   it("does not render a footer when there are no comments and no bookmark", () => {

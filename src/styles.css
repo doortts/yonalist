@@ -1528,12 +1528,16 @@ body.is-resizing-pane {
 }
 
 .item-label {
-  padding: 1px 8px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--text-2);
   font-size: 11px;
   font-weight: 500;
+  line-height: 1;
 }
 
 .item-label.colored {
@@ -1551,16 +1555,18 @@ body.is-resizing-pane {
   align-items: center;
   gap: 3px;
   color: var(--yona-comment);
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1;
 }
 
 .item-comments .yona-comment-icon {
   color: var(--yona-comment);
   font-family: "yobicon";
-  font-size: 13px;
+  font-size: inherit;
   font-style: normal;
   font-weight: normal;
-  line-height: 1;
+  line-height: inherit;
 }
 
 .item-comments .yona-comment-icon::before {
