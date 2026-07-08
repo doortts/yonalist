@@ -24,7 +24,18 @@ export const paneWidthLimits: Record<ResizablePane, { min: number; max: number }
   list: { min: 320, max: 640 }
 };
 
+export interface PaneCollapsed {
+  sidebar: boolean;
+  list: boolean;
+}
+
+const defaultPaneCollapsed: PaneCollapsed = {
+  sidebar: false,
+  list: false
+};
+
 const paneWidthStorageKey = "yonalist.paneWidths.v1";
+const paneCollapsedStorageKey = "yonalist.paneCollapsed.v1";
 
 function clampPaneWidth(pane: ResizablePane, width: number): number {
   const limits = paneWidthLimits[pane];
@@ -59,13 +70,52 @@ function persistPaneWidths(widths: PaneWidths) {
   }
 }
 
+function loadPaneCollapsed(): PaneCollapsed {
+  try {
+    const stored = window.localStorage.getItem(paneCollapsedStorageKey);
+    if (!stored) {
+      return defaultPaneCollapsed;
+    }
+
+    const parsed = JSON.parse(stored) as Partial<PaneCollapsed>;
+    return {
+      sidebar: parsed.sidebar === true,
+      list: parsed.list === true
+    };
+  } catch {
+    return defaultPaneCollapsed;
+  }
+}
+
+function persistPaneCollapsed(collapsed: PaneCollapsed) {
+  try {
+    window.localStorage.setItem(paneCollapsedStorageKey, JSON.stringify(collapsed));
+  } catch {
+    // Collapsing remains available even when stored preferences are unavailable.
+  }
+}
+
 export function usePaneResize() {
   const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths());
+  const [paneCollapsed, setPaneCollapsed] = useState<PaneCollapsed>(() =>
+    loadPaneCollapsed()
+  );
   const paneWidthsRef = useRef(paneWidths);
   paneWidthsRef.current = paneWidths;
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => () => cleanupRef.current?.(), []);
+
+  useEffect(() => {
+    persistPaneCollapsed(paneCollapsed);
+  }, [paneCollapsed]);
+
+  const togglePaneCollapsed = useCallback((pane: ResizablePane) => {
+    setPaneCollapsed((current) => ({
+      ...current,
+      [pane]: !current[pane]
+    }));
+  }, []);
 
   const updatePaneWidth = useCallback((pane: ResizablePane, width: number) => {
     setPaneWidths((current) => {
@@ -131,5 +181,11 @@ export function usePaneResize() {
     []
   );
 
-  return { paneWidths, startResize, resizeWithKeyboard };
+  return {
+    paneWidths,
+    paneCollapsed,
+    togglePaneCollapsed,
+    startResize,
+    resizeWithKeyboard
+  };
 }

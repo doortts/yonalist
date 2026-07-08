@@ -39,6 +39,7 @@ import {
 import { NotificationDetail } from "./components/NotificationDetail";
 import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
+import { ConfirmDialog } from "./components/ui/ConfirmDialog";
 import {
   SettingsCategoryPane,
   type SettingsSection
@@ -118,6 +119,7 @@ import { estimateRecordBytes } from "./services/cacheStats";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
+import { isRemoteReachable } from "./services/remoteReachability";
 import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
 import {
   commentDocumentContents,
@@ -278,6 +280,12 @@ export default function App({ initialOnline }: AppProps) {
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
   const [selectedOutboxIds, setSelectedOutboxIds] = useState<Set<string>>(new Set());
   const [showOutbox, setShowOutbox] = useState(false);
+  // Pending reconnect-sync confirmation; the captured operations are flushed
+  // only if the user accepts. Null when no prompt is open.
+  const [reconnectSyncPrompt, setReconnectSyncPrompt] = useState<{
+    operations: OutboxOperationDocument[];
+    count: number;
+  } | null>(null);
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
@@ -294,7 +302,8 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsStatus, setSettingsStatus] = useState("");
   const [resetProgress, setResetProgress] =
     useState<ResetProgressState>(idleResetProgress);
-  const { paneWidths, startResize, resizeWithKeyboard } = usePaneResize();
+  const { paneWidths, paneCollapsed, togglePaneCollapsed, startResize, resizeWithKeyboard } =
+    usePaneResize();
   const servers = useGithubServers();
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
@@ -945,13 +954,18 @@ export default function App({ initialOnline }: AppProps) {
 
   const layoutStyle = {
     ...navigationListAccentStyle,
-    "--sidebar-width": `${paneWidths.sidebar}px`,
-    "--list-width": `${paneWidths.list}px`
+    // Collapsing zeroes the effective column width while the stored width is
+    // preserved in the hook, so expanding restores the previous size.
+    "--sidebar-width": paneCollapsed.sidebar ? "0px" : `${paneWidths.sidebar}px`,
+    "--list-width": paneCollapsed.list ? "0px" : `${paneWidths.list}px`
   } as CSSProperties;
 
-  // When connectivity returns (browser event or manual toggle), queued work
-  // is flushed automatically for signed-in sessions — with a result toast —
-  // and surfaced for review otherwise, so it is never silently forgotten.
+  // When connectivity returns (browser event or manual toggle), queued work is
+  // never sent silently: for signed-in sessions we first confirm the actual
+  // remote is reachable, then ask before flushing; unsigned sessions surface
+  // the queue for review so it is never forgotten. The transition is evaluated
+  // once per offline→online edge (guarded by previousOnline), so a cancelled or
+  // unreachable probe is not re-asked until the next reconnect.
   const previousOnline = useRef(online);
   useEffect(() => {
     if (
@@ -964,7 +978,7 @@ export default function App({ initialOnline }: AppProps) {
         (operation) => operation.frontMatter.status !== "blocked"
       );
       if (auth.connection.token.trim() && retryable.length > 0) {
-        void autoFlushOutbox(retryable);
+        void promptReconnectSyncIfReachable(retryable);
       } else if (!auth.connection.token.trim()) {
         setSelectedOutboxIds(
           new Set(outbox.map((operation) => operation.frontMatter.id))
@@ -1321,7 +1335,25 @@ export default function App({ initialOnline }: AppProps) {
     setShowOutbox(false);
   }
 
-  /** Reconnect flush: sync everything retryable without asking, then report. */
+  /**
+   * On reconnect, confirm the configured server is actually reachable before
+   * offering to flush. `navigator.onLine` (and the manual toggle) only prove a
+   * network exists — an intranet GHE host can stay unreachable behind a live
+   * internet connection — so we probe the real endpoint first. Only when it
+   * answers do we surface the confirmation; any failure stays silent, and the
+   * next offline→online transition re-evaluates.
+   */
+  async function promptReconnectSyncIfReachable(
+    operations: OutboxOperationDocument[]
+  ) {
+    const reachable = await isRemoteReachable(auth.connection);
+    if (!reachable) {
+      return;
+    }
+    setReconnectSyncPrompt({ operations, count: operations.length });
+  }
+
+  /** Reconnect flush: sync everything retryable after the user confirms. */
   async function autoFlushOutbox(operations: OutboxOperationDocument[]) {
     const outcome = await performSync(operations);
     if (!outcome) {
@@ -1608,8 +1640,21 @@ export default function App({ initialOnline }: AppProps) {
     <GithubConnectionContext.Provider value={auth.connection}>
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
-    <main className="app-shell" aria-label="Yonalist layout" style={layoutStyle}>
-      <TitleBar />
+    <main
+      className="app-shell"
+      aria-label="Yonalist layout"
+      style={layoutStyle}
+      data-sidebar-collapsed={paneCollapsed.sidebar ? "true" : undefined}
+      data-list-collapsed={paneCollapsed.list ? "true" : undefined}
+    >
+      <TitleBar
+        paneToggles={{
+          sidebarCollapsed: paneCollapsed.sidebar,
+          listCollapsed: paneCollapsed.list,
+          onToggleSidebar: () => togglePaneCollapsed("sidebar"),
+          onToggleList: () => togglePaneCollapsed("list")
+        }}
+      />
       <Sidebar
         online={online}
         loginRequired={!auth.signedIn}
@@ -1798,6 +1843,27 @@ export default function App({ initialOnline }: AppProps) {
           onClose={() => setShowOutbox(false)}
         />
       )}
+      <ConfirmDialog
+        open={reconnectSyncPrompt !== null}
+        onOpenChange={(next) => {
+          if (!next) {
+            setReconnectSyncPrompt(null);
+          }
+        }}
+        title="대기 중인 변경 전송"
+        description={
+          reconnectSyncPrompt
+            ? `오프라인에서 작성한 변경 ${reconnectSyncPrompt.count}건을 지금 원격으로 보낼까요?`
+            : ""
+        }
+        confirmLabel="전송"
+        cancelLabel="나중에"
+        onConfirm={() => {
+          if (reconnectSyncPrompt) {
+            void autoFlushOutbox(reconnectSyncPrompt.operations);
+          }
+        }}
+      />
       <Toast.Provider
         toastManager={appToastManager}
         timeout={APP_SNACKBAR_TIMEOUT_MS}

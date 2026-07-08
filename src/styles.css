@@ -539,7 +539,8 @@ h2 {
 .app-shell {
   display: grid;
   grid-template-columns:
-    var(--sidebar-width, 280px) 1px var(--list-width, 420px) 1px
+    var(--sidebar-width, 280px) var(--sidebar-resizer-width, 1px)
+    var(--list-width, 420px) var(--list-resizer-width, 1px)
     minmax(520px, 1fr);
   grid-template-rows: minmax(0, 1fr) var(--statusbar-height);
   height: 100vh;
@@ -642,6 +643,87 @@ body.is-resizing-pane {
 
 .app-shell > .app-content-drag-strip {
   left: calc(var(--sidebar-width, 280px) + 1px);
+}
+
+/* Pane collapse toggles. Fixed in their own strip above the drag regions and
+   offset past the macOS traffic lights, so they stay reachable even when the
+   sidebar is collapsed to zero width. Not a drag region themselves. */
+.pane-toggle-group {
+  position: fixed;
+  top: 0;
+  left: 78px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--titlebar-height);
+}
+
+.pane-toggle.icon-button {
+  width: 30px;
+  min-height: 30px;
+  padding: 0;
+  color: var(--text-2);
+  cursor: default;
+}
+
+.pane-toggle.icon-button:hover {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.pane-toggle.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.pane-toggle.icon-button[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* Collapsing is a desktop-only affordance: below 981px the responsive layouts
+   redefine the grid and hide these toggles, so the content-hiding rules are
+   scoped to the desktop breakpoint to avoid blanking a reserved column. */
+@media (min-width: 981px) {
+  .app-shell[data-sidebar-collapsed="true"] {
+    --sidebar-resizer-width: 0px;
+  }
+
+  .app-shell[data-list-collapsed="true"] {
+    --list-resizer-width: 0px;
+  }
+
+  /* Hide the collapsed pane and its resizer WITHOUT display:none. The five
+     row-1 grid items (sidebar, resizer, list/notifications, resizer, detail)
+     are auto-placed left to right, so display:none would pull the collapsed
+     ones out of the flow and shift every following item one column left — the
+     detail pane lands in the list column (x:0, list width) and the rightmost
+     1fr track is left empty. Keeping them in flow at their already-zeroed
+     column widths preserves placement. visibility:hidden still removes their
+     focusable content from the tab order and the accessibility tree, and
+     overflow/min-width clip any intrinsic content down to the 0px track. */
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar,
+  .app-shell[data-sidebar-collapsed="true"] > .sidebar-list-resizer,
+  .app-shell[data-list-collapsed="true"] > .list-pane,
+  .app-shell[data-list-collapsed="true"] > .notifications-pane,
+  .app-shell[data-list-collapsed="true"] > .list-detail-resizer {
+    visibility: hidden;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  /* Collapsing the sidebar slides the next visible pane to the window's left
+     edge, underneath the fixed .pane-toggle-group. Content panes normally
+     reserve only a slim top spacer, so their header (search row / eyebrow)
+     would collide with the toggle buttons. Restore a full titlebar-height top
+     spacer on whichever pane becomes leftmost so its header clears them. */
+  .app-shell[data-sidebar-collapsed="true"] > .list-pane > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"] > .notifications-pane > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"][data-list-collapsed="true"]
+    > .detail-pane
+    > .pane-titlebar-spacer {
+    flex-basis: var(--titlebar-height);
+  }
 }
 
 .pane-titlebar-spacer {
@@ -3684,6 +3766,12 @@ body.is-resizing-pane {
 
   .detail-pane {
     grid-column: 1 / -1;
+  }
+
+  /* The responsive layouts collapse to two/one columns, so the pane toggles
+     have nothing meaningful to control below the desktop breakpoint. */
+  .pane-toggle-group {
+    display: none;
   }
 }
 

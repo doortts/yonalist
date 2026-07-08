@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -309,6 +309,134 @@ describe("Yonalist app shell", () => {
 
     expect(startDrag).toHaveBeenCalledTimes(1);
     startDrag.mockRestore();
+  });
+
+  it("collapses and expands the sidebar pane, zeroing its grid width", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    const sidebarToggle = screen.getByRole("button", {
+      name: "사이드바 접기/펼치기"
+    });
+
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+
+    await user.click(sidebarToggle);
+
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(sidebarToggle).toHaveAttribute("aria-pressed", "true");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("0px");
+
+    await user.click(sidebarToggle);
+
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+    // Expanding restores the previous width rather than a hard-coded default.
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  });
+
+  it("collapses the list pane independently of the sidebar pane", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    const listToggle = screen.getByRole("button", { name: "목록 접기/펼치기" });
+    const sidebarToggle = screen.getByRole("button", {
+      name: "사이드바 접기/펼치기"
+    });
+
+    await user.click(listToggle);
+
+    expect(shell).toHaveAttribute("data-list-collapsed", "true");
+    expect(shell.style.getPropertyValue("--list-width")).toBe("0px");
+    expect(listToggle).toHaveAttribute("aria-pressed", "true");
+    // The sibling pane is untouched.
+    expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
+    expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+  });
+
+  it("keeps both pane toggles reachable while a pane is collapsed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const sidebarToggle = await screen.findByRole("button", {
+      name: "사이드바 접기/펼치기"
+    });
+
+    await user.click(sidebarToggle);
+
+    // Even with the sidebar collapsed, both toggles remain in the document
+    // (they live in the title bar, not inside the collapsed pane).
+    expect(
+      screen.getByRole("button", { name: "사이드바 접기/펼치기" })
+    ).toBeInTheDocument();
+    const listToggle = screen.getByRole("button", { name: "목록 접기/펼치기" });
+    expect(listToggle).toBeInTheDocument();
+
+    // ...and the sidebar toggle can still be used to expand it again.
+    await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
+    expect(
+      await screen.findByLabelText("Yonalist layout")
+    ).not.toHaveAttribute("data-sidebar-collapsed");
+  });
+
+  it("restores the collapsed pane state after a reload", async () => {
+    const user = userEvent.setup();
+    const first = render(<App />);
+
+    await screen.findByLabelText("Yonalist layout");
+    await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
+    await user.click(screen.getByRole("button", { name: "목록 접기/펼치기" }));
+
+    expect(window.localStorage.getItem("yonalist.paneCollapsed.v1")).toContain(
+      "\"sidebar\":true"
+    );
+
+    // Simulate a fresh launch against the same persisted storage.
+    first.unmount();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).toHaveAttribute("data-list-collapsed", "true");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("0px");
+    expect(shell.style.getPropertyValue("--list-width")).toBe("0px");
+    expect(
+      screen.getByRole("button", { name: "사이드바 접기/펼치기" })
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps collapsed panes mounted in the grid flow instead of removing them", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const shell = await screen.findByLabelText("Yonalist layout");
+    await user.click(screen.getByRole("button", { name: "사이드바 접기/펼치기" }));
+    await user.click(screen.getByRole("button", { name: "목록 접기/펼치기" }));
+
+    expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
+    expect(shell).toHaveAttribute("data-list-collapsed", "true");
+
+    // Regression guard for the grid auto-placement bug: hiding a collapsed pane
+    // with display:none pulled it out of the row's left-to-right auto-placement
+    // flow, shifting the detail pane into the (zero-width) list column and
+    // blanking the right edge. The panes must stay mounted so the surviving
+    // columns keep their positions — the stylesheet now hides them with
+    // visibility, not display:none or a conditional unmount. jsdom does not
+    // resolve stylesheet rules, so we assert the panes remain in the document
+    // and are never hidden via an inline display:none.
+    const sidebar = shell.querySelector<HTMLElement>(".sidebar");
+    const middlePane = shell.querySelector<HTMLElement>(".notifications-pane");
+    const detailPane = shell.querySelector<HTMLElement>(".detail-pane");
+    expect(sidebar).not.toBeNull();
+    expect(middlePane).not.toBeNull();
+    expect(detailPane).not.toBeNull();
+    expect(sidebar?.style.display).not.toBe("none");
+    expect(middlePane?.style.display).not.toBe("none");
   });
 
   it("toggles the red bookmark favorite control in the detail header", async () => {
@@ -926,9 +1054,18 @@ describe("Yonalist app shell", () => {
     );
   }
 
-  function autoFlushFetchMock(issuePost: () => Response) {
+  function autoFlushFetchMock(
+    issuePost: () => Response,
+    rateLimit: () => Response = () =>
+      new Response(JSON.stringify({ resources: {} }), { status: 200 })
+  ) {
     return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const target = String(url);
+      // The reconnect reachability probe hits /rate_limit; answer it before the
+      // generic fallthrough so tests can toggle the remote in/out of reach.
+      if (target.includes("/rate_limit")) {
+        return rateLimit();
+      }
       if (/\/repos\/[^/]+\/[^/]+\/issues$/.test(target) && init?.method === "POST") {
         return issuePost();
       }
@@ -950,7 +1087,29 @@ describe("Yonalist app shell", () => {
     });
   }
 
-  it("auto-syncs the outbox on reconnect when signed in", async () => {
+  function reconnectProbeCalls(fetchMock: ReturnType<typeof autoFlushFetchMock>) {
+    return fetchMock.mock.calls.filter(([url]) =>
+      String(url).includes("/rate_limit")
+    );
+  }
+
+  function queuedIssuePostCalls(fetchMock: ReturnType<typeof autoFlushFetchMock>) {
+    return fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        /\/repos\/[^/]+\/[^/]+\/issues$/.test(String(url)) &&
+        (init as RequestInit | undefined)?.method === "POST"
+    );
+  }
+
+  // Flush pending microtasks plus one macrotask so an in-flight reachability
+  // probe settles; used to assert that *no* prompt surfaces.
+  async function settleReconnectProbe() {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  it("prompts before syncing on reconnect and sends only after the user confirms", async () => {
     const user = userEvent.setup();
     await seedQueuedIssueDraft(user);
 
@@ -977,15 +1136,122 @@ describe("Yonalist app shell", () => {
 
       await user.click(screen.getByRole("button", { name: "Go online" }));
 
-      expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
-      expect(screen.queryByRole("dialog", { name: "Outbox" })).not.toBeInTheDocument();
+      // A confirmation appears (after the reachability probe) and nothing is
+      // sent yet — the reconnect flush no longer happens automatically.
+      const dialog = await screen.findByRole("alertdialog", {
+        name: "대기 중인 변경 전송"
+      });
       expect(
-        fetchMock.mock.calls.filter(
-          ([url, init]) =>
-            /\/repos\/[^/]+\/[^/]+\/issues$/.test(String(url)) &&
-            (init as RequestInit | undefined)?.method === "POST"
-        )
-      ).toHaveLength(1);
+        within(dialog).getByText(/오프라인에서 작성한 변경 1건/)
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock).length).toBeGreaterThan(0);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+
+      await user.click(within(dialog).getByRole("button", { name: "전송" }));
+
+      expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not send and does not re-ask when the reconnect prompt is cancelled", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 201 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      const dialog = await screen.findByRole("alertdialog", {
+        name: "대기 중인 변경 전송"
+      });
+      await user.click(within(dialog).getByRole("button", { name: "나중에" }));
+
+      await waitFor(() =>
+        expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+      );
+      // Cancelling sends nothing and does not resurface on its own.
+      await settleReconnectProbe();
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+      // A fresh offline→online transition re-evaluates and asks again.
+      fireEvent(window, new Event("offline"));
+      fireEvent(window, new Event("online"));
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not prompt or send on reconnect when the remote is unreachable", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 202 }), { status: 201 }),
+      // The reachability probe fails: internet is up but the GHE host is not.
+      () => new Response(JSON.stringify({ message: "unreachable" }), { status: 502 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      await waitFor(() =>
+        expect(reconnectProbeCalls(fetchMock).length).toBeGreaterThan(0)
+      );
+      await settleReconnectProbe();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not probe or prompt on reconnect when the sync setting is off", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+    // Disable the reconnect-sync preference for this run.
+    window.localStorage.setItem(
+      "yonalist.settings.v1",
+      JSON.stringify({ syncQueuedOnReconnect: false })
+    );
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 203 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      await settleReconnectProbe();
+      // With the setting off we never even probe reachability, let alone ask.
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1007,18 +1273,18 @@ describe("Yonalist app shell", () => {
 
       await user.click(screen.getByRole("button", { name: "Go online" }));
 
+      // Confirm the reconnect prompt before the (doomed) send is attempted.
+      const prompt = await screen.findByRole("alertdialog", {
+        name: "대기 중인 변경 전송"
+      });
+      await user.click(within(prompt).getByRole("button", { name: "전송" }));
+
       const dialog = await screen.findByRole("dialog", { name: "Outbox" });
       expect(within(dialog).getByText(/Blocked/)).toBeInTheDocument();
       // Blocked operations are not preselected for another doomed retry.
       expect(within(dialog).getByRole("checkbox")).not.toBeChecked();
       // Permanent failures are not retried.
-      expect(
-        fetchMock.mock.calls.filter(
-          ([url, init]) =>
-            /\/repos\/[^/]+\/[^/]+\/issues$/.test(String(url)) &&
-            (init as RequestInit | undefined)?.method === "POST"
-        )
-      ).toHaveLength(1);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(1);
     } finally {
       vi.unstubAllGlobals();
     }
