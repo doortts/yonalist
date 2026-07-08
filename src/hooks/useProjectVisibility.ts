@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { OwnerGroup, RepositorySummary } from "../services/githubItems";
 import {
+  hasStoredProjectVisibility,
   isRepositoryVisible,
   loadProjectVisibility,
   persistProjectVisibility,
@@ -18,9 +19,10 @@ export interface UseProjectVisibilityResult {
 
 export function useProjectVisibility(
   groups: OwnerGroup[],
-  involvedRepoNames: ReadonlySet<string>,
+  defaultVisibleRepoNames: ReadonlySet<string>,
   snapshotReady = false
 ): UseProjectVisibilityResult {
+  const [hadStoredVisibility] = useState(() => hasStoredProjectVisibility());
   const [overrides, setOverrides] = useState<ProjectVisibilityMap>(() =>
     loadProjectVisibility()
   );
@@ -29,10 +31,11 @@ export function useProjectVisibility(
     persistProjectVisibility(overrides);
   }, [overrides]);
 
-  // Defaults depend on live signals (involves:@me activity) that vary between
-  // sessions. Once those signals are ready, freeze the computed default for
-  // every repository without an explicit choice so the sidebar stays exactly
-  // as the user last saw it instead of re-deriving on each launch.
+  // First-run defaults come from the user's notification feed: repositories
+  // that currently produce notifications are useful immediately, while the
+  // larger accessible repository list can stay hidden until selected in
+  // Settings. Existing saved choices keep the historical fallback so manual
+  // project visibility is never overwritten by a later notification refresh.
   useEffect(() => {
     if (!snapshotReady || groups.length === 0) {
       return;
@@ -43,23 +46,29 @@ export function useProjectVisibility(
       for (const group of groups) {
         for (const repository of group.repositories) {
           if (next[repository.fullName] === undefined) {
-            next[repository.fullName] = isRepositoryVisible(
-              repository,
-              current,
-              involvedRepoNames
-            );
+            next[repository.fullName] = hadStoredVisibility
+              ? isRepositoryVisible(repository, current, defaultVisibleRepoNames)
+              : defaultVisibleRepoNames.has(repository.fullName);
             changed = true;
           }
         }
       }
       return changed ? next : current;
     });
-  }, [snapshotReady, groups, involvedRepoNames]);
+  }, [snapshotReady, groups, defaultVisibleRepoNames, hadStoredVisibility]);
 
   const isVisible = useCallback(
-    (repository: RepositorySummary) =>
-      isRepositoryVisible(repository, overrides, involvedRepoNames),
-    [overrides, involvedRepoNames]
+    (repository: RepositorySummary) => {
+      if (!hadStoredVisibility) {
+        const override = overrides[repository.fullName];
+        if (override !== undefined) {
+          return override;
+        }
+        return snapshotReady && defaultVisibleRepoNames.has(repository.fullName);
+      }
+      return isRepositoryVisible(repository, overrides, defaultVisibleRepoNames);
+    },
+    [hadStoredVisibility, snapshotReady, overrides, defaultVisibleRepoNames]
   );
 
   const visibleGroups = useMemo(

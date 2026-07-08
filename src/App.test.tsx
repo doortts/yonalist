@@ -5,6 +5,7 @@ import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
+import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
 
 function installLocalStorageMock() {
@@ -36,6 +37,7 @@ describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
     clearWorkItemsCache();
+    clearNotificationCache();
     // Existing shell tests assume the app is past the startup login gate.
     window.localStorage.setItem("yonalist.auth.skipLogin.v1", "true");
   });
@@ -277,6 +279,10 @@ describe("Yonalist app shell", () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",
       JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
     );
 
     render(<App />);
@@ -789,6 +795,30 @@ describe("Yonalist app shell", () => {
           status: 200
         });
       }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-app",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Real fetched issue",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/101"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
+      }
       if (target.includes("/user/repos")) {
         return new Response(
           JSON.stringify([
@@ -965,6 +995,30 @@ describe("Yonalist app shell", () => {
         return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
           status: 200
         });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-app",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Real fetched issue",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/101"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
       }
       if (target.includes("/user/repos")) {
         return new Response(
@@ -1428,6 +1482,30 @@ describe("Yonalist app shell", () => {
           status: 200
         });
       }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-app",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Real fetched issue",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/101"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
+      }
       if (target.includes("/user/repos")) {
         return new Response(
           JSON.stringify([
@@ -1667,6 +1745,30 @@ describe("Yonalist app shell", () => {
           status: 200
         });
       }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-app",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Real fetched issue",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/app/issues/101"
+              },
+              repository: {
+                full_name: "acme/app",
+                name: "app",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
+      }
       if (target.includes("/user/repos")) {
         return new Response(
           JSON.stringify([
@@ -1695,6 +1797,16 @@ describe("Yonalist app shell", () => {
       await user.click(screen.getByRole("button", { name: /^All items/ }));
       const list = screen.getByLabelText("Items");
       expect(await within(list).findByText("Real fetched issue")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(
+          fetchMock.mock.calls.some(([url]) => String(url).includes("/notifications"))
+        ).toBe(true)
+      );
+      await waitFor(() =>
+        expect(
+          window.localStorage.getItem("yonalist.projectVisibility.v1")
+        ).toContain('"acme/app":true')
+      );
 
       const navigation = screen.getByLabelText("Navigation");
       expect(await within(navigation).findByText("acme")).toBeInTheDocument();
@@ -1747,6 +1859,30 @@ describe("Yonalist app shell", () => {
         return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
           status: 200
         });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(
+          JSON.stringify([
+            {
+              id: "notification-acme-visible",
+              unread: true,
+              reason: "mention",
+              updated_at: "2026-07-02T00:00:00Z",
+              last_read_at: null,
+              subject: {
+                title: "Visible repo ping",
+                type: "Issue",
+                url: "https://oss.navercorp.com/api/v3/repos/acme/visible/issues/1"
+              },
+              repository: {
+                full_name: "acme/visible",
+                name: "visible",
+                owner: { login: "acme" }
+              }
+            }
+          ]),
+          { status: 200 }
+        );
       }
       if (target.includes("affiliation=owner%2Ccollaborator")) {
         return new Response(

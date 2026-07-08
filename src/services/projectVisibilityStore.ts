@@ -14,6 +14,24 @@ export function loadProjectVisibility(): ProjectVisibilityMap {
   }
 }
 
+export function hasStoredProjectVisibility(): boolean {
+  try {
+    const stored = window.localStorage.getItem(visibilityStorageKey);
+    if (!stored) {
+      return false;
+    }
+    const decoded = JSON.parse(stored) as unknown;
+    return (
+      decoded !== null &&
+      typeof decoded === "object" &&
+      !Array.isArray(decoded) &&
+      Object.keys(decoded).length > 0
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function persistProjectVisibility(map: ProjectVisibilityMap) {
   try {
     window.localStorage.setItem(visibilityStorageKey, JSON.stringify(map));

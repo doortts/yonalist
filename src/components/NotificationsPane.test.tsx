@@ -34,6 +34,7 @@ function makeState(
   return {
     notifications: [makeNotification()],
     unreadCount: 1,
+    loaded: true,
     loading: false,
     error: null,
     demoMode: false,

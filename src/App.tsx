@@ -505,31 +505,22 @@ export default function App({ initialOnline }: AppProps) {
       );
     });
   }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
-  // Repos where the user's involves:@me inbox has activity count as
-  // "participating" for default project visibility.
-  const [involvedRepoNames, setInvolvedRepoNames] = useState<Set<string>>(
-    () => new Set()
+  const notificationRepoNames = useMemo(
+    () =>
+      new Set(
+        unfilteredNotifications.notifications
+          .map((notification) => notification.repository.full_name)
+          .filter((fullName): fullName is string => Boolean(fullName))
+      ),
+    [unfilteredNotifications.notifications]
   );
-  const [involvementReady, setInvolvementReady] = useState(false);
-  useEffect(() => {
-    if (
-      !inboxWorkItems.demoMode &&
-      inboxWorkItems.items.length > 0
-    ) {
-      setInvolvedRepoNames(
-        new Set(
-          inboxWorkItems.items.map(
-            (item) => `${item.frontMatter.owner}/${item.frontMatter.repo}`
-          )
-        )
-      );
-      setInvolvementReady(true);
-    }
-  }, [inboxWorkItems.demoMode, inboxWorkItems.items]);
   const projectVisibility = useProjectVisibility(
     repositoryGroups.groups,
-    involvedRepoNames,
-    involvementReady && !repositoryGroups.loading
+    notificationRepoNames,
+    authGate.state === "passed" &&
+      unfilteredNotifications.loaded &&
+      repositoryGroups.loaded &&
+      !repositoryGroups.loading
   );
   const selectedRepositoryForCounts =
     showSettings || showNotifications ? null : repositoryFilter;

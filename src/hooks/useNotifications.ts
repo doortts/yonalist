@@ -23,6 +23,7 @@ const POLL_INTERVAL_MS = 60 * 1000;
 export interface UseNotificationsResult {
   notifications: GitHubNotification[];
   unreadCount: number;
+  loaded: boolean;
   loading: boolean;
   error: string | null;
   demoMode: boolean;
@@ -129,6 +130,7 @@ export function useNotifications(
     () => (demoMode ? sampleNotifications() : fetched ?? []),
     [demoMode, fetched]
   );
+  const loaded = demoMode || fetched !== null;
 
   const repoVisible = useCallback(
     (notification: GitHubNotification) =>
@@ -174,6 +176,7 @@ export function useNotifications(
   return {
     notifications,
     unreadCount,
+    loaded,
     loading,
     error,
     demoMode,
