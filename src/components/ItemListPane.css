@@ -17,6 +17,7 @@
    flex sibling before it, vertically centered by the row's align-items. The
    avatar (line height ~16.9px ≥ 16px) leaves the row height unchanged. */
 .item-author-name {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -37,6 +37,8 @@ export function summarizeReactions(
 /** One entry in an issue/PR/discussion conversation. */
 export interface ConversationComment {
   id: string;
+  /** GraphQL node id, required when creating a GitHub Discussion reply. */
+  nodeId?: string;
   author: string;
   authorName?: string;
   avatarUrl?: string;

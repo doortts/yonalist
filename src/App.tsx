@@ -67,6 +67,7 @@ import {
   subjectNumber,
   type GitHubNotification
 } from "./domain/notifications";
+import type { ConversationComment } from "./domain/conversation";
 import type {
   CommentDocument,
   ItemKind,
@@ -1145,6 +1146,12 @@ export default function App({ initialOnline }: AppProps) {
             remote_id:
               typeof remote.id === "number" ? remote.id : Number(remote.id) || undefined,
             node_id: remote.node_id,
+            ...(target.parent_comment_id !== undefined
+              ? { parent_remote_id: target.parent_comment_id }
+              : {}),
+            ...(target.parent_comment_node_id
+              ? { parent_node_id: target.parent_comment_node_id }
+              : {}),
             author: "local",
             created_at: createdAt,
             updated_at: remote.updated_at ?? createdAt,
@@ -1402,9 +1409,11 @@ export default function App({ initialOnline }: AppProps) {
 
   function queueCommentForTarget(
     target: CommentTarget | null,
-    action: CommentSubmitAction
+    action: CommentSubmitAction,
+    bodyOverride?: string,
+    parentComment?: ConversationComment
   ) {
-    const body = commentDraft.trim();
+    const body = (bodyOverride ?? commentDraft).trim();
     if (!body || !target) {
       return;
     }
@@ -1419,6 +1428,8 @@ export default function App({ initialOnline }: AppProps) {
       repo: target.repo,
       itemKind: target.kind,
       number: target.number,
+      parentCommentId: parentComment?.id,
+      parentCommentNodeId: parentComment?.nodeId,
       closeAfterComment,
       localFilePath: commentFilePath(vaultRoot, {
         kind: target.kind,
@@ -1437,6 +1448,10 @@ export default function App({ initialOnline }: AppProps) {
       body,
       frontMatter: {
         kind: "issue_comment",
+        ...(parentComment?.id !== undefined
+          ? { parent_remote_id: parentComment.id }
+          : {}),
+        ...(parentComment?.nodeId ? { parent_node_id: parentComment.nodeId } : {}),
         author: "local",
         created_at: createdAt,
         updated_at: createdAt,
@@ -1446,7 +1461,9 @@ export default function App({ initialOnline }: AppProps) {
     const queuedOperation = { ...operation, body };
 
     setOutbox((current) => [...current, queuedOperation]);
-    setCommentDraft("");
+    if (bodyOverride === undefined) {
+      setCommentDraft("");
+    }
     void Promise.all([
       persistCommentDocument(vaultRoot, comment),
       persistOutboxOperation(vaultRoot, queuedOperation)
@@ -1472,8 +1489,38 @@ export default function App({ initialOnline }: AppProps) {
     );
   }
 
+  function queueItemReply(parent: ConversationComment, body: string) {
+    if (!selectedItem || selectedItem.frontMatter.kind !== "discussion") {
+      return;
+    }
+    queueCommentForTarget(
+      {
+        host: selectedItem.frontMatter.host,
+        owner: selectedItem.frontMatter.owner,
+        repo: selectedItem.frontMatter.repo,
+        kind: selectedItem.frontMatter.kind,
+        number: selectedItem.frontMatter.number
+      },
+      "comment",
+      body,
+      parent
+    );
+  }
+
   function queueNotificationComment(action: CommentSubmitAction) {
     queueCommentForTarget(selectedNotificationCommentTarget, action);
+  }
+
+  function queueNotificationReply(parent: ConversationComment, body: string) {
+    if (selectedNotification?.subject.type !== "Discussion") {
+      return;
+    }
+    queueCommentForTarget(
+      selectedNotificationCommentTarget,
+      "comment",
+      body,
+      parent
+    );
   }
 
   function queueIssue(event: FormEvent) {
@@ -1660,6 +1707,7 @@ export default function App({ initialOnline }: AppProps) {
       style={layoutStyle}
       data-sidebar-collapsed={paneCollapsed.sidebar ? "true" : undefined}
       data-list-collapsed={paneCollapsed.list ? "true" : undefined}
+      data-detail-maximized={detailMaximized ? "true" : undefined}
     >
       <TitleBar
         paneToggles={{
@@ -1825,6 +1873,7 @@ export default function App({ initialOnline }: AppProps) {
             onOpenInBrowser={notifications.openNotification}
             onCommentDraftChange={setCommentDraft}
             onQueueComment={queueNotificationComment}
+            onQueueReply={queueNotificationReply}
           />
         ) : (
           <ItemDetail
@@ -1837,6 +1886,7 @@ export default function App({ initialOnline }: AppProps) {
             onHeaderVisibilityChange={setDetailHeaderVisible}
             onCommentDraftChange={setCommentDraft}
             onQueueComment={queueItemComment}
+            onQueueReply={queueItemReply}
             onToggleFavorite={onToggleFavorite}
           />
         )}

@@ -1,4 +1,11 @@
 import {
+  type FormEvent,
+  type KeyboardEvent,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
+import {
   authorAssociationLabel,
   type ConversationComment,
   type ReactionSummary
@@ -71,6 +78,23 @@ function HeaderMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   );
 }
 
+function AuthorIdentity({ author }: { author: EntryAuthor }) {
+  const hasDisplayName = Boolean(author.name && author.name !== author.login);
+  const displayName = hasDisplayName ? author.name : author.login;
+
+  return (
+    <span className="comment-author-cluster">
+      <strong
+        className="comment-author"
+        title={hasDisplayName ? author.login : undefined}
+      >
+        {displayName}
+      </strong>
+      <AssociationBadge author={author} />
+    </span>
+  );
+}
+
 function EntryMeta({ author, meta }: { author: EntryAuthor; meta: string }) {
   return (
     <>
@@ -117,6 +141,71 @@ interface CommentThreadProps {
   comments: ConversationComment[];
   /** The opening post's author, so replies by them get an "Author" badge. */
   subjectAuthor?: string;
+  /**
+   * Called for GitHub Discussion replies. The parent must carry a GraphQL
+   * node id; Issue/PR comments do not have a remote nested-reply endpoint.
+   */
+  onReplySubmit?: (parent: ConversationComment, body: string) => void;
+}
+
+interface InlineReplyComposerProps {
+  onCancel: () => void;
+  onSubmit: (body: string) => void;
+}
+
+function InlineReplyComposer({ onCancel, onSubmit }: InlineReplyComposerProps) {
+  const [body, setBody] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasBody = body.trim().length > 0;
+
+  useLayoutEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      return;
+    }
+    textarea.style.height = "auto";
+    textarea.style.height = `${textarea.scrollHeight}px`;
+  }, [body]);
+
+  function submit(event?: FormEvent) {
+    event?.preventDefault();
+    const trimmed = body.trim();
+    if (!trimmed) {
+      return;
+    }
+    onSubmit(trimmed);
+    setBody("");
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      onCancel();
+      return;
+    }
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      submit();
+    }
+  }
+
+  return (
+    <form className="inline-reply-composer" onSubmit={submit}>
+      <textarea
+        ref={textareaRef}
+        aria-label="대댓글 입력"
+        placeholder="대댓글 추가 (⌘ + ENTER)"
+        rows={1}
+        value={body}
+        onChange={(event) => setBody(event.target.value)}
+        onKeyDown={handleKeyDown}
+        autoFocus
+      />
+      <button type="submit" disabled={!hasBody}>
+        OK
+      </button>
+    </form>
+  );
 }
 
 /**
@@ -124,11 +213,121 @@ interface CommentThreadProps {
  * author's avatar in a left gutter beside a bordered speech bubble whose tail
  * points back at the avatar.
  */
-export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
+export function CommentThread({
+  comments,
+  subjectAuthor,
+  onReplySubmit
+}: CommentThreadProps) {
+  const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
+
   if (comments.length === 0) {
     return null;
   }
-  function renderComment(comment: ConversationComment, nested = false) {
+
+  function authorForComment(comment: ConversationComment): EntryAuthor {
+    return {
+      login: comment.author,
+      name: comment.authorName,
+      avatarUrl: comment.avatarUrl,
+      association: comment.authorAssociation,
+      isAuthor: Boolean(subjectAuthor) && comment.author === subjectAuthor
+    };
+  }
+
+  function commentMeta(comment: ConversationComment) {
+    return comment.created_at
+      ? `commented ${timeAgo(comment.created_at)}`
+      : "commented";
+  }
+
+  function canReplyTo(comment: ConversationComment) {
+    return Boolean(onReplySubmit && comment.nodeId);
+  }
+
+  function renderReplyAction(comment: ConversationComment) {
+    if (!canReplyTo(comment)) {
+      return null;
+    }
+    return (
+      <div className="comment-hover-actions">
+        <button
+          type="button"
+          className="comment-inline-reply-button"
+          onClick={() => setActiveReplyId(comment.id)}
+        >
+          대댓글 추가
+        </button>
+      </div>
+    );
+  }
+
+  function renderInlineReplyComposer(comment: ConversationComment) {
+    if (activeReplyId !== comment.id || !canReplyTo(comment) || !onReplySubmit) {
+      return null;
+    }
+    return (
+      <InlineReplyComposer
+        onCancel={() => setActiveReplyId(null)}
+        onSubmit={(body) => {
+          onReplySubmit(comment, body);
+          setActiveReplyId(null);
+        }}
+      />
+    );
+  }
+
+  function renderReplyThread(replies: ConversationComment[]) {
+    return (
+      <div className="comment-replies" aria-label="Replies">
+        {replies.map((reply, index) => {
+          const previous = replies[index - 1];
+          const compact = Boolean(previous && previous.author === reply.author);
+          const author = authorForComment(reply);
+          return (
+            <article
+              className={
+                compact
+                  ? "comment-reply-card is-compact"
+                  : "comment-reply-card"
+              }
+              key={reply.id}
+            >
+              {!compact && (
+                <span className="comment-reply-author-row">
+                  <span className="comment-reply-avatar">
+                    <Avatar
+                      login={reply.author}
+                      avatarUrl={reply.avatarUrl}
+                      size={32}
+                    />
+                  </span>
+                  <AuthorIdentity author={author} />
+                </span>
+              )}
+              <div className="comment-reply-bubble">
+                <header className="comment-reply-header">
+                  <span className="comment-reply-time">
+                    {reply.created_at ? timeAgo(reply.created_at) : "now"}
+                  </span>
+                </header>
+                <div className="comment-reply-body">
+                  <MarkdownBody body={reply.body} />
+                  <Reactions reactions={reply.reactions} />
+                </div>
+                {renderReplyAction(reply)}
+              </div>
+              {renderInlineReplyComposer(reply)}
+              {reply.replies && reply.replies.length > 0 && (
+                renderReplyThread(reply.replies)
+              )}
+            </article>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderComment(comment: ConversationComment) {
     const author: EntryAuthor = {
       login: comment.author,
       name: comment.authorName,
@@ -137,32 +336,22 @@ export function CommentThread({ comments, subjectAuthor }: CommentThreadProps) {
       isAuthor: Boolean(subjectAuthor) && comment.author === subjectAuthor
     };
     return (
-      <article
-        className={nested ? "comment-item comment-item-reply" : "comment-item"}
-        key={comment.id}
-      >
-        <Avatar login={comment.author} avatarUrl={comment.avatarUrl} size={nested ? 32 : 40} />
+      <article className="comment-item" key={comment.id}>
+        <Avatar login={comment.author} avatarUrl={comment.avatarUrl} size={40} />
         <div className="comment-stack">
           <div className="comment-bubble">
             <header className="comment-header">
-              <HeaderMeta
-                author={author}
-                meta={
-                  comment.created_at
-                    ? `commented ${timeAgo(comment.created_at)}`
-                    : "commented"
-                }
-              />
+              <HeaderMeta author={author} meta={commentMeta(comment)} />
             </header>
             <div className="comment-body">
               <MarkdownBody body={comment.body} />
               <Reactions reactions={comment.reactions} />
             </div>
+            {renderReplyAction(comment)}
           </div>
+          {renderInlineReplyComposer(comment)}
           {comment.replies && comment.replies.length > 0 && (
-            <div className="comment-replies" aria-label="Replies">
-              {comment.replies.map((reply) => renderComment(reply, true))}
-            </div>
+            renderReplyThread(comment.replies)
           )}
         </div>
       </article>

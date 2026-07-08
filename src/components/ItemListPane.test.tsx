@@ -368,12 +368,41 @@ describe("ItemListPane", () => {
   it("no longer renders the owner/repo slug in the footer", () => {
     const { container } = renderPane([baseItem]);
 
-    const footer = container.querySelector(".item-footer") as HTMLElement;
-    // baseItem has comments, so the footer still renders (comments + bookmark).
-    expect(footer).not.toBeNull();
-    expect(footer.querySelector(".item-repo")).toBeNull();
-    expect(footer.textContent).not.toContain("acme");
-    expect(footer.textContent).not.toContain("app");
+    const labelRow = container.querySelector(".item-labels") as HTMLElement;
+    expect(labelRow.querySelector(".item-repo")).toBeNull();
+    expect(labelRow.textContent).not.toContain("acme");
+    expect(labelRow.textContent).not.toContain("app");
+  });
+
+  it("aligns comment count to the right edge of the author line when there are no labels", () => {
+    const item: ItemDocument = {
+      ...baseItem,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        labels: [],
+        label_colors: {},
+        comments_count: 5
+      }
+    };
+    const { container } = renderPane([item]);
+
+    const authorLine = container.querySelector(".item-author") as HTMLElement;
+    expect(authorLine.querySelector(".item-row-actions .item-comments")).toHaveTextContent(
+      "5"
+    );
+    expect(container.querySelector(".item-labels")).toBeNull();
+    expect(container.querySelector(".item-footer")).toBeNull();
+  });
+
+  it("aligns comment count to the right edge of the label line when labels are present", () => {
+    const { container } = renderPane([baseItem]);
+
+    const labelLine = container.querySelector(".item-labels") as HTMLElement;
+    expect(labelLine.querySelector(".item-label")).toHaveTextContent("bug");
+    expect(labelLine.querySelector(".item-row-actions .item-comments")).toHaveTextContent(
+      "3"
+    );
+    expect(container.querySelector(".item-footer")).toBeNull();
   });
 
   it("does not render a footer when there are no comments and no bookmark", () => {
@@ -401,10 +430,10 @@ describe("ItemListPane", () => {
     };
     const { container } = renderPane([item]);
 
-    const footer = container.querySelector(".item-footer") as HTMLElement;
-    expect(footer).not.toBeNull();
-    expect(footer.querySelector(".small-bookmark")).not.toBeNull();
-    expect(footer.querySelector(".item-comments")).toBeNull();
+    const labelLine = container.querySelector(".item-labels") as HTMLElement;
+    expect(labelLine.querySelector(".small-bookmark")).not.toBeNull();
+    expect(labelLine.querySelector(".item-comments")).toBeNull();
+    expect(container.querySelector(".item-footer")).toBeNull();
   });
 
   it("shows the author's display name from their profile on the author line", async () => {
@@ -488,5 +517,41 @@ describe("ItemListPane", () => {
         items[3]
       ]);
     });
+  });
+
+  it("does not reserve label-row height for virtualized items without labels", async () => {
+    const labelled = itemAt(1);
+    const withoutLabels: ItemDocument = {
+      ...itemAt(2),
+      frontMatter: {
+        ...itemAt(2).frontMatter,
+        labels: [],
+        label_colors: {}
+      }
+    };
+    const items = [
+      labelled,
+      withoutLabels,
+      ...Array.from({ length: 90 }, (_, index) => itemAt(index + 3))
+    ];
+    const { container } = renderPane(items);
+    const list = container.querySelector(".item-list") as HTMLDivElement;
+    Object.defineProperty(list, "clientHeight", {
+      configurable: true,
+      value: 320
+    });
+
+    fireEvent(window, new Event("resize"));
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".virtual-row").length).toBeGreaterThan(1);
+    });
+    const rows = Array.from(
+      container.querySelectorAll(".virtual-row")
+    ) as HTMLElement[];
+
+    expect(rows[0].style.height).toBe("140px");
+    expect(rows[1].style.height).toBe("112px");
+    expect(rows[1].querySelector(".item-labels")).toBeNull();
   });
 });

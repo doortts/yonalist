@@ -2,7 +2,7 @@ import type { PointerEvent } from "react";
 import { Maximize2, Minimize2 } from "lucide-react";
 import { startNativeWindowDrag } from "../windowDrag";
 import { IconTooltip } from "./ui/Tooltip";
-import { SidebarPaneIcon } from "./ui/PaneIcons";
+import { SidebarPaneIcon, SidebarPaneOpenIcon } from "./ui/PaneIcons";
 
 export interface PaneToggleControls {
   sidebarCollapsed: boolean;
@@ -68,11 +68,11 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
             aria-label="Pane layout"
             data-position={paneToggles.sidebarCollapsed ? "pane-start" : "sidebar-end"}
             // Open: tucked inside the sidebar's right edge, away from the traffic
-            // lights. Collapsed: the sidebar is gone, so it sits at the left of
-            // the now-frontmost pane, just clear of the traffic lights.
+            // lights. Collapsed: the sidebar is gone, so it rides the right edge
+            // of the now-frontmost pane with a traffic-light-safe fallback.
             style={{
               left: paneToggles.sidebarCollapsed
-                ? "78px"
+                ? "max(78px, calc(var(--list-width, 420px) - 36px))"
                 : "calc(var(--sidebar-width, 280px) - 36px)"
             }}
             // The buttons must not initiate a native window drag; keep pointer
@@ -90,7 +90,11 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
                 aria-pressed={paneToggles.sidebarCollapsed}
                 onClick={paneToggles.onToggleSidebar}
               >
-                <SidebarPaneIcon size={16} />
+                {paneToggles.sidebarCollapsed ? (
+                  <SidebarPaneOpenIcon size={16} />
+                ) : (
+                  <SidebarPaneIcon size={16} />
+                )}
               </button>
             </IconTooltip>
           </div>

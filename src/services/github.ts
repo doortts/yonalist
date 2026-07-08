@@ -119,8 +119,8 @@ query ($owner: String!, $repo: String!, $number: Int!) {
 }`;
 
 const ADD_DISCUSSION_COMMENT_MUTATION = `
-mutation ($discussionId: ID!, $body: String!) {
-  addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
+mutation ($discussionId: ID!, $body: String!, $replyToId: ID) {
+  addDiscussionComment(input: { discussionId: $discussionId, body: $body, replyToId: $replyToId }) {
     comment {
       id
       databaseId
@@ -288,7 +288,8 @@ export function createGitHubClient(options: GitHubClientOptions) {
       owner: string,
       repo: string,
       number: number,
-      body: string
+      body: string,
+      options: { replyToId?: string } = {}
     ) {
       const discussionData = await transport.graphql<{
         repository?: { discussion?: GraphQLDiscussionNode | null } | null;
@@ -303,7 +304,8 @@ export function createGitHubClient(options: GitHubClientOptions) {
         } | null;
       }>(ADD_DISCUSSION_COMMENT_MUTATION, {
         discussionId,
-        body
+        body,
+        ...(options.replyToId ? { replyToId: options.replyToId } : {})
       });
       return mapDiscussionComment(data.addDiscussionComment?.comment);
     },

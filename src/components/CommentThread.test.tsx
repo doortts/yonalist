@@ -1,5 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 import type { ConversationComment } from "../domain/conversation";
 import { CommentThread, OpeningPost } from "./CommentThread";
 
@@ -75,6 +76,109 @@ describe("CommentThread", () => {
     expect(await screen.findByText("parent discussion comment")).toBeInTheDocument();
     const replies = screen.getByLabelText("Replies");
     expect(within(replies).getByText("threaded discussion reply")).toBeInTheDocument();
+  });
+
+  it("renders nested replies as timeline bubbles with author metadata outside the bubble", async () => {
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent",
+            replies: [
+              {
+                id: "reply-1",
+                author: "ted-hwang",
+                authorAssociation: "MEMBER",
+                created_at: "2026-07-02T01:00:00Z",
+                body: "first nested reply"
+              },
+              {
+                id: "reply-2",
+                author: "ted-hwang",
+                authorAssociation: "MEMBER",
+                created_at: "2026-07-02T02:00:00Z",
+                body: "second nested reply"
+              },
+              {
+                id: "reply-3",
+                author: "octocat",
+                created_at: "2026-07-02T03:00:00Z",
+                body: "different author reply"
+              }
+            ]
+          }
+        ]}
+      />
+    );
+
+    const replies = screen.getByLabelText("Replies");
+    expect(await within(replies).findByText("first nested reply")).toBeInTheDocument();
+    expect(within(replies).getByText("second nested reply")).toBeInTheDocument();
+    expect(within(replies).getByText("different author reply")).toBeInTheDocument();
+    expect(replies.querySelectorAll(".comment-reply-author-row")).toHaveLength(2);
+    expect(replies.querySelectorAll(".comment-reply-card.is-compact")).toHaveLength(1);
+
+    const firstReply = replies.querySelector(".comment-reply-card") as HTMLElement;
+    expect(firstReply.querySelector(".comment-reply-author-row")).toHaveTextContent(
+      "ted-hwang"
+    );
+    expect(firstReply.querySelector(".comment-reply-author-row")).toHaveTextContent(
+      "Member"
+    );
+    expect(firstReply.querySelector(".comment-reply-header")).not.toHaveTextContent(
+      "ted-hwang"
+    );
+
+    const compactReply = replies.querySelector(
+      ".comment-reply-card.is-compact"
+    ) as HTMLElement;
+    expect(compactReply.querySelector(".comment-reply-author-row")).toBeNull();
+    expect(compactReply.querySelector(".comment-reply-header")).not.toHaveTextContent(
+      "comment added"
+    );
+    expect(within(replies).queryByText("comment added")).not.toBeInTheDocument();
+  });
+
+  it("opens an auto-growing inline reply composer from the comment hover action", async () => {
+    const user = userEvent.setup();
+    const onReplySubmit = vi.fn();
+    render(
+      <CommentThread
+        comments={[
+          {
+            id: "parent",
+            nodeId: "DC_parent",
+            author: "mona",
+            created_at: "2026-07-02T00:00:00Z",
+            body: "parent discussion comment"
+          }
+        ]}
+        onReplySubmit={onReplySubmit}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "대댓글 추가" }));
+
+    const textarea = screen.getByLabelText("대댓글 입력");
+    Object.defineProperty(textarea, "scrollHeight", {
+      configurable: true,
+      value: 56
+    });
+    fireEvent.change(textarea, { target: { value: "first line\nsecond line" } });
+
+    await waitFor(() => {
+      expect(textarea).toHaveStyle({ height: "56px" });
+    });
+
+    await user.click(screen.getByRole("button", { name: "OK" }));
+
+    expect(onReplySubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "parent", nodeId: "DC_parent" }),
+      "first line\nsecond line"
+    );
   });
 
   it("renders nothing when there are no comments", () => {

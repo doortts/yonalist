@@ -28,13 +28,11 @@ import "./ui/tabs.css";
 export type ItemStateFilter = "open" | "closed";
 
 const VIRTUALIZE_AT = 80;
-// Fixed virtualized row height. Covers the tallest row: meta (kind · repo ·
-// time), title, author, optional labels, and an optional footer (comments +
-// bookmark). The footer and labels are now conditional, so rows never exceed
-// this height — a row that drops its footer just leaves slack, which the fixed
-// slot absorbs without layout drift. Kept at 140 (was bumped +18px for the
-// author line); relocating the repo onto the meta line adds no new line.
-const ITEM_ROW_HEIGHT = 140;
+// Virtualized rows use deterministic per-item heights so rows without labels do
+// not reserve the optional label line. These are intentionally estimates, not
+// measured layout, so scroll math stays cheap and stable.
+const ITEM_ROW_HEIGHT_WITH_LABELS = 140;
+const ITEM_ROW_HEIGHT_COMPACT = 112;
 const ITEM_OVERSCAN = 6;
 
 interface ItemStateCounts {
@@ -105,6 +103,56 @@ function itemListSignature(items: ItemDocument[]): string {
   return items
     .map((item) => `${item.path}|${item.frontMatter.updated_at}`)
     .join("\n");
+}
+
+function virtualRowHeightForItem(item: ItemDocument): number {
+  return item.frontMatter.labels.length > 0
+    ? ITEM_ROW_HEIGHT_WITH_LABELS
+    : ITEM_ROW_HEIGHT_COMPACT;
+}
+
+interface VirtualRowMetrics {
+  heights: number[];
+  offsets: number[];
+  totalHeight: number;
+}
+
+function buildVirtualRowMetrics(items: ItemDocument[]): VirtualRowMetrics {
+  const heights: number[] = [];
+  const offsets: number[] = [];
+  let totalHeight = 0;
+
+  for (const item of items) {
+    offsets.push(totalHeight);
+    const height = virtualRowHeightForItem(item);
+    heights.push(height);
+    totalHeight += height;
+  }
+
+  return { heights, offsets, totalHeight };
+}
+
+function rowIndexForOffset(metrics: VirtualRowMetrics, offset: number): number {
+  if (metrics.offsets.length === 0) {
+    return 0;
+  }
+
+  let low = 0;
+  let high = metrics.offsets.length - 1;
+  let result = 0;
+  const target = Math.max(0, offset);
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (metrics.offsets[mid] <= target) {
+      result = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return result;
 }
 
 export function ItemListPane({
@@ -307,28 +355,31 @@ function ItemRows({
     ItemDocument[] | null
   >(null);
   const shouldVirtualize = items.length > VIRTUALIZE_AT && viewportHeight > 0;
+  const rowMetrics = useMemo(() => buildVirtualRowMetrics(items), [items]);
   const viewportRange = useMemo(() => {
     if (viewportHeight <= 0) {
       return { start: 0, end: items.length };
     }
-    const start = Math.max(0, Math.floor(scrollTop / ITEM_ROW_HEIGHT));
+    const start = rowIndexForOffset(rowMetrics, scrollTop);
     const end = Math.min(
       items.length,
-      Math.max(start + 1, Math.ceil((scrollTop + viewportHeight) / ITEM_ROW_HEIGHT))
+      Math.max(start + 1, rowIndexForOffset(rowMetrics, scrollTop + viewportHeight) + 1)
     );
     return { start, end };
-  }, [items.length, scrollTop, viewportHeight]);
+  }, [items.length, rowMetrics, scrollTop, viewportHeight]);
   const range = useMemo(() => {
     if (!shouldVirtualize) {
       return { start: 0, end: items.length };
     }
-    const start = Math.max(0, Math.floor(scrollTop / ITEM_ROW_HEIGHT) - ITEM_OVERSCAN);
+    const visibleStart = rowIndexForOffset(rowMetrics, scrollTop);
+    const visibleEnd = rowIndexForOffset(rowMetrics, scrollTop + viewportHeight) + 1;
+    const start = Math.max(0, visibleStart - ITEM_OVERSCAN);
     const end = Math.min(
       items.length,
-      Math.ceil((scrollTop + viewportHeight) / ITEM_ROW_HEIGHT) + ITEM_OVERSCAN
+      visibleEnd + ITEM_OVERSCAN
     );
     return { start, end };
-  }, [items.length, scrollTop, shouldVirtualize, viewportHeight]);
+  }, [items.length, rowMetrics, scrollTop, shouldVirtualize, viewportHeight]);
 
   const visibleItems = shouldVirtualize
     ? items.slice(range.start, range.end)
@@ -399,7 +450,8 @@ function ItemRows({
         authorAvatarUrl={authorAvatarUrl}
         selected={item.path === selectedPath}
         virtualized={shouldVirtualize}
-        top={shouldVirtualize ? index * ITEM_ROW_HEIGHT : null}
+        top={shouldVirtualize ? rowMetrics.offsets[index] : null}
+        height={shouldVirtualize ? rowMetrics.heights[index] : null}
         onSelect={onSelect}
         registerRow={registerRow}
       />
@@ -413,7 +465,7 @@ function ItemRows({
   return (
     <div
       className="item-list-virtual-space"
-      style={{ height: items.length * ITEM_ROW_HEIGHT }}
+      style={{ height: rowMetrics.totalHeight }}
     >
       {rows}
     </div>
@@ -427,6 +479,7 @@ interface ItemRowProps {
   selected: boolean;
   virtualized: boolean;
   top: number | null;
+  height: number | null;
   onSelect: (path: string) => void;
   registerRow: (path: string, node: HTMLButtonElement | null) => void;
 }
@@ -438,20 +491,40 @@ const ItemRow = memo(function ItemRow({
   selected,
   virtualized,
   top,
+  height,
   onSelect,
   registerRow
 }: ItemRowProps) {
   const virtualStyle =
-    virtualized && top !== null
+    virtualized && top !== null && height !== null
       ? ({
-          height: ITEM_ROW_HEIGHT,
+          height,
           transform: `translateY(${top}px)`
         } as CSSProperties)
       : undefined;
   const commentCount = item.frontMatter.comments_count ?? 0;
   const showComments = commentCount > 0;
   const showBookmark = item.frontMatter.local.favorite;
-  const showFooter = showComments || showBookmark;
+  const hasAuthor =
+    Boolean(item.frontMatter.author) && item.frontMatter.author !== "unknown";
+  const hasLabels = item.frontMatter.labels.length > 0;
+  const showActions = showComments || showBookmark;
+  const showActionsOnAuthor = showActions && hasAuthor && !hasLabels;
+  const showActionsOnLabels = showActions && hasLabels;
+  const showFooter = showActions && !showActionsOnAuthor && !showActionsOnLabels;
+  const rowActions = showActions ? (
+    <span className="item-row-actions">
+      {showComments && (
+        <span className="item-comments">
+          <span className="yona-comment-icon" aria-hidden="true" />
+          {commentCount}
+        </span>
+      )}
+      {showBookmark && (
+        <Bookmark className="small-bookmark" size={14} fill="currentColor" />
+      )}
+    </span>
+  ) : null;
   return (
     <button
       type="button"
@@ -477,21 +550,21 @@ const ItemRow = memo(function ItemRow({
         <span className="item-time">{timeAgo(item.frontMatter.updated_at)}</span>
       </span>
       <span className="item-title">{item.frontMatter.title}</span>
-      {item.frontMatter.author &&
-        item.frontMatter.author !== "unknown" && (
-          <span className="item-author">
-            {authorAvatarUrl && (
-              <Avatar
-                login={item.frontMatter.author}
-                avatarUrl={authorAvatarUrl}
-                size={16}
-                showFallback={false}
-              />
-            )}
-            <span className="item-author-name">{authorName}</span>
-          </span>
-        )}
-      {item.frontMatter.labels.length > 0 && (
+      {hasAuthor && (
+        <span className="item-author">
+          {authorAvatarUrl && (
+            <Avatar
+              login={item.frontMatter.author}
+              avatarUrl={authorAvatarUrl}
+              size={16}
+              showFallback={false}
+            />
+          )}
+          <span className="item-author-name">{authorName}</span>
+          {showActionsOnAuthor && rowActions}
+        </span>
+      )}
+      {hasLabels && (
         <span className="item-labels">
           {item.frontMatter.labels.slice(0, 4).map((label) => (
             <span
@@ -506,19 +579,12 @@ const ItemRow = memo(function ItemRow({
               {label}
             </span>
           ))}
+          {showActionsOnLabels && rowActions}
         </span>
       )}
       {showFooter && (
         <span className="item-footer">
-          {showComments && (
-            <span className="item-comments">
-              <span className="yona-comment-icon" aria-hidden="true" />
-              {commentCount}
-            </span>
-          )}
-          {showBookmark && (
-            <Bookmark className="small-bookmark" size={14} fill="currentColor" />
-          )}
+          {rowActions}
         </span>
       )}
     </button>

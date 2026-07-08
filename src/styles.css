@@ -701,6 +701,33 @@ body.is-resizing-pane {
   color: var(--text-1);
 }
 
+/* Detail maximize must win over the responsive layouts too. Without this
+   explicit state, shrinking the window below the desktop breakpoint lets the
+   mobile/two-column media queries place the hidden sidebar/list back into the
+   grid, so the detail pane is no longer the only visible pane. */
+.app-shell[data-detail-maximized="true"] {
+  --sidebar-resizer-width: 0px;
+  --list-resizer-width: 0px;
+  grid-template-columns: 0 0 0 0 minmax(0, 1fr);
+}
+
+.app-shell[data-detail-maximized="true"] > .sidebar,
+.app-shell[data-detail-maximized="true"] > .sidebar-list-resizer,
+.app-shell[data-detail-maximized="true"] > .list-pane,
+.app-shell[data-detail-maximized="true"] > .notifications-pane,
+.app-shell[data-detail-maximized="true"] > .list-detail-resizer {
+  visibility: hidden;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.app-shell[data-detail-maximized="true"] > .detail-pane {
+  display: flex;
+  grid-column: 5;
+  height: 100%;
+  overflow: hidden;
+}
+
 /* Collapsing is a desktop-only affordance: below 981px the responsive layouts
    redefine the grid and hide these toggles, so the content-hiding rules are
    scoped to the desktop breakpoint to avoid blanking a reserved column. */
@@ -1495,6 +1522,7 @@ body.is-resizing-pane {
 
 .item-labels {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 4px;
 }
@@ -1537,6 +1565,18 @@ body.is-resizing-pane {
 
 .item-comments .yona-comment-icon::before {
   content: "\e274";
+}
+
+.item-row-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.item-row-actions .small-bookmark {
+  margin-left: 0;
 }
 
 .small-bookmark {
@@ -1932,17 +1972,204 @@ body.is-resizing-pane {
   max-width: none;
 }
 
-.comment-replies {
-  display: grid;
-  gap: 12px;
-  margin-left: 14px;
-  padding-left: 18px;
-  border-left: 2px solid var(--border);
+.comment-hover-actions {
+  position: absolute;
+  right: 12px;
+  bottom: 10px;
+  display: flex;
+  justify-content: flex-end;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
 }
 
-.comment-item-reply {
+.comment-bubble:hover .comment-hover-actions,
+.comment-bubble:focus-within .comment-hover-actions,
+.comment-reply-bubble:hover .comment-hover-actions,
+.comment-reply-bubble:focus-within .comment-hover-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.comment-inline-reply-button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-card) 92%, var(--accent) 8%);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.comment-inline-reply-button:hover {
+  background: color-mix(in srgb, var(--bg-card) 82%, var(--accent) 18%);
+}
+
+.inline-reply-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  margin-top: -1px;
+  border-top: 1px solid #ff7a2f;
+  background: var(--bg-card);
+}
+
+.inline-reply-composer textarea {
+  min-height: 36px;
+  max-height: 180px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  line-height: 1.45;
+  resize: none;
+  overflow-y: auto;
+}
+
+.inline-reply-composer textarea:focus {
+  outline: none;
+}
+
+.inline-reply-composer button {
+  min-width: 62px;
+  border: 0;
+  border-radius: 0;
+  background: #ff7a2f;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inline-reply-composer button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.comment-replies {
+  position: relative;
+  display: grid;
+  gap: 14px;
+  margin-left: 4px;
+  padding-left: 50px;
+}
+
+.comment-replies::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 15px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--border);
+  content: "";
+}
+
+.comment-reply-card {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.comment-reply-card .comment-replies {
+  margin-top: 12px;
+  margin-left: 0;
+}
+
+.comment-reply-author-row {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  margin-bottom: 0;
+  min-height: 32px;
+  margin-left: -50px;
+}
+
+.comment-reply-author-row .comment-reply-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+}
+
+.comment-reply-author-row .comment-author-cluster {
+  gap: 6px;
+}
+
+.comment-reply-author-row .comment-association {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.comment-reply-bubble {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-card);
+}
+
+.comment-reply-bubble::before,
+.comment-reply-bubble::after {
+  position: absolute;
+  top: 9px;
+  width: 0;
+  height: 0;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+  content: "";
+}
+
+.comment-reply-bubble::before {
+  left: -7px;
+  border-right: 7px solid var(--border);
+}
+
+.comment-reply-bubble::after {
+  left: -6px;
+  border-right: 7px solid var(--bg-card);
+}
+
+.comment-reply-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 10px 14px 2px;
+  border-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: transparent;
+  font-size: 13px;
+}
+
+.comment-reply-card.is-compact .comment-reply-header {
+  min-height: 24px;
+  background: transparent;
+}
+
+.comment-reply-time {
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.comment-reply-body {
+  padding: 0;
+}
+
+.comment-reply-body .markdown-body {
+  margin-top: 0;
+  max-width: none;
+  padding: 0 14px 12px !important;
 }
 
 /* read-only reaction summary */

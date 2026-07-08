@@ -128,6 +128,63 @@ describe("GitHub client", () => {
     });
   });
 
+  it("creates discussion replies with replyToId through GraphQL", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (payload.query?.includes("discussion(number")) {
+        return jsonResponse({
+          data: {
+            repository: {
+              discussion: {
+                id: "D_kwDO",
+                title: "Weekly",
+                comments: { nodes: [] }
+              }
+            }
+          }
+        });
+      }
+      return jsonResponse({
+        data: {
+          addDiscussionComment: {
+            comment: {
+              id: "DC_reply",
+              databaseId: 124,
+              body: payload.variables?.body,
+              createdAt: "2026-07-02T00:00:00Z"
+            }
+          }
+        }
+      });
+    });
+    const client = createGitHubClient({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      webBaseUrl: "https://github.com",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    const created = await client.createDiscussionComment(
+      "openai",
+      "codex",
+      7,
+      "Nested reply",
+      { replyToId: "DC_parent" }
+    );
+
+    expect(created).toMatchObject({ id: 124, node_id: "DC_reply" });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      variables: {
+        discussionId: "D_kwDO",
+        body: "Nested reply",
+        replyToId: "DC_parent"
+      }
+    });
+  });
+
   it("starts OAuth device flow with the web base URL", async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({

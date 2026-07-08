@@ -57,6 +57,23 @@ describe("outbox operations", () => {
     expect(operation.frontMatter.close_after_comment).toBe(true);
   });
 
+  it("keeps the parent discussion comment node id for queued replies", () => {
+    const operation = createCommentOutboxOperation({
+      id: "op-4",
+      host: "github.com",
+      owner: "openai",
+      repo: "codex",
+      itemKind: "discussion",
+      number: 10,
+      parentCommentNodeId: "DC_parent",
+      localFilePath:
+        "/vault/github.com/openai/codex/discussions/10/comments/_drafts/local-4.md",
+      createdAt: "2026-07-02T00:00:00Z"
+    });
+
+    expect(operation.frontMatter.target.parent_comment_node_id).toBe("DC_parent");
+  });
+
   it("blocks operations that reference unresolved local attachments", () => {
     expect(
       hasUnresolvedLocalAttachments([

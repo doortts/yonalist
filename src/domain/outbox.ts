@@ -17,6 +17,8 @@ interface CreateCommentOperationInput extends RepositoryIdentity {
   id: string;
   itemKind: ItemKind;
   number: number;
+  parentCommentId?: number | string;
+  parentCommentNodeId?: string;
   closeAfterComment?: boolean;
   localFilePath: string;
   createdAt: string;
@@ -60,7 +62,13 @@ export function createCommentOutboxOperation(
         owner: input.owner,
         repo: input.repo,
         kind: input.itemKind,
-        number: input.number
+        number: input.number,
+        ...(input.parentCommentId !== undefined
+          ? { parent_comment_id: input.parentCommentId }
+          : {}),
+        ...(input.parentCommentNodeId
+          ? { parent_comment_node_id: input.parentCommentNodeId }
+          : {})
       },
       ...(input.closeAfterComment ? { close_after_comment: true } : {}),
       local_file_path: input.localFilePath,

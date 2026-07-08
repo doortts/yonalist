@@ -44,6 +44,8 @@ export interface CommentFrontMatter {
   kind: "comment" | "issue_comment";
   remote_id?: number;
   node_id?: string;
+  parent_remote_id?: number | string;
+  parent_node_id?: string;
   author: string;
   created_at: string;
   updated_at: string;
@@ -53,6 +55,8 @@ export interface CommentFrontMatter {
 export interface OutboxTarget extends RepositoryIdentity {
   kind?: ItemKind;
   number?: number;
+  parent_comment_id?: number | string;
+  parent_comment_node_id?: string;
 }
 
 export interface OutboxOperationFrontMatter {

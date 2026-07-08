@@ -322,12 +322,24 @@ describe("Yonalist app shell", () => {
 
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
     expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
+    expect(sidebarToggle.querySelector("svg")).toHaveAttribute(
+      "data-pane-icon",
+      "sidebar-collapse"
+    );
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
 
     await user.click(sidebarToggle);
 
     expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
     expect(sidebarToggle).toHaveAttribute("aria-pressed", "true");
+    expect(sidebarToggle.querySelector("svg")).toHaveAttribute(
+      "data-pane-icon",
+      "sidebar-open"
+    );
+    expect(sidebarToggle.querySelector("svg path")).toHaveAttribute(
+      "d",
+      "M16 7v10"
+    );
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("0px");
 
     await user.click(sidebarToggle);
@@ -355,10 +367,11 @@ describe("Yonalist app shell", () => {
 
     await user.click(sidebarToggle);
 
-    // Sidebar collapsed: the pane is gone, so the toggle drops to the left of
-    // the now-frontmost pane at a fixed offset past the traffic lights.
+    // Sidebar collapsed: the pane is gone, so the toggle rides the right edge
+    // of the now-frontmost pane, while keeping a traffic-light-safe fallback.
     expect(paneGroup).toHaveAttribute("data-position", "pane-start");
-    expect(paneGroup.style.left).toBe("78px");
+    expect(paneGroup.style.left).toContain("var(--list-width");
+    expect(paneGroup.style.left).not.toBe("78px");
   });
 
   it("puts a detail maximize toggle in its own right-aligned group", () => {
@@ -391,6 +404,7 @@ describe("Yonalist app shell", () => {
     await user.click(maximizeToggle);
 
     expect(maximizeToggle).toHaveAttribute("aria-pressed", "true");
+    expect(shell).toHaveAttribute("data-detail-maximized", "true");
     expect(shell).toHaveAttribute("data-sidebar-collapsed", "true");
     expect(shell).toHaveAttribute("data-list-collapsed", "true");
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("0px");
@@ -399,6 +413,7 @@ describe("Yonalist app shell", () => {
     await user.click(maximizeToggle);
 
     expect(maximizeToggle).toHaveAttribute("aria-pressed", "false");
+    expect(shell).not.toHaveAttribute("data-detail-maximized");
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
     expect(shell).not.toHaveAttribute("data-list-collapsed");
     expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");

@@ -167,7 +167,10 @@ export async function syncOutboxOperations(
                   target.owner,
                   target.repo,
                   target.number as number,
-                  operation.body
+                  operation.body,
+                  target.parent_comment_node_id
+                    ? { replyToId: target.parent_comment_node_id }
+                    : undefined
                 )
               : client.createIssueComment(
                   target.owner,

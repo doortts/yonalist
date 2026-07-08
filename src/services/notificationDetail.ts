@@ -63,6 +63,7 @@ interface IssueResponse {
 
 interface CommentResponse {
   id?: number | string;
+  node_id?: string;
   body?: string | null;
   user?: UserResponse;
   author_association?: string;
@@ -130,6 +131,7 @@ function mapComments(
     const replies = mapComments(comment.replies ?? [], profiles);
     return {
       id: String(comment.id ?? ""),
+      ...(comment.node_id ? { nodeId: String(comment.node_id) } : {}),
       author: comment.user?.login ?? "unknown",
       ...(authorName ? { authorName } : {}),
       avatarUrl: comment.user?.avatar_url,

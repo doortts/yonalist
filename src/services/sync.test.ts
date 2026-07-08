@@ -289,6 +289,75 @@ describe("syncOutboxOperations", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it("passes parent comment node ids when syncing discussion replies", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (payload.query?.includes("discussion(number")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                discussion: {
+                  id: "D_kwDO",
+                  title: "Weekly",
+                  comments: { nodes: [] }
+                }
+              }
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: {
+            addDiscussionComment: {
+              comment: {
+                id: "DC_reply",
+                databaseId: 790,
+                body: payload.variables?.body,
+                createdAt: "2026-07-02T00:00:00Z"
+              }
+            }
+          }
+        }),
+        { status: 200 }
+      );
+    });
+    const operation = {
+      ...createCommentOutboxOperation({
+        id: "discussion-reply",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        itemKind: "discussion",
+        number: 5,
+        parentCommentNodeId: "DC_parent",
+        localFilePath: "/vault/x.md",
+        createdAt: "2026-07-01T00:00:00Z"
+      }),
+      body: "Nested discussion reply"
+    };
+
+    const results = await syncOutboxOperations(
+      client(fetchMock as unknown as typeof fetch),
+      [operation],
+      [],
+      { retryDelays: [] }
+    );
+
+    expect(results[0]).toMatchObject({
+      ok: true,
+      remote: { type: "comment", id: 790 }
+    });
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({
+      variables: { replyToId: "DC_parent" }
+    });
+  });
+
   function commentOperation(id = "comment-1") {
     return {
       ...createCommentOutboxOperation({

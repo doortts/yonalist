@@ -1,4 +1,5 @@
 import { Bell, Globe, Loader2, Maximize2, Minimize2 } from "lucide-react";
+import type { ConversationComment } from "../domain/conversation";
 import { subjectNumber, type GitHubNotification } from "../domain/notifications";
 import type { ItemKind } from "../domain/types";
 import type { UseNotificationDetailResult } from "../hooks/useNotificationDetail";
@@ -18,6 +19,7 @@ interface NotificationDetailProps {
   onOpenInBrowser: (notification: GitHubNotification) => void;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
+  onQueueReply?: (parent: ConversationComment, body: string) => void;
   /** Whether the detail pane is maximized (drives the inline toggle glyph). */
   detailMaximized: boolean;
   /** Toggles the maximized layout from the inline header control. */
@@ -58,6 +60,7 @@ export function NotificationDetail({
   onOpenInBrowser,
   onCommentDraftChange,
   onQueueComment,
+  onQueueReply,
   detailMaximized,
   onToggleMaximize,
   onHeaderVisibilityChange
@@ -192,7 +195,13 @@ export function NotificationDetail({
             body={detail.body || "No description provided."}
             reactions={detail.reactions}
           />
-          <CommentThread comments={detail.comments} subjectAuthor={detail.author} />
+          <CommentThread
+            comments={detail.comments}
+            subjectAuthor={detail.author}
+            onReplySubmit={
+              notification.subject.type === "Discussion" ? onQueueReply : undefined
+            }
+          />
         </div>
       )}
 

@@ -2,6 +2,7 @@ import { Toggle } from "@base-ui/react/toggle";
 import { Bookmark, Globe, Inbox, Loader2, Maximize2, Minimize2 } from "lucide-react";
 import { useContext } from "react";
 import { GithubConnectionContext } from "../GithubConnectionContext";
+import type { ConversationComment } from "../domain/conversation";
 import { itemWebUrl } from "../domain/itemLinks";
 import type { ItemDocument } from "../domain/types";
 import type { UseItemThreadResult } from "../hooks/useItemThread";
@@ -22,6 +23,7 @@ interface ItemDetailProps {
   commentDraft: string;
   onCommentDraftChange: (draft: string) => void;
   onQueueComment: (action: CommentSubmitAction) => void;
+  onQueueReply?: (parent: ConversationComment, body: string) => void;
   onToggleFavorite: () => void;
   /** Whether the detail pane is maximized (drives the inline toggle glyph). */
   detailMaximized: boolean;
@@ -39,6 +41,7 @@ export function ItemDetail({
   commentDraft,
   onCommentDraftChange,
   onQueueComment,
+  onQueueReply,
   onToggleFavorite,
   detailMaximized,
   onToggleMaximize,
@@ -189,7 +192,13 @@ export function ItemDetail({
           </p>
         )}
 
-        <CommentThread comments={comments} subjectAuthor={item.frontMatter.author} />
+        <CommentThread
+          comments={comments}
+          subjectAuthor={item.frontMatter.author}
+          onReplySubmit={
+            item.frontMatter.kind === "discussion" ? onQueueReply : undefined
+          }
+        />
       </div>
 
       {item.frontMatter.number > 0 && (
