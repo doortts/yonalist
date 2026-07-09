@@ -179,6 +179,22 @@ const APP_SNACKBAR_TIMEOUT_MS = 6000;
 // prefetch rather than a measured viewport window.
 const NOTIFICATION_PREFETCH_CAP = 30;
 
+const neutralStatusMetrics: StatusBarMetrics = {
+  listFetchDurationMs: null,
+  detailDisplayDurationMs: null,
+  prefetch: {
+    enabled: false,
+    visible: 0,
+    queued: 0,
+    active: 0,
+    cached: 0,
+    completed: 0,
+    totalDurationMs: 0,
+    lastDurationMs: null
+  },
+  caches: []
+};
+
 // A standalone manager lets feedback fire from effects and event handlers in
 // the App body without needing the `useToastManager` hook (which must run
 // under a Toast.Provider that App itself renders).
@@ -673,6 +689,13 @@ export default function App({ initialOnline }: AppProps) {
   });
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
+  const activeSelectedNotification =
+    activeFeatureId === "inbox" ? selectedNotification : null;
+  useEffect(() => {
+    if (activeFeatureId !== "inbox") {
+      setSelectedNotification(null);
+    }
+  }, [activeFeatureId]);
   useEffect(() => {
     if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
@@ -695,7 +718,7 @@ export default function App({ initialOnline }: AppProps) {
     notifications.demoMode
   ]);
   const notificationDetail = useNotificationDetail(
-    selectedNotification,
+    activeSelectedNotification,
     auth.connection,
     online,
     conversationRefreshKey
@@ -942,7 +965,7 @@ export default function App({ initialOnline }: AppProps) {
     visibleNotifications: notificationPrefetchEnabled
       ? notificationPrefetchTargets
       : [],
-    selectedId: selectedNotification?.id ?? null,
+    selectedId: activeSelectedNotification?.id ?? null,
     connection: auth.connection,
     online,
     enabled: notificationPrefetchEnabled,
@@ -1103,6 +1126,9 @@ export default function App({ initialOnline }: AppProps) {
 
   const statusMetrics = useMemo<StatusBarMetrics>(
     () => {
+      if (activeFeatureId !== "inbox") {
+        return neutralStatusMetrics;
+      }
       const bodyStats = bodyCacheStats;
       const threadStats = getItemThreadCacheStats();
       const notificationStats = getNotificationCacheStats();

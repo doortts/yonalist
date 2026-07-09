@@ -2,6 +2,20 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const notificationDetailInputs = vi.hoisted(() => vi.fn());
+
+vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
+  return {
+    ...actual,
+    useNotificationDetail: (...args: Parameters<typeof actual.useNotificationDetail>) => {
+      notificationDetailInputs(args[0]);
+      return actual.useNotificationDetail(...args);
+    }
+  };
+});
+
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
@@ -39,6 +53,7 @@ function installLocalStorageMock() {
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
+    notificationDetailInputs.mockClear();
     clearWorkItemsCache();
     clearNotificationCache();
     clearNotificationDetailCache();
@@ -1201,6 +1216,43 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
       /Cache Notifications 0\/0 B · Notification details 0\/0 B · Markdown/
+    );
+  });
+
+  it("clears notification detail activity when Notes becomes active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expect.any(String) })
+      );
+    });
+
+    notificationDetailInputs.mockClear();
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+    });
+  });
+
+  it("uses neutral status metrics while Notes is active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+      "List --Item --Prefetch off · 0 visibleCache --"
     );
   });
 
