@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { warmMarkdownBodies } from "../components/MarkdownBody";
-import type { ConversationComment } from "../domain/conversation";
+import { flattenComments, type ConversationComment } from "../domain/conversation";
 import { itemThreadVersion } from "../domain/itemThreadVersion";
 import { commentFilePath } from "../domain/paths";
 import type { CommentDocument, ItemDocument } from "../domain/types";
@@ -80,13 +80,6 @@ function entryKey(item: ItemDocument, refreshKey: number): string {
 
 function expectsRemoteThread(options: LatestOptions, item: ItemDocument): boolean {
   return Boolean(options.connection.token.trim()) && item.frontMatter.number > 0;
-}
-
-function flattenComments(comments: ConversationComment[]): ConversationComment[] {
-  return comments.flatMap((comment) => [
-    comment,
-    ...flattenComments(comment.replies ?? [])
-  ]);
 }
 
 function countComments(comments: ConversationComment[]): number {

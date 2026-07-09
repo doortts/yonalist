@@ -15,13 +15,12 @@ export interface DetailRenderSnapshotInput {
   capturedAt: string;
 }
 
-const detailRenderSnapshots = new LruCache<DetailRenderSnapshot>(
-  50,
-  (key, snapshot) =>
+const detailRenderSnapshots = new LruCache<DetailRenderSnapshot>(50, {
+  estimateBytes: (key, snapshot) =>
     estimateTextBytes(key) +
     estimateTextBytes(snapshot.html) +
     estimateTextBytes(snapshot.capturedAt)
-);
+});
 const snapshotOverlaySelector = '[data-detail-render-snapshot-overlay="true"]';
 
 export function clearDetailRenderSnapshots() {

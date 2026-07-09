@@ -565,6 +565,36 @@ describe("synchronous notification detail cache peek", () => {
     ).toBeNull();
   });
 
+  it("prunes the latest pointer once every version of a subject is evicted", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title: "T", state: "open", user: { login: "mona" } });
+    });
+
+    const subjects = Array.from({ length: 51 }, (_, i) =>
+      notification("Issue", `https://api.github.com/repos/acme/app/issues/${i}`)
+    );
+    for (const subject of subjects) {
+      await fetchNotificationDetail({
+        ...baseOptions,
+        notification: subject,
+        fetchImpl: fetchMock as unknown as typeof fetch
+      });
+    }
+
+    // Subject #0's LRU entry was evicted at the 50-entry cap and its
+    // persisted-store entry at the 30-entry cap, so nothing should keep its
+    // latest pointer alive once the unbounded map is gone.
+    expect(
+      getLatestCachedNotificationDetail({
+        apiBaseUrl: baseOptions.apiBaseUrl,
+        notification: subjects[0]
+      })
+    ).toBeNull();
+  });
+
   it("peeks a directly persisted detail even without a prior fetch", () => {
     persistNotificationDetail(baseOptions.apiBaseUrl, issue, {
       title: "Direct",

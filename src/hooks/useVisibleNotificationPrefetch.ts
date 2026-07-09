@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { warmMarkdownBodies } from "../components/MarkdownBody";
-import type { ConversationComment } from "../domain/conversation";
+import { flattenComments } from "../domain/conversation";
 import type { GitHubNotification } from "../domain/notifications";
 import {
   fetchNotificationDetail,
@@ -70,13 +70,6 @@ function entryKey(
     notification.subject.url ?? notification.id,
     notification.updated_at
   ].join("|");
-}
-
-function flattenComments(comments: ConversationComment[]): ConversationComment[] {
-  return comments.flatMap((comment) => [
-    comment,
-    ...flattenComments(comment.replies ?? [])
-  ]);
 }
 
 function markdownBodiesFromDetail(detail: NotificationDetailContent): string[] {

@@ -1,4 +1,5 @@
 import {
+  flattenComments,
   summarizeReactions,
   type ConversationComment,
   type GitHubLabel,
@@ -10,13 +11,18 @@ import {
   estimateTextBytes,
   type CacheSizeStats
 } from "./cacheStats";
-import { createGitHubClient } from "./github";
 import {
-  createGitHubTransport,
-  encodePathSegment,
-  type GitHubResponseMeta
-} from "./githubTransport";
-import { LruCache } from "./lruCache";
+  displayNameForUser,
+  loginNeedingProfile,
+  mapComments,
+  mapLabels,
+  type CommentResponse,
+  type LabelResponse,
+  type ProfileMap,
+  type UserResponse
+} from "./conversationMapping";
+import { createGitHubClient } from "./github";
+import { createGitHubTransport, encodePathSegment } from "./githubTransport";
 import {
   clearPersistedNotificationDetails,
   deletePersistedNotificationDetail,
@@ -26,12 +32,11 @@ import {
   persistNotificationDetail,
   resetPersistedNotificationDetailMemory
 } from "./notificationStores";
+import { clearUserProfileCache, fetchUserProfiles } from "./userProfiles";
 import {
-  clearUserProfileCache,
-  displayNameForLogin,
-  fetchUserProfiles,
-  type UserProfile
-} from "./userProfiles";
+  createVersionedConversationCache,
+  type ConversationValidator
+} from "./versionedConversationCache";
 
 export type { ConversationComment as NotificationComment } from "../domain/conversation";
 
@@ -51,17 +56,6 @@ export interface NotificationDetailContent {
   commentsError?: boolean;
 }
 
-interface UserResponse {
-  login?: string;
-  name?: string | null;
-  avatar_url?: string;
-}
-
-interface LabelResponse {
-  name?: string;
-  color?: string;
-}
-
 interface IssueResponse {
   title?: string;
   state?: string;
@@ -72,17 +66,6 @@ interface IssueResponse {
   reactions?: Record<string, unknown>;
   created_at?: string;
   merged_at?: string | null;
-}
-
-interface CommentResponse {
-  id?: number | string;
-  node_id?: string;
-  body?: string | null;
-  user?: UserResponse;
-  author_association?: string;
-  reactions?: Record<string, unknown>;
-  created_at?: string;
-  replies?: CommentResponse[];
 }
 
 interface ReleaseResponse {
@@ -107,90 +90,15 @@ export interface NotificationDetailRevalidationResult {
   changed: boolean;
 }
 
-interface DetailValidator {
-  path: string;
-  meta: GitHubResponseMeta;
-}
-
 interface FetchedNotificationDetail {
   detail: NotificationDetailContent;
-  validators: DetailValidator[];
+  validators: ConversationValidator[];
 }
 
-function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLabel[] {
-  return (labels ?? [])
-    .map((label) =>
-      typeof label === "string"
-        ? { name: label, color: "" }
-        : { name: label.name ?? "", color: label.color ?? "" }
-    )
-    .filter((label) => label.name);
-}
-
-type ProfileMap = Record<string, UserProfile>;
-
-function displayNameForUser(
-  user: UserResponse | undefined,
-  profiles: ProfileMap
-): string | undefined {
-  const login = user?.login;
-  const inlineName = user?.name?.trim();
-  if (inlineName && inlineName !== login) {
-    return inlineName;
-  }
-  return displayNameForLogin(profiles, login);
-}
-
-function loginNeedingProfile(user: UserResponse | undefined): string | undefined {
-  const login = user?.login;
-  if (!login || login === "unknown") {
-    return undefined;
-  }
-  const inlineName = user.name?.trim();
-  return inlineName && inlineName !== login ? undefined : login;
-}
-
-function mapComments(
-  comments: CommentResponse[],
-  profiles: ProfileMap = {}
-): ConversationComment[] {
-  return comments.map((comment) => {
-    const authorName = displayNameForUser(comment.user, profiles);
-    const replies = mapComments(comment.replies ?? [], profiles);
-    return {
-      id: String(comment.id ?? ""),
-      ...(comment.node_id ? { nodeId: String(comment.node_id) } : {}),
-      author: comment.user?.login ?? "unknown",
-      ...(authorName ? { authorName } : {}),
-      avatarUrl: comment.user?.avatar_url,
-      authorAssociation: comment.author_association,
-      created_at: comment.created_at ?? "",
-      body: comment.body ?? "",
-      reactions: summarizeReactions(comment.reactions),
-      ...(replies.length > 0 ? { replies } : {})
-    };
-  });
-}
-
-function flattenComments(comments: CommentResponse[]): CommentResponse[] {
-  return comments.flatMap((comment) => [
-    comment,
-    ...flattenComments(comment.replies ?? [])
-  ]);
-}
-
-const detailCache = new LruCache<NotificationDetailContent>(
-  50,
-  (key, detail) => estimateTextBytes(key) + estimateJsonBytes(detail)
-);
-const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
-/**
- * The most recently cached detail per subject, keyed independently of the
- * version marker. Lets consumers show the previous conversation immediately
- * while a newer version is fetched, instead of falling back to a skeleton.
- */
-const latestDetails = new Map<string, NotificationDetailContent>();
-const detailValidators = new Map<string, DetailValidator[]>();
+const cache = createVersionedConversationCache<NotificationDetailContent>({
+  maxEntries: 50,
+  estimateBytes: (key, detail) => estimateTextBytes(key) + estimateJsonBytes(detail)
+});
 
 export function clearNotificationDetailCache() {
   resetNotificationDetailMemoryCache();
@@ -209,16 +117,13 @@ export function clearNotificationDetailCache() {
  * drops that memo so a subsequent restore genuinely reparses localStorage.
  */
 export function resetNotificationDetailMemoryCache() {
-  detailCache.clear();
-  inflightDetails.clear();
-  latestDetails.clear();
-  detailValidators.clear();
+  cache.clear();
   flushPersistedNotificationDetailWrites();
   resetPersistedNotificationDetailMemory();
 }
 
 export function getNotificationDetailCacheStats(): CacheSizeStats {
-  return detailCache.stats();
+  return cache.stats();
 }
 
 /**
@@ -250,7 +155,9 @@ function detailSubjectKey(
 export function getCachedNotificationDetail(
   options: NotificationDetailCacheKeyOptions
 ): NotificationDetailContent | null {
-  const cached = detailCache.get(detailCacheKey(options));
+  const subjectKey = detailSubjectKey(options);
+  const version = options.notification.updated_at;
+  const cached = cache.get(subjectKey, version);
   if (cached) {
     return cached;
   }
@@ -259,10 +166,9 @@ export function getCachedNotificationDetail(
     options.notification
   );
   if (persisted) {
-    // Warm the memory cache so subsequent peeks are pointer-cheap and the
-    // latest pointer is populated for stale-while-revalidate.
-    detailCache.set(detailCacheKey(options), persisted);
-    latestDetails.set(detailSubjectKey(options), persisted);
+    // Warm the memory cache so subsequent peeks are pointer-cheap; set() also
+    // populates the latest pointer for stale-while-revalidate.
+    cache.set(subjectKey, version, persisted);
   }
   return persisted;
 }
@@ -270,14 +176,7 @@ export function getCachedNotificationDetail(
 export function deleteCachedNotificationDetail(
   options: NotificationDetailCacheKeyOptions
 ): void {
-  const subjectKey = detailSubjectKey(options);
-  for (const [key] of detailCache.entries()) {
-    if (key.startsWith(`${subjectKey}|`)) {
-      detailCache.delete(key);
-    }
-  }
-  latestDetails.delete(subjectKey);
-  detailValidators.delete(subjectKey);
+  cache.deleteTarget(detailSubjectKey(options));
   deletePersistedNotificationDetail(options.apiBaseUrl, options.notification);
 }
 
@@ -290,7 +189,8 @@ export function deleteCachedNotificationDetail(
 export function getLatestCachedNotificationDetail(
   options: NotificationDetailCacheKeyOptions
 ): NotificationDetailContent | null {
-  const inMemory = latestDetails.get(detailSubjectKey(options));
+  const subjectKey = detailSubjectKey(options);
+  const inMemory = cache.getLatest(subjectKey);
   if (inMemory) {
     return inMemory;
   }
@@ -299,7 +199,7 @@ export function getLatestCachedNotificationDetail(
     options.notification
   );
   if (persisted) {
-    latestDetails.set(detailSubjectKey(options), persisted);
+    cache.setLatest(subjectKey, persisted);
   }
   return persisted;
 }
@@ -325,15 +225,6 @@ async function userProfilesForDetail(
   );
 }
 
-function detailCacheKey(options: NotificationDetailCacheKeyOptions): string {
-  const { notification } = options;
-  return [
-    detailSubjectKey(options),
-    // A new activity bumps updated_at, invalidating the cached conversation.
-    notification.updated_at
-  ].join("|");
-}
-
 function issuePath(owner: string, repo: string, number: number): string {
   return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`;
 }
@@ -350,10 +241,6 @@ function issueCommentsPath(owner: string, repo: string, number: number): string 
   return `${issuePath(owner, repo, number)}/comments?per_page=100`;
 }
 
-function hasValidator(meta: GitHubResponseMeta): boolean {
-  return Boolean(meta.etag || meta.lastModified);
-}
-
 /**
  * Loads the conversation behind a notification through the GitHub REST API,
  * normalized so the detail pane can render every subject type the same way.
@@ -363,14 +250,17 @@ function hasValidator(meta: GitHubResponseMeta): boolean {
 export async function fetchNotificationDetail(
   options: FetchNotificationDetailOptions
 ): Promise<NotificationDetailContent> {
-  const key = detailCacheKey(options);
+  const subjectKey = detailSubjectKey(options);
+  // A new activity bumps updated_at, invalidating the cached conversation.
+  const version = options.notification.updated_at;
   const forceRefresh = options.forceRefresh === true;
-  const cached = forceRefresh ? undefined : detailCache.get(key);
+  const cached = forceRefresh ? undefined : cache.get(subjectKey, version);
   if (!forceRefresh && cached) {
     return cached;
   }
-  const inflightKey = forceRefresh ? `${key}|force` : key;
-  const running = inflightDetails.get(inflightKey);
+  const composite = cache.keyFor(subjectKey, version);
+  const inflightKey = forceRefresh ? `${composite}|force` : composite;
+  const running = cache.inflight.get(inflightKey);
   if (running) {
     return running;
   }
@@ -378,37 +268,24 @@ export async function fetchNotificationDetail(
   const request = fetchNotificationDetailUncached(options)
     .then(({ detail, validators }) => {
       if (!detail.commentsError) {
-        detailCache.set(key, detail);
-        latestDetails.set(detailSubjectKey(options), detail);
-        recordDetailValidators(options, validators);
+        // set() also refreshes the subject's latest pointer.
+        cache.set(subjectKey, version, detail);
+        cache.recordValidators(subjectKey, validators);
         persistNotificationDetail(options.apiBaseUrl, options.notification, detail);
       }
       return detail;
     })
     .finally(() => {
-      inflightDetails.delete(inflightKey);
+      cache.inflight.delete(inflightKey);
     });
-  inflightDetails.set(inflightKey, request);
+  cache.inflight.set(inflightKey, request);
   return request;
-}
-
-function recordDetailValidators(
-  options: NotificationDetailCacheKeyOptions,
-  validators: DetailValidator[]
-): void {
-  const usable = validators.filter((validator) => hasValidator(validator.meta));
-  const subjectKey = detailSubjectKey(options);
-  if (usable.length > 0) {
-    detailValidators.set(subjectKey, usable);
-  } else {
-    detailValidators.delete(subjectKey);
-  }
 }
 
 export async function revalidateNotificationDetail(
   options: FetchNotificationDetailOptions
 ): Promise<NotificationDetailRevalidationResult> {
-  const validators = detailValidators.get(detailSubjectKey(options));
+  const validators = cache.getValidators(detailSubjectKey(options));
   if (!validators || validators.length === 0) {
     return { changed: true };
   }

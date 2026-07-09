@@ -1,4 +1,5 @@
 import {
+  flattenComments,
   summarizeReactions,
   type ConversationComment,
   type GitHubLabel,
@@ -11,19 +12,23 @@ import {
   estimateTextBytes,
   type CacheSizeStats
 } from "./cacheStats";
+import {
+  displayNameForUser,
+  loginNeedingProfile,
+  mapComments,
+  mapLabels,
+  type CommentResponse,
+  type LabelResponse,
+  type ProfileMap,
+  type UserResponse
+} from "./conversationMapping";
 import { createGitHubClient } from "./github";
+import { createGitHubTransport, encodePathSegment } from "./githubTransport";
+import { clearUserProfileCache, fetchUserProfiles } from "./userProfiles";
 import {
-  createGitHubTransport,
-  encodePathSegment,
-  type GitHubResponseMeta
-} from "./githubTransport";
-import { LruCache } from "./lruCache";
-import {
-  clearUserProfileCache,
-  displayNameForLogin,
-  fetchUserProfiles,
-  type UserProfile
-} from "./userProfiles";
+  createVersionedConversationCache,
+  type ConversationValidator
+} from "./versionedConversationCache";
 
 export interface ItemThread {
   state: ItemState;
@@ -55,27 +60,14 @@ export interface FetchItemThreadOptions {
   signal?: AbortSignal;
 }
 
-const threadCache = new LruCache<ItemThread>(
-  50,
-  (key, thread) => estimateTextBytes(key) + estimateJsonBytes(thread)
-);
-const inflightThreads = new Map<string, Promise<ItemThread>>();
-/**
- * The most recently cached thread per target, keyed independently of the
- * version marker. Lets consumers show the previous conversation immediately
- * while a newer version is fetched, instead of falling back to a skeleton.
- */
-const latestThreads = new Map<string, ItemThread>();
-const threadValidators = new Map<string, ThreadValidator[]>();
-
-interface ThreadValidator {
-  path: string;
-  meta: GitHubResponseMeta;
-}
+const cache = createVersionedConversationCache<ItemThread>({
+  maxEntries: 50,
+  estimateBytes: (key, thread) => estimateTextBytes(key) + estimateJsonBytes(thread)
+});
 
 interface FetchedItemThread {
   thread: ItemThread;
-  validators: ThreadValidator[];
+  validators: ConversationValidator[];
 }
 
 export interface ItemThreadRevalidationResult {
@@ -83,15 +75,12 @@ export interface ItemThreadRevalidationResult {
 }
 
 export function clearItemThreadCache() {
-  threadCache.clear();
-  inflightThreads.clear();
-  latestThreads.clear();
-  threadValidators.clear();
+  cache.clear();
   clearUserProfileCache();
 }
 
 export function getItemThreadCacheStats(): CacheSizeStats {
-  return threadCache.stats();
+  return cache.stats();
 }
 
 function threadTargetKey(
@@ -107,20 +96,12 @@ function threadTargetKey(
   ].join("|");
 }
 
-function threadCacheKey(
-  connection: GithubConnection,
-  target: ItemThreadTarget,
-  version: string
-): string {
-  return [threadTargetKey(connection, target), version].join("|");
-}
-
 export function getCachedItemThread(
   connection: GithubConnection,
   target: ItemThreadTarget,
   version = ""
 ): ItemThread | null {
-  return threadCache.get(threadCacheKey(connection, target, version)) ?? null;
+  return cache.get(threadTargetKey(connection, target), version) ?? null;
 }
 
 /**
@@ -132,7 +113,7 @@ export function getLatestCachedItemThread(
   connection: GithubConnection,
   target: ItemThreadTarget
 ): ItemThread | null {
-  return latestThreads.get(threadTargetKey(connection, target)) ?? null;
+  return cache.getLatest(threadTargetKey(connection, target)) ?? null;
 }
 
 export function deleteCachedItemThread(
@@ -140,31 +121,7 @@ export function deleteCachedItemThread(
   target: ItemThreadTarget,
   version = ""
 ): boolean {
-  const key = threadCacheKey(connection, target, version);
-  inflightThreads.delete(key);
-  const deleted = threadCache.delete(key);
-  // Drop the "latest" pointer only when no versioned entry for this target
-  // survives, keeping it consistent with the versioned cache and LRU eviction.
-  const targetKey = threadTargetKey(connection, target);
-  const hasSurvivingVersion = threadCache
-    .entries()
-    .some(([entryKey]) => entryKey.startsWith(`${targetKey}|`));
-  if (!hasSurvivingVersion) {
-    latestThreads.delete(targetKey);
-    threadValidators.delete(targetKey);
-  }
-  return deleted;
-}
-
-interface UserResponse {
-  login?: string;
-  name?: string | null;
-  avatar_url?: string;
-}
-
-interface LabelResponse {
-  name?: string;
-  color?: string;
+  return cache.deleteVersion(threadTargetKey(connection, target), version);
 }
 
 interface StateResponse {
@@ -177,77 +134,8 @@ interface StateResponse {
   reactions?: Record<string, unknown>;
 }
 
-interface CommentResponse {
-  id?: number | string;
-  node_id?: string;
-  body?: string | null;
-  user?: UserResponse;
-  author_association?: string;
-  reactions?: Record<string, unknown>;
-  created_at?: string;
-  replies?: CommentResponse[];
-}
-
 function normalizeState(state: string | undefined): ItemState {
   return state === "closed" || state === "merged" ? state : "open";
-}
-
-function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLabel[] {
-  return (labels ?? [])
-    .map((label) =>
-      typeof label === "string"
-        ? { name: label, color: "" }
-        : { name: label.name ?? "", color: label.color ?? "" }
-    )
-    .filter((label) => label.name);
-}
-
-type ProfileMap = Record<string, UserProfile>;
-
-function displayNameForUser(
-  user: UserResponse | undefined,
-  profiles: ProfileMap
-): string | undefined {
-  const login = user?.login;
-  const inlineName = user?.name?.trim();
-  if (inlineName && inlineName !== login) {
-    return inlineName;
-  }
-  return displayNameForLogin(profiles, login);
-}
-
-function loginNeedingProfile(user: UserResponse | undefined): string | undefined {
-  const login = user?.login;
-  if (!login || login === "unknown") {
-    return undefined;
-  }
-  const inlineName = user.name?.trim();
-  return inlineName && inlineName !== login ? undefined : login;
-}
-
-function mapComments(
-  comments: CommentResponse[],
-  profiles: ProfileMap = {}
-): ConversationComment[] {
-  if (!Array.isArray(comments)) {
-    return [];
-  }
-  return comments.map((comment) => {
-    const authorName = displayNameForUser(comment.user, profiles);
-    const replies = mapComments(comment.replies ?? [], profiles);
-    return {
-      id: String(comment.id ?? ""),
-      ...(comment.node_id ? { nodeId: String(comment.node_id) } : {}),
-      author: comment.user?.login ?? "unknown",
-      ...(authorName ? { authorName } : {}),
-      avatarUrl: comment.user?.avatar_url,
-      authorAssociation: comment.author_association,
-      created_at: comment.created_at ?? "",
-      body: comment.body ?? "",
-      reactions: summarizeReactions(comment.reactions),
-      ...(replies.length > 0 ? { replies } : {})
-    };
-  });
 }
 
 function threadFrom(
@@ -292,13 +180,6 @@ async function userProfilesForThread(
   );
 }
 
-function flattenComments(comments: CommentResponse[]): CommentResponse[] {
-  return comments.flatMap((comment) => [
-    comment,
-    ...flattenComments(comment.replies ?? [])
-  ]);
-}
-
 function issuePath(owner: string, repo: string, number: number): string {
   return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`;
 }
@@ -309,10 +190,6 @@ function pullPath(owner: string, repo: string, number: number): string {
 
 function issueCommentsPath(owner: string, repo: string, number: number): string {
   return `${issuePath(owner, repo, number)}/comments?per_page=100`;
-}
-
-function hasValidator(meta: GitHubResponseMeta): boolean {
-  return Boolean(meta.etag || meta.lastModified);
 }
 
 /**
@@ -326,12 +203,14 @@ export async function fetchItemThread(
   target: ItemThreadTarget,
   options: FetchItemThreadOptions = {}
 ): Promise<ItemThread> {
-  const key = threadCacheKey(connection, target, options.version ?? "");
-  const cached = threadCache.get(key);
+  const targetKey = threadTargetKey(connection, target);
+  const version = options.version ?? "";
+  const cached = cache.get(targetKey, version);
   if (cached) {
     return cached;
   }
-  const running = inflightThreads.get(key);
+  const inflightKey = cache.keyFor(targetKey, version);
+  const running = cache.inflight.get(inflightKey);
   if (running) {
     return running;
   }
@@ -339,65 +218,24 @@ export async function fetchItemThread(
   const request = fetchItemThreadUncached(connection, target, options.signal)
     .then(({ thread, validators }) => {
       if (!thread.commentsError) {
-        threadCache.set(key, thread);
-        recordLatestThread(connection, target, thread);
-        recordThreadValidators(connection, target, validators);
+        // set() also refreshes the target's latest pointer.
+        cache.set(targetKey, version, thread);
+        cache.recordValidators(targetKey, validators);
       }
       return thread;
     })
     .finally(() => {
-      inflightThreads.delete(key);
+      cache.inflight.delete(inflightKey);
     });
-  inflightThreads.set(key, request);
+  cache.inflight.set(inflightKey, request);
   return request;
-}
-
-/**
- * Marks a freshly cached thread as the latest for its target and drops any
- * "latest" pointers whose only versioned entries were evicted by the LRU, so
- * the version-independent map cannot outgrow the bounded versioned cache.
- */
-function recordLatestThread(
-  connection: GithubConnection,
-  target: ItemThreadTarget,
-  thread: ItemThread
-): void {
-  latestThreads.set(threadTargetKey(connection, target), thread);
-  if (latestThreads.size <= threadCache.size) {
-    return;
-  }
-  const liveTargetKeys = new Set(
-    threadCache
-      .entries()
-      .map(([entryKey]) => entryKey.slice(0, entryKey.lastIndexOf("|")))
-  );
-  for (const targetKey of latestThreads.keys()) {
-    if (!liveTargetKeys.has(targetKey)) {
-      latestThreads.delete(targetKey);
-      threadValidators.delete(targetKey);
-    }
-  }
-}
-
-function recordThreadValidators(
-  connection: GithubConnection,
-  target: ItemThreadTarget,
-  validators: ThreadValidator[]
-): void {
-  const usable = validators.filter((validator) => hasValidator(validator.meta));
-  const targetKey = threadTargetKey(connection, target);
-  if (usable.length > 0) {
-    threadValidators.set(targetKey, usable);
-  } else {
-    threadValidators.delete(targetKey);
-  }
 }
 
 export async function revalidateItemThread(
   connection: GithubConnection,
   target: ItemThreadTarget
 ): Promise<ItemThreadRevalidationResult> {
-  const validators = threadValidators.get(threadTargetKey(connection, target));
+  const validators = cache.getValidators(threadTargetKey(connection, target));
   if (!validators || validators.length === 0) {
     return { changed: true };
   }

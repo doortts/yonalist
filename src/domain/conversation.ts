@@ -50,6 +50,20 @@ export interface ConversationComment {
 }
 
 /**
+ * Flattens a nested comment tree (comments with `replies`) into a single
+ * depth-first list. Generic over the node shape so it serves both the mapped
+ * `ConversationComment` and the raw `CommentResponse` shapes.
+ */
+export function flattenComments<T extends { replies?: T[] }>(
+  comments: T[]
+): T[] {
+  return comments.flatMap((comment) => [
+    comment,
+    ...flattenComments(comment.replies ?? [])
+  ]);
+}
+
+/**
  * Readable text color for a label swatch, matching GitHub's YIQ contrast
  * rule. Defaults to dark text for malformed colors.
  */

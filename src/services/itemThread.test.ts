@@ -437,6 +437,31 @@ describe("fetchItemThread", () => {
     }
   });
 
+  it("keeps latest pointers for still-cached targets when the latest map outgrows the LRU", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ state: "open" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Real versions contain a pipe ('<updated_at>|refresh:<n>'); the old
+    // slice-derivation wiped every latest pointer once the map outgrew the LRU.
+    const version = "2026-07-01T00:00:00Z|refresh:0";
+    try {
+      let lastTarget = { kind: "issue" as const, owner: "acme", repo: "app", number: 1 };
+      for (let n = 1; n <= 51; n += 1) {
+        lastTarget = { kind: "issue" as const, owner: "acme", repo: "app", number: n };
+        await fetchItemThread(connection, lastTarget, { version });
+      }
+
+      expect(getLatestCachedItemThread(connection, lastTarget)).not.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not cache threads whose comments failed to load", async () => {
     let commentCalls = 0;
     const fetchMock = vi.fn(async (url: string | URL | Request) => {

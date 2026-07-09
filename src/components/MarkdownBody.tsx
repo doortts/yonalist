@@ -36,10 +36,10 @@ type RenderedMarkdownState = {
 };
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
-const renderedMarkdownCache = new LruCache<RenderedMarkdown>(
-  200,
-  (body, rendered) => estimateTextBytes(body) + estimateTextBytes(rendered.__html)
-);
+const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200, {
+  estimateBytes: (body, rendered) =>
+    estimateTextBytes(body) + estimateTextBytes(rendered.__html)
+});
 const WARM_RENDER_BATCH_SIZE = 4;
 let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
 

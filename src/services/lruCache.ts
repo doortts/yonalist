@@ -10,16 +10,31 @@ import type { CacheSizeStats } from "./cacheStats";
  * kept in a running sum, so `stats()` is O(1) instead of re-measuring every
  * entry per call. The estimator must not throw (estimateJsonBytes already
  * try/catches); a throwing estimator would leave the running total wrong.
+ *
+ * An optional `onEvict` callback fires ONLY when a capacity overflow drops the
+ * least-recently-used entry, never on an explicit `delete`, `clear`, or an
+ * in-place overwrite. Callers use it to keep companion bookkeeping (e.g. a
+ * version index) in exact lockstep with LRU eviction.
  */
+export interface LruCacheOptions<V> {
+  estimateBytes?: (key: string, value: V) => number;
+  onEvict?: (key: string, value: V) => void;
+}
+
 export class LruCache<V> {
   private map = new Map<string, V>();
   private entryBytes = new Map<string, number>();
   private totalBytes = 0;
+  private readonly estimateBytes?: (key: string, value: V) => number;
+  private readonly onEvict?: (key: string, value: V) => void;
 
   constructor(
     private readonly maxSize: number,
-    private readonly estimateBytes?: (key: string, value: V) => number
-  ) {}
+    options?: LruCacheOptions<V>
+  ) {
+    this.estimateBytes = options?.estimateBytes;
+    this.onEvict = options?.onEvict;
+  }
 
   get size(): number {
     return this.map.size;
@@ -51,10 +66,12 @@ export class LruCache<V> {
     if (this.map.size > this.maxSize) {
       const oldest = this.map.keys().next().value;
       if (oldest !== undefined) {
+        const evictedValue = this.map.get(oldest) as V;
         if (this.estimateBytes) {
           this.releaseBytes(oldest);
         }
         this.map.delete(oldest);
+        this.onEvict?.(oldest, evictedValue);
       }
     }
   }
