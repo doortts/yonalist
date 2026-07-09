@@ -59,10 +59,6 @@ function itemTarget(item: ItemDocument): ItemThreadTarget {
   };
 }
 
-function entryKey(item: ItemDocument, refreshKey: number): string {
-  return `${item.path}|${itemThreadVersion(item, refreshKey)}`;
-}
-
 function expectsRemoteThread(options: LatestOptions, item: ItemDocument): boolean {
   return Boolean(options.connection.token.trim()) && item.frontMatter.number > 0;
 }
@@ -189,14 +185,18 @@ export function useVisibleItemPrefetch(
 
   const entries = useMemo(
     () =>
-      options.visibleItems.map((item) => ({
-        key: [
-          entryKey(item, refreshKey),
-          options.connection.apiBaseUrl,
-          options.connection.token.trim() ? "auth" : "anon"
-        ].join("|"),
-        value: { item, version: itemThreadVersion(item, refreshKey) }
-      })),
+      options.visibleItems.map((item) => {
+        const version = itemThreadVersion(item, refreshKey);
+        return {
+          key: [
+            item.path,
+            version,
+            options.connection.apiBaseUrl,
+            options.connection.token.trim() ? "auth" : "anon"
+          ].join("|"),
+          value: { item, version }
+        };
+      }),
     [
       options.connection.apiBaseUrl,
       options.connection.token,

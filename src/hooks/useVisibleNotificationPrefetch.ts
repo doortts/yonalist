@@ -31,11 +31,6 @@ export interface UseVisibleNotificationPrefetchOptions {
 
 export type VisibleNotificationPrefetchStats = VisiblePrefetchQueueStats;
 
-interface PrefetchValue {
-  key: string;
-  notification: GitHubNotification;
-}
-
 /**
  * Cache identity for a notification's detail. It matches the
  * fetchNotificationDetail cache key inputs (apiBaseUrl, subject.url,
@@ -80,10 +75,10 @@ export function useVisibleNotificationPrefetch(
   const entries = useMemo(
     () =>
       active
-        ? options.visibleNotifications.map((notification) => {
-            const key = entryKey(notification, options.connection);
-            return { key, value: { key, notification } };
-          })
+        ? options.visibleNotifications.map((notification) => ({
+            key: entryKey(notification, options.connection),
+            value: notification
+          }))
         : [],
     [
       active,
@@ -93,7 +88,7 @@ export function useVisibleNotificationPrefetch(
     ]
   );
 
-  return useVisiblePrefetchQueue<PrefetchValue>({
+  return useVisiblePrefetchQueue<GitHubNotification>({
     entries,
     enabled: options.enabled,
     dwellMs: options.dwellMs,
@@ -112,14 +107,14 @@ export function useVisibleNotificationPrefetch(
       );
     },
     // Keep the selected notification's warmed detail even after it leaves view.
-    isProtected: (value) => value.notification.id === latest.current.selectedId,
-    prefetchEntry: async (value) => {
+    isProtected: (notification) => notification.id === latest.current.selectedId,
+    prefetchEntry: async (notification) => {
       const current = latest.current;
       const detail = await fetchNotificationDetail({
         token: current.connection.token.trim(),
         apiBaseUrl: current.connection.apiBaseUrl,
         webBaseUrl: current.connection.webBaseUrl,
-        notification: value.notification
+        notification
       });
       await warmMarkdownBodies(markdownBodiesFromDetail(detail));
       return !detail.commentsError;

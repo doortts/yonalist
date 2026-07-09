@@ -6,6 +6,11 @@ export const DEFAULT_MAX_CONCURRENT_PREFETCHES = 4;
 
 type Timer = ReturnType<typeof setTimeout>;
 
+/** Monotonic when available; jsdom test environments may lack performance. */
+function nowMs(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
+}
+
 /** One thing the queue can warm: a stable cache `key` plus its payload. */
 export interface VisiblePrefetchQueueEntry<E> {
   key: string;
@@ -304,8 +309,7 @@ export function useVisiblePrefetchQueue<E>(
       drainPrefetchQueue();
       return;
     }
-    const startedAt =
-      typeof performance === "undefined" ? Date.now() : performance.now();
+    const startedAt = nowMs();
     try {
       const cached = await current.prefetchEntry(entry.value);
       if (cached) {
@@ -315,9 +319,7 @@ export function useVisiblePrefetchQueue<E>(
       current.onError?.(cause instanceof Error ? cause.message : String(cause));
     } finally {
       inflightKeys.current.delete(key);
-      const endedAt =
-        typeof performance === "undefined" ? Date.now() : performance.now();
-      lastDurationMs.current = endedAt - startedAt;
+      lastDurationMs.current = nowMs() - startedAt;
       completedCount.current += 1;
       totalDurationMs.current += lastDurationMs.current;
       publishStats();
