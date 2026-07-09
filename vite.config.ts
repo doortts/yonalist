@@ -32,8 +32,8 @@ export default defineConfig({
     globals: true,
     setupFiles: ["src/test/setup.ts"],
     // Keep vitest's default excludes (node_modules, dist, .git, …) and also
-    // skip any nested repo copies under `.claude/worktrees/` so worktree
-    // checkouts don't get their test suites scanned and run twice.
-    exclude: [...configDefaults.exclude, "**/.claude/**"]
+    // skip any nested repo copies under `.claude/` or `.worktrees/` so
+    // worktree checkouts don't get their test suites scanned and run twice.
+    exclude: [...configDefaults.exclude, "**/.claude/**", "**/.worktrees/**"]
   }
 });
