@@ -34,14 +34,21 @@ interface HarnessProps {
   token?: string;
   online?: boolean;
   note?: GitHubNotification | null;
+  refreshKey?: number;
 }
 
-function Harness({ token = "ghp_test", online = true, note }: HarnessProps) {
+function Harness({
+  token = "ghp_test",
+  online = true,
+  note,
+  refreshKey = 0
+}: HarnessProps) {
   const selected = note === undefined ? notification("2026-07-01T00:00:00Z") : note;
   const state = useNotificationDetail(
     selected,
     { ...connection, token },
-    online
+    online,
+    refreshKey
   );
   return (
     <div>
@@ -136,7 +143,7 @@ describe("useNotificationDetail", () => {
     expect(fetchMock.mock.calls.length).toBe(callsAfterPrime);
   });
 
-  it("shows the previous detail while refreshing after a version change", async () => {
+  it("keeps the previous detail visible without loading UI during a background refresh", async () => {
     const { fetchMock, resolveIssue } = deferredIssueFetch();
     vi.stubGlobal("fetch", fetchMock);
 
@@ -153,12 +160,10 @@ describe("useNotificationDetail", () => {
     // A new activity bumps updated_at -> versioned cache miss.
     rerender(<Harness note={notification("2026-07-05T00:00:00Z")} />);
 
-    await waitFor(() => {
-      expect(screen.getByText("refreshing")).toBeInTheDocument();
-    });
     // The previously seen conversation stays on screen instead of a skeleton.
     expect(screen.getByText("old title")).toBeInTheDocument();
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
 
     resolveIssue(1, "new title");
 
@@ -167,6 +172,53 @@ describe("useNotificationDetail", () => {
       expect(screen.getByText("settled")).toBeInTheDocument();
     });
     expect(screen.getByText("idle")).toBeInTheDocument();
+  });
+
+  it("force-refreshes the same notification version in the background without loading UI", async () => {
+    const { fetchMock, resolveIssue } = deferredIssueFetch();
+    const note = notification("2026-07-01T00:00:00Z");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(<Harness note={note} refreshKey={0} />);
+
+    resolveIssue(0, "old title");
+    await screen.findByText("old title");
+    await waitFor(() => {
+      expect(screen.getByText("idle")).toBeInTheDocument();
+    });
+
+    rerender(<Harness note={note} refreshKey={1} />);
+
+    expect(screen.getByText("old title")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
+
+    resolveIssue(1, "new title");
+
+    expect(await screen.findByText("new title")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
+  });
+
+  it("does not force-refresh a cached notification just because the global refresh key is nonzero", async () => {
+    const note = notification("2026-07-01T00:00:00Z");
+    const fetchMock = issueFetch("Cached title");
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchNotificationDetail({
+      ...connection,
+      notification: note,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    const callsAfterPrime = fetchMock.mock.calls.length;
+
+    render(<Harness note={note} refreshKey={3} />);
+
+    expect(screen.getByText("Cached title")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.length).toBe(callsAfterPrime);
+    });
   });
 
   it("shows a spinner and no detail when nothing is cached", async () => {

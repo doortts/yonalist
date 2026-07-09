@@ -140,7 +140,6 @@ import {
 } from "./services/detailRenderCache";
 import {
   clearNotificationDetailCache,
-  deleteCachedNotificationDetail,
   getNotificationDetailCacheStats
 } from "./services/notificationDetail";
 import {
@@ -1070,19 +1069,8 @@ export default function App({ initialOnline }: AppProps) {
     if (activeDetailKey) {
       deleteDetailRenderSnapshot(activeDetailKey);
     }
-    if (showNotifications && selectedNotification) {
-      deleteCachedNotificationDetail({
-        apiBaseUrl: auth.connection.apiBaseUrl,
-        notification: selectedNotification
-      });
-    }
     setConversationRefreshKey((current) => current + 1);
-  }, [
-    auth.connection.apiBaseUrl,
-    activeDetailKey,
-    selectedNotification,
-    showNotifications
-  ]);
+  }, [activeDetailKey]);
   useDetailRevalidation({
     target: detailRevalidationTarget,
     enabled:

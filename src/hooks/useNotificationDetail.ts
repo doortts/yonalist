@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GithubConnection } from "./useGithubAuth";
 import type { GitHubNotification } from "../domain/notifications";
 import { sampleNotificationDetail } from "../fixtures/sampleNotifications";
@@ -14,8 +14,8 @@ export interface UseNotificationDetailResult {
   loading: boolean;
   error: string | null;
   /**
-   * True while a stale (previous-version) conversation is shown and a newer
-   * version is being fetched in the background. Consumers may ignore this.
+   * Reserved for visible refresh affordances. Background revalidation keeps
+   * this false so the detail pane does not flash loading UI.
    */
   refreshing: boolean;
 }
@@ -31,9 +31,29 @@ export function useNotificationDetail(
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const lastRefreshContext = useRef<{ key: string | null; refreshKey: number }>({
+    key: null,
+    refreshKey: 0
+  });
   const token = connection.token.trim();
+  const notificationKey = notification
+    ? [
+        connection.apiBaseUrl,
+        notification.id,
+        notification.subject.url ?? notification.subject.title,
+        notification.updated_at
+      ].join("|")
+    : null;
 
   useEffect(() => {
+    const previousRefreshContext = lastRefreshContext.current;
+    const forceRefresh =
+      notificationKey !== null &&
+      previousRefreshContext.key === notificationKey &&
+      previousRefreshContext.refreshKey !== refreshKey &&
+      refreshKey > 0;
+    lastRefreshContext.current = { key: notificationKey, refreshKey };
+
     if (!notification) {
       setDetail(null);
       setLoading(false);
@@ -73,7 +93,7 @@ export function useNotificationDetail(
 
     // Synchronous cache hit for the current version -> show it with no spinner.
     const cached = getCachedNotificationDetail(cacheOptions);
-    if (cached) {
+    if (cached && !forceRefresh) {
       setDetail(cached);
       setLoading(false);
       setError(null);
@@ -85,21 +105,22 @@ export function useNotificationDetail(
     // Version miss: if a previous conversation for this subject is still
     // cached, show it immediately (stale-while-revalidate) and swap in the
     // fresh result when it arrives, instead of dropping to a skeleton.
-    const stale = getLatestCachedNotificationDetail(cacheOptions);
+    const stale = cached ?? getLatestCachedNotificationDetail(cacheOptions);
     if (stale) {
       setDetail(stale);
-      setRefreshing(true);
+      setRefreshing(false);
     } else {
       setDetail(null);
       setRefreshing(false);
     }
-    setLoading(true);
+    setLoading(!stale);
     setError(null);
     fetchNotificationDetail({
       token,
       apiBaseUrl: connection.apiBaseUrl,
       webBaseUrl: connection.webBaseUrl,
-      notification
+      notification,
+      forceRefresh
     })
       .then((content) => {
         if (!cancelled) {
@@ -108,8 +129,13 @@ export function useNotificationDetail(
       })
       .catch((cause) => {
         if (!cancelled) {
-          setDetail(null);
-          setError(cause instanceof Error ? cause.message : String(cause));
+          if (stale) {
+            setDetail(stale);
+            setError(null);
+          } else {
+            setDetail(null);
+            setError(cause instanceof Error ? cause.message : String(cause));
+          }
         }
       })
       .finally(() => {
@@ -123,6 +149,7 @@ export function useNotificationDetail(
     };
   }, [
     notification,
+    notificationKey,
     token,
     online,
     connection.apiBaseUrl,

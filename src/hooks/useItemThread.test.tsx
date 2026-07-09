@@ -320,7 +320,7 @@ describe("useItemThread", () => {
     expect(screen.queryByText("first item comment")).not.toBeInTheDocument();
   });
 
-  it("shows the previous cached thread while refreshing after a version change", async () => {
+  it("keeps the previous cached thread visible without loading UI during a background refresh", async () => {
     const { fetchMock, resolveComment } = deferredThreadFetch([
       "old body",
       "new body"
@@ -342,13 +342,11 @@ describe("useItemThread", () => {
       <ThreadHarness token="ghp_test" item={issueItem("2026-07-05T00:00:00Z")} />
     );
 
-    // The previously seen conversation stays on screen instead of a skeleton,
-    // and the hook reports it is refreshing in the background.
-    await waitFor(() => {
-      expect(screen.getByText("refreshing")).toBeInTheDocument();
-    });
+    // The previously seen conversation stays on screen with no loading or
+    // refreshing UI; the newer thread swaps in when the background request ends.
     expect(screen.getByText("old body")).toBeInTheDocument();
-    expect(screen.getByText("loading")).toBeInTheDocument();
+    expect(screen.getByText("idle")).toBeInTheDocument();
+    expect(screen.getByText("settled")).toBeInTheDocument();
 
     resolveComment(1);
 

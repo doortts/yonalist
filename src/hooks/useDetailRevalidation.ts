@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { GitHubNotification } from "../domain/notifications";
 import {
   revalidateItemThread,
@@ -40,10 +40,22 @@ export function useDetailRevalidation({
   onChanged,
   onError
 }: UseDetailRevalidationOptions): void {
+  const lastScheduledKey = useRef<string | null>(null);
+  const targetKey = target?.key ?? null;
+
   useEffect(() => {
+    if (!targetKey) {
+      lastScheduledKey.current = null;
+      return;
+    }
     if (!enabled || !target) {
       return;
     }
+    if (lastScheduledKey.current === targetKey) {
+      return;
+    }
+    lastScheduledKey.current = targetKey;
+
     let cancelled = false;
     const timer = window.setTimeout(() => {
       const request =
@@ -72,5 +84,5 @@ export function useDetailRevalidation({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [delayMs, enabled, onChanged, onError, target]);
+  }, [delayMs, enabled, onChanged, onError, target, targetKey]);
 }

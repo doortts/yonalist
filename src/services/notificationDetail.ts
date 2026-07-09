@@ -98,6 +98,7 @@ export interface FetchNotificationDetailOptions {
   webBaseUrl: string;
   notification: GitHubNotification;
   fetchImpl?: typeof fetch;
+  forceRefresh?: boolean;
 }
 
 export interface NotificationDetailRevalidationResult {
@@ -358,11 +359,13 @@ export async function fetchNotificationDetail(
   options: FetchNotificationDetailOptions
 ): Promise<NotificationDetailContent> {
   const key = detailCacheKey(options);
-  const cached = detailCache.get(key);
-  if (cached) {
+  const forceRefresh = options.forceRefresh === true;
+  const cached = forceRefresh ? undefined : detailCache.get(key);
+  if (!forceRefresh && cached) {
     return cached;
   }
-  const running = inflightDetails.get(key);
+  const inflightKey = forceRefresh ? `${key}|force` : key;
+  const running = inflightDetails.get(inflightKey);
   if (running) {
     return running;
   }
@@ -378,9 +381,9 @@ export async function fetchNotificationDetail(
       return detail;
     })
     .finally(() => {
-      inflightDetails.delete(key);
+      inflightDetails.delete(inflightKey);
     });
-  inflightDetails.set(key, request);
+  inflightDetails.set(inflightKey, request);
   return request;
 }
 

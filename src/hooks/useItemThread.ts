@@ -101,7 +101,7 @@ export function useItemThread(
     const stale = getLatestCachedItemThread(connection, target);
     if (stale) {
       setThread(stale);
-      setRefreshing(true);
+      setRefreshing(false);
     } else {
       setThread({
         state: item.frontMatter.state,
@@ -111,7 +111,7 @@ export function useItemThread(
       });
       setRefreshing(false);
     }
-    setLoading(true);
+    setLoading(!stale);
     setError(null);
     fetchItemThread(
       connection,
@@ -126,8 +126,13 @@ export function useItemThread(
       })
       .catch((cause) => {
         if (!cancelled) {
-          setThread(null);
-          setError(cause instanceof Error ? cause.message : String(cause));
+          if (stale) {
+            setThread(stale);
+            setError(null);
+          } else {
+            setThread(null);
+            setError(cause instanceof Error ? cause.message : String(cause));
+          }
         }
       })
       .finally(() => {

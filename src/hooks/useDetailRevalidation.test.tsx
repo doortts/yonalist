@@ -115,6 +115,32 @@ describe("useDetailRevalidation", () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("does not start another delayed probe for the same detail key after refresh toggles loading", async () => {
+    const onChanged = vi.fn();
+    const target: Parameters<typeof useDetailRevalidation>[0]["target"] = {
+      kind: "item",
+      key: "item:/vault/issue.md",
+      connection,
+      item: itemTarget
+    };
+    vi.mocked(revalidateItemThread).mockResolvedValue({ changed: true });
+
+    const { rerender } = render(
+      <Harness target={target} enabled onChanged={onChanged} />
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(revalidateItemThread).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+
+    rerender(<Harness target={target} enabled={false} onChanged={onChanged} />);
+    rerender(<Harness target={target} enabled onChanged={onChanged} />);
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(revalidateItemThread).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels the previous delayed probe when the detail target changes", async () => {
     const { rerender } = render(
       <Harness
