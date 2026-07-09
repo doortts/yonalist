@@ -85,18 +85,6 @@
   -webkit-font-smoothing: antialiased;
 }
 
-@font-face {
-  font-family: "yobicon";
-  src:
-    url("./assets/fonts/yobicon.woff2") format("woff2"),
-    url("./assets/fonts/yobicon.woff") format("woff");
-  font-style: normal;
-  font-weight: normal;
-  /* `block` on purpose: this is an icon font, so swapping in a fallback
-   * would flash tofu/PUA glyphs — a brief invisible period reads better. */
-  font-display: block;
-}
-
 :root[data-theme="yona"] {
   color-scheme: light;
 
@@ -1656,15 +1644,7 @@ body.is-resizing-pane {
 
 .item-comments .yona-comment-icon {
   color: var(--yona-comment);
-  font-family: "yobicon";
-  font-size: inherit;
-  font-style: normal;
-  font-weight: normal;
-  line-height: inherit;
-}
-
-.item-comments .yona-comment-icon::before {
-  content: "\e274";
+  flex: 0 0 auto;
 }
 
 .item-row-actions {

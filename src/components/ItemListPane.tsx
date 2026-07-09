@@ -5,6 +5,7 @@ import {
   Check,
   CircleDot,
   GitPullRequest,
+  MessageSquare,
   MessagesSquare,
   Plus,
   RefreshCw,
@@ -729,7 +730,7 @@ const ItemRow = memo(function ItemRow({
     <span className="item-row-actions">
       {showComments && (
         <span className="item-comments">
-          <span className="yona-comment-icon" aria-hidden="true" />
+          <MessageSquare className="yona-comment-icon" size={13} aria-hidden="true" />
           {commentCount}
         </span>
       )}
