@@ -199,6 +199,9 @@ export function ItemDetail({
         )}
 
         <CommentThread
+          // Keyed by conversation so the incremental mount count resets when
+          // a different item opens but survives same-item refreshes.
+          key={item.path}
           comments={comments}
           subjectAuthor={item.frontMatter.author}
           replyDraft={replyDraft}
