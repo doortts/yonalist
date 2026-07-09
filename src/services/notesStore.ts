@@ -13,6 +13,9 @@ async function invokeNotes<T>(
   command: string,
   args: Record<string, unknown>
 ): Promise<T> {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+    throw new Error("Notes requires Tauri desktop storage.");
+  }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(command, args);
 }

@@ -1777,6 +1777,41 @@ mod tests {
     }
 
     #[test]
+    fn clear_vault_cache_keeps_notes_sqlite_and_its_nodes() {
+        use crate::notes::repository::{connect_notes_db, create_node, load_workspace};
+        use crate::notes::types::{CreateNodeInput, NotesWorkspaceScope};
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let mut notes = connect_notes_db(&vault_path).expect("notes db");
+        create_node(
+            &mut notes,
+            CreateNodeInput {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Persistent note".to_string(),
+                note: "This is user data.".to_string(),
+            },
+        )
+        .expect("create note");
+
+        drop(notes);
+        let notes_path = metadata_dir(&vault_path).join("notes.sqlite");
+        let notes_bytes_before = fs::read(&notes_path).expect("read notes database");
+        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        assert_eq!(
+            fs::read(&notes_path).expect("read notes database after cache clear"),
+            notes_bytes_before
+        );
+
+        let notes = connect_notes_db(&vault_path).expect("reopen notes");
+        let workspace = load_workspace(&notes, NotesWorkspaceScope::Active).expect("load notes");
+        assert_eq!(workspace.nodes.len(), 1);
+        assert_eq!(workspace.nodes[0].title, "Persistent note");
+    }
+
+    #[test]
     fn write_text_file_creates_parent_directories() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let path = temp_dir

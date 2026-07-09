@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetApplicationData } from "./appReset";
+
+const invokeMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./sessionTokens", () => ({
   clearSessionToken: vi.fn(async () => undefined)
@@ -21,7 +23,20 @@ vi.mock("./notifications", () => ({
   clearNotificationCache: vi.fn()
 }));
 
+vi.mock("./oauth", () => ({
+  isTauri: () => true
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock
+}));
+
 describe("resetApplicationData", () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    window.localStorage.clear();
+  });
+
   it("clears settings and caches while preserving vault documents", async () => {
     window.localStorage.setItem("yonalist.settings.v1", "{\"vaultFolder\":\"/tmp\"}");
     window.localStorage.setItem("yonalist.themeMode.v1", "dark");
@@ -71,5 +86,17 @@ describe("resetApplicationData", () => {
       "github.com/acme/app/issues/1/issue.md"
     );
     expect(window.localStorage.getItem("unrelated")).toBe("kept");
+  });
+
+  it("preserves Notes by clearing only the native vault cache command", async () => {
+    await resetApplicationData({ vaultRoot: "/vault" });
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("clear_vault_cache", {
+      vaultPath: "/vault"
+    });
+    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
+      "notes_empty_trash"
+    );
   });
 });
