@@ -102,7 +102,14 @@ impl CreateNodeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         validate_note_id(&self.id)?;
         validate_optional_note_id(self.parent_id.as_deref())?;
-        validate_optional_note_id(self.after_id.as_deref())
+        validate_optional_note_id(self.after_id.as_deref())?;
+        if self.parent_id.as_deref() == Some(self.id.as_str()) {
+            return Err("A new node cannot be its own parent.".to_string());
+        }
+        if self.after_id.as_deref() == Some(self.id.as_str()) {
+            return Err("A new node cannot be placed after itself.".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -116,14 +123,25 @@ impl MoveNodeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         validate_note_id(&self.id)?;
         validate_optional_note_id(self.parent_id.as_deref())?;
-        validate_optional_note_id(self.after_id.as_deref())
+        validate_optional_note_id(self.after_id.as_deref())?;
+        if self.parent_id.as_deref() == Some(self.id.as_str()) {
+            return Err("A node cannot be moved under itself.".to_string());
+        }
+        if self.after_id.as_deref() == Some(self.id.as_str()) {
+            return Err("A node cannot be placed after itself.".to_string());
+        }
+        Ok(())
     }
 }
 
 impl SplitNodeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         validate_note_id(&self.id)?;
-        validate_note_id(&self.new_node_id)
+        validate_note_id(&self.new_node_id)?;
+        if self.id == self.new_node_id {
+            return Err("A split node must use a fresh Note ID.".to_string());
+        }
+        Ok(())
     }
 }
 
