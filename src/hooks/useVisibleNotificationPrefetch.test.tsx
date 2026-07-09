@@ -222,6 +222,26 @@ describe("useVisibleNotificationPrefetch", () => {
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(4);
   });
 
+  it("caps concurrent prefetches at 4 by default", async () => {
+    const notifications = Array.from({ length: 6 }, (_, index) =>
+      makeNotification(String(index + 1))
+    );
+    const resolvers: Array<(value: NotificationDetailContent) => void> = [];
+    vi.mocked(fetchNotificationDetail).mockImplementation(
+      () =>
+        new Promise<NotificationDetailContent>((resolve) => {
+          resolvers.push(resolve);
+        })
+    );
+
+    // No maxConcurrentPrefetches prop: the hook's default governs the fan-out.
+    render(<Harness visibleNotifications={notifications} />);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+
+    expect(fetchNotificationDetail).toHaveBeenCalledTimes(4);
+  });
+
   it("stops re-warming an evicted notification until it becomes visible again", async () => {
     const { rerender } = render(
       <Harness visibleNotifications={[makeNotification("1")]} />

@@ -283,7 +283,31 @@ describe("useVisibleItemPrefetch", () => {
     expect(fetchItemThread).toHaveBeenCalledTimes(4);
   });
 
-  it("starts enough visible rows to cover lower viewport clicks with the default concurrency", async () => {
+  it("caps concurrent prefetches at 4 by default", async () => {
+    const items = Array.from({ length: 6 }, (_, index) => ({
+      ...baseItem,
+      path: `/vault/github.com/acme/app/issues/${index + 1}/issue.md`,
+      frontMatter: {
+        ...baseItem.frontMatter,
+        number: index + 1,
+        updated_at: `2026-07-0${index + 1}T00:00:00Z`
+      }
+    }));
+    vi.mocked(loadItemDocumentBody).mockResolvedValue("body");
+    vi.mocked(fetchItemThread).mockImplementation(
+      () => new Promise<ItemThread>(() => undefined)
+    );
+
+    // No maxConcurrentPrefetches prop: the hook's default governs the fan-out.
+    render(<Harness visibleItems={items} />);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+
+    expect(fetchItemThread).toHaveBeenCalledTimes(4);
+  });
+
+  it("caps the default fan-out so deep-queue rows wait their turn", async () => {
     const items = Array.from({ length: 10 }, (_, index) => ({
       ...baseItem,
       path: `/vault/github.com/acme/app/issues/${index + 1}/issue.md`,
@@ -296,13 +320,18 @@ describe("useVisibleItemPrefetch", () => {
     vi.mocked(fetchItemThread).mockImplementation(
       () => new Promise<ItemThread>(() => undefined)
     );
+    const onStats = vi.fn();
 
-    render(<Harness visibleItems={items} />);
+    render(<Harness visibleItems={items} onStats={onStats} />);
 
     await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
-    expect(fetchItemThread).toHaveBeenCalledTimes(10);
+    // Only the default cap fires immediately; the remaining rows queue behind them.
+    expect(fetchItemThread).toHaveBeenCalledTimes(4);
+    expect(onStats).toHaveBeenCalledWith(
+      expect.objectContaining({ active: 4, queued: 6 })
+    );
   });
 
   it("continues publishing stats after React StrictMode replays effects", async () => {

@@ -37,6 +37,7 @@ type RenderedMarkdownState = {
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
 const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200);
+const WARM_RENDER_BATCH_SIZE = 4;
 let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
 
 function loadMarkdownRenderer() {
@@ -52,9 +53,18 @@ export async function warmMarkdownBodies(bodies: string[]) {
     return;
   }
   const { renderMarkdown } = await loadMarkdownRenderer();
+  let renderedCount = 0;
   for (const body of missingBodies) {
+    // Yield to the event loop between batches so a large prefetched
+    // conversation cannot block the main thread in one synchronous burst.
+    if (renderedCount > 0 && renderedCount % WARM_RENDER_BATCH_SIZE === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    // Re-check inside the loop: a concurrent warm may have filled the entry
+    // during one of the yields above.
     if (!renderedMarkdownCache.has(body)) {
       renderedMarkdownCache.set(body, renderMarkdown(body));
+      renderedCount += 1;
     }
   }
 }

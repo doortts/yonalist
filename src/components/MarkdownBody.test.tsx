@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useLayoutEffect, useRef } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import {
   clearMarkdownRenderCache,
@@ -264,5 +264,69 @@ describe("MarkdownBody", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     );
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  describe("warmMarkdownBodies event-loop yielding", () => {
+    beforeEach(async () => {
+      // Load the markdown renderer once with real timers so its memoized import
+      // promise is already resolved; then the warm loop only awaits our own
+      // setTimeout(0) yields under fake timers.
+      vi.useRealTimers();
+      await warmMarkdownBodies(["__prewarm_renderer__"]);
+      clearMarkdownRenderCache();
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function flushMicrotasks() {
+      for (let i = 0; i < 5; i += 1) {
+        await Promise.resolve();
+      }
+    }
+
+    it("yields to the event loop while warming many bodies", async () => {
+      const bodies = Array.from(
+        { length: 9 },
+        (_, index) => `# Warm body ${index}\n\nUnique paragraph ${index}`
+      );
+      let settled = false;
+      void warmMarkdownBodies(bodies).then(() => {
+        settled = true;
+      });
+
+      // Microtasks alone do not finish the batch: it yields to the macrotask
+      // queue after every fourth rendered body (two setTimeout(0) yields for
+      // nine bodies at a batch size of four).
+      await flushMicrotasks();
+      expect(settled).toBe(false);
+
+      // Draining the pending setTimeout(0) yields lets the batch finish.
+      await vi.runAllTimersAsync();
+      await flushMicrotasks();
+
+      expect(settled).toBe(true);
+      expect(getMarkdownRenderCacheStats().entries).toBeGreaterThanOrEqual(9);
+    });
+
+    it("warms a small batch without needing timer advances", async () => {
+      const bodies = [
+        "# Small one\n\nalpha",
+        "# Small two\n\nbeta",
+        "# Small three\n\ngamma"
+      ];
+      let settled = false;
+      void warmMarkdownBodies(bodies).then(() => {
+        settled = true;
+      });
+
+      // Four-or-fewer bodies never hit a batch boundary, so no macrotask yield.
+      await flushMicrotasks();
+
+      expect(settled).toBe(true);
+      expect(getMarkdownRenderCacheStats().entries).toBeGreaterThanOrEqual(3);
+    });
   });
 });
