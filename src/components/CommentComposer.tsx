@@ -100,12 +100,6 @@ const DISCUSSION_CLOSE_OPTIONS: Array<{
   }
 ];
 
-/**
- * Walks up from `node` to the nearest scrollable ancestor. The settle observer
- * uses it as its root so "the composer reached its natural flow position"
- * aligns with the bottom of the detail scroll container rather than the
- * browser viewport.
- */
 function findScrollParent(node: HTMLElement | null): HTMLElement | null {
   let current = node?.parentElement ?? null;
   while (current) {
@@ -117,6 +111,8 @@ function findScrollParent(node: HTMLElement | null): HTMLElement | null {
   }
   return null;
 }
+
+type ComposerSurface = "flow" | "dock";
 
 export function CommentComposer({
   draft,
@@ -134,29 +130,24 @@ export function CommentComposer({
   const [discussionCloseReason, setDiscussionCloseReason] =
     useState<DiscussionCloseReason>("resolved");
   const [closeMenuOpen, setCloseMenuOpen] = useState(false);
-  // Focus lives anywhere within the composer; `settled` means the dock sentinel
-  // (rendered just *before* the composer's natural flow position) has scrolled
-  // into the detail viewport — i.e. the reader hit the end of the thread.
-  const [focused, setFocused] = useState(false);
-  // Without an IntersectionObserver we cannot detect the settle point, so fall
-  // back to treating the composer as settled — it stays usably expanded rather
-  // than stranded in the collapsed bar with no way to reach the buttons.
-  const [settled, setSettled] = useState(
+  const [dockExpanded, setDockExpanded] = useState(false);
+  const [flowVisible, setFlowVisible] = useState(
     () => typeof IntersectionObserver === "undefined"
   );
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const flowFormRef = useRef<HTMLFormElement | null>(null);
+  const flowTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const dockTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   // Set when a toggle click lands the composer back on write, so the effect
   // below can hand focus to the textarea once it remounts. Only a deliberate
   // toggle sets it — the empty-draft force-back-to-write path leaves it false
   // and never steals focus.
   const restoreFocusRef = useRef(false);
+  const focusDockRef = useRef(false);
   const hasDraft = draft.trim().length > 0;
   const effectiveCloseKind = closeKind ?? (canClose ? "issue" : undefined);
-  // A draft, active focus, or having settled at the thread's end each expand the
-  // composer; otherwise it stays a thin one-line docked bar.
-  const expanded = hasDraft || focused || settled;
   const canSubmitClose = Boolean(closeAction()) && !disabled;
+  const dockVisible = !flowVisible;
+  const dockFull = dockExpanded || hasDraft;
 
   useEffect(() => {
     if (!hasDraft && mode === "preview") {
@@ -169,9 +160,18 @@ export function CommentComposer({
   useEffect(() => {
     if (mode === "write" && restoreFocusRef.current) {
       restoreFocusRef.current = false;
-      textareaRef.current?.focus();
+      const textarea =
+        dockVisible && dockFull ? dockTextareaRef.current : flowTextareaRef.current;
+      textarea?.focus();
     }
-  }, [mode]);
+  }, [dockFull, dockVisible, mode]);
+
+  useLayoutEffect(() => {
+    if (dockFull && focusDockRef.current) {
+      focusDockRef.current = false;
+      dockTextareaRef.current?.focus();
+    }
+  }, [dockFull]);
 
   function toggleMode() {
     const next = mode === "write" ? "preview" : "write";
@@ -180,51 +180,41 @@ export function CommentComposer({
   }
 
   useLayoutEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) {
-      return;
+    // Previewing leaves the height to CSS; the write surface auto-grows to its
+    // content while remaining in the normal detail flow.
+    for (const textarea of [flowTextareaRef.current, dockTextareaRef.current]) {
+      if (!textarea) {
+        continue;
+      }
+      if (mode !== "write") {
+        textarea.style.height = "";
+        continue;
+      }
+      textarea.style.height = "auto";
+      textarea.style.height = `${textarea.scrollHeight}px`;
     }
-    // Collapsed (or previewing) leaves the height to CSS so the bar stays a
-    // single line; only the expanded write surface auto-grows to its content.
-    if (!expanded || mode !== "write") {
-      textarea.style.height = "";
-      return;
-    }
-    textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
-  }, [draft, mode, expanded]);
+  }, [dockFull, dockVisible, draft, mode]);
 
-  // Register the settle observer in the layout phase (before passive effects).
-  // When this composer is embedded in a detail view that also observes its own
-  // sentinel (e.g. the sticky title), setting up here first keeps observer
-  // registration deterministic instead of racing sibling passive effects.
   useLayoutEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || typeof IntersectionObserver === "undefined") {
+    const flowForm = flowFormRef.current;
+    if (!flowForm || typeof IntersectionObserver === "undefined") {
+      setFlowVisible(true);
       return;
     }
     const observer = new IntersectionObserver(
       (entries) => {
         const entry = entries[entries.length - 1];
         if (entry) {
-          setSettled(entry.isIntersecting);
+          setFlowVisible(entry.isIntersecting);
         }
       },
       {
-        root: findScrollParent(sentinel),
-        // The collapsed bar (~55px) is sticky and paints over the bottom edge of
-        // the scroll container. Inset the observation rect's bottom so the
-        // sentinel only counts as visible once it has risen most of the way past
-        // that bar — i.e. the reader is genuinely at the thread's end, not just
-        // peeking behind the docked bar. Kept below the ~55px bar height on
-        // purpose: while collapsed the only content beneath the sentinel is the
-        // bar itself, so a full 55–56px inset would keep the sentinel from ever
-        // clearing it and the composer could never expand at the bottom.
-        rootMargin: "0px 0px -44px 0px",
+        root: findScrollParent(flowForm),
+        rootMargin: "0px 0px -48px 0px",
         threshold: 0
       }
     );
-    observer.observe(sentinel);
+    observer.observe(flowForm);
     return () => observer.disconnect();
   }, []);
 
@@ -277,6 +267,20 @@ export function CommentComposer({
     }
     setIssueCloseReason(reason);
     setCloseMenuOpen(false);
+  }
+
+  function expandDock() {
+    focusDockRef.current = true;
+    setDockExpanded(true);
+  }
+
+  function handleDockBlur(event: FocusEvent<HTMLFormElement>) {
+    if (
+      !hasDraft &&
+      !event.currentTarget.contains(event.relatedTarget as Node | null)
+    ) {
+      setDockExpanded(false);
+    }
   }
 
   function closeButtonLabel(): string {
@@ -431,43 +435,15 @@ export function CommentComposer({
     return null;
   }
 
-  function handleBlur(event: FocusEvent<HTMLFormElement>) {
-    // Only treat focus leaving the whole composer as a blur; moving between the
-    // textarea, tabs, and buttons keeps it expanded.
-    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-      setFocused(false);
-    }
-  }
-
-  return (
-    <>
-      {/* The settle sentinel marks the end of the thread's content flow,
-       * immediately *before* the sticky composer. Because the composer's flow
-       * box stacks below this anchor, expanding/collapsing it grows or shrinks
-       * the document *below* the sentinel and never moves the sentinel itself.
-       * That keeps the observed geometry independent of the height it toggles,
-       * so there is no feedback loop (an after-the-form sentinel rode on the
-       * composer height and flickered expand<->collapse near the bottom). */}
-      <div
-        ref={sentinelRef}
-        className="composer-dock-sentinel"
-        aria-hidden="true"
-      />
-      <form
-        className={`comment-composer ${expanded ? "is-expanded" : "is-collapsed"}`}
-        data-expanded={expanded ? "true" : "false"}
-        onSubmit={submit}
-        onFocus={() => setFocused(true)}
-        onBlur={handleBlur}
-      >
-        {/* A single mode switch that always points at the *opposite* surface
-         * (write -> Preview, preview -> Write), mirroring GitHub's Preview<->Edit
-         * swap. A two-tab tablist with only one meaningful choice would be
-         * ARIA-noise, so this is a plain button; its visible label is the
-         * action, so no aria-pressed (that would be a conflicting signal). It
-         * inherits the overlay placement so appearing on first keystroke never
-         * shifts the editing surface. */}
-        {hasDraft && (
+  function renderSurface(
+    surface: ComposerSurface,
+    options: { accessible: boolean; full: boolean }
+  ) {
+    const textareaRef = surface === "dock" ? dockTextareaRef : flowTextareaRef;
+    const textareaId = `comment-draft-${surface}`;
+    return (
+      <>
+        {hasDraft && options.full && (
           <button
             type="button"
             className="composer-preview-toggle composer-tabs-overlay"
@@ -487,28 +463,37 @@ export function CommentComposer({
           </button>
         )}
 
-        {mode === "write" ? (
+        {mode === "write" || !options.full ? (
           <textarea
             ref={textareaRef}
-            id="comment-draft"
-            aria-label="Write a comment"
+            id={textareaId}
+            aria-label={options.accessible ? "Write a comment" : undefined}
             placeholder="Write a comment..."
             value={draft}
             disabled={disabled}
-            rows={4}
-            onChange={(event) => onDraftChange(event.target.value)}
+            rows={options.full ? 4 : 1}
+            onFocus={surface === "dock" ? expandDock : undefined}
+            onChange={(event) => {
+              if (surface === "dock") {
+                setDockExpanded(true);
+              }
+              onDraftChange(event.target.value);
+            }}
           />
         ) : (
-          <div className="comment-preview" aria-label="Comment preview">
-            {hasDraft ? (
+          <div
+            className="comment-preview"
+            aria-label={options.accessible ? "Comment preview" : undefined}
+          >
+            {options.accessible && hasDraft ? (
               <MarkdownBody body={draft} />
-            ) : (
+            ) : options.accessible ? (
               <p className="comment-preview-empty">Nothing to preview.</p>
-            )}
+            ) : null}
           </div>
         )}
 
-        {expanded && (
+        {options.full && (
           <div className="composer-actions">
             <span>
               {online
@@ -516,7 +501,7 @@ export function CommentComposer({
                 : "Offline comment will wait in the outbox."}
             </span>
             <div className="composer-buttons">
-              {renderCloseMenu()}
+              {options.accessible && renderCloseMenu()}
               <button
                 className={
                   online ? "primary-button comment-button" : "primary-button"
@@ -530,7 +515,34 @@ export function CommentComposer({
             </div>
           </div>
         )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <form
+        ref={flowFormRef}
+        className="comment-composer comment-composer-flow is-expanded"
+        data-expanded="true"
+        aria-hidden={dockVisible ? "true" : undefined}
+        onSubmit={submit}
+      >
+        {renderSurface("flow", { accessible: !dockVisible, full: true })}
       </form>
+
+      {dockVisible && (
+        <form
+          className={`comment-composer comment-composer-dock ${
+            dockFull ? "is-expanded" : "is-collapsed"
+          }`}
+          data-expanded={dockFull ? "true" : "false"}
+          onSubmit={submit}
+          onBlur={handleDockBlur}
+        >
+          {renderSurface("dock", { accessible: true, full: dockFull })}
+        </form>
+      )}
     </>
   );
 }

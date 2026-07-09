@@ -13,6 +13,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentComposer } from "./CommentComposer";
 
 const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+const composerDockStyles = readFileSync(
+  join(process.cwd(), "src/components/ui/composer-dock.css"),
+  "utf8"
+);
 
 function parseCssDeclarations(block: string): Record<string, string> {
   return Object.fromEntries(
@@ -30,20 +34,19 @@ function parseCssDeclarations(block: string): Record<string, string> {
   );
 }
 
-function cssDeclarationsFor(selector: string): Record<string, string> {
-  const start = appStyles.indexOf(`${selector} {`);
+function cssDeclarationsFor(
+  selector: string,
+  source = appStyles
+): Record<string, string> {
+  const start = source.indexOf(`${selector} {`);
   if (start === -1) {
     throw new Error(`Missing CSS rule for ${selector}`);
   }
-  const blockStart = appStyles.indexOf("{", start);
-  const blockEnd = appStyles.indexOf("}", blockStart);
-  return parseCssDeclarations(appStyles.slice(blockStart + 1, blockEnd));
+  const blockStart = source.indexOf("{", start);
+  const blockEnd = source.indexOf("}", blockStart);
+  return parseCssDeclarations(source.slice(blockStart + 1, blockEnd));
 }
 
-// jsdom ships without IntersectionObserver; the composer uses one to detect
-// when its settle sentinel scrolls into the detail viewport. Install a
-// controllable mock that captures each observer so tests can drive
-// intersection changes deterministically.
 interface MockObserver {
   callback: IntersectionObserverCallback;
   target: Element | null;
@@ -83,7 +86,7 @@ class IntersectionObserverMock {
   }
 }
 
-function fireSettle(isIntersecting: boolean) {
+function fireFlowComposerVisible(isIntersecting: boolean) {
   const observer = observers[observers.length - 1];
   if (!observer) {
     throw new Error("no IntersectionObserver was created by the composer");
@@ -494,49 +497,35 @@ describe("CommentComposer", () => {
     });
   });
 
-  it("starts collapsed as a single-line bar with the action buttons hidden", () => {
+  it("keeps a full composer in the content flow and shows a collapsed dock while it is offscreen", () => {
     const { container } = render(<ControlledComposer />);
 
-    const form = container.querySelector(".comment-composer");
-    expect(form).not.toBeNull();
-    expect(form).toHaveClass("is-collapsed");
-    expect(form).toHaveAttribute("data-expanded", "false");
-
-    // The one-line bar is the textarea itself; it stays reachable so a click
-    // or focus can expand the composer.
+    const flowComposer = container.querySelector(".comment-composer-flow");
+    const dockComposer = container.querySelector(".comment-composer-dock");
+    expect(flowComposer).toHaveClass("is-expanded");
+    expect(flowComposer).toHaveAttribute("aria-hidden", "true");
+    expect(dockComposer).toHaveClass("is-collapsed");
+    expect(dockComposer).toHaveAttribute("data-expanded", "false");
     expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
-    // Collapsed hides the action buttons and the write/preview toggle.
-    expect(
-      screen.queryByRole("button", { name: "Comment" })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Close with comment" })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Preview" })
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Write" })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Comment" })).toBeNull();
   });
 
-  it("expands and keeps focus when the collapsed bar is focused", async () => {
+  it("expands the dock for input when the collapsed dock is clicked", async () => {
     const user = userEvent.setup();
     const { container } = render(<ControlledComposer />);
+
+    await user.click(screen.getByLabelText("Write a comment"));
+
+    const dockComposer = container.querySelector(".comment-composer-dock");
+    expect(dockComposer).toHaveClass("is-expanded");
+    expect(dockComposer).toHaveAttribute("data-expanded", "true");
     const textarea = screen.getByLabelText("Write a comment");
-
-    await user.click(textarea);
-
-    const form = container.querySelector(".comment-composer");
-    expect(form).toHaveClass("is-expanded");
-    expect(form).toHaveAttribute("data-expanded", "true");
-    // Focus is retained on the same textarea after expanding.
+    expect(textarea).toBeInTheDocument();
     expect(document.activeElement).toBe(textarea);
-    // Buttons appear once expanded (disabled while the draft is empty).
     expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
   });
 
-  it("collapses again after blur when the draft is empty and not settled", async () => {
+  it("collapses the dock again after blur when there is no draft", async () => {
     const user = userEvent.setup();
     const { container } = render(
       <>
@@ -544,16 +533,12 @@ describe("CommentComposer", () => {
         <button type="button">outside</button>
       </>
     );
+    await user.click(screen.getByLabelText("Write a comment"));
     const textarea = screen.getByLabelText("Write a comment");
-
     await user.click(textarea);
-    expect(container.querySelector(".comment-composer")).toHaveClass(
-      "is-expanded"
-    );
-
     await user.click(screen.getByRole("button", { name: "outside" }));
 
-    expect(container.querySelector(".comment-composer")).toHaveClass(
+    expect(container.querySelector(".comment-composer-dock")).toHaveClass(
       "is-collapsed"
     );
   });
@@ -561,82 +546,37 @@ describe("CommentComposer", () => {
   it("stays expanded while a draft is present even without focus", () => {
     const { container } = render(<ControlledComposer initial="draft text" />);
 
-    const form = container.querySelector(".comment-composer");
-    expect(form).toHaveClass("is-expanded");
+    const dockComposer = container.querySelector(".comment-composer-dock");
+    expect(dockComposer).toHaveClass("is-expanded");
     expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
   });
 
-  it("auto-expands when the settle sentinel becomes visible and re-collapses when it leaves", () => {
+  it("hides the dock when the flow composer reaches the viewport", () => {
     const { container } = render(<ControlledComposer />);
 
-    expect(container.querySelector(".comment-composer")).toHaveClass(
-      "is-collapsed"
-    );
+    fireFlowComposerVisible(true);
 
-    // Sentinel enters the detail viewport -> composer has settled at the
-    // bottom of the thread and expands without stealing focus.
-    fireSettle(true);
-
-    expect(container.querySelector(".comment-composer")).toHaveClass(
-      "is-expanded"
-    );
+    expect(container.querySelector(".comment-composer-dock")).toBeNull();
+    const flowComposer = container.querySelector(".comment-composer-flow");
+    expect(flowComposer).not.toHaveAttribute("aria-hidden");
+    expect(screen.getByLabelText("Write a comment")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
-    expect(document.activeElement).not.toBe(
-      screen.getByLabelText("Write a comment")
-    );
-
-    // Scrolling away hides the sentinel again -> collapse (unfocused, empty).
-    fireSettle(false);
-
-    expect(container.querySelector(".comment-composer")).toHaveClass(
-      "is-collapsed"
-    );
   });
 
-  it("renders the settle sentinel just before the composer form", () => {
-    const { container } = render(<ControlledComposer />);
+  it("uses a sticky collapsed dock and a normal-flow full composer", () => {
+    const dockStyle = cssDeclarationsFor(
+      ".comment-composer-dock",
+      composerDockStyles
+    );
+    const expandedStyle = cssDeclarationsFor(
+      ".comment-composer-flow",
+      composerDockStyles
+    );
 
-    const sentinel = container.querySelector(".composer-dock-sentinel");
-    expect(sentinel).not.toBeNull();
-
-    const form = container.querySelector(".comment-composer");
-    // The sentinel anchors the end of the thread content, immediately *before*
-    // the sticky composer. Anchoring it after the form (its old position) made
-    // its geometry ride on the composer height it toggles, which fed back into
-    // an expand/collapse loop; before the form the anchor is height-independent.
-    expect(form!.previousElementSibling).toBe(sentinel);
-    expect(
-      form!.compareDocumentPosition(sentinel!) &
-        Node.DOCUMENT_POSITION_PRECEDING
-    ).toBeTruthy();
-  });
-
-  it("keeps the sentinel anchored before the form across expand/collapse", () => {
-    const { container } = render(<ControlledComposer />);
-
-    const sentinel = container.querySelector(".composer-dock-sentinel")!;
-    const form = () => container.querySelector(".comment-composer")!;
-
-    // Collapsed: sentinel is the form's previous sibling.
-    expect(form()).toHaveClass("is-collapsed");
-    expect(form().previousElementSibling).toBe(sentinel);
-
-    // Settling expands the composer (grows it by ~180px)...
-    fireSettle(true);
-    expect(form()).toHaveClass("is-expanded");
-    // ...but that growth happens *below* the sentinel, so the sentinel's DOM
-    // position is unchanged. This structural invariant is what breaks the
-    // feedback loop: the observed geometry never depends on the toggled height.
-    expect(form().previousElementSibling).toBe(sentinel);
-    expect(
-      form().compareDocumentPosition(sentinel) &
-        Node.DOCUMENT_POSITION_PRECEDING
-    ).toBeTruthy();
-
-    // Collapsing back keeps the same anchor.
-    fireSettle(false);
-    expect(form()).toHaveClass("is-collapsed");
-    expect(form().previousElementSibling).toBe(sentinel);
+    expect(dockStyle.position).toBe("sticky");
+    expect(dockStyle.bottom).toBe("0");
+    expect(expandedStyle.position).not.toBe("sticky");
+    expect(expandedStyle.bottom).toBeUndefined();
   });
 
   it("renders the write/preview toggle as an overlay so typing does not shift the form", () => {

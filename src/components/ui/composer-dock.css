@@ -1,43 +1,35 @@
 /*
- * Comment composer docking + collapse/expand.
+ * Comment composer flow placement + compact scroll dock.
  *
- * The composer pins to the bottom of the detail scroll container so it stays
- * reachable no matter where the reader is in a long thread. It rides along as a
- * thin one-line bar (`.is-collapsed`) and only unfurls into the full textarea +
- * actions (`.is-expanded`) once the reader focuses it, has a draft, or scrolls
- * to the thread's end (the `.composer-dock-sentinel` becomes visible). See
- * CommentComposer.tsx for the state logic.
- *
- * These rules deliberately live here (imported by CommentComposer) rather than
- * in styles.css. The two-class selectors below (`.comment-composer.is-*`) also
- * out-specify the single-class base rules in styles.css, so the docking and
- * collapsed treatments win regardless of stylesheet order.
+ * The full composer lives as a normal block at the end of the detail content.
+ * A separate compact dock sticks to the viewport bottom only while that full
+ * composer is still below the visible scroll area.
  */
 
-/* Sticky docking applies in both states (the form always carries one class). */
-.comment-composer.is-collapsed,
-.comment-composer.is-expanded {
+.comment-composer-flow {
+  position: relative;
+}
+
+.comment-composer-dock {
   position: sticky;
   bottom: 0;
   z-index: 5;
-  /* Replace the base flow margins: docked to the pane edges, top border only. */
   margin: 0;
   background: var(--bg-detail);
   border-top: 1px solid var(--border);
 }
 
-.comment-composer.is-expanded {
+.comment-composer-dock.is-expanded {
   padding: 12px 12px calc(14px + env(safe-area-inset-bottom, 0px));
 }
 
-/* Collapsed: a thin, flat one-line entry bar that blends with the thread. */
-.comment-composer.is-collapsed {
+.comment-composer-dock.is-collapsed {
   padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
 }
 
-.comment-composer.is-collapsed textarea {
+.comment-composer-dock.is-collapsed textarea {
   min-height: 0;
-  height: 38px;
+  height: 38px !important;
   padding: 8px 12px;
   border-color: var(--border);
   background: var(--bg-input);
@@ -45,7 +37,7 @@
   cursor: text;
 }
 
-.comment-composer.is-collapsed textarea:hover {
+.comment-composer-dock.is-collapsed textarea:hover {
   border-color: var(--border-strong);
 }
 
@@ -53,7 +45,7 @@
  * The single Write/Preview mode switch as an overlay. Taking it out of flow
  * (absolute) means it no longer pushes the textarea down the instant a draft
  * appears — the editing surface keeps its position (no layout shift). The
- * sticky form above is the containing block. The button's own opaque pill
+ * composer form above is the containing block. The button's own opaque pill
  * styling (border + `--bg-card`) from styles.css keeps it legible over the
  * text behind it, so no separate backdrop is needed here.
  */
@@ -62,13 +54,4 @@
   top: 8px;
   right: 8px;
   z-index: 3;
-}
-
-/* Zero-ish height marker just before the composer's natural flow position (the
- * end of the thread content); when it enters the scroll viewport the reader has
- * settled at the thread's end. Anchoring it before the composer keeps its
- * geometry independent of the composer height, so settle detection can't loop. */
-.composer-dock-sentinel {
-  flex: 0 0 auto;
-  height: 1px;
 }
