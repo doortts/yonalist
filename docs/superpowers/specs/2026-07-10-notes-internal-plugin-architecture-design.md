@@ -198,6 +198,12 @@ Initialization enables `WAL`, foreign keys, and a bounded busy timeout.
 Schema migrations execute transactionally and are versioned with
 `PRAGMA user_version`. A failed migration leaves the preceding schema intact
 and returns a clear, user-facing error without attempting a destructive reset.
+The current schema version is 2. Initialization always follows the same
+ordered sequence: version 0 creates version 1, then applies the version 1-to-2
+migration before committing version 2. Opening an existing version 1 database
+applies only the second step. Both steps and their `user_version` updates run
+inside one `BEGIN IMMEDIATE` transaction, so migration failure cannot expose a
+partially upgraded schema.
 
 ### Initial schema
 
@@ -214,11 +220,15 @@ CREATE TABLE notes_nodes (
   completed_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  deleted_at TEXT
+  deleted_at TEXT,
+  deleted_batch_id TEXT
 );
 
 CREATE INDEX notes_nodes_active_parent_order
   ON notes_nodes(parent_id, deleted_at, sort_key);
+
+CREATE INDEX notes_nodes_deleted_batch
+  ON notes_nodes(deleted_batch_id, parent_id);
 
 CREATE TABLE notes_tags (
   node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
@@ -242,6 +252,21 @@ CREATE VIRTUAL TABLE notes_search USING fts5(
 );
 ```
 
+Version 1 creates `notes_nodes` without `deleted_batch_id` or
+`notes_nodes_deleted_batch`. Version 2 adds both. It preserves `deleted_at` as
+the user-visible UTC deletion timestamp and uses `deleted_batch_id` only as
+internal deletion provenance; the batch identifier is not serialized into
+`NoteNode` or exposed through Tauri commands.
+
+For existing version 1 rows, migration leaves every `deleted_at` value
+unchanged. Live rows receive a null batch identifier. Deleted rows receive the
+deterministic value `legacy:<stored deleted_at>`, so rows that version 1 would
+have treated as one timestamp group remain restorable together. Version 1 did
+not record operation identity, so independently deleted rows with the same
+stored timestamp are indistinguishable; version 2 cannot reconstruct that
+lost provenance without guessing. The migration preserves this pre-v2
+ambiguity rather than deleting or arbitrarily separating user data.
+
 `sort_key` begins in sparse increments of 1024. Insert and move operations
 calculate a key between adjacent siblings. If no integer gap remains, the
 operation atomically rebalances only that sibling set. This makes ordering
@@ -261,9 +286,13 @@ transaction as the edited node.
 - A node cannot be moved under itself or any descendant.
 - One atomic mutation changes a node and all affected sibling order values.
 - Deletion is soft deletion. Deleting a node soft-deletes its live descendants
-  in the same transaction and preserves parent and sort information so a
-  restore can return the subtree to its original position when that parent is
-  still live; otherwise it restores the subtree at the root.
+  in the same transaction, assigns one fresh opaque `deleted_batch_id` to that
+  operation, and preserves parent and sort information. `remove_empty_node`
+  also assigns a fresh batch to its single soft-deleted node. Restore follows
+  only descendants with the selected root's batch identifier, clears both
+  deletion fields for that batch, and returns the subtree to its original
+  position when that parent is still live; otherwise it restores the subtree
+  at the root. Timestamp equality never determines restore membership.
 - Permanent deletion is limited to a deliberate empty-trash command.
 - Duplication creates a deep copy of the selected subtree with fresh IDs and
   inserts the copy immediately after the source node.

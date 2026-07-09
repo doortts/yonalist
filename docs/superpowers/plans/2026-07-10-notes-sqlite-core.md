@@ -12,10 +12,11 @@
 
 - Store Notes only in `<vault>/.yonalist/notes.sqlite`.
 - Do not change the schema or behavior of `<vault>/.yonalist/index.sqlite`.
-- Use WAL, foreign keys, busy timeout, transactional `PRAGMA user_version` migrations, and SQLite-generated UTC timestamps.
+- Use WAL, foreign keys, busy timeout, transactional `PRAGMA user_version` migrations through schema version 2, and SQLite-generated UTC timestamps.
 - Use opaque UUID text IDs supplied by the renderer and validate their canonical UUID shape in Rust.
 - Every create, move, duplicate, delete, restore, and ordering rebalance runs in a single transaction.
 - Deleting a node soft-deletes its live subtree; permanent deletion is limited to emptying trash.
+- Preserve `deleted_at` as the UTC deletion timestamp and keep the internal `deleted_batch_id` out of renderer DTOs and commands.
 - Browser-only code must not replace SQLite with localStorage. Renderer tests mock the typed store.
 - `clear_vault_cache` must leave `notes.sqlite` unchanged.
 
@@ -115,6 +116,8 @@ All mutation commands return `NotesWorkspace` containing the current active
 tree. `notesLoadWorkspace(vaultPath, { kind: "active" })` returns active nodes
 and `{ kind: "trash" }` returns soft-deleted nodes. Returning an authoritative
 projection avoids renderer-side ordering divergence during the first release.
+`deleted_batch_id` is deliberately absent from this stable data contract. It
+is repository-only provenance used to distinguish deletion operations.
 
 ### Task 1: Define the Domain Contract and Failing Native Migration Tests
 
@@ -186,7 +189,20 @@ Version one creates `notes_nodes`, `notes_tags`, `notes_preferences`,
 Make the existing `metadata_dir` helper `pub(crate)` rather than duplicating
 vault-path expansion. `initialize_notes_db` first runs `PRAGMA journal_mode =
 WAL`, `PRAGMA foreign_keys = ON`, and `PRAGMA busy_timeout = 5000`; it then
-uses one transaction to migrate `user_version` from 0 to 1.
+uses one immediate transaction to run the complete ordered migration sequence.
+Version 0 first creates version 1, then version 2 adds nullable
+`notes_nodes.deleted_batch_id` and the
+`notes_nodes_deleted_batch(deleted_batch_id, parent_id)` index. New databases
+must pass through both versioned steps rather than receiving a separate
+latest-schema shortcut.
+
+The version 1-to-2 migration preserves all deletion timestamps, leaves live
+rows with a null batch, and backfills deleted rows as
+`legacy:<stored deleted_at>`. This deterministic legacy grouping is
+non-destructive, but version 1 did not preserve enough information to separate
+independent deletions that share a timestamp. Tests must cover a new version 2
+database, version 1 backfill, transactional rollback to an unchanged version 1
+schema, future-version rejection, and concurrent first initialization.
 
 `createNoteId` uses `crypto.randomUUID()` and throws a clear unsupported-runtime
 error if it is unavailable; tests stub that browser API. Rust validates every
@@ -285,11 +301,15 @@ Implement the following fixed semantics:
 - `duplicate_node` deep-copies the selected active subtree with fresh validated
   UUIDs and inserts the copied root after the source root.
 - `remove_empty_node` moves a node's children to the removed node's parent at
-  the removed node's position, then soft-deletes only the empty node. A leaf
-  follows the same operation with no child moves.
-- `soft_delete_node` timestamps the selected live subtree in one update.
-- `restore_node` clears deletion timestamps for the subtree; if its original
-  parent remains deleted, the restored root becomes a root page.
+  the removed node's position, then soft-deletes only the empty node with one
+  fresh opaque deletion-batch identifier. A leaf follows the same operation
+  with no child moves.
+- `soft_delete_node` timestamps the selected live subtree and assigns one fresh
+  opaque deletion-batch identifier to every affected node in one update.
+- `restore_node` follows only descendants whose batch identifier matches the
+  selected deleted root, then clears both `deleted_at` and
+  `deleted_batch_id`. If its original parent remains deleted, the restored root
+  becomes a root page. Restore membership never depends on timestamp equality.
 - `empty_trash` physically removes only rows whose subtree is already deleted.
 
 - [ ] **Step 4: Run invariant and rebalance tests to verify they pass**
@@ -297,7 +317,13 @@ Implement the following fixed semantics:
 Run: `cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests`
 
 Expected: PASS, including root moves, deep duplicates, restore fallback, and
-sort-key rebalance fixtures.
+sort-key rebalance fixtures. The delete regression forces independent child
+and ancestor operations to the same `deleted_at` value without sleeping,
+asserts distinct batch identifiers, and verifies ancestor restore retains the
+child in trash. The concurrent initialization regression uses a test-only busy
+observer and releases its held migration lock only after both workers report
+that SQLite invoked their busy handler; both calls must then succeed at schema
+version 2.
 
 - [ ] **Step 5: Commit the transactional repository**
 

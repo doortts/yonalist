@@ -10,10 +10,60 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-const NOTES_SCHEMA_VERSION: i64 = 1;
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
+use std::sync::mpsc::Sender;
+
+const NOTES_SCHEMA_VERSION: i64 = 2;
 const SORT_KEY_STEP: i64 = 1024;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+#[cfg(test)]
+struct MigrationBusyObservation {
+    sender: Sender<usize>,
+    worker_id: usize,
+}
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_MIGRATION_BUSY_OBSERVATION: RefCell<Option<MigrationBusyObservation>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn observe_next_migration_busy(sender: Sender<usize>, worker_id: usize) {
+    NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| {
+        let previous = observation.replace(Some(MigrationBusyObservation { sender, worker_id }));
+        assert!(
+            previous.is_none(),
+            "migration busy observer already installed"
+        );
+    });
+}
+
+#[cfg(test)]
+fn migration_busy_observer(_attempt: i32) -> bool {
+    NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| {
+        if let Some(observation) = observation.take() {
+            let _ = observation.sender.send(observation.worker_id);
+        }
+    });
+    true
+}
+
+#[cfg(test)]
+fn install_migration_busy_observer(connection: &Connection) -> Result<(), String> {
+    let observation_is_pending =
+        NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| observation.borrow().is_some());
+    if observation_is_pending {
+        connection
+            .busy_handler(Some(migration_busy_observer))
+            .map_err(|error| format!("Could not observe the Notes migration lock: {error}"))?;
+    }
+    Ok(())
+}
 
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
     crate::metadata_dir(vault_path).join("notes.sqlite")
@@ -41,6 +91,8 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| format!("Could not configure Notes storage: {error}"))?;
+    #[cfg(test)]
+    install_migration_busy_observer(connection)?;
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -52,6 +104,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     match user_version {
         0 => {
             create_version_one_schema(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", 1)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_one_to_two(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+        }
+        1 => {
+            migrate_version_one_to_two(&transaction)?;
             transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
@@ -163,6 +225,23 @@ fn create_version_one_schema(transaction: &Transaction<'_>) -> Result<(), String
         .map_err(|error| format!("Could not migrate Notes storage to version one: {error}"))
 }
 
+fn migrate_version_one_to_two(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            r#"
+            ALTER TABLE notes_nodes ADD COLUMN deleted_batch_id TEXT;
+
+            UPDATE notes_nodes
+            SET deleted_batch_id = 'legacy:' || deleted_at
+            WHERE deleted_at IS NOT NULL;
+
+            CREATE INDEX notes_nodes_deleted_batch
+              ON notes_nodes(deleted_batch_id, parent_id);
+            "#,
+        )
+        .map_err(|error| format!("Could not migrate Notes storage to version two: {error}"))
+}
+
 #[derive(Clone)]
 struct StoredNode {
     id: String,
@@ -175,6 +254,7 @@ struct StoredNode {
     is_starred: bool,
     completed_at: Option<String>,
     deleted_at: Option<String>,
+    deleted_batch_id: Option<String>,
 }
 
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
@@ -189,6 +269,7 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         is_starred: row.get::<_, i64>(7)? != 0,
         completed_at: row.get(8)?,
         deleted_at: row.get(9)?,
+        deleted_batch_id: row.get(10)?,
     })
 }
 
@@ -267,7 +348,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
     transaction
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at \
+                    is_starred, completed_at, deleted_at, deleted_batch_id \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -659,7 +740,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
                WHERE child.deleted_at IS NULL\
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at \
+                    is_starred, completed_at, deleted_at, deleted_batch_id \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -867,17 +948,25 @@ pub(crate) fn remove_empty_node(
                     })?;
             }
         }
+        let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET \
                    deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   deleted_batch_id = ?2, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
                  WHERE id = ?1 AND deleted_at IS NULL",
-                [node_id],
+                params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not remove the empty Note node: {error}"))?;
         Ok(())
     })
+}
+
+fn fresh_deletion_batch_id(transaction: &Transaction<'_>) -> Result<String, String> {
+    transaction
+        .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+        .map_err(|error| format!("Could not create a Notes deletion batch: {error}"))
 }
 
 pub(crate) fn soft_delete_node(
@@ -887,6 +976,7 @@ pub(crate) fn soft_delete_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, node_id)?;
+        let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
         transaction
             .execute(
                 "WITH RECURSIVE subtree(id) AS (\
@@ -898,9 +988,10 @@ pub(crate) fn soft_delete_node(
                  ) \
                  UPDATE notes_nodes SET \
                    deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   deleted_batch_id = ?2, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
                  WHERE id IN subtree",
-                [node_id],
+                params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not move the Note subtree to trash: {error}"))?;
         Ok(())
@@ -952,10 +1043,10 @@ pub(crate) fn restore_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_deleted_node(transaction, node_id)?;
-        let deletion_marker = source
-            .deleted_at
+        let deletion_batch_id = source
+            .deleted_batch_id
             .as_deref()
-            .expect("a required deleted node has a deletion marker");
+            .ok_or_else(|| format!("Deleted Note node {node_id} has no deletion batch."))?;
         let parent_is_live = match source.parent_id.as_deref() {
             Some(parent_id) => node_by_id(transaction, parent_id)?
                 .is_some_and(|parent| parent.deleted_at.is_none()),
@@ -978,16 +1069,16 @@ pub(crate) fn restore_node(
         transaction
             .execute(
                 "WITH RECURSIVE subtree(id) AS (\
-                   SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at = ?2 \
+                   SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_batch_id = ?2 \
                    UNION ALL \
                    SELECT child.id FROM notes_nodes child \
                    JOIN subtree parent ON child.parent_id = parent.id \
-                   WHERE child.deleted_at = ?2\
+                   WHERE child.deleted_batch_id = ?2\
                  ) \
-                 UPDATE notes_nodes SET deleted_at = NULL, \
+                 UPDATE notes_nodes SET deleted_at = NULL, deleted_batch_id = NULL, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id IN subtree AND deleted_at = ?2",
-                params![node_id, deletion_marker],
+                 WHERE id IN subtree AND deleted_batch_id = ?2",
+                params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not restore the Note subtree: {error}"))?;
         Ok(())
@@ -1006,16 +1097,17 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_notes_db, create_node, duplicate_node, empty_trash, initialize_notes_db,
-        load_workspace, move_node, notes_db_path, remove_empty_node, restore_node,
-        soft_delete_node, split_node, toggle_collapsed, toggle_complete, update_node,
+        connect_notes_db, create_node, create_version_one_schema, duplicate_node, empty_trash,
+        initialize_notes_db, load_workspace, move_node, notes_db_path, observe_next_migration_busy,
+        remove_empty_node, restore_node, soft_delete_node, split_node, toggle_collapsed,
+        toggle_complete, update_node,
     };
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NotesWorkspaceScope, SplitNodeInput,
         UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
-    use std::sync::{Arc, Barrier};
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
@@ -1040,6 +1132,27 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("in-memory notes database");
         initialize_notes_db(&mut connection).expect("initialize notes database");
         connection
+    }
+
+    fn seed_version_one_database(connection: &mut Connection) {
+        let transaction = connection.transaction().expect("version one transaction");
+        create_version_one_schema(&transaction).expect("create version one schema");
+        transaction
+            .pragma_update(None, "user_version", 1)
+            .expect("record version one");
+        transaction.commit().expect("commit version one schema");
+    }
+
+    fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
+        connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table info")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query table info")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table columns")
+            .iter()
+            .any(|name| name == column)
     }
 
     fn insert_node(
@@ -1115,6 +1228,7 @@ mod tests {
         created_at: String,
         updated_at: String,
         deleted_at: Option<String>,
+        deleted_batch_id: Option<String>,
     }
 
     #[derive(Debug, PartialEq)]
@@ -1128,7 +1242,8 @@ mod tests {
         let nodes = connection
             .prepare(
                 "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                        is_starred, completed_at, created_at, updated_at, deleted_at \
+                        is_starred, completed_at, created_at, updated_at, deleted_at, \
+                        deleted_batch_id \
                  FROM notes_nodes ORDER BY id",
             )
             .expect("prepare node state")
@@ -1146,6 +1261,7 @@ mod tests {
                     created_at: row.get(9)?,
                     updated_at: row.get(10)?,
                     deleted_at: row.get(11)?,
+                    deleted_batch_id: row.get(12)?,
                 })
             })
             .expect("query node state")
@@ -1304,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_connection_is_configured_and_migrated_to_version_one() {
+    fn notes_connection_is_configured_and_migrated_to_version_two() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect notes");
@@ -1325,7 +1441,132 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy_timeout, 5_000);
+        assert_eq!(user_version, 2);
+        assert!(column_exists(
+            &connection,
+            "notes_nodes",
+            "deleted_batch_id"
+        ));
+    }
+
+    #[test]
+    fn version_one_deleted_rows_migrate_to_deterministic_legacy_batches() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        seed_version_one_database(&mut connection);
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
+                 VALUES (?1, 1024, 'live', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                [NODE_ID],
+            )
+            .expect("insert live version one row");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, deleted_at) \
+                 VALUES (?1, 2048, 'legacy one', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z'), \
+                        (?2, 3072, 'legacy two', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z'), \
+                        (?3, 4096, 'legacy three', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z', '2026-07-10T05:06:07.008Z')",
+                params![CHILD_ID, THIRD_ID, FOURTH_ID],
+            )
+            .expect("insert deleted version one rows");
+
+        initialize_notes_db(&mut connection).expect("migrate version one database");
+
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("migrated user version");
+        assert_eq!(user_version, 2);
+        let live_batch: Option<String> = connection
+            .query_row(
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("live batch marker");
+        assert_eq!(live_batch, None);
+        let migrated = connection
+            .prepare(
+                "SELECT id, deleted_at, deleted_batch_id FROM notes_nodes \
+                 WHERE deleted_at IS NOT NULL ORDER BY id",
+            )
+            .expect("prepare migrated rows")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query migrated rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect migrated rows");
+        assert_eq!(
+            migrated,
+            vec![
+                (
+                    CHILD_ID.to_string(),
+                    "2026-07-10T01:02:03.004Z".to_string(),
+                    "legacy:2026-07-10T01:02:03.004Z".to_string(),
+                ),
+                (
+                    THIRD_ID.to_string(),
+                    "2026-07-10T01:02:03.004Z".to_string(),
+                    "legacy:2026-07-10T01:02:03.004Z".to_string(),
+                ),
+                (
+                    FOURTH_ID.to_string(),
+                    "2026-07-10T05:06:07.008Z".to_string(),
+                    "legacy:2026-07-10T05:06:07.008Z".to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_version_two_migration_keeps_version_one_schema_and_rows() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        seed_version_one_database(&mut connection);
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, deleted_at) \
+                 VALUES (?1, 1024, 'legacy', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z')",
+                [NODE_ID],
+            )
+            .expect("insert legacy deleted row");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_version_two_update \
+                 BEFORE UPDATE ON notes_nodes \
+                 WHEN OLD.deleted_at IS NOT NULL \
+                 BEGIN SELECT RAISE(ABORT, 'version two migration rejected'); END;",
+            )
+            .expect("install migration rejection trigger");
+
+        let error = initialize_notes_db(&mut connection).expect_err("migration must fail");
+
+        assert!(error.contains("version two migration rejected"));
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user version after failed migration");
         assert_eq!(user_version, 1);
+        assert!(!column_exists(
+            &connection,
+            "notes_nodes",
+            "deleted_batch_id"
+        ));
+        let deleted_at: String = connection
+            .query_row(
+                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("legacy row after rollback");
+        assert_eq!(deleted_at, "2026-07-10T01:02:03.004Z");
     }
 
     #[test]
@@ -1336,24 +1577,32 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
         let blocker = Connection::open(&path).expect("open migration blocker");
         blocker
-            .execute_batch("BEGIN IMMEDIATE")
+            .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE")
             .expect("hold first initialization lock");
 
-        let vault_path = Arc::new(vault_path);
-        let barrier = Arc::new(Barrier::new(3));
+        let (busy_sender, busy_receiver) = mpsc::channel();
         let workers = (0..2)
-            .map(|_| {
-                let vault_path = Arc::clone(&vault_path);
-                let barrier = Arc::clone(&barrier);
+            .map(|worker_id| {
+                let vault_path = vault_path.clone();
+                let busy_sender = busy_sender.clone();
                 thread::spawn(move || {
-                    barrier.wait();
+                    observe_next_migration_busy(busy_sender, worker_id);
                     connect_notes_db(&vault_path)
                 })
             })
             .collect::<Vec<_>>();
+        drop(busy_sender);
 
-        barrier.wait();
-        thread::sleep(Duration::from_millis(100));
+        let mut workers_at_lock = vec![
+            busy_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("first initializer reached held migration lock"),
+            busy_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .expect("second initializer reached held migration lock"),
+        ];
+        workers_at_lock.sort_unstable();
+        assert_eq!(workers_at_lock, vec![0, 1]);
         blocker
             .execute_batch("COMMIT")
             .expect("release migration lock");
@@ -1369,13 +1618,19 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user version");
-        assert_eq!(user_version, 1);
+        assert_eq!(user_version, 2);
+        assert!(column_exists(
+            &connection,
+            "notes_nodes",
+            "deleted_batch_id"
+        ));
         for (object_type, name) in [
             ("table", "notes_nodes"),
             ("table", "notes_tags"),
             ("table", "notes_preferences"),
             ("table", "notes_search"),
             ("index", "notes_nodes_active_parent_order"),
+            ("index", "notes_nodes_deleted_batch"),
             ("index", "notes_tags_normalized_tag"),
             ("trigger", "notes_nodes_search_insert"),
             ("trigger", "notes_nodes_search_update"),
@@ -1428,13 +1683,13 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
         let connection = Connection::open(&path).expect("open future database");
         connection
-            .pragma_update(None, "user_version", 2)
+            .pragma_update(None, "user_version", 3)
             .expect("future user version");
         drop(connection);
 
         let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
             .expect_err("future schema must be rejected");
-        assert!(error.contains("unsupported schema version 2"));
+        assert!(error.contains("unsupported schema version 3"));
     }
 
     #[test]
@@ -1765,14 +2020,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![CHILD_ID, FOURTH_ID, FIFTH_ID, SIXTH_ID]
         );
-        let removed_deleted_at: Option<String> = connection
+        let (removed_deleted_at, removed_batch_id): (Option<String>, Option<String>) = connection
             .query_row(
-                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                "SELECT deleted_at, deleted_batch_id FROM notes_nodes WHERE id = ?1",
                 [THIRD_ID],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .expect("removed node");
         assert!(removed_deleted_at.is_some());
+        assert!(removed_batch_id.is_some());
         assert_tree_invariants(&connection);
     }
 
@@ -2038,6 +2294,21 @@ mod tests {
         let root = insert_tree(&connection);
 
         soft_delete_node(&mut connection, &root).expect("delete");
+        let root_batch: String = connection
+            .query_row(
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("root deletion batch");
+        let child_batch: String = connection
+            .query_row(
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("child deletion batch");
+        assert_eq!(root_batch, child_batch);
         assert!(load_workspace(&connection, NotesWorkspaceScope::Active)
             .expect("active")
             .nodes
@@ -2075,23 +2346,38 @@ mod tests {
         let root = insert_tree(&connection);
 
         soft_delete_node(&mut connection, CHILD_ID).expect("delete child independently");
-        thread::sleep(Duration::from_millis(10));
-        soft_delete_node(&mut connection, &root).expect("delete ancestor later");
-        let child_deleted_at: String = connection
+        let child_batch: String = connection
             .query_row(
-                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
                 [CHILD_ID],
                 |row| row.get(0),
             )
-            .expect("child deletion marker");
-        let root_deleted_at: String = connection
-            .query_row(
-                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| row.get(0),
+            .expect("child deletion batch");
+        soft_delete_node(&mut connection, &root).expect("delete ancestor later");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET deleted_at = '2026-07-10T09:08:07.006Z' \
+                 WHERE id IN (?1, ?2)",
+                params![NODE_ID, CHILD_ID],
             )
-            .expect("root deletion marker");
-        assert_ne!(child_deleted_at, root_deleted_at);
+            .expect("force identical deletion timestamps");
+        let (child_deleted_at, child_batch_after): (String, String) = connection
+            .query_row(
+                "SELECT deleted_at, deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("child deletion provenance");
+        let (root_deleted_at, root_batch): (String, String) = connection
+            .query_row(
+                "SELECT deleted_at, deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("root deletion provenance");
+        assert_eq!(child_deleted_at, root_deleted_at);
+        assert_eq!(child_batch, child_batch_after);
+        assert_ne!(child_batch, root_batch);
 
         restore_node(&mut connection, &root).expect("restore ancestor");
 
@@ -2113,6 +2399,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![CHILD_ID]
         );
+        let root_provenance: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT deleted_at, deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("restored root provenance");
+        assert_eq!(root_provenance, (None, None));
+        let retained_child_batch: String = connection
+            .query_row(
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("retained child deletion batch");
+        assert_eq!(retained_child_batch, child_batch);
         assert_tree_invariants(&connection);
     }
 
