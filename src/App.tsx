@@ -90,6 +90,7 @@ import { useAuthGate } from "./hooks/useAuthGate";
 import { useAppBadge } from "./hooks/useAppBadge";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useDetailContentPaintReady } from "./hooks/useDetailContentPaintReady";
+import { useDetailRenderSnapshotCapture } from "./hooks/useDetailRenderSnapshotCapture";
 import { useDetailDisplayTiming } from "./hooks/useDetailDisplayTiming";
 import {
   useDetailRevalidation,
@@ -133,10 +134,8 @@ import {
 } from "./services/itemThread";
 import { estimateRecordBytes } from "./services/cacheStats";
 import {
-  captureDetailRenderSnapshotHtml,
   deleteDetailRenderSnapshot,
-  getDetailRenderSnapshot,
-  setDetailRenderSnapshot
+  getDetailRenderSnapshot
 } from "./services/detailRenderCache";
 import {
   clearNotificationDetailCache,
@@ -992,41 +991,11 @@ export default function App({ initialOnline }: AppProps) {
     activeDetailKey && !detailContentReady
       ? getDetailRenderSnapshot(activeDetailKey)
       : null;
-  useEffect(() => {
-    if (!activeDetailKey || !detailReady || !detailContentReady) {
-      return;
-    }
-    const root = detailScrollRef.current;
-    if (!root) {
-      return;
-    }
-
-    const capture = () => {
-      const html = captureDetailRenderSnapshotHtml(root);
-      if (html) {
-        setDetailRenderSnapshot(activeDetailKey, {
-          html,
-          capturedAt: new Date().toISOString()
-        });
-      }
-    };
-
-    const timer = window.setTimeout(capture, 0);
-    const observer =
-      typeof MutationObserver === "undefined"
-        ? null
-        : new MutationObserver(capture);
-    observer?.observe(root, {
-      attributeFilter: ["src"],
-      attributes: true,
-      childList: true,
-      subtree: true
-    });
-    return () => {
-      window.clearTimeout(timer);
-      observer?.disconnect();
-    };
-  }, [activeDetailKey, detailContentReady, detailReady]);
+  useDetailRenderSnapshotCapture({
+    rootRef: detailScrollRef,
+    detailKey: activeDetailKey,
+    enabled: detailReady && detailContentReady
+  });
   const detailRevalidationTarget = useMemo<DetailRevalidationTarget | null>(() => {
     if (!activeDetailKey || !auth.connection.token.trim()) {
       return null;
