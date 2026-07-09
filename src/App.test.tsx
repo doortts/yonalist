@@ -1,3 +1,4 @@
+import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -266,6 +267,59 @@ describe("Yonalist app shell", () => {
 
     const leftColumn = screen.getByLabelText("Navigation");
     expect(within(leftColumn).getByText("Offline")).toBeInTheDocument();
+  });
+
+  it("keeps the app shell mounted when an active signed-in session goes offline", async () => {
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify([]), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos") || target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(
+        <React.StrictMode>
+          <App initialOnline />
+        </React.StrictMode>
+      );
+
+      const navigation = await screen.findByLabelText("Navigation");
+
+      fireEvent(window, new Event("offline"));
+
+      await waitFor(() => {
+        expect(within(navigation).getByText("Offline")).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Yonalist failed to start/)).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Yonalist layout")).toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows a login-required icon next to the network control when unsigned", () => {

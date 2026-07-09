@@ -29,13 +29,26 @@ function renderStartupError(error: unknown) {
   root.appendChild(container);
 }
 
-window.addEventListener("error", (event) => {
+function handleStartupWindowError(event: ErrorEvent) {
   renderStartupError(event.error ?? event.message);
-});
+}
 
-window.addEventListener("unhandledrejection", (event) => {
+function handleStartupUnhandledRejection(event: PromiseRejectionEvent) {
   renderStartupError(event.reason);
-});
+}
+
+function installStartupErrorHandlers() {
+  window.addEventListener("error", handleStartupWindowError);
+  window.addEventListener("unhandledrejection", handleStartupUnhandledRejection);
+}
+
+function removeStartupErrorHandlers() {
+  window.removeEventListener("error", handleStartupWindowError);
+  window.removeEventListener(
+    "unhandledrejection",
+    handleStartupUnhandledRejection
+  );
+}
 
 async function start() {
   tracePerf("renderer_entry");
@@ -45,6 +58,8 @@ async function start() {
       <App />
     </React.StrictMode>
   );
+  removeStartupErrorHandlers();
 }
 
+installStartupErrorHandlers();
 void start().catch(renderStartupError);
