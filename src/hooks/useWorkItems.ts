@@ -279,13 +279,17 @@ export function useWorkItems(
     [favorites, items]
   );
 
+  // Stable identity: `refresh` is passed to memoized panes, so recreating it
+  // per render would defeat their React.memo bailout.
+  const refresh = useCallback(() => load(true), [load]);
+
   return {
     items,
     loading: enabled ? loading : false,
     error: enabled ? error : null,
     demoMode,
     lastFetchDurationMs: enabled ? lastFetchDurationMs : null,
-    refresh: () => load(true),
+    refresh,
     toggleFavorite
   };
 }

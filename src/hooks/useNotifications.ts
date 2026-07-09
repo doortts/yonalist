@@ -173,16 +173,32 @@ export function useNotifications(
     [connection.webBaseUrl]
   );
 
-  return {
-    notifications,
-    unreadCount,
-    loaded,
-    loading,
-    error,
-    demoMode,
-    viewedAt,
-    refresh: load,
-    markNotificationViewed,
-    openNotification
-  };
+  // Referentially stable result so consumers (and the memoized Notifications
+  // pane fed from it) only re-render when a field actually changes.
+  return useMemo(
+    () => ({
+      notifications,
+      unreadCount,
+      loaded,
+      loading,
+      error,
+      demoMode,
+      viewedAt,
+      refresh: load,
+      markNotificationViewed,
+      openNotification
+    }),
+    [
+      notifications,
+      unreadCount,
+      loaded,
+      loading,
+      error,
+      demoMode,
+      viewedAt,
+      load,
+      markNotificationViewed,
+      openNotification
+    ]
+  );
 }

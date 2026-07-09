@@ -273,7 +273,10 @@ function rowIndexForOffset(metrics: VirtualRowMetrics, offset: number): number {
   return result;
 }
 
-export function ItemListPane({
+// Memoized so App commits that don't touch list props (comment drafts,
+// outbox churn, metrics) skip re-rendering the pane. Requires every prop —
+// including the callbacks — to be referentially stable in App.
+export const ItemListPane = memo(function ItemListPane({
   items,
   selectedPath,
   stateFilter,
@@ -481,7 +484,7 @@ export function ItemListPane({
       setViewportHeight(measuredHeight);
     }
   }
-}
+});
 
 interface ItemRowsProps {
   items: ItemDocument[];

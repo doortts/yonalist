@@ -486,15 +486,18 @@ export default function App({ initialOnline }: AppProps) {
     ? `repository:${repositoryFilter}`
     : `inbox:${filter}`;
   const itemSort = itemSortByScope[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
-  function setScopedItemSort(nextSort: ItemSort) {
-    setItemSortByScope((current) => {
-      const currentSort = current[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
-      if (itemSortEquals(currentSort, nextSort)) {
-        return current;
-      }
-      return { ...current, [itemSortScopeKey]: nextSort };
-    });
-  }
+  const setScopedItemSort = useCallback(
+    (nextSort: ItemSort) => {
+      setItemSortByScope((current) => {
+        const currentSort = current[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
+        if (itemSortEquals(currentSort, nextSort)) {
+          return current;
+        }
+        return { ...current, [itemSortScopeKey]: nextSort };
+      });
+    },
+    [itemSortScopeKey]
+  );
   const inboxWorkItems = useWorkItems(
     auth.connection,
     online,
@@ -642,11 +645,18 @@ export default function App({ initialOnline }: AppProps) {
       auth.connection.webBaseUrl
     ]
   );
-  const notifications = {
-    ...unfilteredNotifications,
-    notifications: filteredNotificationItems,
-    unreadCount: filteredUnreadNotificationCount
-  };
+  const notifications = useMemo(
+    () => ({
+      ...unfilteredNotifications,
+      notifications: filteredNotificationItems,
+      unreadCount: filteredUnreadNotificationCount
+    }),
+    [
+      unfilteredNotifications,
+      filteredNotificationItems,
+      filteredUnreadNotificationCount
+    ]
+  );
   const displayedUnreadNotificationCount =
     repositoryGroups.loaded ? notifications.unreadCount : 0;
   useAppBadge(authGate.state === "passed" ? displayedUnreadNotificationCount : 0);
