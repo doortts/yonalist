@@ -6,6 +6,9 @@ on issues and pull requests from a local Markdown vault.
 ## Current V1 Slice
 
 - Tauri + React + TypeScript desktop app scaffold.
+- Built-in Notes workspace placeholder that is registered independently of
+  GitHub auth; Phase 1 stops at the local shell, while the separate local
+  database architecture for note persistence is planned for Phase 2.
 - Three-column UI (navigation, item list, detail/comment pane) with
   resizable panes, independently scrolling columns, and a token-based
   design system.
