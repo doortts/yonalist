@@ -9,6 +9,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod notes;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
     pub metadata_dir: String,
@@ -100,7 +102,7 @@ pub fn vault_paths(vault_path: impl AsRef<Path>) -> VaultPaths {
     }
 }
 
-fn metadata_dir(vault_path: &str) -> PathBuf {
+pub(crate) fn metadata_dir(vault_path: &str) -> PathBuf {
     expand_vault_path(vault_path).join(".yonalist")
 }
 
