@@ -55,7 +55,10 @@ const SettingsPage = lazy(() =>
 );
 import { Sidebar, type ListFilter } from "./components/Sidebar";
 import { TitleBar } from "./components/TitleBar";
-import { getMarkdownRenderCacheStats } from "./components/MarkdownBody";
+import {
+  getMarkdownRenderCacheStats,
+  preloadMarkdownRenderer
+} from "./components/MarkdownBody";
 import { toggleFavorite } from "./domain/favorites";
 import {
   createCommentOutboxOperation,
@@ -431,6 +434,10 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
     };
   }, [vaultRoot]);
+
+  // Warm the markdown renderer chunk while the app is idle so the first
+  // opened detail does not pay the dynamic-import cost on click.
+  useEffect(() => scheduleIdleTask(() => void preloadMarkdownRenderer()), []);
 
   const rebuiltVaultRoot = useRef<string | null>(null);
   useEffect(() => {

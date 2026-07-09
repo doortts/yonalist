@@ -48,6 +48,15 @@ function loadMarkdownRenderer() {
   return rendererPromise;
 }
 
+/**
+ * Starts loading the markdown renderer chunk ahead of first use, so the first
+ * opened detail does not pay the dynamic-import cost. Safe to call anytime;
+ * repeat calls share the same in-flight import.
+ */
+export function preloadMarkdownRenderer(): Promise<unknown> {
+  return loadMarkdownRenderer();
+}
+
 export async function warmMarkdownBodies(bodies: string[]) {
   const missingBodies = bodies.filter(
     (body) => body && !renderedMarkdownCache.has(body)
