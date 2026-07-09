@@ -6,6 +6,7 @@ import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
+import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
@@ -66,6 +67,62 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Navigation")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBe("true");
+  });
+
+  it("opens Notes without a GitHub session or persisting skip-login", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    const user = userEvent.setup();
+    render(<App />);
+
+    const login = await screen.findByLabelText("GitHub login");
+    await user.click(within(login).getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+  });
+
+  it("persists a selected Notes feature", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes");
+  });
+
+  it("keeps Inbox filter state when returning from Notes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    const search = within(screen.getByLabelText("Items")).getByRole("textbox", {
+      name: "Search"
+    });
+    await user.type(search, "Design");
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notes" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: /^All items/ })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+    expect(screen.getByRole("button", { name: /^Notifications/ })).not.toHaveClass(
+      "active"
+    );
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("Design");
   });
 
   it("opens straight into the app when the last authenticated host verifies", async () => {
@@ -216,7 +273,7 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("lands on the notifications view after passing the gate", () => {
+  it("lands on the notifications view after passing the gate", async () => {
     render(<App />);
 
     expect(screen.getByLabelText("Notifications")).toBeInTheDocument();
@@ -224,6 +281,9 @@ describe("Yonalist app shell", () => {
       screen.getByLabelText("Empty notification detail")
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Items")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("inbox");
+    });
   });
 
   it("collapses owners with no selected repositories in the project tree", async () => {

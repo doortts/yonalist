@@ -118,6 +118,12 @@ import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
 import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
 import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
+import { featureRegistry, getFeatureDefinition } from "./features/core/featureRegistry";
+import {
+  loadActiveFeature,
+  persistActiveFeature
+} from "./features/core/featureSelection";
+import type { FeatureId, FeaturePanes } from "./features/core/featureTypes";
 import {
   resetApplicationData,
   type ResetApplicationStepId
@@ -333,7 +339,10 @@ export default function App({ initialOnline }: AppProps) {
     count: number;
   } | null>(null);
   const [showNewIssue, setShowNewIssue] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [activeFeatureId, setActiveFeatureId] =
+    useState<FeatureId>(loadActiveFeature);
+  const activeFeature = getFeatureDefinition(activeFeatureId);
+  const showSettings = activeFeatureId === "settings";
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   // Notifications are the landing view once authentication passes.
   const [showNotifications, setShowNotifications] = useState(true);
@@ -368,6 +377,10 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+
+  useEffect(() => {
+    persistActiveFeature(activeFeatureId);
+  }, [activeFeatureId]);
 
   useEffect(() => {
     setSettings((current) =>
@@ -599,7 +612,7 @@ export default function App({ initialOnline }: AppProps) {
       !repositoryGroups.loading
   );
   const selectedRepositoryForCounts =
-    showSettings || showNotifications ? null : repositoryFilter;
+    activeFeatureId !== "inbox" || showNotifications ? null : repositoryFilter;
   const visibleRepositoryCounts = useRepositoryOpenCounts(
     auth.connection,
     online,
@@ -661,7 +674,7 @@ export default function App({ initialOnline }: AppProps) {
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
   useEffect(() => {
-    if (!showNotifications) {
+    if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
     }
     if (notifications.notifications.length === 0 && notifications.loading) {
@@ -674,6 +687,7 @@ export default function App({ initialOnline }: AppProps) {
       demoMode: notifications.demoMode
     });
   }, [
+    activeFeatureId,
     showNotifications,
     notifications.notifications.length,
     notifications.unreadCount,
@@ -803,7 +817,9 @@ export default function App({ initialOnline }: AppProps) {
   );
   const activeNavigationKey = showSettings
     ? "app:settings"
-    : showNotifications
+    : activeFeatureId === "notes"
+      ? "workspace:notes"
+      : showNotifications
       ? "github:notifications"
       : repositoryFilter
         ? `repository:${repositoryFilter}`
@@ -862,7 +878,7 @@ export default function App({ initialOnline }: AppProps) {
 
   const detailVisible =
     authGate.state === "passed" &&
-    !showSettings &&
+    activeFeatureId === "inbox" &&
     !showNewIssue &&
     !showNotifications;
   const itemThread = useItemThread(
@@ -883,7 +899,6 @@ export default function App({ initialOnline }: AppProps) {
       settings.prefetchVisibleItems !== false &&
       authGate.state === "passed" &&
       !workItems.demoMode &&
-      !showSettings &&
       !showNewIssue &&
       !showNotifications,
     loadedBodies: loadedItemBodies,
@@ -917,11 +932,11 @@ export default function App({ initialOnline }: AppProps) {
     [visibleNotificationPrefetchItems]
   );
   const notificationPrefetchEnabled =
+    activeFeatureId === "inbox" &&
     showNotifications &&
     settings.prefetchVisibleItems !== false &&
     authGate.state === "passed" &&
     !notifications.demoMode &&
-    !showSettings &&
     !showNewIssue;
   const notificationPrefetchStats = useVisibleNotificationPrefetch({
     visibleNotifications: notificationPrefetchEnabled
@@ -935,25 +950,31 @@ export default function App({ initialOnline }: AppProps) {
       tracePerf("visible_notification_prefetch_error", { message });
     }
   });
-  const activeDetailKey = showNotifications
-    ? selectedNotification
-      ? `notification:${selectedNotification.id}`
-      : null
-    : detailVisible && selectedItem
-      ? `item:${selectedItem.path}`
-      : null;
+  const activeDetailKey =
+    activeFeatureId !== "inbox"
+      ? null
+      : showNotifications
+        ? selectedNotification
+          ? `notification:${selectedNotification.id}`
+          : null
+        : detailVisible && selectedItem
+          ? `item:${selectedItem.path}`
+          : null;
   // Identifies what the shared `.detail-scroll` container is currently showing.
   // The same DOM node is reused across every selection and content mode, so a
   // change here means the pane switched targets and its scroll must snap back
   // to the top (see the reset effect below). Same-target re-clicks leave this
   // key unchanged, so the previous scroll position is preserved.
-  const detailScrollResetKey = showSettings
-    ? `settings:${settingsSection}`
-    : showNewIssue
-      ? "new-issue"
-      : showNotifications
-        ? `notification:${selectedNotification?.id ?? "none"}`
-        : `item:${selectedItem?.path ?? "none"}`;
+  const detailScrollResetKey =
+    activeFeatureId === "settings"
+      ? `settings:${settingsSection}`
+      : activeFeatureId === "notes"
+        ? "notes"
+        : showNewIssue
+          ? "new-issue"
+          : showNotifications
+            ? `notification:${selectedNotification?.id ?? "none"}`
+            : `item:${selectedItem?.path ?? "none"}`;
   const detailScrollRef = useRef<HTMLDivElement>(null);
 
   // Snap the detail pane back to the top whenever it switches to a different
@@ -978,16 +999,23 @@ export default function App({ initialOnline }: AppProps) {
     !selectedItem ||
     Boolean(selectedItem.body) ||
     loadedItemBodies[selectedItem.path] !== undefined;
-  const detailReady = showNotifications
-    ? Boolean(selectedNotification && notificationDetail.detail && !notificationDetail.loading)
-    : Boolean(selectedItem && selectedBodyReady && !itemThread.loading);
-  const expectedDetailMarkdownBodies = showNotifications
-    ? notificationDetail.detail
-      ? 1 + countConversationMarkdownBodies(notificationDetail.detail.comments)
-      : 0
-    : selectedItem
-      ? 1 + countConversationMarkdownBodies(itemThread.thread?.comments ?? [])
-      : 0;
+  const detailReady =
+    activeFeatureId === "inbox" &&
+    (showNotifications
+      ? Boolean(
+          selectedNotification && notificationDetail.detail && !notificationDetail.loading
+        )
+      : Boolean(selectedItem && selectedBodyReady && !itemThread.loading));
+  const expectedDetailMarkdownBodies =
+    activeFeatureId !== "inbox"
+      ? 0
+      : showNotifications
+        ? notificationDetail.detail
+          ? 1 + countConversationMarkdownBodies(notificationDetail.detail.comments)
+          : 0
+        : selectedItem
+          ? 1 + countConversationMarkdownBodies(itemThread.thread?.comments ?? [])
+          : 0;
   const detailContentReady = useDetailContentPaintReady(
     detailScrollRef,
     activeDetailKey,
@@ -1054,7 +1082,7 @@ export default function App({ initialOnline }: AppProps) {
       detailReady &&
       detailContentReady &&
       authGate.state === "passed" &&
-      !showSettings &&
+      activeFeatureId === "inbox" &&
       !showNewIssue,
     onChanged: refreshActiveDetailAfterRemoteChange,
     onError: (message) => tracePerf("detail_revalidation_error", { message })
@@ -1084,8 +1112,11 @@ export default function App({ initialOnline }: AppProps) {
         listFetchDurationMs: workItems.lastFetchDurationMs,
         detailDisplayDurationMs,
         // Surface whichever prefetcher is active for the current view.
-        prefetch: showNotifications ? notificationPrefetchStats : prefetchStats,
-        caches: showNotifications
+        prefetch:
+          activeFeatureId === "inbox" && showNotifications
+            ? notificationPrefetchStats
+            : prefetchStats,
+        caches: activeFeatureId === "inbox" && showNotifications
           ? [
               { label: "Notifications", ...notificationStats },
               { label: "Notification details", ...notificationDetailStats },
@@ -1100,6 +1131,7 @@ export default function App({ initialOnline }: AppProps) {
     },
     [
       bodyCacheStats,
+      activeFeatureId,
       detailDisplayDurationMs,
       itemThread.thread,
       notificationDetail.detail,
@@ -1193,19 +1225,19 @@ export default function App({ initialOnline }: AppProps) {
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
-    setShowSettings(true);
+    setActiveFeatureId("settings");
     setSettingsStatus("");
   }
 
   function openNotifications() {
     setRepositoryFilter(null);
     setShowNewIssue(false);
-    setShowSettings(false);
     setShowNotifications(true);
+    setActiveFeatureId("inbox");
   }
 
   function openNewIssue() {
-    setShowSettings(false);
+    setActiveFeatureId("inbox");
     setDraftIssue((current) => ({
       ...current,
       repositoryKey:
@@ -1316,7 +1348,7 @@ export default function App({ initialOnline }: AppProps) {
     setFilter("all");
     setQuery("");
     setItemStateFilter("open");
-    setShowSettings(false);
+    setActiveFeatureId("inbox");
     setShowNotifications(false);
     setShowOutbox(false);
     setShowNewIssue(true);
@@ -1609,7 +1641,7 @@ export default function App({ initialOnline }: AppProps) {
         ? "closed"
         : "open"
     );
-    setShowSettings(false);
+    setActiveFeatureId("inbox");
     setShowNewIssue(false);
     setShowNotifications(false);
     setShowOutbox(false);
@@ -1845,7 +1877,7 @@ export default function App({ initialOnline }: AppProps) {
     setOutbox((current) => [...current, queuedOperation]);
     setDraftIssue({ title: "", body: "", repositoryKey: "" });
     setShowNewIssue(false);
-    setShowSettings(false);
+    setActiveFeatureId("inbox");
   }
 
   function updateSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
@@ -1946,11 +1978,136 @@ export default function App({ initialOnline }: AppProps) {
   const showingResetResult =
     showSettings && settingsSection === "reset" && resetProgress.status !== "idle";
 
-  if (authGate.state === "checking") {
+  function renderInboxPanes(): FeaturePanes {
+    return {
+      middle: showNotifications ? (
+        <NotificationsPane
+          state={notifications}
+          webBaseUrl={auth.connection.webBaseUrl}
+          online={online}
+          selectedId={selectedNotification?.id ?? null}
+          onSelect={(notification) => {
+            setSelectedNotification(notification);
+            notifications.markNotificationViewed(notification);
+          }}
+          onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
+        />
+      ) : (
+        <ItemListPane
+          items={filteredItems}
+          selectedPath={selectedItem?.path ?? null}
+          stateFilter={itemStateFilter}
+          stateCounts={displayedItemStateCounts}
+          itemSort={itemSort}
+          query={query}
+          loading={workItems.loading}
+          error={workItems.error}
+          demoMode={workItems.demoMode}
+          online={online}
+          onItemSortChange={setScopedItemSort}
+          onStateFilterChange={setItemStateFilter}
+          onQueryChange={setQuery}
+          onSelect={(path) => {
+            const startedAt =
+              typeof performance !== "undefined" ? performance.now() : Date.now();
+            startDetailTransition(startedAt);
+            setSelectedPath(path);
+            setShowNewIssue(false);
+          }}
+          onVisibleItemsChange={setVisiblePrefetchItems}
+          onNewIssue={openNewIssue}
+          onRefresh={workItems.refresh}
+        />
+      ),
+      detail: showNewIssue ? (
+        <NewIssuePage
+          draft={draftIssue}
+          repositories={repositories}
+          online={online}
+          onChange={setDraftIssue}
+          onSubmit={queueIssue}
+          onClose={() => setShowNewIssue(false)}
+        />
+      ) : showNotifications ? (
+        <NotificationDetail
+          notification={selectedNotification}
+          state={notificationDetail}
+          online={online}
+          commentDraft={commentDraft}
+          replyDraft={replyDraft}
+          detailMaximized={detailMaximized}
+          onToggleMaximize={toggleDetailMaximized}
+          onHeaderVisibilityChange={setDetailHeaderVisible}
+          onOpenInBrowser={notifications.openNotification}
+          onCommentDraftChange={setCommentDraft}
+          onQueueComment={queueNotificationComment}
+          onQueueReply={queueNotificationReply}
+        />
+      ) : (
+        <ItemDetail
+          item={selectedItemWithBody}
+          thread={itemThread}
+          online={online}
+          commentDraft={commentDraft}
+          replyDraft={replyDraft}
+          detailMaximized={detailMaximized}
+          onToggleMaximize={toggleDetailMaximized}
+          onHeaderVisibilityChange={setDetailHeaderVisible}
+          onCommentDraftChange={setCommentDraft}
+          onQueueComment={queueItemComment}
+          onQueueReply={queueItemReply}
+          onToggleFavorite={onToggleFavorite}
+        />
+      )
+    };
+  }
+
+  function renderSettingsPanes(): FeaturePanes {
+    return {
+      middle: (
+        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
+      ),
+      detail: (
+        <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
+          <SettingsPage
+            section={settingsSection}
+            settings={settings}
+            status={settingsStatus}
+            resetProgress={resetProgress}
+            themeMode={themeMode}
+            lightTheme={lightTheme}
+            darkTheme={darkTheme}
+            onThemeModeChange={setThemeMode}
+            onLightThemeChange={setLightTheme}
+            onDarkThemeChange={setDarkTheme}
+            servers={servers}
+            auth={auth}
+            repositoryGroups={repositoryGroups.groups}
+            projectVisibility={projectVisibility}
+            onUpdate={updateSetting}
+            onSave={saveSettings}
+            onResetAll={resetAllSettingsAndCaches}
+            onClose={() => setActiveFeatureId("inbox")}
+          />
+        </Suspense>
+      )
+    };
+  }
+
+  const panes = activeFeature.renderPanes({
+    renderInboxPanes,
+    renderSettingsPanes
+  });
+
+  if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
     return <AuthRestorePage />;
   }
 
-  if (authGate.state === "required" && !showingResetResult) {
+  if (
+    activeFeature.requiresGithubAuth &&
+    authGate.state === "required" &&
+    !showingResetResult
+  ) {
     return (
       <LoginPage
         servers={servers}
@@ -1958,6 +2115,7 @@ export default function App({ initialOnline }: AppProps) {
         checking={false}
         error={authGate.error}
         onSkip={authGate.skipLogin}
+        onOpenNotes={() => setActiveFeatureId("notes")}
       />
     );
   }
@@ -1991,16 +2149,16 @@ export default function App({ initialOnline }: AppProps) {
         onFilterChange={(next) => {
           setFilter(next);
           setRepositoryFilter(null);
-          setShowSettings(false);
           setShowNewIssue(false);
           setShowNotifications(false);
+          setActiveFeatureId("inbox");
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={(key) => {
           setRepositoryFilter(key);
-          setShowSettings(false);
           setShowNewIssue(false);
           setShowNotifications(false);
+          setActiveFeatureId("inbox");
         }}
         repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
@@ -2008,7 +2166,7 @@ export default function App({ initialOnline }: AppProps) {
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
         onOpenProjectSettings={() => openSettings("projects")}
-        notificationsOpen={showNotifications}
+        notificationsOpen={activeFeatureId === "inbox" && showNotifications}
         onOpenNotifications={openNotifications}
         unreadNotificationCount={
           // Until the repository filter basis has loaded, the raw unread
@@ -2018,6 +2176,9 @@ export default function App({ initialOnline }: AppProps) {
         notificationsLoading={
           notifications.loading || (!notifications.demoMode && !repositoryGroups.loaded)
         }
+        activeFeatureId={activeFeatureId}
+        featureEntries={featureRegistry}
+        onFeatureChange={setActiveFeatureId}
       />
 
       <div
@@ -2033,48 +2194,7 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      {showSettings ? (
-        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
-      ) : showNotifications ? (
-        <NotificationsPane
-          state={notifications}
-          webBaseUrl={auth.connection.webBaseUrl}
-          online={online}
-          selectedId={selectedNotification?.id ?? null}
-          onSelect={(notification) => {
-            setSelectedNotification(notification);
-            notifications.markNotificationViewed(notification);
-          }}
-          onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
-        />
-      ) : (
-        <ItemListPane
-          items={filteredItems}
-          selectedPath={selectedItem?.path ?? null}
-          stateFilter={itemStateFilter}
-          stateCounts={displayedItemStateCounts}
-          itemSort={itemSort}
-          query={query}
-          loading={workItems.loading}
-          error={workItems.error}
-          demoMode={workItems.demoMode}
-          online={online}
-          onItemSortChange={setScopedItemSort}
-          onStateFilterChange={setItemStateFilter}
-          onQueryChange={setQuery}
-          onSelect={(path) => {
-            const startedAt =
-              typeof performance !== "undefined" ? performance.now() : Date.now();
-            startDetailTransition(startedAt);
-            setSelectedPath(path);
-            setShowNewIssue(false);
-            setShowSettings(false);
-          }}
-          onVisibleItemsChange={setVisiblePrefetchItems}
-          onNewIssue={openNewIssue}
-          onRefresh={workItems.refresh}
-        />
-      )}
+      {panes.middle}
 
       <div
         className="pane-resizer list-detail-resizer"
@@ -2095,69 +2215,7 @@ export default function App({ initialOnline }: AppProps) {
           {activeDetailRenderSnapshot && (
             <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
           )}
-          {showSettings ? (
-          <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
-            <SettingsPage
-              section={settingsSection}
-              settings={settings}
-              status={settingsStatus}
-              resetProgress={resetProgress}
-              themeMode={themeMode}
-              lightTheme={lightTheme}
-              darkTheme={darkTheme}
-              onThemeModeChange={setThemeMode}
-              onLightThemeChange={setLightTheme}
-              onDarkThemeChange={setDarkTheme}
-              servers={servers}
-              auth={auth}
-              repositoryGroups={repositoryGroups.groups}
-              projectVisibility={projectVisibility}
-              onUpdate={updateSetting}
-              onSave={saveSettings}
-              onResetAll={resetAllSettingsAndCaches}
-              onClose={() => setShowSettings(false)}
-            />
-          </Suspense>
-        ) : showNewIssue ? (
-          <NewIssuePage
-            draft={draftIssue}
-            repositories={repositories}
-            online={online}
-            onChange={setDraftIssue}
-            onSubmit={queueIssue}
-            onClose={() => setShowNewIssue(false)}
-          />
-        ) : showNotifications ? (
-          <NotificationDetail
-            notification={selectedNotification}
-            state={notificationDetail}
-            online={online}
-            commentDraft={commentDraft}
-            replyDraft={replyDraft}
-            detailMaximized={detailMaximized}
-            onToggleMaximize={toggleDetailMaximized}
-            onHeaderVisibilityChange={setDetailHeaderVisible}
-            onOpenInBrowser={notifications.openNotification}
-            onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueNotificationComment}
-            onQueueReply={queueNotificationReply}
-          />
-        ) : (
-          <ItemDetail
-            item={selectedItemWithBody}
-            thread={itemThread}
-            online={online}
-            commentDraft={commentDraft}
-            replyDraft={replyDraft}
-            detailMaximized={detailMaximized}
-            onToggleMaximize={toggleDetailMaximized}
-            onHeaderVisibilityChange={setDetailHeaderVisible}
-            onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueItemComment}
-            onQueueReply={queueItemReply}
-            onToggleFavorite={onToggleFavorite}
-          />
-        )}
+          {panes.detail}
         </div>
       </section>
 
