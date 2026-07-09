@@ -1089,9 +1089,17 @@ export default function App({ initialOnline }: AppProps) {
       Boolean(activeDetailRenderSnapshot) || (detailReady && detailContentReady)
     );
 
+  // Body byte estimation walks every loaded body, so it is memoized on its own
+  // input and kept out of statusMetrics' broader dependency set — a prefetch
+  // tick that leaves loadedItemBodies untouched no longer re-estimates it.
+  const bodyCacheStats = useMemo(
+    () => estimateRecordBytes(loadedItemBodies),
+    [loadedItemBodies]
+  );
+
   const statusMetrics = useMemo<StatusBarMetrics>(
     () => {
-      const bodyStats = estimateRecordBytes(loadedItemBodies);
+      const bodyStats = bodyCacheStats;
       const threadStats = getItemThreadCacheStats();
       const notificationStats = getNotificationCacheStats();
       const notificationDetailStats = getNotificationDetailCacheStats();
@@ -1115,9 +1123,9 @@ export default function App({ initialOnline }: AppProps) {
       };
     },
     [
+      bodyCacheStats,
       detailDisplayDurationMs,
       itemThread.thread,
-      loadedItemBodies,
       notificationDetail.detail,
       notifications.notifications,
       notificationPrefetchStats,

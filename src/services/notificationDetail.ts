@@ -179,7 +179,10 @@ function flattenComments(comments: CommentResponse[]): CommentResponse[] {
   ]);
 }
 
-const detailCache = new LruCache<NotificationDetailContent>(50);
+const detailCache = new LruCache<NotificationDetailContent>(
+  50,
+  (key, detail) => estimateTextBytes(key) + estimateJsonBytes(detail)
+);
 const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
 /**
  * The most recently cached detail per subject, keyed independently of the
@@ -215,14 +218,7 @@ export function resetNotificationDetailMemoryCache() {
 }
 
 export function getNotificationDetailCacheStats(): CacheSizeStats {
-  return detailCache.entries().reduce<CacheSizeStats>(
-    (stats, [key, detail]) => ({
-      entries: stats.entries + 1,
-      bytes:
-        stats.bytes + estimateTextBytes(key) + estimateJsonBytes(detail)
-    }),
-    { entries: 0, bytes: 0 }
-  );
+  return detailCache.stats();
 }
 
 /**

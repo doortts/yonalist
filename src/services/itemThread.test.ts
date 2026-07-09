@@ -278,6 +278,15 @@ describe("fetchItemThread", () => {
       const stats = getItemThreadCacheStats();
       expect(stats.entries).toBe(1);
       expect(stats.bytes).toBeGreaterThan(0);
+
+      // Deleting the only cached thread must return the running byte total to
+      // zero, not leave a stale accumulated cost behind.
+      deleteCachedItemThread(
+        connection,
+        { kind: "issue", owner: "acme", repo: "app", number: 42 },
+        "v1"
+      );
+      expect(getItemThreadCacheStats()).toEqual({ entries: 0, bytes: 0 });
     } finally {
       vi.unstubAllGlobals();
     }

@@ -252,6 +252,34 @@ describe("fetchNotifications", () => {
     expect(stats.bytes).toBeGreaterThan(0);
   });
 
+  it("memoizes cache stats until the cache changes", async () => {
+    await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: vi.fn(async () =>
+        jsonResponse([notification("one")])
+      ) as unknown as typeof fetch
+    });
+
+    const first = getNotificationCacheStats();
+    const second = getNotificationCacheStats();
+    // No cache mutation between the two reads: the same memoized object is
+    // returned instead of a freshly rebuilt one.
+    expect(second).toBe(first);
+
+    await fetchNotifications({
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: vi.fn(async () =>
+        jsonResponse([notification("one"), notification("two")])
+      ) as unknown as typeof fetch
+    });
+
+    const third = getNotificationCacheStats();
+    expect(third).not.toBe(first);
+    expect(third.bytes).toBeGreaterThan(first.bytes);
+  });
+
   it("seeds unread notification updates without emitting desktop items", async () => {
     const fetchMock = vi.fn(async (url: unknown, init?: RequestInit) => {
       const headers = init?.headers as Record<string, string>;

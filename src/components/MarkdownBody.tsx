@@ -36,7 +36,10 @@ type RenderedMarkdownState = {
 };
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
-const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200);
+const renderedMarkdownCache = new LruCache<RenderedMarkdown>(
+  200,
+  (body, rendered) => estimateTextBytes(body) + estimateTextBytes(rendered.__html)
+);
 const WARM_RENDER_BATCH_SIZE = 4;
 let rendererPromise: Promise<typeof import("../markdownRender")> | null = null;
 
@@ -74,16 +77,7 @@ export function clearMarkdownRenderCache() {
 }
 
 export function getMarkdownRenderCacheStats(): CacheSizeStats {
-  return renderedMarkdownCache.entries().reduce<CacheSizeStats>(
-    (stats, [body, rendered]) => ({
-      entries: stats.entries + 1,
-      bytes:
-        stats.bytes +
-        estimateTextBytes(body) +
-        estimateTextBytes(rendered.__html)
-    }),
-    { entries: 0, bytes: 0 }
-  );
+  return renderedMarkdownCache.stats();
 }
 
 /**

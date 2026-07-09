@@ -55,7 +55,10 @@ export interface FetchItemThreadOptions {
   signal?: AbortSignal;
 }
 
-const threadCache = new LruCache<ItemThread>(50);
+const threadCache = new LruCache<ItemThread>(
+  50,
+  (key, thread) => estimateTextBytes(key) + estimateJsonBytes(thread)
+);
 const inflightThreads = new Map<string, Promise<ItemThread>>();
 /**
  * The most recently cached thread per target, keyed independently of the
@@ -88,14 +91,7 @@ export function clearItemThreadCache() {
 }
 
 export function getItemThreadCacheStats(): CacheSizeStats {
-  return threadCache.entries().reduce<CacheSizeStats>(
-    (stats, [key, thread]) => ({
-      entries: stats.entries + 1,
-      bytes:
-        stats.bytes + estimateTextBytes(key) + estimateJsonBytes(thread)
-    }),
-    { entries: 0, bytes: 0 }
-  );
+  return threadCache.stats();
 }
 
 function threadTargetKey(

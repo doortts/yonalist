@@ -15,7 +15,13 @@ export interface DetailRenderSnapshotInput {
   capturedAt: string;
 }
 
-const detailRenderSnapshots = new LruCache<DetailRenderSnapshot>(50);
+const detailRenderSnapshots = new LruCache<DetailRenderSnapshot>(
+  50,
+  (key, snapshot) =>
+    estimateTextBytes(key) +
+    estimateTextBytes(snapshot.html) +
+    estimateTextBytes(snapshot.capturedAt)
+);
 const snapshotOverlaySelector = '[data-detail-render-snapshot-overlay="true"]';
 
 export function clearDetailRenderSnapshots() {
@@ -40,17 +46,7 @@ export function deleteDetailRenderSnapshot(key: string): boolean {
 }
 
 export function getDetailRenderSnapshotStats(): CacheSizeStats {
-  return detailRenderSnapshots.entries().reduce<CacheSizeStats>(
-    (stats, [key, snapshot]) => ({
-      entries: stats.entries + 1,
-      bytes:
-        stats.bytes +
-        estimateTextBytes(key) +
-        estimateTextBytes(snapshot.html) +
-        estimateTextBytes(snapshot.capturedAt)
-    }),
-    { entries: 0, bytes: 0 }
-  );
+  return detailRenderSnapshots.stats();
 }
 
 export function captureDetailRenderSnapshotHtml(root: HTMLElement): string {
