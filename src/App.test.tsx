@@ -21,6 +21,7 @@ import { serializeMarkdownDocument } from "./domain/markdown";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
+import { notesFeature } from "./features/notes/NotesFeature";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
@@ -84,6 +85,22 @@ describe("Yonalist app shell", () => {
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBe("true");
   });
 
+  it("opens Notes immediately while startup auth restoration keeps running", () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    vi.mocked(window.localStorage.setItem).mockClear();
+    render(<App />);
+
+    const restore = screen.getByLabelText("Restoring GitHub session");
+    fireEvent.click(within(restore).getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+      "yonalist.auth.skipLogin.v1",
+      expect.anything()
+    );
+  });
+
   it("opens Notes without a GitHub session or persisting skip-login", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     const user = userEvent.setup();
@@ -138,6 +155,55 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("Design");
+  });
+
+  it("restores the selected notification after visiting Notes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const notification = screen.getByRole("button", {
+      name: /Design offline issue reading/
+    });
+    await user.click(notification);
+    expect(
+      within(screen.getByLabelText("Detail")).getByRole("heading", {
+        name: "Design offline issue reading"
+      })
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    expect(
+      await within(screen.getByLabelText("Detail")).findByRole("heading", {
+        name: "Design offline issue reading"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("button", { name: /Design offline issue reading/ })
+        .closest(".notification-row")
+    ).toHaveClass("selected");
+  });
+
+  it("mounts the active feature Provider around both resolved panes", () => {
+    const originalProvider = notesFeature.Provider;
+    notesFeature.Provider = ({ children }) => (
+      <div aria-label="Notes feature provider sentinel">{children}</div>
+    );
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    try {
+      render(<App />);
+
+      const provider = screen.getByLabelText("Notes feature provider sentinel");
+      expect(within(provider).getByLabelText("Notes library")).toBeInTheDocument();
+      expect(within(provider).getByLabelText("Notes outline")).toBeInTheDocument();
+    } finally {
+      notesFeature.Provider = originalProvider;
+    }
   });
 
   it("opens straight into the app when the last authenticated host verifies", async () => {

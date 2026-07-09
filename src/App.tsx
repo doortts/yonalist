@@ -10,6 +10,7 @@ import {
   useState
 } from "react";
 import { Toast } from "@base-ui/react/toast";
+import { NotebookPen } from "lucide-react";
 import "./components/ui/toast.css";
 import {
   defaultSettings,
@@ -313,7 +314,7 @@ function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
   return left.field === right.field && left.direction === right.direction;
 }
 
-function AuthRestorePage() {
+function AuthRestorePage({ onOpenNotes }: { onOpenNotes: () => void }) {
   return (
     <main className="login-shell" aria-label="Restoring GitHub session">
       <TitleBar />
@@ -325,6 +326,10 @@ function AuthRestorePage() {
             저장된 인증 정보를 확인하고 있습니다.
           </p>
         </div>
+        <button type="button" className="text-button" onClick={onOpenNotes}>
+          <NotebookPen size={16} aria-hidden="true" />
+          <span>Notes</span>
+        </button>
       </div>
     </main>
   );
@@ -691,11 +696,6 @@ export default function App({ initialOnline }: AppProps) {
     useState<GitHubNotification | null>(null);
   const activeSelectedNotification =
     activeFeatureId === "inbox" && showNotifications ? selectedNotification : null;
-  useEffect(() => {
-    if (activeFeatureId !== "inbox") {
-      setSelectedNotification(null);
-    }
-  }, [activeFeatureId]);
   useEffect(() => {
     if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
@@ -2124,9 +2124,10 @@ export default function App({ initialOnline }: AppProps) {
     renderInboxPanes,
     renderSettingsPanes
   });
+  const ActiveFeatureProvider = activeFeature.Provider;
 
   if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
-    return <AuthRestorePage />;
+    return <AuthRestorePage onOpenNotes={() => setActiveFeatureId("notes")} />;
   }
 
   if (
@@ -2220,30 +2221,32 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      {panes.middle}
+      <ActiveFeatureProvider>
+        {panes.middle}
 
-      <div
-        className="pane-resizer list-detail-resizer"
-        role="separator"
-        aria-label="Resize item list pane"
-        aria-orientation="vertical"
-        aria-valuemin={paneWidthLimits.list.min}
-        aria-valuemax={paneWidthLimits.list.max}
-        aria-valuenow={paneWidths.list}
-        tabIndex={0}
-        onPointerDown={(event) => startResize("list", event)}
-        onKeyDown={(event) => resizeWithKeyboard("list", event)}
-      />
+        <div
+          className="pane-resizer list-detail-resizer"
+          role="separator"
+          aria-label="Resize item list pane"
+          aria-orientation="vertical"
+          aria-valuemin={paneWidthLimits.list.min}
+          aria-valuemax={paneWidthLimits.list.max}
+          aria-valuenow={paneWidths.list}
+          tabIndex={0}
+          onPointerDown={(event) => startResize("list", event)}
+          onKeyDown={(event) => resizeWithKeyboard("list", event)}
+        />
 
-      <section className="detail-pane" aria-label="Detail">
-        <div className="pane-titlebar-spacer" />
-        <div className="detail-scroll" ref={detailScrollRef}>
-          {activeDetailRenderSnapshot && (
-            <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
-          )}
-          {panes.detail}
-        </div>
-      </section>
+        <section className="detail-pane" aria-label="Detail">
+          <div className="pane-titlebar-spacer" />
+          <div className="detail-scroll" ref={detailScrollRef}>
+            {activeDetailRenderSnapshot && (
+              <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
+            )}
+            {panes.detail}
+          </div>
+        </section>
+      </ActiveFeatureProvider>
 
       <AppStatusBar
         outboxCount={outbox.length}
