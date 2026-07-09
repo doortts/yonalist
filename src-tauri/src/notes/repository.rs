@@ -1044,18 +1044,51 @@ mod tests {
     }
 
     #[derive(Debug, PartialEq)]
+    struct PersistentNodeState {
+        id: String,
+        parent_id: Option<String>,
+        sort_key: i64,
+        title: String,
+        note: String,
+        layout_mode: String,
+        is_collapsed: i64,
+        is_starred: i64,
+        completed_at: Option<String>,
+        created_at: String,
+        updated_at: String,
+        deleted_at: Option<String>,
+    }
+
+    #[derive(Debug, PartialEq)]
     struct PersistentState {
-        nodes: Vec<(String, Option<String>, i64, Option<String>)>,
+        nodes: Vec<PersistentNodeState>,
         search: Vec<(String, String, String)>,
         tags: Vec<(String, String, String)>,
     }
 
     fn persistent_state(connection: &Connection) -> PersistentState {
         let nodes = connection
-            .prepare("SELECT id, parent_id, sort_key, deleted_at FROM notes_nodes ORDER BY id")
+            .prepare(
+                "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                        is_starred, completed_at, created_at, updated_at, deleted_at \
+                 FROM notes_nodes ORDER BY id",
+            )
             .expect("prepare node state")
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok(PersistentNodeState {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    sort_key: row.get(2)?,
+                    title: row.get(3)?,
+                    note: row.get(4)?,
+                    layout_mode: row.get(5)?,
+                    is_collapsed: row.get(6)?,
+                    is_starred: row.get(7)?,
+                    completed_at: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
+                    deleted_at: row.get(11)?,
+                })
             })
             .expect("query node state")
             .collect::<Result<Vec<_>, _>>()
@@ -1082,6 +1115,48 @@ mod tests {
             search,
             tags,
         }
+    }
+
+    fn install_remove_terminal_failure_trigger(connection: &Connection, node_id: &str) {
+        // Keeping the FTS work and failure in one trigger makes their order deterministic.
+        // RAISE(FAIL) leaves earlier statement changes for the outer transaction to roll back.
+        connection
+            .execute_batch(&format!(
+                "DROP TRIGGER notes_nodes_search_update; \
+                 CREATE TRIGGER notes_nodes_search_update \
+                 AFTER UPDATE OF title, note, deleted_at ON notes_nodes \
+                 BEGIN \
+                   DELETE FROM notes_search WHERE node_id = OLD.id; \
+                   INSERT INTO notes_search (node_id, title, note) \
+                   SELECT NEW.id, NEW.title, NEW.note WHERE NEW.deleted_at IS NULL; \
+                   SELECT RAISE(FAIL, 'remove terminal search deletion rejected') \
+                   WHERE OLD.id = '{node_id}' \
+                     AND OLD.deleted_at IS NULL AND NEW.deleted_at IS NOT NULL \
+                     AND NOT EXISTS (SELECT 1 FROM notes_search WHERE node_id = NEW.id); \
+                 END;"
+            ))
+            .expect("install terminal remove failure trigger");
+    }
+
+    fn install_restore_terminal_failure_trigger(connection: &Connection, node_id: &str) {
+        connection
+            .execute_batch(&format!(
+                "DROP TRIGGER notes_nodes_search_update; \
+                 CREATE TRIGGER notes_nodes_search_update \
+                 AFTER UPDATE OF title, note, deleted_at ON notes_nodes \
+                 BEGIN \
+                   DELETE FROM notes_search WHERE node_id = OLD.id; \
+                   INSERT INTO notes_search (node_id, title, note) \
+                   SELECT NEW.id, NEW.title, NEW.note WHERE NEW.deleted_at IS NULL; \
+                   SELECT RAISE(FAIL, 'restore terminal search reinsertion rejected') \
+                   WHERE OLD.id = '{node_id}' \
+                     AND OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL \
+                     AND 1 = (SELECT COUNT(*) FROM notes_search \
+                              WHERE node_id = NEW.id \
+                                AND title = NEW.title AND note = NEW.note); \
+                 END;"
+            ))
+            .expect("install terminal restore failure trigger");
     }
 
     fn assert_tree_invariants(connection: &Connection) {
@@ -1698,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_empty_node_rolls_back_child_reparenting_search_and_tags_on_failure() {
+    fn remove_empty_node_rolls_back_full_state_after_terminal_search_deletion_failure() {
         let mut connection = test_connection();
         create_test_node(&mut connection, NODE_ID, None, None, "parent #Outline", "");
         create_test_node(
@@ -1741,19 +1816,24 @@ mod tests {
             "after #Sibling",
             "",
         );
-        let before = persistent_state(&connection);
         connection
-            .execute_batch(&format!(
-                "CREATE TRIGGER reject_second_child_reparent \
-                 BEFORE UPDATE OF parent_id, sort_key ON notes_nodes \
-                 WHEN OLD.id = '{FIFTH_ID}' AND NEW.parent_id = '{NODE_ID}' \
-                 BEGIN SELECT RAISE(ABORT, 'child reparent rejected'); END;"
-            ))
-            .expect("reparent failure trigger");
+            .execute(
+                "UPDATE notes_nodes SET \
+                   is_collapsed = CASE WHEN id IN (?1, ?2) THEN 1 ELSE 0 END, \
+                   is_starred = CASE WHEN id IN (?2, ?3) THEN 1 ELSE 0 END, \
+                   completed_at = CASE WHEN id IN (?3, ?4) \
+                     THEN '2025-01-02T03:04:05.000Z' ELSE NULL END, \
+                   created_at = '2024-01-02T03:04:05.000Z', \
+                   updated_at = '2025-02-03T04:05:06.000Z'",
+                params![THIRD_ID, FOURTH_ID, FIFTH_ID, SIXTH_ID],
+            )
+            .expect("seed distinctive persisted node state");
+        let before = persistent_state(&connection);
+        install_remove_terminal_failure_trigger(&connection, THIRD_ID);
 
         let error = remove_empty_node(&mut connection, THIRD_ID).expect_err("remove rollback");
 
-        assert!(error.contains("child reparent rejected"));
+        assert!(error.contains("remove terminal search deletion rejected"));
         assert_eq!(persistent_state(&connection), before);
         assert_tree_invariants(&connection);
     }
@@ -1853,7 +1933,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_collision_rolls_back_order_deletion_search_and_tags_on_failure() {
+    fn restore_collision_rolls_back_full_state_after_terminal_search_reinsertion_failure() {
         let mut connection = test_connection();
         create_test_node(&mut connection, NODE_ID, None, None, "parent #Outline", "");
         create_test_node(
@@ -1873,19 +1953,24 @@ mod tests {
             "replacement #Restore",
             "",
         );
-        let before = persistent_state(&connection);
         connection
-            .execute_batch(&format!(
-                "CREATE TRIGGER reject_restore_undelete \
-                 BEFORE UPDATE OF deleted_at ON notes_nodes \
-                 WHEN OLD.id = '{CHILD_ID}' AND NEW.deleted_at IS NULL \
-                 BEGIN SELECT RAISE(ABORT, 'restore undelete rejected'); END;"
-            ))
-            .expect("restore failure trigger");
+            .execute(
+                "UPDATE notes_nodes SET \
+                   is_collapsed = CASE WHEN id = ?1 THEN 1 ELSE 0 END, \
+                   is_starred = CASE WHEN id IN (?1, ?2) THEN 1 ELSE 0 END, \
+                   completed_at = CASE WHEN id = ?1 \
+                     THEN '2025-03-04T05:06:07.000Z' ELSE NULL END, \
+                   created_at = '2024-03-04T05:06:07.000Z', \
+                   updated_at = '2025-04-05T06:07:08.000Z'",
+                params![CHILD_ID, THIRD_ID],
+            )
+            .expect("seed distinctive persisted node state");
+        let before = persistent_state(&connection);
+        install_restore_terminal_failure_trigger(&connection, CHILD_ID);
 
         let error = restore_node(&mut connection, CHILD_ID).expect_err("restore rollback");
 
-        assert!(error.contains("restore undelete rejected"));
+        assert!(error.contains("restore terminal search reinsertion rejected"));
         assert_eq!(persistent_state(&connection), before);
         assert_tree_invariants(&connection);
     }
