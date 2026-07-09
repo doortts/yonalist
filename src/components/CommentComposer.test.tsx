@@ -242,7 +242,7 @@ describe("CommentComposer", () => {
     expect(screen.getByRole("button", { name: "Preview" })).toBeInTheDocument();
   });
 
-  it("grows the textarea to fit wrapped content", async () => {
+  it("grows the in-flow textarea to fit wrapped content", async () => {
     function WrappedComposer() {
       const [draft, setDraft] = useState("hello");
       return (
@@ -255,6 +255,7 @@ describe("CommentComposer", () => {
       );
     }
     render(<WrappedComposer />);
+    fireFlowComposerVisible(true);
     const textarea = screen.getByLabelText("Write a comment");
     Object.defineProperty(textarea, "scrollHeight", {
       configurable: true,
@@ -510,6 +511,18 @@ describe("CommentComposer", () => {
     expect(screen.queryByRole("button", { name: "Comment" })).toBeNull();
   });
 
+  it("leaves collapsed dock textarea sizing to CSS", () => {
+    const { container } = render(<ControlledComposer />);
+
+    const dockComposer = container.querySelector(".comment-composer-dock");
+    const textarea = screen.getByLabelText(
+      "Write a comment"
+    ) as HTMLTextAreaElement;
+
+    expect(dockComposer).toHaveClass("is-collapsed");
+    expect(textarea.style.height).toBe("");
+  });
+
   it("expands the dock for input when the collapsed dock is clicked", async () => {
     const user = userEvent.setup();
     const { container } = render(<ControlledComposer />);
@@ -523,6 +536,20 @@ describe("CommentComposer", () => {
     expect(textarea).toBeInTheDocument();
     expect(document.activeElement).toBe(textarea);
     expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
+  });
+
+  it("lets the expanded dock textarea be resized by the user", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ControlledComposer />);
+
+    await user.click(screen.getByLabelText("Write a comment"));
+
+    const dockComposer = container.querySelector(".comment-composer-dock");
+    const textarea = screen.getByLabelText(
+      "Write a comment"
+    ) as HTMLTextAreaElement;
+    expect(dockComposer).toHaveClass("is-expanded");
+    expect(textarea.style.height).toBe("");
   });
 
   it("collapses the dock again after blur when there is no draft", async () => {
@@ -563,9 +590,25 @@ describe("CommentComposer", () => {
     expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
   });
 
-  it("uses a sticky collapsed dock and a normal-flow full composer", () => {
+  it("fixes the collapsed dock to the detail pane while keeping the full composer in flow", () => {
     const dockStyle = cssDeclarationsFor(
       ".comment-composer-dock",
+      composerDockStyles
+    );
+    const maximizedDockStyle = cssDeclarationsFor(
+      ".app-shell[data-detail-maximized=\"true\"] .comment-composer-dock",
+      composerDockStyles
+    );
+    const collapsedDockStyle = cssDeclarationsFor(
+      ".comment-composer-dock.is-collapsed",
+      composerDockStyles
+    );
+    const collapsedTextareaStyle = cssDeclarationsFor(
+      ".comment-composer-dock.is-collapsed textarea",
+      composerDockStyles
+    );
+    const expandedTextareaStyle = cssDeclarationsFor(
+      ".comment-composer-dock.is-expanded textarea",
       composerDockStyles
     );
     const expandedStyle = cssDeclarationsFor(
@@ -573,8 +616,36 @@ describe("CommentComposer", () => {
       composerDockStyles
     );
 
-    expect(dockStyle.position).toBe("sticky");
-    expect(dockStyle.bottom).toBe("0");
+    expect(dockStyle.position).toBe("fixed");
+    expect(dockStyle.bottom).toBe("var(--statusbar-height)");
+    expect(dockStyle.left).toBe(
+      "calc(var(--sidebar-width, 280px) + var(--sidebar-resizer-width, 1px) + var(--list-width, 420px) + var(--list-resizer-width, 1px))"
+    );
+    expect(dockStyle.right).toBe("0");
+    expect(dockStyle["border-top"]).toBeUndefined();
+    expect(dockStyle.background).toBe(
+      "color-mix(in srgb, var(--bg-detail) 62%, transparent)"
+    );
+    expect(dockStyle["backdrop-filter"]).toBe("blur(14px) saturate(130%)");
+    expect(dockStyle["-webkit-backdrop-filter"]).toBe(
+      "blur(14px) saturate(130%)"
+    );
+    expect(maximizedDockStyle.left).toBe("0");
+    expect(collapsedDockStyle.overflow).toBe("hidden");
+    expect(collapsedDockStyle["max-height"]).toBe("67px");
+    expect(collapsedDockStyle.padding).toBe(
+      "18px 12px calc(0px + env(safe-area-inset-bottom, 0px))"
+    );
+    expect(collapsedTextareaStyle["min-height"]).toBe("76px");
+    expect(collapsedTextareaStyle.height).toBe("76px");
+    expect(collapsedTextareaStyle.padding).toBe("20px 14px 10px");
+    expect(collapsedTextareaStyle["border-radius"]).toBe("var(--radius)");
+    expect(collapsedTextareaStyle.background).toBe(
+      "color-mix(in srgb, var(--bg-input) 72%, transparent)"
+    );
+    expect(collapsedTextareaStyle.resize).toBe("none");
+    expect(expandedTextareaStyle.resize).toBe("vertical");
+    expect(expandedTextareaStyle["max-height"]).toBe("min(60vh, 520px)");
     expect(expandedStyle.position).not.toBe("sticky");
     expect(expandedStyle.bottom).toBeUndefined();
   });

@@ -180,9 +180,13 @@ export function CommentComposer({
   }
 
   useLayoutEffect(() => {
-    // Previewing leaves the height to CSS; the write surface auto-grows to its
-    // content while remaining in the normal detail flow.
-    for (const textarea of [flowTextareaRef.current, dockTextareaRef.current]) {
+    // The in-flow composer auto-grows. The floating dock leaves height to CSS
+    // so its collapsed slice stays stable and its expanded textarea can be
+    // resized by the user without React immediately overwriting that height.
+    if (dockTextareaRef.current) {
+      dockTextareaRef.current.style.height = "";
+    }
+    for (const textarea of [flowTextareaRef.current]) {
       if (!textarea) {
         continue;
       }
