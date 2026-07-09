@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import {
   clearNotificationDetailCache,
+  deleteCachedNotificationDetail,
   fetchNotificationDetail,
   getCachedNotificationDetail,
   getNotificationDetailCacheStats,
   getLatestCachedNotificationDetail,
+  revalidateNotificationDetail,
   resetNotificationDetailMemoryCache
 } from "./notificationDetail";
 import { persistNotificationDetail } from "./notificationStores";
@@ -29,6 +31,19 @@ function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" }
+  });
+}
+
+function jsonResponseWithValidators(
+  body: unknown,
+  validators: Record<string, string>
+) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      ...validators
+    }
   });
 }
 
@@ -62,6 +77,128 @@ describe("fetchNotificationDetail", () => {
 
     expect(cached.title).toBe("Cached");
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("can delete one cached notification detail without clearing every subject", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      if (String(url).includes("/comments")) {
+        return jsonResponse([]);
+      }
+      return jsonResponse({ title: "Cached", state: "open", user: { login: "mona" } });
+    });
+
+    const first = notification("Issue", "https://api.github.com/repos/acme/app/issues/7");
+    const second = notification("Issue", "https://api.github.com/repos/acme/app/issues/8");
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: first,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+    await fetchNotificationDetail({
+      ...baseOptions,
+      notification: second,
+      fetchImpl: fetchMock as unknown as typeof fetch
+    });
+
+    deleteCachedNotificationDetail({
+      apiBaseUrl: baseOptions.apiBaseUrl,
+      notification: first
+    });
+
+    expect(
+      getCachedNotificationDetail({
+        apiBaseUrl: baseOptions.apiBaseUrl,
+        notification: first
+      })
+    ).toBeNull();
+    expect(
+      getCachedNotificationDetail({
+        apiBaseUrl: baseOptions.apiBaseUrl,
+        notification: second
+      })
+    ).not.toBeNull();
+  });
+
+  it("uses conditional HEAD validators to report an unchanged prefetched issue detail", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (init?.method === "HEAD") {
+        const headers = new Headers(init.headers);
+        expect(headers.get("If-None-Match")).toBeTruthy();
+        expect(headers.get("If-Modified-Since")).toBeTruthy();
+        return new Response(null, { status: 304 });
+      }
+      if (target.includes("/comments")) {
+        return jsonResponseWithValidators([], {
+          ETag: 'W/"notification-comments-v1"',
+          "Last-Modified": "Thu, 09 Jul 2026 01:05:00 GMT"
+        });
+      }
+      return jsonResponseWithValidators({
+        title: "Cached",
+        state: "open",
+        user: { login: "mona" }
+      }, {
+        ETag: 'W/"notification-issue-v1"',
+        "Last-Modified": "Thu, 09 Jul 2026 01:00:00 GMT"
+      });
+    });
+
+    const options = {
+      ...baseOptions,
+      notification: notification("Issue", "https://api.github.com/repos/acme/app/issues/7"),
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    await fetchNotificationDetail(options);
+
+    const result = await revalidateNotificationDetail(options);
+
+    expect(result.changed).toBe(false);
+    expect(
+      fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "HEAD")
+    ).toHaveLength(2);
+  });
+
+  it("reports changed when a prefetched notification HEAD probe returns 200", async () => {
+    let headCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (init?.method === "HEAD") {
+        headCalls += 1;
+        return new Response(null, {
+          status: headCalls === 1 ? 304 : 200,
+          headers: {
+            ETag: 'W/"notification-comments-v2"',
+            "Last-Modified": "Thu, 09 Jul 2026 02:00:00 GMT"
+          }
+        });
+      }
+      if (target.includes("/comments")) {
+        return jsonResponseWithValidators([], {
+          ETag: 'W/"notification-comments-v1"',
+          "Last-Modified": "Thu, 09 Jul 2026 01:05:00 GMT"
+        });
+      }
+      return jsonResponseWithValidators({
+        title: "Cached",
+        state: "open",
+        user: { login: "mona" }
+      }, {
+        ETag: 'W/"notification-issue-v1"',
+        "Last-Modified": "Thu, 09 Jul 2026 01:00:00 GMT"
+      });
+    });
+
+    const options = {
+      ...baseOptions,
+      notification: notification("Issue", "https://api.github.com/repos/acme/app/issues/7"),
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    await fetchNotificationDetail(options);
+
+    const result = await revalidateNotificationDetail(options);
+
+    expect(result.changed).toBe(true);
   });
 
   it("reports the number and size of cached notification details", async () => {

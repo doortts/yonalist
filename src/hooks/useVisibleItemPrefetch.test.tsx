@@ -106,8 +106,6 @@ function Harness({
     enabled: true,
     loadedBodies: {},
     refreshKey: 0,
-    dwellMs: 2_000,
-    evictionMs: 60_000,
     maxConcurrentPrefetches,
     onBodyPrefetched,
     onBodyInvalidated
@@ -136,13 +134,13 @@ describe("useVisibleItemPrefetch", () => {
     vi.clearAllMocks();
   });
 
-  it("prefetches body and comments only after a visible item dwells for two seconds", async () => {
+  it("prefetches body and comments only after a visible item dwells for one second", async () => {
     const onBodyPrefetched = vi.fn();
     render(
       <Harness visibleItems={[baseItem]} onBodyPrefetched={onBodyPrefetched} />
     );
 
-    await vi.advanceTimersByTimeAsync(1_999);
+    await vi.advanceTimersByTimeAsync(999);
 
     expect(loadItemDocumentBody).not.toHaveBeenCalled();
     expect(fetchItemThread).not.toHaveBeenCalled();
@@ -180,18 +178,18 @@ describe("useVisibleItemPrefetch", () => {
     ]);
   });
 
-  it("cancels the dwell timer when an item scrolls out before two seconds", async () => {
+  it("cancels the dwell timer when an item scrolls out before one second", async () => {
     const { rerender } = render(<Harness visibleItems={[baseItem]} />);
 
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(500);
     rerender(<Harness visibleItems={[]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(loadItemDocumentBody).not.toHaveBeenCalled();
     expect(fetchItemThread).not.toHaveBeenCalled();
   });
 
-  it("evicts prefetched body and thread cache one minute after the item leaves view", async () => {
+  it("evicts prefetched body and thread cache ten minutes after the item leaves view", async () => {
     const onBodyInvalidated = vi.fn();
     const { rerender } = render(
       <Harness
@@ -199,14 +197,14 @@ describe("useVisibleItemPrefetch", () => {
         onBodyInvalidated={onBodyInvalidated}
       />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchItemThread).toHaveBeenCalledTimes(1);
 
     rerender(
       <Harness visibleItems={[]} onBodyInvalidated={onBodyInvalidated} />
     );
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(599_999);
 
     expect(deleteCachedItemThread).not.toHaveBeenCalled();
     expect(onBodyInvalidated).not.toHaveBeenCalled();
@@ -235,7 +233,7 @@ describe("useVisibleItemPrefetch", () => {
         onBodyInvalidated={onBodyInvalidated}
       />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchItemThread).toHaveBeenCalledTimes(1);
 
@@ -246,7 +244,7 @@ describe("useVisibleItemPrefetch", () => {
         onBodyInvalidated={onBodyInvalidated}
       />
     );
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(600_000);
 
     expect(deleteCachedItemThread).not.toHaveBeenCalled();
     expect(onBodyInvalidated).not.toHaveBeenCalled();
@@ -272,7 +270,7 @@ describe("useVisibleItemPrefetch", () => {
 
     render(<Harness visibleItems={items} maxConcurrentPrefetches={3} />);
 
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     expect(fetchItemThread).toHaveBeenCalledTimes(3);
@@ -301,7 +299,7 @@ describe("useVisibleItemPrefetch", () => {
 
     render(<Harness visibleItems={items} />);
 
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     expect(fetchItemThread).toHaveBeenCalledTimes(10);
@@ -316,7 +314,7 @@ describe("useVisibleItemPrefetch", () => {
       </StrictMode>
     );
 
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     expect(onStats).toHaveBeenCalledWith(

@@ -1074,6 +1074,73 @@ describe("Yonalist app shell", () => {
     );
   });
 
+  it("caps notification prefetch targets at thirty rows", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(
+      "yonalist.github.personalTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "ghp_test" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    const notifications = Array.from({ length: 35 }, (_, index) => {
+      const number = index + 1;
+      return {
+        id: `notification-${number}`,
+        unread: true,
+        reason: "mention",
+        updated_at: `2026-07-${String((number % 28) + 1).padStart(2, "0")}T00:00:00Z`,
+        last_read_at: null,
+        subject: {
+          title: `Notification ${number}`,
+          type: "Issue",
+          url: `https://oss.navercorp.com/api/v3/repos/acme/app/issues/${number}`
+        },
+        repository: {
+          full_name: "acme/app",
+          name: "app",
+          owner: { login: "acme" }
+        }
+      };
+    });
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/notifications")) {
+        return new Response(JSON.stringify(notifications), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      if (target.includes("/user/repos") || target.includes("/user/subscriptions")) {
+        return new Response("[]", { status: 200 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline />);
+
+      expect(await screen.findByLabelText("Notifications")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+          /Prefetch 30 visible/
+        );
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("updates the status bar when visible signed-in items are prefetched", async () => {
     window.localStorage.setItem(
       "yonalist.github.personalTokens.v1",

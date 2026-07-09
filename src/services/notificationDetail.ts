@@ -11,9 +11,15 @@ import {
   type CacheSizeStats
 } from "./cacheStats";
 import { createGitHubClient } from "./github";
+import {
+  createGitHubTransport,
+  encodePathSegment,
+  type GitHubResponseMeta
+} from "./githubTransport";
 import { LruCache } from "./lruCache";
 import {
   clearPersistedNotificationDetails,
+  deletePersistedNotificationDetail,
   loadLatestPersistedNotificationDetail,
   loadPersistedNotificationDetail,
   persistNotificationDetail
@@ -94,6 +100,20 @@ export interface FetchNotificationDetailOptions {
   fetchImpl?: typeof fetch;
 }
 
+export interface NotificationDetailRevalidationResult {
+  changed: boolean;
+}
+
+interface DetailValidator {
+  path: string;
+  meta: GitHubResponseMeta;
+}
+
+interface FetchedNotificationDetail {
+  detail: NotificationDetailContent;
+  validators: DetailValidator[];
+}
+
 function mapLabels(labels: Array<LabelResponse | string> | undefined): GitHubLabel[] {
   return (labels ?? [])
     .map((label) =>
@@ -164,6 +184,7 @@ const inflightDetails = new Map<string, Promise<NotificationDetailContent>>();
  * while a newer version is fetched, instead of falling back to a skeleton.
  */
 const latestDetails = new Map<string, NotificationDetailContent>();
+const detailValidators = new Map<string, DetailValidator[]>();
 
 export function clearNotificationDetailCache() {
   resetNotificationDetailMemoryCache();
@@ -180,6 +201,7 @@ export function resetNotificationDetailMemoryCache() {
   detailCache.clear();
   inflightDetails.clear();
   latestDetails.clear();
+  detailValidators.clear();
 }
 
 export function getNotificationDetailCacheStats(): CacheSizeStats {
@@ -239,6 +261,20 @@ export function getCachedNotificationDetail(
   return persisted;
 }
 
+export function deleteCachedNotificationDetail(
+  options: NotificationDetailCacheKeyOptions
+): void {
+  const subjectKey = detailSubjectKey(options);
+  for (const [key] of detailCache.entries()) {
+    if (key.startsWith(`${subjectKey}|`)) {
+      detailCache.delete(key);
+    }
+  }
+  latestDetails.delete(subjectKey);
+  detailValidators.delete(subjectKey);
+  deletePersistedNotificationDetail(options.apiBaseUrl, options.notification);
+}
+
 /**
  * Returns the most recently cached detail for a subject, regardless of which
  * version it was cached under. Used to keep the previously seen conversation
@@ -292,6 +328,26 @@ function detailCacheKey(options: NotificationDetailCacheKeyOptions): string {
   ].join("|");
 }
 
+function issuePath(owner: string, repo: string, number: number): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`;
+}
+
+function pullPath(owner: string, repo: string, number: number): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/pulls/${encodePathSegment(number)}`;
+}
+
+function releasePath(owner: string, repo: string, releaseId: number): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/releases/${encodePathSegment(releaseId)}`;
+}
+
+function issueCommentsPath(owner: string, repo: string, number: number): string {
+  return `${issuePath(owner, repo, number)}/comments?per_page=100`;
+}
+
+function hasValidator(meta: GitHubResponseMeta): boolean {
+  return Boolean(meta.etag || meta.lastModified);
+}
+
 /**
  * Loads the conversation behind a notification through the GitHub REST API,
  * normalized so the detail pane can render every subject type the same way.
@@ -312,10 +368,11 @@ export async function fetchNotificationDetail(
   }
 
   const request = fetchNotificationDetailUncached(options)
-    .then((detail) => {
+    .then(({ detail, validators }) => {
       if (!detail.commentsError) {
         detailCache.set(key, detail);
         latestDetails.set(detailSubjectKey(options), detail);
+        recordDetailValidators(options, validators);
         persistNotificationDetail(options.apiBaseUrl, options.notification, detail);
       }
       return detail;
@@ -327,9 +384,47 @@ export async function fetchNotificationDetail(
   return request;
 }
 
+function recordDetailValidators(
+  options: NotificationDetailCacheKeyOptions,
+  validators: DetailValidator[]
+): void {
+  const usable = validators.filter((validator) => hasValidator(validator.meta));
+  const subjectKey = detailSubjectKey(options);
+  if (usable.length > 0) {
+    detailValidators.set(subjectKey, usable);
+  } else {
+    detailValidators.delete(subjectKey);
+  }
+}
+
+export async function revalidateNotificationDetail(
+  options: FetchNotificationDetailOptions
+): Promise<NotificationDetailRevalidationResult> {
+  const validators = detailValidators.get(detailSubjectKey(options));
+  if (!validators || validators.length === 0) {
+    return { changed: true };
+  }
+  const transport = createGitHubTransport({
+    token: options.token,
+    apiBaseUrl: options.apiBaseUrl,
+    webBaseUrl: options.webBaseUrl,
+    fetch: options.fetchImpl
+  });
+  for (const validator of validators) {
+    const result = await transport.conditionalHead(
+      validator.path,
+      validator.meta
+    );
+    if (!result.unchanged) {
+      return { changed: true };
+    }
+  }
+  return { changed: false };
+}
+
 async function fetchNotificationDetailUncached(
   options: FetchNotificationDetailOptions
-): Promise<NotificationDetailContent> {
+): Promise<FetchedNotificationDetail> {
   const { notification } = options;
   const client = createGitHubClient({
     token: options.token,
@@ -345,16 +440,27 @@ async function fetchNotificationDetailUncached(
     if (number === null) {
       throw new Error("Release notification is missing a release id.");
     }
-    const release = (await client.getRelease(owner, repo, number)) as ReleaseResponse;
+    const path = releasePath(owner, repo, number);
+    const releaseResult =
+      await createGitHubTransport({
+        token: options.token,
+        apiBaseUrl: options.apiBaseUrl,
+        webBaseUrl: options.webBaseUrl,
+        fetch: options.fetchImpl
+      }).requestJsonWithMeta<ReleaseResponse>(path, { method: "GET" });
+    const release = releaseResult.data;
     return {
-      title: release.name || release.tag_name || notification.subject.title,
-      state: release.tag_name ?? "release",
-      author: release.author?.login ?? "unknown",
-      authorAvatarUrl: release.author?.avatar_url,
-      created_at: release.published_at ?? release.created_at,
-      body: release.body ?? "",
-      labels: [],
-      comments: []
+      detail: {
+        title: release.name || release.tag_name || notification.subject.title,
+        state: release.tag_name ?? "release",
+        author: release.author?.login ?? "unknown",
+        authorAvatarUrl: release.author?.avatar_url,
+        created_at: release.published_at ?? release.created_at,
+        body: release.body ?? "",
+        labels: [],
+        comments: []
+      },
+      validators: [{ path, meta: releaseResult.meta }]
     };
   }
 
@@ -370,44 +476,65 @@ async function fetchNotificationDetailUncached(
     )) as { discussion: IssueResponse; comments: CommentResponse[] };
     const authorName = displayNameForUser(discussion.user, {});
     return {
-      title: discussion.title ?? notification.subject.title,
-      state: discussion.state ?? "open",
-      author: discussion.user?.login ?? "unknown",
-      ...(authorName ? { authorName } : {}),
-      authorAvatarUrl: discussion.user?.avatar_url,
-      authorAssociation: discussion.author_association,
-      created_at: discussion.created_at,
-      body: discussion.body ?? "",
-      labels: mapLabels(discussion.labels),
-      reactions: summarizeReactions(discussion.reactions),
-      comments: mapComments(comments)
+      detail: {
+        title: discussion.title ?? notification.subject.title,
+        state: discussion.state ?? "open",
+        author: discussion.user?.login ?? "unknown",
+        ...(authorName ? { authorName } : {}),
+        authorAvatarUrl: discussion.user?.avatar_url,
+        authorAssociation: discussion.author_association,
+        created_at: discussion.created_at,
+        body: discussion.body ?? "",
+        labels: mapLabels(discussion.labels),
+        reactions: summarizeReactions(discussion.reactions),
+        comments: mapComments(comments)
+      },
+      validators: []
     };
   }
 
   const isPull = notification.subject.type === "PullRequest";
-  const [item, comments] = await Promise.all([
-    (isPull
-      ? client.getPull(owner, repo, number)
-      : client.getIssue(owner, repo, number)) as Promise<IssueResponse>,
-    client.listIssueComments(owner, repo, number).catch(() => null) as Promise<
-      CommentResponse[] | null
-    >
+  const transport = createGitHubTransport({
+    token: options.token,
+    apiBaseUrl: options.apiBaseUrl,
+    webBaseUrl: options.webBaseUrl,
+    fetch: options.fetchImpl
+  });
+  const itemPath = isPull
+    ? pullPath(owner, repo, number)
+    : issuePath(owner, repo, number);
+  const commentsPath = issueCommentsPath(owner, repo, number);
+  const [itemResult, commentsResult] = await Promise.all([
+    transport.requestJsonWithMeta<IssueResponse>(itemPath, { method: "GET" }),
+    transport
+      .requestJsonWithMeta<CommentResponse[]>(commentsPath, { method: "GET" })
+      .catch(() => null)
   ]);
+  const item = itemResult.data;
+  const comments = commentsResult?.data ?? null;
   const profiles = await userProfilesForDetail(options, item, comments);
   const authorName = displayNameForUser(item.user, profiles);
 
   return {
-    title: item.title ?? notification.subject.title,
-    state: isPull && item.merged_at ? "merged" : item.state ?? "open",
-    author: item.user?.login ?? "unknown",
-    ...(authorName ? { authorName } : {}),
-    authorAvatarUrl: item.user?.avatar_url,
-    authorAssociation: item.author_association,
-    created_at: item.created_at,
-    body: item.body ?? "",
-    labels: mapLabels(item.labels),
-    reactions: summarizeReactions(item.reactions),
-    comments: mapComments(comments ?? [], profiles),
-    commentsError: comments === null
+    detail: {
+      title: item.title ?? notification.subject.title,
+      state: isPull && item.merged_at ? "merged" : item.state ?? "open",
+      author: item.user?.login ?? "unknown",
+      ...(authorName ? { authorName } : {}),
+      authorAvatarUrl: item.user?.avatar_url,
+      authorAssociation: item.author_association,
+      created_at: item.created_at,
+      body: item.body ?? "",
+      labels: mapLabels(item.labels),
+      reactions: summarizeReactions(item.reactions),
+      comments: mapComments(comments ?? [], profiles),
+      commentsError: comments === null
+    },
+    validators: [
+      { path: itemPath, meta: itemResult.meta },
+      ...(commentsResult
+        ? [{ path: commentsPath, meta: commentsResult.meta }]
+        : [])
+    ]
   };
 }

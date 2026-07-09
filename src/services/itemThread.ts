@@ -12,6 +12,11 @@ import {
   type CacheSizeStats
 } from "./cacheStats";
 import { createGitHubClient } from "./github";
+import {
+  createGitHubTransport,
+  encodePathSegment,
+  type GitHubResponseMeta
+} from "./githubTransport";
 import { LruCache } from "./lruCache";
 import {
   clearUserProfileCache,
@@ -58,11 +63,27 @@ const inflightThreads = new Map<string, Promise<ItemThread>>();
  * while a newer version is fetched, instead of falling back to a skeleton.
  */
 const latestThreads = new Map<string, ItemThread>();
+const threadValidators = new Map<string, ThreadValidator[]>();
+
+interface ThreadValidator {
+  path: string;
+  meta: GitHubResponseMeta;
+}
+
+interface FetchedItemThread {
+  thread: ItemThread;
+  validators: ThreadValidator[];
+}
+
+export interface ItemThreadRevalidationResult {
+  changed: boolean;
+}
 
 export function clearItemThreadCache() {
   threadCache.clear();
   inflightThreads.clear();
   latestThreads.clear();
+  threadValidators.clear();
   clearUserProfileCache();
 }
 
@@ -134,6 +155,7 @@ export function deleteCachedItemThread(
     .some(([entryKey]) => entryKey.startsWith(`${targetKey}|`));
   if (!hasSurvivingVersion) {
     latestThreads.delete(targetKey);
+    threadValidators.delete(targetKey);
   }
   return deleted;
 }
@@ -281,6 +303,22 @@ function flattenComments(comments: CommentResponse[]): CommentResponse[] {
   ]);
 }
 
+function issuePath(owner: string, repo: string, number: number): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/issues/${encodePathSegment(number)}`;
+}
+
+function pullPath(owner: string, repo: string, number: number): string {
+  return `/repos/${encodePathSegment(owner)}/${encodePathSegment(repo)}/pulls/${encodePathSegment(number)}`;
+}
+
+function issueCommentsPath(owner: string, repo: string, number: number): string {
+  return `${issuePath(owner, repo, number)}/comments?per_page=100`;
+}
+
+function hasValidator(meta: GitHubResponseMeta): boolean {
+  return Boolean(meta.etag || meta.lastModified);
+}
+
 /**
  * Loads the live conversation for a work item: refined state (merged/draft
  * for pull requests), labels, author, and the comment thread. Results are
@@ -303,10 +341,11 @@ export async function fetchItemThread(
   }
 
   const request = fetchItemThreadUncached(connection, target, options.signal)
-    .then((thread) => {
+    .then(({ thread, validators }) => {
       if (!thread.commentsError) {
         threadCache.set(key, thread);
         recordLatestThread(connection, target, thread);
+        recordThreadValidators(connection, target, validators);
       }
       return thread;
     })
@@ -339,15 +378,55 @@ function recordLatestThread(
   for (const targetKey of latestThreads.keys()) {
     if (!liveTargetKeys.has(targetKey)) {
       latestThreads.delete(targetKey);
+      threadValidators.delete(targetKey);
     }
   }
+}
+
+function recordThreadValidators(
+  connection: GithubConnection,
+  target: ItemThreadTarget,
+  validators: ThreadValidator[]
+): void {
+  const usable = validators.filter((validator) => hasValidator(validator.meta));
+  const targetKey = threadTargetKey(connection, target);
+  if (usable.length > 0) {
+    threadValidators.set(targetKey, usable);
+  } else {
+    threadValidators.delete(targetKey);
+  }
+}
+
+export async function revalidateItemThread(
+  connection: GithubConnection,
+  target: ItemThreadTarget
+): Promise<ItemThreadRevalidationResult> {
+  const validators = threadValidators.get(threadTargetKey(connection, target));
+  if (!validators || validators.length === 0) {
+    return { changed: true };
+  }
+  const transport = createGitHubTransport({
+    token: connection.token,
+    apiBaseUrl: connection.apiBaseUrl,
+    webBaseUrl: connection.webBaseUrl
+  });
+  for (const validator of validators) {
+    const result = await transport.conditionalHead(
+      validator.path,
+      validator.meta
+    );
+    if (!result.unchanged) {
+      return { changed: true };
+    }
+  }
+  return { changed: false };
 }
 
 async function fetchItemThreadUncached(
   connection: GithubConnection,
   target: ItemThreadTarget,
   signal?: AbortSignal
-): Promise<ItemThread> {
+): Promise<FetchedItemThread> {
   const client = createGitHubClient({
     token: connection.token,
     apiBaseUrl: connection.apiBaseUrl,
@@ -366,40 +445,74 @@ async function fetchItemThreadUncached(
     signal?.throwIfAborted();
     const profiles = await userProfilesForThread(connection, discussion, comments, signal);
     signal?.throwIfAborted();
-    return threadFrom(
-      discussion,
-      comments,
-      normalizeState(discussion.state),
-      profiles
-    );
+    return {
+      thread: threadFrom(
+        discussion,
+        comments,
+        normalizeState(discussion.state),
+        profiles
+      ),
+      validators: []
+    };
   }
 
+  const transport = createGitHubTransport({
+    token: connection.token,
+    apiBaseUrl: connection.apiBaseUrl,
+    webBaseUrl: connection.webBaseUrl,
+    signal
+  });
+
   if (target.kind === "pull") {
-    const [pull, comments] = await Promise.all([
-      client.getPull(owner, repo, number) as Promise<StateResponse>,
-      client
-        .listIssueComments(owner, repo, number)
-        .catch(() => null) as Promise<CommentResponse[] | null>
+    const itemPath = pullPath(owner, repo, number);
+    const commentsPath = issueCommentsPath(owner, repo, number);
+    const [pullResult, commentsResult] = await Promise.all([
+      transport.requestJsonWithMeta<StateResponse>(itemPath, { method: "GET" }),
+      transport
+        .requestJsonWithMeta<CommentResponse[]>(commentsPath, { method: "GET" })
+        .catch(() => null)
     ]);
+    const pull = pullResult.data;
+    const comments = commentsResult?.data ?? null;
     signal?.throwIfAborted();
     const profiles = await userProfilesForThread(connection, pull, comments, signal);
     signal?.throwIfAborted();
-    return threadFrom(
-      pull,
-      comments,
-      pull.merged_at ? "merged" : normalizeState(pull.state),
-      profiles
-    );
+    return {
+      thread: threadFrom(
+        pull,
+        comments,
+        pull.merged_at ? "merged" : normalizeState(pull.state),
+        profiles
+      ),
+      validators: [
+        { path: itemPath, meta: pullResult.meta },
+        ...(commentsResult
+          ? [{ path: commentsPath, meta: commentsResult.meta }]
+          : [])
+      ]
+    };
   }
 
-  const [issue, comments] = await Promise.all([
-    client.getIssue(owner, repo, number) as Promise<StateResponse>,
-    client
-      .listIssueComments(owner, repo, number)
-      .catch(() => null) as Promise<CommentResponse[] | null>
+  const itemPath = issuePath(owner, repo, number);
+  const commentsPath = issueCommentsPath(owner, repo, number);
+  const [issueResult, commentsResult] = await Promise.all([
+    transport.requestJsonWithMeta<StateResponse>(itemPath, { method: "GET" }),
+    transport
+      .requestJsonWithMeta<CommentResponse[]>(commentsPath, { method: "GET" })
+      .catch(() => null)
   ]);
+  const issue = issueResult.data;
+  const comments = commentsResult?.data ?? null;
   signal?.throwIfAborted();
   const profiles = await userProfilesForThread(connection, issue, comments, signal);
   signal?.throwIfAborted();
-  return threadFrom(issue, comments, normalizeState(issue.state), profiles);
+  return {
+    thread: threadFrom(issue, comments, normalizeState(issue.state), profiles),
+    validators: [
+      { path: itemPath, meta: issueResult.meta },
+      ...(commentsResult
+        ? [{ path: commentsPath, meta: commentsResult.meta }]
+        : [])
+    ]
+  };
 }

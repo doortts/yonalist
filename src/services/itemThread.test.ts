@@ -5,7 +5,8 @@ import {
   deleteCachedItemThread,
   fetchItemThread,
   getItemThreadCacheStats,
-  getLatestCachedItemThread
+  getLatestCachedItemThread,
+  revalidateItemThread
 } from "./itemThread";
 
 const connection: GithubConnection = {
@@ -18,6 +19,19 @@ function jsonResponse(body: unknown) {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" }
+  });
+}
+
+function jsonResponseWithValidators(
+  body: unknown,
+  validators: Record<string, string>
+) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      ...validators
+    }
   });
 }
 
@@ -154,6 +168,82 @@ describe("fetchItemThread", () => {
 
       expect(cached.state).toBe("open");
       expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses conditional HEAD validators to report an unchanged prefetched issue thread", async () => {
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (init?.method === "HEAD") {
+        const headers = new Headers(init.headers);
+        expect(headers.get("If-None-Match")).toBeTruthy();
+        expect(headers.get("If-Modified-Since")).toBeTruthy();
+        return new Response(null, { status: 304 });
+      }
+      if (target.includes("/comments")) {
+        return jsonResponseWithValidators([], {
+          ETag: 'W/"comments-v1"',
+          "Last-Modified": "Thu, 09 Jul 2026 01:05:00 GMT"
+        });
+      }
+      return jsonResponseWithValidators({ state: "open" }, {
+        ETag: 'W/"issue-v1"',
+        "Last-Modified": "Thu, 09 Jul 2026 01:00:00 GMT"
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+
+      const result = await revalidateItemThread(connection, target);
+
+      expect(result.changed).toBe(false);
+      expect(
+        fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === "HEAD")
+      ).toHaveLength(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports changed when a prefetched issue HEAD probe returns 200", async () => {
+    let headCalls = 0;
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const target = String(url);
+      if (init?.method === "HEAD") {
+        headCalls += 1;
+        return new Response(null, {
+          status: headCalls === 1 ? 304 : 200,
+          headers: {
+            ETag: 'W/"comments-v2"',
+            "Last-Modified": "Thu, 09 Jul 2026 02:00:00 GMT"
+          }
+        });
+      }
+      if (target.includes("/comments")) {
+        return jsonResponseWithValidators([], {
+          ETag: 'W/"comments-v1"',
+          "Last-Modified": "Thu, 09 Jul 2026 01:05:00 GMT"
+        });
+      }
+      return jsonResponseWithValidators({ state: "open" }, {
+        ETag: 'W/"issue-v1"',
+        "Last-Modified": "Thu, 09 Jul 2026 01:00:00 GMT"
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const target = { kind: "issue" as const, owner: "acme", repo: "app", number: 42 };
+    try {
+      await fetchItemThread(connection, target, { version: "v1" });
+
+      const result = await revalidateItemThread(connection, target);
+
+      expect(result.changed).toBe(true);
     } finally {
       vi.unstubAllGlobals();
     }

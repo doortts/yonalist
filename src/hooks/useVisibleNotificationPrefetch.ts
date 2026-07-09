@@ -8,8 +8,8 @@ import {
 } from "../services/notificationDetail";
 import type { GithubConnection } from "./useGithubAuth";
 
-const DEFAULT_DWELL_MS = 2_000;
-const DEFAULT_EVICTION_MS = 60_000;
+const DEFAULT_DWELL_MS = 1_000;
+const DEFAULT_EVICTION_MS = 600_000;
 const DEFAULT_MAX_CONCURRENT_PREFETCHES = 12;
 
 type Timer = ReturnType<typeof setTimeout>;

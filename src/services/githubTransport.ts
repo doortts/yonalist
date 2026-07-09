@@ -22,6 +22,16 @@ export class GitHubRequestError extends Error {
   }
 }
 
+export interface GitHubResponseMeta {
+  etag: string | null;
+  lastModified: string | null;
+}
+
+export interface ConditionalHeadResult {
+  unchanged: boolean;
+  meta: GitHubResponseMeta;
+}
+
 export function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/g, "");
 }
@@ -52,7 +62,14 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   const apiBaseUrl = trimTrailingSlash(options.apiBaseUrl);
   const webBaseUrl = trimTrailingSlash(options.webBaseUrl);
 
-  async function request(
+  function responseMeta(response: Response): GitHubResponseMeta {
+    return {
+      etag: response.headers.get("ETag"),
+      lastModified: response.headers.get("Last-Modified")
+    };
+  }
+
+  async function rawRequest(
     path: string,
     init: RequestInit = {}
   ): Promise<Response> {
@@ -75,6 +92,14 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
       signal: init.signal ?? options.signal,
       headers
     });
+    return response;
+  }
+
+  async function request(
+    path: string,
+    init: RequestInit = {}
+  ): Promise<Response> {
+    const response = await rawRequest(path, init);
 
     if (!response.ok) {
       throw new GitHubRequestError(
@@ -92,6 +117,41 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
   ): Promise<TResponse> {
     const response = await request(path, init);
     return (await response.json()) as TResponse;
+  }
+
+  async function requestJsonWithMeta<TResponse>(
+    path: string,
+    init: RequestInit = {}
+  ): Promise<{ data: TResponse; meta: GitHubResponseMeta }> {
+    const response = await request(path, init);
+    return {
+      data: (await response.json()) as TResponse,
+      meta: responseMeta(response)
+    };
+  }
+
+  async function conditionalHead(
+    path: string,
+    validators: GitHubResponseMeta
+  ): Promise<ConditionalHeadResult> {
+    const headers = new Headers();
+    if (validators.etag) {
+      headers.set("If-None-Match", validators.etag);
+    }
+    if (validators.lastModified) {
+      headers.set("If-Modified-Since", validators.lastModified);
+    }
+    const response = await rawRequest(path, { method: "HEAD", headers });
+    if (response.status === 304) {
+      return { unchanged: true, meta: responseMeta(response) };
+    }
+    if (!response.ok) {
+      throw new GitHubRequestError(
+        response.status,
+        await extractErrorDetail(response)
+      );
+    }
+    return { unchanged: false, meta: responseMeta(response) };
   }
 
   async function postOAuth<TResponse>(
@@ -155,5 +215,14 @@ export function createGitHubTransport(options: GitHubTransportOptions) {
     return payload.data;
   }
 
-  return { apiBaseUrl, webBaseUrl, request, requestJson, postOAuth, graphql };
+  return {
+    apiBaseUrl,
+    webBaseUrl,
+    request,
+    requestJson,
+    requestJsonWithMeta,
+    conditionalHead,
+    postOAuth,
+    graphql
+  };
 }

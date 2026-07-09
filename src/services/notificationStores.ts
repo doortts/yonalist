@@ -183,6 +183,18 @@ export function persistNotificationDetail(
   writeJson(detailStorageKey, { ...store, [key]: next });
 }
 
+export function deletePersistedNotificationDetail(
+  apiBaseUrl: string,
+  notification: GitHubNotification
+) {
+  const store = readJson<PersistedDetailStore>(detailStorageKey, {});
+  const key = hostKey(apiBaseUrl);
+  const subject = detailSubjectKey(notification);
+  const current = store[key] ?? [];
+  const next = current.filter((entry) => entry.subject !== subject);
+  writeJson(detailStorageKey, { ...store, [key]: next });
+}
+
 /** Removes every persisted conversation across all hosts. */
 export function clearPersistedNotificationDetails() {
   try {

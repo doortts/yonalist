@@ -3,6 +3,7 @@ import {
   type FormEvent,
   lazy,
   Suspense,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -37,6 +38,7 @@ import {
   type RepositoryEntry
 } from "./components/NewIssuePage";
 import { NotificationDetail } from "./components/NotificationDetail";
+import { DetailRenderSnapshotOverlay } from "./components/DetailRenderSnapshotOverlay";
 import { NotificationsPane } from "./components/NotificationsPane";
 import { OutboxModal } from "./components/OutboxModal";
 import { ConfirmDialog } from "./components/ui/ConfirmDialog";
@@ -89,6 +91,10 @@ import { useAppBadge } from "./hooks/useAppBadge";
 import { useGithubServers } from "./hooks/useGithubServers";
 import { useDetailContentPaintReady } from "./hooks/useDetailContentPaintReady";
 import { useDetailDisplayTiming } from "./hooks/useDetailDisplayTiming";
+import {
+  useDetailRevalidation,
+  type DetailRevalidationTarget
+} from "./hooks/useDetailRevalidation";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
@@ -127,7 +133,14 @@ import {
 } from "./services/itemThread";
 import { estimateRecordBytes } from "./services/cacheStats";
 import {
+  captureDetailRenderSnapshotHtml,
+  deleteDetailRenderSnapshot,
+  getDetailRenderSnapshot,
+  setDetailRenderSnapshot
+} from "./services/detailRenderCache";
+import {
   clearNotificationDetailCache,
+  deleteCachedNotificationDetail,
   getNotificationDetailCacheStats
 } from "./services/notificationDetail";
 import {
@@ -157,7 +170,7 @@ const APP_SNACKBAR_TIMEOUT_MS = 6000;
 // How many of the newest notifications to warm ahead of a click. The
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
 // prefetch rather than a measured viewport window.
-const NOTIFICATION_PREFETCH_CAP = 20;
+const NOTIFICATION_PREFETCH_CAP = 30;
 
 // A standalone manager lets feedback fire from effects and event handlers in
 // the App body without needing the `useToastManager` hook (which must run
@@ -976,8 +989,117 @@ export default function App({ initialOnline }: AppProps) {
     detailReady,
     expectedDetailMarkdownBodies
   );
+  const activeDetailRenderSnapshot =
+    activeDetailKey && !detailContentReady
+      ? getDetailRenderSnapshot(activeDetailKey)
+      : null;
+  useEffect(() => {
+    if (!activeDetailKey || !detailReady || !detailContentReady) {
+      return;
+    }
+    const root = detailScrollRef.current;
+    if (!root) {
+      return;
+    }
+
+    const capture = () => {
+      const html = captureDetailRenderSnapshotHtml(root);
+      if (html) {
+        setDetailRenderSnapshot(activeDetailKey, {
+          html,
+          capturedAt: new Date().toISOString()
+        });
+      }
+    };
+
+    const timer = window.setTimeout(capture, 0);
+    const observer =
+      typeof MutationObserver === "undefined"
+        ? null
+        : new MutationObserver(capture);
+    observer?.observe(root, {
+      attributeFilter: ["src"],
+      attributes: true,
+      childList: true,
+      subtree: true
+    });
+    return () => {
+      window.clearTimeout(timer);
+      observer?.disconnect();
+    };
+  }, [activeDetailKey, detailContentReady, detailReady]);
+  const detailRevalidationTarget = useMemo<DetailRevalidationTarget | null>(() => {
+    if (!activeDetailKey || !auth.connection.token.trim()) {
+      return null;
+    }
+    if (showNotifications) {
+      return selectedNotification
+        ? {
+            kind: "notification",
+            key: activeDetailKey,
+            token: auth.connection.token,
+            apiBaseUrl: auth.connection.apiBaseUrl,
+            webBaseUrl: auth.connection.webBaseUrl,
+            notification: selectedNotification
+          }
+        : null;
+    }
+    if (!detailVisible || !selectedItem || selectedItem.frontMatter.number <= 0) {
+      return null;
+    }
+    return {
+      kind: "item",
+      key: activeDetailKey,
+      connection: auth.connection,
+      item: {
+        kind: selectedItem.frontMatter.kind,
+        owner: selectedItem.frontMatter.owner,
+        repo: selectedItem.frontMatter.repo,
+        number: selectedItem.frontMatter.number
+      }
+    };
+  }, [
+    activeDetailKey,
+    auth.connection,
+    detailVisible,
+    selectedItem,
+    selectedNotification,
+    showNotifications
+  ]);
+  const refreshActiveDetailAfterRemoteChange = useCallback(() => {
+    if (activeDetailKey) {
+      deleteDetailRenderSnapshot(activeDetailKey);
+    }
+    if (showNotifications && selectedNotification) {
+      deleteCachedNotificationDetail({
+        apiBaseUrl: auth.connection.apiBaseUrl,
+        notification: selectedNotification
+      });
+    }
+    setConversationRefreshKey((current) => current + 1);
+  }, [
+    auth.connection.apiBaseUrl,
+    activeDetailKey,
+    selectedNotification,
+    showNotifications
+  ]);
+  useDetailRevalidation({
+    target: detailRevalidationTarget,
+    enabled:
+      online &&
+      detailReady &&
+      detailContentReady &&
+      authGate.state === "passed" &&
+      !showSettings &&
+      !showNewIssue,
+    onChanged: refreshActiveDetailAfterRemoteChange,
+    onError: (message) => tracePerf("detail_revalidation_error", { message })
+  });
   const { detailDisplayDurationMs, startDetailTransition } =
-    useDetailDisplayTiming(activeDetailKey, detailReady && detailContentReady);
+    useDetailDisplayTiming(
+      activeDetailKey,
+      Boolean(activeDetailRenderSnapshot) || (detailReady && detailContentReady)
+    );
 
   const statusMetrics = useMemo<StatusBarMetrics>(
     () => {
@@ -1990,7 +2112,10 @@ export default function App({ initialOnline }: AppProps) {
       <section className="detail-pane" aria-label="Detail">
         <div className="pane-titlebar-spacer" />
         <div className="detail-scroll" ref={detailScrollRef}>
-        {showSettings ? (
+          {activeDetailRenderSnapshot && (
+            <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
+          )}
+          {showSettings ? (
           <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
             <SettingsPage
               section={settingsSection}

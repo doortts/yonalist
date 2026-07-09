@@ -150,3 +150,88 @@ describe("createGitHubTransport().requestJson", () => {
     );
   });
 });
+
+describe("createGitHubTransport() conditional metadata requests", () => {
+  function transport(fetchMock: unknown) {
+    return createGitHubTransport({
+      token: "token-123",
+      apiBaseUrl: "https://api.github.com/",
+      webBaseUrl: "https://github.com/",
+      fetch: fetchMock as typeof fetch
+    });
+  }
+
+  it("returns response validators with parsed JSON", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ state: "open" }), {
+        status: 200,
+        headers: {
+          ETag: 'W/"issue-1"',
+          "Last-Modified": "Thu, 09 Jul 2026 01:00:00 GMT"
+        }
+      })
+    );
+
+    const result = await transport(fetchMock).requestJsonWithMeta<{
+      state: string;
+    }>("/repos/acme/app/issues/1");
+
+    expect(result.data).toEqual({ state: "open" });
+    expect(result.meta).toEqual({
+      etag: 'W/"issue-1"',
+      lastModified: "Thu, 09 Jul 2026 01:00:00 GMT"
+    });
+  });
+
+  it("sends conditional HEAD headers and returns unchanged on 304", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 304 }));
+
+    const result = await transport(fetchMock).conditionalHead(
+      "/repos/acme/app/issues/1",
+      {
+        etag: 'W/"issue-1"',
+        lastModified: "Thu, 09 Jul 2026 01:00:00 GMT"
+      }
+    );
+
+    expect(result).toEqual({
+      unchanged: true,
+      meta: { etag: null, lastModified: null }
+    });
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit;
+    const headers = new Headers(init.headers);
+    expect(init.method).toBe("HEAD");
+    expect(headers.get("If-None-Match")).toBe('W/"issue-1"');
+    expect(headers.get("If-Modified-Since")).toBe(
+      "Thu, 09 Jul 2026 01:00:00 GMT"
+    );
+  });
+
+  it("returns changed metadata when a conditional HEAD gets 200", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(null, {
+        status: 200,
+        headers: {
+          ETag: 'W/"issue-2"',
+          "Last-Modified": "Thu, 09 Jul 2026 02:00:00 GMT"
+        }
+      })
+    );
+
+    const result = await transport(fetchMock).conditionalHead(
+      "/repos/acme/app/issues/1",
+      {
+        etag: 'W/"issue-1"',
+        lastModified: "Thu, 09 Jul 2026 01:00:00 GMT"
+      }
+    );
+
+    expect(result).toEqual({
+      unchanged: false,
+      meta: {
+        etag: 'W/"issue-2"',
+        lastModified: "Thu, 09 Jul 2026 02:00:00 GMT"
+      }
+    });
+  });
+});

@@ -1724,7 +1724,17 @@ body.is-resizing-pane {
   min-height: 0;
   overflow-y: auto;
   overflow-y: overlay;
+  position: relative;
   scrollbar-gutter: auto;
+}
+
+.detail-render-snapshot {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg-detail);
 }
 
 .detail-header {

@@ -101,8 +101,6 @@ function Harness({
     connection: { ...connection, token },
     online,
     enabled,
-    dwellMs: 2_000,
-    evictionMs: 60_000,
     maxConcurrentPrefetches
   });
   useEffect(() => {
@@ -122,10 +120,10 @@ describe("useVisibleNotificationPrefetch", () => {
     vi.clearAllMocks();
   });
 
-  it("prefetches detail and warms markdown only after a two-second dwell", async () => {
+  it("prefetches detail and warms markdown only after a one-second dwell", async () => {
     render(<Harness visibleNotifications={[makeNotification("1")]} />);
 
-    await vi.advanceTimersByTimeAsync(1_999);
+    await vi.advanceTimersByTimeAsync(999);
     expect(fetchNotificationDetail).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
@@ -148,13 +146,13 @@ describe("useVisibleNotificationPrefetch", () => {
     ]);
   });
 
-  it("cancels the dwell timer when a notification scrolls out before two seconds", async () => {
+  it("cancels the dwell timer when a notification scrolls out before one second", async () => {
     const { rerender } = render(
       <Harness visibleNotifications={[makeNotification("1")]} />
     );
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(500);
     rerender(<Harness visibleNotifications={[]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     expect(fetchNotificationDetail).not.toHaveBeenCalled();
@@ -164,13 +162,13 @@ describe("useVisibleNotificationPrefetch", () => {
     const { rerender } = render(
       <Harness visibleNotifications={[makeNotification("1")]} />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
 
     // Re-render with the same visible notification: no re-fetch.
     rerender(<Harness visibleNotifications={[makeNotification("1")]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
   });
@@ -179,7 +177,7 @@ describe("useVisibleNotificationPrefetch", () => {
     const { rerender } = render(
       <Harness visibleNotifications={[makeNotification("1")]} />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
 
@@ -188,7 +186,7 @@ describe("useVisibleNotificationPrefetch", () => {
       updated_at: "2026-07-09T00:00:00Z"
     };
     rerender(<Harness visibleNotifications={[bumped]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(2);
   });
@@ -211,7 +209,7 @@ describe("useVisibleNotificationPrefetch", () => {
         maxConcurrentPrefetches={3}
       />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(3);
@@ -228,24 +226,24 @@ describe("useVisibleNotificationPrefetch", () => {
     const { rerender } = render(
       <Harness visibleNotifications={[makeNotification("1")]} />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
 
     // Leaves view: eviction timer starts but has not fired yet.
     rerender(<Harness visibleNotifications={[]} />);
-    await vi.advanceTimersByTimeAsync(59_999);
+    await vi.advanceTimersByTimeAsync(599_999);
     // Comes back into view before eviction: still cached, no re-fetch.
     rerender(<Harness visibleNotifications={[makeNotification("1")]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
 
     // Now leave view long enough to evict, then return: a fresh warm happens.
     rerender(<Harness visibleNotifications={[]} />);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(600_000);
     rerender(<Harness visibleNotifications={[makeNotification("1")]} />);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(2);
   });
@@ -257,7 +255,7 @@ describe("useVisibleNotificationPrefetch", () => {
         selectedId="1"
       />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
 
@@ -266,7 +264,7 @@ describe("useVisibleNotificationPrefetch", () => {
     rerender(
       <Harness visibleNotifications={[makeNotification("1")]} selectedId="1" />
     );
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
     // Still cached because it stayed selected: no re-fetch.
     expect(fetchNotificationDetail).toHaveBeenCalledTimes(1);
