@@ -790,6 +790,9 @@ pub(crate) fn remove_empty_node(connection: &mut Connection, node_id: &str) -> R
     validate_note_id(node_id)?;
     with_transaction(connection, |transaction| {
         let source = require_live_node(transaction, node_id)?;
+        if !source.title.trim().is_empty() || !source.note.trim().is_empty() {
+            return Err("Only an empty Note node can be removed.".to_string());
+        }
         let children = sibling_keys(transaction, Some(node_id), None)?;
         if !children.is_empty() {
             let siblings = sibling_keys(transaction, source.parent_id.as_deref(), None)?;
@@ -1004,6 +1007,27 @@ mod tests {
         root
     }
 
+    fn create_test_node(
+        connection: &mut Connection,
+        id: &str,
+        parent_id: Option<&str>,
+        after_id: Option<&str>,
+        title: &str,
+        note: &str,
+    ) {
+        create_node(
+            connection,
+            CreateNodeInput {
+                id: id.to_string(),
+                parent_id: parent_id.map(str::to_string),
+                after_id: after_id.map(str::to_string),
+                title: title.to_string(),
+                note: note.to_string(),
+            },
+        )
+        .expect("create test node");
+    }
+
     fn active_children(connection: &Connection, parent_id: Option<&str>) -> Vec<(String, i64)> {
         let mut statement = connection
             .prepare(
@@ -1017,6 +1041,47 @@ mod tests {
             .expect("query active children")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect active children")
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct PersistentState {
+        nodes: Vec<(String, Option<String>, i64, Option<String>)>,
+        search: Vec<(String, String, String)>,
+        tags: Vec<(String, String, String)>,
+    }
+
+    fn persistent_state(connection: &Connection) -> PersistentState {
+        let nodes = connection
+            .prepare("SELECT id, parent_id, sort_key, deleted_at FROM notes_nodes ORDER BY id")
+            .expect("prepare node state")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query node state")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect node state");
+        let search = connection
+            .prepare("SELECT node_id, title, note FROM notes_search ORDER BY node_id")
+            .expect("prepare search state")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query search state")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect search state");
+        let tags = connection
+            .prepare(
+                "SELECT node_id, tag, normalized_tag FROM notes_tags \
+                 ORDER BY node_id, normalized_tag",
+            )
+            .expect("prepare tag state")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query tag state")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect tag state");
+        PersistentState {
+            nodes,
+            search,
+            tags,
+        }
     }
 
     fn assert_tree_invariants(connection: &Connection) {
@@ -1043,6 +1108,27 @@ mod tests {
             )
             .expect("duplicate sibling sort keys");
         assert_eq!(duplicate_sort_keys, 0, "live sibling keys must be unique");
+
+        let unreachable_count: i64 = connection
+            .query_row(
+                "WITH RECURSIVE reachable(id) AS (\
+                   SELECT id FROM notes_nodes \
+                   WHERE deleted_at IS NULL AND parent_id IS NULL \
+                   UNION \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN reachable parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL\
+                 ) \
+                 SELECT COUNT(*) FROM notes_nodes \
+                 WHERE deleted_at IS NULL AND id NOT IN reachable",
+                [],
+                |row| row.get(0),
+            )
+            .expect("live nodes unreachable from a root");
+        assert_eq!(
+            unreachable_count, 0,
+            "every live node must reach a root without a cycle"
+        );
     }
 
     #[test]
@@ -1256,19 +1342,31 @@ mod tests {
     #[test]
     fn move_rejects_a_descendant_as_the_new_parent() {
         let mut connection = test_connection();
-        let root = insert_tree(&connection);
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "grandchild");
+        insert_node(
+            &connection,
+            FOURTH_ID,
+            Some(THIRD_ID),
+            1024,
+            "great-grandchild",
+        );
+        insert_node(&connection, FIFTH_ID, None, 2048, "following root");
+        let before = persistent_state(&connection);
 
         let error = move_node(
             &mut connection,
             MoveNodeInput {
-                id: root,
-                parent_id: Some(CHILD_ID.to_string()),
+                id: NODE_ID.to_string(),
+                parent_id: Some(FOURTH_ID.to_string()),
                 after_id: None,
             },
         )
         .expect_err("cycle");
 
         assert!(error.contains("descendant"));
+        assert_eq!(persistent_state(&connection), before);
         assert_tree_invariants(&connection);
     }
 
@@ -1390,7 +1488,7 @@ mod tests {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "parent");
         insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "before");
-        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, "");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, " \t ");
         insert_node(&connection, FOURTH_ID, Some(THIRD_ID), 1024, "child one");
         insert_node(&connection, FIFTH_ID, Some(THIRD_ID), 2048, "child two");
         insert_node(&connection, SIXTH_ID, Some(NODE_ID), 3072, "after");
@@ -1413,6 +1511,111 @@ mod tests {
             )
             .expect("removed node");
         assert!(removed_deleted_at.is_some());
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn remove_empty_node_rejects_a_non_whitespace_title_without_mutation() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            " keep #Title ",
+            " \n ",
+        );
+        let before = persistent_state(&connection);
+
+        let error = remove_empty_node(&mut connection, NODE_ID).expect_err("non-empty title");
+
+        assert!(error.contains("empty"));
+        assert_eq!(persistent_state(&connection), before);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn remove_empty_node_rejects_a_non_whitespace_note_without_mutation() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            " \t ",
+            " keep #Supporting-Note ",
+        );
+        let before = persistent_state(&connection);
+
+        let error = remove_empty_node(&mut connection, NODE_ID).expect_err("non-empty note");
+
+        assert!(error.contains("empty"));
+        assert_eq!(persistent_state(&connection), before);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn split_then_remove_empty_node_preserves_children_and_root_order() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "original");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        insert_node(&connection, THIRD_ID, None, 2048, "following root");
+
+        let split_id = split_node(
+            &mut connection,
+            SplitNodeInput {
+                id: NODE_ID.to_string(),
+                new_node_id: FOURTH_ID.to_string(),
+                prefix: "alpha".to_string(),
+                suffix: " \t ".to_string(),
+            },
+        )
+        .expect("split before removing empty suffix");
+        assert_eq!(split_id, FOURTH_ID);
+        assert_eq!(
+            active_children(&connection, None),
+            vec![
+                (NODE_ID.to_string(), 1024),
+                (FOURTH_ID.to_string(), 1536),
+                (THIRD_ID.to_string(), 2048),
+            ]
+        );
+
+        remove_empty_node(&mut connection, &split_id).expect("remove empty split node");
+
+        assert_eq!(
+            active_children(&connection, None),
+            vec![(NODE_ID.to_string(), 1024), (THIRD_ID.to_string(), 2048)]
+        );
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID)),
+            vec![(CHILD_ID.to_string(), 1024)]
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn remove_empty_leaf_soft_deletes_only_that_leaf() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "before");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, " \n\t ");
+        insert_node(&connection, FOURTH_ID, Some(NODE_ID), 3072, "after");
+
+        remove_empty_node(&mut connection, THIRD_ID).expect("remove empty leaf");
+
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID)),
+            vec![(CHILD_ID.to_string(), 1024), (FOURTH_ID.to_string(), 3072)]
+        );
+        let deleted_at: Option<String> = connection
+            .query_row(
+                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                [THIRD_ID],
+                |row| row.get(0),
+            )
+            .expect("removed leaf");
+        assert!(deleted_at.is_some());
         assert_tree_invariants(&connection);
     }
 
@@ -1448,6 +1651,110 @@ mod tests {
                 .len(),
             7
         );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn duplicate_node_rolls_back_nodes_search_and_tags_after_a_mid_copy_failure() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "copy root #Root",
+            "root note #Details",
+        );
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "copy child #Child",
+            "child note #Details",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            None,
+            Some(NODE_ID),
+            "following #Root",
+            "",
+        );
+        let before = persistent_state(&connection);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_duplicate_child BEFORE INSERT ON notes_nodes \
+                 WHEN NEW.parent_id IS NOT NULL AND NEW.title = 'copy child #Child' \
+                 BEGIN SELECT RAISE(ABORT, 'duplicate child rejected'); END;",
+            )
+            .expect("duplicate failure trigger");
+
+        let error = duplicate_node(&mut connection, NODE_ID).expect_err("duplicate rollback");
+
+        assert!(error.contains("duplicate child rejected"));
+        assert_eq!(persistent_state(&connection), before);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn remove_empty_node_rolls_back_child_reparenting_search_and_tags_on_failure() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "parent #Outline", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "before #Sibling",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(NODE_ID),
+            Some(CHILD_ID),
+            " \t ",
+            "\n",
+        );
+        create_test_node(
+            &mut connection,
+            FOURTH_ID,
+            Some(THIRD_ID),
+            None,
+            "child one #Child",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            FIFTH_ID,
+            Some(THIRD_ID),
+            Some(FOURTH_ID),
+            "child two #Child",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            SIXTH_ID,
+            Some(NODE_ID),
+            Some(THIRD_ID),
+            "after #Sibling",
+            "",
+        );
+        let before = persistent_state(&connection);
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_second_child_reparent \
+                 BEFORE UPDATE OF parent_id, sort_key ON notes_nodes \
+                 WHEN OLD.id = '{FIFTH_ID}' AND NEW.parent_id = '{NODE_ID}' \
+                 BEGIN SELECT RAISE(ABORT, 'child reparent rejected'); END;"
+            ))
+            .expect("reparent failure trigger");
+
+        let error = remove_empty_node(&mut connection, THIRD_ID).expect_err("remove rollback");
+
+        assert!(error.contains("child reparent rejected"));
+        assert_eq!(persistent_state(&connection), before);
         assert_tree_invariants(&connection);
     }
 
@@ -1546,12 +1853,68 @@ mod tests {
     }
 
     #[test]
-    fn empty_trash_permanently_removes_only_deleted_rows() {
+    fn restore_collision_rolls_back_order_deletion_search_and_tags_on_failure() {
         let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "active");
-        insert_node(&connection, CHILD_ID, None, 2048, "trash root");
-        insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "trash child");
+        create_test_node(&mut connection, NODE_ID, None, None, "parent #Outline", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "trashed child #Restore",
+            "restore note #Details",
+        );
+        soft_delete_node(&mut connection, CHILD_ID).expect("delete child");
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(NODE_ID),
+            None,
+            "replacement #Restore",
+            "",
+        );
+        let before = persistent_state(&connection);
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_restore_undelete \
+                 BEFORE UPDATE OF deleted_at ON notes_nodes \
+                 WHEN OLD.id = '{CHILD_ID}' AND NEW.deleted_at IS NULL \
+                 BEGIN SELECT RAISE(ABORT, 'restore undelete rejected'); END;"
+            ))
+            .expect("restore failure trigger");
+
+        let error = restore_node(&mut connection, CHILD_ID).expect_err("restore rollback");
+
+        assert!(error.contains("restore undelete rejected"));
+        assert_eq!(persistent_state(&connection), before);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn empty_trash_removes_deleted_rows_and_their_search_and_tags() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "active #Keep", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            None,
+            Some(NODE_ID),
+            "trash root #Remove",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            None,
+            "trash child #Remove",
+            "",
+        );
         soft_delete_node(&mut connection, CHILD_ID).expect("delete subtree");
+        let tags_before_emptying: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_tags", [], |row| row.get(0))
+            .expect("tags before emptying trash");
+        assert_eq!(tags_before_emptying, 3);
 
         empty_trash(&mut connection).expect("empty trash");
 
@@ -1572,6 +1935,24 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
             .expect("remaining rows");
         assert_eq!(row_count, 1);
+        let search_ids = connection
+            .prepare("SELECT node_id FROM notes_search ORDER BY node_id")
+            .expect("prepare remaining search rows")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query remaining search rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect remaining search rows");
+        assert_eq!(search_ids, vec![NODE_ID]);
+        let tag_rows = connection
+            .prepare("SELECT node_id, normalized_tag FROM notes_tags ORDER BY node_id")
+            .expect("prepare remaining tag rows")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query remaining tag rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect remaining tag rows");
+        assert_eq!(tag_rows, vec![(NODE_ID.to_string(), "keep".to_string())]);
     }
 
     #[test]
