@@ -28,8 +28,7 @@ pub(crate) fn notes_create_node(
     input: CreateNodeInput,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    create_node(&mut connection, input)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    create_node(&mut connection, input)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -38,8 +37,7 @@ pub(crate) fn notes_update_node(
     input: UpdateNodeInput,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    update_node(&mut connection, input)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    update_node(&mut connection, input)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -48,8 +46,7 @@ pub(crate) fn notes_split_node(
     input: SplitNodeInput,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    split_node(&mut connection, input)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    split_node(&mut connection, input)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -58,8 +55,7 @@ pub(crate) fn notes_move_node(
     input: MoveNodeInput,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    move_node(&mut connection, input)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    move_node(&mut connection, input)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -68,8 +64,7 @@ pub(crate) fn notes_toggle_complete(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    toggle_complete(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    toggle_complete(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -78,8 +73,7 @@ pub(crate) fn notes_toggle_collapsed(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    toggle_collapsed(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    toggle_collapsed(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -88,8 +82,7 @@ pub(crate) fn notes_duplicate_node(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    duplicate_node(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    duplicate_node(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -98,8 +91,7 @@ pub(crate) fn notes_remove_empty_node(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    remove_empty_node(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    remove_empty_node(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -108,8 +100,7 @@ pub(crate) fn notes_soft_delete_node(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    soft_delete_node(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    soft_delete_node(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -118,15 +109,13 @@ pub(crate) fn notes_restore_node(
     node_id: String,
 ) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    restore_node(&mut connection, &node_id)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    restore_node(&mut connection, &node_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    empty_trash(&mut connection)?;
-    load_workspace(&connection, NotesWorkspaceScope::Active)
+    empty_trash(&mut connection)
 }
 
 #[cfg(test)]

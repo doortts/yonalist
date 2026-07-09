@@ -2,13 +2,18 @@ use crate::notes::types::{
     validate_note_id, CreateNodeInput, MoveNodeInput, NoteLayoutMode, NoteNode, NotesWorkspace,
     NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
-use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use rusqlite::{
+    params, Connection, Error, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior,
+};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 const NOTES_SCHEMA_VERSION: i64 = 1;
 const SORT_KEY_STEP: i64 = 1024;
+const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
+const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
     crate::metadata_dir(vault_path).join("notes.sqlite")
@@ -30,40 +35,62 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
 
 fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     connection
-        .execute_batch(
-            r#"
-            PRAGMA journal_mode = WAL;
-            PRAGMA foreign_keys = ON;
-            PRAGMA busy_timeout = 5000;
-            "#,
-        )
+        .busy_timeout(NOTES_BUSY_TIMEOUT)
+        .map_err(|error| format!("Could not configure the Notes busy timeout: {error}"))?;
+    enable_wal_with_busy_retry(connection)?;
+    connection
+        .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| format!("Could not configure Notes storage: {error}"))?;
 
-    let user_version: i64 = connection
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes database migration: {error}"))?;
+    let user_version: i64 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
 
     match user_version {
-        0 => migrate_to_version_one(connection),
-        NOTES_SCHEMA_VERSION => Ok(()),
-        version => Err(format!(
-            "This Notes database uses unsupported schema version {version}."
-        )),
+        0 => {
+            create_version_one_schema(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+        }
+        NOTES_SCHEMA_VERSION => {}
+        version => {
+            return Err(format!(
+                "This Notes database uses unsupported schema version {version}."
+            ));
+        }
     }
-}
 
-fn migrate_to_version_one(connection: &mut Connection) -> Result<(), String> {
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format!("Could not start the Notes database migration: {error}"))?;
-
-    create_version_one_schema(&transaction)?;
-    transaction
-        .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
-        .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+}
+
+fn enable_wal_with_busy_retry(connection: &Connection) -> Result<(), String> {
+    let deadline = Instant::now() + NOTES_BUSY_TIMEOUT;
+    loop {
+        match connection.execute_batch("PRAGMA journal_mode = WAL;") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_database_busy(&error) && Instant::now() < deadline => {
+                // Journal-mode changes can bypass SQLite's configured busy handler.
+                std::thread::sleep(NOTES_BUSY_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(format!("Could not configure Notes storage: {error}"));
+            }
+        }
+    }
+}
+
+fn is_database_busy(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::SqliteFailure(details, _)
+            if matches!(details.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
 }
 
 fn create_version_one_schema(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -221,18 +248,19 @@ pub(crate) fn load_workspace(
     Ok(NotesWorkspace { nodes })
 }
 
-fn with_transaction<T>(
+fn with_workspace_transaction(
     connection: &mut Connection,
-    operation: impl FnOnce(&Transaction<'_>) -> Result<T, String>,
-) -> Result<T, String> {
+    operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
     let transaction = connection
         .transaction()
         .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
-    let result = operation(&transaction)?;
+    operation(&transaction)?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
     transaction
         .commit()
         .map_err(|error| format!("Could not commit the Notes transaction: {error}"))?;
-    Ok(result)
+    Ok(workspace)
 }
 
 fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<StoredNode>, String> {
@@ -444,9 +472,9 @@ fn replace_tags(
 pub(crate) fn create_node(
     connection: &mut Connection,
     input: CreateNodeInput,
-) -> Result<(), String> {
+) -> Result<NotesWorkspace, String> {
     input.validate()?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         ensure_fresh_id(transaction, &input.id)?;
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
         let sort_key = next_sort_key(
@@ -473,9 +501,9 @@ pub(crate) fn create_node(
 pub(crate) fn update_node(
     connection: &mut Connection,
     input: UpdateNodeInput,
-) -> Result<(), String> {
+) -> Result<NotesWorkspace, String> {
     input.validate()?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, &input.id)?;
         transaction
             .execute(
@@ -492,9 +520,9 @@ pub(crate) fn update_node(
 pub(crate) fn split_node(
     connection: &mut Connection,
     input: SplitNodeInput,
-) -> Result<String, String> {
+) -> Result<NotesWorkspace, String> {
     input.validate()?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         let source = require_live_node(transaction, &input.id)?;
         ensure_fresh_id(transaction, &input.new_node_id)?;
         let sort_key = next_sort_key(
@@ -524,7 +552,7 @@ pub(crate) fn split_node(
             )
             .map_err(|error| format!("Could not create the split Note node: {error}"))?;
         replace_tags(transaction, &input.new_node_id, &input.suffix, "")?;
-        Ok(input.new_node_id.clone())
+        Ok(())
     })
 }
 
@@ -549,9 +577,12 @@ fn live_descendant_exists(
         .map_err(|error| format!("Could not validate the Note move: {error}"))
 }
 
-pub(crate) fn move_node(connection: &mut Connection, input: MoveNodeInput) -> Result<(), String> {
+pub(crate) fn move_node(
+    connection: &mut Connection,
+    input: MoveNodeInput,
+) -> Result<NotesWorkspace, String> {
     input.validate()?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, &input.id)?;
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
         if let Some(parent_id) = input.parent_id.as_deref() {
@@ -577,9 +608,12 @@ pub(crate) fn move_node(connection: &mut Connection, input: MoveNodeInput) -> Re
     })
 }
 
-pub(crate) fn toggle_complete(connection: &mut Connection, node_id: &str) -> Result<(), String> {
+pub(crate) fn toggle_complete(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, node_id)?;
         transaction
             .execute(
@@ -595,9 +629,12 @@ pub(crate) fn toggle_complete(connection: &mut Connection, node_id: &str) -> Res
     })
 }
 
-pub(crate) fn toggle_collapsed(connection: &mut Connection, node_id: &str) -> Result<(), String> {
+pub(crate) fn toggle_collapsed(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, node_id)?;
         transaction
             .execute(
@@ -716,9 +753,12 @@ fn fresh_uuid_v4(
     Err("Could not generate a unique Note ID.".to_string())
 }
 
-pub(crate) fn duplicate_node(connection: &mut Connection, node_id: &str) -> Result<String, String> {
+pub(crate) fn duplicate_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         let source = require_live_node(transaction, node_id)?;
         let subtree = active_subtree(transaction, node_id)?;
         let root_sort_key = next_sort_key(
@@ -779,16 +819,20 @@ pub(crate) fn duplicate_node(connection: &mut Connection, node_id: &str) -> Resu
             replace_tags(transaction, copied_id, &original.title, &original.note)?;
         }
 
-        copied_ids
-            .get(node_id)
-            .cloned()
-            .ok_or_else(|| "Could not identify the duplicated Note root.".to_string())
+        if copied_ids.contains_key(node_id) {
+            Ok(())
+        } else {
+            Err("Could not identify the duplicated Note root.".to_string())
+        }
     })
 }
 
-pub(crate) fn remove_empty_node(connection: &mut Connection, node_id: &str) -> Result<(), String> {
+pub(crate) fn remove_empty_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         let source = require_live_node(transaction, node_id)?;
         if !source.title.trim().is_empty() || !source.note.trim().is_empty() {
             return Err("Only an empty Note node can be removed.".to_string());
@@ -836,9 +880,12 @@ pub(crate) fn remove_empty_node(connection: &mut Connection, node_id: &str) -> R
     })
 }
 
-pub(crate) fn soft_delete_node(connection: &mut Connection, node_id: &str) -> Result<(), String> {
+pub(crate) fn soft_delete_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         require_live_node(transaction, node_id)?;
         transaction
             .execute(
@@ -898,10 +945,17 @@ fn resolve_restore_sort_collision(
     Ok(())
 }
 
-pub(crate) fn restore_node(connection: &mut Connection, node_id: &str) -> Result<(), String> {
+pub(crate) fn restore_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
-    with_transaction(connection, |transaction| {
+    with_workspace_transaction(connection, |transaction| {
         let source = require_deleted_node(transaction, node_id)?;
+        let deletion_marker = source
+            .deleted_at
+            .as_deref()
+            .expect("a required deleted node has a deletion marker");
         let parent_is_live = match source.parent_id.as_deref() {
             Some(parent_id) => node_by_id(transaction, parent_id)?
                 .is_some_and(|parent| parent.deleted_at.is_none()),
@@ -924,23 +978,24 @@ pub(crate) fn restore_node(connection: &mut Connection, node_id: &str) -> Result
         transaction
             .execute(
                 "WITH RECURSIVE subtree(id) AS (\
-                   SELECT id FROM notes_nodes WHERE id = ?1 \
+                   SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at = ?2 \
                    UNION ALL \
                    SELECT child.id FROM notes_nodes child \
-                   JOIN subtree parent ON child.parent_id = parent.id\
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at = ?2\
                  ) \
                  UPDATE notes_nodes SET deleted_at = NULL, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id IN subtree AND deleted_at IS NOT NULL",
-                [node_id],
+                 WHERE id IN subtree AND deleted_at = ?2",
+                params![node_id, deletion_marker],
             )
             .map_err(|error| format!("Could not restore the Note subtree: {error}"))?;
         Ok(())
     })
 }
 
-pub(crate) fn empty_trash(connection: &mut Connection) -> Result<(), String> {
-    with_transaction(connection, |transaction| {
+pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace, String> {
+    with_workspace_transaction(connection, |transaction| {
         transaction
             .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
             .map_err(|error| format!("Could not permanently empty Notes trash: {error}"))?;
@@ -960,6 +1015,9 @@ mod tests {
         UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -1271,6 +1329,99 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_first_initialization_waits_for_locks_and_creates_one_valid_schema() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let path = notes_db_path(&vault_path);
+        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
+        let blocker = Connection::open(&path).expect("open migration blocker");
+        blocker
+            .execute_batch("BEGIN IMMEDIATE")
+            .expect("hold first initialization lock");
+
+        let vault_path = Arc::new(vault_path);
+        let barrier = Arc::new(Barrier::new(3));
+        let workers = (0..2)
+            .map(|_| {
+                let vault_path = Arc::clone(&vault_path);
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    connect_notes_db(&vault_path)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        barrier.wait();
+        thread::sleep(Duration::from_millis(100));
+        blocker
+            .execute_batch("COMMIT")
+            .expect("release migration lock");
+
+        for worker in workers {
+            worker
+                .join()
+                .expect("initialization worker")
+                .expect("concurrent first initialization");
+        }
+
+        let connection = Connection::open(&path).expect("reopen initialized database");
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user version");
+        assert_eq!(user_version, 1);
+        for (object_type, name) in [
+            ("table", "notes_nodes"),
+            ("table", "notes_tags"),
+            ("table", "notes_preferences"),
+            ("table", "notes_search"),
+            ("index", "notes_nodes_active_parent_order"),
+            ("index", "notes_tags_normalized_tag"),
+            ("trigger", "notes_nodes_search_insert"),
+            ("trigger", "notes_nodes_search_update"),
+            ("trigger", "notes_nodes_search_delete"),
+        ] {
+            assert!(
+                object_exists(&connection, object_type, name),
+                "missing {object_type} {name}"
+            );
+        }
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check");
+        assert_eq!(foreign_key_errors, 0);
+    }
+
+    #[test]
+    fn failed_version_one_migration_keeps_the_prior_schema_and_version() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute("CREATE TABLE notes_nodes (sentinel TEXT)", [])
+            .expect("seed prior schema");
+
+        let error = initialize_notes_db(&mut connection).expect_err("migration must fail");
+
+        assert!(error.contains("already exists"));
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user version after failed migration");
+        assert_eq!(user_version, 0);
+        assert!(object_exists(&connection, "table", "notes_nodes"));
+        for (object_type, name) in [
+            ("table", "notes_tags"),
+            ("table", "notes_preferences"),
+            ("table", "notes_search"),
+            ("index", "notes_nodes_active_parent_order"),
+            ("index", "notes_tags_normalized_tag"),
+            ("trigger", "notes_nodes_search_insert"),
+        ] {
+            assert!(!object_exists(&connection, object_type, name));
+        }
+    }
+
+    #[test]
     fn notes_connection_rejects_a_future_schema_version() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let path = notes_db_path(temp_dir.path().to_str().expect("path"));
@@ -1415,6 +1566,42 @@ mod tests {
     }
 
     #[test]
+    fn projection_failure_rolls_back_the_mutation_that_produced_it() {
+        let mut connection = test_connection();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER corrupt_created_node_projection \
+                 AFTER INSERT ON notes_nodes \
+                 BEGIN \
+                   UPDATE notes_nodes SET layout_mode = 'invalid' WHERE id = NEW.id; \
+                 END;",
+            )
+            .expect("projection failure trigger");
+
+        let error = create_node(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "must roll back".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect_err("invalid workspace projection");
+
+        assert!(error.contains("Unsupported Notes layout mode: invalid"));
+        let node_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count after projection failure");
+        assert_eq!(node_count, 0);
+        let search_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_search", [], |row| row.get(0))
+            .expect("search count after projection failure");
+        assert_eq!(search_count, 0);
+    }
+
+    #[test]
     fn move_rejects_a_descendant_as_the_new_parent() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "root");
@@ -1505,7 +1692,7 @@ mod tests {
         insert_node(&connection, NODE_ID, None, 1024, "original");
         insert_node(&connection, CHILD_ID, None, 2048, "following");
 
-        let split_id = split_node(
+        let workspace = split_node(
             &mut connection,
             SplitNodeInput {
                 id: NODE_ID.to_string(),
@@ -1516,7 +1703,7 @@ mod tests {
         )
         .expect("split");
 
-        assert_eq!(split_id, THIRD_ID);
+        assert!(workspace.nodes.iter().any(|node| node.id == THIRD_ID));
         let roots = active_children(&connection, None);
         assert_eq!(
             roots.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
@@ -1636,7 +1823,7 @@ mod tests {
         insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
         insert_node(&connection, THIRD_ID, None, 2048, "following root");
 
-        let split_id = split_node(
+        let workspace = split_node(
             &mut connection,
             SplitNodeInput {
                 id: NODE_ID.to_string(),
@@ -1646,7 +1833,7 @@ mod tests {
             },
         )
         .expect("split before removing empty suffix");
-        assert_eq!(split_id, FOURTH_ID);
+        assert!(workspace.nodes.iter().any(|node| node.id == FOURTH_ID));
         assert_eq!(
             active_children(&connection, None),
             vec![
@@ -1656,7 +1843,7 @@ mod tests {
             ]
         );
 
-        remove_empty_node(&mut connection, &split_id).expect("remove empty split node");
+        remove_empty_node(&mut connection, FOURTH_ID).expect("remove empty split node");
 
         assert_eq!(
             active_children(&connection, None),
@@ -1702,7 +1889,14 @@ mod tests {
         insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "grandchild");
         insert_node(&connection, FOURTH_ID, None, 2048, "following root");
 
-        let copied_root = duplicate_node(&mut connection, NODE_ID).expect("duplicate subtree");
+        let workspace = duplicate_node(&mut connection, NODE_ID).expect("duplicate subtree");
+        let copied_root = workspace
+            .nodes
+            .iter()
+            .find(|node| node.parent_id.is_none() && node.id != NODE_ID && node.id != FOURTH_ID)
+            .expect("copied root in returned workspace")
+            .id
+            .clone();
 
         assert_ne!(copied_root, NODE_ID);
         validate_note_id(&copied_root).expect("copied root UUID");
@@ -1872,6 +2066,53 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM notes_search", [], |row| row.get(0))
             .expect("search count after restore");
         assert_eq!(restored_search_count, 2);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn restoring_an_ancestor_keeps_an_independently_trashed_child_deleted() {
+        let mut connection = test_connection();
+        let root = insert_tree(&connection);
+
+        soft_delete_node(&mut connection, CHILD_ID).expect("delete child independently");
+        thread::sleep(Duration::from_millis(10));
+        soft_delete_node(&mut connection, &root).expect("delete ancestor later");
+        let child_deleted_at: String = connection
+            .query_row(
+                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("child deletion marker");
+        let root_deleted_at: String = connection
+            .query_row(
+                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("root deletion marker");
+        assert_ne!(child_deleted_at, root_deleted_at);
+
+        restore_node(&mut connection, &root).expect("restore ancestor");
+
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Active)
+                .expect("active workspace")
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID]
+        );
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Trash)
+                .expect("trash workspace")
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![CHILD_ID]
+        );
         assert_tree_invariants(&connection);
     }
 
