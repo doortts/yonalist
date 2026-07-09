@@ -1,4 +1,5 @@
 import type { GitHubNotification } from "../domain/notifications";
+import { scheduleIdleTask } from "./idleQueue";
 import type { NotificationDetailContent } from "./notificationDetail";
 
 const viewedStorageKey = "yonalist.notifications.viewedAt.v1";
@@ -118,6 +119,74 @@ interface PersistedDetailEntry {
 
 type PersistedDetailStore = Record<string, PersistedDetailEntry[]>;
 
+/**
+ * In-memory copy of the persisted detail store, used as the read/write source
+ * of truth. Parsing this blob (up to {@link MAX_PERSISTED_DETAILS} large
+ * conversations per host) on every prefetch peek/completion is a P1 main-thread
+ * cost, so we parse localStorage once and then serve reads from memory and
+ * coalesce writes onto the idle queue. null means "not yet parsed this session".
+ */
+let detailStoreCache: PersistedDetailStore | null = null;
+/** Cancels the pending idle flush; null when no flush is scheduled. */
+let cancelScheduledDetailFlush: (() => void) | null = null;
+
+/**
+ * Returns the memoized detail store, parsing localStorage on first use. Callers
+ * mutate the returned object in place and schedule a flush; the memo stays the
+ * source of truth so external localStorage mutation is invisible until a reset.
+ */
+function persistedDetailStore(): PersistedDetailStore {
+  detailStoreCache ??= readJson<PersistedDetailStore>(detailStorageKey, {});
+  return detailStoreCache;
+}
+
+/**
+ * Schedules a single coalesced flush of the memoized store to localStorage at
+ * idle time. A 12-wide prefetch burst thus produces one stringify+setItem
+ * instead of one per completion. Tradeoff: quitting inside the idle window
+ * (<=1.5s) loses only freshly cached conversations, which merely refetch later.
+ */
+function scheduleDetailStoreFlush(): void {
+  if (cancelScheduledDetailFlush) {
+    // A flush is already pending; folding this write into it keeps the burst
+    // down to a single physical write (single-handle guard).
+    return;
+  }
+  cancelScheduledDetailFlush = scheduleIdleTask(() => {
+    cancelScheduledDetailFlush = null;
+    if (detailStoreCache) {
+      writeJson(detailStorageKey, detailStoreCache);
+    }
+  });
+}
+
+/**
+ * Flushes any pending idle write to localStorage immediately and cancels the
+ * scheduled idle task so it cannot fire a redundant second write. Exposed for
+ * tests and for the app-restart seam that must persist before dropping memory.
+ */
+export function flushPersistedNotificationDetailWrites(): void {
+  if (!cancelScheduledDetailFlush) {
+    return;
+  }
+  cancelScheduledDetailFlush();
+  cancelScheduledDetailFlush = null;
+  if (detailStoreCache) {
+    writeJson(detailStorageKey, detailStoreCache);
+  }
+}
+
+/**
+ * Drops the memoized store and cancels any pending idle write WITHOUT flushing.
+ * Test seam mirroring resetNotificationDetailMemoryCache so a restart genuinely
+ * reparses localStorage; also prevents a stale memo leaking across tests.
+ */
+export function resetPersistedNotificationDetailMemory(): void {
+  cancelScheduledDetailFlush?.();
+  cancelScheduledDetailFlush = null;
+  detailStoreCache = null;
+}
+
 /** Version-independent key for a notification's conversation. */
 function detailSubjectKey(notification: GitHubNotification): string {
   return notification.subject.url ?? `${notification.repository.full_name}#${notification.id}`;
@@ -154,9 +223,7 @@ function readPersistedDetailEntry(
   apiBaseUrl: string,
   notification: GitHubNotification
 ): PersistedDetailEntry | null {
-  const host = readJson<PersistedDetailStore>(detailStorageKey, {})[
-    hostKey(apiBaseUrl)
-  ];
+  const host = persistedDetailStore()[hostKey(apiBaseUrl)];
   const subject = detailSubjectKey(notification);
   return host?.find((entry) => entry.subject === subject) ?? null;
 }
@@ -172,31 +239,36 @@ export function persistNotificationDetail(
   notification: GitHubNotification,
   detail: NotificationDetailContent
 ) {
-  const store = readJson<PersistedDetailStore>(detailStorageKey, {});
+  const store = persistedDetailStore();
   const key = hostKey(apiBaseUrl);
   const subject = detailSubjectKey(notification);
   const others = (store[key] ?? []).filter((entry) => entry.subject !== subject);
-  const next = [
+  store[key] = [
     ...others,
     { subject, updatedAt: notification.updated_at, detail }
   ].slice(-MAX_PERSISTED_DETAILS);
-  writeJson(detailStorageKey, { ...store, [key]: next });
+  scheduleDetailStoreFlush();
 }
 
 export function deletePersistedNotificationDetail(
   apiBaseUrl: string,
   notification: GitHubNotification
 ) {
-  const store = readJson<PersistedDetailStore>(detailStorageKey, {});
+  const store = persistedDetailStore();
   const key = hostKey(apiBaseUrl);
   const subject = detailSubjectKey(notification);
-  const current = store[key] ?? [];
-  const next = current.filter((entry) => entry.subject !== subject);
-  writeJson(detailStorageKey, { ...store, [key]: next });
+  store[key] = (store[key] ?? []).filter((entry) => entry.subject !== subject);
+  scheduleDetailStoreFlush();
 }
 
 /** Removes every persisted conversation across all hosts. */
 export function clearPersistedNotificationDetails() {
+  // Order matters: cancel the pending flush and drop the memo BEFORE removing
+  // the item, otherwise a flush firing after removeItem would resurrect the
+  // just-deleted data from the in-memory copy.
+  cancelScheduledDetailFlush?.();
+  cancelScheduledDetailFlush = null;
+  detailStoreCache = null;
   try {
     window.localStorage.removeItem(detailStorageKey);
   } catch {

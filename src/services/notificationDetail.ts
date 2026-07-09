@@ -20,9 +20,11 @@ import { LruCache } from "./lruCache";
 import {
   clearPersistedNotificationDetails,
   deletePersistedNotificationDetail,
+  flushPersistedNotificationDetailWrites,
   loadLatestPersistedNotificationDetail,
   loadPersistedNotificationDetail,
-  persistNotificationDetail
+  persistNotificationDetail,
+  resetPersistedNotificationDetailMemory
 } from "./notificationStores";
 import {
   clearUserProfileCache,
@@ -197,12 +199,19 @@ export function clearNotificationDetailCache() {
  * Drops the in-memory caches but keeps the persisted store, mirroring an app
  * restart where localStorage survives. Exposed mainly for tests that exercise
  * the persistence-restore path.
+ *
+ * The persisted detail store is itself memoized in memory (idle-coalesced
+ * writes), so a faithful restart first flushes any pending idle write — idle
+ * callbacks run before unload in practice, and we flush conservatively — then
+ * drops that memo so a subsequent restore genuinely reparses localStorage.
  */
 export function resetNotificationDetailMemoryCache() {
   detailCache.clear();
   inflightDetails.clear();
   latestDetails.clear();
   detailValidators.clear();
+  flushPersistedNotificationDetailWrites();
+  resetPersistedNotificationDetailMemory();
 }
 
 export function getNotificationDetailCacheStats(): CacheSizeStats {
