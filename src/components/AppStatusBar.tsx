@@ -1,4 +1,5 @@
 import { Inbox } from "lucide-react";
+import { memo, useEffect, useState } from "react";
 import { IconTooltip } from "./ui/Tooltip";
 
 export interface StatusBarMetrics {
@@ -21,31 +22,68 @@ export interface StatusBarMetrics {
   }>;
 }
 
+// Performance metrics are a development aid: shown in dev builds and in
+// explicit perf builds (VITE_YONALIST_PERF=1), hidden from release users.
+const viteEnv = (import.meta as unknown as {
+  env?: { DEV?: boolean; VITE_YONALIST_PERF?: string };
+}).env;
+const METRICS_ENABLED =
+  Boolean(viteEnv?.DEV) || viteEnv?.VITE_YONALIST_PERF === "1";
+
+// Pull cadence for the metrics row. Metrics are bookkeeping read out of refs;
+// polling a few times per second keeps the display fresh while re-rendering
+// only this footer subtree, never the app shell.
+const METRICS_POLL_MS = 250;
+
 interface AppStatusBarProps {
   outboxCount: number;
   online: boolean;
   syncing: boolean;
-  metrics: StatusBarMetrics;
+  /**
+   * Pull-based metrics source. Called on a polling interval inside the status
+   * bar so metric churn (prefetch progress, cache growth) never re-renders
+   * the owning component. Must be referentially stable.
+   */
+  getMetrics: () => StatusBarMetrics;
   onOpenOutbox: () => void;
 }
 
-export function AppStatusBar({
+function StatusBarMetricsRow({
+  getMetrics
+}: {
+  getMetrics: () => StatusBarMetrics;
+}) {
+  const [metrics, setMetrics] = useState<StatusBarMetrics>(getMetrics);
+  useEffect(() => {
+    setMetrics(getMetrics());
+    const interval = window.setInterval(
+      () => setMetrics(getMetrics()),
+      METRICS_POLL_MS
+    );
+    return () => window.clearInterval(interval);
+  }, [getMetrics]);
+  return (
+    <div className="statusbar-metrics" aria-label="Performance metrics">
+      <span>{`List ${formatMs(metrics.listFetchDurationMs)}`}</span>
+      <span>{`Item ${formatMs(metrics.detailDisplayDurationMs)}`}</span>
+      <span>{prefetchLabel(metrics.prefetch)}</span>
+      <span title={cacheLabel(metrics.caches)}>
+        {cacheLabel(metrics.caches)}
+      </span>
+    </div>
+  );
+}
+
+export const AppStatusBar = memo(function AppStatusBar({
   outboxCount,
   online,
   syncing,
-  metrics,
+  getMetrics,
   onOpenOutbox
 }: AppStatusBarProps) {
   return (
     <footer className="app-statusbar" aria-label="Status bar">
-      <div className="statusbar-metrics" aria-label="Performance metrics">
-        <span>{`List ${formatMs(metrics.listFetchDurationMs)}`}</span>
-        <span>{`Item ${formatMs(metrics.detailDisplayDurationMs)}`}</span>
-        <span>{prefetchLabel(metrics.prefetch)}</span>
-        <span title={cacheLabel(metrics.caches)}>
-          {cacheLabel(metrics.caches)}
-        </span>
-      </div>
+      {METRICS_ENABLED && <StatusBarMetricsRow getMetrics={getMetrics} />}
       <div className="statusbar-actions">
         <span className="statusbar-state">
           {syncing ? "Syncing" : online ? "Online" : "Offline"}
@@ -66,7 +104,7 @@ export function AppStatusBar({
       </div>
     </footer>
   );
-}
+});
 
 function formatMs(value: number | null): string {
   return value === null ? "--" : `${Math.round(value)}ms`;

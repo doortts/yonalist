@@ -63,7 +63,7 @@ function markdownBodiesFromDetail(detail: NotificationDetailContent): string[] {
  */
 export function useVisibleNotificationPrefetch(
   options: UseVisibleNotificationPrefetchOptions
-): VisibleNotificationPrefetchStats {
+): () => VisibleNotificationPrefetchStats {
   const active =
     options.enabled &&
     options.online &&

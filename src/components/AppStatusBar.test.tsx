@@ -9,7 +9,7 @@ describe("AppStatusBar", () => {
         outboxCount={2}
         online
         syncing={false}
-        metrics={{
+        getMetrics={() => ({
           listFetchDurationMs: 124.4,
           detailDisplayDurationMs: 48.2,
           prefetch: {
@@ -27,7 +27,7 @@ describe("AppStatusBar", () => {
             { label: "Threads", entries: 5, bytes: 1536 },
             { label: "Markdown", entries: 13, bytes: 1_048_576 }
           ]
-        }}
+        })}
         onOpenOutbox={vi.fn()}
       />
     );

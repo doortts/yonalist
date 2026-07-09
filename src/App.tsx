@@ -7,7 +7,8 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  useTransition
 } from "react";
 import { Toast } from "@base-ui/react/toast";
 import "./components/ui/toast.css";
@@ -882,7 +883,7 @@ export default function App({ initialOnline }: AppProps) {
     conversationRefreshKey
   );
 
-  const prefetchStats = useVisibleItemPrefetch({
+  const getItemPrefetchStats = useVisibleItemPrefetch({
     visibleItems: detailVisible ? visiblePrefetchItems : [],
     selectedPath: selectedItem?.path ?? null,
     vaultRoot,
@@ -933,7 +934,7 @@ export default function App({ initialOnline }: AppProps) {
     !notifications.demoMode &&
     !showSettings &&
     !showNewIssue;
-  const notificationPrefetchStats = useVisibleNotificationPrefetch({
+  const getNotificationPrefetchStats = useVisibleNotificationPrefetch({
     visibleNotifications: notificationPrefetchEnabled
       ? notificationPrefetchTargets
       : [],
@@ -1069,57 +1070,88 @@ export default function App({ initialOnline }: AppProps) {
     onChanged: refreshActiveDetailAfterRemoteChange,
     onError: (message) => tracePerf("detail_revalidation_error", { message })
   });
-  const { detailDisplayDurationMs, startDetailTransition } =
+  // Selection renders run as a transition so heavy detail renders stay
+  // interruptible (clicking another row mid-render is never blocked).
+  // `selectionPending` also keeps the paint-timing hook from completing a
+  // measurement against a frame painted before the transition commits.
+  const [selectionPending, startSelectionTransition] = useTransition();
+  const { getDetailDisplayDurationMs, startDetailTransition } =
     useDetailDisplayTiming(
       activeDetailKey,
-      Boolean(activeDetailRenderSnapshot) || (detailReady && detailContentReady)
+      !selectionPending &&
+        (Boolean(activeDetailRenderSnapshot) ||
+          (detailReady && detailContentReady))
     );
-
-  // Body byte estimation walks every loaded body, so it is memoized on its own
-  // input and kept out of statusMetrics' broader dependency set — a prefetch
-  // tick that leaves loadedItemBodies untouched no longer re-estimates it.
-  const bodyCacheStats = useMemo(
-    () => estimateRecordBytes(loadedItemBodies),
-    [loadedItemBodies]
-  );
-
-  const statusMetrics = useMemo<StatusBarMetrics>(
-    () => {
-      const bodyStats = bodyCacheStats;
-      const threadStats = getItemThreadCacheStats();
-      const notificationStats = getNotificationCacheStats();
-      const notificationDetailStats = getNotificationDetailCacheStats();
-      const markdownStats = getMarkdownRenderCacheStats();
-      return {
-        listFetchDurationMs: workItems.lastFetchDurationMs,
-        detailDisplayDurationMs,
-        // Surface whichever prefetcher is active for the current view.
-        prefetch: showNotifications ? notificationPrefetchStats : prefetchStats,
-        caches: showNotifications
-          ? [
-              { label: "Notifications", ...notificationStats },
-              { label: "Notification details", ...notificationDetailStats },
-              { label: "Markdown", ...markdownStats }
-            ]
-          : [
-              { label: "Bodies", ...bodyStats },
-              { label: "Threads", ...threadStats },
-              { label: "Markdown", ...markdownStats }
-            ]
-      };
+  const selectItemPath = useCallback(
+    (path: string) => {
+      const startedAt =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      startDetailTransition(startedAt);
+      startSelectionTransition(() => {
+        setSelectedPath(path);
+        setShowNewIssue(false);
+        setShowSettings(false);
+      });
     },
-    [
-      bodyCacheStats,
-      detailDisplayDurationMs,
-      itemThread.thread,
-      notificationDetail.detail,
-      notifications.notifications,
-      notificationPrefetchStats,
-      prefetchStats,
-      showNotifications,
-      workItems.lastFetchDurationMs
-    ]
+    [startDetailTransition, startSelectionTransition]
   );
+  const markNotificationViewed = unfilteredNotifications.markNotificationViewed;
+  const selectNotification = useCallback(
+    (notification: GitHubNotification) => {
+      startSelectionTransition(() => {
+        setSelectedNotification(notification);
+        markNotificationViewed(notification);
+      });
+    },
+    [markNotificationViewed, startSelectionTransition]
+  );
+
+
+  // Pull-based status metrics: the status bar polls this stable getter on its
+  // own interval, so metric churn (prefetch progress, cache growth, paint
+  // timings) never re-renders the app shell. State-held inputs are mirrored
+  // through a ref refreshed each render; everything else is read from O(1)
+  // cache-stat getters at poll time. Body byte estimation (O(total bytes))
+  // also runs at poll time, which only happens in dev/perf builds.
+  const statusMetricsInputs = useRef({
+    listFetchDurationMs: workItems.lastFetchDurationMs,
+    showNotifications,
+    loadedItemBodies
+  });
+  statusMetricsInputs.current = {
+    listFetchDurationMs: workItems.lastFetchDurationMs,
+    showNotifications,
+    loadedItemBodies
+  };
+  const getStatusMetrics = useCallback((): StatusBarMetrics => {
+    const inputs = statusMetricsInputs.current;
+    return {
+      listFetchDurationMs: inputs.listFetchDurationMs,
+      detailDisplayDurationMs: getDetailDisplayDurationMs(),
+      // Surface whichever prefetcher is active for the current view.
+      prefetch: inputs.showNotifications
+        ? getNotificationPrefetchStats()
+        : getItemPrefetchStats(),
+      caches: inputs.showNotifications
+        ? [
+            { label: "Notifications", ...getNotificationCacheStats() },
+            {
+              label: "Notification details",
+              ...getNotificationDetailCacheStats()
+            },
+            { label: "Markdown", ...getMarkdownRenderCacheStats() }
+          ]
+        : [
+            { label: "Bodies", ...estimateRecordBytes(inputs.loadedItemBodies) },
+            { label: "Threads", ...getItemThreadCacheStats() },
+            { label: "Markdown", ...getMarkdownRenderCacheStats() }
+          ]
+    };
+  }, [
+    getDetailDisplayDurationMs,
+    getItemPrefetchStats,
+    getNotificationPrefetchStats
+  ]);
 
   const layoutStyle = {
     ...navigationListAccentStyle,
@@ -2051,10 +2083,7 @@ export default function App({ initialOnline }: AppProps) {
           webBaseUrl={auth.connection.webBaseUrl}
           online={online}
           selectedId={selectedNotification?.id ?? null}
-          onSelect={(notification) => {
-            setSelectedNotification(notification);
-            notifications.markNotificationViewed(notification);
-          }}
+          onSelect={selectNotification}
           onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
         />
       ) : (
@@ -2072,14 +2101,7 @@ export default function App({ initialOnline }: AppProps) {
           onItemSortChange={setScopedItemSort}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
-          onSelect={(path) => {
-            const startedAt =
-              typeof performance !== "undefined" ? performance.now() : Date.now();
-            startDetailTransition(startedAt);
-            setSelectedPath(path);
-            setShowNewIssue(false);
-            setShowSettings(false);
-          }}
+          onSelect={selectItemPath}
           onVisibleItemsChange={setVisiblePrefetchItems}
           onNewIssue={openNewIssue}
           onRefresh={workItems.refresh}
@@ -2175,7 +2197,7 @@ export default function App({ initialOnline }: AppProps) {
         outboxCount={outbox.length}
         online={online}
         syncing={syncing}
-        metrics={statusMetrics}
+        getMetrics={getStatusMetrics}
         onOpenOutbox={openOutbox}
       />
 
