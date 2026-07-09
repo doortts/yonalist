@@ -775,6 +775,22 @@ describe("Yonalist app shell", () => {
     expect(screen.getByText(/I can write this offline/)).toBeInTheDocument();
   });
 
+  it("queues a close-only issue action when the comment body is empty", async () => {
+    const user = userEvent.setup();
+    render(<App initialOnline={false} />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByLabelText("Write a comment"));
+    await user.click(screen.getByRole("button", { name: "Queue and close" }));
+
+    expect(
+      screen.getByRole("button", { name: "Open outbox, 1 pending change" })
+    ).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
+      "close_after_comment"
+    );
+  });
+
   it("opens the target item when a queued outbox comment is clicked", async () => {
     const user = userEvent.setup();
     render(<App initialOnline={false} />);

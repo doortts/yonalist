@@ -93,6 +93,12 @@ export type SyncedRemote =
       closedIssue?: boolean;
       closedPullRequest?: boolean;
       closedDiscussion?: boolean;
+    }
+  | {
+      type: "close";
+      closedIssue?: boolean;
+      closedPullRequest?: boolean;
+      closedDiscussion?: boolean;
     };
 
 interface CreatedIssueResponse {
@@ -179,6 +185,15 @@ async function closeTargetAfterComment(
   );
 }
 
+function closeRemoteForAction(closeAction: CommentCloseAction): SyncedRemote {
+  return {
+    type: "close",
+    ...(closeAction.kind === "issue" ? { closedIssue: true } : {}),
+    ...(closeAction.kind === "pull" ? { closedPullRequest: true } : {}),
+    ...(closeAction.kind === "discussion" ? { closedDiscussion: true } : {})
+  };
+}
+
 /**
  * Pushes queued outbox operations to GitHub. Each operation is attempted
  * independently so one failure does not block the rest of the queue.
@@ -227,6 +242,25 @@ export async function syncOutboxOperations(
         if (target.number === undefined) {
           throw new Error("Comment operation is missing a target number.");
         }
+        const closeAction = closeActionForOperation(operation, target);
+        const hasBody = operation.body.trim().length > 0;
+        if (!hasBody) {
+          if (!closeAction) {
+            throw new Error("Comment operation is missing a comment body.");
+          }
+          await closeTargetAfterComment(
+            client,
+            target,
+            closeAction,
+            retryDelays
+          );
+          results.push({
+            operation,
+            ok: true,
+            remote: closeRemoteForAction(closeAction)
+          });
+          continue;
+        }
         const created = (await attemptWithRetry(
           () =>
             target.kind === "discussion"
@@ -250,7 +284,6 @@ export async function syncOutboxOperations(
         if (created.id === undefined) {
           throw new Error("GitHub did not return the created comment id.");
         }
-        const closeAction = closeActionForOperation(operation, target);
         if (closeAction) {
           await closeTargetAfterComment(
             client,

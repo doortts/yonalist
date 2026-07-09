@@ -1270,9 +1270,14 @@ export default function App({ initialOnline }: AppProps) {
   }
 
   function removeOutboxOperationDocuments(operation: OutboxOperationDocument) {
+    const shouldDeleteLocalDocument =
+      operation.frontMatter.operation === "create_issue" ||
+      operation.body.trim().length > 0;
     return Promise.all([
       deleteVaultDocument(vaultRoot, operation.path),
-      deleteVaultDocument(vaultRoot, operation.frontMatter.local_file_path)
+      ...(shouldDeleteLocalDocument
+        ? [deleteVaultDocument(vaultRoot, operation.frontMatter.local_file_path)]
+        : [])
     ]);
   }
 
@@ -1684,14 +1689,14 @@ export default function App({ initialOnline }: AppProps) {
     parentComment?: ConversationComment
   ) {
     const body = (bodyOverride ?? commentDraft).trim();
-    if (!body || !target) {
+    const closeAfterComment =
+      action.type === "comment-and-close" ? action.close : undefined;
+    if (!target || (!body && !closeAfterComment)) {
       return;
     }
 
     const id = createOperationId("comment");
     const createdAt = new Date().toISOString();
-    const closeAfterComment =
-      action.type === "comment-and-close" ? action.close : undefined;
     const operation = createCommentOutboxOperation({
       id,
       host: target.host,
@@ -1735,12 +1740,15 @@ export default function App({ initialOnline }: AppProps) {
     if (bodyOverride === undefined) {
       setCommentDraft("");
     }
-    void Promise.all([
-      persistCommentDocument(vaultRoot, comment),
-      persistOutboxOperation(vaultRoot, queuedOperation)
-    ]).then(() => syncQueuedOperation(queuedOperation));
+    const persistence = body
+      ? Promise.all([
+          persistCommentDocument(vaultRoot, comment),
+          persistOutboxOperation(vaultRoot, queuedOperation)
+        ])
+      : persistOutboxOperation(vaultRoot, queuedOperation);
+    void persistence.then(() => syncQueuedOperation(queuedOperation));
     if (closeAfterComment) {
-      showAppSnackbar("Close with comment queued.");
+      showAppSnackbar(body ? "Close with comment queued." : "Close queued.");
     }
   }
 

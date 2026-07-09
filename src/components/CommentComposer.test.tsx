@@ -305,6 +305,34 @@ describe("CommentComposer", () => {
     expect(onSubmit).toHaveBeenNthCalledWith(2, { type: "comment" });
   });
 
+  it("closes an issue without requiring a comment body", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft=""
+        online
+        closeKind="issue"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByLabelText("Write a comment"));
+
+    const closeButton = screen.getByRole("button", { name: "Close issue" });
+    expect(closeButton).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Close options" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Comment" })).toBeDisabled();
+
+    await user.click(closeButton);
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "issue", reason: "completed" }
+    });
+  });
+
   it("matches the close-with-comment button font size to the comment button", () => {
     const closeButtonStyle = cssDeclarationsFor(
       ".secondary-danger-button.composer-close-main"
@@ -400,6 +428,28 @@ describe("CommentComposer", () => {
     });
   });
 
+  it("closes a discussion without requiring a comment body", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft=""
+        online
+        closeKind="discussion"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByLabelText("Write a comment"));
+    await user.click(screen.getByRole("button", { name: "Close discussion" }));
+
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "discussion", reason: "resolved" }
+    });
+  });
+
   it("renders pull request close as a single action without a reason menu", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn();
@@ -416,6 +466,28 @@ describe("CommentComposer", () => {
     await user.click(screen.getByRole("button", { name: "Close pull request" }));
 
     expect(screen.queryByRole("button", { name: "Close options" })).toBeNull();
+    expect(onSubmit).toHaveBeenCalledWith({
+      type: "comment-and-close",
+      close: { kind: "pull" }
+    });
+  });
+
+  it("closes a pull request without requiring a comment body", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(
+      <CommentComposer
+        draft=""
+        online
+        closeKind="pull"
+        onDraftChange={vi.fn()}
+        onSubmit={onSubmit}
+      />
+    );
+
+    await user.click(screen.getByLabelText("Write a comment"));
+    await user.click(screen.getByRole("button", { name: "Close pull request" }));
+
     expect(onSubmit).toHaveBeenCalledWith({
       type: "comment-and-close",
       close: { kind: "pull" }

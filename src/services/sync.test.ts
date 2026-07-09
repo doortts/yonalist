@@ -282,6 +282,52 @@ describe("syncOutboxOperations", () => {
     );
   });
 
+  it("closes an issue without creating a blank comment when the operation body is empty", async () => {
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ state: "closed" }), { status: 200 })
+    );
+
+    const operation = {
+      ...createCommentOutboxOperation({
+        id: "issue-close-only",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        itemKind: "issue",
+        number: 42,
+        closeAfterComment: { kind: "issue", reason: "completed" },
+        localFilePath: "/vault/x.md",
+        createdAt: "2026-07-01T00:00:00Z"
+      }),
+      body: ""
+    };
+
+    const results = await syncOutboxOperations(
+      client(fetchMock as unknown as typeof fetch),
+      [operation],
+      [],
+      { retryDelays: [] }
+    );
+
+    expect(results[0]).toMatchObject({
+      ok: true,
+      remote: { type: "close", closedIssue: true }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.github.com/repos/acme/app/issues/42",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          state: "closed",
+          state_reason: "completed"
+        })
+      })
+    );
+  });
+
   it("closes a pull request after its comment is created when requested", async () => {
     const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
     fetchMock.mockResolvedValueOnce(
@@ -327,6 +373,49 @@ describe("syncOutboxOperations", () => {
     });
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
+      "https://api.github.com/repos/acme/app/pulls/43",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ state: "closed" })
+      })
+    );
+  });
+
+  it("closes a pull request without creating a blank comment when the operation body is empty", async () => {
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ state: "closed" }), { status: 200 })
+    );
+
+    const operation = {
+      ...createCommentOutboxOperation({
+        id: "pull-close-only",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        itemKind: "pull",
+        number: 43,
+        closeAfterComment: { kind: "pull" },
+        localFilePath: "/vault/x.md",
+        createdAt: "2026-07-01T00:00:00Z"
+      }),
+      body: ""
+    };
+
+    const results = await syncOutboxOperations(
+      client(fetchMock as unknown as typeof fetch),
+      [operation],
+      [],
+      { retryDelays: [] }
+    );
+
+    expect(results[0]).toMatchObject({
+      ok: true,
+      remote: { type: "close", closedPullRequest: true }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
       "https://api.github.com/repos/acme/app/pulls/43",
       expect.objectContaining({
         method: "PATCH",
@@ -415,6 +504,74 @@ describe("syncOutboxOperations", () => {
     expect(closePayload.variables).toEqual({
       discussionId: "D_kwDO",
       reason: "OUTDATED"
+    });
+  });
+
+  it("closes a discussion without creating a blank comment when the operation body is empty", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
+        query?: string;
+        variables?: Record<string, unknown>;
+      };
+      if (payload.query?.includes("discussion(number")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              repository: {
+                discussion: {
+                  id: "D_kwDO",
+                  title: "Weekly",
+                  comments: { nodes: [] }
+                }
+              }
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: {
+            closeDiscussion: {
+              discussion: { id: "D_kwDO", closed: true }
+            }
+          }
+        }),
+        { status: 200 }
+      );
+    });
+    const operation = {
+      ...createCommentOutboxOperation({
+        id: "discussion-close-only",
+        host: "github.com",
+        owner: "acme",
+        repo: "app",
+        itemKind: "discussion",
+        number: 5,
+        closeAfterComment: { kind: "discussion", reason: "resolved" },
+        localFilePath: "/vault/x.md",
+        createdAt: "2026-07-01T00:00:00Z"
+      }),
+      body: ""
+    };
+
+    const results = await syncOutboxOperations(
+      client(fetchMock as unknown as typeof fetch),
+      [operation],
+      [],
+      { retryDelays: [] }
+    );
+
+    expect(results[0]).toMatchObject({
+      ok: true,
+      remote: { type: "close", closedDiscussion: true }
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const closePayload = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(closePayload.query).toContain("closeDiscussion");
+    expect(closePayload.variables).toEqual({
+      discussionId: "D_kwDO",
+      reason: "RESOLVED"
     });
   });
 

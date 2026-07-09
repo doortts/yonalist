@@ -156,6 +156,7 @@ export function CommentComposer({
   // A draft, active focus, or having settled at the thread's end each expand the
   // composer; otherwise it stays a thin one-line docked bar.
   const expanded = hasDraft || focused || settled;
+  const canSubmitClose = Boolean(closeAction()) && !disabled;
 
   useEffect(() => {
     if (!hasDraft && mode === "preview") {
@@ -237,7 +238,7 @@ export function CommentComposer({
 
   function submitAndClose() {
     const close = closeAction();
-    if (!hasDraft || disabled || !close) {
+    if (disabled || !close) {
       return;
     }
     onSubmit({ type: "comment-and-close", close });
@@ -288,7 +289,7 @@ export function CommentComposer({
     if (effectiveCloseKind === "pull") {
       return "Close pull request";
     }
-    return "Close with comment";
+    return hasDraft ? "Close with comment" : "Close issue";
   }
 
   function renderCloseMenu() {
@@ -299,7 +300,7 @@ export function CommentComposer({
             <button
               className="secondary-danger-button composer-close-main"
               type="button"
-              disabled={!hasDraft || disabled}
+              disabled={!canSubmitClose}
               onClick={submitAndClose}
             >
               <CircleCheck size={17} />
@@ -309,7 +310,7 @@ export function CommentComposer({
               className="secondary-danger-button composer-close-trigger"
               type="button"
               aria-label="Close options"
-              disabled={!hasDraft || disabled}
+              disabled={!canSubmitClose}
               onClick={() => setCloseMenuOpen(true)}
             >
               <ChevronDown size={16} />
@@ -363,7 +364,7 @@ export function CommentComposer({
             <button
               className="secondary-danger-button composer-close-main"
               type="button"
-              disabled={!hasDraft || disabled}
+              disabled={!canSubmitClose}
               onClick={submitAndClose}
             >
               <MessageSquare size={17} />
@@ -373,7 +374,7 @@ export function CommentComposer({
               className="secondary-danger-button composer-close-trigger"
               type="button"
               aria-label="Close options"
-              disabled={!hasDraft || disabled}
+              disabled={!canSubmitClose}
               onClick={() => setCloseMenuOpen(true)}
             >
               <ChevronDown size={16} />
@@ -418,7 +419,7 @@ export function CommentComposer({
         <button
           className="secondary-danger-button composer-close-main composer-close-single"
           type="button"
-          disabled={!hasDraft || disabled}
+          disabled={!canSubmitClose}
           onClick={submitAndClose}
         >
           <GitPullRequestClosed size={17} />
