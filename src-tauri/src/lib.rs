@@ -11,6 +11,13 @@ use tauri::Manager;
 
 mod notes;
 
+use notes::commands::{
+    notes_create_node, notes_duplicate_node, notes_empty_trash, notes_initialize,
+    notes_load_workspace, notes_move_node, notes_remove_empty_node, notes_restore_node,
+    notes_soft_delete_node, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
+    notes_update_node,
+};
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
     pub metadata_dir: String,
@@ -1546,7 +1553,20 @@ pub fn run() {
             load_cached_avatar_image,
             store_cached_avatar_image,
             touch_cached_avatar_image,
-            record_perf_event
+            record_perf_event,
+            notes_initialize,
+            notes_load_workspace,
+            notes_create_node,
+            notes_update_node,
+            notes_split_node,
+            notes_move_node,
+            notes_toggle_complete,
+            notes_toggle_collapsed,
+            notes_duplicate_node,
+            notes_remove_empty_node,
+            notes_soft_delete_node,
+            notes_restore_node,
+            notes_empty_trash
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
