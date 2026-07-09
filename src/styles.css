@@ -87,9 +87,13 @@
 
 @font-face {
   font-family: "yobicon";
-  src: url("./assets/fonts/yobicon.woff") format("woff");
+  src:
+    url("./assets/fonts/yobicon.woff2") format("woff2"),
+    url("./assets/fonts/yobicon.woff") format("woff");
   font-style: normal;
   font-weight: normal;
+  /* `block` on purpose: this is an icon font, so swapping in a fallback
+   * would flash tofu/PUA glyphs — a brief invisible period reads better. */
   font-display: block;
 }
 
