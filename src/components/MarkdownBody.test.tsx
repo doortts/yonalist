@@ -328,5 +328,36 @@ describe("MarkdownBody", () => {
       expect(settled).toBe(true);
       expect(getMarkdownRenderCacheStats().entries).toBeGreaterThanOrEqual(3);
     });
+
+    it("does not yield again for bodies a concurrent warm already rendered", async () => {
+      const bodies = Array.from(
+        { length: 8 },
+        (_, index) => `# Interleaved body ${index}\n\nUnique paragraph ${index}`
+      );
+      let firstSettled = false;
+      void warmMarkdownBodies(bodies).then(() => {
+        firstSettled = true;
+      });
+
+      // The first warm renders four bodies, then parks on its batch yield.
+      await flushMicrotasks();
+      expect(firstSettled).toBe(false);
+
+      // While it is parked, a second warm renders the remaining four bodies.
+      let secondSettled = false;
+      void warmMarkdownBodies(bodies.slice(4)).then(() => {
+        secondSettled = true;
+      });
+      await flushMicrotasks();
+      expect(secondSettled).toBe(true);
+
+      // Resuming from its single pending yield, the first warm finds every
+      // remaining body cached and finishes without scheduling further yields.
+      await vi.advanceTimersByTimeAsync(0);
+      await flushMicrotasks();
+
+      expect(firstSettled).toBe(true);
+      expect(getMarkdownRenderCacheStats().entries).toBeGreaterThanOrEqual(8);
+    });
   });
 });

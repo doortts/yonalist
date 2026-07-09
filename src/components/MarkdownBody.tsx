@@ -56,18 +56,21 @@ export async function warmMarkdownBodies(bodies: string[]) {
     return;
   }
   const { renderMarkdown } = await loadMarkdownRenderer();
-  let renderedCount = 0;
+  let renderedSinceYield = 0;
   for (const body of missingBodies) {
     // Yield to the event loop between batches so a large prefetched
-    // conversation cannot block the main thread in one synchronous burst.
-    if (renderedCount > 0 && renderedCount % WARM_RENDER_BATCH_SIZE === 0) {
+    // conversation cannot block the main thread in one synchronous burst. The
+    // counter resets on yield so bodies a concurrent warm filled in the
+    // meantime are skipped without re-yielding once per cached body.
+    if (renderedSinceYield === WARM_RENDER_BATCH_SIZE) {
       await new Promise((resolve) => setTimeout(resolve, 0));
+      renderedSinceYield = 0;
     }
     // Re-check inside the loop: a concurrent warm may have filled the entry
     // during one of the yields above.
     if (!renderedMarkdownCache.has(body)) {
       renderedMarkdownCache.set(body, renderMarkdown(body));
-      renderedCount += 1;
+      renderedSinceYield += 1;
     }
   }
 }
