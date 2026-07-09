@@ -1558,7 +1558,7 @@ body.is-resizing-pane {
   width: 100%;
   padding: 5px 10px;
   border: 0;
-  border-bottom: 0;
+  border-bottom: 1px solid var(--border);
   border-radius: 0;
   background: transparent;
   color: var(--text-1);
@@ -2900,6 +2900,7 @@ body.is-resizing-pane {
   border-color: var(--border-strong);
   background: var(--bg-card);
   color: var(--text-1);
+  font-size: 13.5px;
 }
 
 .secondary-danger-button.composer-close-main svg {

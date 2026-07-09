@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   act,
   fireEvent,
@@ -9,6 +11,34 @@ import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentComposer } from "./CommentComposer";
+
+const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+
+function parseCssDeclarations(block: string): Record<string, string> {
+  return Object.fromEntries(
+    block
+      .split(";")
+      .map((declaration) => declaration.trim())
+      .filter(Boolean)
+      .map((declaration) => {
+        const separator = declaration.indexOf(":");
+        return [
+          declaration.slice(0, separator).trim(),
+          declaration.slice(separator + 1).trim()
+        ];
+      })
+  );
+}
+
+function cssDeclarationsFor(selector: string): Record<string, string> {
+  const start = appStyles.indexOf(`${selector} {`);
+  if (start === -1) {
+    throw new Error(`Missing CSS rule for ${selector}`);
+  }
+  const blockStart = appStyles.indexOf("{", start);
+  const blockEnd = appStyles.indexOf("}", blockStart);
+  return parseCssDeclarations(appStyles.slice(blockStart + 1, blockEnd));
+}
 
 // jsdom ships without IntersectionObserver; the composer uses one to detect
 // when its settle sentinel scrolls into the detail viewport. Install a
@@ -273,6 +303,14 @@ describe("CommentComposer", () => {
       close: { kind: "issue", reason: "completed" }
     });
     expect(onSubmit).toHaveBeenNthCalledWith(2, { type: "comment" });
+  });
+
+  it("matches the close-with-comment button font size to the comment button", () => {
+    const closeButtonStyle = cssDeclarationsFor(
+      ".secondary-danger-button.composer-close-main"
+    );
+
+    expect(closeButtonStyle["font-size"]).toBe("13.5px");
   });
 
   it("lets issue close reason be selected from a GitHub-style menu", async () => {

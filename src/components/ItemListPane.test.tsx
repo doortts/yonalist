@@ -659,7 +659,7 @@ describe("ItemListPane", () => {
     expect(iconStyle["line-height"]).toBe("inherit");
   });
 
-  it("uses compact item row spacing without per-item bottom lines", () => {
+  it("uses compact item row spacing with per-item bottom lines", () => {
     const cardStyle = cssDeclarationsFor(".item-card");
     const labelRowStyle = cssDeclarationsFor(".item-labels");
     const titleStyle = cssDeclarationsFor(".item-title");
@@ -668,7 +668,7 @@ describe("ItemListPane", () => {
 
     expect(cardStyle.gap).toBe("2px");
     expect(cardStyle.padding).toBe("5px 10px");
-    expect(cardStyle["border-bottom"]).toBe("0");
+    expect(cardStyle["border-bottom"]).toBe("1px solid var(--border)");
     expect(labelRowStyle.gap).toBe("3px");
     expect(titleStyle["line-height"]).toBe("1.25");
     expect(authorStyle["line-height"]).toBe("1.25");

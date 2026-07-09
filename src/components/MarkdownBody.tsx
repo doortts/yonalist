@@ -29,6 +29,11 @@ interface MarkdownBodyProps {
 }
 
 type RenderedMarkdown = { __html: string };
+type RenderedMarkdownState = {
+  body: string;
+  complete: boolean;
+  rendered: RenderedMarkdown;
+};
 
 const emptyMarkdown: RenderedMarkdown = { __html: "" };
 const renderedMarkdownCache = new LruCache<RenderedMarkdown>(200);
@@ -85,28 +90,48 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
   const lightboxTriggerRef = useRef<HTMLImageElement | null>(null);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const cachedMarkdown = useMemo(
-    () => renderedMarkdownCache.get(body) ?? emptyMarkdown,
+    () => renderedMarkdownCache.get(body),
     [body]
   );
-  const [renderedMarkdown, setRenderedMarkdown] =
-    useState<RenderedMarkdown>(cachedMarkdown);
+  const fallbackMarkdown = cachedMarkdown ?? emptyMarkdown;
+  const cachedComplete = body.trim().length === 0 || cachedMarkdown !== undefined;
+  const [renderedMarkdownState, setRenderedMarkdownState] =
+    useState<RenderedMarkdownState>(() => ({
+      body,
+      complete: cachedComplete,
+      rendered: fallbackMarkdown
+    }));
+  const currentBodyComplete =
+    renderedMarkdownState.body === body
+      ? renderedMarkdownState.complete
+      : cachedComplete;
+  const renderedMarkdown =
+    renderedMarkdownState.body === body
+      ? renderedMarkdownState.rendered
+      : fallbackMarkdown;
 
   useEffect(() => {
     const cached = renderedMarkdownCache.get(body);
-    if (cached) {
-      setRenderedMarkdown(cached);
+    if (cached || body.trim().length === 0) {
+      setRenderedMarkdownState((current) =>
+        current.body === body &&
+        current.complete &&
+        current.rendered === (cached ?? emptyMarkdown)
+          ? current
+          : { body, complete: true, rendered: cached ?? emptyMarkdown }
+      );
       return;
     }
 
     let cancelled = false;
-    setRenderedMarkdown(emptyMarkdown);
+    setRenderedMarkdownState({ body, complete: false, rendered: emptyMarkdown });
     void loadMarkdownRenderer().then(({ renderMarkdown }) => {
       if (cancelled) {
         return;
       }
       const rendered = renderMarkdown(body);
       renderedMarkdownCache.set(body, rendered);
-      setRenderedMarkdown(rendered);
+      setRenderedMarkdownState({ body, complete: true, rendered });
     });
     return () => {
       cancelled = true;
@@ -164,6 +189,8 @@ export function MarkdownBody({ body, variant }: MarkdownBodyProps) {
       <div
         ref={containerRef}
         className={`markdown-body markdown-body-${styleVariant}`}
+        data-markdown-body="true"
+        data-markdown-rendered={currentBodyComplete ? "true" : "false"}
         onClick={handleClick}
         dangerouslySetInnerHTML={renderedMarkdown}
       />

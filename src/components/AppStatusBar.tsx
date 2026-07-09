@@ -80,8 +80,7 @@ function prefetchLabel(metrics: StatusBarMetrics["prefetch"]): string {
     `${metrics.visible} visible`,
     `${metrics.completed} done`,
     `${metrics.active} active`,
-    `${metrics.queued} queued`,
-    `total ${formatMs(metrics.totalDurationMs)}`
+    `${metrics.queued} queued`
   ];
   if (metrics.lastDurationMs !== null) {
     parts.push(`last ${formatMs(metrics.lastDurationMs)}`);

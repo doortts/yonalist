@@ -87,6 +87,8 @@ import { useGithubAuth } from "./hooks/useGithubAuth";
 import { useAuthGate } from "./hooks/useAuthGate";
 import { useAppBadge } from "./hooks/useAppBadge";
 import { useGithubServers } from "./hooks/useGithubServers";
+import { useDetailContentPaintReady } from "./hooks/useDetailContentPaintReady";
+import { useDetailDisplayTiming } from "./hooks/useDetailDisplayTiming";
 import { useItemThread } from "./hooks/useItemThread";
 import { useNotificationDetail } from "./hooks/useNotificationDetail";
 import { useDesktopNotifications } from "./hooks/useDesktopNotifications";
@@ -241,6 +243,14 @@ function notificationSubjectKind(
   }
 }
 
+function countConversationMarkdownBodies(comments: ConversationComment[]): number {
+  return comments.reduce(
+    (count, comment) =>
+      count + 1 + countConversationMarkdownBodies(comment.replies ?? []),
+    0
+  );
+}
+
 function matchesFilter(item: ItemDocument, filter: ListFilter): boolean {
   switch (filter) {
     case "favorites":
@@ -320,8 +330,6 @@ export default function App({ initialOnline }: AppProps) {
   const [visibleNotificationPrefetchItems, setVisibleNotificationPrefetchItems] =
     useState<GitHubNotification[]>([]);
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
-  const [detailDisplayDurationMs, setDetailDisplayDurationMs] =
-    useState<number | null>(null);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
   const [resetProgress, setResetProgress] =
@@ -916,7 +924,6 @@ export default function App({ initialOnline }: AppProps) {
     : detailVisible && selectedItem
       ? `item:${selectedItem.path}`
       : null;
-  const detailStartedAt = useRef<number | null>(null);
   // Identifies what the shared `.detail-scroll` container is currently showing.
   // The same DOM node is reused across every selection and content mode, so a
   // change here means the pane switched targets and its scroll must snap back
@@ -956,29 +963,21 @@ export default function App({ initialOnline }: AppProps) {
   const detailReady = showNotifications
     ? Boolean(selectedNotification && notificationDetail.detail && !notificationDetail.loading)
     : Boolean(selectedItem && selectedBodyReady && !itemThread.loading);
-
-  useEffect(() => {
-    if (!activeDetailKey) {
-      detailStartedAt.current = null;
-      setDetailDisplayDurationMs(null);
-      return;
-    }
-    if (detailStartedAt.current === null) {
-      detailStartedAt.current =
-        typeof performance !== "undefined" ? performance.now() : Date.now();
-    }
-    setDetailDisplayDurationMs(null);
-  }, [activeDetailKey]);
-
-  useEffect(() => {
-    if (!activeDetailKey || !detailReady || detailStartedAt.current === null) {
-      return;
-    }
-    const finishedAt =
-      typeof performance === "undefined" ? Date.now() : performance.now();
-    setDetailDisplayDurationMs(finishedAt - detailStartedAt.current);
-    detailStartedAt.current = null;
-  }, [activeDetailKey, detailReady]);
+  const expectedDetailMarkdownBodies = showNotifications
+    ? notificationDetail.detail
+      ? 1 + countConversationMarkdownBodies(notificationDetail.detail.comments)
+      : 0
+    : selectedItem
+      ? 1 + countConversationMarkdownBodies(itemThread.thread?.comments ?? [])
+      : 0;
+  const detailContentReady = useDetailContentPaintReady(
+    detailScrollRef,
+    activeDetailKey,
+    detailReady,
+    expectedDetailMarkdownBodies
+  );
+  const { detailDisplayDurationMs, startDetailTransition } =
+    useDetailDisplayTiming(activeDetailKey, detailReady && detailContentReady);
 
   const statusMetrics = useMemo<StatusBarMetrics>(
     () => {
@@ -1964,12 +1963,7 @@ export default function App({ initialOnline }: AppProps) {
           onSelect={(path) => {
             const startedAt =
               typeof performance !== "undefined" ? performance.now() : Date.now();
-            detailStartedAt.current = startedAt;
-            setDetailDisplayDurationMs(null);
-            if (path === selectedItem?.path && detailReady) {
-              setDetailDisplayDurationMs(0);
-              detailStartedAt.current = null;
-            }
+            startDetailTransition(startedAt);
             setSelectedPath(path);
             setShowNewIssue(false);
             setShowSettings(false);

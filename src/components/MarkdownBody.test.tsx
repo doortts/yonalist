@@ -1,5 +1,6 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useLayoutEffect, useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GithubConnectionContext } from "../GithubConnectionContext";
 import {
@@ -16,6 +17,24 @@ vi.mock("../services/browser", () => ({
 }));
 
 const imageMarkdown = "![roadmap](https://example.com/roadmap.png)\n\nBody text";
+
+function LayoutHtmlProbe({
+  body,
+  onLayout
+}: {
+  body: string;
+  onLayout: (html: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    onLayout(hostRef.current?.querySelector(".markdown-body")?.innerHTML ?? "");
+  }, [body, onLayout]);
+  return (
+    <div ref={hostRef}>
+      <MarkdownBody body={body} />
+    </div>
+  );
+}
 
 describe("MarkdownBody", () => {
   it("renders markdown images inside the body", async () => {
@@ -48,6 +67,29 @@ describe("MarkdownBody", () => {
 
     expect(container.querySelector(".markdown-body-yona")).not.toBeNull();
     expect(container.querySelector(".markdown-body")?.innerHTML).toBe(body?.innerHTML);
+  });
+
+  it("shows warmed cached markdown immediately when the body changes", async () => {
+    await warmMarkdownBodies(["**First** body", "**Second** body"]);
+    const layoutHtml: string[] = [];
+    const { rerender } = render(
+      <LayoutHtmlProbe
+        body="**First** body"
+        onLayout={(html) => layoutHtml.push(html)}
+      />
+    );
+
+    expect(layoutHtml.at(-1)).toContain("<strong>First</strong>");
+
+    rerender(
+      <LayoutHtmlProbe
+        body="**Second** body"
+        onLayout={(html) => layoutHtml.push(html)}
+      />
+    );
+
+    expect(layoutHtml.at(-1)).toContain("<strong>Second</strong>");
+    expect(layoutHtml.at(-1)).not.toContain("<strong>First</strong>");
   });
 
   it("opens the original image in a lightbox when clicked", async () => {

@@ -37,7 +37,7 @@ describe("AppStatusBar", () => {
     expect(within(statusBar).getByText("Item 48ms")).toBeInTheDocument();
     expect(
       within(statusBar).getByText(
-        "Prefetch 5 visible · 4 done · 2 active · 1 queued · total 310ms · last 92ms"
+        "Prefetch 5 visible · 4 done · 2 active · 1 queued · last 92ms"
       )
     ).toBeInTheDocument();
     expect(
