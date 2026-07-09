@@ -12,6 +12,18 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--", "--port", "1421"],
       "port": 1421
+    },
+    {
+      "name": "yonalist-web-perf",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["VITE_YONALIST_PERF=1", "npm", "run", "dev", "--", "--port", "1422"],
+      "port": 1422
+    },
+    {
+      "name": "yonalist-dist",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "preview", "--port", "1424"],
+      "port": 1424
     }
   ]
 }
