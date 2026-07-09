@@ -138,6 +138,73 @@ describe("resolveAuthenticatedImage", () => {
     expect(second).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
+
+  it("retries a failed authenticated image after five minutes", async () => {
+    vi.setSystemTime(new Date("2026-07-10T00:00:00Z"));
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<html>rate limited</html>", {
+          status: 429,
+          headers: { "content-type": "text/html" }
+        })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const url = `https://oss.navercorp.com/storage/user/${Math.random()}/a.png`;
+
+    const first = await resolveAuthenticatedImage(url, connection);
+    const second = await resolveAuthenticatedImage(url, connection);
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    // One real attempt tries both header variants; the second resolve is served
+    // from the failure cache without touching the network.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.setSystemTime(new Date("2026-07-10T00:04:59Z"));
+    const third = await resolveAuthenticatedImage(url, connection);
+    expect(third).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.setSystemTime(new Date("2026-07-10T00:05:01Z"));
+    const fourth = await resolveAuthenticatedImage(url, connection);
+    expect(fourth).toBeNull();
+    // TTL elapsed, so a fresh attempt (two more header variants) runs.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not blacklist images that fail while offline", async () => {
+    const onLineSpy = vi
+      .spyOn(window.navigator, "onLine", "get")
+      .mockReturnValue(false);
+
+    const failingFetch = vi.fn(async () => {
+      throw new TypeError("network error");
+    });
+    vi.stubGlobal("fetch", failingFetch);
+
+    const url = `https://oss.navercorp.com/storage/user/${Math.random()}/a.png`;
+    const first = await resolveAuthenticatedImage(url, connection);
+    expect(first).toBeNull();
+    expect(failingFetch).toHaveBeenCalled();
+
+    onLineSpy.mockReturnValue(true);
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const successFetch = vi.fn(
+      async () =>
+        new Response(bytes, {
+          status: 200,
+          headers: { "content-type": "image/png" }
+        })
+    );
+    vi.stubGlobal("fetch", successFetch);
+
+    const second = await resolveAuthenticatedImage(url, connection);
+    expect(second).toMatch(/^data:image\/png;base64,/);
+    // The offline failure must not have been cached, so a retry runs at once.
+    expect(successFetch).toHaveBeenCalledTimes(1);
+
+    onLineSpy.mockRestore();
+  });
 });
 
 describe("avatar image cache", () => {

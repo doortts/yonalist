@@ -13,10 +13,15 @@ import { isTauri } from "./oauth";
 // cache instead of letting a long-running window grow without limit.
 const resolvedCache = new LruCache<string>(200);
 const inflight = new Map<string, Promise<string | null>>();
-const failedCache = new LruCache<true>(500);
+// Stores the failure timestamp (not a permanent flag) so a transient 429 or
+// network blip only suppresses one attachment for a few minutes, not the whole
+// session.
+const failedCache = new LruCache<number>(500);
 const avatarInflight = new Map<string, Promise<string | null>>();
 const avatarStorageKey = "yonalist.avatarImages.v1";
 const AVATAR_REFRESH_INTERVAL_MS = 60 * 60 * 1000;
+// Retry a failed authenticated image once this elapses so transient failures recover.
+const FAILED_IMAGE_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_STORED_AVATARS = 200;
 
 export interface CachedAvatarImage {
@@ -216,6 +221,17 @@ async function fetchAvatarAsDataUrl(
   return `data:${contentType};base64,${base64}`;
 }
 
+/**
+ * Records a failed lookup so we stop retrying for a few minutes — but never
+ * while offline, where the failure says nothing about the image itself.
+ */
+function recordImageFailure(key: string) {
+  if (typeof navigator !== "undefined" && navigator.onLine === false) {
+    return;
+  }
+  failedCache.set(key, Date.now());
+}
+
 /** Resolves an attachment URL to a data URL, caching per session. */
 export function resolveAuthenticatedImage(
   src: string,
@@ -226,8 +242,12 @@ export function resolveAuthenticatedImage(
   if (cached) {
     return Promise.resolve(cached);
   }
-  if (failedCache.has(key)) {
-    return Promise.resolve(null);
+  const failedAt = failedCache.get(key);
+  if (failedAt !== undefined) {
+    if (Date.now() - failedAt < FAILED_IMAGE_RETRY_INTERVAL_MS) {
+      return Promise.resolve(null);
+    }
+    failedCache.delete(key);
   }
   const running = inflight.get(key);
   if (running) {
@@ -238,12 +258,12 @@ export function resolveAuthenticatedImage(
       if (dataUrl) {
         resolvedCache.set(key, dataUrl);
       } else {
-        failedCache.set(key, true);
+        recordImageFailure(key);
       }
       return dataUrl;
     })
     .catch(() => {
-      failedCache.set(key, true);
+      recordImageFailure(key);
       return null;
     })
     .finally(() => {
