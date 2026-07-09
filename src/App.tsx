@@ -690,7 +690,7 @@ export default function App({ initialOnline }: AppProps) {
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
   const activeSelectedNotification =
-    activeFeatureId === "inbox" ? selectedNotification : null;
+    activeFeatureId === "inbox" && showNotifications ? selectedNotification : null;
   useEffect(() => {
     if (activeFeatureId !== "inbox") {
       setSelectedNotification(null);

@@ -1241,6 +1241,28 @@ describe("Yonalist app shell", () => {
     });
   });
 
+  it("clears notification detail activity when All items becomes active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expect.any(String) })
+      );
+    });
+
+    notificationDetailInputs.mockClear();
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByLabelText("Items")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+    });
+  });
+
   it("uses neutral status metrics while Notes is active", async () => {
     const user = userEvent.setup();
     render(<App />);
