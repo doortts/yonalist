@@ -10,13 +10,15 @@ import {
   Settings,
   WifiOff
 } from "lucide-react";
+import { featureRegistry } from "../features/core/featureRegistry";
+import type { FeatureDefinition, FeatureId } from "../features/core/featureTypes";
 import type { OwnerGroup } from "../services/githubItems";
 import { LoadingDots } from "./LoadingDots";
 import { IconTooltip, TooltipProvider } from "./ui/Tooltip";
 
 export type ListFilter = "all" | "favorites" | "issues" | "pulls" | "discussions";
 
-interface SidebarProps {
+export interface SidebarProps {
   online: boolean;
   loginRequired: boolean;
   onToggleOnline: () => void;
@@ -34,6 +36,9 @@ interface SidebarProps {
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
   notificationsLoading: boolean;
+  activeFeatureId?: FeatureId;
+  featureEntries?: readonly FeatureDefinition[];
+  onFeatureChange?: (featureId: FeatureId) => void;
 }
 
 const filterEntries: Array<{
@@ -65,10 +70,21 @@ export function Sidebar({
   notificationsOpen,
   onOpenNotifications,
   unreadNotificationCount,
-  notificationsLoading
+  notificationsLoading,
+  activeFeatureId,
+  featureEntries = featureRegistry,
+  onFeatureChange
 }: SidebarProps) {
-  const inboxActive = !repositoryFilter && !settingsOpen && !notificationsOpen;
-  const projectsActive = !settingsOpen && !notificationsOpen;
+  const featureNavigationEnabled = activeFeatureId !== undefined && onFeatureChange !== undefined;
+  const inboxActive =
+    activeFeatureId === undefined
+      ? !repositoryFilter && !settingsOpen && !notificationsOpen
+      : activeFeatureId === "inbox" && !repositoryFilter && !settingsOpen && !notificationsOpen;
+  const projectsActive =
+    activeFeatureId === undefined
+      ? !settingsOpen && !notificationsOpen
+      : activeFeatureId === "inbox" && !settingsOpen && !notificationsOpen;
+  const settingsActive = activeFeatureId === undefined ? settingsOpen : activeFeatureId === "settings";
 
   return (
     <TooltipProvider>
@@ -127,6 +143,26 @@ export function Sidebar({
           )}
         </button>
       </section>
+
+      {featureNavigationEnabled && (
+        <section className="nav-section">
+          <h2>Workspace</h2>
+          {featureEntries
+            .filter((entry) => entry.section === "workspace" && entry.id === "notes")
+            .map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                className={activeFeatureId === id ? "nav-item active" : "nav-item"}
+                type="button"
+                aria-pressed={activeFeatureId === id}
+                onClick={() => onFeatureChange?.(id)}
+              >
+                <Icon size={16} />
+                <span>{label}</span>
+              </button>
+            ))}
+        </section>
+      )}
 
       <section className="nav-section">
         <h2>Inbox</h2>
@@ -192,7 +228,7 @@ export function Sidebar({
       <section className="nav-section">
         <h2>App</h2>
         <button
-          className={settingsOpen ? "nav-item active" : "nav-item"}
+          className={settingsActive ? "nav-item active" : "nav-item"}
           type="button"
           onClick={() => onOpenSettings()}
         >
