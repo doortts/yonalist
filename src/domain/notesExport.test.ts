@@ -31,6 +31,7 @@ describe("defaultNotesExportFileName", () => {
 
   it.each([
     "Project.md.",
+    "Project.md .",
     "Project.md.md",
     "Project.MD.md.."
   ])("normalizes trailing dots and repeated Markdown suffixes in %j", (title) => {

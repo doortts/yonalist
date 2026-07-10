@@ -34,8 +34,8 @@ export function defaultNotesExportFileName(
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^\.+|\.+$/g, "")
-    .replace(/(?:\.md)+$/i, "")
-    .trim();
+    .trim()
+    .replace(/(?:\.md)+$/i, "");
 
   return baseName && !WINDOWS_RESERVED_DEVICE_NAME.test(baseName)
     ? `${baseName}.md`
