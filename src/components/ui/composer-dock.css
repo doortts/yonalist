@@ -45,7 +45,7 @@
 .comment-composer-dock.is-collapsed textarea {
   min-height: 76px;
   height: 76px;
-  padding: 20px 14px 10px;
+  padding: 13px 14px 10px;
   border-color: var(--border-strong);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--bg-input) 72%, transparent);
