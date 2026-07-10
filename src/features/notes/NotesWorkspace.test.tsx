@@ -590,11 +590,26 @@ describe("Notes workspace", () => {
       coords: { clientX: 36, clientY: 42 }
     });
     expect(document.body).toHaveTextContent("Active is over Parent.");
+    const previews = document.querySelectorAll(
+      ".notes-outline-drop-preview"
+    );
+    const movedBeforeDrop = notesStoreMock.moveNode.mock.calls.length > 0;
     await user.pointer({
       keys: "[/MouseLeft]",
       target: parentBullet,
       coords: { clientX: 36, clientY: 42 }
     });
+
+    expect(previews).toHaveLength(1);
+    expect(previews[0]).toHaveAttribute("aria-hidden", "true");
+    expect(previews[0]).toHaveAttribute("data-parent-id", "parent");
+    expect(previews[0]).toHaveAttribute("data-depth", "1");
+    expect(
+      (previews[0] as HTMLElement).style.getPropertyValue(
+        "--notes-drop-depth"
+      )
+    ).toBe("1");
+    expect(movedBeforeDrop).toBe(false);
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
     await waitFor(() =>
@@ -704,6 +719,28 @@ describe("Notes workspace", () => {
     ).toEqual(["1", "2", "3", "1"]);
     for (const item of within(outline).getAllByRole("listitem")) {
       expect(item).toHaveAttribute("role", "listitem");
+    }
+
+    const projectRow = getTitleInput("Project").closest<HTMLElement>(
+      ".notes-node"
+    );
+    const planRow = getTitleInput("Plan").closest<HTMLElement>(".notes-node");
+    const milestoneRow = getTitleInput("Milestone").closest<HTMLElement>(
+      ".notes-node"
+    );
+    const outsideRow = getTitleInput("Outside branch").closest<HTMLElement>(
+      ".notes-node"
+    );
+
+    expect(projectRow).toHaveAttribute("data-guide-end-id", "milestone");
+    expect(planRow).toHaveAttribute("data-guide-end-id", "milestone");
+    expect(milestoneRow).not.toHaveAttribute("data-guide-end-id");
+    expect(outsideRow).not.toHaveAttribute("data-guide-end-id");
+    expect(projectRow?.querySelectorAll(".notes-node-guide")).toHaveLength(0);
+    expect(planRow?.querySelectorAll(".notes-node-guide")).toHaveLength(1);
+    expect(milestoneRow?.querySelectorAll(".notes-node-guide")).toHaveLength(2);
+    for (const guide of outline.querySelectorAll(".notes-node-guide")) {
+      expect(guide).toHaveAttribute("aria-hidden", "true");
     }
   });
 
@@ -2267,6 +2304,15 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node-main:(?:hover|focus-within)[^{]*{[^}]*background:/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-guides\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:\s*repeat\([^}]*var\(--notes-outline-indent\)[^}]*\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-guide\s*{[^}]*width:\s*1px;[^}]*margin-inline-start:\s*33px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:[^}]*var\(--notes-outline-indent\)[^}]*height:\s*2px;/s
     );
   });
 });

@@ -440,7 +440,36 @@
 }
 
 .notes-outline-item {
+  position: relative;
   min-width: 0;
+}
+
+.notes-outline-drop-preview-tail {
+  position: relative;
+  height: 0;
+  list-style: none;
+}
+
+.notes-outline-drop-preview {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  inset-block-start: -1px;
+  inset-inline: 0;
+  grid-template-columns:
+    repeat(var(--notes-drop-column-count), var(--notes-outline-indent))
+    minmax(0, 1fr);
+  height: 2px;
+  pointer-events: none;
+}
+
+.notes-outline-drop-preview::after {
+  grid-column: -2 / -1;
+  width: calc(100% + 3px);
+  height: 2px;
+  margin-inline-start: -3px;
+  background: var(--accent);
+  content: "";
 }
 
 .notes-pane-state {
@@ -474,6 +503,25 @@
 .notes-node[data-dragging="true"] {
   z-index: 2;
   opacity: 0.72;
+}
+
+.notes-node-guides {
+  position: absolute;
+  z-index: 0;
+  display: grid;
+  inset: 0;
+  grid-template-columns: repeat(
+    var(--notes-guide-count),
+    var(--notes-outline-indent)
+  );
+  pointer-events: none;
+}
+
+.notes-node-guide {
+  width: 1px;
+  height: 100%;
+  margin-inline-start: 33px;
+  background: var(--border);
 }
 
 .notes-node-main {

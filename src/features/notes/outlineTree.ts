@@ -7,6 +7,44 @@ export interface FlattenedOutlineRow {
   depth: number;
   isCollapsed: boolean;
   ancestorIds: NoteId[];
+  ancestorGuideDepths: number[];
+  visibleDescendantEndId: NoteId | null;
+}
+
+export interface OutlineGuideMetadata {
+  ancestorGuideDepths: number[];
+  visibleDescendantEndId: NoteId | null;
+}
+
+export function deriveOutlineGuideMetadata(
+  rows: readonly Pick<FlattenedOutlineRow, "id" | "depth" | "ancestorIds">[]
+): OutlineGuideMetadata[] {
+  const metadata = rows.map<OutlineGuideMetadata>((row) => ({
+    ancestorGuideDepths: row.ancestorIds.map((_, depth) => depth),
+    visibleDescendantEndId: null
+  }));
+  const openRowIndexes: number[] = [];
+
+  const closeGuide = (rowIndex: number, descendantEndIndex: number) => {
+    if (descendantEndIndex > rowIndex) {
+      metadata[rowIndex].visibleDescendantEndId = rows[descendantEndIndex].id;
+    }
+  };
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    while (openRowIndexes.length > row.depth) {
+      closeGuide(openRowIndexes.pop()!, index - 1);
+    }
+    openRowIndexes[row.depth] = index;
+    openRowIndexes.length = row.depth + 1;
+  }
+
+  while (openRowIndexes.length > 0) {
+    closeGuide(openRowIndexes.pop()!, rows.length - 1);
+  }
+
+  return metadata;
 }
 
 export function flattenVisibleOutlineRows(
@@ -14,7 +52,10 @@ export function flattenVisibleOutlineRows(
   zoomRootId: NoteId | null,
   locallyExpandedNodeIds: ReadonlySet<NoteId> = new Set()
 ): FlattenedOutlineRow[] {
-  const rows: FlattenedOutlineRow[] = [];
+  const rows: Omit<
+    FlattenedOutlineRow,
+    "ancestorGuideDepths" | "visibleDescendantEndId"
+  >[] = [];
   const visited = new Set<NoteId>();
 
   const visit = (nodeId: NoteId, ancestorIds: NoteId[]) => {
@@ -51,7 +92,8 @@ export function flattenVisibleOutlineRows(
     }
   }
 
-  return rows;
+  const guideMetadata = deriveOutlineGuideMetadata(rows);
+  return rows.map((row, index) => ({ ...row, ...guideMetadata[index] }));
 }
 
 export function visibleNodeIds(

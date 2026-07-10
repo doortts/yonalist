@@ -25,6 +25,8 @@ import { resolveOutlineKey } from "./outlineKeyboard";
 interface OutlineNodeRowProps {
   nodeId: NoteId;
   depth: number;
+  ancestorGuideDepths: readonly number[];
+  visibleDescendantEndId: NoteId | null;
   dragDisabled: boolean;
   disabled?: boolean;
   readOnly?: boolean;
@@ -38,6 +40,8 @@ function controlLabel(title: string): string {
 export function OutlineNodeRow({
   nodeId,
   depth,
+  ancestorGuideDepths,
+  visibleDescendantEndId,
   dragDisabled,
   disabled = false,
   readOnly = false,
@@ -115,6 +119,25 @@ export function OutlineNodeRow({
       : undefined,
     transition
   } as CSSProperties;
+  const guides = ancestorGuideDepths.length > 0 && (
+    <span
+      className="notes-node-guides"
+      aria-hidden="true"
+      style={
+        {
+          "--notes-guide-count": ancestorGuideDepths.length
+        } as CSSProperties
+      }
+    >
+      {ancestorGuideDepths.map((guideDepth) => (
+        <span
+          className="notes-node-guide"
+          aria-hidden="true"
+          key={guideDepth}
+        />
+      ))}
+    </span>
+  );
 
   if (readOnly) {
     return (
@@ -122,8 +145,10 @@ export function OutlineNodeRow({
         ref={setNodeRef}
         className="notes-node notes-node-readonly"
         data-outline-id={nodeId}
+        data-guide-end-id={visibleDescendantEndId ?? undefined}
         style={rowStyle}
       >
+        {guides}
         <div className="notes-node-main notes-node-main-readonly">
           <span className="notes-node-readonly-title">{label}</span>
           <div className="notes-node-actions">
@@ -287,8 +312,10 @@ export function OutlineNodeRow({
       data-outline-id={nodeId}
       data-completed={completed ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
+      data-guide-end-id={visibleDescendantEndId ?? undefined}
       style={rowStyle}
     >
+      {guides}
       <div className="notes-node-main">
         <span className="notes-node-arrow-slot">
           {hasChildren && (

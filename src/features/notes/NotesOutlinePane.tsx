@@ -5,6 +5,7 @@ import {
   PointerSensor,
   type Announcements,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragStartEvent,
   useSensor,
   useSensors
@@ -30,7 +31,12 @@ import {
 import type { NoteId } from "../../domain/notes";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
-import { OUTLINE_INDENT_PX, projectOutlineDrop } from "./outlineDrag";
+import {
+  deriveOutlineDropPreview,
+  OUTLINE_INDENT_PX,
+  projectOutlineDrop,
+  type OutlineDropPreview
+} from "./outlineDrag";
 import { flattenVisibleOutlineRows, parentTrail } from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
 
@@ -103,6 +109,24 @@ function NotesBreadcrumb({
   );
 }
 
+function DropPreviewLine({ preview }: { preview: OutlineDropPreview }) {
+  return (
+    <span
+      className="notes-outline-drop-preview"
+      aria-hidden="true"
+      data-before-id={preview.beforeId ?? undefined}
+      data-parent-id={preview.parentId ?? undefined}
+      data-depth={preview.depth}
+      style={
+        {
+          "--notes-drop-depth": preview.depth,
+          "--notes-drop-column-count": preview.depth + 1
+        } as CSSProperties
+      }
+    />
+  );
+}
+
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
   const {
@@ -114,6 +138,7 @@ export function NotesOutlinePane() {
     state
   } = workspace;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const trashView = libraryView === "trash";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
@@ -138,8 +163,8 @@ export function NotesOutlinePane() {
     trashView ||
     state.status === "loading" ||
     rows.length === 0;
-  const projectDragEnd = useCallback(
-    (event: DragEndEvent) => {
+  const projectDrag = useCallback(
+    (event: Pick<DragMoveEvent, "active" | "delta" | "over">) => {
       const activeId = String(event.active.id);
       if (
         dragUnavailable ||
@@ -204,6 +229,7 @@ export function NotesOutlinePane() {
   const handleDragStart = (event: DragStartEvent) => {
     const id = String(event.active.id);
     dragEndProjection.current = null;
+    setDropPreview(null);
     if (
       dragUnavailable ||
       id === state.zoomRootId ||
@@ -215,15 +241,25 @@ export function NotesOutlinePane() {
     setActiveDragId(id);
   };
 
+  const handleDragMove = (event: DragMoveEvent) => {
+    const projection = projectDrag(event);
+    setDropPreview(
+      projection
+        ? deriveOutlineDropPreview(String(event.active.id), rows, projection)
+        : null
+    );
+  };
+
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
-    const projection = projectDragEnd(event);
+    const projection = projectDrag(event);
     dragEndProjection.current = {
       activeId,
       overId: event.over ? String(event.over.id) : null,
       projection
     };
     setActiveDragId(null);
+    setDropPreview(null);
     if (!projection) {
       return;
     }
@@ -300,7 +336,12 @@ export function NotesOutlinePane() {
             collisionDetection={closestCenter}
             sensors={sensors}
             onDragStart={handleDragStart}
-            onDragCancel={() => setActiveDragId(null)}
+            onDragMove={handleDragMove}
+            onDragOver={handleDragMove}
+            onDragCancel={() => {
+              setActiveDragId(null);
+              setDropPreview(null);
+            }}
             onDragEnd={handleDragEnd}
           >
             <SortableContext
@@ -319,9 +360,14 @@ export function NotesOutlinePane() {
                     aria-level={row.depth + 1}
                     role="listitem"
                   >
+                    {dropPreview?.beforeId === row.id && (
+                      <DropPreviewLine preview={dropPreview} />
+                    )}
                     <OutlineNodeRow
                       nodeId={row.id}
                       depth={row.depth}
+                      ancestorGuideDepths={row.ancestorGuideDepths}
+                      visibleDescendantEndId={row.visibleDescendantEndId}
                       readOnly={trashView}
                       disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
@@ -331,6 +377,15 @@ export function NotesOutlinePane() {
                     />
                   </li>
                 ))}
+                {dropPreview?.beforeId === null && (
+                  <li
+                    className="notes-outline-drop-preview-tail"
+                    aria-hidden="true"
+                    role="presentation"
+                  >
+                    <DropPreviewLine preview={dropPreview} />
+                  </li>
+                )}
               </ol>
             </SortableContext>
           </DndContext>

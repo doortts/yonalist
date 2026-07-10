@@ -107,35 +107,45 @@ describe("outlineTree", () => {
         parentId: null,
         depth: 0,
         isCollapsed: false,
-        ancestorIds: []
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "child-b"
       },
       {
         id: "child-a",
         parentId: "root-a",
         depth: 1,
         isCollapsed: false,
-        ancestorIds: ["root-a"]
+        ancestorIds: ["root-a"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: "grandchild"
       },
       {
         id: "grandchild",
         parentId: "child-a",
         depth: 2,
         isCollapsed: false,
-        ancestorIds: ["root-a", "child-a"]
+        ancestorIds: ["root-a", "child-a"],
+        ancestorGuideDepths: [0, 1],
+        visibleDescendantEndId: null
       },
       {
         id: "child-b",
         parentId: "root-a",
         depth: 1,
         isCollapsed: true,
-        ancestorIds: ["root-a"]
+        ancestorIds: ["root-a"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: null
       },
       {
         id: "root-b",
         parentId: null,
         depth: 0,
         isCollapsed: false,
-        ancestorIds: []
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
       }
     ]);
   });
@@ -156,17 +166,70 @@ describe("outlineTree", () => {
         parentId: "project",
         depth: 0,
         isCollapsed: false,
-        ancestorIds: []
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "detail"
       },
       {
         id: "detail",
         parentId: "task",
         depth: 1,
         isCollapsed: false,
-        ancestorIds: ["task"]
+        ancestorIds: ["task"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: null
       }
     ]);
     expect(flattenVisibleOutlineRows(state, "missing")).toEqual([]);
+  });
+
+  it("marks guide ancestry and the final visible descendant for expanded branches", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "project", sortKey: 1 }),
+        node({ id: "plan", parentId: "project", sortKey: 1 }),
+        node({ id: "milestone", parentId: "plan" }),
+        node({ id: "reference", parentId: "project", sortKey: 2 }),
+        node({ id: "collapsed", sortKey: 2, isCollapsed: true }),
+        node({ id: "hidden", parentId: "collapsed" })
+      ])
+    );
+
+    const guideMetadata = flattenVisibleOutlineRows(state, null).map((row) =>
+      ({
+        id: row.id,
+        ancestorGuideDepths: row.ancestorGuideDepths,
+        visibleDescendantEndId: row.visibleDescendantEndId
+      })
+    );
+
+    expect(guideMetadata).toEqual([
+      {
+        id: "project",
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "reference"
+      },
+      {
+        id: "plan",
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: "milestone"
+      },
+      {
+        id: "milestone",
+        ancestorGuideDepths: [0, 1],
+        visibleDescendantEndId: null
+      },
+      {
+        id: "reference",
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: null
+      },
+      {
+        id: "collapsed",
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: null
+      }
+    ]);
   });
 
   it("builds an ordered parent trail and safely stops at missing parents", () => {

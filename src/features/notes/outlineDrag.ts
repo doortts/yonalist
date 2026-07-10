@@ -14,6 +14,12 @@ export interface OutlineDropProjection
   expandNodeId?: NoteId;
 }
 
+export interface OutlineDropPreview {
+  beforeId: NoteId | null;
+  parentId: NoteId | null;
+  depth: number;
+}
+
 function hasValidRowShape(
   rows: readonly FlattenedOutlineRow[],
   zoomRootId: NoteId | null
@@ -118,6 +124,63 @@ function visibleSubtreeEnd(
     end += 1;
   }
   return end;
+}
+
+export function deriveOutlineDropPreview(
+  activeId: NoteId,
+  rows: readonly FlattenedOutlineRow[],
+  projection: OutlineDropProjection
+): OutlineDropPreview | null {
+  const activeIndex = rows.findIndex((row) => row.id === activeId);
+  if (activeIndex < 0) {
+    return null;
+  }
+
+  const activeEnd = visibleSubtreeEnd(rows, activeIndex);
+  const remaining = [
+    ...rows.slice(0, activeIndex),
+    ...rows.slice(activeEnd)
+  ];
+  const parentIndex =
+    projection.parentId === null
+      ? -1
+      : remaining.findIndex((row) => row.id === projection.parentId);
+  if (projection.parentId !== null && parentIndex < 0) {
+    return null;
+  }
+  const depth =
+    projection.parentId === null ? 0 : remaining[parentIndex].depth + 1;
+
+  let beforeId: NoteId | null;
+  if (projection.beforeId != null) {
+    const before = remaining.find((row) => row.id === projection.beforeId);
+    if (!before || before.parentId !== projection.parentId) {
+      return null;
+    }
+    beforeId = before.id;
+  } else if (projection.afterId !== null) {
+    const afterIndex = remaining.findIndex(
+      (row) => row.id === projection.afterId
+    );
+    if (afterIndex >= 0) {
+      if (remaining[afterIndex].parentId !== projection.parentId) {
+        return null;
+      }
+      beforeId = remaining[visibleSubtreeEnd(remaining, afterIndex)]?.id ?? null;
+    } else {
+      const parent = remaining[parentIndex];
+      if (!parent || projection.expandNodeId !== parent.id) {
+        return null;
+      }
+      beforeId = remaining[visibleSubtreeEnd(remaining, parentIndex)]?.id ?? null;
+    }
+  } else if (projection.parentId !== null) {
+    beforeId = remaining[visibleSubtreeEnd(remaining, parentIndex)]?.id ?? null;
+  } else {
+    beforeId = null;
+  }
+
+  return { beforeId, parentId: projection.parentId, depth };
 }
 
 function previousDirectSibling(

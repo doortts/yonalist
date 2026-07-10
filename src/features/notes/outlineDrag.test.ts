@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
 import {
+  deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
   projectOutlineDrop,
+  type OutlineDropPreview,
   type OutlineSiblingOrder
 } from "./outlineDrag";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -36,6 +38,8 @@ function row(
     depth: 0,
     isCollapsed: false,
     ancestorIds: [],
+    ancestorGuideDepths: [],
+    visibleDescendantEndId: null,
     ...overrides
   };
 }
@@ -117,6 +121,67 @@ describe("projectOutlineDrop", () => {
       parentId: null,
       afterId: "c"
     });
+  });
+
+  it("derives one insertion preview at the projected parent depth", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "project", sortKey: 1 }),
+        node({ id: "plan", parentId: "project" }),
+        node({ id: "milestone", parentId: "plan" }),
+        node({ id: "active", sortKey: 2 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const projection = projectOutlineDrop(
+      "active",
+      "plan",
+      OUTLINE_INDENT_PX,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(deriveOutlineDropPreview).toBeTypeOf("function");
+    expect(projection).not.toBeNull();
+    expect(deriveOutlineDropPreview("active", rows, projection!)).toEqual({
+      beforeId: "plan",
+      parentId: "project",
+      depth: 1
+    } satisfies OutlineDropPreview);
+  });
+
+  it("places a collapsed-parent preview before the next visible row", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "active", sortKey: 1 }),
+        node({ id: "parent", sortKey: 2, isCollapsed: true }),
+        node({ id: "hidden", parentId: "parent" }),
+        node({ id: "tail", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const projection = projectOutlineDrop(
+      "active",
+      "parent",
+      OUTLINE_INDENT_PX,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(projection).not.toBeNull();
+    expect(deriveOutlineDropPreview("active", rows, projection!)).toEqual({
+      beforeId: "tail",
+      parentId: "parent",
+      depth: 1
+    } satisfies OutlineDropPreview);
   });
 
   it("indents right as the last actual child of the preceding row", () => {
