@@ -23,6 +23,8 @@ export interface NotesExportResult {
 
 const NOTES_EXPORT_CONFLICT_MESSAGE = "Destination already exists.";
 const DEFAULT_MARKDOWN_FILE_NAME = "notes-export.md";
+const WINDOWS_RESERVED_DEVICE_NAME =
+  /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
 
 export function defaultNotesExportFileName(
   title: string | null | undefined
@@ -31,12 +33,13 @@ export function defaultNotesExportFileName(
     .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .replace(/\.md$/i, "")
-    .trim()
     .replace(/^\.+|\.+$/g, "")
+    .replace(/(?:\.md)+$/i, "")
     .trim();
 
-  return baseName ? `${baseName}.md` : DEFAULT_MARKDOWN_FILE_NAME;
+  return baseName && !WINDOWS_RESERVED_DEVICE_NAME.test(baseName)
+    ? `${baseName}.md`
+    : DEFAULT_MARKDOWN_FILE_NAME;
 }
 
 export function isNotesExportResult(value: unknown): value is NotesExportResult {

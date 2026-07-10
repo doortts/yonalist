@@ -168,6 +168,15 @@ fn ensure_export_destination_is_available(path: &PathBuf) -> Result<(), String> 
     }
 }
 
+fn ensure_export_destination_is_not_directory(path: &PathBuf) -> Result<(), String> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Err("File path must name a file.".to_string()),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_export_markdown(
     vault_path: String,
@@ -177,13 +186,14 @@ pub(crate) fn notes_export_markdown(
 ) -> Result<NotesExportResult, String> {
     validate_note_id(&root_node_id)?;
     let destination_path = export_destination_path(&destination)?;
+    ensure_export_destination_is_not_directory(&destination_path)?;
     if !overwrite {
         ensure_export_destination_is_available(&destination_path)?;
     }
 
     let connection = open_notes_export_db(&vault_path)?;
     let snapshot = load_export_snapshot(&connection, &root_node_id)?;
-    let markdown = render_markdown(&snapshot);
+    let markdown = render_markdown(&snapshot)?;
     write_atomic_file(&destination_path, &markdown, overwrite)?;
 
     Ok(NotesExportResult {
@@ -203,6 +213,7 @@ mod tests {
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SPLIT_ID: &str = "22222222-2222-4222-8222-222222222222";
     const EMPTY_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const INVALID_DESCENDANT_ID: &str = "bad -->\n# injected";
 
     fn assert_active(workspace: &NotesWorkspace) {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
@@ -573,6 +584,71 @@ mod tests {
         );
     }
 
+    #[test]
+    fn markdown_export_rejects_an_overwrite_directory_before_opening_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("export.md");
+        std::fs::create_dir(&destination).expect("seed destination directory");
+
+        let error = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect_err("directory destination");
+
+        assert_eq!(error, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(destination.is_dir());
+    }
+
+    #[test]
+    fn markdown_export_rejects_a_no_overwrite_directory_by_shape_before_opening_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("export.md");
+        std::fs::create_dir(&destination).expect("seed destination directory");
+
+        let error = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("directory destination");
+
+        assert_eq!(error, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(destination.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn markdown_export_follows_an_overwrite_symlink_to_a_directory_before_opening_storage() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let target_directory = temp_dir.path().join("target-directory");
+        let destination = temp_dir.path().join("export.md");
+        std::fs::create_dir(&target_directory).expect("seed target directory");
+        symlink(&target_directory, &destination).expect("seed directory symlink");
+
+        let error = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect_err("directory symlink destination");
+
+        assert_eq!(error, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(destination.is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn markdown_export_preflight_treats_a_dangling_symlink_as_occupied() {
@@ -594,6 +670,35 @@ mod tests {
         assert_eq!(error, "Destination already exists.");
         assert!(!vault_path.join(".yonalist").exists());
         assert!(std::fs::symlink_metadata(destination).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn markdown_export_overwrite_replaces_a_dangling_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let destination = temp_dir.path().join("dangling.md");
+        symlink("missing-target", &destination).expect("seed dangling symlink");
+
+        notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect("replace dangling destination");
+
+        assert!(std::fs::symlink_metadata(&destination)
+            .expect("destination metadata")
+            .file_type()
+            .is_file());
+        assert!(std::fs::read_to_string(destination)
+            .expect("read Markdown")
+            .contains("# Project"));
     }
 
     #[test]
@@ -661,5 +766,38 @@ mod tests {
             std::fs::read(&destination).expect("read overwritten Markdown"),
             b"stale"
         );
+    }
+
+    #[test]
+    fn markdown_export_rejects_an_invalid_descendant_without_writing_output() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let connection = connect_notes_db(&vault_path_string).expect("open export database");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, is_collapsed, completed_at, \
+                   created_at, updated_at, deleted_at\
+                 ) VALUES (?1, ?2, 3072, 'Injected child', '', 0, NULL, \
+                           '2026-07-10T00:00:00.000Z', \
+                           '2026-07-10T00:00:00.000Z', NULL)",
+                rusqlite::params![INVALID_DESCENDANT_ID, ROOT_ID],
+            )
+            .expect("corrupt descendant ID");
+        drop(connection);
+        let destination = temp_dir.path().join("project.md");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("invalid descendant");
+
+        assert_eq!(error, "Note ID must be a canonical UUID v4 string.");
+        assert!(!destination.exists());
     }
 }

@@ -1,4 +1,4 @@
-use super::types::NotesExportSnapshot;
+use super::types::{validate_note_id, ExportNode, NotesExportSnapshot};
 use rusqlite::Connection;
 use std::fmt::Write;
 
@@ -38,6 +38,14 @@ fn escape_inline(value: &str) -> String {
         .join(r"\n")
 }
 
+fn validate_export_node_ids(node: &ExportNode) -> Result<(), String> {
+    validate_note_id(&node.id)?;
+    for child in &node.children {
+        validate_export_node_ids(child)?;
+    }
+    Ok(())
+}
+
 fn render_node(markdown: &mut String, node: &super::types::ExportNode, depth: usize) {
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
@@ -66,7 +74,10 @@ fn render_node(markdown: &mut String, node: &super::types::ExportNode, depth: us
     }
 }
 
-pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Vec<u8> {
+pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
+    validate_note_id(&snapshot.root_node_id)?;
+    validate_export_node_ids(&snapshot.root)?;
+
     let mut markdown = String::new();
     writeln!(markdown, "---").expect("writing to a String cannot fail");
     writeln!(markdown, "kind: yonalist-notes-export").expect("writing to a String cannot fail");
@@ -80,7 +91,7 @@ pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Vec<u8> {
     writeln!(markdown, "# {}\n", escape_inline(&snapshot.title))
         .expect("writing to a String cannot fail");
     render_node(&mut markdown, &snapshot.root, 0);
-    markdown.into_bytes()
+    Ok(markdown.into_bytes())
 }
 
 #[cfg(test)]
@@ -95,6 +106,7 @@ mod tests {
     const LATER_ID: &str = "44444444-4444-4444-8444-444444444444";
     const DELETED_ID: &str = "55555555-5555-4555-8555-555555555555";
     const COLLAPSED_CHILD_ID: &str = "66666666-6666-4666-8666-666666666666";
+    const INVALID_DESCENDANT_ID: &str = "bad -->\n# injected";
 
     fn export_node(
         id: &str,
@@ -307,7 +319,7 @@ mod tests {
             vec![export_node(FIRST_ID, "First task", "", true, Vec::new())],
         ));
 
-        let rendered = render_markdown(&snapshot);
+        let rendered = render_markdown(&snapshot).expect("render Markdown");
 
         assert_eq!(
             rendered,
@@ -343,7 +355,8 @@ mod tests {
             Vec::new(),
         ));
 
-        let rendered = String::from_utf8(render_markdown(&snapshot)).expect("UTF-8 Markdown");
+        let rendered = String::from_utf8(render_markdown(&snapshot).expect("render Markdown"))
+            .expect("UTF-8 Markdown");
         let escaped = r#"A \\ \*bold\* \[link\]\(x\) \#tag &lt;\!\-\- forged \-\-&gt; &amp; done"#;
 
         assert!(rendered.contains(&format!("# {escaped}\n")));
@@ -365,9 +378,32 @@ mod tests {
             Vec::new(),
         ));
 
-        let rendered = String::from_utf8(render_markdown(&snapshot)).expect("UTF-8 Markdown");
+        let rendered = String::from_utf8(render_markdown(&snapshot).expect("render Markdown"))
+            .expect("UTF-8 Markdown");
 
         assert!(rendered.contains("  > first\n  >\n  > second\n  > third\n"));
         assert!(!rendered.contains('\r'));
+    }
+
+    #[test]
+    fn markdown_renderer_rejects_an_invalid_descendant_without_returning_injected_markdown() {
+        let snapshot = snapshot(export_node(
+            ROOT_ID,
+            "Project",
+            "",
+            false,
+            vec![export_node(
+                INVALID_DESCENDANT_ID,
+                "Injected child",
+                "",
+                false,
+                Vec::new(),
+            )],
+        ));
+
+        let error = render_markdown(&snapshot)
+            .expect_err("invalid descendant must not return Markdown bytes");
+
+        assert_eq!(error, "Note ID must be a canonical UUID v4 string.");
     }
 }

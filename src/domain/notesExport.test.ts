@@ -28,6 +28,36 @@ describe("defaultNotesExportFileName", () => {
       "Project roadmap.md"
     );
   });
+
+  it.each([
+    "Project.md.",
+    "Project.md.md",
+    "Project.MD.md.."
+  ])("normalizes trailing dots and repeated Markdown suffixes in %j", (title) => {
+    expect(defaultNotesExportFileName(title)).toBe("Project.md");
+  });
+
+  const reservedDeviceStems = [
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+    ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)
+  ];
+
+  it.each(
+    reservedDeviceStems.flatMap((stem) => [stem, `${stem.toLowerCase()}.txt`])
+  )("uses the default filename for reserved Windows device name %j", (title) => {
+    expect(defaultNotesExportFileName(title)).toBe("notes-export.md");
+  });
+
+  it.each(["COM0", "COM10", "LPT0", "LPT10", "CONSOLE"])(
+    "keeps non-reserved Windows filename stem %j",
+    (title) => {
+      expect(defaultNotesExportFileName(title)).toBe(`${title}.md`);
+    }
+  );
 });
 
 describe("isNotesExportResult", () => {
