@@ -23,6 +23,7 @@ serde_json = "1"
 tauri = { version = "=2.8.0", features = [] }
 tauri-plugin-notification = "2"
 tauri-runtime = "=2.8.0"
+tempfile = "3"
 ureq = "2"
 
 # macOS-only: read the OS major version (NSProcessInfo) so the window controls
@@ -31,6 +32,3 @@ ureq = "2"
 # it here only makes the `NSProcessInfo` API usable — it pulls in no new crate.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", features = ["NSProcessInfo"] }
-
-[dev-dependencies]
-tempfile = "3"
