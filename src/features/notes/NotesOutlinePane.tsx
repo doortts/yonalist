@@ -22,6 +22,7 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
+import { NotesExportMenu } from "./NotesExportMenu";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { projectOutlineDrop } from "./outlineDrag";
 import { flattenVisibleOutlineRows, parentTrail } from "./outlineTree";
@@ -101,6 +102,7 @@ export function NotesOutlinePane() {
   const {
     actions,
     deletingNotesData,
+    draftsByNodeId,
     libraryView,
     locallyExpandedNodeIds,
     state
@@ -234,11 +236,33 @@ export function NotesOutlinePane() {
       aria-busy={state.status === "loading" || deletingNotesData}
     >
       <TooltipProvider>
-        <NotesBreadcrumb
-          disabled={deletingNotesData}
-          trashView={trashView}
-          onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
-        />
+        <div className="notes-outline-toolbar">
+          <NotesBreadcrumb
+            disabled={deletingNotesData}
+            trashView={trashView}
+            onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+          />
+          <NotesExportMenu
+            selectedNodeId={state.selectedId}
+            selectedNodeTitle={
+              state.selectedId === null
+                ? undefined
+                : (draftsByNodeId[state.selectedId]?.title ??
+                  state.nodesById[state.selectedId]?.title)
+            }
+            zoomRootId={state.zoomRootId}
+            zoomRootTitle={
+              state.zoomRootId === null
+                ? undefined
+                : (draftsByNodeId[state.zoomRootId]?.title ??
+                  state.nodesById[state.zoomRootId]?.title)
+            }
+            onFlushNodeDraft={actions.flushNodeDraft}
+            disabled={
+              deletingNotesData || trashView || state.status === "loading"
+            }
+          />
+        </div>
         <div className="notes-outline-rows">
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>

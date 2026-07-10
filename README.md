@@ -11,6 +11,16 @@ on issues and pull requests from a local Markdown vault.
   vault's `.yonalist/notes.sqlite` file; resetting app settings and caches
   preserves it, while deleting all Notes data is a separate Notes-specific
   confirmed action.
+- Local Notes export saves either the selected node subtree or the current
+  zoomed page as frontmatter Markdown or a semantic PDF. Current-page export
+  is unavailable while viewing all notes, and replacing an existing destination
+  always requires explicit confirmation.
+- Notes PDFs bundle Nanum Gothic Regular for Korean text under the SIL Open Font
+  License 1.1. The font and license are unmodified copies from the official
+  Google Fonts repository; exact source URLs and checksums are recorded in
+  `src-tauri/resources/FONT_SOURCE.md`. If a title or note contains a glyph the
+  bundled font cannot render, export reports a retryable error and does not
+  create or replace the destination.
 - Three-column UI (navigation, item list, detail/comment pane) with
   resizable panes, independently scrolling columns, and a token-based
   design system.
