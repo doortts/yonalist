@@ -32,6 +32,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 }
 
 function workspaceValue(options: {
+  title?: string;
   note?: string;
   draft?: NotesNodeDraft;
 } = {}): UseNotesWorkspaceResult {
@@ -39,7 +40,7 @@ function workspaceValue(options: {
     nodes: [
       node({
         id: "project",
-        title: "Project",
+        title: options.title ?? "Project",
         note: options.note ?? "Project context"
       }),
       node({ id: "child", parentId: "project", title: "First child" }),
@@ -141,6 +142,25 @@ describe("NotesPageHeader", () => {
         .getAllByRole("listitem")
         .map((item) => item.getAttribute("aria-level"))
     ).toEqual(["1", "2"]);
+  });
+
+  it("auto-grows a long Korean page title without sharing the menu track", () => {
+    const longTitle =
+      "길고 자세한 한국어 페이지 제목도 메뉴 버튼 아래로 숨지 않고 필요한 만큼 여러 줄로 줄바꿈됩니다";
+    vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(
+      102
+    );
+    renderZoomedOutline(workspaceValue({ title: longTitle, note: "" }));
+
+    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const titleRow = title.closest(".notes-page-title-row");
+
+    expect(title).toBeInstanceOf(HTMLTextAreaElement);
+    expect(title).toHaveAttribute("rows", "1");
+    expect(title).toHaveStyle({ height: "102px" });
+    expect(titleRow).toContainElement(
+      screen.getByRole("button", { name: `More actions for ${longTitle}` })
+    );
   });
 
   it("does not mount an empty page note before a reveal action", () => {

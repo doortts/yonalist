@@ -56,7 +56,8 @@ function project(
   activeId: NoteId,
   overId: NoteId,
   horizontalOffset = 0,
-  zoomRootId: NoteId | null = null
+  zoomRootId: NoteId | null = null,
+  indentPx = OUTLINE_INDENT_PX
 ) {
   const state = normalizeWorkspace({ nodes } satisfies NotesWorkspace);
   const result = projectOutlineDrop(
@@ -68,7 +69,8 @@ function project(
       rootIds: state.rootIds,
       childIdsByParent: state.childIdsByParent,
       zoomRootId
-    }
+    },
+    indentPx
   );
   if (result) {
     const anchors = [result.afterId, result.beforeId].filter(
@@ -88,7 +90,7 @@ function project(
 }
 
 describe("projectOutlineDrop", () => {
-  it("exports and uses a 36px horizontal depth step", () => {
+  it("exports and uses a 36px desktop horizontal depth step", () => {
     const nodes = [
       node({ id: "active", sortKey: 1 }),
       node({ id: "parent", sortKey: 2 })
@@ -104,6 +106,26 @@ describe("projectOutlineDrop", () => {
       afterId: null
     });
   });
+
+  it.each([
+    { indentPx: 36, belowThreshold: 17, atThreshold: 18 },
+    { indentPx: 28, belowThreshold: 13, atThreshold: 14 }
+  ])(
+    "uses the runtime $indentPx px indent for horizontal projection",
+    ({ indentPx, belowThreshold, atThreshold }) => {
+      const nodes = [
+        node({ id: "active", sortKey: 1 }),
+        node({ id: "parent", sortKey: 2 })
+      ];
+
+      expect(
+        project(nodes, "active", "parent", belowThreshold, null, indentPx)
+      ).toEqual({ parentId: null, afterId: "parent" });
+      expect(
+        project(nodes, "active", "parent", atThreshold, null, indentPx)
+      ).toEqual({ parentId: "parent", afterId: null });
+    }
+  );
 
   it("orders same-parent rows upward with beforeId and downward with afterId", () => {
     const roots = [

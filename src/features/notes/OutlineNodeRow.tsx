@@ -16,7 +16,7 @@ import { createNoteId, type NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
-import { OUTLINE_INDENT_PX } from "./outlineDrag";
+import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
   resolveOutlineKey
@@ -78,7 +78,7 @@ export function OutlineNodeRow({
   const [noteOpen, setNoteOpen] = useState(() =>
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const focusNoteOnOpenRef = useRef(false);
@@ -89,6 +89,8 @@ export function OutlineNodeRow({
   } | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
+
+  useAutoGrowTextarea(titleRef, titleValue);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -114,8 +116,7 @@ export function OutlineNodeRow({
     if (!noteOpen || !noteRef.current) {
       return;
     }
-    noteRef.current.style.height = "auto";
-    noteRef.current.style.height = `${noteRef.current.scrollHeight}px`;
+    resizeTextarea(noteRef.current);
     if (focusNoteOnOpenRef.current) {
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
@@ -132,7 +133,7 @@ export function OutlineNodeRow({
   const isCollapsed = node.isCollapsed && !locallyExpanded;
   const dragEnabled = !disabled && !dragDisabled && !readOnly;
   const rowStyle = {
-    "--notes-indent": `${depth * OUTLINE_INDENT_PX}px`,
+    "--notes-depth": depth,
     transform: transform
       ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
       : undefined,
@@ -246,7 +247,7 @@ export function OutlineNodeRow({
     }
   };
 
-  const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
       key: event.key,
@@ -266,6 +267,9 @@ export function OutlineNodeRow({
       visibleNodeIds
     });
     if (!resolution) {
+      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+      }
       return;
     }
 
@@ -423,19 +427,22 @@ export function OutlineNodeRow({
           />
         </div>
 
-        <input
+        <textarea
           className="notes-node-title"
           ref={titleRef}
           value={titleValue}
           aria-label="Edit node title"
           placeholder="Untitled"
+          rows={1}
+          wrap="soft"
           disabled={disabled}
-          onChange={(event) =>
+          onChange={(event) => {
+            resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
               title: event.target.value,
               note: noteValue
             })
-          }
+          }}
           onKeyDown={handleTitleKeyDown}
           onBlur={commitDrafts}
         />
@@ -450,8 +457,7 @@ export function OutlineNodeRow({
           rows={2}
           disabled={disabled}
           onChange={(event) => {
-            event.currentTarget.style.height = "auto";
-            event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
+            resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
               note: event.target.value

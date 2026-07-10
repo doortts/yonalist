@@ -19,6 +19,7 @@ import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState
@@ -36,6 +37,8 @@ import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import {
   deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
+  OUTLINE_NARROW_INDENT_PX,
+  OUTLINE_NARROW_MEDIA_QUERY,
   projectOutlineDrop,
   type OutlineDropPreview
 } from "./outlineDrag";
@@ -127,7 +130,6 @@ function DropPreviewLine({ preview }: { preview: OutlineDropPreview }) {
       style={
         {
           "--notes-drop-depth": preview.depth,
-          "--notes-drop-column-count": preview.depth + 1
         } as CSSProperties
       }
     />
@@ -156,6 +158,29 @@ function hideCompletedSubtrees<Row extends { depth: number; id: NoteId }>(
   });
 }
 
+function useOutlineIndentPx(): number {
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window.matchMedia === "function"
+      ? window.matchMedia(OUTLINE_NARROW_MEDIA_QUERY).matches
+      : false
+  );
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") {
+      return;
+    }
+    const media = window.matchMedia(OUTLINE_NARROW_MEDIA_QUERY);
+    const handleChange = (event: MediaQueryListEvent) => {
+      setIsNarrow(event.matches);
+    };
+    setIsNarrow(media.matches);
+    media.addEventListener("change", handleChange);
+    return () => media.removeEventListener("change", handleChange);
+  }, []);
+
+  return isNarrow ? OUTLINE_NARROW_INDENT_PX : OUTLINE_INDENT_PX;
+}
+
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
   const {
@@ -170,6 +195,7 @@ export function NotesOutlinePane() {
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
+  const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
@@ -231,12 +257,14 @@ export function NotesOutlinePane() {
           rootIds: state.rootIds,
           childIdsByParent: state.childIdsByParent,
           zoomRootId: state.zoomRootId
-        }
+        },
+        outlineIndentPx
       );
     },
     [
       activeDragId,
       dragUnavailable,
+      outlineIndentPx,
       structuralRows,
       state.childIdsByParent,
       state.rootIds,
@@ -335,7 +363,7 @@ export function NotesOutlinePane() {
         aria-busy={state.status === "loading" || deletingNotesData}
         style={
           {
-            "--notes-outline-indent": `${OUTLINE_INDENT_PX}px`
+            "--notes-outline-indent": `${outlineIndentPx}px`
           } as CSSProperties
         }
       >
@@ -382,6 +410,7 @@ export function NotesOutlinePane() {
           />
         </div>
         <div className="notes-outline-rows">
+          <div className="notes-outline-content">
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>
           )}
@@ -474,6 +503,7 @@ export function NotesOutlinePane() {
               </ol>
             </SortableContext>
           </DndContext>
+          </div>
         </div>
         <ConfirmDialog
           open={emptyTrashConfirmOpen}

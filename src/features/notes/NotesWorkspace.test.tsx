@@ -51,6 +51,22 @@ const notesStyles = readFileSync(
   "utf8"
 );
 
+function mockNarrowViewport(narrow: boolean): void {
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn((query: string) => ({
+      matches: query === "(max-width: 720px)" ? narrow : false,
+      media: query,
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn(() => true)
+    }))
+  );
+}
+
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
     parentId: null,
@@ -237,10 +253,10 @@ function renderNotesWorkspace() {
   );
 }
 
-function queryTitleInput(value: string): HTMLInputElement | null {
+function queryTitleInput(value: string): HTMLTextAreaElement | null {
   return (
     screen
-      .queryAllByRole<HTMLInputElement>("textbox", {
+      .queryAllByRole<HTMLTextAreaElement>("textbox", {
         name: "Edit node title"
       })
       .find(
@@ -250,7 +266,7 @@ function queryTitleInput(value: string): HTMLInputElement | null {
   );
 }
 
-function getTitleInput(value: string): HTMLInputElement {
+function getTitleInput(value: string): HTMLTextAreaElement {
   const input = queryTitleInput(value);
   if (!input) {
     throw new Error(`Unable to find a node title input with value ${value}`);
@@ -258,7 +274,7 @@ function getTitleInput(value: string): HTMLInputElement {
   return input;
 }
 
-async function findTitleInput(value: string): Promise<HTMLInputElement> {
+async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
   return waitFor(() => getTitleInput(value));
 }
 
@@ -297,12 +313,14 @@ function mockOutlineRowRects() {
 
 describe("Notes workspace", () => {
   beforeEach(() => {
+    mockNarrowViewport(false);
     configureRepository();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
@@ -564,7 +582,7 @@ describe("Notes workspace", () => {
     });
     expect(
       screen
-        .getAllByRole<HTMLInputElement>("textbox", {
+        .getAllByRole<HTMLTextAreaElement>("textbox", {
           name: "Edit node title"
         })
         .map((input) => input.value)
@@ -579,7 +597,7 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(
         screen
-          .getAllByRole<HTMLInputElement>("textbox", {
+          .getAllByRole<HTMLTextAreaElement>("textbox", {
             name: "Edit node title"
           })
           .map((input) => input.value)
@@ -711,7 +729,7 @@ describe("Notes workspace", () => {
 
   it("focuses a created title exactly once across row unmount and remount", async () => {
     const user = userEvent.setup();
-    const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
+    const focusSpy = vi.spyOn(HTMLTextAreaElement.prototype, "focus");
     renderNotesWorkspace();
     await findTitleInput("Project");
 
@@ -804,7 +822,24 @@ describe("Notes workspace", () => {
     expect(home).toHaveAttribute("data-base-ui-tooltip-trigger");
   });
 
-  it("uses uncapped 36px indentation from the outline root", async () => {
+  it("shares one centered content column between the page header and outline", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+
+    const heading = await screen.findByRole("heading", {
+      name: "Project",
+      level: 1
+    });
+    const content = heading.closest<HTMLElement>(".notes-outline-content");
+
+    expect(content).not.toBeNull();
+    expect(within(content!).getByRole("list")).toBeInTheDocument();
+  });
+
+  it("uses uncapped depth-based indentation from the outline root", async () => {
     configureRepository(
       Array.from({ length: 12 }, (_, index) =>
         node({
@@ -821,12 +856,26 @@ describe("Notes workspace", () => {
     const deepestRow = deepestTitle.closest<HTMLElement>(".notes-node");
 
     expect(deepestRow).not.toBeNull();
-    expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe("396px");
+    expect(deepestRow?.style.getPropertyValue("--notes-depth")).toBe("11");
+    expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe("");
     expect(
       screen.getByLabelText("Notes outline").style.getPropertyValue(
         "--notes-outline-indent"
       )
     ).toBe("36px");
+  });
+
+  it("uses the 28px runtime indent token at narrow widths", async () => {
+    mockNarrowViewport(true);
+    renderNotesWorkspace();
+
+    await findTitleInput("Project");
+
+    expect(
+      screen.getByLabelText("Notes outline").style.getPropertyValue(
+        "--notes-outline-indent"
+      )
+    ).toBe("28px");
   });
 
   it("persists collapse and completion only after authoritative responses", async () => {
@@ -1860,6 +1909,9 @@ describe("Notes workspace", () => {
     expect(
       fireEvent.keyDown(title, { key: "Enter", isComposing: true })
     ).toBe(true);
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", repeat: true })
+    ).toBe(false);
     expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
     const note = screen.getByRole("textbox", {
       name: "Supporting note: Project"
@@ -2220,7 +2272,7 @@ describe("Notes workspace", () => {
     expect(options[0]).toHaveFocus();
 
     await user.keyboard("{Enter}");
-    const pageTitle = await screen.findByRole<HTMLInputElement>("textbox", {
+    const pageTitle = await screen.findByRole<HTMLTextAreaElement>("textbox", {
       name: "Edit page title"
     });
     expect(pageTitle).toHaveValue("Project");
@@ -2233,7 +2285,7 @@ describe("Notes workspace", () => {
     await user.keyboard(" ");
     await waitFor(() => {
       expect(
-        screen.getByRole<HTMLInputElement>("textbox", {
+        screen.getByRole<HTMLTextAreaElement>("textbox", {
           name: "Edit page title"
         })
       ).toHaveValue("Outside branch");
@@ -2521,7 +2573,25 @@ describe("Notes workspace", () => {
 
   it("keeps long titles and one compact menu trigger in stable layout hooks", async () => {
     const longTitle =
-      "A very long project title that must remain readable when every interim row action is revealed";
+      "아주 긴 한국어 프로젝트 제목은 여러 줄로 자연스럽게 줄바꿈되어도 화살표와 글머리표와 메뉴를 덮지 않아야 합니다";
+    let resizeCallback: ResizeObserverCallback | undefined;
+    let titleScrollHeight = 52;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: ResizeObserverCallback) {
+          resizeCallback = callback;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    vi.spyOn(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+      "get"
+    ).mockImplementation(() => titleScrollHeight);
     configureRepository([node({ id: "project", title: longTitle })]);
     renderNotesWorkspace();
 
@@ -2531,6 +2601,23 @@ describe("Notes workspace", () => {
 
     expect(row).not.toBeNull();
     expect(menuSlot).not.toBeNull();
+    expect(title).toBeInstanceOf(HTMLTextAreaElement);
+    expect(title).toHaveAttribute("rows", "1");
+    expect(title).toHaveStyle({ height: "52px" });
+
+    titleScrollHeight = 76;
+    act(() =>
+      resizeCallback?.(
+        [
+          {
+            target: title,
+            contentRect: { width: 320 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+    expect(title).toHaveStyle({ height: "76px" });
     expect(title.parentElement).toBe(row);
     expect(menuSlot?.parentElement).toBe(row);
     expect(
@@ -2549,10 +2636,22 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-indent:\s*0px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*46px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
+      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*46px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline-rows\s*{[^}]*overflow-x:\s*auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-page-header\s*{[^}]*width:\s*100%;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
@@ -2564,7 +2663,7 @@ describe("Notes workspace", () => {
       /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title\s*{[^}]*grid-column:\s*3;[^}]*grid-row:\s*1;[^}]*height:\s*28px;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
+      /\.notes-node-title\s*{[^}]*grid-column:\s*3;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
@@ -2590,7 +2689,7 @@ describe("Notes workspace", () => {
       /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-title\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
+      /\.notes-page-title\s*{[^}]*min-height:\s*34px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-page-note\s*{[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
@@ -2609,10 +2708,25 @@ describe("Notes workspace", () => {
       /\.notes-node-guides\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:\s*repeat\([^}]*var\(--notes-outline-indent\)[^}]*\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-guide\s*{[^}]*width:\s*1px;[^}]*margin-inline-start:\s*33px;/s
+      /\.notes-node-guide\s*{[^}]*width:\s*1px;[^}]*margin-inline-start:\s*var\(--notes-bullet-center-offset\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*grid-template-columns:[^}]*var\(--notes-outline-indent\)[^}]*height:\s*2px;/s
+      /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*56px;[^}]*--notes-bullet-center-offset:\s*42px;[\s\S]*\.notes-node-main\s*{[^}]*grid-template-columns:\s*28px 28px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*width:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
     );
   });
 });

@@ -9,6 +9,7 @@ import type { NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
   resolveOutlineKey
@@ -21,14 +22,6 @@ interface NotesPageHeaderProps {
 
 function pageLabel(title: string): string {
   return title.trim() || "Untitled page";
-}
-
-function resizeNote(textarea: HTMLTextAreaElement | null): void {
-  if (!textarea) {
-    return;
-  }
-  textarea.style.height = "auto";
-  textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
 export function NotesPageHeader({
@@ -44,7 +37,7 @@ export function NotesPageHeader({
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const focusNoteOnOpenRef = useRef(false);
   const commandInFlightRef = useRef(false);
@@ -56,8 +49,10 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
 
+  useAutoGrowTextarea(titleRef, titleValue);
+
   useLayoutEffect(() => {
-    resizeNote(noteRef.current);
+    resizeTextarea(noteRef.current);
     if (noteVisible && focusNoteOnOpenRef.current && noteRef.current) {
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
@@ -105,7 +100,7 @@ export function NotesPageHeader({
     }
   };
 
-  const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+  const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
       key: event.key,
@@ -123,8 +118,13 @@ export function NotesPageHeader({
       platform: detectOutlineShortcutPlatform(),
       workspace: state
     });
+    if (!resolution) {
+      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+      }
+      return;
+    }
     if (
-      !resolution ||
       ![
         "focusNote",
         "toggleComplete",
@@ -132,6 +132,9 @@ export function NotesPageHeader({
         "delete"
       ].includes(resolution.type)
     ) {
+      if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+        event.preventDefault();
+      }
       return;
     }
     event.preventDefault();
@@ -158,20 +161,23 @@ export function NotesPageHeader({
     >
       <div className="notes-page-title-row">
         <h1 className="notes-page-heading" aria-label={label}>
-          <input
+          <textarea
             ref={titleRef}
             className="notes-page-title"
             value={titleValue}
             aria-label="Edit page title"
             placeholder="Untitled page"
+            rows={1}
+            wrap="soft"
             disabled={disabled}
             onKeyDown={handleTitleKeyDown}
-            onChange={(event) =>
+            onChange={(event) => {
+              resizeTextarea(event.currentTarget);
               actions.updateNodeDraft(nodeId, {
                 title: event.target.value,
                 note: noteValue
               })
-            }
+            }}
             onBlur={() => void actions.flushNodeDraft(nodeId)}
           />
         </h1>
@@ -206,7 +212,7 @@ export function NotesPageHeader({
           onFocus={() => setRevealedNoteNodeId(nodeId)}
           onChange={(event) => {
             setRevealedNoteNodeId(nodeId);
-            resizeNote(event.currentTarget);
+            resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
               note: event.target.value

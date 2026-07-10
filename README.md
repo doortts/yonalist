@@ -7,14 +7,26 @@ on issues and pull requests from a local Markdown vault.
 
 - Tauri + React + TypeScript desktop app scaffold.
 - Built-in local-only Notes workspace that works independently of GitHub auth
-  and has no remote sync path. Notes user data is stored in the selected
+  and has no cloud or remote sync path. Notes user data is stored in the selected
   vault's `.yonalist/notes.sqlite` file; resetting app settings and caches
   preserves it, while deleting all Notes data is a separate Notes-specific
   confirmed action.
+- Workflowy-style local Notes outliner with inline wrapping titles and notes,
+  unlimited nesting, expand/collapse arrows, bullet zoom and drag, hierarchy
+  guides, precise drop targets, breadcrumbs, completion filtering, starring,
+  duplication, deletion, failed-draft retry, search, tags, and Trash restore.
+- Notes title shortcuts: `Enter` splits a node, `Tab` indents,
+  `Shift+Tab` outdents, boundary arrow keys navigate or expand/collapse, and
+  empty `Backspace` removes a safe empty node. `Shift+Enter` opens the
+  supporting note; `Ctrl/Cmd+Enter` completes; `Alt+Shift+D` on Windows/Linux
+  or `Cmd+Shift+D` on macOS duplicates; `Ctrl+Shift+Backspace` on
+  Windows/Linux or `Cmd+Shift+Backspace` on macOS deletes. IME composition is
+  left untouched by structural shortcuts.
 - Local Notes export saves either the selected node subtree or the current
   zoomed page as frontmatter Markdown or a semantic PDF. Current-page export
   is unavailable while viewing all notes, and replacing an existing destination
-  always requires explicit confirmation.
+  always requires explicit confirmation. Export writes local files only and
+  does not publish or synchronize Notes content.
 - Notes PDFs bundle Nanum Gothic Regular for Korean text under the SIL Open Font
   License 1.1. The font and license are unmodified copies from the official
   Google Fonts repository; exact source URLs and checksums are recorded in

@@ -2,6 +2,8 @@ import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
 import type { FlattenedOutlineRow } from "./outlineTree";
 
 export const OUTLINE_INDENT_PX = 36;
+export const OUTLINE_NARROW_INDENT_PX = 28;
+export const OUTLINE_NARROW_MEDIA_QUERY = "(max-width: 720px)";
 
 export interface OutlineSiblingOrder {
   rootIds: readonly NoteId[];
@@ -250,10 +252,13 @@ export function projectOutlineDrop(
   overId: NoteId,
   horizontalOffset: number,
   rows: readonly FlattenedOutlineRow[],
-  order: OutlineSiblingOrder
+  order: OutlineSiblingOrder,
+  indentPx = OUTLINE_INDENT_PX
 ): OutlineDropProjection | null {
   if (
     !Number.isFinite(horizontalOffset) ||
+    !Number.isFinite(indentPx) ||
+    indentPx <= 0 ||
     !hasValidRowShape(rows, order.zoomRootId)
   ) {
     return null;
@@ -316,7 +321,7 @@ export function projectOutlineDrop(
   }
 
   const requestedDepth =
-    active.depth + Math.round(horizontalOffset / OUTLINE_INDENT_PX);
+    active.depth + Math.round(horizontalOffset / indentPx);
   const depth = Math.min(maximumDepth, Math.max(minimumDepth, requestedDepth));
   const parentId = parentAtDepth(previous, depth);
   if (parentId === undefined || (order.zoomRootId !== null && parentId === null)) {
