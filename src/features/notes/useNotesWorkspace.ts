@@ -56,7 +56,7 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
   ): void;
-  flushNodeDraft(nodeId: NoteId): Promise<void>;
+  flushNodeDraft(nodeId: NoteId): Promise<boolean>;
   moveNode(
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
@@ -1019,13 +1019,38 @@ export function useNotesWorkspace({
     [persistDraft, publishDraftState, writeScheduledDraft]
   );
 
-  const flushNodeDraft = useCallback((nodeId: NoteId): Promise<void> => {
-    const record = sessionRecordRef.current;
-    if (!record || record.closing || sessionRef.current !== record.session) {
-      return Promise.resolve();
-    }
-    return record.writeQueue.flush(nodeId);
-  }, []);
+  const flushNodeDraft = useCallback(
+    async (nodeId: NoteId): Promise<boolean> => {
+      const record = sessionRecordRef.current;
+      if (!record || record.closing || sessionRef.current !== record.session) {
+        return false;
+      }
+      const draft = record.drafts.get(nodeId);
+      if (draft) {
+        try {
+          if (
+            draft.status === "failed" &&
+            record.pendingDebounceByNodeId.get(nodeId) !== draft.revision
+          ) {
+            await record.writeQueue.enqueue(() =>
+              persistDraft(record, nodeId, draft)
+            );
+          } else {
+            await record.writeQueue.flush(nodeId);
+          }
+        } catch {
+          return false;
+        }
+      }
+      return (
+        !record.closing &&
+        sessionRecordRef.current === record &&
+        sessionRef.current === record.session &&
+        !record.drafts.has(nodeId)
+      );
+    },
+    [persistDraft]
+  );
 
   const retryFailedDraft = useCallback(
     async (nodeId: NoteId): Promise<void> => {
@@ -1072,35 +1097,7 @@ export function useNotesWorkspace({
     }
   }, [retryFailedDraft]);
 
-  const flushDraftBeforeStructural = useCallback(
-    async (nodeId: NoteId): Promise<boolean> => {
-      const record = sessionRecordRef.current;
-      if (!record || record.closing || sessionRef.current !== record.session) {
-        return false;
-      }
-      const draft = record.drafts.get(nodeId);
-      if (!draft) {
-        return true;
-      }
-
-      if (
-        draft.status === "failed" &&
-        record.pendingDebounceByNodeId.get(nodeId) !== draft.revision
-      ) {
-        await record.writeQueue.enqueue(() =>
-          persistDraft(record, nodeId, draft)
-        );
-      } else {
-        await record.writeQueue.flush(nodeId);
-      }
-      return (
-        !record.closing &&
-        sessionRecordRef.current === record &&
-        !record.drafts.has(nodeId)
-      );
-    },
-    [persistDraft]
-  );
+  const flushDraftBeforeStructural = flushNodeDraft;
 
   const flushAllDraftsBeforeStructural = useCallback(
     async (): Promise<boolean> => {
@@ -1925,7 +1922,10 @@ export function useNotesWorkspace({
           updateNodeDraft(nodeId, patch);
         }
       },
-      flushNodeDraft: gate(flushNodeDraft),
+      flushNodeDraft: (nodeId) =>
+        deletingNotesDataRef.current
+          ? Promise.resolve(false)
+          : flushNodeDraft(nodeId),
       moveNode: gate(moveNode),
       toggleComplete: gate(toggleComplete),
       toggleCollapsed: gate(toggleCollapsed),

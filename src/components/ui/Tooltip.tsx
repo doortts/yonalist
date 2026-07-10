@@ -31,7 +31,9 @@ export function IconTooltip({ label, children, side = "top" }: IconTooltipProps)
           side={side}
           sideOffset={6}
         >
-          <BaseTooltip.Popup className="tooltip-popup">{label}</BaseTooltip.Popup>
+          <BaseTooltip.Popup className="tooltip-popup" role="tooltip">
+            {label}
+          </BaseTooltip.Popup>
         </BaseTooltip.Positioner>
       </BaseTooltip.Portal>
     </BaseTooltip.Root>

@@ -9,7 +9,11 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteId, NoteNode } from "../../domain/notes";
+import type {
+  NoteId,
+  NoteNode,
+  NotesStore
+} from "../../domain/notes";
 import {
   NotesExportConflictError,
   type NotesExportFormat,
@@ -24,6 +28,7 @@ import type {
   NotesLibraryView,
   UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+import { useNotesWorkspace } from "./useNotesWorkspace";
 
 const exportServiceMock = vi.hoisted(() => ({
   saveNotesExport: vi.fn(),
@@ -56,7 +61,7 @@ function renderExportMenu(
   overrides: Partial<ComponentProps<typeof NotesExportMenu>> = {},
   vaultPath = "/vault"
 ) {
-  const onFlushNodeDraft = vi.fn().mockResolvedValue(undefined);
+  const onFlushNodeDraft = vi.fn().mockResolvedValue(true);
   const props: ComponentProps<typeof NotesExportMenu> = {
     selectedNodeId: "selected",
     selectedNodeTitle: "Selected title",
@@ -66,13 +71,27 @@ function renderExportMenu(
     ...overrides
   };
 
-  render(
+  const rendered = render(
     <VaultRootContext.Provider value={vaultPath}>
       <NotesExportMenu {...props} />
     </VaultRootContext.Provider>
   );
 
-  return { onFlushNodeDraft, props };
+  return {
+    onFlushNodeDraft,
+    props,
+    unmount: rendered.unmount,
+    rerenderExportMenu(
+      nextOverrides: Partial<ComponentProps<typeof NotesExportMenu>>,
+      nextVaultPath = vaultPath
+    ) {
+      rendered.rerender(
+        <VaultRootContext.Provider value={nextVaultPath}>
+          <NotesExportMenu {...props} {...nextOverrides} />
+        </VaultRootContext.Provider>
+      );
+    }
+  };
 }
 
 async function openExportMenu(user = userEvent.setup()) {
@@ -97,10 +116,70 @@ function note(id: NoteId, title: string, parentId: NoteId | null): NoteNode {
   };
 }
 
+function repository(overrides: Partial<NotesStore> = {}): NotesStore {
+  const empty = vi.fn().mockResolvedValue({ nodes: [] });
+  return {
+    initialize: vi.fn().mockResolvedValue(undefined),
+    loadWorkspace: vi.fn().mockResolvedValue({
+      nodes: [
+        note("page", "Page title", null),
+        note("selected", "Selected title", "page")
+      ]
+    }),
+    createNode: empty,
+    updateNode: empty,
+    splitNode: empty,
+    moveNode: empty,
+    toggleComplete: empty,
+    toggleCollapsed: empty,
+    toggleStar: empty,
+    duplicateNode: empty,
+    removeEmptyNode: empty,
+    softDeleteNode: empty,
+    restoreNode: empty,
+    emptyTrash: empty,
+    search: vi.fn().mockResolvedValue([]),
+    listTags: vi.fn().mockResolvedValue([]),
+    deleteDatabase: vi.fn().mockResolvedValue(undefined),
+    ...overrides
+  };
+}
+
+function RealWorkspacePane({
+  store,
+  onWorkspace
+}: {
+  store: NotesStore;
+  onWorkspace(workspace: UseNotesWorkspaceResult): void;
+}) {
+  const workspace = useNotesWorkspace({
+    vaultRoot: "/vault",
+    repository: store
+  });
+  onWorkspace(workspace);
+  return (
+    <NotesWorkspaceContext.Provider value={workspace}>
+      <NotesOutlinePane />
+    </NotesWorkspaceContext.Provider>
+  );
+}
+
+function renderRealWorkspacePane(
+  store: NotesStore,
+  onWorkspace: (workspace: UseNotesWorkspaceResult) => void
+) {
+  render(
+    <VaultRootContext.Provider value="/vault">
+      <RealWorkspacePane store={store} onWorkspace={onWorkspace} />
+    </VaultRootContext.Provider>
+  );
+}
+
 interface WorkspaceOptions {
   deletingNotesData?: boolean;
   draftTitle?: string;
   libraryView?: NotesLibraryView;
+  pageDraftTitle?: string;
   selectedId?: NoteId | null;
   status?: UseNotesWorkspaceResult["state"]["status"];
   zoomRootId?: NoteId | null;
@@ -128,7 +207,7 @@ function workspaceValue(
     createChild: resolved(),
     updateNode: resolved(),
     updateNodeDraft: vi.fn(),
-    flushNodeDraft: resolved(),
+    flushNodeDraft: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
@@ -154,17 +233,28 @@ function workspaceValue(
     activeTag: null,
     tags: [],
     locallyExpandedNodeIds: new Set(),
-    draftsByNodeId:
-      options.draftTitle === undefined
+    draftsByNodeId: {
+      ...(options.draftTitle === undefined
         ? {}
         : {
             selected: {
               title: options.draftTitle,
               note: "",
               revision: 1,
-              status: "pending"
+              status: "pending" as const
             }
-          },
+          }),
+      ...(options.pageDraftTitle === undefined
+        ? {}
+        : {
+            page: {
+              title: options.pageDraftTitle,
+              note: "",
+              revision: 2,
+              status: "pending" as const
+            }
+          })
+    },
     writeError: null,
     retryFailedDraft: resolved(),
     retryLastFailedWrite: resolved(),
@@ -207,11 +297,11 @@ describe("NotesExportMenu", () => {
 
     const trigger = screen.getByRole("button", { name: "Export" });
     await user.hover(trigger);
-    expect(
-      await screen.findByText("Export", { selector: ".tooltip-popup" })
-    ).toBeVisible();
+    expect(await screen.findByRole("tooltip", { name: "Export" })).toBeVisible();
 
     const menu = await openExportMenu(user);
+    expect(menu).toHaveAccessibleName("Export");
+    expect(menu).not.toHaveAttribute("aria-label");
     expect(
       within(menu).getAllByRole("menuitem").map((item) => item.textContent)
     ).toEqual([
@@ -300,6 +390,27 @@ describe("NotesExportMenu", () => {
     ).toHaveAttribute("aria-disabled", "true");
   });
 
+  it("disables the trigger and closes its menu when all targets disappear", async () => {
+    const user = userEvent.setup();
+    const rendered = renderExportMenu();
+    await openExportMenu(user);
+
+    rendered.rerenderExportMenu({
+      selectedNodeId: null,
+      selectedNodeTitle: undefined,
+      zoomRootId: null,
+      zoomRootTitle: undefined
+    });
+
+    const trigger = screen.getByRole("button", { name: "Export" });
+    expect(trigger).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.queryByRole("menu")).not.toBeInTheDocument()
+    );
+    await user.click(trigger);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
   it("keeps save-dialog cancellation silent", async () => {
     const user = userEvent.setup();
     exportServiceMock.saveNotesExport.mockResolvedValue(null);
@@ -317,6 +428,85 @@ describe("NotesExportMenu", () => {
       expect(screen.queryByRole("status")).not.toBeInTheDocument();
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
+  });
+
+  it("blocks save and retains retry when the draft flush returns false", async () => {
+    const user = userEvent.setup();
+    const onFlushNodeDraft = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    exportServiceMock.saveNotesExport.mockResolvedValue(
+      exportResult("markdown")
+    );
+    renderExportMenu({ onFlushNodeDraft });
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Save this note before exporting.");
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(onFlushNodeDraft).toHaveBeenCalledTimes(2);
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce();
+    });
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Exported Markdown."
+    );
+  });
+
+  it("blocks export when the real workspace retains a rejected draft write", async () => {
+    const user = userEvent.setup();
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("disk full"))
+    });
+    let currentWorkspace: UseNotesWorkspaceResult | undefined;
+    renderRealWorkspacePane(store, (workspace) => {
+      currentWorkspace = workspace;
+    });
+    await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
+    await act(async () => {
+      await currentWorkspace?.actions.focusNode("selected");
+    });
+    act(() => {
+      currentWorkspace?.actions.updateNodeDraft("selected", {
+        title: "Unsaved title",
+        note: ""
+      });
+    });
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+
+    const exportControl = screen
+      .getByRole("button", { name: "Export" })
+      .closest<HTMLElement>(".notes-export-control");
+    expect(exportControl).not.toBeNull();
+    expect(await within(exportControl!).findByRole("alert")).toHaveTextContent(
+      "Save this note before exporting."
+    );
+    expect(store.updateNode).toHaveBeenCalled();
+    expect(currentWorkspace?.draftsByNodeId.selected).toMatchObject({
+      title: "Unsaved title",
+      status: "failed"
+    });
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
   it("exposes a busy state and prevents duplicate export commands", async () => {
@@ -345,6 +535,114 @@ describe("NotesExportMenu", () => {
     );
   });
 
+  it("does not start a native export when unmounted during draft flushing", async () => {
+    const user = userEvent.setup();
+    const flush = deferred<boolean>();
+    const rendered = renderExportMenu({
+      onFlushNodeDraft: vi.fn().mockReturnValue(flush.promise)
+    });
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent("Exporting");
+
+    rendered.unmount();
+    await act(async () => flush.resolve(true));
+
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a late native success after export becomes unavailable", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NotesExportResult | null>();
+    exportServiceMock.saveNotesExport.mockReturnValue(pending.promise);
+    const rendered = renderExportMenu();
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce()
+    );
+
+    rendered.rerenderExportMenu({ disabled: true });
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.queryByText("Exporting...")).not.toBeInTheDocument()
+    );
+
+    await act(async () => pending.resolve(exportResult("markdown")));
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("suppresses a late native error after export becomes unavailable", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NotesExportResult | null>();
+    exportServiceMock.saveNotesExport.mockReturnValue(pending.promise);
+    const rendered = renderExportMenu();
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce()
+    );
+
+    rendered.rerenderExportMenu({ disabled: true });
+    await act(async () => pending.reject(new Error("late failure")));
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("suppresses a late conflict after export becomes unavailable", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NotesExportResult | null>();
+    const request: NotesExportRequest = {
+      vaultPath: "/vault",
+      rootNodeId: "selected",
+      destination: "/exports/selected.md",
+      overwrite: false
+    };
+    exportServiceMock.saveNotesExport.mockReturnValue(pending.promise);
+    const rendered = renderExportMenu();
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce()
+    );
+
+    rendered.rerenderExportMenu({ disabled: true });
+    await act(async () =>
+      pending.reject(new NotesExportConflictError(request.destination, request))
+    );
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
   it("opens overwrite confirmation with the captured destination and cancels without writing", async () => {
     const user = userEvent.setup();
     const request: NotesExportRequest = {
@@ -368,6 +666,7 @@ describe("NotesExportMenu", () => {
     const dialog = await screen.findByRole("alertdialog", {
       name: "Replace existing export?"
     });
+    expect(dialog).toHaveClass("notes-export-confirm-dialog");
     expect(dialog).toHaveTextContent(request.destination);
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
@@ -545,6 +844,33 @@ describe("NotesExportMenu", () => {
       expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("selected");
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
         expect.objectContaining({ defaultFileName: "Renamed draft" })
+      );
+    });
+  });
+
+  it("uses the live current-page draft title for the PDF filename", async () => {
+    const user = userEvent.setup();
+    exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("pdf"));
+    const workspace = renderNotesPanes({
+      pageDraftTitle: "Renamed page draft"
+    });
+
+    await user.click(screen.getByRole("button", { name: "Export" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Current page as PDF"
+      })
+    );
+
+    await waitFor(() => {
+      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("page");
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rootNodeId: "page",
+          format: "pdf",
+          defaultFileName: "Renamed page draft"
+        })
       );
     });
   });

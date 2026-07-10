@@ -17,6 +17,8 @@ interface ConfirmDialogProps {
   cancelLabel?: string;
   /** Styles the confirm button as a destructive action. */
   danger?: boolean;
+  /** Optional feature-local class applied to the popup. */
+  popupClassName?: string;
   /** Invoked once when the user confirms; the dialog then closes. */
   onConfirm: () => void;
 }
@@ -37,13 +39,16 @@ export function ConfirmDialog({
   confirmLabel,
   cancelLabel = "취소",
   danger = false,
+  popupClassName,
   onConfirm
 }: ConfirmDialogProps) {
   return (
     <AlertDialog.Root open={open} onOpenChange={(nextOpen) => onOpenChange(nextOpen)}>
       <AlertDialog.Portal>
         <AlertDialog.Backdrop className="modal-backdrop" />
-        <AlertDialog.Popup className="modal confirm-dialog">
+        <AlertDialog.Popup
+          className={`modal confirm-dialog${popupClassName ? ` ${popupClassName}` : ""}`}
+        >
           <AlertDialog.Title render={<h2 className="confirm-dialog-title" />}>
             {title}
           </AlertDialog.Title>

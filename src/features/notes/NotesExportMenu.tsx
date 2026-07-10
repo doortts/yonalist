@@ -28,13 +28,14 @@ export interface NotesExportMenuProps {
   selectedNodeTitle?: string;
   zoomRootId: NoteId | null;
   zoomRootTitle?: string;
-  onFlushNodeDraft(nodeId: NoteId): Promise<void>;
+  onFlushNodeDraft(nodeId: NoteId): Promise<boolean>;
   disabled?: boolean;
+  loading?: boolean;
 }
 
 interface ExportAttempt {
   format: NotesExportFormat;
-  run(): Promise<NotesExportResult | null>;
+  run(isCurrent: () => boolean): Promise<NotesExportResult | null>;
 }
 
 interface RetryableAttempt {
@@ -71,7 +72,8 @@ export function NotesExportMenu({
   zoomRootId,
   zoomRootTitle,
   onFlushNodeDraft,
-  disabled = false
+  disabled = false,
+  loading = false
 }: NotesExportMenuProps) {
   const vaultPath = useContext(VaultRootContext);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -80,31 +82,66 @@ export function NotesExportMenu({
   const [pendingOverwrite, setPendingOverwrite] =
     useState<PendingOverwrite | null>(null);
   const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const operationGenerationRef = useRef(0);
+  const awaitingDraftFlushRef = useRef(false);
   const retryRef = useRef<RetryableAttempt | null>(null);
-  const unavailable = disabled || !vaultPath.trim();
+  const hardUnavailable =
+    disabled ||
+    !vaultPath.trim() ||
+    (selectedNodeId === null && zoomRootId === null);
+  const unavailable =
+    hardUnavailable || (loading && !awaitingDraftFlushRef.current);
+  const unavailableRef = useRef(unavailable);
+  unavailableRef.current = unavailable;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      operationGenerationRef.current += 1;
+      awaitingDraftFlushRef.current = false;
+      busyRef.current = false;
+      retryRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!unavailable) {
       return;
     }
+    operationGenerationRef.current += 1;
+    busyRef.current = false;
+    retryRef.current = null;
     setMenuOpen(false);
+    setBusy(false);
+    setFeedback(null);
     setPendingOverwrite(null);
   }, [unavailable]);
 
   const executeAttempt = useCallback(
     async (attempt: ExportAttempt, allowConflict: boolean) => {
-      if (busyRef.current || unavailable) {
+      if (
+        busyRef.current ||
+        unavailableRef.current ||
+        !mountedRef.current
+      ) {
         return;
       }
 
+      const operationGeneration = ++operationGenerationRef.current;
+      const isCurrent = () =>
+        mountedRef.current &&
+        !unavailableRef.current &&
+        operationGenerationRef.current === operationGeneration;
       busyRef.current = true;
       setBusy(true);
       setFeedback(null);
       retryRef.current = null;
 
       try {
-        const result = await attempt.run();
-        if (result === null) {
+        const result = await attempt.run(isCurrent);
+        if (!isCurrent() || result === null) {
           return;
         }
         setFeedback({
@@ -112,6 +149,9 @@ export function NotesExportMenu({
           message: `Exported ${formatLabel(result.format)}.`
         });
       } catch (cause) {
+        if (!isCurrent()) {
+          return;
+        }
         if (allowConflict && cause instanceof NotesExportConflictError) {
           setPendingOverwrite({
             format: attempt.format,
@@ -123,11 +163,13 @@ export function NotesExportMenu({
         retryRef.current = { attempt, allowConflict };
         setFeedback({ kind: "error", message: exportErrorMessage(cause) });
       } finally {
-        busyRef.current = false;
-        setBusy(false);
+        if (isCurrent()) {
+          busyRef.current = false;
+          setBusy(false);
+        }
       }
     },
-    [unavailable]
+    []
   );
 
   const startExport = (
@@ -141,8 +183,20 @@ export function NotesExportMenu({
 
     const attempt: ExportAttempt = {
       format,
-      run: async () => {
-        await onFlushNodeDraft(rootNodeId);
+      run: async (isCurrent) => {
+        awaitingDraftFlushRef.current = true;
+        let saved: boolean;
+        try {
+          saved = await onFlushNodeDraft(rootNodeId);
+        } finally {
+          awaitingDraftFlushRef.current = false;
+        }
+        if (!isCurrent()) {
+          return null;
+        }
+        if (!saved) {
+          throw new Error("Save this note before exporting.");
+        }
         return saveNotesExport({
           vaultPath,
           rootNodeId,
@@ -226,7 +280,7 @@ export function NotesExportMenu({
         </IconTooltip>
         <Menu.Portal>
           <Menu.Positioner side="bottom" align="end" sideOffset={6}>
-            <Menu.Popup className="notes-export-menu" aria-label="Export options">
+            <Menu.Popup className="notes-export-menu">
               <Menu.Item
                 className="notes-export-menu-item"
                 disabled={busy || selectedNodeId === null}
@@ -289,6 +343,7 @@ export function NotesExportMenu({
         }
         confirmLabel="Replace"
         cancelLabel="Cancel"
+        popupClassName="notes-export-confirm-dialog"
         onConfirm={replaceExistingExport}
       />
     </div>

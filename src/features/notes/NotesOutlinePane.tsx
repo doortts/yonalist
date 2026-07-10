@@ -258,9 +258,8 @@ export function NotesOutlinePane() {
                   state.nodesById[state.zoomRootId]?.title)
             }
             onFlushNodeDraft={actions.flushNodeDraft}
-            disabled={
-              deletingNotesData || trashView || state.status === "loading"
-            }
+            disabled={deletingNotesData || trashView}
+            loading={state.status === "loading"}
           />
         </div>
         <div className="notes-outline-rows">

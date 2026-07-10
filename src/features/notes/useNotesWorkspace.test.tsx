@@ -1776,6 +1776,127 @@ describe("useNotesWorkspace", () => {
     expect(secondMount.result.current.writeError).toBeNull();
   });
 
+  it("returns true after flushing a draft that persists successfully", async () => {
+    const saved = workspace([node({ id: "root", title: "saved" })]);
+    const store = repository({
+      updateNode: vi.fn().mockResolvedValue(saved)
+    });
+    const mounted = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
+
+    act(() => {
+      mounted.result.current.actions.updateNodeDraft("root", {
+        title: "saved",
+        note: ""
+      });
+    });
+
+    let flushed: unknown;
+    await act(async () => {
+      flushed = await mounted.result.current.actions.flushNodeDraft("root");
+    });
+
+    expect(flushed).toBe(true);
+    expect(mounted.result.current.draftsByNodeId).toEqual({});
+  });
+
+  it("returns false when flushing retains a failed draft", async () => {
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("disk full"))
+    });
+    const mounted = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
+
+    act(() => {
+      mounted.result.current.actions.updateNodeDraft("root", {
+        title: "not saved",
+        note: ""
+      });
+    });
+
+    let flushed: unknown;
+    await act(async () => {
+      flushed = await mounted.result.current.actions.flushNodeDraft("root");
+    });
+
+    expect(flushed).toBe(false);
+    expect(mounted.result.current.draftsByNodeId.root).toMatchObject({
+      title: "not saved",
+      status: "failed"
+    });
+  });
+
+  it("returns true when a second flush retries and saves a retained draft", async () => {
+    const saved = workspace([node({ id: "root", title: "saved on retry" })]);
+    const store = repository({
+      updateNode: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("disk full"))
+        .mockResolvedValueOnce(saved)
+    });
+    const mounted = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
+
+    act(() => {
+      mounted.result.current.actions.updateNodeDraft("root", {
+        title: "saved on retry",
+        note: ""
+      });
+    });
+
+    let firstFlush: unknown;
+    let retryFlush: unknown;
+    await act(async () => {
+      firstFlush = await mounted.result.current.actions.flushNodeDraft("root");
+      retryFlush = await mounted.result.current.actions.flushNodeDraft("root");
+    });
+
+    expect(firstFlush).toBe(false);
+    expect(retryFlush).toBe(true);
+    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(mounted.result.current.draftsByNodeId).toEqual({});
+  });
+
+  it("returns false when the vault session changes before a flush completes", async () => {
+    const oldWrite = deferred<NotesWorkspace>();
+    const oldStore = repository({
+      updateNode: vi.fn().mockReturnValue(oldWrite.promise)
+    });
+    const newStore = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "new-root" })]))
+    });
+    const mounted = renderHook(
+      ({ vaultRoot, repository: current }) =>
+        useNotesWorkspace({ vaultRoot, repository: current }),
+      { initialProps: { vaultRoot: "/old", repository: oldStore } }
+    );
+    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
+
+    act(() => {
+      mounted.result.current.actions.updateNodeDraft("root", {
+        title: "old vault draft",
+        note: ""
+      });
+    });
+    const flush = mounted.result.current.actions.flushNodeDraft("root");
+    await waitFor(() => expect(oldStore.updateNode).toHaveBeenCalledOnce());
+
+    mounted.rerender({ vaultRoot: "/new", repository: newStore });
+    await act(async () => {
+      oldWrite.resolve(workspace([node({ id: "root", title: "old vault draft" })]));
+    });
+
+    await expect(flush).resolves.toBe(false);
+  });
+
   it("retries a retained failed draft before closing its unmounted session", async () => {
     const saved = workspace([node({ id: "root", title: "saved on unmount" })]);
     const store = repository({
