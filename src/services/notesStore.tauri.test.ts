@@ -125,6 +125,33 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("passes beforeId unchanged and keeps legacy afterId-only moves valid", async () => {
+    const beforeInput: MoveNoteNodeInput = {
+      id: nodeId,
+      parentId: null,
+      afterId: null,
+      beforeId: secondNodeId
+    };
+    const legacyInput: MoveNoteNodeInput = {
+      id: secondNodeId,
+      parentId: null,
+      afterId: nodeId
+    };
+    invokeMock.mockResolvedValue(workspace);
+
+    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toBe(workspace);
+    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toBe(workspace);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_move_node", {
+      vaultPath,
+      input: beforeInput
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_move_node", {
+      vaultPath,
+      input: legacyInput
+    });
+  });
+
   it.each([
     ["notes_toggle_complete", notesToggleComplete],
     ["notes_toggle_collapsed", notesToggleCollapsed],

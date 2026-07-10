@@ -62,6 +62,7 @@ pub struct MoveNodeInput {
     pub id: NoteId,
     pub parent_id: Option<NoteId>,
     pub after_id: Option<NoteId>,
+    pub before_id: Option<NoteId>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -124,11 +125,18 @@ impl MoveNodeInput {
         validate_note_id(&self.id)?;
         validate_optional_note_id(self.parent_id.as_deref())?;
         validate_optional_note_id(self.after_id.as_deref())?;
+        validate_optional_note_id(self.before_id.as_deref())?;
+        if self.after_id.is_some() && self.before_id.is_some() {
+            return Err("A node move cannot specify both afterId and beforeId.".to_string());
+        }
         if self.parent_id.as_deref() == Some(self.id.as_str()) {
             return Err("A node cannot be moved under itself.".to_string());
         }
         if self.after_id.as_deref() == Some(self.id.as_str()) {
             return Err("A node cannot be placed after itself.".to_string());
+        }
+        if self.before_id.as_deref() == Some(self.id.as_str()) {
+            return Err("A node cannot be placed before itself.".to_string());
         }
         Ok(())
     }
@@ -147,7 +155,11 @@ impl SplitNodeInput {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_note_id;
+    use super::{validate_note_id, MoveNodeInput};
+
+    const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const SECOND_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
 
     #[test]
     fn validates_only_canonical_uuid_v4_ids() {
@@ -165,5 +177,30 @@ mod tests {
                 "accepted invalid ID {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn move_rejects_conflicting_and_self_anchors() {
+        let conflicting = MoveNodeInput {
+            id: NODE_ID.to_string(),
+            parent_id: None,
+            after_id: Some(SECOND_ID.to_string()),
+            before_id: Some(THIRD_ID.to_string()),
+        };
+        assert_eq!(
+            conflicting.validate().expect_err("conflicting anchors"),
+            "A node move cannot specify both afterId and beforeId."
+        );
+
+        let self_anchored = MoveNodeInput {
+            id: NODE_ID.to_string(),
+            parent_id: None,
+            after_id: None,
+            before_id: Some(NODE_ID.to_string()),
+        };
+        assert_eq!(
+            self_anchored.validate().expect_err("self before anchor"),
+            "A node cannot be placed before itself."
+        );
     }
 }

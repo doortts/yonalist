@@ -145,6 +145,25 @@ mod tests {
         assert_eq!(create.parent_id, None);
         assert_eq!(create.after_id, None);
 
+        let move_before: MoveNodeInput = serde_json::from_value(json!({
+            "id": ROOT_ID,
+            "parentId": null,
+            "afterId": null,
+            "beforeId": SPLIT_ID
+        }))
+        .expect("camelCase move input with beforeId");
+        assert_eq!(move_before.after_id, None);
+        assert_eq!(move_before.before_id.as_deref(), Some(SPLIT_ID));
+
+        let legacy_move: MoveNodeInput = serde_json::from_value(json!({
+            "id": ROOT_ID,
+            "parentId": null,
+            "afterId": SPLIT_ID
+        }))
+        .expect("legacy move input with only afterId");
+        assert_eq!(legacy_move.after_id.as_deref(), Some(SPLIT_ID));
+        assert_eq!(legacy_move.before_id, None);
+
         let split: SplitNodeInput = serde_json::from_value(json!({
             "id": ROOT_ID,
             "newNodeId": SPLIT_ID,
@@ -262,6 +281,7 @@ mod tests {
                 id: SPLIT_ID.to_string(),
                 parent_id: Some(ROOT_ID.to_string()),
                 after_id: Some(EMPTY_ID.to_string()),
+                before_id: None,
             },
         )
         .expect("move");

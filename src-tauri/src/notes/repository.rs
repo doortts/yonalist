@@ -452,17 +452,42 @@ fn next_sort_key(
     parent_id: Option<&str>,
     after_id: Option<&str>,
 ) -> Result<i64, String> {
-    next_sort_key_excluding(transaction, parent_id, after_id, None)
+    next_sort_key_excluding(transaction, parent_id, after_id, None, None)
 }
 
 fn next_sort_key_excluding(
     transaction: &Transaction<'_>,
     parent_id: Option<&str>,
     after_id: Option<&str>,
+    before_id: Option<&str>,
     excluded_id: Option<&str>,
 ) -> Result<i64, String> {
     let siblings = sibling_keys(transaction, parent_id, excluded_id)?;
     let calculate = |siblings: &[(String, i64)]| -> Result<Option<i64>, String> {
+        if after_id.is_some() && before_id.is_some() {
+            return Err("A node move cannot specify both afterId and beforeId.".to_string());
+        }
+        if let Some(before_id) = before_id {
+            let index = siblings
+                .iter()
+                .position(|(node_id, _)| node_id == before_id)
+                .ok_or_else(|| {
+                    "The requested beforeId must identify a live sibling under the target parent."
+                        .to_string()
+                })?;
+            let right = siblings[index].1;
+            return match index.checked_sub(1).and_then(|index| siblings.get(index)) {
+                Some((_, left)) => {
+                    let gap = i128::from(right) - i128::from(*left);
+                    if gap > 1 {
+                        Ok(Some((i128::from(*left) + gap / 2) as i64))
+                    } else {
+                        Ok(None)
+                    }
+                }
+                None => Ok(right.checked_sub(SORT_KEY_STEP)),
+            };
+        }
         let Some(after_id) = after_id else {
             return match siblings.last() {
                 Some((_, sort_key)) => Ok(sort_key.checked_add(SORT_KEY_STEP)),
@@ -675,6 +700,7 @@ pub(crate) fn move_node(
             transaction,
             input.parent_id.as_deref(),
             input.after_id.as_deref(),
+            input.before_id.as_deref(),
             Some(&input.id),
         )?;
         transaction
@@ -1857,6 +1883,135 @@ mod tests {
     }
 
     #[test]
+    fn move_places_a_node_before_the_first_root_without_sort_key_overflow() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, i64::MIN, "first root");
+        insert_node(&connection, CHILD_ID, None, i64::MIN + 1, "second root");
+        insert_node(&connection, THIRD_ID, None, 0, "moving root");
+
+        let workspace = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: THIRD_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                before_id: Some(NODE_ID.to_string()),
+            },
+        )
+        .expect("move before first root");
+
+        assert_eq!(
+            active_children(&connection, None),
+            vec![
+                (THIRD_ID.to_string(), 0),
+                (NODE_ID.to_string(), 1024),
+                (CHILD_ID.to_string(), 2048),
+            ]
+        );
+        assert_eq!(workspace.nodes[0].id, THIRD_ID);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn move_places_a_node_before_the_first_child_without_rebalancing() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "first child");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, "second child");
+
+        let workspace = move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: THIRD_ID.to_string(),
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                before_id: Some(CHILD_ID.to_string()),
+            },
+        )
+        .expect("move before first child");
+
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID)),
+            vec![(THIRD_ID.to_string(), 0), (CHILD_ID.to_string(), 1024)]
+        );
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == THIRD_ID)
+                .expect("moved child")
+                .parent_id
+                .as_deref(),
+            Some(NODE_ID)
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn move_places_a_node_before_a_middle_sibling() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "first");
+        insert_node(&connection, CHILD_ID, None, 2048, "middle");
+        insert_node(&connection, THIRD_ID, None, 3072, "moving");
+
+        move_node(
+            &mut connection,
+            MoveNodeInput {
+                id: THIRD_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                before_id: Some(CHILD_ID.to_string()),
+            },
+        )
+        .expect("move before middle root");
+
+        assert_eq!(
+            active_children(&connection, None),
+            vec![
+                (NODE_ID.to_string(), 1024),
+                (THIRD_ID.to_string(), 1536),
+                (CHILD_ID.to_string(), 2048),
+            ]
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn move_rejects_cross_parent_and_deleted_before_anchors_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "target parent");
+        insert_node(&connection, CHILD_ID, None, 2048, "other parent");
+        insert_node(&connection, THIRD_ID, None, 3072, "moving root");
+        insert_node(
+            &connection,
+            FOURTH_ID,
+            Some(CHILD_ID),
+            1024,
+            "cross-parent anchor",
+        );
+        insert_node(&connection, FIFTH_ID, Some(NODE_ID), 1024, "deleted anchor");
+        soft_delete_node(&mut connection, FIFTH_ID).expect("delete anchor");
+
+        for anchor_id in [FOURTH_ID, FIFTH_ID] {
+            let before = persistent_state(&connection);
+            let error = move_node(
+                &mut connection,
+                MoveNodeInput {
+                    id: THIRD_ID.to_string(),
+                    parent_id: Some(NODE_ID.to_string()),
+                    after_id: None,
+                    before_id: Some(anchor_id.to_string()),
+                },
+            )
+            .expect_err("invalid before anchor");
+
+            assert!(error.contains("beforeId must identify a live sibling under the target parent"));
+            assert_eq!(persistent_state(&connection), before);
+            assert_tree_invariants(&connection);
+        }
+    }
+
+    #[test]
     fn move_rejects_a_descendant_as_the_new_parent() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "root");
@@ -1878,6 +2033,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 parent_id: Some(FOURTH_ID.to_string()),
                 after_id: None,
+                before_id: None,
             },
         )
         .expect_err("cycle");
@@ -1898,6 +2054,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
+                before_id: None,
             },
         )
         .expect_err("self-parent cycle");
@@ -1920,6 +2077,7 @@ mod tests {
                 id: THIRD_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
+                before_id: None,
             },
         )
         .expect("promote child");
@@ -1929,6 +2087,7 @@ mod tests {
                 id: CHILD_ID.to_string(),
                 parent_id: None,
                 after_id: Some(NODE_ID.to_string()),
+                before_id: None,
             },
         )
         .expect("reorder root");

@@ -40,6 +40,7 @@ export interface MoveNoteNodeInput {
   id: NoteId;
   parentId: NoteId | null;
   afterId: NoteId | null;
+  beforeId?: NoteId | null;
 }
 
 export interface SplitNoteNodeInput {
