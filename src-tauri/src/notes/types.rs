@@ -19,6 +19,23 @@ pub struct NoteNode {
     pub deleted_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotesExportSnapshot {
+    pub root_node_id: NoteId,
+    pub title: String,
+    pub exported_at: String,
+    pub root: ExportNode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportNode {
+    pub id: NoteId,
+    pub title: String,
+    pub note: String,
+    pub completed: bool,
+    pub children: Vec<ExportNode>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NoteLayoutMode {

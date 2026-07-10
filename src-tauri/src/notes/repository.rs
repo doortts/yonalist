@@ -1,7 +1,7 @@
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, MoveNodeInput, NoteLayoutMode, NoteNode,
-    NoteSearchMatchedField, NoteSearchResult, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput,
+    validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteLayoutMode, NoteNode,
+    NoteSearchMatchedField, NoteSearchResult, NotesExportSnapshot, NotesWorkspace,
+    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
     params, Connection, Error, ErrorCode, OptionalExtension, Params, Row, Transaction,
@@ -357,6 +357,146 @@ fn query_workspace<P: Params>(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes workspace: {error}"))?;
     Ok(NotesWorkspace { nodes })
+}
+
+struct StoredExportNode {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    completed_at: Option<String>,
+}
+
+pub(crate) fn load_export_snapshot(
+    connection: &Connection,
+    root_node_id: &str,
+) -> Result<NotesExportSnapshot, String> {
+    validate_note_id(root_node_id)?;
+    let mut statement = connection
+        .prepare(
+            "WITH RECURSIVE \
+             export_context(exported_at) AS (\
+               SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+             ), \
+             subtree(id, path, cycle) AS (\
+               SELECT id, '|' || id || '|', 0 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT child.id, subtree.path || child.id || '|', \
+                      instr(subtree.path, '|' || child.id || '|') > 0 \
+               FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+             ) \
+             SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
+                    node.completed_at, subtree.cycle, export_context.exported_at \
+             FROM subtree \
+             JOIN notes_nodes node ON node.id = subtree.id \
+             CROSS JOIN export_context",
+        )
+        .map_err(|error| format!("Could not prepare the Notes export snapshot: {error}"))?;
+    let rows = statement
+        .query_map([root_node_id], |row| {
+            Ok((
+                StoredExportNode {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    sort_key: row.get(2)?,
+                    title: row.get(3)?,
+                    note: row.get(4)?,
+                    completed_at: row.get(5)?,
+                },
+                row.get::<_, i64>(6)? != 0,
+                row.get::<_, String>(7)?,
+            ))
+        })
+        .map_err(|error| format!("Could not load the Notes export snapshot: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the Notes export snapshot: {error}"))?;
+
+    if rows.is_empty() {
+        return Err(format!(
+            "Note node {root_node_id} is missing or deleted and cannot be exported."
+        ));
+    }
+    if rows.iter().any(|(_, cycle, _)| *cycle) {
+        return Err("The Notes tree contains a cycle and cannot be exported.".to_string());
+    }
+
+    let exported_at = rows[0].2.clone();
+    let mut by_id = rows
+        .into_iter()
+        .map(|(node, _, _)| (node.id.clone(), node))
+        .collect::<HashMap<_, _>>();
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for node in by_id.values() {
+        if node.id == root_node_id {
+            continue;
+        }
+        let parent_id = node
+            .parent_id
+            .as_ref()
+            .ok_or_else(|| format!("Note node {} has no parent in the export subtree.", node.id))?;
+        if !by_id.contains_key(parent_id) {
+            return Err(format!(
+                "Note node {} has a missing parent in the export subtree.",
+                node.id
+            ));
+        }
+        children
+            .entry(parent_id.clone())
+            .or_default()
+            .push(node.id.clone());
+    }
+    for child_ids in children.values_mut() {
+        child_ids.sort_by(|left, right| {
+            let left_node = &by_id[left];
+            let right_node = &by_id[right];
+            left_node
+                .sort_key
+                .cmp(&right_node.sort_key)
+                .then_with(|| left.cmp(right))
+        });
+    }
+
+    fn build_node(
+        node_id: &str,
+        by_id: &mut HashMap<String, StoredExportNode>,
+        children: &HashMap<String, Vec<String>>,
+        visited: &mut HashSet<String>,
+    ) -> Result<ExportNode, String> {
+        if !visited.insert(node_id.to_string()) {
+            return Err("The Notes tree contains a cycle and cannot be exported.".to_string());
+        }
+        let node = by_id.remove(node_id).ok_or_else(|| {
+            format!("Note node {node_id} disappeared while building the export snapshot.")
+        })?;
+        let child_ids = children.get(node_id).cloned().unwrap_or_default();
+        let child_nodes = child_ids
+            .iter()
+            .map(|child_id| build_node(child_id, by_id, children, visited))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ExportNode {
+            id: node.id,
+            title: node.title,
+            note: node.note,
+            completed: node.completed_at.is_some(),
+            children: child_nodes,
+        })
+    }
+
+    let root = build_node(root_node_id, &mut by_id, &children, &mut HashSet::new())?;
+    if !by_id.is_empty() {
+        return Err("The Notes export subtree could not be assembled safely.".to_string());
+    }
+
+    Ok(NotesExportSnapshot {
+        root_node_id: root_node_id.to_string(),
+        title: root.title.clone(),
+        exported_at,
+        root,
+    })
 }
 
 pub(crate) fn load_workspace(

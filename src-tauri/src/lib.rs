@@ -9,8 +9,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod file_io;
 mod notes;
 
+use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
     notes_create_node, notes_delete_database, notes_duplicate_node, notes_empty_trash,
     notes_initialize, notes_list_tags, notes_load_workspace, notes_move_node,
@@ -288,32 +290,6 @@ pub fn resolve_vault_file(vault_path: &str, relative_path: &str) -> Result<PathB
     }
 
     Ok(expand_vault_path(vault_path).join(relative))
-}
-
-fn ensure_parent(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-/// Writes through a sibling temp file and renames it into place so a crash
-/// mid-write never leaves a truncated vault document behind.
-fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), String> {
-    ensure_parent(path)?;
-
-    let mut temp_name = path
-        .file_name()
-        .ok_or_else(|| "File path must name a file.".to_string())?
-        .to_os_string();
-    temp_name.push(".tmp");
-    let temp_path = path.with_file_name(temp_name);
-
-    fs::write(&temp_path, contents).map_err(|error| error.to_string())?;
-    fs::rename(&temp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        error.to_string()
-    })
 }
 
 fn collect_markdown_files(
