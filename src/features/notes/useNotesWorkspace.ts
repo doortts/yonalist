@@ -163,7 +163,8 @@ function hasMoveDependencies(
   return Boolean(
     workspace.nodesById[input.id] &&
       (input.parentId === null || workspace.nodesById[input.parentId]) &&
-      (input.afterId === null || workspace.nodesById[input.afterId])
+      (input.afterId === null || workspace.nodesById[input.afterId]) &&
+      (input.beforeId == null || workspace.nodesById[input.beforeId])
   );
 }
 

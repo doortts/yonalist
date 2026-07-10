@@ -446,6 +446,32 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("skips a queued move when its before sibling is missing", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      moveNode: vi.fn().mockResolvedValue(initial)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.moveNode({
+        id: "child",
+        parentId: null,
+        afterId: null,
+        beforeId: "missing"
+      })
+    );
+
+    expect(store.moveNode).not.toHaveBeenCalled();
+  });
+
   it("does not launch loading or queued commands after unmount during initialization", async () => {
     const initialization = deferred<void>();
     const store = repository({
