@@ -2193,9 +2193,46 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("uses stable Workflowy row geometry and overlays secondary actions", () => {
+  it("keeps long titles and interim actions in separate stable layout hooks", async () => {
+    const longTitle =
+      "A very long project title that must remain readable when every interim row action is revealed";
+    configureRepository([node({ id: "project", title: longTitle })]);
+    renderNotesWorkspace();
+
+    const title = await findTitleInput(longTitle);
+    const row = title.closest<HTMLElement>(".notes-node-main");
+    const actions = row?.querySelector<HTMLElement>(".notes-node-actions");
+
+    expect(row).not.toBeNull();
+    expect(actions).not.toBeNull();
+    expect(title.parentElement).toBe(row);
+    expect(actions?.parentElement).toBe(row);
+    expect(within(row!).getByRole("button", { name: `Complete ${longTitle}` })).toBeVisible();
+    expect(within(row!).getByRole("button", { name: `Star ${longTitle}` })).toBeVisible();
+    expect(
+      within(row!).getByRole("button", {
+        name: `Show supporting note for ${longTitle}`
+      })
+    ).toBeVisible();
+    expect(
+      within(row!).getByRole("button", { name: `Duplicate ${longTitle}` })
+    ).toBeVisible();
+    expect(
+      within(row!).getByRole("button", { name: `Delete ${longTitle}` })
+    ).toBeVisible();
+
+    title.focus();
+    expect(row).toContainElement(document.activeElement as HTMLElement | null);
+    fireEvent.mouseEnter(row!);
+    expect(actions).toBeInTheDocument();
+  });
+
+  it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) 24px;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
+      /\.notes-node\s*{[^}]*--notes-indent:\s*0px;[^}]*--notes-actions-width:\s*149px;[^}]*--notes-content-offset:\s*46px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-actions-width\);[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
@@ -2207,16 +2244,19 @@ describe("Notes workspace", () => {
       /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title\s*{[^}]*height:\s*28px;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
+      /\.notes-node-title\s*{[^}]*grid-column:\s*3;[^}]*grid-row:\s*1;[^}]*height:\s*28px;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-actions\s*{[^}]*position:\s*absolute;[^}]*inset-inline-end:\s*0;/s
+      /\.notes-node-actions\s*{[^}]*position:\s*static;[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*justify-content:\s*flex-end;[^}]*width:\s*var\(--notes-actions-width\);[^}]*min-width:\s*var\(--notes-actions-width\);/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node-actions\s*{[^}]*(?:position:\s*absolute|inset-inline-end):/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main:focus-within \.notes-node-actions,[^{]*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+      /\.notes-node-main:hover \.notes-node-actions,\s*\.notes-node-main:focus-within \.notes-node-actions,\s*\.notes-node-actions:focus-within\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-content-offset:\s*46px;/s
+      /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s

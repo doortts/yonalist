@@ -465,6 +465,7 @@
 
 .notes-node {
   --notes-indent: 0px;
+  --notes-actions-width: 149px;
   --notes-content-offset: 46px;
   position: relative;
   min-width: 0;
@@ -478,7 +479,7 @@
 .notes-node-main {
   position: relative;
   display: grid;
-  grid-template-columns: 20px 18px minmax(0, 1fr) 24px;
+  grid-template-columns: 20px 18px minmax(0, 1fr) var(--notes-actions-width);
   align-items: center;
   gap: 4px;
   min-height: 28px;
@@ -595,6 +596,8 @@
 }
 
 .notes-node-title {
+  grid-column: 3;
+  grid-row: 1;
   width: 100%;
   min-width: 0;
   height: 28px;
@@ -620,16 +623,18 @@
 
 .notes-node-actions {
   display: flex;
-  position: absolute;
-  inset-inline-end: 0;
-  top: 0;
-  z-index: 1;
+  position: static;
+  grid-column: 4;
+  grid-row: 1;
   align-items: center;
+  justify-content: flex-end;
   flex: 0 0 auto;
   gap: 1px;
+  width: var(--notes-actions-width);
+  min-width: var(--notes-actions-width);
   min-height: 28px;
-  padding-inline-start: 4px;
-  background: var(--bg-detail);
+  padding: 0;
+  background: transparent;
   opacity: 0;
   pointer-events: none;
 }
@@ -642,6 +647,8 @@
 }
 
 .notes-node-main-readonly .notes-node-actions {
+  width: 24px;
+  min-width: 24px;
   opacity: 1;
   pointer-events: auto;
 }
@@ -681,7 +688,7 @@
 
 .notes-node-title:focus-visible {
   outline: 0;
-  box-shadow: inset 0 -1px 0 var(--border-strong);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .notes-node-bullet:focus-visible {
