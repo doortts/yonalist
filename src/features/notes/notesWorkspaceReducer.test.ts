@@ -84,7 +84,7 @@ describe("notesWorkspaceReducer", () => {
     const retained = notesWorkspaceReducer(state, {
       type: "settleQueueWork",
       result: {
-        kind: "success",
+        kind: "authoritative",
         workspace: workspace([
           node({ id: "root" }),
           node({ id: "child", parentId: "root" }),
@@ -110,7 +110,7 @@ describe("notesWorkspaceReducer", () => {
     const cleared = notesWorkspaceReducer(retained, {
       type: "settleQueueWork",
       result: {
-        kind: "success",
+        kind: "authoritative",
         workspace: workspace([node({ id: "root" })])
       },
       hasPendingWork: false
@@ -162,5 +162,48 @@ describe("notesWorkspaceReducer", () => {
       editingNoteId: null,
       pendingFocusId: null
     });
+  });
+
+  it("retains errors through loading and skipped dependent work", () => {
+    const confirmed = normalizeWorkspace(workspace([node({ id: "root" })]));
+    const failed = notesWorkspaceReducer(confirmed, {
+      type: "settleQueueWork",
+      result: { kind: "failure", error: "parent creation failed" },
+      hasPendingWork: false
+    });
+
+    const loading = notesWorkspaceReducer(failed, { type: "setLoading" });
+    expect(loading).toMatchObject({
+      status: "loading",
+      error: "parent creation failed"
+    });
+    expect(loading.nodesById.root).toBeDefined();
+
+    const skipped = notesWorkspaceReducer(loading, {
+      type: "settleQueueWork",
+      result: { kind: "skipped" },
+      hasPendingWork: false
+    });
+    expect(skipped).toMatchObject({
+      status: "error",
+      error: "parent creation failed"
+    });
+    expect(skipped.nodesById.root).toBeDefined();
+  });
+
+  it("reports ready after skipped work only when no failure remains", () => {
+    const loading = notesWorkspaceReducer(
+      normalizeWorkspace(workspace([node({ id: "root" })])),
+      { type: "setLoading" }
+    );
+
+    const skipped = notesWorkspaceReducer(loading, {
+      type: "settleQueueWork",
+      result: { kind: "skipped" },
+      hasPendingWork: false
+    });
+
+    expect(skipped).toMatchObject({ status: "ready", error: null });
+    expect(skipped.nodesById.root).toBeDefined();
   });
 });

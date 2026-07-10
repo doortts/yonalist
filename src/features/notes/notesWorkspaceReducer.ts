@@ -24,10 +24,11 @@ export type NotesWorkspaceReducerAction =
       type: "settleQueueWork";
       result:
         | {
-            kind: "success";
+            kind: "authoritative";
             workspace: NotesWorkspace;
             uiUpdate?: Partial<UiState>;
           }
+        | { kind: "skipped" }
         | { kind: "failure"; error: string };
       hasPendingWork: boolean;
     }
@@ -101,6 +102,17 @@ export function notesWorkspaceReducer(
         };
       }
 
+      if (action.result.kind === "skipped") {
+        return {
+          ...state,
+          status: action.hasPendingWork
+            ? "loading"
+            : state.error
+              ? "error"
+              : "ready"
+        };
+      }
+
       const workspace = normalizeWorkspace(action.result.workspace);
       const retainedUi = normalizedUiState(workspace, state);
       const uiUpdate = action.result.uiUpdate;
@@ -133,7 +145,7 @@ export function notesWorkspaceReducer(
         status: "loading"
       };
     case "setLoading":
-      return { ...state, status: "loading", error: null };
+      return { ...state, status: "loading" };
     case "setZoomRoot":
       return {
         ...state,

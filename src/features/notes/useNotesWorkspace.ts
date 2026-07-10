@@ -8,6 +8,14 @@ import type {
   NotesWorkspace
 } from "../../domain/notes";
 import {
+  notesWorkspaceCoordinatorRegistry,
+  type NotesWorkspaceCoordinatorSession,
+  type NotesWorkspaceQueueContext,
+  type NotesWorkspaceQueueResult,
+  type NotesWorkspaceQueueWork,
+  type NotesWorkspaceUiUpdate
+} from "./notesWorkspaceCoordinator";
+import {
   normalizeWorkspace,
   notesWorkspaceReducer,
   type NormalizedNotesWorkspace
@@ -49,47 +57,17 @@ export interface UseNotesWorkspaceResult {
   error: string | null;
 }
 
-type UiUpdate = Partial<
-  Pick<
-    NormalizedNotesWorkspace,
-    "selectedId" | "zoomRootId" | "editingNoteId" | "pendingFocusId"
-  >
->;
-
-interface WorkspaceCoordinator {
-  vaultRoot: string;
-  repository: NotesStore;
-  subscribers: number;
-  active: boolean;
-  initialLoadQueued: boolean;
-  pendingWork: number;
-  confirmedWorkspace: NotesWorkspace;
-  tail: Promise<void>;
+function authoritative(
+  workspace: NotesWorkspace,
+  uiUpdate?: NotesWorkspaceUiUpdate
+): NotesWorkspaceQueueResult {
+  return { kind: "authoritative", workspace, uiUpdate };
 }
 
-interface QueueSuccess {
-  workspace: NotesWorkspace;
-  uiUpdate?: UiUpdate;
-}
-
-type QueueWork = (
-  confirmedWorkspace: NotesWorkspace
-) => Promise<QueueSuccess | null>;
-
-type WorkspaceCommand = (
-  store: NotesStore,
-  vaultPath: string,
-  confirmedState: NormalizedNotesWorkspace,
-  confirmedWorkspace: NotesWorkspace
-) => Promise<NotesWorkspace> | NotesWorkspace;
-
-type UiUpdateFactory = (
-  before: NormalizedNotesWorkspace,
-  after: NotesWorkspace
-) => UiUpdate;
-
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+function confirmedState(
+  context: NotesWorkspaceQueueContext
+): NormalizedNotesWorkspace {
+  return normalizeWorkspace(context.confirmedWorkspace);
 }
 
 function duplicateRootId(
@@ -104,9 +82,19 @@ function duplicateRootId(
   return (
     after.nodes.find(
       (node) =>
-        node.parentId === source.parentId &&
-        !before.nodesById[node.id]
+        node.parentId === source.parentId && !before.nodesById[node.id]
     )?.id ?? null
+  );
+}
+
+function hasMoveDependencies(
+  workspace: NormalizedNotesWorkspace,
+  input: MoveNoteNodeInput
+): boolean {
+  return Boolean(
+    workspace.nodesById[input.id] &&
+      (input.parentId === null || workspace.nodesById[input.parentId]) &&
+      (input.afterId === null || workspace.nodesById[input.afterId])
   );
 }
 
@@ -119,323 +107,237 @@ export function useNotesWorkspace({
     undefined,
     () => normalizeWorkspace({ nodes: [] })
   );
-  const identityRef = useRef({ vaultRoot, repository });
-  const mountedRef = useRef(false);
-  const coordinatorRef = useRef<WorkspaceCoordinator | null>(null);
-  identityRef.current = { vaultRoot, repository };
-
-  const isCurrentCoordinator = useCallback(
-    (coordinator: WorkspaceCoordinator) => {
-      const current = identityRef.current;
-      return (
-        mountedRef.current &&
-        coordinator.active &&
-        coordinator.subscribers > 0 &&
-        coordinatorRef.current === coordinator &&
-        current.vaultRoot === coordinator.vaultRoot &&
-        current.repository === coordinator.repository
-      );
-    },
-    []
-  );
-
-  const enqueueCoordinatorWork = useCallback(
-    (
-      coordinator: WorkspaceCoordinator,
-      work: QueueWork,
-      announceLoading = true
-    ): Promise<void> => {
-      coordinator.pendingWork += 1;
-      if (announceLoading && isCurrentCoordinator(coordinator)) {
-        dispatch({ type: "setLoading" });
-      }
-
-      const completion = coordinator.tail.then(async () => {
-        if (!isCurrentCoordinator(coordinator)) {
-          coordinator.pendingWork -= 1;
-          return;
-        }
-
-        try {
-          const result = await work(coordinator.confirmedWorkspace);
-          if (!result || !isCurrentCoordinator(coordinator)) {
-            coordinator.pendingWork -= 1;
-            return;
-          }
-
-          coordinator.confirmedWorkspace = result.workspace;
-          coordinator.pendingWork -= 1;
-          dispatch({
-            type: "settleQueueWork",
-            result: {
-              kind: "success",
-              workspace: result.workspace,
-              uiUpdate: result.uiUpdate
-            },
-            hasPendingWork: coordinator.pendingWork > 0
-          });
-        } catch (cause) {
-          coordinator.pendingWork -= 1;
-          if (isCurrentCoordinator(coordinator)) {
-            dispatch({
-              type: "settleQueueWork",
-              result: { kind: "failure", error: errorMessage(cause) },
-              hasPendingWork: coordinator.pendingWork > 0
-            });
-          }
-        }
-      });
-
-      coordinator.tail = completion;
-      return completion;
-    },
-    [isCurrentCoordinator]
-  );
+  const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
 
   useEffect(() => {
-    mountedRef.current = true;
-    let coordinator = coordinatorRef.current;
-    if (
-      !coordinator ||
-      coordinator.vaultRoot !== vaultRoot ||
-      coordinator.repository !== repository
-    ) {
-      if (coordinator) {
-        coordinator.active = false;
-      }
-      coordinator = {
-        vaultRoot,
-        repository,
-        subscribers: 0,
-        active: true,
-        initialLoadQueued: false,
-        pendingWork: 0,
-        confirmedWorkspace: { nodes: [] },
-        tail: Promise.resolve()
-      };
-      coordinatorRef.current = coordinator;
-    }
-    coordinator.subscribers += 1;
-    coordinator.active = true;
     dispatch({ type: "startWorkspaceLoad" });
-
-    if (!coordinator.initialLoadQueued) {
-      coordinator.initialLoadQueued = true;
-      let initialization: Promise<void>;
-      try {
-        initialization = repository.initialize(vaultRoot);
-      } catch (cause) {
-        initialization = Promise.reject(cause);
+    const session = notesWorkspaceCoordinatorRegistry.openSession({
+      repository,
+      vaultRoot,
+      onEvent(event) {
+        if (event.type === "pending") {
+          dispatch({ type: "setLoading" });
+          return;
+        }
+        dispatch({
+          type: "settleQueueWork",
+          result: event.result,
+          hasPendingWork: event.hasPendingWork
+        });
       }
-
-      void enqueueCoordinatorWork(
-        coordinator,
-        async () => {
-          await initialization;
-          if (!isCurrentCoordinator(coordinator)) {
-            return null;
-          }
-          const workspace = await repository.loadWorkspace(vaultRoot, {
-            kind: "active"
-          });
-          return { workspace };
-        },
-        false
-      );
-    }
+    });
+    sessionRef.current = session;
 
     return () => {
-      coordinator.subscribers -= 1;
-      if (coordinator.subscribers === 0) {
-        coordinator.active = false;
+      if (sessionRef.current === session) {
+        sessionRef.current = null;
       }
-      mountedRef.current = false;
+      session.close();
     };
-  }, [
-    enqueueCoordinatorWork,
-    isCurrentCoordinator,
-    repository,
-    vaultRoot
-  ]);
+  }, [repository, vaultRoot]);
 
-  const runCommand = useCallback(
-    (
-      command: WorkspaceCommand,
-      uiUpdate: UiUpdate | UiUpdateFactory = {}
-    ): Promise<void> => {
-      const coordinator = coordinatorRef.current;
-      if (
-        !coordinator ||
-        coordinator.vaultRoot !== vaultRoot ||
-        coordinator.repository !== repository ||
-        !isCurrentCoordinator(coordinator)
-      ) {
-        return Promise.resolve();
-      }
+  const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
+    return sessionRef.current?.enqueue(work) ?? Promise.resolve();
+  }, []);
 
-      return enqueueCoordinatorWork(
-        coordinator,
-        async (confirmedWorkspace) => {
-          const before = normalizeWorkspace(confirmedWorkspace);
-          const workspace = await command(
-            coordinator.repository,
-            coordinator.vaultRoot,
-            before,
-            confirmedWorkspace
-          );
-          return {
-            workspace,
-            uiUpdate:
-              typeof uiUpdate === "function"
-                ? uiUpdate(before, workspace)
-                : uiUpdate
-          };
-        }
-      );
-    },
-    [
-      enqueueCoordinatorWork,
-      isCurrentCoordinator,
-      repository,
-      vaultRoot
-    ]
-  );
-
-  const createRoot = useCallback(async () => {
-    const id = createNoteId();
-    await runCommand(
-      (store, vaultPath, confirmed) =>
-        store.createNode(vaultPath, {
-          id,
-          parentId: null,
-          afterId: confirmed.rootIds.at(-1) ?? null,
-          title: "",
-          note: ""
-        }),
-      { selectedId: id, editingNoteId: id, pendingFocusId: id }
-    );
+  const createRoot = useCallback(() => {
+    return runCommand(async (context) => {
+      const before = confirmedState(context);
+      const id = createNoteId();
+      const workspace = await context.repository.createNode(context.vaultRoot, {
+        id,
+        parentId: null,
+        afterId: before.rootIds.at(-1) ?? null,
+        title: "",
+        note: ""
+      });
+      return authoritative(workspace, {
+        selectedId: id,
+        editingNoteId: id,
+        pendingFocusId: id
+      });
+    });
   }, [runCommand]);
 
   const createChild = useCallback(
-    async (nodeId: NoteId) => {
-      const id = createNoteId();
-      await runCommand(
-        (store, vaultPath, confirmed, confirmedWorkspace) => {
-          if (!confirmed.nodesById[nodeId]) {
-            return confirmedWorkspace;
-          }
-          const afterId = confirmed.childIdsByParent[nodeId]?.at(-1) ?? null;
-          return store.createNode(vaultPath, {
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        const before = confirmedState(context);
+        if (!before.nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        const id = createNoteId();
+        const workspace = await context.repository.createNode(
+          context.vaultRoot,
+          {
             id,
             parentId: nodeId,
-            afterId,
+            afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
             title: "",
             note: ""
-          });
-        },
-        { selectedId: id, editingNoteId: id, pendingFocusId: id }
-      );
+          }
+        );
+        return authoritative(workspace, {
+          selectedId: id,
+          editingNoteId: id,
+          pendingFocusId: id
+        });
+      });
     },
     [runCommand]
   );
 
   const splitNode = useCallback(
-    async (
+    (
       nodeId: NoteId,
       newNodeId: NoteId,
       prefix: string,
       suffix: string
     ) => {
-      await runCommand(
-        (store, vaultPath) =>
-          store.splitNode(vaultPath, {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        const workspace = await context.repository.splitNode(
+          context.vaultRoot,
+          {
             id: nodeId,
             newNodeId,
             prefix,
             suffix
-          }),
-        {
+          }
+        );
+        return authoritative(workspace, {
           selectedId: newNodeId,
           editingNoteId: newNodeId,
           pendingFocusId: newNodeId
-        }
-      );
+        });
+      });
     },
     [runCommand]
   );
 
   const updateNode = useCallback(
-    async (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
-      await runCommand((store, vaultPath) =>
-        store.updateNode(vaultPath, { id: nodeId, ...patch })
-      );
+    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.updateNode(context.vaultRoot, {
+            id: nodeId,
+            ...patch
+          })
+        );
+      });
     },
     [runCommand]
   );
 
   const moveNode = useCallback(
-    async (input: MoveNoteNodeInput) => {
-      await runCommand((store, vaultPath) => store.moveNode(vaultPath, input));
+    (input: MoveNoteNodeInput) => {
+      return runCommand(async (context) => {
+        if (!hasMoveDependencies(confirmedState(context), input)) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.moveNode(context.vaultRoot, input)
+        );
+      });
     },
     [runCommand]
   );
 
   const toggleComplete = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand((store, vaultPath) =>
-        store.toggleComplete(vaultPath, nodeId)
-      );
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.toggleComplete(context.vaultRoot, nodeId)
+        );
+      });
     },
     [runCommand]
   );
 
   const toggleCollapsed = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand((store, vaultPath) =>
-        store.toggleCollapsed(vaultPath, nodeId)
-      );
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.toggleCollapsed(context.vaultRoot, nodeId)
+        );
+      });
     },
     [runCommand]
   );
 
   const duplicateNode = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand(
-        (store, vaultPath) => store.duplicateNode(vaultPath, nodeId),
-        (before, workspace) => {
-          const duplicateId = duplicateRootId(before, workspace, nodeId);
-          return duplicateId
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        const before = confirmedState(context);
+        if (!before.nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        const workspace = await context.repository.duplicateNode(
+          context.vaultRoot,
+          nodeId
+        );
+        const duplicateId = duplicateRootId(before, workspace, nodeId);
+        return authoritative(
+          workspace,
+          duplicateId
             ? {
                 selectedId: duplicateId,
                 editingNoteId: duplicateId,
                 pendingFocusId: duplicateId
               }
-            : {};
-        }
-      );
+            : undefined
+        );
+      });
     },
     [runCommand]
   );
 
   const removeEmptyNode = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand((store, vaultPath) =>
-        store.removeEmptyNode(vaultPath, nodeId)
-      );
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.removeEmptyNode(context.vaultRoot, nodeId)
+        );
+      });
     },
     [runCommand]
   );
 
   const deleteNode = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand((store, vaultPath) => store.softDeleteNode(vaultPath, nodeId));
+    (nodeId: NoteId) => {
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        return authoritative(
+          await context.repository.softDeleteNode(context.vaultRoot, nodeId)
+        );
+      });
     },
     [runCommand]
   );
 
   const restoreNode = useCallback(
-    async (nodeId: NoteId) => {
-      await runCommand((store, vaultPath) => store.restoreNode(vaultPath, nodeId));
+    (nodeId: NoteId) => {
+      return runCommand(async (context) =>
+        authoritative(
+          await context.repository.restoreNode(context.vaultRoot, nodeId)
+        )
+      );
     },
     [runCommand]
   );
