@@ -53,6 +53,13 @@ describe("defaultNotesExportFileName", () => {
     expect(defaultNotesExportFileName(title)).toBe("notes-export.md");
   });
 
+  it.each(["CON .md", "COM1 .md", "NUL .txt"])(
+    "uses the default filename when whitespace precedes an extension in reserved Windows device name %j",
+    (title) => {
+      expect(defaultNotesExportFileName(title)).toBe("notes-export.md");
+    }
+  );
+
   it.each(["COM0", "COM10", "LPT0", "LPT10", "CONSOLE"])(
     "keeps non-reserved Windows filename stem %j",
     (title) => {

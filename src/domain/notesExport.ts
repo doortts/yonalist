@@ -35,9 +35,11 @@ export function defaultNotesExportFileName(
     .trim()
     .replace(/^\.+|\.+$/g, "")
     .trim()
-    .replace(/(?:\.md)+$/i, "");
+    .replace(/(?:\.md)+$/i, "")
+    .trim();
+  const windowsComparableBaseName = baseName.replace(/\s+(?=\.)/g, "");
 
-  return baseName && !WINDOWS_RESERVED_DEVICE_NAME.test(baseName)
+  return baseName && !WINDOWS_RESERVED_DEVICE_NAME.test(windowsComparableBaseName)
     ? `${baseName}.md`
     : DEFAULT_MARKDOWN_FILE_NAME;
 }
