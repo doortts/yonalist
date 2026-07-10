@@ -277,6 +277,7 @@ describe("Notes workspace", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -658,6 +659,112 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("coalesces rapid title edits into one write after 300 ms", async () => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+    vi.useFakeTimers();
+
+    fireEvent.change(title, { target: { value: "Project one" } });
+    fireEvent.change(title, { target: { value: "Project latest" } });
+
+    await vi.advanceTimersByTimeAsync(299);
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "project",
+      title: "Project latest",
+      note: "Project note"
+    });
+  });
+
+  it("flushes a title on blur without a later duplicate timer write", async () => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+    vi.useFakeTimers();
+
+    fireEvent.change(title, { target: { value: "Blurred project" } });
+    fireEvent.blur(title);
+
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a failed title draft visible and retries the failed patch", async () => {
+    notesStoreMock.updateNode
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce(
+        workspace(
+          initialNodes().map((current) =>
+            current.id === "project"
+              ? { ...current, title: "Project next" }
+              : current
+          )
+        )
+      );
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+
+    fireEvent.change(title, { target: { value: "Project next" } });
+    fireEvent.blur(title);
+
+    const retry = await screen.findByRole("button", { name: "Retry save" });
+    expect(title).toHaveValue("Project next");
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "project",
+      title: "Project next",
+      note: "Project note"
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Retry save" })
+      ).not.toBeInTheDocument()
+    );
+  });
+
+  it("retries the latest visible draft instead of a stale failed patch", async () => {
+    const user = userEvent.setup();
+    notesStoreMock.updateNode
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockResolvedValueOnce(
+        workspace(
+          initialNodes().map((current) =>
+            current.id === "project"
+              ? { ...current, title: "Newest visible title" }
+              : current
+          )
+        )
+      );
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+
+    fireEvent.change(title, { target: { value: "Failed title" } });
+    fireEvent.blur(title);
+    const retry = await screen.findByRole("button", { name: "Retry save" });
+
+    title.focus();
+    fireEvent.change(title, { target: { value: "Newest visible title" } });
+    await user.click(retry);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "project",
+      title: "Newest visible title",
+      note: "Project note"
+    });
+    expect(title).toHaveValue("Newest visible title");
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
+  });
+
   it("toggles and writes a supporting note on blur with the current title", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
@@ -686,6 +793,30 @@ describe("Notes workspace", () => {
         note: "Updated context"
       })
     );
+  });
+
+  it("debounces supporting-note edits with the latest title patch", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    await user.click(
+      screen.getByRole("button", { name: "Show supporting note for Project" })
+    );
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    vi.useFakeTimers();
+
+    fireEvent.change(note, { target: { value: "First note" } });
+    fireEvent.change(note, { target: { value: "Latest note" } });
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "project",
+      title: "Project",
+      note: "Latest note"
+    });
   });
 
   it("preserves newer title and note drafts when an older blur save resolves", async () => {
@@ -1087,6 +1218,26 @@ describe("Notes workspace", () => {
 
     fireEvent.blur(title);
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("flushes the pending debounce before a structural move without a timer duplicate", async () => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Milestone");
+    vi.useFakeTimers();
+    fireEvent.change(title, { target: { value: "Milestone queued" } });
+    title.focus();
+
+    expect(
+      fireEvent.keyDown(title, { key: "Tab", shiftKey: true })
+    ).toBe(false);
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
+    expect(
+      notesStoreMock.updateNode.mock.invocationCallOrder[0]
+    ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
   });
 
   it("saves before moving focus through visible rows without a native focus command", async () => {

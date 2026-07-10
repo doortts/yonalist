@@ -145,6 +145,7 @@ describe("useNotesWorkspace", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -1308,6 +1309,277 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.updateNode("root", { title: "Again", note: "" }));
     expect(result.current.error).toBe("write failed");
     expect(result.current.state.nodesById.root).toBeDefined();
+  });
+
+  it("coalesces rapid node drafts and writes the latest patch after 300 ms", async () => {
+    const store = repository({
+      updateNode: vi.fn((_vaultRoot, input) =>
+        Promise.resolve(
+          workspace([
+            node({ id: "root", title: input.title, note: input.note })
+          ])
+        )
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    vi.useFakeTimers();
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "first draft",
+        note: ""
+      });
+      result.current.actions.updateNodeDraft("root", {
+        title: "latest draft",
+        note: "latest note"
+      });
+    });
+
+    expect(result.current.draftsByNodeId.root).toMatchObject({
+      title: "latest draft",
+      note: "latest note"
+    });
+    await vi.advanceTimersByTimeAsync(299);
+    expect(store.updateNode).not.toHaveBeenCalled();
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "root",
+      title: "latest draft",
+      note: "latest note"
+    });
+  });
+
+  it("keeps a pending draft and split in one coordinator command", async () => {
+    const draftWrite = deferred<NotesWorkspace>();
+    const invocations: string[] = [];
+    const before = workspace([
+      node({ id: "source", title: "source" }),
+      node({ id: "other", sortKey: 2048, title: "other" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      updateNode: vi.fn((_vaultRoot, input) => {
+        invocations.push(`update:${input.id}`);
+        return input.id === "source"
+          ? draftWrite.promise
+          : Promise.resolve(before);
+      }),
+      splitNode: vi.fn().mockImplementation(async () => {
+        invocations.push("split");
+        return before;
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft("source", {
+        title: "source edited",
+        note: ""
+      });
+    });
+    let splitCompletion!: Promise<void>;
+    let otherCompletion!: Promise<void>;
+    act(() => {
+      splitCompletion = result.current.actions.splitNode(
+        "source",
+        "new-node",
+        "source",
+        " edited"
+      );
+      otherCompletion = result.current.actions.updateNode("other", {
+        title: "other edited",
+        note: ""
+      });
+    });
+    expect(invocations).toEqual(["update:source"]);
+
+    await act(async () =>
+      draftWrite.resolve(
+        workspace([
+          node({ id: "source", title: "source edited" }),
+          node({ id: "other", sortKey: 2048, title: "other" })
+        ])
+      )
+    );
+    await act(async () => Promise.all([splitCompletion, otherCompletion]));
+
+    expect(invocations).toEqual(["update:source", "split", "update:other"]);
+  });
+
+  it("flushes pending drafts before creating a new root", async () => {
+    createNoteIdMock.mockReturnValue("new-root");
+    const invocations: string[] = [];
+    const afterDraft = workspace([node({ id: "root", title: "edited" })]);
+    const store = repository({
+      updateNode: vi.fn().mockImplementation(async () => {
+        invocations.push("update");
+        return afterDraft;
+      }),
+      createNode: vi.fn().mockImplementation(async () => {
+        invocations.push("create");
+        return workspace([
+          node({ id: "root", title: "edited" }),
+          node({ id: "new-root", sortKey: 2048 })
+        ]);
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "edited",
+        note: ""
+      });
+    });
+    await act(async () => result.current.actions.createRoot());
+
+    expect(invocations).toEqual(["update", "create"]);
+  });
+
+  it("flushes an old-vault draft without publishing its response into the new vault", async () => {
+    const oldWrite = deferred<NotesWorkspace>();
+    const store = repository({
+      loadWorkspace: vi.fn((vaultRoot) =>
+        Promise.resolve(
+          workspace([
+            node({ id: vaultRoot === "/old" ? "old-root" : "new-root" })
+          ])
+        )
+      ),
+      updateNode: vi.fn().mockReturnValue(oldWrite.promise)
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/old" } }
+    );
+    await waitFor(() =>
+      expect(result.current.state.nodesById["old-root"]).toBeDefined()
+    );
+
+    act(() => {
+      result.current.actions.updateNodeDraft("old-root", {
+        title: "old draft",
+        note: ""
+      });
+    });
+    rerender({ vaultRoot: "/new" });
+
+    expect(store.updateNode).toHaveBeenCalledWith("/old", {
+      id: "old-root",
+      title: "old draft",
+      note: ""
+    });
+    await waitFor(() =>
+      expect(result.current.state.nodesById["new-root"]).toBeDefined()
+    );
+
+    await act(async () =>
+      oldWrite.resolve(workspace([node({ id: "old-saved" })]))
+    );
+    expect(result.current.state.nodesById["new-root"]).toBeDefined();
+    expect(result.current.state.nodesById["old-saved"]).toBeUndefined();
+    expect(result.current.draftsByNodeId).toEqual({});
+  });
+
+  it("flushes a dirty unmount before a same-vault remount activation", async () => {
+    const unmountWrite = deferred<NotesWorkspace>();
+    let loadCount = 0;
+    const store = repository({
+      loadWorkspace: vi.fn(() => {
+        loadCount += 1;
+        return Promise.resolve(
+          workspace([
+            node({
+              id: "root",
+              title: loadCount === 1 ? "before" : "saved"
+            })
+          ])
+        );
+      }),
+      updateNode: vi.fn().mockReturnValue(unmountWrite.promise)
+    });
+    const firstMount = renderHook(
+      () => useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
+      { wrapper: strictMode }
+    );
+    await waitFor(() => expect(firstMount.result.current.status).toBe("ready"));
+
+    act(() => {
+      firstMount.result.current.actions.updateNodeDraft("root", {
+        title: "saved",
+        note: ""
+      });
+    });
+    firstMount.unmount();
+    expect(store.updateNode).toHaveBeenCalledOnce();
+
+    const secondMount = renderHook(
+      () => useNotesWorkspace({ vaultRoot: "/vault", repository: store }),
+      { wrapper: strictMode }
+    );
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      unmountWrite.resolve(
+        workspace([node({ id: "root", title: "saved" })])
+      )
+    );
+    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(secondMount.result.current.state.nodesById.root.title).toBe(
+        "saved"
+      )
+    );
+    expect(store.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("retries a retained failed draft before closing its unmounted session", async () => {
+    const saved = workspace([node({ id: "root", title: "saved on unmount" })]);
+    const store = repository({
+      updateNode: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("disk full"))
+        .mockResolvedValueOnce(saved)
+    });
+    const mounted = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
+
+    act(() => {
+      mounted.result.current.actions.updateNodeDraft("root", {
+        title: "saved on unmount",
+        note: ""
+      });
+    });
+    await act(async () =>
+      mounted.result.current.actions.flushNodeDraft("root")
+    );
+    expect(mounted.result.current.writeError).toMatchObject({
+      operation: "write",
+      retryable: true,
+      message: "disk full"
+    });
+
+    mounted.unmount();
+
+    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "root",
+      title: "saved on unmount",
+      note: ""
+    });
   });
 
   it("does not launch or publish old-identity queued work after a vault change", async () => {

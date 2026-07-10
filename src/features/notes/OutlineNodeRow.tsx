@@ -5,6 +5,7 @@ import {
   Copy,
   GripVertical,
   MessageSquareText,
+  RotateCcw,
   Trash2
 } from "lucide-react";
 import {
@@ -25,38 +26,6 @@ interface OutlineNodeRowProps {
   dragDisabled: boolean;
 }
 
-interface DraftField {
-  value: string;
-  dirty: boolean;
-  pending: string | null;
-}
-
-function initialDraft(value: string): DraftField {
-  return { value, dirty: false, pending: null };
-}
-
-function synchronizeDraft(
-  draft: DraftField,
-  authoritativeValue: string
-): DraftField {
-  if (draft.pending === authoritativeValue) {
-    return {
-      value: draft.value,
-      dirty: draft.value !== authoritativeValue,
-      pending: null
-    };
-  }
-  if (draft.value === authoritativeValue) {
-    return draft.dirty || draft.pending !== null
-      ? initialDraft(authoritativeValue)
-      : draft;
-  }
-  if (draft.dirty || draft.pending !== null) {
-    return draft;
-  }
-  return initialDraft(authoritativeValue);
-}
-
 function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
 }
@@ -66,8 +35,14 @@ export function OutlineNodeRow({
   depth,
   dragDisabled
 }: OutlineNodeRowProps) {
-  const { actions, state } = useNotesWorkspaceContext();
+  const {
+    actions,
+    draftsByNodeId,
+    retryLastFailedWrite,
+    state
+  } = useNotesWorkspaceContext();
   const node = state.nodesById[nodeId];
+  const draft = draftsByNodeId[nodeId];
   const {
     attributes,
     isDragging,
@@ -85,46 +60,14 @@ export function OutlineNodeRow({
       tabIndex: 0
     }
   });
-  const [titleDraft, setTitleDraft] = useState(() =>
-    initialDraft(node?.title ?? "")
-  );
-  const [noteDraft, setNoteDraft] = useState(() =>
-    initialDraft(node?.note ?? "")
-  );
   const [noteOpen, setNoteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const structuralCommandInFlightRef = useRef(false);
-  const pendingSplitRef = useRef<{
-    sourceTitle: string;
-    prefix: string;
-    succeeded: boolean;
-  } | null>(null);
   const suppressedBlurPatchRef = useRef<{
     title: string;
     note: string;
   } | null>(null);
-
-  useEffect(() => {
-    if (!node) {
-      return;
-    }
-    const pendingSplit = pendingSplitRef.current;
-    setTitleDraft((draft) =>
-      pendingSplit?.succeeded &&
-      node.title === pendingSplit.prefix &&
-      draft.value === pendingSplit.sourceTitle
-        ? initialDraft(node.title)
-        : synchronizeDraft(draft, node.title)
-    );
-    setNoteDraft((draft) => synchronizeDraft(draft, node.note));
-    if (
-      state.error !== null ||
-      (pendingSplit?.succeeded && node.title === pendingSplit.prefix)
-    ) {
-      pendingSplitRef.current = null;
-    }
-  }, [node, state.error]);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -150,7 +93,9 @@ export function OutlineNodeRow({
     return null;
   }
 
-  const label = controlLabel(titleDraft.value || node.title);
+  const titleValue = draft?.title ?? node.title;
+  const noteValue = draft?.note ?? node.note;
+  const label = controlLabel(titleValue || node.title);
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
   const rowStyle = {
@@ -162,35 +107,22 @@ export function OutlineNodeRow({
   } as CSSProperties;
 
   const draftPatch = () => ({
-    title: titleDraft.value,
-    note: noteDraft.value
+    title: titleValue,
+    note: noteValue
   });
 
   const draftToSave = (force = false) => {
-    if (!force && !titleDraft.dirty && !noteDraft.dirty) {
+    if (!force && !draft) {
       return undefined;
     }
     return draftPatch();
   };
 
-  const markDraftPending = (patch: ReturnType<typeof draftPatch>) => {
-    setTitleDraft((draft) => ({
-      ...draft,
-      pending: draft.value === patch.title ? patch.title : draft.pending
-    }));
-    setNoteDraft((draft) => ({
-      ...draft,
-      pending: draft.value === patch.note ? patch.note : draft.pending
-    }));
-  };
-
-  const saveDrafts = (force = false) => {
-    const patch = draftToSave(force);
-    if (!patch) {
+  const saveDrafts = () => {
+    if (!draft) {
       return;
     }
-    markDraftPending(patch);
-    void actions.updateNode(nodeId, patch);
+    void actions.flushNodeDraft(nodeId);
   };
 
   const suppressHandledBlur = () => {
@@ -240,8 +172,8 @@ export function OutlineNodeRow({
       repeat: event.repeat,
       selectionStart: event.currentTarget.selectionStart,
       selectionEnd: event.currentTarget.selectionEnd,
-      title: titleDraft.value,
-      note: noteDraft.value,
+      title: titleValue,
+      note: noteValue,
       nodeId,
       workspace: state
     });
@@ -266,16 +198,6 @@ export function OutlineNodeRow({
         }
         runStructuralCommand(() => {
           const patch = draftToSave();
-          if (patch) {
-            markDraftPending(patch);
-          }
-          const sourceTitle = titleDraft.value;
-          const pendingSplit = {
-            sourceTitle,
-            prefix: resolution.prefix,
-            succeeded: false
-          };
-          pendingSplitRef.current = pendingSplit;
           suppressHandledBlur();
           return actions.splitNode(
             nodeId,
@@ -283,12 +205,7 @@ export function OutlineNodeRow({
             resolution.prefix,
             resolution.suffix,
             {
-              draft: patch,
-              onSuccess: () => {
-                if (pendingSplitRef.current === pendingSplit) {
-                  pendingSplit.succeeded = true;
-                }
-              }
+              draft: patch
             }
           );
         });
@@ -297,9 +214,6 @@ export function OutlineNodeRow({
       case "move": {
         runStructuralCommand(() => {
           const patch = draftToSave();
-          if (patch) {
-            markDraftPending(patch);
-          }
           suppressHandledBlur();
           return actions.moveNode(resolution.input, resolution.focusNodeId, {
             draft: patch,
@@ -319,7 +233,6 @@ export function OutlineNodeRow({
       case "remove": {
         runStructuralCommand(() => {
           const patch = draftToSave(true)!;
-          markDraftPending(patch);
           suppressHandledBlur();
           return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
             draft: patch
@@ -386,16 +299,14 @@ export function OutlineNodeRow({
         <input
           className="notes-node-title"
           ref={titleRef}
-          value={titleDraft.value}
+          value={titleValue}
           aria-label="Edit node title"
           placeholder="Untitled"
           onChange={(event) =>
-            setTitleDraft((draft) => ({
-              ...draft,
-              value: event.target.value,
-              dirty:
-                draft.pending !== null || event.target.value !== node.title
-            }))
+            actions.updateNodeDraft(nodeId, {
+              title: event.target.value,
+              note: noteValue
+            })
           }
           onKeyDown={handleTitleKeyDown}
           onBlur={commitDrafts}
@@ -403,6 +314,18 @@ export function OutlineNodeRow({
         />
 
         <div className="notes-node-actions">
+          {draft?.status === "failed" && (
+            <IconTooltip label="Retry save">
+              <button
+                className="notes-row-icon-button"
+                type="button"
+                aria-label="Retry save"
+                onClick={() => void retryLastFailedWrite()}
+              >
+                <RotateCcw size={15} aria-hidden="true" />
+              </button>
+            </IconTooltip>
+          )}
           <IconTooltip label={noteOpen ? "Hide note" : "Show note"}>
             <button
               className="notes-row-icon-button"
@@ -440,16 +363,14 @@ export function OutlineNodeRow({
       {noteOpen && (
         <textarea
           className="notes-node-note"
-          value={noteDraft.value}
+          value={noteValue}
           aria-label={`Supporting note: ${label}`}
           rows={2}
           onChange={(event) =>
-            setNoteDraft((draft) => ({
-              ...draft,
-              value: event.target.value,
-              dirty:
-                draft.pending !== null || event.target.value !== node.note
-            }))
+            actions.updateNodeDraft(nodeId, {
+              title: titleValue,
+              note: event.target.value
+            })
           }
           onBlur={commitDrafts}
         />

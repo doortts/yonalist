@@ -34,6 +34,11 @@ export interface NoteSearchResult {
   matchedField: "title" | "note";
 }
 
+export interface NotesStoreError extends Error {
+  operation: "load" | "write" | "search" | "deleteData";
+  retryable: boolean;
+}
+
 export interface CreateNoteNodeInput {
   id: NoteId;
   parentId: NoteId | null;

@@ -4,7 +4,8 @@ import {
   useLayoutEffect,
   useMemo,
   useReducer,
-  useRef
+  useRef,
+  useState
 } from "react";
 import { createNoteId } from "../../domain/notes";
 import type {
@@ -12,8 +13,13 @@ import type {
   NoteId,
   NoteNode,
   NotesStore,
+  NotesStoreError,
   NotesWorkspace
 } from "../../domain/notes";
+import {
+  createNotesWriteQueue,
+  type NotesWriteQueue
+} from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
   type NotesWorkspaceCoordinatorSession,
@@ -44,6 +50,11 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
   ): Promise<void>;
+  updateNodeDraft(
+    nodeId: NoteId,
+    patch: Pick<NoteNode, "title" | "note">
+  ): void;
+  flushNodeDraft(nodeId: NoteId): Promise<void>;
   moveNode(
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
@@ -76,9 +87,17 @@ export interface UseNotesWorkspaceOptions {
 export interface UseNotesWorkspaceResult {
   state: NormalizedNotesWorkspace;
   actions: NotesWorkspaceActions;
+  draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
+  writeError: NotesStoreError | null;
+  retryLastFailedWrite(): Promise<void>;
   status: NormalizedNotesWorkspace["status"];
   loading: boolean;
   error: string | null;
+}
+
+export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
+  revision: number;
+  status: "pending" | "failed";
 }
 
 function authoritative(
@@ -89,6 +108,10 @@ function authoritative(
 }
 
 type NotesWorkspaceQueueStep = () => Promise<NotesWorkspace>;
+type PendingDraftCompoundWork = (
+  context: NotesWorkspaceQueueContext,
+  draftStep: NotesWorkspaceQueueStep
+) => Promise<NotesWorkspaceQueueResult>;
 
 interface BufferedWorkspaceCommand {
   work: NotesWorkspaceQueueWork;
@@ -97,6 +120,20 @@ interface BufferedWorkspaceCommand {
 
 interface NotesWorkspaceSessionRecord {
   session: NotesWorkspaceCoordinatorSession;
+  writeQueue: NotesWriteQueue;
+  drafts: Map<NoteId, NotesNodeDraft>;
+  pendingDebounceByNodeId: Map<NoteId, number>;
+  inFlightDraftByNodeId: Map<NoteId, number>;
+  retryWriteByNodeId: Map<NoteId, () => Promise<boolean>>;
+  nextDraftRevision: number;
+  failedWrite: {
+    nodeId: NoteId;
+    patch: Pick<NoteNode, "title" | "note">;
+    revision: number;
+  } | null;
+  writeError: NotesStoreError | null;
+  closing: boolean;
+  closeCompletion: Promise<void> | null;
 }
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
@@ -123,6 +160,31 @@ function enqueueBufferedCommands(
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function writeError(cause: unknown): NotesStoreError {
+  return Object.assign(new Error(errorMessage(cause)), {
+    operation: "write" as const,
+    retryable: true
+  });
+}
+
+function draftSnapshot(
+  drafts: Map<NoteId, NotesNodeDraft>
+): Record<NoteId, NotesNodeDraft> {
+  return Object.fromEntries(drafts) as Record<NoteId, NotesNodeDraft>;
+}
+
+function canRunDraftCompound(
+  record: NotesWorkspaceSessionRecord,
+  nodeId: NoteId,
+  draft: NotesNodeDraft
+): boolean {
+  return (
+    record.writeQueue.hasPending(nodeId) ||
+    (draft.status === "failed" &&
+      !record.inFlightDraftByNodeId.has(nodeId))
+  );
 }
 
 async function runCompoundQueueWork(
@@ -218,20 +280,77 @@ export function useNotesWorkspace({
       status: "loading"
     })
   );
+  const [draftsByNodeId, setDraftsByNodeId] = useState<
+    Readonly<Record<NoteId, NotesNodeDraft>>
+  >({});
+  const [currentWriteError, setCurrentWriteError] =
+    useState<NotesStoreError | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
   const closedRef = useRef(false);
 
+  const publishDraftState = useCallback(
+    (record: NotesWorkspaceSessionRecord): void => {
+      if (record.closing || sessionRecordRef.current !== record) {
+        return;
+      }
+      setDraftsByNodeId(draftSnapshot(record.drafts));
+      setCurrentWriteError(record.writeError);
+    },
+    []
+  );
+
+  const beginRecordShutdown = useCallback(
+    (record: NotesWorkspaceSessionRecord): Promise<void> => {
+      if (record.closeCompletion) {
+        return record.closeCompletion;
+      }
+      record.closing = true;
+      if (record.drafts.size === 0) {
+        record.session.close();
+        record.closeCompletion = Promise.resolve();
+        return record.closeCompletion;
+      }
+      for (const [nodeId] of record.drafts) {
+        if (
+          record.pendingDebounceByNodeId.has(nodeId) ||
+          record.inFlightDraftByNodeId.has(nodeId)
+        ) {
+          continue;
+        }
+        const retry = record.retryWriteByNodeId.get(nodeId);
+        if (retry) {
+          void record.writeQueue.enqueue(retry).catch(() => undefined);
+        }
+      }
+      record.closeCompletion = record.writeQueue.flush().then(
+        () => record.session.close(),
+        () => record.session.close()
+      );
+      return record.closeCompletion;
+    },
+    []
+  );
+
   useLayoutEffect(() => {
     closedRef.current = false;
-    sessionRecordRef.current?.session.close();
+    const previousRecord = sessionRecordRef.current;
+    if (previousRecord) {
+      void beginRecordShutdown(previousRecord);
+    }
     dispatch({ type: "startWorkspaceLoad" });
+    setDraftsByNodeId({});
+    setCurrentWriteError(null);
+    let record!: NotesWorkspaceSessionRecord;
     const session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
       onEvent(event) {
+        if (record.closing || sessionRecordRef.current !== record) {
+          return;
+        }
         if (event.type === "pending") {
           dispatch({ type: "setLoading" });
           return;
@@ -243,7 +362,19 @@ export function useNotesWorkspace({
         });
       }
     });
-    const record = { session };
+    record = {
+      session,
+      writeQueue: createNotesWriteQueue(),
+      drafts: new Map(),
+      pendingDebounceByNodeId: new Map(),
+      inFlightDraftByNodeId: new Map(),
+      retryWriteByNodeId: new Map(),
+      nextDraftRevision: 1,
+      failedWrite: null,
+      writeError: null,
+      closing: false,
+      closeCompletion: null
+    };
     sessionRecordRef.current = record;
     sessionRef.current = session;
     enqueueBufferedCommands(
@@ -257,11 +388,15 @@ export function useNotesWorkspace({
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       }
     };
-  }, [repository, vaultRoot]);
+  }, [beginRecordShutdown, repository, vaultRoot]);
 
   useEffect(() => {
     finalCleanupTokenRef.current = null;
     return () => {
+      const record = sessionRecordRef.current;
+      if (record) {
+        void beginRecordShutdown(record);
+      }
       const token = {};
       finalCleanupTokenRef.current = token;
       queueMicrotask(() => {
@@ -270,16 +405,15 @@ export function useNotesWorkspace({
         }
         finalCleanupTokenRef.current = null;
         closedRef.current = true;
-        const record = sessionRecordRef.current;
+        const finalRecord = sessionRecordRef.current;
         sessionRecordRef.current = null;
-        if (record && sessionRef.current === record.session) {
+        if (finalRecord && sessionRef.current === finalRecord.session) {
           sessionRef.current = null;
         }
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
-        record?.session.close();
       });
     };
-  }, []);
+  }, [beginRecordShutdown]);
 
   const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
     const session = sessionRef.current;
@@ -294,15 +428,328 @@ export function useNotesWorkspace({
     });
   }, []);
 
+  const settleDraftWrite = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      draft: NotesNodeDraft,
+      result: NotesWorkspaceQueueResult,
+      writeSucceeded: boolean
+    ): boolean => {
+      const latest = record.drafts.get(nodeId);
+      if (result.kind === "failure" && !writeSucceeded) {
+        if (latest) {
+          record.drafts.set(nodeId, { ...latest, status: "failed" });
+        }
+        record.failedWrite = {
+          nodeId,
+          patch: { title: draft.title, note: draft.note },
+          revision: draft.revision
+        };
+        record.writeError = writeError(result.error);
+        publishDraftState(record);
+        return false;
+      }
+
+      if (result.kind === "skipped") {
+        record.drafts.delete(nodeId);
+        record.pendingDebounceByNodeId.delete(nodeId);
+      } else if (writeSucceeded && latest?.revision === draft.revision) {
+        record.drafts.delete(nodeId);
+      }
+      if (
+        writeSucceeded &&
+        record.failedWrite?.nodeId === nodeId &&
+        record.failedWrite.revision <= draft.revision
+      ) {
+        record.failedWrite = null;
+        record.writeError = null;
+      }
+      if (!record.drafts.has(nodeId)) {
+        record.retryWriteByNodeId.delete(nodeId);
+      }
+      publishDraftState(record);
+      return result.kind !== "failure" || writeSucceeded;
+    },
+    [publishDraftState]
+  );
+
+  const persistDraft = useCallback(
+    async (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      draft: NotesNodeDraft
+    ): Promise<boolean> => {
+      const current = record.drafts.get(nodeId);
+      if (current?.revision === draft.revision && current.status !== "pending") {
+        record.drafts.set(nodeId, { ...current, status: "pending" });
+        publishDraftState(record);
+      }
+      record.inFlightDraftByNodeId.set(nodeId, draft.revision);
+
+      let result: NotesWorkspaceQueueResult | undefined;
+      await record.session.enqueue(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          result = { kind: "skipped" };
+          return result;
+        }
+        try {
+          result = authoritative(
+            await context.repository.updateNode(context.vaultRoot, {
+              id: nodeId,
+              title: draft.title,
+              note: draft.note
+            })
+          );
+        } catch (cause) {
+          result = { kind: "failure", error: errorMessage(cause) };
+        }
+        return result;
+      });
+      if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
+        record.inFlightDraftByNodeId.delete(nodeId);
+      }
+
+      if (!result) {
+        return false;
+      }
+
+      return settleDraftWrite(
+        record,
+        nodeId,
+        draft,
+        result,
+        result.kind === "authoritative"
+      );
+    },
+    [publishDraftState, settleDraftWrite]
+  );
+
+  const runPendingDraftCompound = useCallback(
+    async (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      draft: NotesNodeDraft,
+      work: PendingDraftCompoundWork
+    ): Promise<NotesWorkspaceQueueResult | undefined> => {
+      if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
+        record.pendingDebounceByNodeId.delete(nodeId);
+      }
+      record.inFlightDraftByNodeId.set(nodeId, draft.revision);
+      let result: NotesWorkspaceQueueResult | undefined;
+      let writeSucceeded = false;
+      await record.session.enqueue(async (context) => {
+        const draftStep = async (): Promise<NotesWorkspace> => {
+          const workspace = await context.repository.updateNode(
+            context.vaultRoot,
+            {
+              id: nodeId,
+              title: draft.title,
+              note: draft.note
+            }
+          );
+          writeSucceeded = true;
+          return workspace;
+        };
+        result = await work(context, draftStep);
+        return result;
+      });
+      if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
+        record.inFlightDraftByNodeId.delete(nodeId);
+      }
+      if (result) {
+        settleDraftWrite(record, nodeId, draft, result, writeSucceeded);
+      }
+      return result;
+    },
+    [settleDraftWrite]
+  );
+
+  const flushPendingDraftCompound = useCallback(
+    async (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      draft: NotesNodeDraft,
+      work: PendingDraftCompoundWork
+    ): Promise<NotesWorkspaceQueueResult | undefined> => {
+      let result: NotesWorkspaceQueueResult | undefined;
+      const completion = record.writeQueue.enqueueDebounced(
+        nodeId,
+        async () => {
+          result = await runPendingDraftCompound(
+            record,
+            nodeId,
+            draft,
+            work
+          );
+          return result?.kind === "authoritative";
+        }
+      );
+      await record.writeQueue.flush(nodeId);
+      await completion;
+      return result;
+    },
+    [runPendingDraftCompound]
+  );
+
+  const writeScheduledDraft = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      draft: NotesNodeDraft
+    ): Promise<boolean> => {
+      if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
+        record.pendingDebounceByNodeId.delete(nodeId);
+      }
+      return persistDraft(record, nodeId, draft);
+    },
+    [persistDraft]
+  );
+
+  const updateNodeDraft = useCallback(
+    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">): void => {
+      const record = sessionRecordRef.current;
+      if (!record || record.closing || sessionRef.current !== record.session) {
+        return;
+      }
+      const previous = record.drafts.get(nodeId);
+      const draft: NotesNodeDraft = {
+        ...patch,
+        revision: record.nextDraftRevision++,
+        status: previous?.status === "failed" ? "failed" : "pending"
+      };
+      record.drafts.set(nodeId, draft);
+      record.retryWriteByNodeId.set(nodeId, () => {
+        const latest = record.drafts.get(nodeId);
+        return latest
+          ? persistDraft(record, nodeId, latest)
+          : Promise.resolve(true);
+      });
+      record.pendingDebounceByNodeId.set(nodeId, draft.revision);
+      publishDraftState(record);
+      void record.writeQueue
+        .enqueueDebounced(nodeId, () =>
+          writeScheduledDraft(record, nodeId, draft)
+        )
+        .catch(() => undefined);
+    },
+    [persistDraft, publishDraftState, writeScheduledDraft]
+  );
+
+  const flushNodeDraft = useCallback((nodeId: NoteId): Promise<void> => {
+    const record = sessionRecordRef.current;
+    if (!record || record.closing || sessionRef.current !== record.session) {
+      return Promise.resolve();
+    }
+    return record.writeQueue.flush(nodeId);
+  }, []);
+
+  const retryLastFailedWrite = useCallback(async (): Promise<void> => {
+    const record = sessionRecordRef.current;
+    const failed = record?.failedWrite;
+    if (
+      !record ||
+      !failed ||
+      record.closing ||
+      sessionRef.current !== record.session
+    ) {
+      return;
+    }
+    const latest = record.drafts.get(failed.nodeId);
+    if (!latest) {
+      record.failedWrite = null;
+      record.writeError = null;
+      publishDraftState(record);
+      return;
+    }
+
+    if (
+      record.pendingDebounceByNodeId.get(failed.nodeId) === latest.revision ||
+      record.inFlightDraftByNodeId.get(failed.nodeId) === latest.revision
+    ) {
+      await record.writeQueue.flush(failed.nodeId);
+      return;
+    }
+    await record.writeQueue.enqueue(() =>
+      persistDraft(record, failed.nodeId, latest)
+    );
+  }, [persistDraft, publishDraftState]);
+
+  const flushDraftBeforeStructural = useCallback(
+    async (nodeId: NoteId): Promise<boolean> => {
+      const record = sessionRecordRef.current;
+      if (!record || record.closing || sessionRef.current !== record.session) {
+        return false;
+      }
+      const draft = record.drafts.get(nodeId);
+      if (!draft) {
+        return true;
+      }
+
+      if (
+        draft.status === "failed" &&
+        record.pendingDebounceByNodeId.get(nodeId) !== draft.revision
+      ) {
+        await record.writeQueue.enqueue(() =>
+          persistDraft(record, nodeId, draft)
+        );
+      } else {
+        await record.writeQueue.flush(nodeId);
+      }
+      return (
+        !record.closing &&
+        sessionRecordRef.current === record &&
+        !record.drafts.has(nodeId)
+      );
+    },
+    [persistDraft]
+  );
+
+  const flushAllDraftsBeforeStructural = useCallback(
+    async (): Promise<boolean> => {
+      const record = sessionRecordRef.current;
+      if (!record || record.closing || sessionRef.current !== record.session) {
+        return false;
+      }
+      for (const [nodeId, draft] of record.drafts) {
+        if (
+          draft.status !== "failed" ||
+          record.pendingDebounceByNodeId.has(nodeId) ||
+          record.inFlightDraftByNodeId.has(nodeId)
+        ) {
+          continue;
+        }
+        const retry = record.retryWriteByNodeId.get(nodeId);
+        if (retry) {
+          void record.writeQueue.enqueue(retry).catch(() => undefined);
+        }
+      }
+      await record.writeQueue.flush();
+      return (
+        !record.closing &&
+        sessionRecordRef.current === record &&
+        record.drafts.size === 0
+      );
+    },
+    []
+  );
+
   const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
     dispatch({ type: "acknowledgePendingFocus", nodeId });
   }, []);
 
   const focusNode = useCallback(async (nodeId: NoteId) => {
+    void flushNodeDraft(nodeId);
     dispatch({ type: "focusNode", nodeId });
-  }, []);
+  }, [flushNodeDraft]);
 
-  const createRoot = useCallback(() => {
+  const createRoot = useCallback(async () => {
+    if (
+      (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+      !(await flushAllDraftsBeforeStructural())
+    ) {
+      return;
+    }
     return runCommand(async (context) => {
       const before = confirmedState(context);
       const id = createNoteId();
@@ -319,10 +766,13 @@ export function useNotesWorkspace({
         pendingFocusId: id
       });
     });
-  }, [runCommand]);
+  }, [flushAllDraftsBeforeStructural, runCommand]);
 
   const createChild = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
       return runCommand(async (context) => {
         const before = confirmedState(context);
         if (!before.nodesById[nodeId]) {
@@ -346,24 +796,71 @@ export function useNotesWorkspace({
         });
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, runCommand]
   );
 
   const splitNode = useCallback(
-    (
+    async (
       nodeId: NoteId,
       newNodeId: NoteId,
       prefix: string,
       suffix: string,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const record = sessionRecordRef.current;
+      const centralDraft = record?.drafts.get(nodeId);
+      if (
+        record &&
+        centralDraft &&
+        canRunDraftCompound(record, nodeId, centralDraft)
+      ) {
+        const result = await flushPendingDraftCompound(
+          record,
+          nodeId,
+          centralDraft,
+          async (context, draftStep) => {
+            if (!confirmedState(context).nodesById[nodeId]) {
+              return { kind: "skipped" };
+            }
+            return runCompoundQueueWork(
+              context,
+              [
+                draftStep,
+                () =>
+                  context.repository.splitNode(context.vaultRoot, {
+                    id: nodeId,
+                    newNodeId,
+                    prefix,
+                    suffix
+                  })
+              ],
+              {
+                selectedId: newNodeId,
+                editingNoteId: newNodeId,
+                pendingFocusId: newNodeId
+              }
+            );
+          }
+        );
+        if (result?.kind === "authoritative") {
+          notifySuccess(options?.onSuccess);
+        }
+        return;
+      }
+      const hasCentralDraft = centralDraft !== undefined;
+      if (
+        hasCentralDraft &&
+        !(await flushDraftBeforeStructural(nodeId))
+      ) {
+        return;
+      }
       let succeeded = false;
       const completion = runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = options?.draft;
+        const draft = hasCentralDraft ? undefined : options?.draft;
         if (draft) {
           steps.push(() =>
             context.repository.updateNode(context.vaultRoot, {
@@ -394,7 +891,7 @@ export function useNotesWorkspace({
         }
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
   );
 
   const updateNode = useCallback(
@@ -415,11 +912,62 @@ export function useNotesWorkspace({
   );
 
   const moveNode = useCallback(
-    (
+    async (
       input: MoveNoteNodeInput,
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const record = sessionRecordRef.current;
+      const centralDraft = record?.drafts.get(input.id);
+      if (
+        record &&
+        centralDraft &&
+        canRunDraftCompound(record, input.id, centralDraft)
+      ) {
+        await flushPendingDraftCompound(
+          record,
+          input.id,
+          centralDraft,
+          async (context, draftStep) => {
+            const before = confirmedState(context);
+            const expandNodeId = options?.expandNodeId;
+            if (
+              !hasMoveDependencies(before, input) ||
+              (expandNodeId !== undefined && !before.nodesById[expandNodeId])
+            ) {
+              return { kind: "skipped" };
+            }
+            const steps: NotesWorkspaceQueueStep[] = [draftStep];
+            if (
+              expandNodeId !== undefined &&
+              before.nodesById[expandNodeId].isCollapsed
+            ) {
+              steps.push(() =>
+                context.repository.toggleCollapsed(
+                  context.vaultRoot,
+                  expandNodeId
+                )
+              );
+            }
+            steps.push(() =>
+              context.repository.moveNode(context.vaultRoot, input)
+            );
+            return runCompoundQueueWork(
+              context,
+              steps,
+              focusedUiUpdate(focusNodeId)
+            );
+          }
+        );
+        return;
+      }
+      const hasCentralDraft = centralDraft !== undefined;
+      if (
+        hasCentralDraft &&
+        !(await flushDraftBeforeStructural(input.id))
+      ) {
+        return;
+      }
       return runCommand(async (context) => {
         const before = confirmedState(context);
         const expandNodeId = options?.expandNodeId;
@@ -430,7 +978,7 @@ export function useNotesWorkspace({
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = options?.draft;
+        const draft = hasCentralDraft ? undefined : options?.draft;
         if (draft) {
           steps.push(() =>
             context.repository.updateNode(context.vaultRoot, {
@@ -458,11 +1006,14 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
   );
 
   const toggleComplete = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
@@ -472,11 +1023,14 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, runCommand]
   );
 
   const toggleCollapsed = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
@@ -486,11 +1040,14 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, runCommand]
   );
 
   const duplicateNode = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
       return runCommand(async (context) => {
         const before = confirmedState(context);
         if (!before.nodesById[nodeId]) {
@@ -513,21 +1070,59 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, runCommand]
   );
 
   const removeEmptyNode = useCallback(
-    (
+    async (
       nodeId: NoteId,
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const record = sessionRecordRef.current;
+      const centralDraft = record?.drafts.get(nodeId);
+      if (
+        record &&
+        centralDraft &&
+        canRunDraftCompound(record, nodeId, centralDraft)
+      ) {
+        await flushPendingDraftCompound(
+          record,
+          nodeId,
+          centralDraft,
+          async (context, draftStep) => {
+            if (!confirmedState(context).nodesById[nodeId]) {
+              return { kind: "skipped" };
+            }
+            return runCompoundQueueWork(
+              context,
+              [
+                draftStep,
+                () =>
+                  context.repository.removeEmptyNode(
+                    context.vaultRoot,
+                    nodeId
+                  )
+              ],
+              focusedUiUpdate(focusNodeId)
+            );
+          }
+        );
+        return;
+      }
+      const hasCentralDraft = centralDraft !== undefined;
+      if (
+        hasCentralDraft &&
+        !(await flushDraftBeforeStructural(nodeId))
+      ) {
+        return;
+      }
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = options?.draft;
+        const draft = hasCentralDraft ? undefined : options?.draft;
         if (draft) {
           steps.push(() =>
             context.repository.updateNode(context.vaultRoot, {
@@ -546,11 +1141,14 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
   );
 
   const deleteNode = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
@@ -560,7 +1158,7 @@ export function useNotesWorkspace({
         );
       });
     },
-    [runCommand]
+    [flushDraftBeforeStructural, runCommand]
   );
 
   const restoreNode = useCallback(
@@ -586,6 +1184,8 @@ export function useNotesWorkspace({
       splitNode,
       createChild,
       updateNode,
+      updateNodeDraft,
+      flushNodeDraft,
       moveNode,
       toggleComplete,
       toggleCollapsed,
@@ -602,6 +1202,8 @@ export function useNotesWorkspace({
       splitNode,
       createChild,
       updateNode,
+      updateNodeDraft,
+      flushNodeDraft,
       moveNode,
       toggleComplete,
       toggleCollapsed,
@@ -616,6 +1218,9 @@ export function useNotesWorkspace({
   return {
     state,
     actions,
+    draftsByNodeId,
+    writeError: currentWriteError,
+    retryLastFailedWrite,
     status: state.status,
     loading: state.status === "loading",
     error: state.error
