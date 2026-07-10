@@ -23,6 +23,7 @@ import {
 
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
+  focusNode(nodeId: NoteId): Promise<void>;
   createRoot(): Promise<void>;
   splitNode(
     nodeId: NoteId,
@@ -35,11 +36,11 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
   ): Promise<void>;
-  moveNode(input: MoveNoteNodeInput): Promise<void>;
+  moveNode(input: MoveNoteNodeInput, focusNodeId?: NoteId | null): Promise<void>;
   toggleComplete(nodeId: NoteId): Promise<void>;
   toggleCollapsed(nodeId: NoteId): Promise<void>;
   duplicateNode(nodeId: NoteId): Promise<void>;
-  removeEmptyNode(nodeId: NoteId): Promise<void>;
+  removeEmptyNode(nodeId: NoteId, focusNodeId?: NoteId | null): Promise<void>;
   deleteNode(nodeId: NoteId): Promise<void>;
   restoreNode(nodeId: NoteId): Promise<void>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
@@ -69,6 +70,18 @@ function confirmedState(
   context: NotesWorkspaceQueueContext
 ): NormalizedNotesWorkspace {
   return normalizeWorkspace(context.confirmedWorkspace);
+}
+
+function focusedUiUpdate(
+  focusNodeId: NoteId | null | undefined
+): NotesWorkspaceUiUpdate | undefined {
+  return focusNodeId == null
+    ? undefined
+    : {
+        selectedId: focusNodeId,
+        editingNoteId: focusNodeId,
+        pendingFocusId: focusNodeId
+      };
 }
 
 function duplicateRootId(
@@ -143,6 +156,10 @@ export function useNotesWorkspace({
 
   const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
     dispatch({ type: "acknowledgePendingFocus", nodeId });
+  }, []);
+
+  const focusNode = useCallback(async (nodeId: NoteId) => {
+    dispatch({ type: "focusNode", nodeId });
   }, []);
 
   const createRoot = useCallback(() => {
@@ -240,13 +257,14 @@ export function useNotesWorkspace({
   );
 
   const moveNode = useCallback(
-    (input: MoveNoteNodeInput) => {
+    (input: MoveNoteNodeInput, focusNodeId?: NoteId | null) => {
       return runCommand(async (context) => {
         if (!hasMoveDependencies(confirmedState(context), input)) {
           return { kind: "skipped" };
         }
         return authoritative(
-          await context.repository.moveNode(context.vaultRoot, input)
+          await context.repository.moveNode(context.vaultRoot, input),
+          focusedUiUpdate(focusNodeId)
         );
       });
     },
@@ -309,13 +327,14 @@ export function useNotesWorkspace({
   );
 
   const removeEmptyNode = useCallback(
-    (nodeId: NoteId) => {
+    (nodeId: NoteId, focusNodeId?: NoteId | null) => {
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         return authoritative(
-          await context.repository.removeEmptyNode(context.vaultRoot, nodeId)
+          await context.repository.removeEmptyNode(context.vaultRoot, nodeId),
+          focusedUiUpdate(focusNodeId)
         );
       });
     },
@@ -354,6 +373,7 @@ export function useNotesWorkspace({
   const actions = useMemo<NotesWorkspaceActions>(
     () => ({
       acknowledgeFocus,
+      focusNode,
       createRoot,
       splitNode,
       createChild,
@@ -369,6 +389,7 @@ export function useNotesWorkspace({
     }),
     [
       acknowledgeFocus,
+      focusNode,
       createRoot,
       splitNode,
       createChild,

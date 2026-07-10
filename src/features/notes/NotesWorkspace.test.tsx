@@ -494,6 +494,311 @@ describe("Notes workspace", () => {
     });
   });
 
+  it("splits the selected title range and focuses the suffix only after success", async () => {
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+    ]);
+    const split = deferred<NotesWorkspace>();
+    notesStoreMock.splitNode.mockReturnValue(split.promise);
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000001");
+    renderNotesWorkspace();
+    const title = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: alphaXYZomega"
+    });
+    title.focus();
+    title.setSelectionRange(5, 8);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
+      id: "source",
+      newNodeId: "00000000-0000-4000-8000-000000000001",
+      prefix: "alpha",
+      suffix: "omega"
+    });
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(title).toHaveFocus();
+
+    await act(async () =>
+      split.resolve(
+        workspace([
+          node({ id: "source", sortKey: 1, title: "alpha" }),
+          node({
+            id: "00000000-0000-4000-8000-000000000001",
+            sortKey: 2,
+            title: "omega"
+          })
+        ])
+      )
+    );
+
+    expect(
+      await screen.findByRole("textbox", { name: "Edit node title: omega" })
+    ).toHaveFocus();
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    randomUUID.mockRestore();
+  });
+
+  it("saves a dirty draft before Tab move and focuses after the move response", async () => {
+    const before = [
+      node({ id: "project", sortKey: 1, title: "Project" }),
+      node({ id: "first", parentId: "project", sortKey: 1, title: "First" }),
+      node({ id: "leaf", parentId: "first", sortKey: 1, title: "Leaf" }),
+      node({ id: "second", parentId: "project", sortKey: 2, title: "Second" })
+    ];
+    configureRepository(before);
+    const save = deferred<NotesWorkspace>();
+    const move = deferred<NotesWorkspace>();
+    const invocations: string[] = [];
+    notesStoreMock.updateNode.mockImplementation(() => {
+      invocations.push("update");
+      return save.promise;
+    });
+    notesStoreMock.moveNode.mockImplementation(() => {
+      invocations.push("move");
+      return move.promise;
+    });
+    renderNotesWorkspace();
+    const title = await screen.findByRole("textbox", {
+      name: "Edit node title: Second"
+    });
+    fireEvent.change(title, { target: { value: "Second edited" } });
+    title.focus();
+
+    expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    screen.getByRole("button", { name: "New page" }).focus();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+
+    const saved = before.map((current) =>
+      current.id === "second" ? { ...current, title: "Second edited" } : current
+    );
+    await act(async () => save.resolve(workspace(saved)));
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(invocations).toEqual(["update", "move"]);
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "second",
+      parentId: "first",
+      afterId: "leaf"
+    });
+    expect(screen.getByRole("button", { name: "New page" })).toHaveFocus();
+
+    await act(async () =>
+      move.resolve(
+        workspace(
+          saved.map((current) =>
+            current.id === "second"
+              ? { ...current, parentId: "first", sortKey: 2 }
+              : current
+          )
+        )
+      )
+    );
+    expect(
+      await screen.findByRole("textbox", {
+        name: "Edit node title: Second edited"
+      })
+    ).toHaveFocus();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("saves before Shift+Tab outdent and does not duplicate the handled blur", async () => {
+    renderNotesWorkspace();
+    const title = await screen.findByRole("textbox", {
+      name: "Edit node title: Milestone"
+    });
+    fireEvent.change(title, { target: { value: "Milestone edited" } });
+    title.focus();
+
+    expect(
+      fireEvent.keyDown(title, { key: "Tab", shiftKey: true })
+    ).toBe(false);
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "milestone",
+      title: "Milestone edited",
+      note: ""
+    });
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "milestone",
+      parentId: "project",
+      afterId: "plan"
+    });
+    expect(
+      notesStoreMock.updateNode.mock.invocationCallOrder[0]
+    ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
+
+    fireEvent.blur(title);
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("saves before moving focus through visible rows without a native focus command", async () => {
+    const save = deferred<NotesWorkspace>();
+    notesStoreMock.updateNode.mockReturnValue(save.promise);
+    renderNotesWorkspace();
+    const plan = await screen.findByRole("textbox", {
+      name: "Edit node title: Plan"
+    });
+    fireEvent.change(plan, { target: { value: "Plan edited" } });
+    plan.focus();
+
+    expect(fireEvent.keyDown(plan, { key: "ArrowDown" })).toBe(false);
+    expect(
+      await screen.findByRole("textbox", {
+        name: "Edit node title: Milestone"
+      })
+    ).toHaveFocus();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+
+    await act(async () =>
+      save.resolve(
+        workspace(
+          initialNodes().map((current) =>
+            current.id === "plan"
+              ? { ...current, title: "Plan edited" }
+              : current
+          )
+        )
+      )
+    );
+    const milestone = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: Milestone"
+    });
+    milestone.setSelectionRange(0, 0);
+    expect(fireEvent.keyDown(milestone, { key: "ArrowUp" })).toBe(false);
+    expect(
+      await screen.findByRole("textbox", {
+        name: "Edit node title: Plan edited"
+      })
+    ).toHaveFocus();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("keeps horizontal caret movement native except at collapse boundaries", async () => {
+    renderNotesWorkspace();
+    const project = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: Project"
+    });
+    project.focus();
+    project.setSelectionRange(1, 1);
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(true);
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+
+    project.setSelectionRange(0, 0);
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("textbox", { name: "Edit node title: Plan" })
+      ).not.toBeInTheDocument()
+    );
+
+    project.setSelectionRange(project.value.length, project.value.length);
+    expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledTimes(2));
+    const plan = await screen.findByRole("textbox", {
+      name: "Edit node title: Plan"
+    });
+
+    project.setSelectionRange(project.value.length, project.value.length);
+    expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
+    expect(plan).toHaveFocus();
+  });
+
+  it("persists an empty draft before removal and focuses only after success", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "empty", sortKey: 2, title: "", note: "" }),
+      node({ id: "last", sortKey: 3, title: "Last" })
+    ];
+    configureRepository(before);
+    const save = deferred<NotesWorkspace>();
+    const remove = deferred<NotesWorkspace>();
+    notesStoreMock.updateNode.mockReturnValue(save.promise);
+    notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
+    renderNotesWorkspace();
+    const empty = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title"
+    });
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "empty",
+      title: "",
+      note: ""
+    });
+    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
+    screen.getByRole("button", { name: "New page" }).focus();
+
+    await act(async () => save.resolve(workspace(before)));
+    await waitFor(() =>
+      expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
+        "/vault",
+        "empty"
+      )
+    );
+    expect(screen.getByRole("button", { name: "New page" })).toHaveFocus();
+
+    await act(async () =>
+      remove.resolve(workspace(before.filter((current) => current.id !== "empty")))
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "Edit node title: First" })
+    ).toHaveFocus();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Backspace native when an empty title has a nonempty note", async () => {
+    configureRepository([
+      node({ id: "kept", title: "", note: "supporting context" })
+    ]);
+    renderNotesWorkspace();
+    const title = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title"
+    });
+    title.focus();
+    title.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(title, { key: "Backspace" })).toBe(true);
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept composing, Process, or supporting-note keys", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    const title = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: Project"
+    });
+    title.focus();
+    title.setSelectionRange(0, 0);
+
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", isComposing: true })
+    ).toBe(true);
+    expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
+    await user.click(
+      screen.getByRole("button", { name: "Show supporting note for Project" })
+    );
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    expect(fireEvent.keyDown(note, { key: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(note, { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(note, { key: "Backspace" })).toBe(true);
+
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
+  });
+
   it("exposes named duplicate and delete controls", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();

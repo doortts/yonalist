@@ -5,10 +5,17 @@ import {
   MessageSquareText,
   Trash2
 } from "lucide-react";
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
-import type { NoteId } from "../../domain/notes";
+import { createNoteId, type NoteId } from "../../domain/notes";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { resolveOutlineKey } from "./outlineKeyboard";
 
 interface OutlineNodeRowProps {
   nodeId: NoteId;
@@ -60,6 +67,10 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
   const [noteOpen, setNoteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const suppressedBlurPatchRef = useRef<{
+    title: string;
+    note: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!node) {
@@ -100,16 +111,19 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
     "--notes-indent": `min(${depth * 24}px, 20%)`
   } as CSSProperties;
 
-  const commitDrafts = () => {
+  const draftPatch = () => ({
+    title: titleDraft.value,
+    note: noteDraft.value
+  });
+
+  const saveDrafts = (force = false) => {
+    if (!force && !titleDraft.dirty && !noteDraft.dirty) {
+      return;
+    }
     const patch = {
       title: titleDraft.value,
       note: noteDraft.value
     };
-    if (patch.title === node.title && patch.note === node.note) {
-      setTitleDraft(initialDraft(node.title));
-      setNoteDraft(initialDraft(node.note));
-      return;
-    }
     setTitleDraft((draft) => ({
       ...draft,
       dirty: false,
@@ -121,6 +135,75 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
       submitted: patch.note
     }));
     void actions.updateNode(nodeId, patch);
+  };
+
+  const suppressHandledBlur = () => {
+    suppressedBlurPatchRef.current = draftPatch();
+  };
+
+  const commitDrafts = () => {
+    const suppressedPatch = suppressedBlurPatchRef.current;
+    suppressedBlurPatchRef.current = null;
+    const patch = draftPatch();
+    if (
+      suppressedPatch?.title === patch.title &&
+      suppressedPatch.note === patch.note
+    ) {
+      return;
+    }
+    saveDrafts();
+  };
+
+  const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    const resolution = resolveOutlineKey({
+      target: "title",
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+      selectionStart: event.currentTarget.selectionStart,
+      selectionEnd: event.currentTarget.selectionEnd,
+      title: titleDraft.value,
+      note: noteDraft.value,
+      nodeId,
+      workspace: state
+    });
+    if (!resolution) {
+      return;
+    }
+
+    event.preventDefault();
+    switch (resolution.type) {
+      case "split":
+        suppressHandledBlur();
+        void actions.splitNode(
+          nodeId,
+          createNoteId(),
+          resolution.prefix,
+          resolution.suffix
+        );
+        return;
+      case "move":
+        saveDrafts();
+        suppressHandledBlur();
+        void actions.moveNode(resolution.input, resolution.focusNodeId);
+        return;
+      case "focus":
+        saveDrafts();
+        suppressHandledBlur();
+        void actions.focusNode(resolution.nodeId);
+        return;
+      case "toggleCollapsed":
+        void actions.toggleCollapsed(nodeId);
+        return;
+      case "remove":
+        saveDrafts(true);
+        suppressHandledBlur();
+        void actions.removeEmptyNode(nodeId, resolution.focusNodeId);
+    }
   };
 
   return (
@@ -176,6 +259,7 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
                 event.target.value !== (draft.submitted ?? node.title)
             }))
           }
+          onKeyDown={handleTitleKeyDown}
           onBlur={commitDrafts}
           onDoubleClick={() => void actions.zoomTo(nodeId)}
         />

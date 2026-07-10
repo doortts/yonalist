@@ -33,6 +33,7 @@ export type NotesWorkspaceReducerAction =
       hasPendingWork: boolean;
     }
   | ({ type: "setUiState" } & Partial<UiState>)
+  | { type: "focusNode"; nodeId: NoteId }
   | { type: "acknowledgePendingFocus"; nodeId: NoteId }
   | { type: "setZoomRoot"; zoomRootId: NoteId | null };
 
@@ -152,6 +153,15 @@ export function notesWorkspaceReducer(
         ...state,
         zoomRootId: existingId(state, action.zoomRootId)
       };
+    case "focusNode":
+      return existingId(state, action.nodeId) === null
+        ? state
+        : {
+            ...state,
+            selectedId: action.nodeId,
+            editingNoteId: action.nodeId,
+            pendingFocusId: action.nodeId
+          };
     case "acknowledgePendingFocus":
       return state.pendingFocusId === action.nodeId
         ? { ...state, pendingFocusId: null }

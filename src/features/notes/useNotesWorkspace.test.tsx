@@ -421,6 +421,147 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).not.toHaveBeenCalled();
   });
 
+  it("focuses an existing node without enqueueing a repository command", async () => {
+    const store = repository();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.focusNode("root"));
+
+    expect(result.current.state).toMatchObject({
+      selectedId: "root",
+      editingNoteId: "root",
+      pendingFocusId: "root"
+    });
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+    expect(store.updateNode).not.toHaveBeenCalled();
+    expect(store.moveNode).not.toHaveBeenCalled();
+  });
+
+  it("publishes a move focus target only after authoritative success", async () => {
+    const moved = deferred<NotesWorkspace>();
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      moveNode: vi.fn().mockReturnValue(moved.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.moveNode(
+        { id: "child", parentId: null, afterId: "root" },
+        "child"
+      );
+    });
+    await waitFor(() => expect(store.moveNode).toHaveBeenCalledOnce());
+    expect(result.current.state.pendingFocusId).toBeNull();
+
+    await act(async () => {
+      moved.resolve(initial);
+      await completion;
+    });
+    expect(result.current.state).toMatchObject({
+      selectedId: "child",
+      editingNoteId: "child",
+      pendingFocusId: "child"
+    });
+  });
+
+  it("does not publish a move focus target when the command fails", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      moveNode: vi.fn().mockRejectedValue(new Error("move failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.moveNode(
+        { id: "child", parentId: null, afterId: "root" },
+        "child"
+      )
+    );
+
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "move failed"
+    });
+  });
+
+  it("publishes a remove focus target only after authoritative success", async () => {
+    const removed = deferred<NotesWorkspace>();
+    const initial = workspace([
+      node({ id: "first" }),
+      node({ id: "empty", sortKey: 2, title: "" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      removeEmptyNode: vi.fn().mockReturnValue(removed.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.removeEmptyNode("empty", "first");
+    });
+    await waitFor(() => expect(store.removeEmptyNode).toHaveBeenCalledOnce());
+    expect(result.current.state.pendingFocusId).toBeNull();
+
+    await act(async () => {
+      removed.resolve(workspace([node({ id: "first" })]));
+      await completion;
+    });
+    expect(result.current.state).toMatchObject({
+      selectedId: "first",
+      editingNoteId: "first",
+      pendingFocusId: "first"
+    });
+  });
+
+  it("does not publish a remove focus target when the command fails", async () => {
+    const initial = workspace([
+      node({ id: "first" }),
+      node({ id: "empty", sortKey: 2, title: "" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      removeEmptyNode: vi.fn().mockRejectedValue(new Error("remove failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.removeEmptyNode("empty", "first")
+    );
+
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "remove failed"
+    });
+  });
+
   it("publishes two successful commands in invocation order", async () => {
     const first = deferred<NotesWorkspace>();
     const second = deferred<NotesWorkspace>();

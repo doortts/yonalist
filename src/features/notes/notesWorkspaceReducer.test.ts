@@ -153,6 +153,29 @@ describe("notesWorkspaceReducer", () => {
     expect(acknowledged.pendingFocusId).toBeNull();
   });
 
+  it("publishes command-neutral focus only for an existing node", () => {
+    const initial = normalizeWorkspace(
+      workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })])
+    );
+
+    const focused = notesWorkspaceReducer(initial, {
+      type: "focusNode",
+      nodeId: "child"
+    });
+    expect(focused).toMatchObject({
+      selectedId: "child",
+      editingNoteId: "child",
+      pendingFocusId: "child"
+    });
+
+    expect(
+      notesWorkspaceReducer(focused, {
+        type: "focusNode",
+        nodeId: "missing"
+      })
+    ).toBe(focused);
+  });
+
   it("keeps the confirmed tree on failures and settles status from remaining work", () => {
     const initial = normalizeWorkspace(workspace([node({ id: "root" })]));
     const pending = notesWorkspaceReducer(initial, {
