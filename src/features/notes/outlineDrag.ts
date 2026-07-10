@@ -14,33 +14,52 @@ export interface OutlineDropProjection
   expandNodeId?: NoteId;
 }
 
-function hasValidRowShape(rows: readonly FlattenedOutlineRow[]): boolean {
-  const seen = new Set<NoteId>();
+function hasValidRowShape(
+  rows: readonly FlattenedOutlineRow[],
+  zoomRootId: NoteId | null
+): boolean {
+  const seen = new Map<NoteId, FlattenedOutlineRow>();
 
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
+    const previous = rows[index - 1];
+    const isNestedZoomRoot = index === 0 && row.id === zoomRootId;
     if (
       seen.has(row.id) ||
       !Number.isInteger(row.depth) ||
       row.depth < 0 ||
       row.ancestorIds.length !== row.depth ||
-      (index > 0 && row.depth > rows[index - 1].depth + 1)
+      (!previous && row.depth !== 0)
     ) {
       return false;
     }
+
+    const expectedAncestorIds = previous
+      ? row.depth === previous.depth + 1
+        ? [...previous.ancestorIds, previous.id]
+        : row.depth <= previous.depth
+          ? previous.ancestorIds.slice(0, row.depth)
+          : null
+      : [];
     if (
-      row.depth > 0 &&
-      row.ancestorIds[row.depth - 1] !== row.parentId
+      expectedAncestorIds === null ||
+      expectedAncestorIds.some(
+        (ancestorId, depth) => row.ancestorIds[depth] !== ancestorId
+      ) ||
+      (row.depth === 0
+        ? row.parentId !== null && !isNestedZoomRoot
+        : row.ancestorIds[row.depth - 1] !== row.parentId)
     ) {
       return false;
     }
+
     for (let depth = 0; depth < row.ancestorIds.length; depth += 1) {
-      const ancestor = rows.find((candidate) => candidate.id === row.ancestorIds[depth]);
+      const ancestor = seen.get(row.ancestorIds[depth]);
       if (!ancestor || ancestor.depth !== depth) {
         return false;
       }
     }
-    seen.add(row.id);
+    seen.set(row.id, row);
   }
 
   return true;
@@ -170,18 +189,22 @@ export function projectOutlineDrop(
   rows: readonly FlattenedOutlineRow[],
   order: OutlineSiblingOrder
 ): OutlineDropProjection | null {
-  if (!Number.isFinite(horizontalOffset) || !hasValidRowShape(rows)) {
+  if (
+    !Number.isFinite(horizontalOffset) ||
+    !hasValidRowShape(rows, order.zoomRootId)
+  ) {
     return null;
   }
 
   const activeIndex = rows.findIndex((row) => row.id === activeId);
   const overIndex = rows.findIndex((row) => row.id === overId);
-  if (activeIndex < 0 || overIndex < 0 || activeId === overId) {
+  if (activeIndex < 0 || overIndex < 0) {
     return null;
   }
 
   const active = rows[activeIndex];
   const over = rows[overIndex];
+  const isSelfOver = activeId === overId;
   if (
     activeId === order.zoomRootId ||
     !isInsideZoom(active, order.zoomRootId) ||
@@ -200,7 +223,7 @@ export function projectOutlineDrop(
   }
   if (
     rows.slice(activeEnd).some((row) => row.ancestorIds.includes(activeId)) ||
-    (overIndex >= activeIndex && overIndex < activeEnd)
+    (!isSelfOver && overIndex >= activeIndex && overIndex < activeEnd)
   ) {
     return null;
   }
@@ -209,14 +232,17 @@ export function projectOutlineDrop(
     ...rows.slice(0, activeIndex),
     ...rows.slice(activeEnd)
   ];
-  const remainingOverIndex = remaining.findIndex((row) => row.id === overId);
-  if (remainingOverIndex < 0) {
-    return null;
+  let insertionIndex = activeIndex;
+  if (!isSelfOver) {
+    const remainingOverIndex = remaining.findIndex((row) => row.id === overId);
+    if (remainingOverIndex < 0) {
+      return null;
+    }
+    insertionIndex =
+      activeIndex < overIndex
+        ? visibleSubtreeEnd(remaining, remainingOverIndex)
+        : remainingOverIndex;
   }
-  const insertionIndex =
-    activeIndex < overIndex
-      ? visibleSubtreeEnd(remaining, remainingOverIndex)
-      : remainingOverIndex;
   const previous = remaining[insertionIndex - 1];
   const next = remaining[insertionIndex];
   const minimumZoomDepth = order.zoomRootId === null ? 0 : 1;

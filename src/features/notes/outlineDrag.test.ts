@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
-import { projectOutlineDrop } from "./outlineDrag";
+import {
+  projectOutlineDrop,
+  type OutlineSiblingOrder
+} from "./outlineDrag";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
-import { flattenVisibleOutlineRows } from "./outlineTree";
+import {
+  flattenVisibleOutlineRows,
+  type FlattenedOutlineRow
+} from "./outlineTree";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -19,6 +25,25 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     ...overrides
   };
+}
+
+function row(
+  overrides: Partial<FlattenedOutlineRow> & Pick<FlattenedOutlineRow, "id">
+): FlattenedOutlineRow {
+  return {
+    parentId: null,
+    depth: 0,
+    isCollapsed: false,
+    ancestorIds: [],
+    ...overrides
+  };
+}
+
+function siblingOrder(
+  rootIds: NoteId[],
+  childIdsByParent: Readonly<Record<NoteId, readonly NoteId[]>> = {}
+): OutlineSiblingOrder {
+  return { rootIds, childIdsByParent, zoomRootId: null };
 }
 
 function project(
@@ -113,6 +138,27 @@ describe("projectOutlineDrop", () => {
     });
   });
 
+  it("indents in place over itself under the preceding row", () => {
+    expect(
+      project(
+        [
+          node({ id: "previous", sortKey: 1 }),
+          node({ id: "previous-child", parentId: "previous" }),
+          node({ id: "previous-grandchild", parentId: "previous-child" }),
+          node({ id: "active", sortKey: 2 }),
+          node({ id: "active-child", parentId: "active" }),
+          node({ id: "tail", sortKey: 3 })
+        ],
+        "active",
+        "active",
+        24
+      )
+    ).toEqual({
+      parentId: "previous",
+      afterId: "previous-child"
+    });
+  });
+
   it("outdents left without escaping the valid visible boundary", () => {
     expect(
       project(
@@ -128,6 +174,26 @@ describe("projectOutlineDrop", () => {
     ).toEqual({
       parentId: null,
       afterId: "tail"
+    });
+  });
+
+  it("outdents in place over itself after its former parent", () => {
+    expect(
+      project(
+        [
+          node({ id: "parent", sortKey: 1 }),
+          node({ id: "earlier", parentId: "parent", sortKey: 1 }),
+          node({ id: "active", parentId: "parent", sortKey: 2 }),
+          node({ id: "active-child", parentId: "active" }),
+          node({ id: "tail", sortKey: 2 })
+        ],
+        "active",
+        "active",
+        -24
+      )
+    ).toEqual({
+      parentId: null,
+      afterId: "parent"
     });
   });
 
@@ -180,6 +246,70 @@ describe("projectOutlineDrop", () => {
     expect(project(roots, "a", "missing")).toBeNull();
   });
 
+  it.each([
+    {
+      name: "a deferred ancestor before its parent",
+      rows: [
+        row({
+          id: "active",
+          parentId: "parent",
+          depth: 1,
+          ancestorIds: ["parent"]
+        }),
+        row({ id: "parent" }),
+        row({ id: "target" })
+      ],
+      order: siblingOrder(["parent", "target"], { parent: ["active"] })
+    },
+    {
+      name: "an ancestor path resumed after a later root",
+      rows: [
+        row({ id: "parent" }),
+        row({ id: "active" }),
+        row({
+          id: "child",
+          parentId: "parent",
+          depth: 1,
+          ancestorIds: ["parent"]
+        }),
+        row({ id: "target" })
+      ],
+      order: siblingOrder(["parent", "active", "target"], {
+        parent: ["child"]
+      })
+    },
+    {
+      name: "a duplicate row id",
+      rows: [row({ id: "active" }), row({ id: "active" }), row({ id: "target" })],
+      order: siblingOrder(["active", "target"])
+    },
+    {
+      name: "a depth jump",
+      rows: [
+        row({ id: "active" }),
+        row({
+          id: "jumped",
+          parentId: "missing",
+          depth: 2,
+          ancestorIds: ["active", "missing"]
+        }),
+        row({ id: "target" })
+      ],
+      order: siblingOrder(["active", "target"])
+    },
+    {
+      name: "root-level parent linkage",
+      rows: [
+        row({ id: "active", parentId: "parent" }),
+        row({ id: "parent" }),
+        row({ id: "target" })
+      ],
+      order: siblingOrder(["parent", "target"], { parent: ["active"] })
+    }
+  ])("rejects malformed preorder rows with $name", ({ rows, order }) => {
+    expect(projectOutlineDrop("active", "target", 0, rows, order)).toBeNull();
+  });
+
   it("rejects drops over descendants", () => {
     expect(
       project(
@@ -208,6 +338,27 @@ describe("projectOutlineDrop", () => {
     expect(project(nodes, "first", "second", -96, "project")).toEqual({
       parentId: "project",
       afterId: "second"
+    });
+  });
+
+  it("reorders descendants inside a nested zoom root", () => {
+    expect(
+      project(
+        [
+          node({ id: "project" }),
+          node({ id: "zoom", parentId: "project" }),
+          node({ id: "first", parentId: "zoom", sortKey: 1 }),
+          node({ id: "second", parentId: "zoom", sortKey: 2 })
+        ],
+        "second",
+        "first",
+        0,
+        "zoom"
+      )
+    ).toEqual({
+      parentId: "zoom",
+      afterId: null,
+      beforeId: "first"
     });
   });
 

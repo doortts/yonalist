@@ -333,6 +333,25 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("announces an invalid self drop without queuing a move", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "second", sortKey: 2, title: "Second" })
+    ]);
+    renderNotesWorkspace();
+    const handle = await screen.findByRole("button", { name: "Move Second" });
+    mockOutlineRowRects();
+
+    handle.focus();
+    await user.keyboard("[Space][Space]");
+
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent("No move was made for Second.")
+    );
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+  });
+
   it("moves before the first row by keyboard through one queued action without optimistic order", async () => {
     const user = userEvent.setup();
     const move = deferred<NotesWorkspace>();
@@ -415,6 +434,11 @@ describe("Notes workspace", () => {
     });
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent(
+        "Queued move for Active at Parent."
+      )
+    );
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
       "parent"

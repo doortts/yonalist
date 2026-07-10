@@ -15,7 +15,7 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { ChevronRight, Home } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   IconTooltip,
   TooltipProvider
@@ -76,6 +76,12 @@ export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
   const { actions, state } = workspace;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
+  const dragEndProjection = useRef<{
+    activeId: NoteId;
+    overId: NoteId | null;
+    projection: ReturnType<typeof projectOutlineDrop>;
+  } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
@@ -84,6 +90,39 @@ export function NotesOutlinePane() {
   const visibleIds = rows.map((row) => row.id);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const dragUnavailable = state.status === "loading" || rows.length === 0;
+  const projectDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const activeId = String(event.active.id);
+      if (
+        dragUnavailable ||
+        !event.over ||
+        activeId === state.zoomRootId ||
+        (activeDragId !== null && activeDragId !== activeId)
+      ) {
+        return null;
+      }
+
+      return projectOutlineDrop(
+        activeId,
+        String(event.over.id),
+        event.delta.x,
+        rows,
+        {
+          rootIds: state.rootIds,
+          childIdsByParent: state.childIdsByParent,
+          zoomRootId: state.zoomRootId
+        }
+      );
+    },
+    [
+      activeDragId,
+      dragUnavailable,
+      rows,
+      state.childIdsByParent,
+      state.rootIds,
+      state.zoomRootId
+    ]
+  );
   const announcements = useMemo<Announcements>(() => {
     const labelFor = (id: string | number) => {
       const title = state.nodesById[String(id)]?.title.trim();
@@ -96,16 +135,27 @@ export function NotesOutlinePane() {
         over
           ? `${labelFor(active.id)} is over ${labelFor(over.id)}.`
           : `${labelFor(active.id)} is no longer over a valid row.`,
-      onDragEnd: ({ active, over }) =>
-        over
-          ? `Dropped ${labelFor(active.id)} at ${labelFor(over.id)}.`
-          : `Could not drop ${labelFor(active.id)}.`,
+      onDragEnd: ({ active, over }) => {
+        const result = dragEndProjection.current;
+        const activeId = String(active.id);
+        const overId = over ? String(over.id) : null;
+        if (
+          over &&
+          result?.activeId === activeId &&
+          result.overId === overId &&
+          result.projection
+        ) {
+          return `Queued move for ${labelFor(active.id)} at ${labelFor(over.id)}.`;
+        }
+        return `No move was made for ${labelFor(active.id)}.`;
+      },
       onDragCancel: ({ active }) => `Cancelled moving ${labelFor(active.id)}.`
     };
   }, [state.nodesById]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const id = String(event.active.id);
+    dragEndProjection.current = null;
     if (
       dragUnavailable ||
       id === state.zoomRootId ||
@@ -119,27 +169,13 @@ export function NotesOutlinePane() {
 
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
-    setActiveDragId(null);
-    if (
-      dragUnavailable ||
-      !event.over ||
-      activeId === state.zoomRootId ||
-      (activeDragId !== null && activeDragId !== activeId)
-    ) {
-      return;
-    }
-
-    const projection = projectOutlineDrop(
+    const projection = projectDragEnd(event);
+    dragEndProjection.current = {
       activeId,
-      String(event.over.id),
-      event.delta.x,
-      rows,
-      {
-        rootIds: state.rootIds,
-        childIdsByParent: state.childIdsByParent,
-        zoomRootId: state.zoomRootId
-      }
-    );
+      overId: event.over ? String(event.over.id) : null,
+      projection
+    };
+    setActiveDragId(null);
     if (!projection) {
       return;
     }
