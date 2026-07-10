@@ -1,6 +1,6 @@
 import { Dialog } from "@base-ui/react/dialog";
 import { Database, Trash2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -18,7 +18,14 @@ export function NotesDataSettingsDialog({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const deleting = deletingNotesData || deletionRequestPending;
+
+  useEffect(() => {
+    if (error && !deleting) {
+      deleteTriggerRef.current?.focus();
+    }
+  }, [deleting, error]);
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (!nextOpen && deleting) {
@@ -89,6 +96,7 @@ export function NotesDataSettingsDialog({
                 </p>
               </div>
               <button
+                ref={deleteTriggerRef}
                 className="danger-button"
                 type="button"
                 disabled={deleting}

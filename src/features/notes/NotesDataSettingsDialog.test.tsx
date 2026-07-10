@@ -67,7 +67,7 @@ describe("NotesDataSettingsDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("keeps an asynchronous deletion failure visible and retryable", async () => {
+  it("focuses the retryable delete trigger after an asynchronous failure", async () => {
     const user = userEvent.setup();
     deleteAllNotesDataMock.mockRejectedValueOnce(new Error("Database is busy"));
     render(
@@ -84,9 +84,11 @@ describe("NotesDataSettingsDialog", () => {
     );
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Database is busy");
-    expect(
-      screen.getByRole("button", { name: "Delete all Notes data" })
-    ).toBeEnabled();
+    const deleteTrigger = screen.getByRole("button", {
+      name: "Delete all Notes data"
+    });
+    expect(deleteTrigger).toBeEnabled();
+    expect(deleteTrigger).toHaveFocus();
   });
 
   it("blocks dialog dismissal while deletion is pending", async () => {
