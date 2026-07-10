@@ -885,7 +885,7 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Completed project");
 
-    const toggle = screen.getByRole("button", { name: "Hide completed" });
+    const toggle = screen.getByRole("button", { name: "Completed items" });
     expect(toggle).toHaveAttribute("aria-pressed", "true");
     await user.click(toggle);
 
@@ -893,13 +893,38 @@ describe("Notes workspace", () => {
     expect(queryTitleInput("Hidden child")).toBeNull();
     expect(getTitleInput("Active project")).toBeVisible();
     expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Show completed" })
-    ).toHaveAttribute("aria-pressed", "false");
+    expect(toggle).toHaveAccessibleName("Completed items");
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
 
-    await user.click(screen.getByRole("button", { name: "Show completed" }));
+    await user.click(toggle);
     expect(await findTitleInput("Completed project")).toBeVisible();
     expect(getTitleInput("Hidden child")).toBeVisible();
+  });
+
+  it("explains when all root rows are hidden and the toggle restores them", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "done",
+        title: "Completed project",
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({ id: "done-child", parentId: "done", title: "Hidden child" })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Completed project");
+    const toggle = screen.getByRole("button", { name: "Completed items" });
+
+    await user.click(toggle);
+
+    expect(screen.getByText("Completed items are hidden.")).toBeVisible();
+    expect(screen.queryByText("No outline yet.")).toBeNull();
+    expect(queryTitleInput("Completed project")).toBeNull();
+
+    await user.click(toggle);
+
+    expect(await findTitleInput("Completed project")).toBeVisible();
+    expect(screen.queryByText("Completed items are hidden.")).toBeNull();
   });
 
   it("keeps a completed zoom root header and its commands when rows are hidden", async () => {
@@ -918,16 +943,22 @@ describe("Notes workspace", () => {
       screen.getByRole("button", { name: "Zoom into Completed project" })
     );
 
-    await user.click(screen.getByRole("button", { name: "Hide completed" }));
+    const toggle = screen.getByRole("button", { name: "Completed items" });
+    await user.click(toggle);
 
     expect(
       screen.getByRole("heading", { name: "Completed project", level: 1 })
     ).toBeVisible();
     expect(queryTitleInput("Hidden child")).toBeNull();
+    expect(screen.getByText("Completed items are hidden.")).toBeVisible();
     const menu = await openNodeMenu("Completed project", user);
     expect(
       within(menu).getByRole("menuitem", { name: "Uncomplete" })
     ).toBeVisible();
+    await user.keyboard("{Escape}");
+    await user.click(toggle);
+    expect(await findTitleInput("Hidden child")).toBeVisible();
+    expect(screen.queryByText("Completed items are hidden.")).toBeNull();
   });
 
   it("writes a title on blur with the current supporting note", async () => {
@@ -1176,15 +1207,22 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
 
     const menu = await openNodeMenu("Outside branch", user);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Outside branch"
+    });
     await user.click(
       within(menu).getByRole("menuitem", { name: "Add note" })
     );
 
-    expect(
-      screen.getByRole("textbox", {
-        name: "Supporting note: Outside branch"
-      })
-    ).toHaveFocus();
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("textbox", {
+          name: "Supporting note: Outside branch"
+        })
+      ).toHaveFocus()
+    );
+    expect(trigger).not.toHaveFocus();
   });
 
   it("debounces supporting-note edits with the latest title patch", async () => {
@@ -1850,9 +1888,13 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
 
-  it.each([{ ctrlKey: true }, { metaKey: true }])(
-    "toggles completion with the primary Enter shortcut",
-    async (modifier) => {
+  it.each([
+    { platform: "Win32", modifier: { ctrlKey: true }, label: "Ctrl" },
+    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" }
+  ])(
+    "toggles completion with $label+Enter on $platform",
+    async ({ platform, modifier }) => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
       renderNotesWorkspace();
       const title = await findTitleInput("Outside branch");
 
@@ -1867,9 +1909,18 @@ describe("Notes workspace", () => {
   );
 
   it.each([
-    { altKey: true, label: "Alt" },
-    { metaKey: true, label: "Cmd" }
-  ])("duplicates with $label+Shift+D", async ({ label: _label, ...modifier }) => {
+    {
+      platform: "Win32",
+      modifier: { altKey: true },
+      label: "Alt"
+    },
+    {
+      platform: "MacIntel",
+      modifier: { metaKey: true },
+      label: "Cmd"
+    }
+  ])("duplicates with $label+Shift+D on $platform", async ({ platform, modifier }) => {
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
     renderNotesWorkspace();
     const title = await findTitleInput("Outside branch");
 
@@ -1884,9 +1935,13 @@ describe("Notes workspace", () => {
     );
   });
 
-  it.each([{ ctrlKey: true }, { metaKey: true }])(
-    "deletes with the primary Shift+Backspace shortcut",
-    async (modifier) => {
+  it.each([
+    { platform: "Win32", modifier: { ctrlKey: true }, label: "Ctrl" },
+    { platform: "MacIntel", modifier: { metaKey: true }, label: "Cmd" }
+  ])(
+    "deletes with $label+Shift+Backspace on $platform",
+    async ({ platform, modifier }) => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
       renderNotesWorkspace();
       const title = await findTitleInput("Outside branch");
 
@@ -2516,6 +2571,15 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row \.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;/s
     );
     expect(notesStyles).not.toContain("--notes-actions-width: 149px");
     expect(notesStyles).not.toContain(".notes-node-actions");

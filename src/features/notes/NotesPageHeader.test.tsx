@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
@@ -191,6 +197,29 @@ describe("NotesPageHeader", () => {
 
     await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     expect(workspace.actions.toggleComplete).toHaveBeenCalledWith("project");
+  });
+
+  it("closes the page menu before focusing a newly revealed note", async () => {
+    const user = userEvent.setup();
+    renderZoomedOutline(workspaceValue({ note: "" }));
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+
+    await user.click(trigger);
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add note"
+      })
+    );
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() =>
+      expect(
+        screen.getByRole("textbox", { name: "Supporting note: Project" })
+      ).toHaveFocus()
+    );
+    expect(trigger).not.toHaveFocus();
   });
 
   it("keeps a revealed page note mounted after its draft becomes empty", () => {

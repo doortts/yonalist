@@ -2,6 +2,14 @@ import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 import { visibleNodeIds } from "./outlineTree";
 
+export type OutlineShortcutPlatform = "mac" | "other";
+
+export function detectOutlineShortcutPlatform(
+  platform = typeof navigator === "undefined" ? "" : navigator.platform
+): OutlineShortcutPlatform {
+  return /Mac|iPhone|iPad|iPod/i.test(platform) ? "mac" : "other";
+}
+
 export interface ResolveOutlineKeyInput {
   target: "title" | "textarea";
   key: string;
@@ -16,6 +24,7 @@ export interface ResolveOutlineKeyInput {
   title: string;
   note: string;
   nodeId: NoteId;
+  platform: OutlineShortcutPlatform;
   workspace: NormalizedNotesWorkspace;
   visibleNodeIds?: readonly NoteId[];
 }
@@ -47,13 +56,21 @@ export function resolveOutlineKey(
     return null;
   }
 
-  const primaryModifierCount = Number(input.ctrlKey) + Number(input.metaKey);
+  const primaryModifierPressed =
+    input.platform === "mac"
+      ? input.metaKey && !input.ctrlKey
+      : input.ctrlKey && !input.metaKey;
+  const duplicateModifierPressed =
+    input.platform === "mac"
+      ? input.metaKey && !input.altKey && !input.ctrlKey
+      : input.altKey && !input.metaKey && !input.ctrlKey;
   if (!input.repeat) {
     if (
       input.key === "Enter" &&
       input.shiftKey &&
       !input.altKey &&
-      primaryModifierCount === 0
+      !input.ctrlKey &&
+      !input.metaKey
     ) {
       return { type: "focusNote" };
     }
@@ -61,15 +78,14 @@ export function resolveOutlineKey(
       input.key === "Enter" &&
       !input.shiftKey &&
       !input.altKey &&
-      primaryModifierCount === 1
+      primaryModifierPressed
     ) {
       return { type: "toggleComplete" };
     }
     if (
       input.key.toLowerCase() === "d" &&
       input.shiftKey &&
-      !input.ctrlKey &&
-      input.altKey !== input.metaKey
+      duplicateModifierPressed
     ) {
       return { type: "duplicate" };
     }
@@ -77,7 +93,7 @@ export function resolveOutlineKey(
       input.key === "Backspace" &&
       input.shiftKey &&
       !input.altKey &&
-      primaryModifierCount === 1
+      primaryModifierPressed
     ) {
       return { type: "delete" };
     }

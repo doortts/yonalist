@@ -17,7 +17,10 @@ import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { OUTLINE_INDENT_PX } from "./outlineDrag";
-import { resolveOutlineKey } from "./outlineKeyboard";
+import {
+  detectOutlineShortcutPlatform,
+  resolveOutlineKey
+} from "./outlineKeyboard";
 
 interface OutlineNodeRowProps {
   nodeId: NoteId;
@@ -258,6 +261,7 @@ export function OutlineNodeRow({
       title: titleValue,
       note: noteValue,
       nodeId,
+      platform: detectOutlineShortcutPlatform(),
       workspace: state,
       visibleNodeIds
     });
@@ -408,7 +412,7 @@ export function OutlineNodeRow({
               runStructuralCommand(() => actions.duplicateNode(nodeId))
             }
             onExport={(format) =>
-              exportController.startExport(nodeId, titleValue || node.title, format)
+              exportController.startExport(nodeId, titleValue, format)
             }
             onDelete={() =>
               runStructuralCommand(() => actions.deleteNode(nodeId))

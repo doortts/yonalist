@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NoteNode, NotesWorkspace } from "../../domain/notes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import {
+  detectOutlineShortcutPlatform,
   resolveOutlineKey,
   type ResolveOutlineKeyInput
 } from "./outlineKeyboard";
@@ -56,6 +57,7 @@ function input(
     title: "Root alpha",
     note: "",
     nodeId: "root-a",
+    platform: "other",
     workspace: tree,
     ...overrides
   };
@@ -63,43 +65,123 @@ function input(
 
 describe("resolveOutlineKey", () => {
   it.each([
+    ["MacIntel", "mac"],
+    ["MacPPC", "mac"],
+    ["iPhone", "mac"],
+    ["Win32", "other"],
+    ["Linux x86_64", "other"],
+    ["", "other"]
+  ] as const)("detects %s as %s", (platform, expected) => {
+    expect(detectOutlineShortcutPlatform(platform)).toBe(expected);
+  });
+
+  it.each([
     {
       label: "Shift+Enter",
       overrides: { key: "Enter", shiftKey: true },
       resolution: { type: "focusNote" }
     },
     {
-      label: "Ctrl+Enter",
-      overrides: { key: "Enter", ctrlKey: true },
+      label: "Ctrl+Enter on other platforms",
+      overrides: { key: "Enter", ctrlKey: true, platform: "other" as const },
       resolution: { type: "toggleComplete" }
     },
     {
-      label: "Cmd+Enter",
-      overrides: { key: "Enter", metaKey: true },
+      label: "Cmd+Enter on macOS",
+      overrides: { key: "Enter", metaKey: true, platform: "mac" as const },
       resolution: { type: "toggleComplete" }
     },
     {
-      label: "Alt+Shift+D",
-      overrides: { key: "D", altKey: true, shiftKey: true },
+      label: "Alt+Shift+D on other platforms",
+      overrides: {
+        key: "D",
+        altKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      },
       resolution: { type: "duplicate" }
     },
     {
-      label: "Cmd+Shift+D",
-      overrides: { key: "D", metaKey: true, shiftKey: true },
+      label: "Cmd+Shift+D on macOS",
+      overrides: {
+        key: "D",
+        metaKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      },
       resolution: { type: "duplicate" }
     },
     {
-      label: "Ctrl+Shift+Backspace",
-      overrides: { key: "Backspace", ctrlKey: true, shiftKey: true },
+      label: "Ctrl+Shift+Backspace on other platforms",
+      overrides: {
+        key: "Backspace",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      },
       resolution: { type: "delete" }
     },
     {
-      label: "Cmd+Shift+Backspace",
-      overrides: { key: "Backspace", metaKey: true, shiftKey: true },
+      label: "Cmd+Shift+Backspace on macOS",
+      overrides: {
+        key: "Backspace",
+        metaKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      },
       resolution: { type: "delete" }
     }
   ])("resolves $label to a Workflowy command", ({ overrides, resolution }) => {
     expect(resolveOutlineKey(input(overrides))).toEqual(resolution);
+  });
+
+  it.each([
+    {
+      label: "Cmd+Enter on other platforms",
+      overrides: { key: "Enter", metaKey: true, platform: "other" as const }
+    },
+    {
+      label: "Ctrl+Enter on macOS",
+      overrides: { key: "Enter", ctrlKey: true, platform: "mac" as const }
+    },
+    {
+      label: "Cmd+Shift+D on other platforms",
+      overrides: {
+        key: "D",
+        metaKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      }
+    },
+    {
+      label: "Alt+Shift+D on macOS",
+      overrides: {
+        key: "D",
+        altKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      }
+    },
+    {
+      label: "Cmd+Shift+Backspace on other platforms",
+      overrides: {
+        key: "Backspace",
+        metaKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      }
+    },
+    {
+      label: "Ctrl+Shift+Backspace on macOS",
+      overrides: {
+        key: "Backspace",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      }
+    }
+  ])("rejects $label", ({ overrides }) => {
+    expect(resolveOutlineKey(input(overrides))).toBeNull();
   });
 
   it("ignores repeated Workflowy commands", () => {

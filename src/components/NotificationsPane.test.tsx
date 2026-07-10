@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
@@ -361,16 +361,17 @@ describe("NotificationsPane", () => {
     const openAll = screen.getByRole("button", {
       name: /Open all notifications/
     });
-    // The explanatory text moved from a native `title` to a Base UI Tooltip
-    // whose label is portalled into a `.tooltip-popup` on focus. The accessible
-    // name stays on `aria-label`.
+    // The description remains mounted so aria-describedby resolves at rest.
     expect(openAll).not.toHaveAttribute("title");
-    expect(screen.queryByText("Open all in browser")).toBeNull();
+    const popup = document.getElementById(
+      openAll.getAttribute("aria-describedby")!
+    );
+    expect(popup).toHaveClass("tooltip-popup");
+    expect(popup).toHaveAttribute("data-closed");
+    expect(popup).toHaveTextContent("Open all in browser");
 
     openAll.focus();
 
-    expect(await screen.findByText("Open all in browser")).toHaveClass(
-      "tooltip-popup"
-    );
+    await waitFor(() => expect(popup).toHaveAttribute("data-open"));
   });
 });

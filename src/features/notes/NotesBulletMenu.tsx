@@ -13,7 +13,13 @@ import {
   Star,
   Trash2
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
 
@@ -42,6 +48,7 @@ interface CommandItemProps {
   disabled?: boolean;
   icon: ReactNode;
   closeOnClick?: boolean;
+  itemRef?: Ref<HTMLElement>;
   onClick?(): void;
 }
 
@@ -51,10 +58,12 @@ function CommandItem({
   disabled = false,
   icon,
   closeOnClick = true,
+  itemRef,
   onClick
 }: CommandItemProps) {
   return (
     <Menu.Item
+      ref={itemRef}
       className="notes-bullet-menu-item"
       data-danger={danger ? "true" : undefined}
       disabled={disabled}
@@ -85,15 +94,38 @@ export function NotesBulletMenu({
   onRetrySave,
   onRestore
 }: NotesBulletMenuProps) {
+  const [open, setOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
+  const exportBackRef = useRef<HTMLElement>(null);
+  const exportCommandRef = useRef<HTMLElement>(null);
+  const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
+  const noteHandoffPendingRef = useRef(false);
+
+  useLayoutEffect(() => {
+    if (viewFocusTargetRef.current === "back" && exportView) {
+      viewFocusTargetRef.current = null;
+      exportBackRef.current?.focus();
+    } else if (viewFocusTargetRef.current === "export" && !exportView) {
+      viewFocusTargetRef.current = null;
+      exportCommandRef.current?.focus();
+    }
+  }, [exportView]);
 
   return (
     <Menu.Root
       disabled={disabled}
       modal={false}
-      onOpenChange={(open) => {
-        if (!open) {
+      open={open}
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
           setExportView(false);
+        }
+      }}
+      onOpenChangeComplete={(nextOpen) => {
+        if (!nextOpen && noteHandoffPendingRef.current) {
+          noteHandoffPendingRef.current = false;
+          onOpenNote?.();
         }
       }}
     >
@@ -109,7 +141,10 @@ export function NotesBulletMenu({
       </IconTooltip>
       <Menu.Portal>
         <Menu.Positioner side="bottom" align="end" sideOffset={4}>
-          <Menu.Popup className="notes-bullet-menu">
+          <Menu.Popup
+            className="notes-bullet-menu"
+            finalFocus={noteHandoffPendingRef.current ? false : undefined}
+          >
             {mode === "trash" ? (
               <CommandItem
                 icon={<RotateCcw size={15} aria-hidden="true" />}
@@ -121,8 +156,12 @@ export function NotesBulletMenu({
               <>
                 <CommandItem
                   closeOnClick={false}
+                  itemRef={exportBackRef}
                   icon={<ChevronLeft size={15} aria-hidden="true" />}
-                  onClick={() => setExportView(false)}
+                  onClick={() => {
+                    viewFocusTargetRef.current = "export";
+                    setExportView(false);
+                  }}
                 >
                   Back
                 </CommandItem>
@@ -161,7 +200,9 @@ export function NotesBulletMenu({
                 </CommandItem>
                 <CommandItem
                   icon={<MessageSquareText size={15} aria-hidden="true" />}
-                  onClick={onOpenNote}
+                  onClick={() => {
+                    noteHandoffPendingRef.current = true;
+                  }}
                 >
                   {hasNote ? "Edit note" : "Add note"}
                 </CommandItem>
@@ -172,10 +213,14 @@ export function NotesBulletMenu({
                   Duplicate
                 </CommandItem>
                 <Menu.Item
+                  ref={exportCommandRef}
                   className="notes-bullet-menu-item"
                   closeOnClick={false}
                   disabled={exportDisabled}
-                  onClick={() => setExportView(true)}
+                  onClick={() => {
+                    viewFocusTargetRef.current = "back";
+                    setExportView(true);
+                  }}
                 >
                   <Download size={15} aria-hidden="true" />
                   <span>Export subtree</span>

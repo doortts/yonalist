@@ -839,16 +839,18 @@ describe("Yonalist app shell", () => {
       "button",
       { name: "Open in browser" }
     );
-    // The notification detail button now uses a Base UI Tooltip: no native
-    // `title`, the visible label lives in a portalled `.tooltip-popup` that only
-    // appears once the button is focused. The accessible name stays on
-    // `aria-label`.
+    // The portalled tooltip stays mounted so aria-describedby resolves at rest.
+    // Its visual state still opens only when the button is focused.
     expect(notificationOpen).not.toHaveAttribute("title");
     expect(notificationOpen.textContent).toBe("");
-    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
-    notificationOpen.focus();
-    const notificationTip = await screen.findByText("브라우저에서 열기");
+    const notificationTip = document.getElementById(
+      notificationOpen.getAttribute("aria-describedby")!
+    );
     expect(notificationTip).toHaveClass("tooltip-popup");
+    expect(notificationTip).toHaveAttribute("data-closed");
+    expect(notificationTip).toHaveTextContent("브라우저에서 열기");
+    notificationOpen.focus();
+    await waitFor(() => expect(notificationTip).toHaveAttribute("data-open"));
 
     // Item detail: the visible label now lives in a Base UI Tooltip popup, not
     // a native `title`; the accessible name is still carried by `aria-label`.
@@ -858,13 +860,14 @@ describe("Yonalist app shell", () => {
     });
     expect(itemOpen).not.toHaveAttribute("title");
     expect(itemOpen.textContent).toBe("");
-    // Keyboard focus opens the Base UI tooltip instantly (focus opens skip the
-    // hover delay), portalling the label into a `.tooltip-popup` element that
-    // is absent before the button is focused.
-    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
-    itemOpen.focus();
-    const itemTip = await screen.findByText("브라우저에서 열기");
+    const itemTip = document.getElementById(
+      itemOpen.getAttribute("aria-describedby")!
+    );
     expect(itemTip).toHaveClass("tooltip-popup");
+    expect(itemTip).toHaveAttribute("data-closed");
+    expect(itemTip).toHaveTextContent("브라우저에서 열기");
+    itemOpen.focus();
+    await waitFor(() => expect(itemTip).toHaveAttribute("data-open"));
   });
 
   it("shows the item state and its comment thread in the detail pane", async () => {
@@ -1333,15 +1336,18 @@ describe("Yonalist app shell", () => {
       name: "Open outbox, 0 pending changes"
     });
     expect(outboxButton).toHaveTextContent("Outbox 0");
-    // The explanatory text moved from a native `title` to a Base UI Tooltip
-    // that opens on hover/focus and portals its popup into the document. It is
-    // absent until the button gains focus, then surfaces in `.tooltip-popup`.
+    // The description is mounted at rest and opens visually on focus.
     const outboxTip =
       "Outbox stores offline issues and comments waiting to sync to GitHub.";
     expect(outboxButton).not.toHaveAttribute("title");
-    expect(screen.queryByText(outboxTip)).toBeNull();
+    const outboxPopup = document.getElementById(
+      outboxButton.getAttribute("aria-describedby")!
+    );
+    expect(outboxPopup).toHaveClass("tooltip-popup");
+    expect(outboxPopup).toHaveAttribute("data-closed");
+    expect(outboxPopup).toHaveTextContent(outboxTip);
     outboxButton.focus();
-    expect(await screen.findByText(outboxTip)).toHaveClass("tooltip-popup");
+    await waitFor(() => expect(outboxPopup).toHaveAttribute("data-open"));
     expect(
       within(navigation).queryByRole("button", {
         name: /Open outbox/

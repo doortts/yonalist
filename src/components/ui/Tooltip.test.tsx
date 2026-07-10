@@ -18,6 +18,14 @@ describe("IconTooltip", () => {
 
     expect(trigger).toHaveAttribute("aria-label", "Named action");
     expect(popupId).toBeTruthy();
+    expect(document.getElementById(popupId!)).toBeInTheDocument();
+    expect(document.getElementById(popupId!)).toHaveAttribute(
+      "role",
+      "tooltip"
+    );
+    expect(document.getElementById(popupId!)).toHaveTextContent(
+      "Helpful detail"
+    );
 
     await user.hover(trigger);
     expect(await screen.findByRole("tooltip", { name: "Helpful detail" })).toHaveAttribute(
@@ -51,5 +59,31 @@ describe("IconTooltip", () => {
         .getAttribute("aria-describedby")
         ?.split(" ")
     ).toEqual(["existing-help", expect.any(String)]);
+  });
+
+  it("keeps unique mounted descriptions for multiple named triggers", () => {
+    render(
+      <>
+        <IconTooltip label="First detail">
+          <button type="button" aria-label="First action" />
+        </IconTooltip>
+        <IconTooltip label="Second detail">
+          <button type="button" aria-label="Second action" />
+        </IconTooltip>
+      </>
+    );
+
+    const first = screen.getByRole("button", { name: "First action" });
+    const second = screen.getByRole("button", { name: "Second action" });
+    const firstId = first.getAttribute("aria-describedby");
+    const secondId = second.getAttribute("aria-describedby");
+
+    expect(firstId).toBeTruthy();
+    expect(secondId).toBeTruthy();
+    expect(firstId).not.toBe(secondId);
+    expect(document.getElementById(firstId!)).toHaveTextContent("First detail");
+    expect(document.getElementById(secondId!)).toHaveTextContent("Second detail");
+    expect(first).toHaveAccessibleName("First action");
+    expect(second).toHaveAccessibleName("Second action");
   });
 });

@@ -194,6 +194,10 @@ export function NotesOutlinePane() {
         state.zoomRootId
       );
   const bodyRows = deriveOutlineBodyRows(structuralRows, state.zoomRootId);
+  const completedItemsHidden =
+    !showCompleted &&
+    allStructuralRows.length > structuralRows.length &&
+    bodyRows.length === 0;
   const structuralVisibleIds = structuralRows.map((row) => row.id);
   const bodyVisibleIds = bodyRows.map((row) => row.id);
   const bodyDropPreview =
@@ -349,7 +353,7 @@ export function NotesOutlinePane() {
             <button
               className="notes-completed-toggle"
               type="button"
-              aria-label={showCompleted ? "Hide completed" : "Show completed"}
+              aria-label="Completed items"
               aria-pressed={showCompleted}
               disabled={deletingNotesData || trashView}
               onClick={() => setShowCompleted((visible) => !visible)}
@@ -388,7 +392,12 @@ export function NotesOutlinePane() {
           )}
           {!initialLoading &&
             state.status !== "error" &&
-            structuralVisibleIds.length === 0 && (
+            completedItemsHidden && (
+              <p className="notes-pane-state">Completed items are hidden.</p>
+            )}
+          {!initialLoading &&
+            state.status !== "error" &&
+            allStructuralRows.length === 0 && (
               <p className="notes-pane-state">No outline yet.</p>
             )}
           {state.status === "error" && state.rootIds.length > 0 && (

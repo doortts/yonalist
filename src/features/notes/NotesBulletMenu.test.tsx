@@ -96,6 +96,37 @@ describe("NotesBulletMenu", () => {
     expect(props.onExport).toHaveBeenCalledWith(format);
   });
 
+  it("moves focus into the export view and back to its parent command", async () => {
+    const user = userEvent.setup();
+    render(<NotesBulletMenu {...standardProps()} />);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+    trigger.focus();
+
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "Complete" })).toHaveFocus()
+    );
+    await user.keyboard(
+      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
+    );
+
+    const back = await screen.findByRole("menuitem", { name: "Back" });
+    await waitFor(() => expect(back).toHaveFocus());
+    await user.keyboard("{ArrowDown}");
+    expect(
+      screen.getByRole("menuitem", { name: "Export subtree as Markdown" })
+    ).toHaveFocus();
+    await user.keyboard("{ArrowUp}{Enter}");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("menuitem", { name: "Export subtree" })
+      ).toHaveFocus()
+    );
+  });
+
   it("closes on Escape and restores focus to the trigger", async () => {
     const user = userEvent.setup();
     render(<NotesBulletMenu {...standardProps()} />);
@@ -115,6 +146,35 @@ describe("NotesBulletMenu", () => {
 
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(trigger).toHaveFocus();
+  });
+
+  it("hands note focus off only after the popup reaches its closed state", async () => {
+    const user = userEvent.setup();
+    const onOpenNote = vi.fn(() => {
+      expect(screen.getByRole("menu")).toHaveAttribute("data-closed");
+      expect(screen.getByRole("menu")).not.toHaveAttribute("data-open");
+      note.focus();
+    });
+    render(
+      <>
+        <NotesBulletMenu {...standardProps({ onOpenNote })} />
+        <textarea aria-label="Supporting note" />
+      </>
+    );
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+    const note = screen.getByRole("textbox", { name: "Supporting note" });
+
+    await user.click(trigger);
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add note"
+      })
+    );
+
+    await waitFor(() => expect(onOpenNote).toHaveBeenCalledOnce());
+    expect(note).toHaveFocus();
   });
 
   it("closes on an outside pointer press", async () => {

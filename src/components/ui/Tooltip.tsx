@@ -31,7 +31,7 @@ export function IconTooltip({ label, children, side = "top" }: IconTooltipProps)
   return (
     <BaseTooltip.Root>
       <BaseTooltip.Trigger render={trigger} />
-      <BaseTooltip.Portal>
+      <BaseTooltip.Portal keepMounted>
         <BaseTooltip.Positioner
           className="tooltip-positioner"
           side={side}

@@ -937,6 +937,49 @@ describe("NotesExportMenu", () => {
   });
 
   it.each([
+    {
+      target: "row",
+      options: { draftTitle: "" },
+      trigger: "More actions for Selected title",
+      format: "markdown" as const,
+      rootNodeId: "selected",
+      command: "Export subtree as Markdown"
+    },
+    {
+      target: "page",
+      options: { pageDraftTitle: "" },
+      trigger: "More actions for Page title",
+      format: "pdf" as const,
+      rootNodeId: "page",
+      command: "Export subtree as PDF"
+    }
+  ])(
+    "passes a blank live $target draft title through to export",
+    async ({ options, trigger, format, rootNodeId, command }) => {
+      const user = userEvent.setup();
+      exportServiceMock.saveNotesExport.mockResolvedValue(exportResult(format));
+      renderNotesPanes(options);
+
+      await user.click(screen.getByRole("button", { name: trigger }));
+      const menu = await screen.findByRole("menu");
+      await user.click(
+        within(menu).getByRole("menuitem", { name: "Export subtree" })
+      );
+      await user.click(within(menu).getByRole("menuitem", { name: command }));
+
+      await waitFor(() =>
+        expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
+          expect.objectContaining({
+            rootNodeId,
+            format,
+            defaultFileName: ""
+          })
+        )
+      );
+    }
+  );
+
+  it.each([
     { label: "Trash", options: { libraryView: "trash" as const }, vault: "/vault" },
     { label: "loading", options: { status: "loading" as const }, vault: "/vault" },
     {

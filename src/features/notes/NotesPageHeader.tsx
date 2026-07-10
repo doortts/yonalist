@@ -9,7 +9,10 @@ import type { NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
-import { resolveOutlineKey } from "./outlineKeyboard";
+import {
+  detectOutlineShortcutPlatform,
+  resolveOutlineKey
+} from "./outlineKeyboard";
 
 interface NotesPageHeaderProps {
   nodeId: NoteId;
@@ -117,6 +120,7 @@ export function NotesPageHeader({
       title: titleValue,
       note: noteValue,
       nodeId,
+      platform: detectOutlineShortcutPlatform(),
       workspace: state
     });
     if (
@@ -184,7 +188,7 @@ export function NotesPageHeader({
           onOpenNote={openAndFocusNote}
           onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
           onExport={(format) =>
-            exportController.startExport(nodeId, titleValue || node.title, format)
+            exportController.startExport(nodeId, titleValue, format)
           }
           onDelete={() => runCommand(() => actions.deleteNode(nodeId))}
           onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
