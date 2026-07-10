@@ -14,8 +14,9 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
-import { ChevronRight, Home } from "lucide-react";
+import { ChevronRight, Home, Trash2 } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   IconTooltip,
   TooltipProvider
@@ -31,7 +32,15 @@ const outlineScreenReaderInstructions = {
     "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
 };
 
-function NotesBreadcrumb() {
+interface NotesBreadcrumbProps {
+  trashView: boolean;
+  onRequestEmptyTrash(): void;
+}
+
+function NotesBreadcrumb({
+  trashView,
+  onRequestEmptyTrash
+}: NotesBreadcrumbProps) {
   const { actions, state } = useNotesWorkspaceContext();
   const trail = state.zoomRootId ? parentTrail(state, state.zoomRootId) : [];
 
@@ -68,14 +77,26 @@ function NotesBreadcrumb() {
           </span>
         );
       })}
+      {trashView && (
+        <button
+          className="notes-empty-trash-button"
+          type="button"
+          onClick={onRequestEmptyTrash}
+        >
+          <Trash2 size={15} aria-hidden="true" />
+          <span>Empty trash</span>
+        </button>
+      )}
     </nav>
   );
 }
 
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
-  const { actions, state } = workspace;
+  const { actions, libraryView, locallyExpandedNodeIds, state } = workspace;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+  const trashView = libraryView === "trash";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -86,10 +107,15 @@ export function NotesOutlinePane() {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-  const rows = flattenVisibleOutlineRows(state, state.zoomRootId);
+  const rows = flattenVisibleOutlineRows(
+    state,
+    state.zoomRootId,
+    locallyExpandedNodeIds
+  );
   const visibleIds = rows.map((row) => row.id);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
-  const dragUnavailable = state.status === "loading" || rows.length === 0;
+  const dragUnavailable =
+    trashView || state.status === "loading" || rows.length === 0;
   const projectDragEnd = useCallback(
     (event: DragEndEvent) => {
       const activeId = String(event.active.id);
@@ -194,7 +220,10 @@ export function NotesOutlinePane() {
       aria-busy={state.status === "loading"}
     >
       <TooltipProvider>
-        <NotesBreadcrumb />
+        <NotesBreadcrumb
+          trashView={trashView}
+          onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+        />
         <div className="notes-outline-rows">
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>
@@ -244,6 +273,8 @@ export function NotesOutlinePane() {
                     <OutlineNodeRow
                       nodeId={row.id}
                       depth={row.depth}
+                      readOnly={trashView}
+                      locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
                         dragUnavailable || row.id === state.zoomRootId
                       }
@@ -254,6 +285,16 @@ export function NotesOutlinePane() {
             </SortableContext>
           </DndContext>
         </div>
+        <ConfirmDialog
+          open={emptyTrashConfirmOpen}
+          onOpenChange={setEmptyTrashConfirmOpen}
+          title="Empty trash?"
+          description="Permanently delete every note currently in Trash? This cannot be undone."
+          confirmLabel="Empty trash"
+          cancelLabel="Cancel"
+          danger
+          onConfirm={() => void actions.emptyTrash()}
+        />
       </TooltipProvider>
     </section>
   );

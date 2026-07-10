@@ -98,5 +98,8 @@ describe("resetApplicationData", () => {
     expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
       "notes_empty_trash"
     );
+    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
+      "notes_delete_database"
+    );
   });
 });

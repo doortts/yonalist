@@ -11,7 +11,8 @@ export interface FlattenedOutlineRow {
 
 export function flattenVisibleOutlineRows(
   workspace: NormalizedNotesWorkspace,
-  zoomRootId: NoteId | null
+  zoomRootId: NoteId | null,
+  locallyExpandedNodeIds: ReadonlySet<NoteId> = new Set()
 ): FlattenedOutlineRow[] {
   const rows: FlattenedOutlineRow[] = [];
   const visited = new Set<NoteId>();
@@ -25,14 +26,16 @@ export function flattenVisibleOutlineRows(
       return;
     }
     visited.add(nodeId);
+    const isCollapsed =
+      node.isCollapsed && !locallyExpandedNodeIds.has(node.id);
     rows.push({
       id: node.id,
       parentId: node.parentId,
       depth: ancestorIds.length,
-      isCollapsed: node.isCollapsed,
+      isCollapsed,
       ancestorIds
     });
-    if (node.isCollapsed) {
+    if (isCollapsed) {
       return;
     }
     for (const childId of workspace.childIdsByParent[nodeId] ?? []) {

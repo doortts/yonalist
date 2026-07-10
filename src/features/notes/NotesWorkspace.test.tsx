@@ -29,11 +29,15 @@ const notesStoreMock = vi.hoisted(() => ({
   moveNode: vi.fn(),
   toggleComplete: vi.fn(),
   toggleCollapsed: vi.fn(),
+  toggleStar: vi.fn(),
   duplicateNode: vi.fn(),
   removeEmptyNode: vi.fn(),
   softDeleteNode: vi.fn(),
   restoreNode: vi.fn(),
-  emptyTrash: vi.fn()
+  emptyTrash: vi.fn(),
+  search: vi.fn(),
+  listTags: vi.fn(),
+  deleteDatabase: vi.fn()
 }));
 
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
@@ -167,6 +171,16 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
       return workspace(confirmedNodes);
     }
   );
+  notesStoreMock.toggleStar.mockImplementation(
+    async (_vaultRoot: string, nodeId: NoteId) => {
+      confirmedNodes = confirmedNodes.map((current) =>
+        current.id === nodeId
+          ? { ...current, isStarred: !current.isStarred }
+          : current
+      );
+      return workspace(confirmedNodes);
+    }
+  );
   notesStoreMock.duplicateNode.mockImplementation(
     async (_vaultRoot: string, nodeId: NoteId) => {
       const source = confirmedNodes.find((current) => current.id === nodeId);
@@ -205,6 +219,9 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   notesStoreMock.emptyTrash.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
+  notesStoreMock.search.mockResolvedValue([]);
+  notesStoreMock.listTags.mockResolvedValue([]);
+  notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
 }
 
 function renderNotesWorkspace() {
@@ -1563,6 +1580,302 @@ describe("Notes workspace", () => {
       "/vault",
       "outside"
     );
+  });
+
+  it("reloads All, Starred, Recent, tagged, and Trash library views", async () => {
+    const user = userEvent.setup();
+    notesStoreMock.listTags.mockResolvedValue(["Personal", "Work"]);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    const views = screen.getByRole("group", { name: "Notes library views" });
+    await user.click(within(views).getByRole("button", { name: "Starred" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "starred"
+      })
+    );
+    await user.click(within(views).getByRole("button", { name: "Recent" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "recent"
+      })
+    );
+    await user.click(within(views).getByRole("button", { name: "Tags" }));
+    await user.click(await screen.findByRole("button", { name: "Work" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "tag",
+        tag: "Work"
+      })
+    );
+    expect(screen.getByRole("button", { name: "Work" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await user.click(within(views).getByRole("button", { name: "Trash" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "trash"
+      })
+    );
+    await user.click(within(views).getByRole("button", { name: "All" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "active"
+      })
+    );
+  });
+
+  it("keeps only the newest asynchronous search results", async () => {
+    const first = deferred<
+      Array<{
+        nodeId: string;
+        title: string;
+        parentTrail: string[];
+        matchedField: "title";
+      }>
+    >();
+    const second = deferred<
+      Array<{
+        nodeId: string;
+        title: string;
+        parentTrail: string[];
+        matchedField: "title";
+      }>
+    >();
+    notesStoreMock.search.mockImplementation(
+      async (_vaultRoot: string, query: string) =>
+        query === "Old" ? first.promise : second.promise
+    );
+    renderNotesWorkspace();
+    const search = await screen.findByRole("searchbox", {
+      name: "Search notes"
+    });
+
+    fireEvent.change(search, { target: { value: "Old" } });
+    fireEvent.change(search, { target: { value: "New" } });
+    second.resolve([
+      {
+        nodeId: "new",
+        title: "New result",
+        parentTrail: ["Project"],
+        matchedField: "title"
+      }
+    ]);
+    expect(
+      await screen.findByRole("option", { name: /New result/ })
+    ).toBeInTheDocument();
+
+    first.resolve([
+      {
+        nodeId: "old",
+        title: "Old result",
+        parentTrail: ["Project"],
+        matchedField: "title"
+      }
+    ]);
+    await act(async () => first.promise);
+    expect(
+      screen.queryByRole("option", { name: /Old result/ })
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens a search result in active context without persisting expansion", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "page", title: "Page", isCollapsed: true }),
+      node({
+        id: "section",
+        parentId: "page",
+        title: "Section",
+        isCollapsed: true
+      }),
+      node({ id: "target", parentId: "section", title: "Target" })
+    ]);
+    notesStoreMock.search.mockResolvedValue([
+      {
+        nodeId: "target",
+        title: "Target",
+        parentTrail: ["Page", "Section"],
+        matchedField: "title"
+      }
+    ]);
+    renderNotesWorkspace();
+
+    await user.type(
+      await screen.findByRole("searchbox", { name: "Search notes" }),
+      "Target"
+    );
+    await user.click(
+      await screen.findByRole("option", { name: /Target/ })
+    );
+
+    expect(screen.getByLabelText("Notes breadcrumb")).toHaveTextContent("Page");
+    expect(await findTitleInput("Target")).toHaveFocus();
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
+    expect(notesStoreMock.loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+      kind: "active"
+    });
+  });
+
+  it("toggles a row star with a named pressed action", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    const star = screen.getByRole("button", { name: "Star Project" });
+    expect(star).toHaveAttribute("aria-pressed", "false");
+    await user.click(star);
+
+    expect(notesStoreMock.toggleStar).toHaveBeenCalledWith("/vault", "project");
+    expect(
+      await screen.findByRole("button", { name: "Unstar Project" })
+    ).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("keeps a filtered workspace scoped after a row mutation", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "starred", title: "Starred page", isStarred: true }),
+      node({ id: "outside", title: "Outside page" })
+    ]);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(
+          scope.kind === "starred"
+            ? confirmedNodes.filter((current) => current.isStarred)
+            : confirmedNodes
+        )
+    );
+    renderNotesWorkspace();
+    await findTitleInput("Starred page");
+
+    await user.click(screen.getByRole("button", { name: "Starred" }));
+    await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
+    await user.click(
+      screen.getByRole("checkbox", { name: "Mark Starred page complete" })
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+        kind: "starred"
+      })
+    );
+    expect(queryTitleInput("Outside page")).toBeNull();
+  });
+
+  it("keeps Trash read-only while allowing restore and confirmed emptying", async () => {
+    const user = userEvent.setup();
+    const activeNodes = [node({ id: "project", title: "Project" })];
+    let deletedNodes = [
+      node({
+        id: "deleted",
+        title: "Deleted note",
+        deletedAt: "2026-07-10T01:00:00Z"
+      })
+    ];
+    configureRepository(activeNodes);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+    );
+    notesStoreMock.restoreNode.mockImplementation(async () => {
+      deletedNodes = [];
+      return workspace(activeNodes);
+    });
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    expect(
+      await screen.findByRole("button", { name: "Restore Deleted note" })
+    ).toBeInTheDocument();
+    expect(queryTitleInput("Deleted note")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Star Deleted note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Duplicate Deleted note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete Deleted note" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Restore Deleted note" }));
+    expect(notesStoreMock.restoreNode).toHaveBeenCalledWith("/vault", "deleted");
+
+    deletedNodes = [
+      node({
+        id: "another-deleted",
+        title: "Another deleted note",
+        deletedAt: "2026-07-10T01:00:00Z"
+      })
+    ];
+    await user.click(screen.getByRole("button", { name: "All" }));
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    await screen.findByRole("button", { name: "Restore Another deleted note" });
+    await user.click(screen.getByRole("button", { name: "Empty trash" }));
+    expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
+    const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
+    await user.click(within(confirm).getByRole("button", { name: "Empty trash" }));
+    expect(notesStoreMock.emptyTrash).toHaveBeenCalledWith("/vault");
+  });
+
+  it("does not expose deleted rows for editing while choosing a tag", async () => {
+    const user = userEvent.setup();
+    const activeNodes = [node({ id: "project", title: "Project" })];
+    const deletedNodes = [
+      node({
+        id: "deleted",
+        title: "Deleted note",
+        deletedAt: "2026-07-10T01:00:00Z"
+      })
+    ];
+    configureRepository(activeNodes);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
+    );
+    notesStoreMock.listTags.mockResolvedValue(["Work"]);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(screen.getByRole("button", { name: "Trash" }));
+    await screen.findByRole("button", { name: "Restore Deleted note" });
+    await user.click(screen.getByRole("button", { name: "Tags" }));
+
+    expect(await screen.findByRole("button", { name: "Work" })).toBeInTheDocument();
+    expect(queryTitleInput("Deleted note")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
+  });
+
+  it("flushes drafts before deleting only the Notes database", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+    await user.clear(title);
+    await user.type(title, "Unsaved project");
+
+    await user.click(
+      screen.getByRole("button", { name: "Notes data settings" })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    const confirm = screen.getByRole("alertdialog", {
+      name: "Delete all Notes data?"
+    });
+    await user.click(
+      within(confirm).getByRole("button", { name: "Delete Notes data" })
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.deleteDatabase).toHaveBeenCalledWith("/vault")
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenCalled();
+    expect(
+      notesStoreMock.updateNode.mock.invocationCallOrder.at(-1)
+    ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
+    expect(screen.queryByRole("textbox", { name: "Edit node title" })).toBeNull();
+    expect(screen.getByText("No outline yet.")).toBeInTheDocument();
+    expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
   });
 
   it("renders loading, empty, and error states", async () => {

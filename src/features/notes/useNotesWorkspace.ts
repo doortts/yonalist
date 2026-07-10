@@ -12,9 +12,11 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
+  NoteSearchResult,
   NotesStore,
   NotesStoreError,
-  NotesWorkspace
+  NotesWorkspace,
+  NotesWorkspaceScope
 } from "../../domain/notes";
 import {
   createNotesWriteQueue,
@@ -62,6 +64,7 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   toggleComplete(nodeId: NoteId): Promise<void>;
   toggleCollapsed(nodeId: NoteId): Promise<void>;
+  toggleStar(nodeId: NoteId): Promise<void>;
   duplicateNode(nodeId: NoteId): Promise<void>;
   removeEmptyNode(
     nodeId: NoteId,
@@ -70,8 +73,21 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   deleteNode(nodeId: NoteId): Promise<void>;
   restoreNode(nodeId: NoteId): Promise<void>;
+  emptyTrash(): Promise<void>;
+  selectLibraryView(view: NotesLibraryView): Promise<void>;
+  selectTag(tag: string): Promise<void>;
+  searchNotes(query: string): Promise<NoteSearchResult[]>;
+  openSearchResult(nodeId: NoteId): Promise<void>;
+  deleteAllNotesData(): Promise<void>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
 }
+
+export type NotesLibraryView =
+  | "all"
+  | "starred"
+  | "recent"
+  | "tags"
+  | "trash";
 
 export interface NotesWorkspaceCompoundOptions {
   draft?: Pick<NoteNode, "title" | "note">;
@@ -87,6 +103,10 @@ export interface UseNotesWorkspaceOptions {
 export interface UseNotesWorkspaceResult {
   state: NormalizedNotesWorkspace;
   actions: NotesWorkspaceActions;
+  libraryView: NotesLibraryView;
+  activeTag: string | null;
+  tags: readonly string[];
+  locallyExpandedNodeIds: ReadonlySet<NoteId>;
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
   retryFailedDraft(nodeId: NoteId): Promise<void>;
@@ -106,6 +126,16 @@ function authoritative(
   uiUpdate?: NotesWorkspaceUiUpdate
 ): NotesWorkspaceQueueResult {
   return { kind: "authoritative", workspace, uiUpdate };
+}
+
+async function workspaceForScope(
+  context: NotesWorkspaceQueueContext,
+  mutationWorkspace: NotesWorkspace,
+  scope: NotesWorkspaceScope
+): Promise<NotesWorkspace> {
+  return scope.kind === "active"
+    ? mutationWorkspace
+    : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
 type NotesWorkspaceQueueStep = () => Promise<NotesWorkspace>;
@@ -149,6 +179,11 @@ interface NotesWorkspaceSessionRecord {
   closeCompletion: Promise<void> | null;
 }
 
+interface SearchNavigation {
+  rootId: NoteId;
+  expandedNodeIds: Set<NoteId>;
+}
+
 const notesWorkspaceRecoveryRegistry = new WeakMap<
   NotesStore,
   Map<string, NotesWorkspaceRecoveryEntry>
@@ -178,6 +213,56 @@ function enqueueBufferedCommands(
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function scopeForLibraryView(
+  view: Exclude<NotesLibraryView, "tags">
+): NotesWorkspaceScope {
+  switch (view) {
+    case "all":
+      return { kind: "active" };
+    case "starred":
+      return { kind: "starred" };
+    case "recent":
+      return { kind: "recent" };
+    case "trash":
+      return { kind: "trash" };
+  }
+}
+
+function searchNavigation(
+  workspace: NotesWorkspace,
+  nodeId: NoteId
+): SearchNavigation | null {
+  const normalized = normalizeWorkspace(workspace);
+  if (!normalized.nodesById[nodeId]) {
+    return null;
+  }
+  const trail: NoteId[] = [];
+  const visited = new Set<NoteId>();
+  let currentId: NoteId | null = nodeId;
+  while (currentId !== null && !visited.has(currentId)) {
+    const node: NoteNode | undefined = normalized.nodesById[currentId];
+    if (!node) {
+      return null;
+    }
+    visited.add(currentId);
+    trail.push(currentId);
+    currentId = node.parentId;
+  }
+  const orderedTrail = trail.reverse();
+  const rootId = orderedTrail[0];
+  if (!rootId) {
+    return null;
+  }
+  return {
+    rootId,
+    expandedNodeIds: new Set(
+      orderedTrail
+        .slice(0, -1)
+        .filter((id) => normalized.nodesById[id]?.isCollapsed)
+    )
+  };
 }
 
 function writeError(cause: unknown): NotesStoreError {
@@ -254,6 +339,17 @@ function deleteRecoveryEntry(
   if (entries.size === 0) {
     notesWorkspaceRecoveryRegistry.delete(repository);
   }
+}
+
+function clearRecoveryEntry(repository: NotesStore, vaultRoot: string): void {
+  const entry = recoveryEntryFor(repository, vaultRoot);
+  if (!entry) {
+    return;
+  }
+  deleteRecoveryEntry(repository, vaultRoot, entry);
+  entry.subscribers.clear();
+  entry.drafts.clear();
+  entry.failedWritesByNodeId.clear();
 }
 
 function beginShutdownRecovery(
@@ -361,7 +457,8 @@ function canRunDraftCompound(
 async function runCompoundQueueWork(
   context: NotesWorkspaceQueueContext,
   steps: NotesWorkspaceQueueStep[],
-  uiUpdate?: NotesWorkspaceUiUpdate
+  uiUpdate?: NotesWorkspaceUiUpdate,
+  scope: NotesWorkspaceScope = { kind: "active" }
 ): Promise<NotesWorkspaceQueueResult> {
   let workspace = context.confirmedWorkspace;
   let hasAuthoritativeStep = false;
@@ -371,8 +468,21 @@ async function runCompoundQueueWork(
       workspace = await step();
       hasAuthoritativeStep = true;
     }
-    return authoritative(workspace, uiUpdate);
+    return authoritative(
+      await workspaceForScope(context, workspace, scope),
+      uiUpdate
+    );
   } catch (cause) {
+    if (hasAuthoritativeStep && scope.kind !== "active") {
+      try {
+        workspace = await context.repository.loadWorkspace(
+          context.vaultRoot,
+          scope
+        );
+      } catch {
+        // Preserve the last authoritative response when scoped reload fails.
+      }
+    }
     return {
       kind: "failure",
       error: errorMessage(cause),
@@ -454,8 +564,16 @@ export function useNotesWorkspace({
   const [draftsByNodeId, setDraftsByNodeId] = useState<
     Readonly<Record<NoteId, NotesNodeDraft>>
   >({});
+  const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
+  const [activeTag, setActiveTag] = useState<string | null>(null);
+  const [tags, setTags] = useState<readonly string[]>([]);
+  const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
+    ReadonlySet<NoteId>
+  >(() => new Set());
   const [currentWriteError, setCurrentWriteError] =
     useState<NotesStoreError | null>(null);
+  const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
+  const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const persistDraftRef = useRef<
@@ -527,6 +645,12 @@ export function useNotesWorkspace({
     dispatch({ type: "startWorkspaceLoad" });
     setDraftsByNodeId({});
     setCurrentWriteError(null);
+    activeScopeRef.current = { kind: "active" };
+    locallyExpandedNodeIdsRef.current = new Set();
+    setLibraryView("all");
+    setActiveTag(null);
+    setTags([]);
+    setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let record!: NotesWorkspaceSessionRecord;
     const session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
@@ -654,6 +778,14 @@ export function useNotesWorkspace({
     });
   }, []);
 
+  const replaceLocalExpansions = useCallback(
+    (nodeIds: ReadonlySet<NoteId>): void => {
+      locallyExpandedNodeIdsRef.current = nodeIds;
+      setLocallyExpandedNodeIds(nodeIds);
+    },
+    []
+  );
+
   const settleDraftWrite = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
@@ -724,12 +856,20 @@ export function useNotesWorkspace({
           return result;
         }
         try {
-          result = authoritative(
-            await context.repository.updateNode(context.vaultRoot, {
+          const mutationWorkspace = await context.repository.updateNode(
+            context.vaultRoot,
+            {
               id: nodeId,
               title: draft.title,
               note: draft.note
-            })
+            }
+          );
+          result = authoritative(
+            await workspaceForScope(
+              context,
+              mutationWorkspace,
+              activeScopeRef.current
+            )
           );
         } catch (cause) {
           result = { kind: "failure", error: errorMessage(cause) };
@@ -977,6 +1117,143 @@ export function useNotesWorkspace({
     []
   );
 
+  const loadLibraryScope = useCallback(
+    async (
+      view: NotesLibraryView,
+      scope: NotesWorkspaceScope,
+      tag: string | null = null
+    ): Promise<void> => {
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
+      let loaded = false;
+      await runCommand(async (context) => {
+        const workspace = await context.repository.loadWorkspace(
+          context.vaultRoot,
+          scope
+        );
+        loaded = true;
+        activeScopeRef.current = scope;
+        return authoritative(workspace, {
+          selectedId: null,
+          zoomRootId: null,
+          editingNoteId: null,
+          pendingFocusId: null
+        });
+      });
+      if (!loaded) {
+        return;
+      }
+      setLibraryView(view);
+      setActiveTag(tag);
+      replaceLocalExpansions(new Set());
+    },
+    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+  );
+
+  const selectLibraryView = useCallback(
+    async (view: NotesLibraryView): Promise<void> => {
+      if (view !== "tags") {
+        await loadLibraryScope(view, scopeForLibraryView(view));
+        return;
+      }
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
+      let listedTags: string[] | null = null;
+      await runCommand(async (context) => {
+        listedTags = await context.repository.listTags(context.vaultRoot);
+        activeScopeRef.current = { kind: "active" };
+        return authoritative(
+          { nodes: [] },
+          {
+            selectedId: null,
+            zoomRootId: null,
+            editingNoteId: null,
+            pendingFocusId: null
+          }
+        );
+      });
+      if (!listedTags) {
+        return;
+      }
+      setLibraryView("tags");
+      setActiveTag(null);
+      setTags(listedTags);
+      replaceLocalExpansions(new Set());
+    }, [
+      flushAllDraftsBeforeStructural,
+      loadLibraryScope,
+      replaceLocalExpansions,
+      runCommand
+    ]
+  );
+
+  const selectTag = useCallback(
+    async (tag: string): Promise<void> => {
+      await loadLibraryScope("tags", { kind: "tag", tag }, tag);
+    },
+    [loadLibraryScope]
+  );
+
+  const searchNotes = useCallback(
+    (query: string): Promise<NoteSearchResult[]> =>
+      repository.search(vaultRoot, query),
+    [repository, vaultRoot]
+  );
+
+  const openSearchResult = useCallback(
+    async (nodeId: NoteId): Promise<void> => {
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
+      let expandedNodeIds: ReadonlySet<NoteId> = new Set();
+      let loaded = false;
+      await runCommand(async (context) => {
+        const workspace = await context.repository.loadWorkspace(
+          context.vaultRoot,
+          { kind: "active" }
+        );
+        loaded = true;
+        activeScopeRef.current = { kind: "active" };
+        const navigation = searchNavigation(workspace, nodeId);
+        expandedNodeIds = navigation?.expandedNodeIds ?? new Set();
+        return authoritative(
+          workspace,
+          navigation
+            ? {
+                selectedId: nodeId,
+                zoomRootId: navigation.rootId,
+                editingNoteId: nodeId,
+                pendingFocusId: nodeId
+              }
+            : {
+                selectedId: null,
+                zoomRootId: null,
+                editingNoteId: null,
+                pendingFocusId: null
+              }
+        );
+      });
+      if (!loaded) {
+        return;
+      }
+      setLibraryView("all");
+      setActiveTag(null);
+      replaceLocalExpansions(expandedNodeIds);
+    },
+    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+  );
+
   const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
     dispatch({ type: "acknowledgePendingFocus", nodeId });
   }, []);
@@ -1003,11 +1280,14 @@ export function useNotesWorkspace({
         title: "",
         note: ""
       });
-      return authoritative(workspace, {
-        selectedId: id,
-        editingNoteId: id,
-        pendingFocusId: id
-      });
+      return authoritative(
+        await workspaceForScope(context, workspace, activeScopeRef.current),
+        {
+          selectedId: id,
+          editingNoteId: id,
+          pendingFocusId: id
+        }
+      );
     });
   }, [flushAllDraftsBeforeStructural, runCommand]);
 
@@ -1032,11 +1312,14 @@ export function useNotesWorkspace({
             note: ""
           }
         );
-        return authoritative(workspace, {
-          selectedId: id,
-          editingNoteId: id,
-          pendingFocusId: id
-        });
+        return authoritative(
+          await workspaceForScope(context, workspace, activeScopeRef.current),
+          {
+            selectedId: id,
+            editingNoteId: id,
+            pendingFocusId: id
+          }
+        );
       });
     },
     [flushDraftBeforeStructural, runCommand]
@@ -1081,7 +1364,8 @@ export function useNotesWorkspace({
                 selectedId: newNodeId,
                 editingNoteId: newNodeId,
                 pendingFocusId: newNodeId
-              }
+              },
+              activeScopeRef.current
             );
           }
         );
@@ -1120,11 +1404,16 @@ export function useNotesWorkspace({
             suffix
           })
         );
-        const result = await runCompoundQueueWork(context, steps, {
-          selectedId: newNodeId,
-          editingNoteId: newNodeId,
-          pendingFocusId: newNodeId
-        });
+        const result = await runCompoundQueueWork(
+          context,
+          steps,
+          {
+            selectedId: newNodeId,
+            editingNoteId: newNodeId,
+            pendingFocusId: newNodeId
+          },
+          activeScopeRef.current
+        );
         succeeded = result.kind === "authoritative";
         return result;
       });
@@ -1143,11 +1432,19 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        return authoritative(
-          await context.repository.updateNode(context.vaultRoot, {
+        const workspace = await context.repository.updateNode(
+          context.vaultRoot,
+          {
             id: nodeId,
             ...patch
-          })
+          }
+        );
+        return authoritative(
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
         );
       });
     },
@@ -1198,7 +1495,8 @@ export function useNotesWorkspace({
             return runCompoundQueueWork(
               context,
               steps,
-              focusedUiUpdate(focusNodeId)
+              focusedUiUpdate(focusNodeId),
+              activeScopeRef.current
             );
           }
         );
@@ -1245,7 +1543,8 @@ export function useNotesWorkspace({
         return runCompoundQueueWork(
           context,
           steps,
-          focusedUiUpdate(focusNodeId)
+          focusedUiUpdate(focusNodeId),
+          activeScopeRef.current
         );
       });
     },
@@ -1261,8 +1560,16 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
+        const workspace = await context.repository.toggleComplete(
+          context.vaultRoot,
+          nodeId
+        );
         return authoritative(
-          await context.repository.toggleComplete(context.vaultRoot, nodeId)
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
         );
       });
     },
@@ -1271,6 +1578,12 @@ export function useNotesWorkspace({
 
   const toggleCollapsed = useCallback(
     async (nodeId: NoteId) => {
+      if (locallyExpandedNodeIdsRef.current.has(nodeId)) {
+        const next = new Set(locallyExpandedNodeIdsRef.current);
+        next.delete(nodeId);
+        replaceLocalExpansions(next);
+        return;
+      }
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
@@ -1278,8 +1591,41 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
+        const workspace = await context.repository.toggleCollapsed(
+          context.vaultRoot,
+          nodeId
+        );
         return authoritative(
-          await context.repository.toggleCollapsed(context.vaultRoot, nodeId)
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
+        );
+      });
+    },
+    [flushDraftBeforeStructural, replaceLocalExpansions, runCommand]
+  );
+
+  const toggleStar = useCallback(
+    async (nodeId: NoteId) => {
+      if (!(await flushDraftBeforeStructural(nodeId))) {
+        return;
+      }
+      return runCommand(async (context) => {
+        if (!confirmedState(context).nodesById[nodeId]) {
+          return { kind: "skipped" };
+        }
+        const workspace = await context.repository.toggleStar(
+          context.vaultRoot,
+          nodeId
+        );
+        return authoritative(
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
         );
       });
     },
@@ -1302,7 +1648,11 @@ export function useNotesWorkspace({
         );
         const duplicateId = duplicateRootId(before, workspace, nodeId);
         return authoritative(
-          workspace,
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          ),
           duplicateId
             ? {
                 selectedId: duplicateId,
@@ -1347,7 +1697,8 @@ export function useNotesWorkspace({
                     nodeId
                   )
               ],
-              focusedUiUpdate(focusNodeId)
+              focusedUiUpdate(focusNodeId),
+              activeScopeRef.current
             );
           }
         );
@@ -1380,7 +1731,8 @@ export function useNotesWorkspace({
         return runCompoundQueueWork(
           context,
           steps,
-          focusedUiUpdate(focusNodeId)
+          focusedUiUpdate(focusNodeId),
+          activeScopeRef.current
         );
       });
     },
@@ -1396,8 +1748,16 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
+        const workspace = await context.repository.softDeleteNode(
+          context.vaultRoot,
+          nodeId
+        );
         return authoritative(
-          await context.repository.softDeleteNode(context.vaultRoot, nodeId)
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
         );
       });
     },
@@ -1406,14 +1766,103 @@ export function useNotesWorkspace({
 
   const restoreNode = useCallback(
     (nodeId: NoteId) => {
-      return runCommand(async (context) =>
-        authoritative(
-          await context.repository.restoreNode(context.vaultRoot, nodeId)
-        )
-      );
+      return runCommand(async (context) => {
+        const workspace = await context.repository.restoreNode(
+          context.vaultRoot,
+          nodeId
+        );
+        return authoritative(
+          await workspaceForScope(
+            context,
+            workspace,
+            activeScopeRef.current
+          )
+        );
+      });
     },
     [runCommand]
   );
+
+  const emptyTrash = useCallback(() => {
+    return runCommand(async (context) => {
+      const workspace = await context.repository.emptyTrash(context.vaultRoot);
+      return authoritative(
+        await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
+        ),
+        {
+          selectedId: null,
+          zoomRootId: null,
+          editingNoteId: null,
+          pendingFocusId: null
+        }
+      );
+    });
+  }, [runCommand]);
+
+  const deleteAllNotesData = useCallback(async (): Promise<void> => {
+    const record = sessionRecordRef.current;
+    if (!record || record.closing || sessionRef.current !== record.session) {
+      throw new Error("The Notes workspace is unavailable.");
+    }
+    if (
+      record.drafts.size > 0 &&
+      !(await flushAllDraftsBeforeStructural())
+    ) {
+      throw record.writeError ?? new Error("Pending Notes changes could not be saved.");
+    }
+
+    let deletionError: unknown = null;
+    let deleted = false;
+    await runCommand(async (context) => {
+      try {
+        await context.repository.deleteDatabase(context.vaultRoot);
+        deleted = true;
+        return authoritative(
+          { nodes: [] },
+          {
+            selectedId: null,
+            zoomRootId: null,
+            editingNoteId: null,
+            pendingFocusId: null
+          }
+        );
+      } catch (cause) {
+        deletionError = cause;
+        return { kind: "failure", error: errorMessage(cause) };
+      }
+    });
+    if (deletionError) {
+      throw deletionError;
+    }
+    if (!deleted) {
+      throw new Error("Notes data deletion did not complete.");
+    }
+
+    record.drafts.clear();
+    record.pendingDebounceByNodeId.clear();
+    record.inFlightDraftByNodeId.clear();
+    record.retryWriteByNodeId.clear();
+    record.failedWritesByNodeId.clear();
+    record.writeError = null;
+    record.recoveryEntry = null;
+    clearRecoveryEntry(repository, vaultRoot);
+    publishDraftState(record);
+    activeScopeRef.current = { kind: "active" };
+    setLibraryView("all");
+    setActiveTag(null);
+    setTags([]);
+    replaceLocalExpansions(new Set());
+  }, [
+    flushAllDraftsBeforeStructural,
+    publishDraftState,
+    replaceLocalExpansions,
+    repository,
+    runCommand,
+    vaultRoot
+  ]);
 
   const zoomTo = useCallback(async (nodeId: NoteId | null) => {
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
@@ -1432,10 +1881,17 @@ export function useNotesWorkspace({
       moveNode,
       toggleComplete,
       toggleCollapsed,
+      toggleStar,
       duplicateNode,
       removeEmptyNode,
       deleteNode,
       restoreNode,
+      emptyTrash,
+      selectLibraryView,
+      selectTag,
+      searchNotes,
+      openSearchResult,
+      deleteAllNotesData,
       zoomTo
     }),
     [
@@ -1450,10 +1906,17 @@ export function useNotesWorkspace({
       moveNode,
       toggleComplete,
       toggleCollapsed,
+      toggleStar,
       duplicateNode,
       removeEmptyNode,
       deleteNode,
       restoreNode,
+      emptyTrash,
+      selectLibraryView,
+      selectTag,
+      searchNotes,
+      openSearchResult,
+      deleteAllNotesData,
       zoomTo
     ]
   );
@@ -1461,6 +1924,10 @@ export function useNotesWorkspace({
   return {
     state,
     actions,
+    libraryView,
+    activeTag,
+    tags,
+    locallyExpandedNodeIds,
     draftsByNodeId,
     writeError: currentWriteError,
     retryFailedDraft,

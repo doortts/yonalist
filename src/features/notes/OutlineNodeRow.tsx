@@ -6,6 +6,7 @@ import {
   GripVertical,
   MessageSquareText,
   RotateCcw,
+  Star,
   Trash2
 } from "lucide-react";
 import {
@@ -24,6 +25,8 @@ interface OutlineNodeRowProps {
   nodeId: NoteId;
   depth: number;
   dragDisabled: boolean;
+  readOnly?: boolean;
+  locallyExpanded?: boolean;
 }
 
 function controlLabel(title: string): string {
@@ -33,7 +36,9 @@ function controlLabel(title: string): string {
 export function OutlineNodeRow({
   nodeId,
   depth,
-  dragDisabled
+  dragDisabled,
+  readOnly = false,
+  locallyExpanded = false
 }: OutlineNodeRowProps) {
   const {
     actions,
@@ -53,7 +58,7 @@ export function OutlineNodeRow({
     transition
   } = useSortable({
     id: nodeId,
-    disabled: dragDisabled,
+    disabled: dragDisabled || readOnly,
     attributes: {
       role: "button",
       roleDescription: "sortable note",
@@ -98,6 +103,7 @@ export function OutlineNodeRow({
   const label = controlLabel(titleValue || node.title);
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
+  const isCollapsed = node.isCollapsed && !locallyExpanded;
   const rowStyle = {
     "--notes-indent": `min(${depth * 24}px, 20%)`,
     transform: transform
@@ -105,6 +111,33 @@ export function OutlineNodeRow({
       : undefined,
     transition
   } as CSSProperties;
+
+  if (readOnly) {
+    return (
+      <div
+        ref={setNodeRef}
+        className="notes-node notes-node-readonly"
+        data-outline-id={nodeId}
+        style={rowStyle}
+      >
+        <div className="notes-node-main notes-node-main-readonly">
+          <span className="notes-node-readonly-title">{label}</span>
+          <div className="notes-node-actions">
+            <IconTooltip label="Restore">
+              <button
+                className="notes-row-icon-button"
+                type="button"
+                aria-label={`Restore ${label}`}
+                onClick={() => void actions.restoreNode(nodeId)}
+              >
+                <RotateCcw size={15} aria-hidden="true" />
+              </button>
+            </IconTooltip>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const draftPatch = () => ({
     title: titleValue,
@@ -268,17 +301,17 @@ export function OutlineNodeRow({
 
         <span className="notes-collapse-slot">
           {hasChildren && (
-            <IconTooltip label={node.isCollapsed ? "Expand" : "Collapse"}>
+            <IconTooltip label={isCollapsed ? "Expand" : "Collapse"}>
               <button
                 className="notes-row-icon-button notes-collapse-button"
                 type="button"
-                aria-label={`${node.isCollapsed ? "Expand" : "Collapse"} ${label}`}
-                aria-expanded={!node.isCollapsed}
+                aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${label}`}
+                aria-expanded={!isCollapsed}
                 onClick={() =>
                   runStructuralCommand(() => actions.toggleCollapsed(nodeId))
                 }
               >
-                {node.isCollapsed ? (
+                {isCollapsed ? (
                   <ChevronRight size={15} aria-hidden="true" />
                 ) : (
                   <ChevronDown size={15} aria-hidden="true" />
@@ -326,6 +359,21 @@ export function OutlineNodeRow({
               </button>
             </IconTooltip>
           )}
+          <IconTooltip label={node.isStarred ? "Unstar" : "Star"}>
+            <button
+              className="notes-row-icon-button"
+              type="button"
+              aria-label={`${node.isStarred ? "Unstar" : "Star"} ${label}`}
+              aria-pressed={node.isStarred}
+              onClick={() => void actions.toggleStar(nodeId)}
+            >
+              <Star
+                size={15}
+                fill={node.isStarred ? "currentColor" : "none"}
+                aria-hidden="true"
+              />
+            </button>
+          </IconTooltip>
           <IconTooltip label={noteOpen ? "Hide note" : "Show note"}>
             <button
               className="notes-row-icon-button"
