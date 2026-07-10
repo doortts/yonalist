@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::Write;
 use std::path::Path;
+#[cfg(unix)]
+use tempfile::Builder;
 use tempfile::NamedTempFile;
 
 pub(crate) fn ensure_parent(path: &Path) -> Result<(), String> {
@@ -10,13 +12,41 @@ pub(crate) fn ensure_parent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn ensure_destination_is_available(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err("Destination already exists.".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn create_temp_file(parent: &Path) -> Result<NamedTempFile, String> {
+    #[cfg(unix)]
+    let temp_file = {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut builder = Builder::new();
+        // Match File::create's requested mode and let the OS umask restrict it.
+        builder.permissions(fs::Permissions::from_mode(0o666));
+        builder.tempfile_in(parent)
+    };
+
+    #[cfg(not(unix))]
+    let temp_file = NamedTempFile::new_in(parent);
+
+    temp_file.map_err(|error| error.to_string())
+}
+
 pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
     ensure_parent(path)?;
     path.file_name()
         .ok_or_else(|| "File path must name a file.".to_string())?;
+    if !overwrite {
+        ensure_destination_is_available(path)?;
+    }
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temp_file = NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
+    let mut temp_file = create_temp_file(parent)?;
     temp_file
         .write_all(bytes)
         .map_err(|error| error.to_string())?;
@@ -48,7 +78,7 @@ pub(crate) fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
-    use super::write_atomic_file;
+    use super::{ensure_destination_is_available, write_atomic_file};
     use std::fs;
 
     #[test]
@@ -61,6 +91,34 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("read destination"), bytes);
         assert!(!destination.with_file_name("export.bin.tmp").exists());
+    }
+
+    #[test]
+    fn no_overwrite_preflight_rejects_regular_files_and_directories() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let regular_file = temp_dir.path().join("export.md");
+        let directory = temp_dir.path().join("export-directory");
+        fs::write(&regular_file, b"old").expect("seed regular file");
+        fs::create_dir(&directory).expect("seed directory");
+
+        for occupied_path in [&regular_file, &directory] {
+            let error = ensure_destination_is_available(occupied_path).expect_err("conflict");
+            assert_eq!(error, "Destination already exists.");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_overwrite_preflight_rejects_dangling_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("export.md");
+        symlink("missing-target", &destination).expect("seed dangling symlink");
+
+        let error = ensure_destination_is_available(&destination).expect_err("conflict");
+
+        assert_eq!(error, "Destination already exists.");
     }
 
     #[test]
@@ -102,6 +160,26 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("read destination"), b"new");
         assert!(!temp_dir.path().join("export.md.tmp").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_file_matches_file_create_permissions() {
+        use std::os::unix::fs::MetadataExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let reference = temp_dir.path().join("reference.md");
+        let destination = temp_dir.path().join("export.md");
+        fs::File::create(&reference).expect("create reference");
+
+        write_atomic_file(&destination, b"contents", false).expect("write");
+
+        let reference_mode = fs::metadata(reference).expect("reference metadata").mode() & 0o777;
+        let destination_mode = fs::metadata(destination)
+            .expect("destination metadata")
+            .mode()
+            & 0o777;
+        assert_eq!(destination_mode, reference_mode);
     }
 
     #[test]
@@ -155,6 +233,8 @@ mod tests {
         );
     }
 
+    // Darwin rejects malformed UTF-8 filename bytes before the persistence call,
+    // so Apple targets cannot exercise this behavior.
     #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]
     fn write_atomic_file_supports_a_non_utf8_output_filename() {
