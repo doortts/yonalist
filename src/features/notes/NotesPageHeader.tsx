@@ -1,8 +1,15 @@
-import { RotateCcw } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { IconTooltip } from "../../components/ui/Tooltip";
+import {
+  type KeyboardEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import type { NoteId } from "../../domain/notes";
+import { NotesBulletMenu } from "./NotesBulletMenu";
+import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { resolveOutlineKey } from "./outlineKeyboard";
 
 interface NotesPageHeaderProps {
   nodeId: NoteId;
@@ -31,10 +38,13 @@ export function NotesPageHeader({
     retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
+  const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
   const titleRef = useRef<HTMLInputElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const focusNoteOnOpenRef = useRef(false);
+  const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
     useState<NoteId | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
@@ -45,6 +55,10 @@ export function NotesPageHeader({
 
   useLayoutEffect(() => {
     resizeNote(noteRef.current);
+    if (noteVisible && focusNoteOnOpenRef.current && noteRef.current) {
+      focusNoteOnOpenRef.current = false;
+      noteRef.current.focus();
+    }
   }, [noteValue, noteVisible]);
 
   useEffect(() => {
@@ -61,8 +75,83 @@ export function NotesPageHeader({
     return null;
   }
 
+  const runCommand = (command: () => Promise<void>) => {
+    if (commandInFlightRef.current) {
+      return;
+    }
+    commandInFlightRef.current = true;
+    let completion: Promise<void>;
+    try {
+      completion = command();
+    } catch {
+      commandInFlightRef.current = false;
+      return;
+    }
+    const settle = () => {
+      commandInFlightRef.current = false;
+    };
+    void completion.then(settle, settle);
+  };
+
+  const openAndFocusNote = () => {
+    focusNoteOnOpenRef.current = true;
+    setRevealedNoteNodeId(nodeId);
+    if (noteRef.current) {
+      focusNoteOnOpenRef.current = false;
+      noteRef.current.focus();
+    }
+  };
+
+  const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    const resolution = resolveOutlineKey({
+      target: "title",
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+      selectionStart: event.currentTarget.selectionStart,
+      selectionEnd: event.currentTarget.selectionEnd,
+      title: titleValue,
+      note: noteValue,
+      nodeId,
+      workspace: state
+    });
+    if (
+      !resolution ||
+      ![
+        "focusNote",
+        "toggleComplete",
+        "duplicate",
+        "delete"
+      ].includes(resolution.type)
+    ) {
+      return;
+    }
+    event.preventDefault();
+    switch (resolution.type) {
+      case "focusNote":
+        openAndFocusNote();
+        return;
+      case "toggleComplete":
+        runCommand(() => actions.toggleComplete(nodeId));
+        return;
+      case "duplicate":
+        runCommand(() => actions.duplicateNode(nodeId));
+        return;
+      case "delete":
+        runCommand(() => actions.deleteNode(nodeId));
+        return;
+    }
+  };
+
   return (
-    <header className="notes-page-header">
+    <header
+      className="notes-page-header"
+      data-completed={node.completedAt !== null ? "true" : undefined}
+    >
       <div className="notes-page-title-row">
         <h1 className="notes-page-heading" aria-label={label}>
           <input
@@ -72,6 +161,7 @@ export function NotesPageHeader({
             aria-label="Edit page title"
             placeholder="Untitled page"
             disabled={disabled}
+            onKeyDown={handleTitleKeyDown}
             onChange={(event) =>
               actions.updateNodeDraft(nodeId, {
                 title: event.target.value,
@@ -81,19 +171,24 @@ export function NotesPageHeader({
             onBlur={() => void actions.flushNodeDraft(nodeId)}
           />
         </h1>
-        {draft?.status === "failed" && (
-          <IconTooltip label="Retry save">
-            <button
-              className="notes-row-icon-button notes-page-retry"
-              type="button"
-              aria-label="Retry save"
-              disabled={disabled}
-              onClick={() => void retryFailedDraft(nodeId)}
-            >
-              <RotateCcw size={15} aria-hidden="true" />
-            </button>
-          </IconTooltip>
-        )}
+        <NotesBulletMenu
+          label={label}
+          completed={node.completedAt !== null}
+          starred={node.isStarred}
+          hasNote={Boolean(noteValue.trim())}
+          saveFailed={draft?.status === "failed"}
+          disabled={disabled}
+          exportDisabled={exportController.unavailable || exportController.busy}
+          onToggleComplete={() => runCommand(() => actions.toggleComplete(nodeId))}
+          onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
+          onOpenNote={openAndFocusNote}
+          onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
+          onExport={(format) =>
+            exportController.startExport(nodeId, titleValue || node.title, format)
+          }
+          onDelete={() => runCommand(() => actions.deleteNode(nodeId))}
+          onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
+        />
       </div>
       {noteVisible && (
         <textarea

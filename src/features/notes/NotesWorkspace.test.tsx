@@ -262,6 +262,13 @@ async function findTitleInput(value: string): Promise<HTMLInputElement> {
   return waitFor(() => getTitleInput(value));
 }
 
+async function openNodeMenu(label: string, user = userEvent.setup()) {
+  await user.click(
+    screen.getByRole("button", { name: `More actions for ${label}` })
+  );
+  return screen.findByRole("menu");
+}
+
 function mockOutlineRowRects() {
   const rectangle = (top: number, left = 0, width = 640, height = 28) =>
     ({
@@ -334,7 +341,7 @@ describe("Notes workspace", () => {
       screen.getByRole("button", { name: "Collapse Project" })
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "Complete Project" })
+      screen.getByRole("button", { name: "More actions for Project" })
     ).toBeVisible();
     expect(
       screen.queryByRole("checkbox", { name: /complete/i })
@@ -451,7 +458,12 @@ describe("Notes workspace", () => {
     bullet.focus();
     await user.tab();
     expect(
-      screen.getByRole("button", { name: "Complete Project" })
+      screen.getByRole("button", { name: "More actions for Project" })
+    ).toHaveFocus();
+    await user.keyboard("[Enter]");
+    const keyboardMenu = await screen.findByRole("menu");
+    expect(
+      within(keyboardMenu).getByRole("menuitem", { name: "Complete" })
     ).toHaveFocus();
     await user.keyboard("[Enter]");
 
@@ -459,8 +471,9 @@ describe("Notes workspace", () => {
       "/vault",
       "project"
     );
-    const uncomplete = await screen.findByRole("button", {
-      name: "Uncomplete Project"
+    const pointerMenu = await openNodeMenu("Project", user);
+    const uncomplete = within(pointerMenu).getByRole("menuitem", {
+      name: "Uncomplete"
     });
 
     fireEvent.pointerDown(title, { pointerType: "touch" });
@@ -486,10 +499,8 @@ describe("Notes workspace", () => {
     });
     expect(projectBullet).toHaveAttribute("aria-describedby");
 
-    const complete = screen.getByRole("button", {
-      name: "Complete Project"
-    });
-    await user.click(complete);
+    const menu = await openNodeMenu("Project", user);
+    await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     await waitFor(() =>
       expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
     );
@@ -844,18 +855,79 @@ describe("Notes workspace", () => {
       screen.getByRole("button", { name: "Zoom into Project" })
     ).toHaveAttribute("data-collapsed", "true");
 
+    const menu = await openNodeMenu("Project", user);
     await user.click(
-      screen.getByRole("button", { name: "Complete Project" })
+      within(menu).getByRole("menuitem", { name: "Complete" })
     );
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
       "project"
     );
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Uncomplete Project" })
-      ).toHaveAttribute("aria-pressed", "true")
+    await waitFor(() => expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce());
+    const updatedMenu = await openNodeMenu("Project", user);
+    expect(
+      within(updatedMenu).getByRole("menuitem", { name: "Uncomplete" })
+    ).toBeVisible();
+  });
+
+  it("hides completed node subtrees only in the visible projection", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "done",
+        sortKey: 1,
+        title: "Completed project",
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({ id: "done-child", parentId: "done", title: "Hidden child" }),
+      node({ id: "active", sortKey: 2, title: "Active project" })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Completed project");
+
+    const toggle = screen.getByRole("button", { name: "Hide completed" });
+    expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await user.click(toggle);
+
+    expect(queryTitleInput("Completed project")).toBeNull();
+    expect(queryTitleInput("Hidden child")).toBeNull();
+    expect(getTitleInput("Active project")).toBeVisible();
+    expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Show completed" })
+    ).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(screen.getByRole("button", { name: "Show completed" }));
+    expect(await findTitleInput("Completed project")).toBeVisible();
+    expect(getTitleInput("Hidden child")).toBeVisible();
+  });
+
+  it("keeps a completed zoom root header and its commands when rows are hidden", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "done",
+        title: "Completed project",
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({ id: "done-child", parentId: "done", title: "Hidden child" })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Completed project");
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Completed project" })
     );
+
+    await user.click(screen.getByRole("button", { name: "Hide completed" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Completed project", level: 1 })
+    ).toBeVisible();
+    expect(queryTitleInput("Hidden child")).toBeNull();
+    const menu = await openNodeMenu("Completed project", user);
+    expect(
+      within(menu).getByRole("menuitem", { name: "Uncomplete" })
+    ).toBeVisible();
   });
 
   it("writes a title on blur with the current supporting note", async () => {
@@ -913,6 +985,7 @@ describe("Notes workspace", () => {
   });
 
   it("keeps a failed title draft visible and retries the failed patch", async () => {
+    const user = userEvent.setup();
     notesStoreMock.updateNode
       .mockRejectedValueOnce(new Error("disk full"))
       .mockResolvedValueOnce(
@@ -930,9 +1003,11 @@ describe("Notes workspace", () => {
     fireEvent.change(title, { target: { value: "Project next" } });
     fireEvent.blur(title);
 
-    const retry = await screen.findByRole("button", { name: "Retry save" });
+    const failedMenu = await openNodeMenu("Project next", user);
     expect(title).toHaveValue("Project next");
-    fireEvent.click(retry);
+    await user.click(
+      within(failedMenu).getByRole("menuitem", { name: "Retry save" })
+    );
 
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
@@ -942,11 +1017,10 @@ describe("Notes workspace", () => {
       title: "Project next",
       note: "Project note"
     });
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Retry save" })
-      ).not.toBeInTheDocument()
-    );
+    const savedMenu = await openNodeMenu("Project next", user);
+    expect(
+      within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
+    ).toBeNull();
   });
 
   it("retries the latest visible draft instead of a stale failed patch", async () => {
@@ -967,11 +1041,13 @@ describe("Notes workspace", () => {
 
     fireEvent.change(title, { target: { value: "Failed title" } });
     fireEvent.blur(title);
-    const retry = await screen.findByRole("button", { name: "Retry save" });
-
+    const failedMenu = await openNodeMenu("Failed title", user);
+    const retry = within(failedMenu).getByRole("menuitem", {
+      name: "Retry save"
+    });
     title.focus();
     fireEvent.change(title, { target: { value: "Newest visible title" } });
-    await user.click(retry);
+    fireEvent.click(retry);
 
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
@@ -986,6 +1062,7 @@ describe("Notes workspace", () => {
   });
 
   it("renders and retries a failed unmount draft after a same-vault remount", async () => {
+    const user = userEvent.setup();
     notesStoreMock.updateNode.mockRejectedValueOnce(new Error("disk full"));
     const firstMount = renderNotesWorkspace();
     const firstTitle = await findTitleInput("Project");
@@ -996,10 +1073,12 @@ describe("Notes workspace", () => {
 
     renderNotesWorkspace();
     const recoveredTitle = await findTitleInput("Recovered project");
-    const retry = await screen.findByRole("button", { name: "Retry save" });
     expect(recoveredTitle).toHaveValue("Recovered project");
 
-    fireEvent.click(retry);
+    const failedMenu = await openNodeMenu("Recovered project", user);
+    await user.click(
+      within(failedMenu).getByRole("menuitem", { name: "Retry save" })
+    );
 
     await waitFor(() =>
       expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
@@ -1009,14 +1088,14 @@ describe("Notes workspace", () => {
       title: "Recovered project",
       note: "Project note"
     });
-    await waitFor(() =>
-      expect(
-        screen.queryByRole("button", { name: "Retry save" })
-      ).not.toBeInTheDocument()
-    );
+    const savedMenu = await openNodeMenu("Recovered project", user);
+    expect(
+      within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
+    ).toBeNull();
   });
 
   it("retries only the failed draft belonging to the clicked row", async () => {
+    const user = userEvent.setup();
     notesStoreMock.updateNode
       .mockRejectedValueOnce(new Error("project failed"))
       .mockRejectedValueOnce(new Error("outside failed"));
@@ -1036,18 +1115,9 @@ describe("Notes workspace", () => {
       target: { value: "Failed outside draft" }
     });
     fireEvent.blur(outsideTitle);
-    await waitFor(() =>
-      expect(screen.getAllByRole("button", { name: "Retry save" })).toHaveLength(
-        2
-      )
-    );
-
-    const projectRow = projectTitle.closest<HTMLElement>(".notes-node");
-    const outsideRow = outsideTitle.closest<HTMLElement>(".notes-node");
-    expect(projectRow).not.toBeNull();
-    expect(outsideRow).not.toBeNull();
-    fireEvent.click(
-      within(projectRow!).getByRole("button", { name: "Retry save" })
+    const projectMenu = await openNodeMenu("Failed project draft", user);
+    await user.click(
+      within(projectMenu).getByRole("menuitem", { name: "Retry save" })
     );
 
     await waitFor(() =>
@@ -1058,14 +1128,15 @@ describe("Notes workspace", () => {
       title: "Failed project draft",
       note: "Project note"
     });
-    await waitFor(() =>
-      expect(
-        within(projectRow!).queryByRole("button", { name: "Retry save" })
-      ).not.toBeInTheDocument()
-    );
+    const savedProjectMenu = await openNodeMenu("Failed project draft", user);
     expect(
-      within(outsideRow!).getByRole("button", { name: "Retry save" })
-    ).toBeInTheDocument();
+      within(savedProjectMenu).queryByRole("menuitem", { name: "Retry save" })
+    ).toBeNull();
+    await user.keyboard("{Escape}");
+    const outsideMenu = await openNodeMenu("Failed outside draft", user);
+    expect(
+      within(outsideMenu).getByRole("menuitem", { name: "Retry save" })
+    ).toBeVisible();
     expect(outsideTitle).toHaveValue("Failed outside draft");
   });
 
@@ -1093,7 +1164,7 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("keeps an empty supporting note hidden until the existing note action opens it", async () => {
+  it("keeps an empty supporting note hidden until the bullet menu opens it", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Outside branch");
@@ -1104,17 +1175,16 @@ describe("Notes workspace", () => {
       })
     ).not.toBeInTheDocument();
 
+    const menu = await openNodeMenu("Outside branch", user);
     await user.click(
-      screen.getByRole("button", {
-        name: "Show supporting note for Outside branch"
-      })
+      within(menu).getByRole("menuitem", { name: "Add note" })
     );
 
     expect(
       screen.getByRole("textbox", {
         name: "Supporting note: Outside branch"
       })
-    ).toBeVisible();
+    ).toHaveFocus();
   });
 
   it("debounces supporting-note edits with the latest title patch", async () => {
@@ -1765,21 +1835,120 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
   });
 
-  it("exposes named duplicate and delete controls", async () => {
+  it("opens and focuses an empty row note with Shift+Enter", async () => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Outside branch");
+
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(
+      screen.getByRole("textbox", {
+        name: "Supporting note: Outside branch"
+      })
+    ).toHaveFocus();
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])(
+    "toggles completion with the primary Enter shortcut",
+    async (modifier) => {
+      renderNotesWorkspace();
+      const title = await findTitleInput("Outside branch");
+
+      expect(fireEvent.keyDown(title, { key: "Enter", ...modifier })).toBe(false);
+      await waitFor(() =>
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
+          "/vault",
+          "outside"
+        )
+      );
+    }
+  );
+
+  it.each([
+    { altKey: true, label: "Alt" },
+    { metaKey: true, label: "Cmd" }
+  ])("duplicates with $label+Shift+D", async ({ label: _label, ...modifier }) => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Outside branch");
+
+    expect(
+      fireEvent.keyDown(title, { key: "D", shiftKey: true, ...modifier })
+    ).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
+        "/vault",
+        "outside"
+      )
+    );
+  });
+
+  it.each([{ ctrlKey: true }, { metaKey: true }])(
+    "deletes with the primary Shift+Backspace shortcut",
+    async (modifier) => {
+      renderNotesWorkspace();
+      const title = await findTitleInput("Outside branch");
+
+      expect(
+        fireEvent.keyDown(title, {
+          key: "Backspace",
+          shiftKey: true,
+          ...modifier
+        })
+      ).toBe(false);
+      await waitFor(() =>
+        expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
+          "/vault",
+          "outside"
+        )
+      );
+    }
+  );
+
+  it("ignores composing, repeated, and textarea Workflowy shortcuts", async () => {
+    renderNotesWorkspace();
+    const title = await findTitleInput("Project");
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+
+    expect(
+      fireEvent.keyDown(title, {
+        key: "Enter",
+        ctrlKey: true,
+        isComposing: true
+      })
+    ).toBe(true);
+    expect(
+      fireEvent.keyDown(title, { key: "D", altKey: true, shiftKey: true, repeat: true })
+    ).toBe(true);
+    expect(
+      fireEvent.keyDown(note, { key: "Backspace", metaKey: true, shiftKey: true })
+    ).toBe(true);
+
+    expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+    expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+  });
+
+  it("exposes duplicate and delete through the bullet menu", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
 
+    const duplicateMenu = await openNodeMenu("Outside branch", user);
     await user.click(
-      screen.getByRole("button", { name: "Duplicate Outside branch" })
+      within(duplicateMenu).getByRole("menuitem", { name: "Duplicate" })
     );
     expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
       "/vault",
       "outside"
     );
 
+    const deleteMenu = await openNodeMenu("Outside branch", user);
     await user.click(
-      screen.getByRole("button", { name: "Delete Outside branch" })
+      within(deleteMenu).getByRole("menuitem", { name: "Delete" })
     );
     expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
       "/vault",
@@ -2057,19 +2226,19 @@ describe("Notes workspace", () => {
     });
   });
 
-  it("toggles a row star with a named pressed action", async () => {
+  it("toggles a row star with state-aware bullet menu copy", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
 
-    const star = screen.getByRole("button", { name: "Star Project" });
-    expect(star).toHaveAttribute("aria-pressed", "false");
-    await user.click(star);
+    const menu = await openNodeMenu("Project", user);
+    await user.click(within(menu).getByRole("menuitem", { name: "Star" }));
 
     expect(notesStoreMock.toggleStar).toHaveBeenCalledWith("/vault", "project");
+    const updatedMenu = await openNodeMenu("Project", user);
     expect(
-      await screen.findByRole("button", { name: "Unstar Project" })
-    ).toHaveAttribute("aria-pressed", "true");
+      within(updatedMenu).getByRole("menuitem", { name: "Unstar" })
+    ).toBeVisible();
   });
 
   it("keeps a filtered workspace scoped after a row mutation", async () => {
@@ -2091,8 +2260,9 @@ describe("Notes workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Starred" }));
     await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
+    const menu = await openNodeMenu("Starred page", user);
     await user.click(
-      screen.getByRole("button", { name: "Complete Starred page" })
+      within(menu).getByRole("menuitem", { name: "Complete" })
     );
 
     await waitFor(() =>
@@ -2127,7 +2297,9 @@ describe("Notes workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Trash" }));
     expect(
-      await screen.findByRole("button", { name: "Restore Deleted note" })
+      await screen.findByRole("button", {
+        name: "More actions for Deleted note"
+      })
     ).toBeInTheDocument();
     expect(queryTitleInput("Deleted note")).toBeNull();
     expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
@@ -2136,7 +2308,11 @@ describe("Notes workspace", () => {
     expect(screen.queryByRole("button", { name: "Delete Deleted note" })).toBeNull();
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Restore Deleted note" }));
+    const trashMenu = await openNodeMenu("Deleted note", user);
+    expect(within(trashMenu).getAllByRole("menuitem")).toHaveLength(1);
+    await user.click(
+      within(trashMenu).getByRole("menuitem", { name: "Restore" })
+    );
     expect(notesStoreMock.restoreNode).toHaveBeenCalledWith("/vault", "deleted");
 
     deletedNodes = [
@@ -2148,7 +2324,9 @@ describe("Notes workspace", () => {
     ];
     await user.click(screen.getByRole("button", { name: "All" }));
     await user.click(screen.getByRole("button", { name: "Trash" }));
-    await screen.findByRole("button", { name: "Restore Another deleted note" });
+    await screen.findByRole("button", {
+      name: "More actions for Another deleted note"
+    });
     await user.click(screen.getByRole("button", { name: "Empty trash" }));
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
     const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
@@ -2176,7 +2354,9 @@ describe("Notes workspace", () => {
     await findTitleInput("Project");
 
     await user.click(screen.getByRole("button", { name: "Trash" }));
-    await screen.findByRole("button", { name: "Restore Deleted note" });
+    await screen.findByRole("button", {
+      name: "More actions for Deleted note"
+    });
     await user.click(screen.getByRole("button", { name: "Tags" }));
 
     expect(await screen.findByRole("button", { name: "Work" })).toBeInTheDocument();
@@ -2253,7 +2433,7 @@ describe("Notes workspace", () => {
     }
     expect(
       screen.getByRole("button", {
-        name: "Complete Project",
+        name: "More actions for Project",
         hidden: true
       })
     ).toBeDisabled();
@@ -2284,7 +2464,7 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("keeps long titles and interim actions in separate stable layout hooks", async () => {
+  it("keeps long titles and one compact menu trigger in stable layout hooks", async () => {
     const longTitle =
       "A very long project title that must remain readable when every interim row action is revealed";
     configureRepository([node({ id: "project", title: longTitle })]);
@@ -2292,38 +2472,32 @@ describe("Notes workspace", () => {
 
     const title = await findTitleInput(longTitle);
     const row = title.closest<HTMLElement>(".notes-node-main");
-    const actions = row?.querySelector<HTMLElement>(".notes-node-actions");
+    const menuSlot = row?.querySelector<HTMLElement>(".notes-node-menu-slot");
 
     expect(row).not.toBeNull();
-    expect(actions).not.toBeNull();
+    expect(menuSlot).not.toBeNull();
     expect(title.parentElement).toBe(row);
-    expect(actions?.parentElement).toBe(row);
-    expect(within(row!).getByRole("button", { name: `Complete ${longTitle}` })).toBeVisible();
-    expect(within(row!).getByRole("button", { name: `Star ${longTitle}` })).toBeVisible();
+    expect(menuSlot?.parentElement).toBe(row);
     expect(
-      within(row!).getByRole("button", {
-        name: `Show supporting note for ${longTitle}`
+      within(row!).getAllByRole("button", {
+        name: `More actions for ${longTitle}`
       })
-    ).toBeVisible();
-    expect(
-      within(row!).getByRole("button", { name: `Duplicate ${longTitle}` })
-    ).toBeVisible();
-    expect(
-      within(row!).getByRole("button", { name: `Delete ${longTitle}` })
-    ).toBeVisible();
+    ).toHaveLength(1);
+    expect(within(row!).queryByRole("button", { name: /Complete/ })).toBeNull();
+    expect(within(row!).queryByRole("button", { name: /Duplicate/ })).toBeNull();
 
     title.focus();
     expect(row).toContainElement(document.activeElement as HTMLElement | null);
     fireEvent.mouseEnter(row!);
-    expect(actions).toBeInTheDocument();
+    expect(menuSlot).toBeInTheDocument();
   });
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-indent:\s*0px;[^}]*--notes-actions-width:\s*149px;[^}]*--notes-content-offset:\s*46px;/s
+      /\.notes-node\s*{[^}]*--notes-indent:\s*0px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*46px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-actions-width\);[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
@@ -2338,14 +2512,13 @@ describe("Notes workspace", () => {
       /\.notes-node-title\s*{[^}]*grid-column:\s*3;[^}]*grid-row:\s*1;[^}]*height:\s*28px;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-actions\s*{[^}]*position:\s*static;[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*justify-content:\s*flex-end;[^}]*width:\s*var\(--notes-actions-width\);[^}]*min-width:\s*var\(--notes-actions-width\);/s
-    );
-    expect(notesStyles).not.toMatch(
-      /\.notes-node-actions\s*{[^}]*(?:position:\s*absolute|inset-inline-end):/s
+      /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main:hover \.notes-node-actions,\s*\.notes-node-main:focus-within \.notes-node-actions,\s*\.notes-node-actions:focus-within\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+      /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s
     );
+    expect(notesStyles).not.toContain("--notes-actions-width: 149px");
+    expect(notesStyles).not.toContain(".notes-node-actions");
     expect(notesStyles).toMatch(
       /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/s
     );

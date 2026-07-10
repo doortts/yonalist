@@ -158,6 +158,41 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
   });
 
+  it("reveals and focuses an empty page note with Shift+Enter", () => {
+    renderZoomedOutline(workspaceValue({ note: "" }));
+    const title = screen.getByRole("textbox", { name: "Edit page title" });
+
+    expect(
+      fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(
+      screen.getByRole("textbox", { name: "Supporting note: Project" })
+    ).toHaveFocus();
+  });
+
+  it("keeps zoom-root commands in the shared bullet menu", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline();
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Project" })
+    );
+    const menu = await screen.findByRole("menu");
+    expect(
+      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+    ).toEqual([
+      "Complete",
+      "Star",
+      "Edit note",
+      "Duplicate",
+      "Export subtree",
+      "Delete"
+    ]);
+
+    await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
+    expect(workspace.actions.toggleComplete).toHaveBeenCalledWith("project");
+  });
+
   it("keeps a revealed page note mounted after its draft becomes empty", () => {
     const initialWorkspace = workspaceValue();
     const view = render(zoomedOutline(initialWorkspace));
@@ -226,7 +261,14 @@ describe("NotesPageHeader", () => {
       screen.getByRole("textbox", { name: "Supporting note: Unsaved project" })
     ).toHaveValue("Unsaved context");
 
-    await user.click(screen.getByRole("button", { name: "Retry save" }));
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Unsaved project" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Retry save"
+      })
+    );
     expect(workspace.retryFailedDraft).toHaveBeenCalledWith("project");
   });
 });

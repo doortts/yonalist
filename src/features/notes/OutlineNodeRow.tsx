@@ -1,13 +1,7 @@
 import { useSortable } from "@dnd-kit/sortable";
 import {
-  Check,
   ChevronDown,
-  ChevronRight,
-  Copy,
-  MessageSquareText,
-  RotateCcw,
-  Star,
-  Trash2
+  ChevronRight
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -19,6 +13,8 @@ import {
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { createNoteId, type NoteId } from "../../domain/notes";
+import { NotesBulletMenu } from "./NotesBulletMenu";
+import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { OUTLINE_INDENT_PX } from "./outlineDrag";
 import { resolveOutlineKey } from "./outlineKeyboard";
@@ -28,6 +24,7 @@ interface OutlineNodeRowProps {
   depth: number;
   ancestorGuideDepths: readonly number[];
   visibleDescendantEndId: NoteId | null;
+  visibleNodeIds: readonly NoteId[];
   dragDisabled: boolean;
   disabled?: boolean;
   readOnly?: boolean;
@@ -43,6 +40,7 @@ export function OutlineNodeRow({
   depth,
   ancestorGuideDepths,
   visibleDescendantEndId,
+  visibleNodeIds,
   dragDisabled,
   disabled = false,
   readOnly = false,
@@ -54,6 +52,7 @@ export function OutlineNodeRow({
     retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
+  const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
   const {
@@ -79,6 +78,7 @@ export function OutlineNodeRow({
   const titleRef = useRef<HTMLInputElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const focusNoteOnOpenRef = useRef(false);
   const structuralCommandInFlightRef = useRef(false);
   const suppressedBlurPatchRef = useRef<{
     title: string;
@@ -113,6 +113,10 @@ export function OutlineNodeRow({
     }
     noteRef.current.style.height = "auto";
     noteRef.current.style.height = `${noteRef.current.scrollHeight}px`;
+    if (focusNoteOnOpenRef.current) {
+      focusNoteOnOpenRef.current = false;
+      noteRef.current.focus();
+    }
   }, [noteOpen, noteValue]);
 
   if (!node) {
@@ -163,18 +167,13 @@ export function OutlineNodeRow({
         {guides}
         <div className="notes-node-main notes-node-main-readonly">
           <span className="notes-node-readonly-title">{label}</span>
-          <div className="notes-node-actions">
-            <IconTooltip label="Restore">
-              <button
-                className="notes-row-icon-button"
-                type="button"
-                aria-label={`Restore ${label}`}
-                disabled={disabled}
-                onClick={() => void actions.restoreNode(nodeId)}
-              >
-                <RotateCcw size={15} aria-hidden="true" />
-              </button>
-            </IconTooltip>
+          <div className="notes-node-menu-slot">
+            <NotesBulletMenu
+              mode="trash"
+              label={label}
+              disabled={disabled}
+              onRestore={() => void actions.restoreNode(nodeId)}
+            />
           </div>
         </div>
       </div>
@@ -235,6 +234,15 @@ export function OutlineNodeRow({
     void completion.then(settle, settle);
   };
 
+  const openAndFocusNote = () => {
+    focusNoteOnOpenRef.current = true;
+    setNoteOpen(true);
+    if (noteOpen && noteRef.current) {
+      focusNoteOnOpenRef.current = false;
+      noteRef.current.focus();
+    }
+  };
+
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
@@ -250,7 +258,8 @@ export function OutlineNodeRow({
       title: titleValue,
       note: noteValue,
       nodeId,
-      workspace: state
+      workspace: state,
+      visibleNodeIds
     });
     if (!resolution) {
       return;
@@ -301,6 +310,18 @@ export function OutlineNodeRow({
         saveDrafts();
         suppressHandledBlur();
         void actions.focusNode(resolution.nodeId);
+        return;
+      case "focusNote":
+        openAndFocusNote();
+        return;
+      case "toggleComplete":
+        runStructuralCommand(() => actions.toggleComplete(nodeId));
+        return;
+      case "duplicate":
+        runStructuralCommand(() => actions.duplicateNode(nodeId));
+        return;
+      case "delete":
+        runStructuralCommand(() => actions.deleteNode(nodeId));
         return;
       case "toggleCollapsed":
         runStructuralCommand(() => actions.toggleCollapsed(nodeId));
@@ -367,82 +388,35 @@ export function OutlineNodeRow({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
-        <div className="notes-node-actions">
-          {draft?.status === "failed" && (
-            <IconTooltip label="Retry save">
-              <button
-                className="notes-row-icon-button"
-                type="button"
-                aria-label="Retry save"
-                disabled={disabled}
-                onClick={() => void retryFailedDraft(nodeId)}
-              >
-                <RotateCcw size={15} aria-hidden="true" />
-              </button>
-            </IconTooltip>
-          )}
-          <IconTooltip label={completed ? "Uncomplete" : "Complete"}>
-            <button
-              className="notes-row-icon-button"
-              type="button"
-              aria-label={`${completed ? "Uncomplete" : "Complete"} ${label}`}
-              aria-pressed={completed}
-              disabled={disabled}
-              onClick={() => void actions.toggleComplete(nodeId)}
-            >
-              <Check size={15} aria-hidden="true" />
-            </button>
-          </IconTooltip>
-          <IconTooltip label={node.isStarred ? "Unstar" : "Star"}>
-            <button
-              className="notes-row-icon-button"
-              type="button"
-              aria-label={`${node.isStarred ? "Unstar" : "Star"} ${label}`}
-              aria-pressed={node.isStarred}
-              disabled={disabled}
-              onClick={() => void actions.toggleStar(nodeId)}
-            >
-              <Star
-                size={15}
-                fill={node.isStarred ? "currentColor" : "none"}
-                aria-hidden="true"
-              />
-            </button>
-          </IconTooltip>
-          <IconTooltip label={noteOpen ? "Hide note" : "Show note"}>
-            <button
-              className="notes-row-icon-button"
-              type="button"
-              aria-label={`${noteOpen ? "Hide" : "Show"} supporting note for ${label}`}
-              aria-pressed={noteOpen}
-              disabled={disabled}
-              onClick={() => setNoteOpen((open) => !open)}
-            >
-              <MessageSquareText size={15} aria-hidden="true" />
-            </button>
-          </IconTooltip>
-          <IconTooltip label="Duplicate">
-            <button
-              className="notes-row-icon-button"
-              type="button"
-              aria-label={`Duplicate ${label}`}
-              disabled={disabled}
-              onClick={() => void actions.duplicateNode(nodeId)}
-            >
-              <Copy size={15} aria-hidden="true" />
-            </button>
-          </IconTooltip>
-          <IconTooltip label="Delete">
-            <button
-              className="notes-row-icon-button notes-delete-button"
-              type="button"
-              aria-label={`Delete ${label}`}
-              disabled={disabled}
-              onClick={() => void actions.deleteNode(nodeId)}
-            >
-              <Trash2 size={15} aria-hidden="true" />
-            </button>
-          </IconTooltip>
+        <div className="notes-node-menu-slot">
+          <NotesBulletMenu
+            label={label}
+            completed={completed}
+            starred={node.isStarred}
+            hasNote={Boolean(noteValue.trim())}
+            saveFailed={draft?.status === "failed"}
+            disabled={disabled}
+            exportDisabled={exportController.unavailable || exportController.busy}
+            onToggleComplete={() =>
+              runStructuralCommand(() => actions.toggleComplete(nodeId))
+            }
+            onToggleStar={() =>
+              runStructuralCommand(() => actions.toggleStar(nodeId))
+            }
+            onOpenNote={openAndFocusNote}
+            onDuplicate={() =>
+              runStructuralCommand(() => actions.duplicateNode(nodeId))
+            }
+            onExport={(format) =>
+              exportController.startExport(nodeId, titleValue || node.title, format)
+            }
+            onDelete={() =>
+              runStructuralCommand(() => actions.deleteNode(nodeId))
+            }
+            onRetrySave={() =>
+              runStructuralCommand(() => retryFailedDraft(nodeId))
+            }
+          />
         </div>
 
         <input

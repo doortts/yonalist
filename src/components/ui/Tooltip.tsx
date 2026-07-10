@@ -1,4 +1,4 @@
-import type { ReactElement, ReactNode } from "react";
+import { cloneElement, useId, type ReactElement, type ReactNode } from "react";
 import { Tooltip as BaseTooltip } from "@base-ui/react/tooltip";
 import "./tooltip.css";
 
@@ -10,7 +10,7 @@ interface IconTooltipProps {
    * Rendered as-is via Base UI's `render` prop, so its DOM structure,
    * className, and event handlers are preserved.
    */
-  children: ReactElement;
+  children: ReactElement<{ "aria-describedby"?: string }>;
   /** Which side of the trigger to place the popup. Defaults to "top". */
   side?: "top" | "bottom" | "left" | "right";
 }
@@ -22,16 +22,26 @@ interface IconTooltipProps {
  * `aria-label` on the button remains the accessible name.
  */
 export function IconTooltip({ label, children, side = "top" }: IconTooltipProps) {
+  const popupId = useId();
+  const describedBy = [children.props["aria-describedby"], popupId]
+    .filter(Boolean)
+    .join(" ");
+  const trigger = cloneElement(children, { "aria-describedby": describedBy });
+
   return (
     <BaseTooltip.Root>
-      <BaseTooltip.Trigger render={children} />
+      <BaseTooltip.Trigger render={trigger} />
       <BaseTooltip.Portal>
         <BaseTooltip.Positioner
           className="tooltip-positioner"
           side={side}
           sideOffset={6}
         >
-          <BaseTooltip.Popup className="tooltip-popup" role="tooltip">
+          <BaseTooltip.Popup
+            id={popupId}
+            className="tooltip-popup"
+            role="tooltip"
+          >
             {label}
           </BaseTooltip.Popup>
         </BaseTooltip.Positioner>

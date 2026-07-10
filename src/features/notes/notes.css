@@ -335,6 +335,30 @@
   color: var(--text-3);
 }
 
+.notes-completed-toggle {
+  display: inline-flex;
+  flex: 0 0 30px;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+}
+
+.notes-completed-toggle:hover,
+.notes-completed-toggle[aria-pressed="false"] {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.notes-completed-toggle:disabled {
+  opacity: 0.42;
+}
+
 .notes-export-trigger:hover,
 .notes-export-trigger[data-popup-open] {
   background: var(--bg-hover);
@@ -471,6 +495,11 @@
   color: var(--text-3);
 }
 
+.notes-page-header[data-completed="true"] .notes-page-title {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
 .notes-page-note {
   display: block;
   width: 100%;
@@ -487,11 +516,6 @@
   font: inherit;
   font-size: 14px;
   line-height: 20px;
-}
-
-.notes-page-retry {
-  margin-top: 3px;
-  opacity: 1;
 }
 
 .notes-page-title:focus-visible,
@@ -560,7 +584,7 @@
 
 .notes-node {
   --notes-indent: 0px;
-  --notes-actions-width: 149px;
+  --notes-menu-width: 24px;
   --notes-content-offset: 46px;
   position: relative;
   min-width: 0;
@@ -593,7 +617,7 @@
 .notes-node-main {
   position: relative;
   display: grid;
-  grid-template-columns: 20px 18px minmax(0, 1fr) var(--notes-actions-width);
+  grid-template-columns: 20px 18px minmax(0, 1fr) var(--notes-menu-width);
   align-items: center;
   gap: 4px;
   min-height: 28px;
@@ -704,11 +728,6 @@
   background: currentColor;
 }
 
-.notes-delete-button:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
 .notes-node-title {
   grid-column: 3;
   grid-row: 1;
@@ -735,36 +754,92 @@
   text-decoration: line-through;
 }
 
-.notes-node-actions {
-  display: flex;
-  position: static;
+.notes-node-menu-slot {
+  display: inline-flex;
   grid-column: 4;
   grid-row: 1;
   align-items: center;
   justify-content: flex-end;
-  flex: 0 0 auto;
-  gap: 1px;
-  width: var(--notes-actions-width);
-  min-width: var(--notes-actions-width);
+  width: var(--notes-menu-width);
+  min-width: var(--notes-menu-width);
   min-height: 28px;
-  padding: 0;
-  background: transparent;
-  opacity: 0;
-  pointer-events: none;
 }
 
-.notes-node-main:hover .notes-node-actions,
-.notes-node-main:focus-within .notes-node-actions,
-.notes-node-actions:focus-within {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.notes-node-main-readonly .notes-node-actions {
+.notes-node-main-readonly .notes-node-menu-slot {
   width: 24px;
   min-width: 24px;
+}
+
+.notes-bullet-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-3);
+  opacity: 0.68;
+}
+
+.notes-bullet-menu-trigger:hover,
+.notes-bullet-menu-trigger[data-popup-open] {
+  background: var(--bg-hover);
+  color: var(--text-1);
   opacity: 1;
-  pointer-events: auto;
+}
+
+.notes-bullet-menu-trigger:disabled {
+  opacity: 0.34;
+}
+
+.notes-bullet-menu {
+  z-index: 40;
+  min-width: 196px;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-modal);
+  color: var(--text-1);
+}
+
+.notes-bullet-menu-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  outline: 0;
+  cursor: default;
+}
+
+.notes-bullet-menu-item[data-highlighted] {
+  background: var(--bg-hover);
+  color: var(--text-1);
+}
+
+.notes-bullet-menu-item[data-danger="true"] {
+  color: var(--danger);
+}
+
+.notes-bullet-menu-item[data-danger="true"][data-highlighted] {
+  background: var(--danger-soft);
+}
+
+.notes-bullet-menu-item[data-disabled] {
+  opacity: 0.42;
+}
+
+.notes-bullet-menu-chevron {
+  grid-column: 3;
 }
 
 .notes-node-note {
@@ -791,6 +866,8 @@
 .notes-library-discovery button:focus-visible,
 .notes-library-icon-button:focus-visible,
 .notes-export-trigger:focus-visible,
+.notes-completed-toggle:focus-visible,
+.notes-bullet-menu-trigger:focus-visible,
 .notes-export-retry-button:focus-visible,
 .notes-empty-trash-button:focus-visible {
   outline: 2px solid var(--accent);

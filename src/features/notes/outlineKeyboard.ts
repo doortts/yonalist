@@ -17,6 +17,7 @@ export interface ResolveOutlineKeyInput {
   note: string;
   nodeId: NoteId;
   workspace: NormalizedNotesWorkspace;
+  visibleNodeIds?: readonly NoteId[];
 }
 
 export type OutlineKeyResolution =
@@ -28,6 +29,10 @@ export type OutlineKeyResolution =
       expandNodeId?: NoteId;
     }
   | { type: "focus"; nodeId: NoteId }
+  | { type: "focusNote" }
+  | { type: "toggleComplete" }
+  | { type: "duplicate" }
+  | { type: "delete" }
   | { type: "toggleCollapsed" }
   | { type: "remove"; focusNodeId: NoteId | null };
 
@@ -37,7 +42,48 @@ export function resolveOutlineKey(
   if (
     input.target !== "title" ||
     input.isComposing ||
-    input.key === "Process" ||
+    input.key === "Process"
+  ) {
+    return null;
+  }
+
+  const primaryModifierCount = Number(input.ctrlKey) + Number(input.metaKey);
+  if (!input.repeat) {
+    if (
+      input.key === "Enter" &&
+      input.shiftKey &&
+      !input.altKey &&
+      primaryModifierCount === 0
+    ) {
+      return { type: "focusNote" };
+    }
+    if (
+      input.key === "Enter" &&
+      !input.shiftKey &&
+      !input.altKey &&
+      primaryModifierCount === 1
+    ) {
+      return { type: "toggleComplete" };
+    }
+    if (
+      input.key.toLowerCase() === "d" &&
+      input.shiftKey &&
+      !input.ctrlKey &&
+      input.altKey !== input.metaKey
+    ) {
+      return { type: "duplicate" };
+    }
+    if (
+      input.key === "Backspace" &&
+      input.shiftKey &&
+      !input.altKey &&
+      primaryModifierCount === 1
+    ) {
+      return { type: "delete" };
+    }
+  }
+
+  if (
     input.altKey ||
     input.ctrlKey ||
     input.metaKey ||
@@ -127,10 +173,9 @@ export function resolveOutlineKey(
     };
   }
 
-  const visibleIds = visibleNodeIds(
-    input.workspace,
-    input.workspace.zoomRootId
-  );
+  const visibleIds =
+    input.visibleNodeIds ??
+    visibleNodeIds(input.workspace, input.workspace.zoomRootId);
   const visibleIndex = visibleIds.indexOf(input.nodeId);
 
   if (input.key === "ArrowUp" || input.key === "ArrowDown") {

@@ -1,0 +1,159 @@
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
+import { describe, expect, it, vi } from "vitest";
+import { NotesBulletMenu } from "./NotesBulletMenu";
+
+function standardProps(
+  overrides: Partial<ComponentProps<typeof NotesBulletMenu>> = {}
+): ComponentProps<typeof NotesBulletMenu> {
+  return {
+    label: "Project",
+    completed: false,
+    starred: false,
+    hasNote: false,
+    saveFailed: false,
+    onToggleComplete: vi.fn(),
+    onToggleStar: vi.fn(),
+    onOpenNote: vi.fn(),
+    onDuplicate: vi.fn(),
+    onExport: vi.fn(),
+    onDelete: vi.fn(),
+    onRetrySave: vi.fn(),
+    ...overrides
+  };
+}
+
+async function openMenu(user = userEvent.setup()) {
+  const trigger = screen.getByRole("button", {
+    name: "More actions for Project"
+  });
+  await user.click(trigger);
+  return { menu: await screen.findByRole("menu"), trigger, user };
+}
+
+describe("NotesBulletMenu", () => {
+  it("exposes one compact trigger and the standard bullet commands", async () => {
+    render(<NotesBulletMenu {...standardProps()} />);
+
+    const { menu, trigger } = await openMenu();
+    expect(trigger).toHaveClass("notes-bullet-menu-trigger");
+    expect(
+      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+    ).toEqual([
+      "Complete",
+      "Star",
+      "Add note",
+      "Duplicate",
+      "Export subtree",
+      "Delete"
+    ]);
+    expect(within(menu).queryByRole("menuitem", { name: "Restore" })).toBeNull();
+  });
+
+  it("uses state-aware labels and invokes the matching commands", async () => {
+    const props = standardProps({
+      completed: true,
+      starred: true,
+      hasNote: true,
+      saveFailed: true
+    });
+    const { rerender } = render(<NotesBulletMenu {...props} />);
+    const { menu, user } = await openMenu();
+
+    expect(within(menu).getByRole("menuitem", { name: "Uncomplete" })).toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Unstar" })).toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Edit note" })).toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Retry save" })).toBeVisible();
+
+    await user.click(within(menu).getByRole("menuitem", { name: "Uncomplete" }));
+    expect(props.onToggleComplete).toHaveBeenCalledOnce();
+
+    rerender(<NotesBulletMenu {...props} />);
+    const reopened = await openMenu(user);
+    await user.click(
+      within(reopened.menu).getByRole("menuitem", { name: "Edit note" })
+    );
+    expect(props.onOpenNote).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["Markdown", "markdown"],
+    ["PDF", "pdf"]
+  ] as const)("offers real %s subtree export", async (label, format) => {
+    const props = standardProps();
+    render(<NotesBulletMenu {...props} />);
+    const { menu, user } = await openMenu();
+
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree" })
+    );
+    const exportItem = await screen.findByRole("menuitem", {
+      name: `Export subtree as ${label}`
+    });
+    await user.click(exportItem);
+
+    expect(props.onExport).toHaveBeenCalledWith(format);
+  });
+
+  it("closes on Escape and restores focus to the trigger", async () => {
+    const user = userEvent.setup();
+    render(<NotesBulletMenu {...standardProps()} />);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+    trigger.focus();
+
+    await user.keyboard("{Enter}");
+    const menu = await screen.findByRole("menu");
+    await waitFor(() =>
+      expect(
+        within(menu).getByRole("menuitem", { name: "Complete" })
+      ).toHaveFocus()
+    );
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(trigger).toHaveFocus();
+  });
+
+  it("closes on an outside pointer press", async () => {
+    const user = userEvent.setup();
+    render(
+      <div>
+        <NotesBulletMenu {...standardProps()} />
+        <button type="button">Outside</button>
+      </div>
+    );
+    await openMenu(user);
+
+    await user.click(screen.getByRole("button", { name: "Outside" }));
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  });
+
+  it("keeps Trash rows limited to Restore", async () => {
+    const onRestore = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NotesBulletMenu
+        mode="trash"
+        label="Project"
+        disabled={false}
+        onRestore={onRestore}
+      />
+    );
+
+    const { menu } = await openMenu(user);
+    expect(within(menu).getAllByRole("menuitem")).toHaveLength(1);
+    await user.click(within(menu).getByRole("menuitem", { name: "Restore" }));
+    expect(onRestore).toHaveBeenCalledOnce();
+  });
+
+  it("disables the trigger when row commands are unavailable", () => {
+    render(<NotesBulletMenu {...standardProps({ disabled: true })} />);
+    expect(
+      screen.getByRole("button", { name: "More actions for Project" })
+    ).toBeDisabled();
+  });
+});

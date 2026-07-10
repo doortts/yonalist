@@ -804,6 +804,7 @@ describe("NotesExportMenu", () => {
     const user = userEvent.setup();
     exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
     const workspace = renderNotesPanes();
+    const flushNodeDraft = vi.mocked(workspace.actions.flushNodeDraft);
     const detailPane = screen.getByTestId("notes-detail-pane");
     const middlePane = screen.getByTestId("notes-middle-pane");
     const trigger = within(detailPane).getByRole("button", { name: "Export" });
@@ -820,11 +821,71 @@ describe("NotesExportMenu", () => {
     );
 
     await waitFor(() => {
-      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("selected");
+      expect(flushNodeDraft).toHaveBeenCalledWith("selected");
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
         expect.objectContaining({ rootNodeId: "selected" })
       );
     });
+  });
+
+  it("routes a row subtree export through the shared guarded controller", async () => {
+    const user = userEvent.setup();
+    exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
+    const workspace = renderNotesPanes();
+    const flushNodeDraft = vi.mocked(workspace.actions.flushNodeDraft);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for Selected title"
+      })
+    );
+    const menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree" })
+    );
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Export subtree as Markdown"
+      })
+    );
+
+    await waitFor(() => {
+      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("selected");
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith({
+        vaultPath: "/vault",
+        rootNodeId: "selected",
+        format: "markdown",
+        defaultFileName: "Selected title"
+      });
+    });
+    expect(flushNodeDraft.mock.invocationCallOrder[0]).toBeLessThan(
+      exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("blocks a row subtree export when its draft save barrier fails", async () => {
+    const user = userEvent.setup();
+    const workspace = renderNotesPanes();
+    vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(false);
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for Selected title"
+      })
+    );
+    const menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree" })
+    );
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree as PDF" })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Save this note before exporting."
+    );
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
   it("uses the live target draft title for the default filename", async () => {

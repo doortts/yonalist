@@ -62,6 +62,87 @@ function input(
 }
 
 describe("resolveOutlineKey", () => {
+  it.each([
+    {
+      label: "Shift+Enter",
+      overrides: { key: "Enter", shiftKey: true },
+      resolution: { type: "focusNote" }
+    },
+    {
+      label: "Ctrl+Enter",
+      overrides: { key: "Enter", ctrlKey: true },
+      resolution: { type: "toggleComplete" }
+    },
+    {
+      label: "Cmd+Enter",
+      overrides: { key: "Enter", metaKey: true },
+      resolution: { type: "toggleComplete" }
+    },
+    {
+      label: "Alt+Shift+D",
+      overrides: { key: "D", altKey: true, shiftKey: true },
+      resolution: { type: "duplicate" }
+    },
+    {
+      label: "Cmd+Shift+D",
+      overrides: { key: "D", metaKey: true, shiftKey: true },
+      resolution: { type: "duplicate" }
+    },
+    {
+      label: "Ctrl+Shift+Backspace",
+      overrides: { key: "Backspace", ctrlKey: true, shiftKey: true },
+      resolution: { type: "delete" }
+    },
+    {
+      label: "Cmd+Shift+Backspace",
+      overrides: { key: "Backspace", metaKey: true, shiftKey: true },
+      resolution: { type: "delete" }
+    }
+  ])("resolves $label to a Workflowy command", ({ overrides, resolution }) => {
+    expect(resolveOutlineKey(input(overrides))).toEqual(resolution);
+  });
+
+  it("ignores repeated Workflowy commands", () => {
+    expect(
+      resolveOutlineKey(input({ key: "Enter", shiftKey: true, repeat: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ key: "Enter", ctrlKey: true, repeat: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({ key: "D", altKey: true, shiftKey: true, repeat: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          metaKey: true,
+          shiftKey: true,
+          repeat: true
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("keeps Workflowy commands native for textarea and IME targets", () => {
+    expect(
+      resolveOutlineKey(input({ target: "textarea", key: "Enter", shiftKey: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ key: "Enter", ctrlKey: true, isComposing: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(input({ key: "D", metaKey: true, shiftKey: true, isComposing: true }))
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({ key: "Backspace", ctrlKey: true, shiftKey: true, isComposing: true })
+      )
+    ).toBeNull();
+  });
+
   it("splits Enter around the full selected title range", () => {
     expect(
       resolveOutlineKey(
@@ -375,7 +456,9 @@ describe("resolveOutlineKey", () => {
     expect(resolveOutlineKey(input({ isComposing: true }))).toBeNull();
     expect(resolveOutlineKey(input({ key: "Process" }))).toBeNull();
     expect(resolveOutlineKey(input({ target: "textarea" }))).toBeNull();
-    expect(resolveOutlineKey(input({ ctrlKey: true }))).toBeNull();
+    expect(
+      resolveOutlineKey(input({ key: "ArrowDown", ctrlKey: true }))
+    ).toBeNull();
     expect(resolveOutlineKey(input({ key: "ArrowDown", shiftKey: true }))).toBeNull();
     expect(
       resolveOutlineKey(input({ selectionStart: null, selectionEnd: null }))

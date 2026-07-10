@@ -15,7 +15,7 @@ import {
   sortableKeyboardCoordinates,
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
-import { ChevronRight, Home, Trash2 } from "lucide-react";
+import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
 import {
   type CSSProperties,
   useCallback,
@@ -30,6 +30,7 @@ import {
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
 import { NotesExportMenu } from "./NotesExportMenu";
+import { NotesExportControllerProvider } from "./NotesExportController";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import {
@@ -44,6 +45,7 @@ import {
   parentTrail
 } from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
+import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 
 const outlineScreenReaderInstructions = {
   draggable:
@@ -132,6 +134,28 @@ function DropPreviewLine({ preview }: { preview: OutlineDropPreview }) {
   );
 }
 
+function hideCompletedSubtrees<Row extends { depth: number; id: NoteId }>(
+  rows: readonly Row[],
+  nodesById: UseNotesWorkspaceResult["state"]["nodesById"],
+  zoomRootId: NoteId | null
+): Row[] {
+  let hiddenDepth: number | null = null;
+  return rows.filter((row) => {
+    if (hiddenDepth !== null) {
+      if (row.depth > hiddenDepth) {
+        return false;
+      }
+      hiddenDepth = null;
+    }
+    const node = nodesById[row.id];
+    if (!node || node.completedAt === null) {
+      return true;
+    }
+    hiddenDepth = row.depth;
+    return row.id === zoomRootId;
+  });
+}
+
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
   const {
@@ -145,6 +169,7 @@ export function NotesOutlinePane() {
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(true);
   const trashView = libraryView === "trash";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
@@ -156,11 +181,18 @@ export function NotesOutlinePane() {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-  const structuralRows = flattenVisibleOutlineRows(
+  const allStructuralRows = flattenVisibleOutlineRows(
     state,
     state.zoomRootId,
     locallyExpandedNodeIds
   );
+  const structuralRows = showCompleted
+    ? allStructuralRows
+    : hideCompletedSubtrees(
+        allStructuralRows,
+        state.nodesById,
+        state.zoomRootId
+      );
   const bodyRows = deriveOutlineBodyRows(structuralRows, state.zoomRootId);
   const structuralVisibleIds = structuralRows.map((row) => row.id);
   const bodyVisibleIds = bodyRows.map((row) => row.id);
@@ -287,23 +319,44 @@ export function NotesOutlinePane() {
   };
 
   return (
-    <section
-      className="notes-outline"
-      aria-label="Notes outline"
-      aria-busy={state.status === "loading" || deletingNotesData}
-      style={
-        {
-          "--notes-outline-indent": `${OUTLINE_INDENT_PX}px`
-        } as CSSProperties
-      }
+    <NotesExportControllerProvider
+      available={state.zoomRootId !== null || bodyRows.length > 0}
+      disabled={deletingNotesData || trashView}
+      loading={state.status === "loading"}
+      onFlushNodeDraft={actions.flushNodeDraft}
     >
-      <TooltipProvider>
+      <section
+        className="notes-outline"
+        aria-label="Notes outline"
+        aria-busy={state.status === "loading" || deletingNotesData}
+        style={
+          {
+            "--notes-outline-indent": `${OUTLINE_INDENT_PX}px`
+          } as CSSProperties
+        }
+      >
+        <TooltipProvider>
         <div className="notes-outline-toolbar">
           <NotesBreadcrumb
             disabled={deletingNotesData}
             trashView={trashView}
             onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
           />
+          <IconTooltip
+            label={showCompleted ? "Hide completed" : "Show completed"}
+            side="bottom"
+          >
+            <button
+              className="notes-completed-toggle"
+              type="button"
+              aria-label={showCompleted ? "Hide completed" : "Show completed"}
+              aria-pressed={showCompleted}
+              disabled={deletingNotesData || trashView}
+              onClick={() => setShowCompleted((visible) => !visible)}
+            >
+              <ListChecks size={16} aria-hidden="true" />
+            </button>
+          </IconTooltip>
           <NotesExportMenu
             selectedNodeId={state.selectedId}
             selectedNodeTitle={
@@ -390,6 +443,7 @@ export function NotesOutlinePane() {
                       depth={row.depth}
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
+                      visibleNodeIds={structuralVisibleIds}
                       readOnly={trashView}
                       disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
@@ -422,7 +476,8 @@ export function NotesOutlinePane() {
           danger
           onConfirm={() => void actions.emptyTrash()}
         />
-      </TooltipProvider>
-    </section>
+        </TooltipProvider>
+      </section>
+    </NotesExportControllerProvider>
   );
 }
