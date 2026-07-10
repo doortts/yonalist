@@ -33,7 +33,9 @@ describe("defaultNotesExportFileName", () => {
     "Project.md.",
     "Project.md .",
     "Project.md.md",
-    "Project.MD.md.."
+    "Project.md .md",
+    "Project.md. .md",
+    "Project.md .MD.."
   ])("normalizes trailing dots and repeated Markdown suffixes in %j", (title) => {
     expect(defaultNotesExportFileName(title)).toBe("Project.md");
   });
@@ -44,28 +46,53 @@ describe("defaultNotesExportFileName", () => {
     "AUX",
     "NUL",
     ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
-    ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`)
+    ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+    "COM\u00b9",
+    "COM\u00b2",
+    "COM\u00b3",
+    "LPT\u00b9",
+    "LPT\u00b2",
+    "LPT\u00b3"
+  ];
+
+  const reservedNameVariants = [
+    (stem: string) => stem,
+    (stem: string) => `${stem.toLowerCase()}.txt`,
+    (stem: string) => `${stem} .txt`,
+    (stem: string) => `${stem}. txt`,
+    (stem: string) => `${stem}..txt`,
+    (stem: string) => `${stem}.md.md`,
+    (stem: string) => `${stem} .md .MD..`
   ];
 
   it.each(
-    reservedDeviceStems.flatMap((stem) => [stem, `${stem.toLowerCase()}.txt`])
+    reservedDeviceStems.flatMap((stem) =>
+      reservedNameVariants.map((createTitle) => createTitle(stem))
+    )
   )("uses the default filename for reserved Windows device name %j", (title) => {
     expect(defaultNotesExportFileName(title)).toBe("notes-export.md");
   });
 
-  it.each(["CON .md", "COM1 .md", "NUL .txt"])(
-    "uses the default filename when whitespace precedes an extension in reserved Windows device name %j",
-    (title) => {
-      expect(defaultNotesExportFileName(title)).toBe("notes-export.md");
-    }
-  );
-
-  it.each(["COM0", "COM10", "LPT0", "LPT10", "CONSOLE"])(
+  it.each([
+    "COM0",
+    "COM10",
+    "LPT0",
+    "LPT10",
+    "CONSOLE",
+    "COM\u2074",
+    "LPT\u2074"
+  ])(
     "keeps non-reserved Windows filename stem %j",
     (title) => {
       expect(defaultNotesExportFileName(title)).toBe(`${title}.md`);
     }
   );
+
+  it("preserves ordinary base text used only to derive the Windows comparison stem", () => {
+    expect(defaultNotesExportFileName("Project notes .txt")).toBe(
+      "Project notes .txt.md"
+    );
+  });
 });
 
 describe("isNotesExportResult", () => {

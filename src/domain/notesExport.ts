@@ -23,23 +23,64 @@ export interface NotesExportResult {
 
 const NOTES_EXPORT_CONFLICT_MESSAGE = "Destination already exists.";
 const DEFAULT_MARKDOWN_FILE_NAME = "notes-export.md";
-const WINDOWS_RESERVED_DEVICE_NAME =
-  /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i;
+const WINDOWS_RESERVED_DEVICE_STEMS = new Set([
+  "CON",
+  "PRN",
+  "AUX",
+  "NUL",
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+  "COM\u00b9",
+  "COM\u00b2",
+  "COM\u00b3",
+  "LPT\u00b9",
+  "LPT\u00b2",
+  "LPT\u00b3"
+]);
+
+function sanitizeNotesExportTitle(title: string): string {
+  return title
+    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTerminalFileNameEdges(value: string): string {
+  return value.replace(/^\.+/, "").replace(/[. ]+$/, "");
+}
+
+function consumeTerminalMarkdownSuffixes(value: string): string {
+  let baseName = value;
+
+  while (baseName.toLowerCase().endsWith(".md")) {
+    baseName = normalizeTerminalFileNameEdges(baseName.slice(0, -3));
+  }
+
+  return baseName;
+}
+
+function windowsComparisonStem(baseName: string): string {
+  const firstDotIndex = baseName.indexOf(".");
+  const stem =
+    firstDotIndex === -1 ? baseName : baseName.slice(0, firstDotIndex);
+
+  return stem.replace(/^[. ]+/, "").replace(/[. ]+$/, "");
+}
+
+function isWindowsReservedDeviceStem(stem: string): boolean {
+  return WINDOWS_RESERVED_DEVICE_STEMS.has(stem.toUpperCase());
+}
 
 export function defaultNotesExportFileName(
   title: string | null | undefined
 ): string {
-  const baseName = (title ?? "")
-    .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/^\.+|\.+$/g, "")
-    .trim()
-    .replace(/(?:\.md)+$/i, "")
-    .trim();
-  const windowsComparableBaseName = baseName.replace(/\s+(?=\.)/g, "");
+  const sanitizedTitle = sanitizeNotesExportTitle(title ?? "");
+  const baseName = consumeTerminalMarkdownSuffixes(
+    normalizeTerminalFileNameEdges(sanitizedTitle)
+  );
+  const comparableStem = windowsComparisonStem(baseName);
 
-  return baseName && !WINDOWS_RESERVED_DEVICE_NAME.test(windowsComparableBaseName)
+  return baseName && !isWindowsReservedDeviceStem(comparableStem)
     ? `${baseName}.md`
     : DEFAULT_MARKDOWN_FILE_NAME;
 }
