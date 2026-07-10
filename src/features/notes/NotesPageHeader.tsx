@@ -1,5 +1,5 @@
 import { RotateCcw } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -35,13 +35,17 @@ export function NotesPageHeader({
   const draft = draftsByNodeId[nodeId];
   const titleRef = useRef<HTMLInputElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const [revealedNoteNodeId, setRevealedNoteNodeId] =
+    useState<NoteId | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
   const label = pageLabel(titleValue || node?.title || "");
+  const noteVisible =
+    noteValue.length > 0 || revealedNoteNodeId === nodeId;
 
   useLayoutEffect(() => {
     resizeNote(noteRef.current);
-  }, [noteValue]);
+  }, [noteValue, noteVisible]);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId || !titleRef.current) {
@@ -91,23 +95,27 @@ export function NotesPageHeader({
           </IconTooltip>
         )}
       </div>
-      <textarea
-        ref={noteRef}
-        className="notes-page-note"
-        value={noteValue}
-        aria-label={`Supporting note: ${label}`}
-        placeholder="Add a supporting note"
-        rows={1}
-        disabled={disabled}
-        onChange={(event) => {
-          resizeNote(event.currentTarget);
-          actions.updateNodeDraft(nodeId, {
-            title: titleValue,
-            note: event.target.value
-          });
-        }}
-        onBlur={() => void actions.flushNodeDraft(nodeId)}
-      />
+      {noteVisible && (
+        <textarea
+          ref={noteRef}
+          className="notes-page-note"
+          value={noteValue}
+          aria-label={`Supporting note: ${label}`}
+          placeholder="Add a supporting note"
+          rows={1}
+          disabled={disabled}
+          onFocus={() => setRevealedNoteNodeId(nodeId)}
+          onChange={(event) => {
+            setRevealedNoteNodeId(nodeId);
+            resizeNote(event.currentTarget);
+            actions.updateNodeDraft(nodeId, {
+              title: titleValue,
+              note: event.target.value
+            });
+          }}
+          onBlur={() => void actions.flushNodeDraft(nodeId)}
+        />
+      )}
     </header>
   );
 }

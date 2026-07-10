@@ -345,6 +345,7 @@ export function NotesOutlinePane() {
           )}
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesPageHeader
+              key={state.zoomRootId}
               nodeId={state.zoomRootId}
               disabled={deletingNotesData || trashView}
             />

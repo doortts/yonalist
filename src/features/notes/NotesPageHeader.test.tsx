@@ -87,14 +87,18 @@ function workspaceValue(options: {
   };
 }
 
-function renderZoomedOutline(workspace = workspaceValue()) {
-  render(
+function zoomedOutline(workspace: UseNotesWorkspaceResult) {
+  return (
     <VaultRootContext.Provider value="/vault">
       <NotesWorkspaceContext.Provider value={workspace}>
         <NotesOutlinePane />
       </NotesWorkspaceContext.Provider>
     </VaultRootContext.Provider>
   );
+}
+
+function renderZoomedOutline(workspace = workspaceValue()) {
+  render(zoomedOutline(workspace));
   return workspace;
 }
 
@@ -133,31 +137,73 @@ describe("NotesPageHeader", () => {
     ).toEqual(["1", "2"]);
   });
 
-  it("keeps an empty page note reachable through the existing draft pipeline", () => {
+  it("does not mount an empty page note before a reveal action", () => {
     const workspace = renderZoomedOutline(workspaceValue({ note: "" }));
     const title = screen.getByRole("textbox", { name: "Edit page title" });
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const header = screen
+      .getByRole("heading", { name: "Project", level: 1 })
+      .closest(".notes-page-header");
 
-    expect(note).toBeVisible();
+    expect(header).not.toBeNull();
+    expect(header?.querySelector(".notes-page-note")).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "Supporting note: Project" })
+    ).not.toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Renamed project" } });
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith("project", {
       title: "Renamed project",
       note: ""
     });
-    fireEvent.change(note, { target: { value: "Added context" } });
-    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith("project", {
-      title: "Project",
-      note: "Added context"
-    });
-    fireEvent.blur(note);
+    fireEvent.blur(title);
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
-    expect(fireEvent.keyDown(note, { key: "Enter" })).toBe(true);
-    expect(fireEvent.keyDown(note, { key: "Tab" })).toBe(true);
-    expect(fireEvent.keyDown(note, { key: "Process", isComposing: true })).toBe(
-      true
+  });
+
+  it("keeps a revealed page note mounted after its draft becomes empty", () => {
+    const initialWorkspace = workspaceValue();
+    const view = render(zoomedOutline(initialWorkspace));
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    fireEvent.focus(note);
+
+    const clearedWorkspace = workspaceValue({
+      draft: {
+        title: "Project",
+        note: "",
+        revision: 1,
+        status: "pending"
+      }
+    });
+    view.rerender(zoomedOutline(clearedWorkspace));
+
+    const clearedNote = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    expect(clearedNote).toHaveValue("");
+    fireEvent.blur(clearedNote);
+    expect(clearedWorkspace.actions.flushNodeDraft).toHaveBeenCalledWith(
+      "project"
     );
+  });
+
+  it("does not carry page-note reveal state to a different zoom root", () => {
+    const view = render(zoomedOutline(workspaceValue()));
+    fireEvent.focus(
+      screen.getByRole("textbox", { name: "Supporting note: Project" })
+    );
+    const childWorkspace = workspaceValue();
+    childWorkspace.state.zoomRootId = "child";
+
+    view.rerender(zoomedOutline(childWorkspace));
+
+    expect(
+      screen.getByRole("heading", { name: "First child", level: 1 })
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("textbox", {
+        name: "Supporting note: First child"
+      })
+    ).not.toBeInTheDocument();
   });
 
   it("shows the zoom-root failed draft and retries it through workspace state", async () => {

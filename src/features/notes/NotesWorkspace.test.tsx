@@ -404,10 +404,33 @@ describe("Notes workspace", () => {
         name: "Project"
       })
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 })
+    ).toBeVisible();
+    const zoomedPlan = getTitleInput("Plan");
+    const zoomedMilestone = getTitleInput("Milestone");
+    expect(zoomedPlan.closest("li")).toHaveAttribute("aria-level", "1");
+    expect(zoomedPlan.closest(".notes-node")).toHaveAttribute(
+      "data-guide-end-id",
+      "milestone"
+    );
+    expect(
+      zoomedMilestone.closest(".notes-node")?.querySelectorAll(
+        ".notes-node-guide"
+      )
+    ).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Zoom into Plan" })
+    ).toHaveAttribute("data-sortable-activator", "true");
     expect(queryTitleInput("Outside branch")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "All notes" }));
     const restoredTitle = await findTitleInput("Project");
+    expect(queryTitleInput("Plan")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Expand Project" })
+    ).toHaveAttribute("aria-expanded", "false");
+    expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce();
     await user.dblClick(restoredTitle);
 
     expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(

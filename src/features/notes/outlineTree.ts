@@ -67,8 +67,12 @@ export function flattenVisibleOutlineRows(
       return;
     }
     visited.add(nodeId);
+    const isZoomRoot =
+      zoomRootId !== null && node.id === zoomRootId && ancestorIds.length === 0;
     const isCollapsed =
-      node.isCollapsed && !locallyExpandedNodeIds.has(node.id);
+      !isZoomRoot &&
+      node.isCollapsed &&
+      !locallyExpandedNodeIds.has(node.id);
     rows.push({
       id: node.id,
       parentId: node.parentId,

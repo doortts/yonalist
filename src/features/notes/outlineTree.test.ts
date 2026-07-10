@@ -222,6 +222,70 @@ describe("outlineTree", () => {
     ]);
   });
 
+  it("expands a collapsed zoom root without changing its stored collapse state", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "outside", sortKey: 1 }),
+        node({ id: "project", sortKey: 20, isCollapsed: true }),
+        node({ id: "task", parentId: "project" }),
+        node({ id: "detail", parentId: "task" })
+      ])
+    );
+    const structuralRows = flattenVisibleOutlineRows(state, "project");
+
+    expect(structuralRows).toEqual([
+      {
+        id: "project",
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "detail"
+      },
+      {
+        id: "task",
+        parentId: "project",
+        depth: 1,
+        isCollapsed: false,
+        ancestorIds: ["project"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: "detail"
+      },
+      {
+        id: "detail",
+        parentId: "task",
+        depth: 2,
+        isCollapsed: false,
+        ancestorIds: ["project", "task"],
+        ancestorGuideDepths: [0, 1],
+        visibleDescendantEndId: null
+      }
+    ]);
+    expect(deriveOutlineBodyRows(structuralRows, "project")).toEqual([
+      {
+        id: "task",
+        parentId: "project",
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "detail"
+      },
+      {
+        id: "detail",
+        parentId: "task",
+        depth: 1,
+        isCollapsed: false,
+        ancestorIds: ["task"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: null
+      }
+    ]);
+    expect(state.nodesById.project.isCollapsed).toBe(true);
+    expect(visibleNodeIds(state, null)).toEqual(["outside", "project"]);
+  });
+
   it("marks guide ancestry and the final visible descendant for expanded branches", () => {
     const state = normalizeWorkspace(
       workspace([
