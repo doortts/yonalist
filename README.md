@@ -6,9 +6,11 @@ on issues and pull requests from a local Markdown vault.
 ## Current V1 Slice
 
 - Tauri + React + TypeScript desktop app scaffold.
-- Built-in Notes workspace placeholder that is registered independently of
-  GitHub auth; Phase 1 stops at the local shell, while the separate local
-  database architecture for note persistence is planned for Phase 2.
+- Built-in local-only Notes workspace that works independently of GitHub auth
+  and has no remote sync path. Notes user data is stored in the selected
+  vault's `.yonalist/notes.sqlite` file; resetting app settings and caches
+  preserves it, while deleting all Notes data is a separate Notes-specific
+  confirmed action.
 - Three-column UI (navigation, item list, detail/comment pane) with
   resizable panes, independently scrolling columns, and a token-based
   design system.

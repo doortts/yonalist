@@ -18,10 +18,12 @@ vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
 
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
+import type { NoteNode, UpdateNoteNodeInput } from "./domain/notes";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import { notesFeature } from "./features/notes/NotesFeature";
+import { notesStore } from "./services/notesStore";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
@@ -49,6 +51,23 @@ function installLocalStorageMock() {
     configurable: true,
     value: localStorageMock
   });
+}
+
+function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
+  return {
+    parentId: null,
+    sortKey: 1024,
+    title: "",
+    note: "",
+    layoutMode: "bullets",
+    isCollapsed: false,
+    isStarred: false,
+    completedAt: null,
+    createdAt: "2026-07-10T00:00:00Z",
+    updatedAt: "2026-07-10T00:00:00Z",
+    deletedAt: null,
+    ...overrides
+  };
 }
 
 describe("Yonalist app shell", () => {
@@ -116,6 +135,62 @@ describe("Yonalist app shell", () => {
 
     expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+  });
+
+  it("continues to edit Notes while offline and unsigned in", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestNote({ id: "offline-note", title: "Offline note" })]
+    });
+    const updateNodeSpy = vi
+      .spyOn(notesStore, "updateNode")
+      .mockImplementation(async (_vaultPath: string, input: UpdateNoteNodeInput) => {
+        return {
+          nodes: [
+            appTestNote({
+              id: input.id,
+              title: input.title ?? "",
+              note: input.note ?? ""
+            })
+          ]
+        };
+      });
+    const fetchMock = vi.fn(async () => {
+      throw new Error("Network access is forbidden in local Notes");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+
+      const login = await screen.findByLabelText("GitHub login");
+      await user.click(within(login).getByRole("button", { name: "Notes" }));
+      expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
+
+      const title = await screen.findByRole("textbox", {
+        name: "Edit node title"
+      });
+      await user.clear(title);
+      await user.type(title, "Edited offline");
+      fireEvent.blur(title);
+
+      expect(title).toHaveValue("Edited offline");
+      await waitFor(() =>
+        expect(updateNodeSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ title: "Edited offline" })
+        )
+      );
+      expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
   });
 
   it("persists a selected Notes feature", async () => {
