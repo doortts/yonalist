@@ -13,6 +13,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState
 } from "react";
@@ -72,14 +73,19 @@ export function OutlineNodeRow({
       tabIndex: 0
     }
   });
-  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteOpen, setNoteOpen] = useState(() =>
+    Boolean((draft?.note ?? node?.note ?? "").trim())
+  );
   const titleRef = useRef<HTMLInputElement>(null);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const structuralCommandInFlightRef = useRef(false);
   const suppressedBlurPatchRef = useRef<{
     title: string;
     note: string;
   } | null>(null);
+  const titleValue = draft?.title ?? node?.title ?? "";
+  const noteValue = draft?.note ?? node?.note ?? "";
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -101,12 +107,18 @@ export function OutlineNodeRow({
     void actions.acknowledgeFocus(nodeId);
   }, [actions, nodeId, state.pendingFocusId]);
 
+  useLayoutEffect(() => {
+    if (!noteOpen || !noteRef.current) {
+      return;
+    }
+    noteRef.current.style.height = "auto";
+    noteRef.current.style.height = `${noteRef.current.scrollHeight}px`;
+  }, [noteOpen, noteValue]);
+
   if (!node) {
     return null;
   }
 
-  const titleValue = draft?.title ?? node.title;
-  const noteValue = draft?.note ?? node.note;
   const label = controlLabel(titleValue || node.title);
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
@@ -453,17 +465,20 @@ export function OutlineNodeRow({
 
       {noteOpen && (
         <textarea
+          ref={noteRef}
           className="notes-node-note"
           value={noteValue}
           aria-label={`Supporting note: ${label}`}
           rows={2}
           disabled={disabled}
-          onChange={(event) =>
+          onChange={(event) => {
+            event.currentTarget.style.height = "auto";
+            event.currentTarget.style.height = `${event.currentTarget.scrollHeight}px`;
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
               note: event.target.value
-            })
-          }
+            });
+          }}
           onBlur={commitDrafts}
         />
       )}

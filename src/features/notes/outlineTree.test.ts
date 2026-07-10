@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NoteNode, NotesWorkspace } from "../../domain/notes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import {
+  deriveOutlineBodyRows,
   flattenVisibleOutlineRows,
   parentTrail,
   visibleNodeIds
@@ -181,6 +182,44 @@ describe("outlineTree", () => {
       }
     ]);
     expect(flattenVisibleOutlineRows(state, "missing")).toEqual([]);
+  });
+
+  it("derives zoomed body rows without changing structural drag rows", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "outside" }),
+        node({ id: "project", sortKey: 20 }),
+        node({ id: "task", parentId: "project" }),
+        node({ id: "detail", parentId: "task" })
+      ])
+    );
+    const structuralRows = flattenVisibleOutlineRows(state, "project");
+
+    expect(deriveOutlineBodyRows(structuralRows, "project")).toEqual([
+      {
+        id: "task",
+        parentId: "project",
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: [],
+        ancestorGuideDepths: [],
+        visibleDescendantEndId: "detail"
+      },
+      {
+        id: "detail",
+        parentId: "task",
+        depth: 1,
+        isCollapsed: false,
+        ancestorIds: ["task"],
+        ancestorGuideDepths: [0],
+        visibleDescendantEndId: null
+      }
+    ]);
+    expect(structuralRows.map((row) => [row.id, row.depth])).toEqual([
+      ["project", 0],
+      ["task", 1],
+      ["detail", 2]
+    ]);
   });
 
   it("marks guide ancestry and the final visible descendant for expanded branches", () => {

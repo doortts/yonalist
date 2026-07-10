@@ -96,6 +96,34 @@ export function flattenVisibleOutlineRows(
   return rows.map((row, index) => ({ ...row, ...guideMetadata[index] }));
 }
 
+export function deriveOutlineBodyRows(
+  rows: readonly FlattenedOutlineRow[],
+  zoomRootId: NoteId | null
+): FlattenedOutlineRow[] {
+  if (zoomRootId === null) {
+    return [...rows];
+  }
+  if (rows[0]?.id !== zoomRootId) {
+    return [];
+  }
+
+  const bodyRows = rows.slice(1).map<FlattenedOutlineRow>((row) => ({
+    id: row.id,
+    parentId: row.parentId,
+    depth: row.depth - 1,
+    isCollapsed: row.isCollapsed,
+    ancestorIds: row.ancestorIds.slice(1),
+    ancestorGuideDepths: [],
+    visibleDescendantEndId: null
+  }));
+  const guideMetadata = deriveOutlineGuideMetadata(bodyRows);
+
+  return bodyRows.map((row, index) => ({
+    ...row,
+    ...guideMetadata[index]
+  }));
+}
+
 export function visibleNodeIds(
   workspace: NormalizedNotesWorkspace,
   zoomRootId: NoteId | null

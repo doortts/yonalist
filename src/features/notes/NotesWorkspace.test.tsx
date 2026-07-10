@@ -364,9 +364,6 @@ describe("Notes workspace", () => {
     await user.keyboard(" [ArrowLeft][ArrowRight]");
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
 
-    await user.click(
-      screen.getByRole("button", { name: /Show supporting note for Project/ })
-    );
     const supportingNote = screen.getByRole("textbox", {
       name: /Supporting note: Project/
     });
@@ -647,6 +644,25 @@ describe("Notes workspace", () => {
     await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");
     expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 })
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Zoom into Project" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Zoom into Plan" })
+    ).toBeVisible();
+    expect(getTitleInput("Plan").closest("li")).toHaveAttribute(
+      "aria-level",
+      "1"
+    );
+    const projectNote = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    expect(projectNote).toHaveValue("Project note");
+    expect(projectNote.closest(".notes-page-header")).not.toBeNull();
+    expect(projectNote.closest("ol")).toBeNull();
     expect(
       queryTitleInput("Outside branch")
     ).not.toBeInTheDocument();
@@ -1030,17 +1046,11 @@ describe("Notes workspace", () => {
     expect(outsideTitle).toHaveValue("Failed outside draft");
   });
 
-  it("toggles and writes a supporting note on blur with the current title", async () => {
+  it("shows and writes a nonempty supporting note on blur with the current title", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
 
-    expect(
-      screen.queryByRole("textbox", { name: "Supporting note: Project" })
-    ).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "Show supporting note for Project" })
-    );
     const note = screen.getByRole("textbox", {
       name: "Supporting note: Project"
     });
@@ -1060,13 +1070,34 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("keeps an empty supporting note hidden until the existing note action opens it", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Outside branch");
+
+    expect(
+      screen.queryByRole("textbox", {
+        name: "Supporting note: Outside branch"
+      })
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Show supporting note for Outside branch"
+      })
+    );
+
+    expect(
+      screen.getByRole("textbox", {
+        name: "Supporting note: Outside branch"
+      })
+    ).toBeVisible();
+  });
+
   it("debounces supporting-note edits with the latest title patch", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
-    await user.click(
-      screen.getByRole("button", { name: "Show supporting note for Project" })
-    );
     const note = screen.getByRole("textbox", {
       name: "Supporting note: Project"
     });
@@ -1090,9 +1121,6 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
-    await user.click(
-      screen.getByRole("button", { name: "Show supporting note for Project" })
-    );
     const note = screen.getByRole("textbox", {
       name: "Supporting note: Project"
     });
@@ -1238,14 +1266,8 @@ describe("Notes workspace", () => {
     const randomUUID = vi
       .spyOn(globalThis.crypto, "randomUUID")
       .mockReturnValue("00000000-0000-4000-8000-000000000002");
-    const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
-    await user.click(
-      screen.getByRole("button", {
-        name: "Show supporting note for alphaXYZomega"
-      })
-    );
     const note = screen.getByRole("textbox", {
       name: "Supporting note: alphaXYZomega"
     });
@@ -1699,7 +1721,6 @@ describe("Notes workspace", () => {
   });
 
   it("does not intercept composing, Process, or supporting-note keys", async () => {
-    const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
     title.focus();
@@ -1709,9 +1730,6 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", isComposing: true })
     ).toBe(true);
     expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
-    await user.click(
-      screen.getByRole("button", { name: "Show supporting note for Project" })
-    );
     const note = screen.getByRole("textbox", {
       name: "Supporting note: Project"
     });
@@ -1955,14 +1973,27 @@ describe("Notes workspace", () => {
     expect(options[0]).toHaveFocus();
 
     await user.keyboard("{Enter}");
-    expect(await findTitleInput("Project")).toHaveFocus();
+    const pageTitle = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit page title"
+    });
+    expect(pageTitle).toHaveValue("Project");
+    expect(pageTitle).toHaveFocus();
 
     await user.type(search, "result");
     options = await screen.findAllByRole("option");
     options[0].focus();
     await user.keyboard("{End}");
     await user.keyboard(" ");
-    expect(await findTitleInput("Outside branch")).toHaveFocus();
+    await waitFor(() => {
+      expect(
+        screen.getByRole<HTMLInputElement>("textbox", {
+          name: "Edit page title"
+        })
+      ).toHaveValue("Outside branch");
+      expect(
+        screen.getByRole("textbox", { name: "Edit page title" })
+      ).toHaveFocus();
+    });
   });
 
   it("opens a search result in active context without persisting expansion", async () => {
@@ -2297,6 +2328,15 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-page-title\s*{[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-page-note\s*{[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-note\s*{[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
     );
     expect(notesStyles).not.toContain(".notes-complete-checkbox");
     expect(notesStyles).toMatch(

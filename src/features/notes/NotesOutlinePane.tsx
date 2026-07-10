@@ -30,6 +30,7 @@ import {
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
 import { NotesExportMenu } from "./NotesExportMenu";
+import { NotesPageHeader } from "./NotesPageHeader";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import {
   deriveOutlineDropPreview,
@@ -37,7 +38,11 @@ import {
   projectOutlineDrop,
   type OutlineDropPreview
 } from "./outlineDrag";
-import { flattenVisibleOutlineRows, parentTrail } from "./outlineTree";
+import {
+  deriveOutlineBodyRows,
+  flattenVisibleOutlineRows,
+  parentTrail
+} from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
 
 const outlineScreenReaderInstructions = {
@@ -151,18 +156,24 @@ export function NotesOutlinePane() {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
-  const rows = flattenVisibleOutlineRows(
+  const structuralRows = flattenVisibleOutlineRows(
     state,
     state.zoomRootId,
     locallyExpandedNodeIds
   );
-  const visibleIds = rows.map((row) => row.id);
+  const bodyRows = deriveOutlineBodyRows(structuralRows, state.zoomRootId);
+  const structuralVisibleIds = structuralRows.map((row) => row.id);
+  const bodyVisibleIds = bodyRows.map((row) => row.id);
+  const bodyDropPreview =
+    dropPreview && state.zoomRootId !== null
+      ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
+      : dropPreview;
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const dragUnavailable =
     deletingNotesData ||
     trashView ||
     state.status === "loading" ||
-    rows.length === 0;
+    bodyRows.length === 0;
   const projectDrag = useCallback(
     (event: Pick<DragMoveEvent, "active" | "delta" | "over">) => {
       const activeId = String(event.active.id);
@@ -179,7 +190,7 @@ export function NotesOutlinePane() {
         activeId,
         String(event.over.id),
         event.delta.x,
-        rows,
+        structuralRows,
         {
           rootIds: state.rootIds,
           childIdsByParent: state.childIdsByParent,
@@ -190,7 +201,7 @@ export function NotesOutlinePane() {
     [
       activeDragId,
       dragUnavailable,
-      rows,
+      structuralRows,
       state.childIdsByParent,
       state.rootIds,
       state.zoomRootId
@@ -233,7 +244,7 @@ export function NotesOutlinePane() {
     if (
       dragUnavailable ||
       id === state.zoomRootId ||
-      !rows.some((row) => row.id === id)
+      !structuralRows.some((row) => row.id === id)
     ) {
       setActiveDragId(null);
       return;
@@ -245,7 +256,11 @@ export function NotesOutlinePane() {
     const projection = projectDrag(event);
     setDropPreview(
       projection
-        ? deriveOutlineDropPreview(String(event.active.id), rows, projection)
+        ? deriveOutlineDropPreview(
+            String(event.active.id),
+            structuralRows,
+            projection
+          )
         : null
     );
   };
@@ -320,13 +335,19 @@ export function NotesOutlinePane() {
           )}
           {!initialLoading &&
             state.status !== "error" &&
-            visibleIds.length === 0 && (
+            structuralVisibleIds.length === 0 && (
               <p className="notes-pane-state">No outline yet.</p>
             )}
           {state.status === "error" && state.rootIds.length > 0 && (
             <p className="notes-inline-error" role="alert">
               {state.error}
             </p>
+          )}
+          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
+            <NotesPageHeader
+              nodeId={state.zoomRootId}
+              disabled={deletingNotesData || trashView}
+            />
           )}
           <DndContext
             accessibility={{
@@ -345,7 +366,7 @@ export function NotesOutlinePane() {
             onDragEnd={handleDragEnd}
           >
             <SortableContext
-              items={visibleIds}
+              items={bodyVisibleIds}
               strategy={verticalListSortingStrategy}
             >
               <ol
@@ -353,15 +374,15 @@ export function NotesOutlinePane() {
                 data-drag-active={activeDragId === null ? undefined : "true"}
                 role="list"
               >
-                {rows.map((row) => (
+                {bodyRows.map((row) => (
                   <li
                     className="notes-outline-item"
                     key={row.id}
                     aria-level={row.depth + 1}
                     role="listitem"
                   >
-                    {dropPreview?.beforeId === row.id && (
-                      <DropPreviewLine preview={dropPreview} />
+                    {bodyDropPreview?.beforeId === row.id && (
+                      <DropPreviewLine preview={bodyDropPreview} />
                     )}
                     <OutlineNodeRow
                       nodeId={row.id}
@@ -377,13 +398,13 @@ export function NotesOutlinePane() {
                     />
                   </li>
                 ))}
-                {dropPreview?.beforeId === null && (
+                {bodyDropPreview?.beforeId === null && (
                   <li
                     className="notes-outline-drop-preview-tail"
                     aria-hidden="true"
                     role="presentation"
                   >
-                    <DropPreviewLine preview={dropPreview} />
+                    <DropPreviewLine preview={bodyDropPreview} />
                   </li>
                 )}
               </ol>

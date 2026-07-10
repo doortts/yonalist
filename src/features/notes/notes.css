@@ -433,6 +433,72 @@
   padding: 20px 24px 44px;
 }
 
+.notes-page-header {
+  width: min(100%, 700px);
+  margin: 0 0 20px;
+}
+
+.notes-page-title-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  align-items: start;
+  gap: 6px;
+}
+
+.notes-page-heading {
+  min-width: 0;
+  margin: 0;
+}
+
+.notes-page-title {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 34px;
+}
+
+.notes-page-title::placeholder,
+.notes-page-note::placeholder {
+  color: var(--text-3);
+}
+
+.notes-page-note {
+  display: block;
+  width: 100%;
+  min-height: 20px;
+  margin: 4px 0 0;
+  padding: 0;
+  overflow: hidden;
+  resize: none;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.notes-page-retry {
+  margin-top: 3px;
+  opacity: 1;
+}
+
+.notes-page-title:focus-visible,
+.notes-page-note:focus-visible {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
 .notes-outline-list {
   margin: 0;
   padding: 0;
@@ -704,22 +770,19 @@
 .notes-node-note {
   display: block;
   width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
-  min-height: 58px;
+  min-height: 20px;
   margin: 2px 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
-  padding: 7px 9px;
-  resize: vertical;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 0;
+  overflow: hidden;
+  resize: none;
+  border: 0;
+  border-radius: 0;
   outline: 0;
-  background: var(--bg-input);
-  color: var(--text-2);
+  background: transparent;
+  color: var(--text-3);
   font: inherit;
-  font-size: 13px;
-  line-height: 19px;
-}
-
-.notes-node-note:focus {
-  border-color: var(--accent);
+  font-size: 14px;
+  line-height: 20px;
 }
 
 .notes-node :focus-visible,
@@ -737,6 +800,11 @@
 .notes-node-title:focus-visible {
   outline: 0;
   box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.notes-node-note:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 -1px 0 var(--accent);
 }
 
 .notes-node-bullet:focus-visible {
