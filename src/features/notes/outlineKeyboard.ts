@@ -25,6 +25,7 @@ export type OutlineKeyResolution =
       type: "move";
       input: MoveNoteNodeInput;
       focusNodeId: NoteId;
+      expandNodeId?: NoteId;
     }
   | { type: "focus"; nodeId: NoteId }
   | { type: "toggleCollapsed" }
@@ -101,7 +102,7 @@ export function resolveOutlineKey(
     }
     const priorId = siblings[index - 1];
     const prior = input.workspace.nodesById[priorId];
-    if (!prior || prior.isCollapsed) {
+    if (!prior) {
       return null;
     }
     return {
@@ -111,7 +112,8 @@ export function resolveOutlineKey(
         parentId: priorId,
         afterId: input.workspace.childIdsByParent[priorId]?.at(-1) ?? null
       },
-      focusNodeId: input.nodeId
+      focusNodeId: input.nodeId,
+      ...(prior.isCollapsed ? { expandNodeId: priorId } : {})
     };
   }
 
@@ -176,7 +178,10 @@ export function resolveOutlineKey(
     return {
       type: "remove",
       focusNodeId:
-        visibleIds[visibleIndex - 1] ?? visibleIds[visibleIndex + 1] ?? null
+        visibleIds[visibleIndex - 1] ??
+        input.workspace.childIdsByParent[input.nodeId]?.[0] ??
+        visibleIds[visibleIndex + 1] ??
+        null
     };
   }
 

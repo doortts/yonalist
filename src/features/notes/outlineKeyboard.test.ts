@@ -86,16 +86,19 @@ describe("resolveOutlineKey", () => {
     });
   });
 
-  it("does not indent a first sibling or indent under a collapsed sibling", () => {
+  it("does not indent a first sibling", () => {
     expect(
       resolveOutlineKey(
         input({ key: "Tab", nodeId: "child-a", title: "child-a" })
       )
     ).toBeNull();
+  });
 
+  it("expands a collapsed prior sibling before indenting under it", () => {
     const collapsedPrior = normalizeWorkspace(
       workspace([
         node({ id: "first", sortKey: 1, isCollapsed: true }),
+        node({ id: "hidden", parentId: "first", sortKey: 1 }),
         node({ id: "second", sortKey: 2 })
       ])
     );
@@ -108,7 +111,16 @@ describe("resolveOutlineKey", () => {
           workspace: collapsedPrior
         })
       )
-    ).toBeNull();
+    ).toEqual({
+      type: "move",
+      input: {
+        id: "second",
+        parentId: "first",
+        afterId: "hidden"
+      },
+      focusNodeId: "second",
+      expandNodeId: "first"
+    });
   });
 
   it("outdents immediately after the former parent and ignores roots", () => {
@@ -267,6 +279,31 @@ describe("resolveOutlineKey", () => {
         })
       )
     ).toEqual({ type: "remove", focusNodeId: "child-a" });
+  });
+
+  it("chooses the first lifted child before the next visible row", () => {
+    const collapsedEmptyParent = normalizeWorkspace(
+      workspace([
+        node({ id: "empty", sortKey: 1, title: "", isCollapsed: true }),
+        node({ id: "lifted-a", parentId: "empty", sortKey: 1 }),
+        node({ id: "lifted-b", parentId: "empty", sortKey: 2 }),
+        node({ id: "next", sortKey: 2 })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "empty",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: collapsedEmptyParent
+        })
+      )
+    ).toEqual({ type: "remove", focusNodeId: "lifted-a" });
   });
 
   it("keeps Backspace native for nonempty notes, repeats, and non-start carets", () => {

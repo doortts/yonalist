@@ -25,30 +25,33 @@ interface OutlineNodeRowProps {
 interface DraftField {
   value: string;
   dirty: boolean;
-  submitted: string | null;
+  pending: string | null;
 }
 
 function initialDraft(value: string): DraftField {
-  return { value, dirty: false, submitted: null };
+  return { value, dirty: false, pending: null };
 }
 
 function synchronizeDraft(
   draft: DraftField,
   authoritativeValue: string
 ): DraftField {
-  if (draft.submitted === authoritativeValue) {
+  if (draft.pending === authoritativeValue) {
     return {
       value: draft.value,
       dirty: draft.value !== authoritativeValue,
-      submitted: null
+      pending: null
     };
   }
-  if (draft.dirty || draft.submitted !== null) {
+  if (draft.value === authoritativeValue) {
+    return draft.dirty || draft.pending !== null
+      ? initialDraft(authoritativeValue)
+      : draft;
+  }
+  if (draft.dirty || draft.pending !== null) {
     return draft;
   }
-  return draft.value === authoritativeValue
-    ? draft
-    : initialDraft(authoritativeValue);
+  return initialDraft(authoritativeValue);
 }
 
 function controlLabel(title: string): string {
@@ -67,6 +70,11 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
   const [noteOpen, setNoteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const pendingSplitRef = useRef<{
+    sourceTitle: string;
+    prefix: string;
+    succeeded: boolean;
+  } | null>(null);
   const suppressedBlurPatchRef = useRef<{
     title: string;
     note: string;
@@ -76,9 +84,22 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
     if (!node) {
       return;
     }
-    setTitleDraft((draft) => synchronizeDraft(draft, node.title));
+    const pendingSplit = pendingSplitRef.current;
+    setTitleDraft((draft) =>
+      pendingSplit?.succeeded &&
+      node.title === pendingSplit.prefix &&
+      draft.value === pendingSplit.sourceTitle
+        ? initialDraft(node.title)
+        : synchronizeDraft(draft, node.title)
+    );
     setNoteDraft((draft) => synchronizeDraft(draft, node.note));
-  }, [node]);
+    if (
+      state.error !== null ||
+      (pendingSplit?.succeeded && node.title === pendingSplit.prefix)
+    ) {
+      pendingSplitRef.current = null;
+    }
+  }, [node, state.error]);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -116,24 +137,30 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
     note: noteDraft.value
   });
 
-  const saveDrafts = (force = false) => {
+  const draftToSave = (force = false) => {
     if (!force && !titleDraft.dirty && !noteDraft.dirty) {
-      return;
+      return undefined;
     }
-    const patch = {
-      title: titleDraft.value,
-      note: noteDraft.value
-    };
+    return draftPatch();
+  };
+
+  const markDraftPending = (patch: ReturnType<typeof draftPatch>) => {
     setTitleDraft((draft) => ({
       ...draft,
-      dirty: false,
-      submitted: patch.title
+      pending: draft.value === patch.title ? patch.title : draft.pending
     }));
     setNoteDraft((draft) => ({
       ...draft,
-      dirty: false,
-      submitted: patch.note
+      pending: draft.value === patch.note ? patch.note : draft.pending
     }));
+  };
+
+  const saveDrafts = (force = false) => {
+    const patch = draftToSave(force);
+    if (!patch) {
+      return;
+    }
+    markDraftPending(patch);
     void actions.updateNode(nodeId, patch);
   };
 
@@ -177,20 +204,47 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
 
     event.preventDefault();
     switch (resolution.type) {
-      case "split":
+      case "split": {
+        const patch = draftToSave();
+        if (patch) {
+          markDraftPending(patch);
+        }
+        const sourceTitle = titleDraft.value;
+        const pendingSplit = {
+          sourceTitle,
+          prefix: resolution.prefix,
+          succeeded: false
+        };
+        pendingSplitRef.current = pendingSplit;
         suppressHandledBlur();
         void actions.splitNode(
           nodeId,
           createNoteId(),
           resolution.prefix,
-          resolution.suffix
+          resolution.suffix,
+          {
+            draft: patch,
+            onSuccess: () => {
+              if (pendingSplitRef.current === pendingSplit) {
+                pendingSplit.succeeded = true;
+              }
+            }
+          }
         );
         return;
-      case "move":
-        saveDrafts();
+      }
+      case "move": {
+        const patch = draftToSave();
+        if (patch) {
+          markDraftPending(patch);
+        }
         suppressHandledBlur();
-        void actions.moveNode(resolution.input, resolution.focusNodeId);
+        void actions.moveNode(resolution.input, resolution.focusNodeId, {
+          draft: patch,
+          expandNodeId: resolution.expandNodeId
+        });
         return;
+      }
       case "focus":
         saveDrafts();
         suppressHandledBlur();
@@ -199,10 +253,14 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
       case "toggleCollapsed":
         void actions.toggleCollapsed(nodeId);
         return;
-      case "remove":
-        saveDrafts(true);
+      case "remove": {
+        const patch = draftToSave(true)!;
+        markDraftPending(patch);
         suppressHandledBlur();
-        void actions.removeEmptyNode(nodeId, resolution.focusNodeId);
+        void actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
+          draft: patch
+        });
+      }
     }
   };
 
@@ -256,7 +314,7 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
               ...draft,
               value: event.target.value,
               dirty:
-                event.target.value !== (draft.submitted ?? node.title)
+                draft.pending !== null || event.target.value !== node.title
             }))
           }
           onKeyDown={handleTitleKeyDown}
@@ -309,7 +367,8 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
             setNoteDraft((draft) => ({
               ...draft,
               value: event.target.value,
-              dirty: event.target.value !== (draft.submitted ?? node.note)
+              dirty:
+                draft.pending !== null || event.target.value !== node.note
             }))
           }
           onBlur={commitDrafts}

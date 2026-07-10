@@ -29,21 +29,36 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     newNodeId: NoteId,
     prefix: string,
-    suffix: string
+    suffix: string,
+    options?: NotesWorkspaceCompoundOptions
   ): Promise<void>;
   createChild(nodeId: NoteId): Promise<void>;
   updateNode(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
   ): Promise<void>;
-  moveNode(input: MoveNoteNodeInput, focusNodeId?: NoteId | null): Promise<void>;
+  moveNode(
+    input: MoveNoteNodeInput,
+    focusNodeId?: NoteId | null,
+    options?: NotesWorkspaceCompoundOptions
+  ): Promise<void>;
   toggleComplete(nodeId: NoteId): Promise<void>;
   toggleCollapsed(nodeId: NoteId): Promise<void>;
   duplicateNode(nodeId: NoteId): Promise<void>;
-  removeEmptyNode(nodeId: NoteId, focusNodeId?: NoteId | null): Promise<void>;
+  removeEmptyNode(
+    nodeId: NoteId,
+    focusNodeId?: NoteId | null,
+    options?: NotesWorkspaceCompoundOptions
+  ): Promise<void>;
   deleteNode(nodeId: NoteId): Promise<void>;
   restoreNode(nodeId: NoteId): Promise<void>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
+}
+
+export interface NotesWorkspaceCompoundOptions {
+  draft?: Pick<NoteNode, "title" | "note">;
+  expandNodeId?: NoteId;
+  onSuccess?: () => void;
 }
 
 export interface UseNotesWorkspaceOptions {
@@ -64,6 +79,46 @@ function authoritative(
   uiUpdate?: NotesWorkspaceUiUpdate
 ): NotesWorkspaceQueueResult {
   return { kind: "authoritative", workspace, uiUpdate };
+}
+
+type NotesWorkspaceQueueStep = () => Promise<NotesWorkspace>;
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function runCompoundQueueWork(
+  context: NotesWorkspaceQueueContext,
+  steps: NotesWorkspaceQueueStep[],
+  uiUpdate?: NotesWorkspaceUiUpdate
+): Promise<NotesWorkspaceQueueResult> {
+  let workspace = context.confirmedWorkspace;
+  let hasAuthoritativeStep = false;
+
+  try {
+    for (const step of steps) {
+      workspace = await step();
+      hasAuthoritativeStep = true;
+    }
+    return authoritative(workspace, uiUpdate);
+  } catch (cause) {
+    return {
+      kind: "failure",
+      error: errorMessage(cause),
+      ...(hasAuthoritativeStep ? { workspace } : {})
+    };
+  }
+}
+
+function notifySuccess(callback: (() => void) | undefined): void {
+  if (!callback) {
+    return;
+  }
+  try {
+    callback();
+  } catch {
+    // Local completion handlers cannot change an authoritative queue result.
+  }
 }
 
 function confirmedState(
@@ -214,26 +269,44 @@ export function useNotesWorkspace({
       nodeId: NoteId,
       newNodeId: NoteId,
       prefix: string,
-      suffix: string
+      suffix: string,
+      options?: NotesWorkspaceCompoundOptions
     ) => {
-      return runCommand(async (context) => {
+      let succeeded = false;
+      const completion = runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.splitNode(
-          context.vaultRoot,
-          {
+        const steps: NotesWorkspaceQueueStep[] = [];
+        const draft = options?.draft;
+        if (draft) {
+          steps.push(() =>
+            context.repository.updateNode(context.vaultRoot, {
+              id: nodeId,
+              ...draft
+            })
+          );
+        }
+        steps.push(() =>
+          context.repository.splitNode(context.vaultRoot, {
             id: nodeId,
             newNodeId,
             prefix,
             suffix
-          }
+          })
         );
-        return authoritative(workspace, {
+        const result = await runCompoundQueueWork(context, steps, {
           selectedId: newNodeId,
           editingNoteId: newNodeId,
           pendingFocusId: newNodeId
         });
+        succeeded = result.kind === "authoritative";
+        return result;
+      });
+      return completion.then(() => {
+        if (succeeded) {
+          notifySuccess(options?.onSuccess);
+        }
       });
     },
     [runCommand]
@@ -257,13 +330,45 @@ export function useNotesWorkspace({
   );
 
   const moveNode = useCallback(
-    (input: MoveNoteNodeInput, focusNodeId?: NoteId | null) => {
+    (
+      input: MoveNoteNodeInput,
+      focusNodeId?: NoteId | null,
+      options?: NotesWorkspaceCompoundOptions
+    ) => {
       return runCommand(async (context) => {
-        if (!hasMoveDependencies(confirmedState(context), input)) {
+        const before = confirmedState(context);
+        const expandNodeId = options?.expandNodeId;
+        if (
+          !hasMoveDependencies(before, input) ||
+          (expandNodeId !== undefined && !before.nodesById[expandNodeId])
+        ) {
           return { kind: "skipped" };
         }
-        return authoritative(
-          await context.repository.moveNode(context.vaultRoot, input),
+        const steps: NotesWorkspaceQueueStep[] = [];
+        const draft = options?.draft;
+        if (draft) {
+          steps.push(() =>
+            context.repository.updateNode(context.vaultRoot, {
+              id: input.id,
+              ...draft
+            })
+          );
+        }
+        if (
+          expandNodeId !== undefined &&
+          before.nodesById[expandNodeId].isCollapsed
+        ) {
+          steps.push(() =>
+            context.repository.toggleCollapsed(
+              context.vaultRoot,
+              expandNodeId
+            )
+          );
+        }
+        steps.push(() => context.repository.moveNode(context.vaultRoot, input));
+        return runCompoundQueueWork(
+          context,
+          steps,
           focusedUiUpdate(focusNodeId)
         );
       });
@@ -327,13 +432,31 @@ export function useNotesWorkspace({
   );
 
   const removeEmptyNode = useCallback(
-    (nodeId: NoteId, focusNodeId?: NoteId | null) => {
+    (
+      nodeId: NoteId,
+      focusNodeId?: NoteId | null,
+      options?: NotesWorkspaceCompoundOptions
+    ) => {
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        return authoritative(
-          await context.repository.removeEmptyNode(context.vaultRoot, nodeId),
+        const steps: NotesWorkspaceQueueStep[] = [];
+        const draft = options?.draft;
+        if (draft) {
+          steps.push(() =>
+            context.repository.updateNode(context.vaultRoot, {
+              id: nodeId,
+              ...draft
+            })
+          );
+        }
+        steps.push(() =>
+          context.repository.removeEmptyNode(context.vaultRoot, nodeId)
+        );
+        return runCompoundQueueWork(
+          context,
+          steps,
           focusedUiUpdate(focusNodeId)
         );
       });

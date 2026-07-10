@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
   CreateNoteNodeInput,
@@ -87,10 +87,12 @@ function workspace(nodes: NoteNode[]): NotesWorkspace {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 let confirmedNodes: NoteNode[];
@@ -214,6 +216,10 @@ function renderNotesWorkspace() {
 describe("Notes workspace", () => {
   beforeEach(() => {
     configureRepository();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
@@ -541,6 +547,145 @@ describe("Notes workspace", () => {
     randomUUID.mockRestore();
   });
 
+  it("saves dirty title and note drafts before splitting and adopts the prefix", async () => {
+    configureRepository([
+      node({
+        id: "source",
+        sortKey: 1,
+        title: "alphaXYZomega",
+        note: "old note"
+      })
+    ]);
+    const save = deferred<NotesWorkspace>();
+    notesStoreMock.updateNode.mockReturnValue(save.promise);
+    notesStoreMock.splitNode.mockResolvedValue(
+      workspace([
+        node({
+          id: "source",
+          sortKey: 1,
+          title: "alpha",
+          note: "draft note"
+        }),
+        node({
+          id: "00000000-0000-4000-8000-000000000002",
+          sortKey: 2,
+          title: "omega!"
+        })
+      ])
+    );
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000002");
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    const title = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: alphaXYZomega"
+    });
+    await user.click(
+      screen.getByRole("button", {
+        name: "Show supporting note for alphaXYZomega"
+      })
+    );
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: alphaXYZomega"
+    });
+    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    fireEvent.change(note, { target: { value: "draft note" } });
+    title.focus();
+    title.setSelectionRange(5, 8);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "source",
+      title: "alphaXYZomega!",
+      note: "draft note"
+    });
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+
+    await act(async () =>
+      save.resolve(
+        workspace([
+          node({
+            id: "source",
+            sortKey: 1,
+            title: "alphaXYZomega!",
+            note: "draft note"
+          })
+        ])
+      )
+    );
+    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
+      id: "source",
+      newNodeId: "00000000-0000-4000-8000-000000000002",
+      prefix: "alpha",
+      suffix: "omega!"
+    });
+
+    expect(
+      await screen.findByRole("textbox", { name: "Edit node title: alpha" })
+    ).toHaveValue("alpha");
+    expect(
+      screen.getByRole("textbox", { name: "Edit node title: omega!" })
+    ).toHaveFocus();
+    randomUUID.mockRestore();
+  });
+
+  it("keeps a failed split prerequisite dirty and retries it before splitting", async () => {
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+    ]);
+    const retrySave = deferred<NotesWorkspace>();
+    notesStoreMock.updateNode
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockReturnValueOnce(retrySave.promise);
+    notesStoreMock.splitNode.mockResolvedValue(
+      workspace([
+        node({ id: "source", title: "alpha", sortKey: 1 }),
+        node({
+          id: "00000000-0000-4000-8000-000000000003",
+          title: "omega!",
+          sortKey: 2
+        })
+      ])
+    );
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockReturnValue("00000000-0000-4000-8000-000000000003");
+    renderNotesWorkspace();
+    const title = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title: alphaXYZomega"
+    });
+    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    title.focus();
+    title.setSelectionRange(5, 8);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(screen.getAllByText("save failed")).toHaveLength(2)
+    );
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+
+    title.setSelectionRange(5, 8);
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+    );
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+
+    await act(async () =>
+      retrySave.resolve(
+        workspace([
+          node({ id: "source", title: "alphaXYZomega!", sortKey: 1 })
+        ])
+      )
+    );
+    await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
+    randomUUID.mockRestore();
+  });
+
   it("saves a dirty draft before Tab move and focuses after the move response", async () => {
     const before = [
       node({ id: "project", sortKey: 1, title: "Project" }),
@@ -603,6 +748,59 @@ describe("Notes workspace", () => {
       })
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("expands a collapsed previous sibling before indenting and focusing", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First", isCollapsed: true }),
+      node({ id: "hidden", parentId: "first", sortKey: 1, title: "Hidden" }),
+      node({ id: "second", sortKey: 2, title: "Second" })
+    ];
+    configureRepository(before);
+    const expand = deferred<NotesWorkspace>();
+    const move = deferred<NotesWorkspace>();
+    notesStoreMock.toggleCollapsed.mockReturnValue(expand.promise);
+    notesStoreMock.moveNode.mockReturnValue(move.promise);
+    renderNotesWorkspace();
+    const second = await screen.findByRole("textbox", {
+      name: "Edit node title: Second"
+    });
+    second.focus();
+
+    expect(fireEvent.keyDown(second, { key: "Tab" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
+        "/vault",
+        "first"
+      )
+    );
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+
+    const expanded = before.map((current) =>
+      current.id === "first" ? { ...current, isCollapsed: false } : current
+    );
+    await act(async () => expand.resolve(workspace(expanded)));
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "second",
+      parentId: "first",
+      afterId: "hidden"
+    });
+
+    await act(async () =>
+      move.resolve(
+        workspace(
+          expanded.map((current) =>
+            current.id === "second"
+              ? { ...current, parentId: "first", sortKey: 2 }
+              : current
+          )
+        )
+      )
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "Edit node title: Second" })
+    ).toHaveFocus();
   });
 
   it("saves before Shift+Tab outdent and does not duplicate the handled blur", async () => {
@@ -753,6 +951,47 @@ describe("Notes workspace", () => {
       await screen.findByRole("textbox", { name: "Edit node title: First" })
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+  });
+
+  it("focuses the first lifted child after removing a collapsed empty parent", async () => {
+    const before = [
+      node({ id: "empty", sortKey: 1, title: "", isCollapsed: true }),
+      node({ id: "lifted-a", parentId: "empty", sortKey: 1, title: "Lifted A" }),
+      node({ id: "lifted-b", parentId: "empty", sortKey: 2, title: "Lifted B" }),
+      node({ id: "next", sortKey: 2, title: "Next" })
+    ];
+    configureRepository(before);
+    const remove = deferred<NotesWorkspace>();
+    notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
+    renderNotesWorkspace();
+    const empty = await screen.findByRole<HTMLInputElement>("textbox", {
+      name: "Edit node title"
+    });
+    empty.focus();
+    empty.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
+        "/vault",
+        "empty"
+      )
+    );
+
+    await act(async () =>
+      remove.resolve(
+        workspace([
+          node({ id: "lifted-a", sortKey: 1, title: "Lifted A" }),
+          node({ id: "lifted-b", sortKey: 2, title: "Lifted B" }),
+          node({ id: "next", sortKey: 3, title: "Next" })
+        ])
+      )
+    );
+    expect(
+      await screen.findByRole("textbox", {
+        name: "Edit node title: Lifted A"
+      })
+    ).toHaveFocus();
   });
 
   it("keeps Backspace native when an empty title has a nonempty note", async () => {

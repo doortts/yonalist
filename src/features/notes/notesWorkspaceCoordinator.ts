@@ -17,11 +17,10 @@ export type NotesWorkspaceQueueResult =
       workspace: NotesWorkspace;
       uiUpdate?: NotesWorkspaceUiUpdate;
     }
-  | { kind: "skipped" };
+  | { kind: "skipped" }
+  | { kind: "failure"; error: string; workspace?: NotesWorkspace };
 
-export type NotesWorkspaceQueueSettlement =
-  | NotesWorkspaceQueueResult
-  | { kind: "failure"; error: string };
+export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
 
 export interface NotesWorkspaceQueueContext {
   repository: NotesStore;
@@ -193,8 +192,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }
     entry.running = null;
 
-    if (result.kind === "authoritative") {
-      entry.confirmedWorkspace = result.workspace;
+    const authoritativeWorkspace =
+      result.kind === "authoritative"
+        ? result.workspace
+        : result.kind === "failure"
+          ? result.workspace
+          : undefined;
+    if (authoritativeWorkspace) {
+      entry.confirmedWorkspace = authoritativeWorkspace;
     }
 
     if (item.kind === "activation") {

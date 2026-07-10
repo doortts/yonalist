@@ -29,7 +29,7 @@ export type NotesWorkspaceReducerAction =
             uiUpdate?: Partial<UiState>;
           }
         | { kind: "skipped" }
-        | { kind: "failure"; error: string };
+        | { kind: "failure"; error: string; workspace?: NotesWorkspace };
       hasPendingWork: boolean;
     }
   | ({ type: "setUiState" } & Partial<UiState>)
@@ -97,6 +97,15 @@ export function notesWorkspaceReducer(
   switch (action.type) {
     case "settleQueueWork": {
       if (action.result.kind === "failure") {
+        if (action.result.workspace) {
+          const workspace = normalizeWorkspace(action.result.workspace);
+          return {
+            ...workspace,
+            ...normalizedUiState(workspace, state),
+            status: action.hasPendingWork ? "loading" : "error",
+            error: action.result.error
+          };
+        }
         return {
           ...state,
           status: action.hasPendingWork ? "loading" : "error",

@@ -54,6 +54,44 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("advances confirmed workspace when failed work carries partial authority", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: events
+    });
+    await session.activation;
+    const saved = workspace([node({ id: "root", title: "saved draft" })]);
+
+    await session.enqueue(() => ({
+      kind: "failure" as const,
+      error: "move failed",
+      workspace: saved
+    }));
+    let nextConfirmedWorkspace: NotesWorkspace | null = null;
+    const nextWork = vi.fn(({ confirmedWorkspace }) => {
+      nextConfirmedWorkspace = confirmedWorkspace;
+      return { kind: "skipped" as const };
+    });
+    await session.enqueue(nextWork);
+
+    expect(nextWork).toHaveBeenCalledOnce();
+    expect(nextConfirmedWorkspace).toEqual(saved);
+    expect(events).toHaveBeenCalledWith({
+      type: "settled",
+      result: {
+        kind: "failure",
+        error: "move failed",
+        workspace: saved
+      },
+      hasPendingWork: false
+    });
+    session.close();
+  });
+
   it("removes an idle entry after deferred initialization settles without a session", async () => {
     const initialization = deferred<void>();
     const store = repository({

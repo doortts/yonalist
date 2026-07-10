@@ -215,6 +215,37 @@ describe("notesWorkspaceReducer", () => {
     });
   });
 
+  it("publishes a partially authoritative failure without success-only focus", () => {
+    const initial = normalizeWorkspace(
+      workspace([
+        node({ id: "root", title: "before" }),
+        node({ id: "focus-target", sortKey: 2 })
+      ])
+    );
+
+    const state = notesWorkspaceReducer(initial, {
+      type: "settleQueueWork",
+      result: {
+        kind: "failure",
+        error: "move failed",
+        workspace: workspace([
+          node({ id: "root", title: "saved draft" }),
+          node({ id: "focus-target", sortKey: 2 })
+        ])
+      },
+      hasPendingWork: false
+    });
+
+    expect(state.nodesById.root.title).toBe("saved draft");
+    expect(state).toMatchObject({
+      selectedId: null,
+      editingNoteId: null,
+      pendingFocusId: null,
+      status: "error",
+      error: "move failed"
+    });
+  });
+
   it("retains errors through loading and skipped dependent work", () => {
     const confirmed = normalizeWorkspace(workspace([node({ id: "root" })]));
     const failed = notesWorkspaceReducer(confirmed, {

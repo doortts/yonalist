@@ -309,6 +309,143 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("blocks a compound split when its draft save fails", async () => {
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("save failed")),
+      splitNode: vi.fn().mockResolvedValue(workspace([]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.splitNode(
+        "root",
+        "split-child",
+        "prefix",
+        "suffix",
+        { draft: { title: "prefixsuffix", note: "saved note" } }
+      );
+    });
+    await act(async () => {
+      await expect(completion).resolves.toBeUndefined();
+    });
+
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "root",
+      title: "prefixsuffix",
+      note: "saved note"
+    });
+    expect(store.splitNode).not.toHaveBeenCalled();
+    expect(result.current.state.nodesById.root.title).toBe("root");
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "save failed"
+    });
+  });
+
+  it("retains an authoritative draft when the later compound split fails", async () => {
+    const saved = workspace([
+      node({ id: "root", title: "prefixsuffix", note: "saved note" })
+    ]);
+    const store = repository({
+      updateNode: vi.fn().mockResolvedValue(saved),
+      splitNode: vi.fn().mockRejectedValue(new Error("split failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.splitNode(
+        "root",
+        "split-child",
+        "prefix",
+        "suffix",
+        { draft: { title: "prefixsuffix", note: "saved note" } }
+      )
+    );
+
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(store.splitNode).toHaveBeenCalledWith("/vault", {
+      id: "root",
+      newNodeId: "split-child",
+      prefix: "prefix",
+      suffix: "suffix"
+    });
+    expect(result.current.state.nodesById.root).toMatchObject({
+      title: "prefixsuffix",
+      note: "saved note"
+    });
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "split failed"
+    });
+  });
+
+  it("expands a move target before moving and publishing focus", async () => {
+    const expanded = deferred<NotesWorkspace>();
+    const moved = deferred<NotesWorkspace>();
+    const initial = workspace([
+      node({ id: "first", sortKey: 1, isCollapsed: true }),
+      node({ id: "hidden", parentId: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleCollapsed: vi.fn().mockReturnValue(expanded.promise),
+      moveNode: vi.fn().mockReturnValue(moved.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.moveNode(
+        { id: "second", parentId: "first", afterId: "hidden" },
+        "second",
+        { expandNodeId: "first" }
+      );
+    });
+    await waitFor(() => expect(store.toggleCollapsed).toHaveBeenCalledOnce());
+    expect(store.moveNode).not.toHaveBeenCalled();
+    expect(result.current.state.pendingFocusId).toBeNull();
+
+    await act(async () =>
+      expanded.resolve(
+        workspace([
+          node({ id: "first", sortKey: 1, isCollapsed: false }),
+          node({ id: "hidden", parentId: "first", sortKey: 1 }),
+          node({ id: "second", sortKey: 2 })
+        ])
+      )
+    );
+    await waitFor(() => expect(store.moveNode).toHaveBeenCalledOnce());
+    expect(result.current.state.pendingFocusId).toBeNull();
+
+    await act(async () => {
+      moved.resolve(
+        workspace([
+          node({ id: "first", sortKey: 1, isCollapsed: false }),
+          node({ id: "hidden", parentId: "first", sortKey: 1 }),
+          node({ id: "second", parentId: "first", sortKey: 2 })
+        ])
+      );
+      await completion;
+    });
+    expect(result.current.state).toMatchObject({
+      selectedId: "second",
+      editingNoteId: "second",
+      pendingFocusId: "second"
+    });
+  });
+
   it("does not launch loading or queued commands after unmount during initialization", async () => {
     const initialization = deferred<void>();
     const store = repository({
