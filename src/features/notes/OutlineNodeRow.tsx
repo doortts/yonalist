@@ -1,9 +1,9 @@
 import { useSortable } from "@dnd-kit/sortable";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
-  GripVertical,
   MessageSquareText,
   RotateCcw,
   Star,
@@ -19,6 +19,7 @@ import {
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { createNoteId, type NoteId } from "../../domain/notes";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { OUTLINE_INDENT_PX } from "./outlineDrag";
 import { resolveOutlineKey } from "./outlineKeyboard";
 
 interface OutlineNodeRowProps {
@@ -106,8 +107,9 @@ export function OutlineNodeRow({
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
   const isCollapsed = node.isCollapsed && !locallyExpanded;
+  const dragEnabled = !disabled && !dragDisabled && !readOnly;
   const rowStyle = {
-    "--notes-indent": `min(${depth * 24}px, 20%)`,
+    "--notes-indent": `${depth * OUTLINE_INDENT_PX}px`,
     transform: transform
       ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
       : undefined,
@@ -288,21 +290,7 @@ export function OutlineNodeRow({
       style={rowStyle}
     >
       <div className="notes-node-main">
-        <IconTooltip label="Move">
-          <button
-            ref={setActivatorNodeRef}
-            className="notes-row-icon-button notes-drag-handle"
-            type="button"
-            disabled={disabled || dragDisabled}
-            {...attributes}
-            {...listeners}
-            aria-label={`Move ${label}`}
-          >
-            <GripVertical size={15} aria-hidden="true" />
-          </button>
-        </IconTooltip>
-
-        <span className="notes-collapse-slot">
+        <span className="notes-node-arrow-slot">
           {hasChildren && (
             <IconTooltip label={isCollapsed ? "Expand" : "Collapse"}>
               <button
@@ -316,41 +304,29 @@ export function OutlineNodeRow({
                 }
               >
                 {isCollapsed ? (
-                  <ChevronRight size={15} aria-hidden="true" />
+                  <ChevronRight size={12} aria-hidden="true" />
                 ) : (
-                  <ChevronDown size={15} aria-hidden="true" />
+                  <ChevronDown size={12} aria-hidden="true" />
                 )}
               </button>
             </IconTooltip>
           )}
         </span>
 
-        <input
-          className="notes-complete-checkbox"
-          type="checkbox"
-          checked={completed}
-          aria-label={`Mark ${label} ${completed ? "incomplete" : "complete"}`}
+        <button
+          ref={setActivatorNodeRef}
+          className="notes-node-bullet"
+          type="button"
+          {...(dragEnabled ? attributes : {})}
+          {...(dragEnabled ? listeners : {})}
+          aria-label={`Zoom into ${label}`}
           disabled={disabled}
-          onChange={() => void actions.toggleComplete(nodeId)}
-        />
-
-        <input
-          className="notes-node-title"
-          ref={titleRef}
-          value={titleValue}
-          aria-label="Edit node title"
-          placeholder="Untitled"
-          disabled={disabled}
-          onChange={(event) =>
-            actions.updateNodeDraft(nodeId, {
-              title: event.target.value,
-              note: noteValue
-            })
-          }
-          onKeyDown={handleTitleKeyDown}
-          onBlur={commitDrafts}
-          onDoubleClick={() => void actions.zoomTo(nodeId)}
-        />
+          data-collapsed={hasChildren && isCollapsed ? "true" : undefined}
+          data-sortable-activator={dragEnabled ? "true" : undefined}
+          onClick={() => void actions.zoomTo(nodeId)}
+        >
+          <span className="notes-node-bullet-dot" aria-hidden="true" />
+        </button>
 
         <div className="notes-node-actions">
           {draft?.status === "failed" && (
@@ -366,6 +342,18 @@ export function OutlineNodeRow({
               </button>
             </IconTooltip>
           )}
+          <IconTooltip label={completed ? "Uncomplete" : "Complete"}>
+            <button
+              className="notes-row-icon-button"
+              type="button"
+              aria-label={`${completed ? "Uncomplete" : "Complete"} ${label}`}
+              aria-pressed={completed}
+              disabled={disabled}
+              onClick={() => void actions.toggleComplete(nodeId)}
+            >
+              <Check size={15} aria-hidden="true" />
+            </button>
+          </IconTooltip>
           <IconTooltip label={node.isStarred ? "Unstar" : "Star"}>
             <button
               className="notes-row-icon-button"
@@ -417,6 +405,23 @@ export function OutlineNodeRow({
             </button>
           </IconTooltip>
         </div>
+
+        <input
+          className="notes-node-title"
+          ref={titleRef}
+          value={titleValue}
+          aria-label="Edit node title"
+          placeholder="Untitled"
+          disabled={disabled}
+          onChange={(event) =>
+            actions.updateNodeDraft(nodeId, {
+              title: event.target.value,
+              note: noteValue
+            })
+          }
+          onKeyDown={handleTitleKeyDown}
+          onBlur={commitDrafts}
+        />
       </div>
 
       {noteOpen && (

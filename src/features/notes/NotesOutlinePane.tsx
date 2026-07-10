@@ -15,7 +15,13 @@ import {
   verticalListSortingStrategy
 } from "@dnd-kit/sortable";
 import { ChevronRight, Home, Trash2 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   IconTooltip,
@@ -24,7 +30,7 @@ import {
 import type { NoteId } from "../../domain/notes";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
-import { projectOutlineDrop } from "./outlineDrag";
+import { OUTLINE_INDENT_PX, projectOutlineDrop } from "./outlineDrag";
 import { flattenVisibleOutlineRows, parentTrail } from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
 
@@ -234,6 +240,11 @@ export function NotesOutlinePane() {
       className="notes-outline"
       aria-label="Notes outline"
       aria-busy={state.status === "loading" || deletingNotesData}
+      style={
+        {
+          "--notes-outline-indent": `${OUTLINE_INDENT_PX}px`
+        } as CSSProperties
+      }
     >
       <TooltipProvider>
         <div className="notes-outline-toolbar">

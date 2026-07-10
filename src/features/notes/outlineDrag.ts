@@ -1,7 +1,7 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
 import type { FlattenedOutlineRow } from "./outlineTree";
 
-const outlineIndentationWidth = 24;
+export const OUTLINE_INDENT_PX = 36;
 
 export interface OutlineSiblingOrder {
   rootIds: readonly NoteId[];
@@ -253,7 +253,7 @@ export function projectOutlineDrop(
   }
 
   const requestedDepth =
-    active.depth + Math.round(horizontalOffset / outlineIndentationWidth);
+    active.depth + Math.round(horizontalOffset / OUTLINE_INDENT_PX);
   const depth = Math.min(maximumDepth, Math.max(minimumDepth, requestedDepth));
   const parentId = parentAtDepth(previous, depth);
   if (parentId === undefined || (order.zoomRootId !== null && parentId === null)) {

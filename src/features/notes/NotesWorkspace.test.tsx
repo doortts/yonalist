@@ -263,7 +263,7 @@ async function findTitleInput(value: string): Promise<HTMLInputElement> {
 }
 
 function mockOutlineRowRects() {
-  const rectangle = (top: number, left = 0, width = 640, height = 38) =>
+  const rectangle = (top: number, left = 0, width = 640, height = 28) =>
     ({
       x: left,
       y: top,
@@ -284,7 +284,7 @@ function mockOutlineRowRects() {
         return rectangle(0);
       }
       const rows = Array.from(document.querySelectorAll(".notes-node"));
-      return rectangle(rows.indexOf(row) * 38);
+      return rectangle(rows.indexOf(row) * 28);
     });
 }
 
@@ -310,21 +310,56 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
-  it("exposes dedicated sortable handles without capturing title or note input", async () => {
-    const user = userEvent.setup();
+  it("renders separate arrow and bullet controls with the bullet as sortable activator", async () => {
     renderNotesWorkspace();
 
     const title = await findTitleInput("Project");
     expect(title.closest("li")).toHaveAttribute("aria-level", "1");
-    expect(
-      getTitleInput("Plan").closest("li")
-    ).toHaveAttribute("aria-level", "2");
-    const projectHandle = screen.getByRole("button", { name: "Move Project" });
-    expect(projectHandle).toBeEnabled();
-    expect(projectHandle).toHaveAttribute("aria-describedby");
+    expect(getTitleInput("Plan").closest("li")).toHaveAttribute(
+      "aria-level",
+      "2"
+    );
 
-    projectHandle.focus();
-    expect(projectHandle).toHaveFocus();
+    const projectBullet = screen.getByRole("button", {
+      name: "Zoom into Project"
+    });
+    expect(projectBullet).toBeVisible();
+    expect(projectBullet).toHaveClass("notes-node-bullet");
+    expect(projectBullet).toHaveAttribute(
+      "aria-roledescription",
+      "sortable note"
+    );
+    expect(projectBullet).toHaveAttribute("aria-describedby");
+    expect(
+      screen.getByRole("button", { name: "Collapse Project" })
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Complete Project" })
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("checkbox", { name: /complete/i })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Move Project" })
+    ).not.toBeInTheDocument();
+
+    const leafRow = getTitleInput("Outside branch").closest(".notes-node-main");
+    expect(
+      leafRow?.querySelector(".notes-node-arrow-slot")
+    ).toBeEmptyDOMElement();
+  });
+
+  it("keeps title and supporting-note input outside drag activation", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+
+    const title = await findTitleInput("Project");
+    const projectBullet = screen.getByRole("button", {
+      name: "Zoom into Project"
+    });
+
+    projectBullet.focus();
+    expect(projectBullet).toHaveFocus();
     await user.click(title);
     await user.keyboard(" [ArrowLeft][ArrowRight]");
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -338,40 +373,116 @@ describe("Notes workspace", () => {
     await user.click(supportingNote);
     await user.keyboard(" [ArrowUp][ArrowDown]");
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
-
-    await user.dblClick(title);
-    expect(screen.getByRole("button", { name: /Move Project/ })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Move Plan" })).toBeEnabled();
-    expect(
-      getTitleInput("Project").closest("li")
-    ).toHaveAttribute("aria-level", "1");
-    expect(
-      getTitleInput("Plan").closest("li")
-    ).toHaveAttribute("aria-level", "2");
   });
 
-  it("disables visible drag handles while queued workspace work is loading", async () => {
+  it("uses the arrow only for collapse and the bullet only for zoom", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+
+    await findTitleInput("Project");
+    const collapse = screen.getByRole("button", { name: "Collapse Project" });
+    const bullet = screen.getByRole("button", { name: "Zoom into Project" });
+
+    await user.click(collapse);
+
+    expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
+      "/vault",
+      "project"
+    );
+    expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(getTitleInput("Outside branch")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Zoom into Project" })
+      ).toHaveAttribute("data-collapsed", "true")
+    );
+
+    await user.click(bullet);
+
+    expect(
+      within(screen.getByLabelText("Notes breadcrumb")).getByRole("button", {
+        name: "Project"
+      })
+    ).toBeInTheDocument();
+    expect(queryTitleInput("Outside branch")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+    const restoredTitle = await findTitleInput("Project");
+    await user.dblClick(restoredTitle);
+
+    expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    expect(getTitleInput("Outside branch")).toBeInTheDocument();
+  });
+
+  it("keeps completion reachable by keyboard and touch-style pointer input", async () => {
+    const user = userEvent.setup();
+    configureRepository([node({ id: "project", title: "Project" })]);
+    renderNotesWorkspace();
+
+    const title = await findTitleInput("Project");
+    const bullet = screen.getByRole("button", { name: "Zoom into Project" });
+
+    bullet.focus();
+    await user.tab();
+    expect(
+      screen.getByRole("button", { name: "Complete Project" })
+    ).toHaveFocus();
+    await user.keyboard("[Enter]");
+
+    expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
+      "/vault",
+      "project"
+    );
+    const uncomplete = await screen.findByRole("button", {
+      name: "Uncomplete Project"
+    });
+
+    fireEvent.pointerDown(title, { pointerType: "touch" });
+    title.focus();
+    expect(title.closest<HTMLElement>(".notes-node-main")).toContainElement(
+      document.activeElement as HTMLElement | null
+    );
+    fireEvent.pointerDown(uncomplete, { pointerType: "touch" });
+    fireEvent.click(uncomplete);
+
+    await waitFor(() =>
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it("suspends bullet drag activation while queued workspace work is loading", async () => {
     const user = userEvent.setup();
     const completion = deferred<NotesWorkspace>();
     notesStoreMock.toggleComplete.mockReturnValue(completion.promise);
     renderNotesWorkspace();
-    await screen.findByRole("button", { name: "Move Project" });
-
-    const completionCheckbox = screen.getByRole("checkbox", {
-      name: "Mark Project complete"
+    const projectBullet = await screen.findByRole("button", {
+      name: "Zoom into Project"
     });
-    expect(completionCheckbox).toHaveClass("notes-complete-checkbox");
-    await user.click(completionCheckbox);
+    expect(projectBullet).toHaveAttribute("aria-describedby");
+
+    const complete = screen.getByRole("button", {
+      name: "Complete Project"
+    });
+    await user.click(complete);
     await waitFor(() =>
       expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
     );
-    for (const handle of screen.getAllByRole("button", { name: /^Move / })) {
-      expect(handle).toBeDisabled();
+    for (const bullet of screen.getAllByRole("button", { name: /^Zoom into / })) {
+      expect(bullet).toBeEnabled();
+      expect(bullet).not.toHaveAttribute("aria-describedby");
     }
 
     completion.resolve(workspace(confirmedNodes));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Move Project" })).toBeEnabled()
+      expect(
+        screen.getByRole("button", { name: "Zoom into Project" })
+      ).toHaveAttribute("aria-describedby")
     );
   });
 
@@ -382,10 +493,12 @@ describe("Notes workspace", () => {
       node({ id: "second", sortKey: 2, title: "Second" })
     ]);
     renderNotesWorkspace();
-    const handle = await screen.findByRole("button", { name: "Move Second" });
+    const bullet = await screen.findByRole("button", {
+      name: "Zoom into Second"
+    });
     mockOutlineRowRects();
 
-    handle.focus();
+    bullet.focus();
     await user.keyboard("[Space][Space]");
 
     await waitFor(() =>
@@ -403,10 +516,12 @@ describe("Notes workspace", () => {
     ]);
     notesStoreMock.moveNode.mockReturnValue(move.promise);
     renderNotesWorkspace();
-    const handle = await screen.findByRole("button", { name: "Move Second" });
+    const bullet = await screen.findByRole("button", {
+      name: "Zoom into Second"
+    });
     mockOutlineRowRects();
 
-    handle.focus();
+    bullet.focus();
     await user.keyboard("[Space][ArrowUp][Space]");
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
@@ -449,34 +564,36 @@ describe("Notes workspace", () => {
       node({ id: "hidden", parentId: "parent", title: "Hidden" })
     ]);
     renderNotesWorkspace();
-    const activeHandle = await screen.findByRole("button", {
-      name: "Move Active"
+    const activeBullet = await screen.findByRole("button", {
+      name: "Zoom into Active"
     });
-    const parentHandle = screen.getByRole("button", { name: "Move Parent" });
+    const parentBullet = screen.getByRole("button", {
+      name: "Zoom into Parent"
+    });
     mockOutlineRowRects();
 
     await user.pointer({
       keys: "[MouseLeft>]",
-      target: activeHandle,
-      coords: { clientX: 12, clientY: 18 }
+      target: activeBullet,
+      coords: { clientX: 9, clientY: 14 }
     });
     await user.pointer({
-      target: parentHandle,
-      coords: { clientX: 20, clientY: 26 }
+      target: parentBullet,
+      coords: { clientX: 14, clientY: 20 }
     });
-    expect(activeHandle.closest(".notes-node")).toHaveAttribute(
+    expect(activeBullet.closest(".notes-node")).toHaveAttribute(
       "data-dragging",
       "true"
     );
     await user.pointer({
-      target: parentHandle,
-      coords: { clientX: 40, clientY: 56 }
+      target: parentBullet,
+      coords: { clientX: 36, clientY: 42 }
     });
     expect(document.body).toHaveTextContent("Active is over Parent.");
     await user.pointer({
       keys: "[/MouseLeft]",
-      target: parentHandle,
-      coords: { clientX: 40, clientY: 56 }
+      target: parentBullet,
+      coords: { clientX: 36, clientY: 42 }
     });
 
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
@@ -497,6 +614,10 @@ describe("Notes workspace", () => {
     expect(
       notesStoreMock.toggleCollapsed.mock.invocationCallOrder[0]
     ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
+    expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
   });
 
   it("lists root pages only and zooms through the full breadcrumb trail", async () => {
@@ -508,14 +629,14 @@ describe("Notes workspace", () => {
     expect(within(library).getByRole("button", { name: "Outside branch" })).toBeInTheDocument();
     expect(within(library).queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
 
-    await user.dblClick(getTitleInput("Project"));
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");
     expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(
       queryTitleInput("Outside branch")
     ).not.toBeInTheDocument();
 
-    await user.dblClick(getTitleInput("Plan"));
+    await user.click(screen.getByRole("button", { name: "Zoom into Plan" }));
     expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(within(breadcrumb).getByRole("button", { name: "Plan" })).toBeInTheDocument();
     expect(
@@ -596,7 +717,7 @@ describe("Notes workspace", () => {
     expect(home).toHaveAttribute("data-base-ui-tooltip-trigger");
   });
 
-  it("caps indentation for deeply nested rows", async () => {
+  it("uses uncapped 36px indentation from the outline root", async () => {
     configureRepository(
       Array.from({ length: 12 }, (_, index) =>
         node({
@@ -613,9 +734,12 @@ describe("Notes workspace", () => {
     const deepestRow = deepestTitle.closest<HTMLElement>(".notes-node");
 
     expect(deepestRow).not.toBeNull();
-    expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe(
-      "min(264px, 20%)"
-    );
+    expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe("396px");
+    expect(
+      screen.getByLabelText("Notes outline").style.getPropertyValue(
+        "--notes-outline-indent"
+      )
+    ).toBe("36px");
   });
 
   it("persists collapse and completion only after authoritative responses", async () => {
@@ -640,9 +764,12 @@ describe("Notes workspace", () => {
       "aria-expanded",
       "false"
     );
+    expect(
+      screen.getByRole("button", { name: "Zoom into Project" })
+    ).toHaveAttribute("data-collapsed", "true");
 
     await user.click(
-      screen.getByRole("checkbox", { name: "Mark Project complete" })
+      screen.getByRole("button", { name: "Complete Project" })
     );
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
@@ -650,8 +777,8 @@ describe("Notes workspace", () => {
     );
     await waitFor(() =>
       expect(
-        screen.getByRole("checkbox", { name: "Mark Project incomplete" })
-      ).toBeChecked()
+        screen.getByRole("button", { name: "Uncomplete Project" })
+      ).toHaveAttribute("aria-pressed", "true")
     );
   });
 
@@ -1874,7 +2001,7 @@ describe("Notes workspace", () => {
     await user.click(screen.getByRole("button", { name: "Starred" }));
     await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
     await user.click(
-      screen.getByRole("checkbox", { name: "Mark Starred page complete" })
+      screen.getByRole("button", { name: "Complete Starred page" })
     );
 
     await waitFor(() =>
@@ -2034,8 +2161,8 @@ describe("Notes workspace", () => {
       expect(titleInput).toBeDisabled();
     }
     expect(
-      screen.getByRole("checkbox", {
-        name: "Mark Project complete",
+      screen.getByRole("button", {
+        name: "Complete Project",
         hidden: true
       })
     ).toBeDisabled();
@@ -2066,18 +2193,40 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("uses a 24px completion target and keeps note content aligned", () => {
+  it("uses stable Workflowy row geometry and overlays secondary actions", () => {
     expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*24px 24px 24px minmax\(0, 1fr\) auto;/s
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) 24px;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-complete-checkbox\s*{[^}]*width:\s*24px;[^}]*height:\s*24px;/s
+      /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-content-offset:\s*84px;/s
+      /\.notes-node-bullet\s*{[^}]*width:\s*18px;[^}]*height:\s*28px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-title\s*{[^}]*height:\s*28px;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-actions\s*{[^}]*position:\s*absolute;[^}]*inset-inline-end:\s*0;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-main:focus-within \.notes-node-actions,[^{]*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\s*{[^}]*--notes-content-offset:\s*46px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
+    );
+    expect(notesStyles).not.toContain(".notes-complete-checkbox");
+    expect(notesStyles).toMatch(
+      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*{[^}]*background:\s*var\(--bg-active\);/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node-main:(?:hover|focus-within)[^{]*{[^}]*background:/s
     );
   });
 });

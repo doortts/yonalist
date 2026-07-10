@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
 import {
+  OUTLINE_INDENT_PX,
   projectOutlineDrop,
   type OutlineSiblingOrder
 } from "./outlineDrag";
@@ -83,6 +84,23 @@ function project(
 }
 
 describe("projectOutlineDrop", () => {
+  it("exports and uses a 36px horizontal depth step", () => {
+    const nodes = [
+      node({ id: "active", sortKey: 1 }),
+      node({ id: "parent", sortKey: 2 })
+    ];
+
+    expect(OUTLINE_INDENT_PX).toBe(36);
+    expect(project(nodes, "active", "parent", OUTLINE_INDENT_PX / 2 - 1)).toEqual({
+      parentId: null,
+      afterId: "parent"
+    });
+    expect(project(nodes, "active", "parent", OUTLINE_INDENT_PX)).toEqual({
+      parentId: "parent",
+      afterId: null
+    });
+  });
+
   it("orders same-parent rows upward with beforeId and downward with afterId", () => {
     const roots = [
       node({ id: "a", sortKey: 1 }),
@@ -113,7 +131,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "parent",
-        24
+        OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: "parent",
@@ -130,7 +148,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "parent",
-        24
+        OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: "parent",
@@ -151,7 +169,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "active",
-        24
+        OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: "previous",
@@ -169,7 +187,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "tail",
-        -24
+        -OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: null,
@@ -189,7 +207,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "active",
-        -24
+        -OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: null,
@@ -226,7 +244,7 @@ describe("projectOutlineDrop", () => {
         ],
         "active",
         "parent",
-        24
+        OUTLINE_INDENT_PX
       )
     ).toEqual({
       parentId: "parent",
@@ -320,7 +338,7 @@ describe("projectOutlineDrop", () => {
         ],
         "parent",
         "grandchild",
-        24
+        OUTLINE_INDENT_PX
       )
     ).toBeNull();
   });
@@ -335,7 +353,9 @@ describe("projectOutlineDrop", () => {
 
     expect(project(nodes, "project", "first", 0, "project")).toBeNull();
     expect(project(nodes, "first", "outside", 0, "project")).toBeNull();
-    expect(project(nodes, "first", "second", -96, "project")).toEqual({
+    expect(
+      project(nodes, "first", "second", -4 * OUTLINE_INDENT_PX, "project")
+    ).toEqual({
       parentId: "project",
       afterId: "second"
     });
@@ -399,7 +419,7 @@ describe("projectOutlineDrop", () => {
         ],
         activeId: "active",
         overId: "parent",
-        offset: 24
+        offset: OUTLINE_INDENT_PX
       },
       {
         nodes: [
@@ -409,7 +429,7 @@ describe("projectOutlineDrop", () => {
         ],
         activeId: "active",
         overId: "parent",
-        offset: 24
+        offset: OUTLINE_INDENT_PX
       }
     ];
 
