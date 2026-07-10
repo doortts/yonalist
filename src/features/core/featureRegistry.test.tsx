@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { VaultRootContext } from "../../VaultRootContext";
 import { featureRegistry, getFeatureDefinition } from "./featureRegistry";
 
 describe("feature registry", () => {
@@ -54,12 +55,21 @@ describe("feature registry", () => {
   });
 
   it("renders structural Notes panes without App-owned renderers", () => {
-    const panes = getFeatureDefinition("notes").renderPanes({
+    const notes = getFeatureDefinition("notes");
+    const panes = notes.renderPanes({
       renderInboxPanes: vi.fn(),
       renderSettingsPanes: vi.fn()
     });
+    const NotesProvider = notes.Provider;
 
-    render(<>{panes.middle}{panes.detail}</>);
+    render(
+      <VaultRootContext.Provider value="/registry-vault">
+        <NotesProvider>
+          {panes.middle}
+          {panes.detail}
+        </NotesProvider>
+      </VaultRootContext.Provider>
+    );
     expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
     expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
   });

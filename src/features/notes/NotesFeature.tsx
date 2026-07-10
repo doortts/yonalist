@@ -1,31 +1,27 @@
 import { NotebookPen } from "lucide-react";
-import type { PropsWithChildren } from "react";
+import { useContext, type PropsWithChildren } from "react";
+import { VaultRootContext } from "../../VaultRootContext";
+import { notesStore } from "../../services/notesStore";
 import type { FeatureDefinition } from "../core/featureTypes";
+import { NotesLibraryPane } from "./NotesLibraryPane";
+import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { useNotesWorkspace } from "./useNotesWorkspace";
+import "./notes.css";
+
+export function NotesWorkspaceProvider({ children }: PropsWithChildren) {
+  const vaultRoot = useContext(VaultRootContext);
+  const workspace = useNotesWorkspace({ vaultRoot, repository: notesStore });
+
+  return (
+    <NotesWorkspaceContext.Provider value={workspace}>
+      {children}
+    </NotesWorkspaceContext.Provider>
+  );
+}
 
 export function NotesFeatureProvider({ children }: PropsWithChildren) {
-  return <>{children}</>;
-}
-
-export function NotesLibraryPlaceholder() {
-  return (
-    <section aria-label="Notes library">
-      <header>
-        <h2>Notes</h2>
-      </header>
-      <p>No notes yet.</p>
-    </section>
-  );
-}
-
-export function NotesOutlinePlaceholder() {
-  return (
-    <section aria-label="Notes outline">
-      <header>
-        <h2>Outline</h2>
-      </header>
-      <p>Select a note to view its outline.</p>
-    </section>
-  );
+  return <NotesWorkspaceProvider>{children}</NotesWorkspaceProvider>;
 }
 
 export const notesFeature: FeatureDefinition = {
@@ -37,7 +33,7 @@ export const notesFeature: FeatureDefinition = {
   requiresGithubAuth: false,
   Provider: NotesFeatureProvider,
   renderPanes: () => ({
-    middle: <NotesLibraryPlaceholder />,
-    detail: <NotesOutlinePlaceholder />
+    middle: <NotesLibraryPane />,
+    detail: <NotesOutlinePane />
   })
 };

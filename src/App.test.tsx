@@ -189,9 +189,11 @@ describe("Yonalist app shell", () => {
   });
 
   it("mounts the active feature Provider around both resolved panes", () => {
-    const originalProvider = notesFeature.Provider;
+    const OriginalProvider = notesFeature.Provider;
     notesFeature.Provider = ({ children }) => (
-      <div aria-label="Notes feature provider sentinel">{children}</div>
+      <div aria-label="Notes feature provider sentinel">
+        <OriginalProvider>{children}</OriginalProvider>
+      </div>
     );
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
@@ -202,7 +204,7 @@ describe("Yonalist app shell", () => {
       expect(within(provider).getByLabelText("Notes library")).toBeInTheDocument();
       expect(within(provider).getByLabelText("Notes outline")).toBeInTheDocument();
     } finally {
-      notesFeature.Provider = originalProvider;
+      notesFeature.Provider = OriginalProvider;
     }
   });
 
