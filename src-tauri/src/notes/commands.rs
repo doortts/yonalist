@@ -1,12 +1,17 @@
+use crate::file_io::write_atomic_file;
+use crate::notes::export::{load_export_snapshot, render_markdown};
 use crate::notes::repository::{
     connect_notes_db, create_node, delete_database, duplicate_node, empty_trash, list_tags,
-    load_workspace, move_node, remove_empty_node, restore_node, search_nodes, soft_delete_node,
-    split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
+    load_workspace, move_node, open_notes_export_db, remove_empty_node, restore_node, search_nodes,
+    soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
 };
 use crate::notes::types::{
-    CreateNodeInput, MoveNodeInput, NoteSearchResult, NotesWorkspace, NotesWorkspaceScope,
-    SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchResult, NotesExportFormat,
+    NotesExportResult, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
+use std::fs;
+use std::io::ErrorKind;
+use std::path::PathBuf;
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
@@ -147,10 +152,52 @@ pub(crate) fn notes_delete_database(vault_path: String) -> Result<(), String> {
     delete_database(&vault_path)
 }
 
+fn export_destination_path(destination: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(destination);
+    path.file_name()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "File path must name a file.".to_string())?;
+    Ok(path)
+}
+
+fn ensure_export_destination_is_available(path: &PathBuf) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err("Destination already exists.".to_string()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_export_markdown(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    validate_note_id(&root_node_id)?;
+    let destination_path = export_destination_path(&destination)?;
+    if !overwrite {
+        ensure_export_destination_is_available(&destination_path)?;
+    }
+
+    let connection = open_notes_export_db(&vault_path)?;
+    let snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    let markdown = render_markdown(&snapshot);
+    write_atomic_file(&destination_path, &markdown, overwrite)?;
+
+    Ok(NotesExportResult {
+        destination,
+        format: NotesExportFormat::Markdown,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notes::types::{NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult};
+    use crate::notes::types::{
+        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NotesExportFormat,
+    };
     use serde_json::json;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -159,6 +206,73 @@ mod tests {
 
     fn assert_active(workspace: &NotesWorkspace) {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
+    }
+
+    fn seed_export_vault(vault_path: &str) {
+        let connection = connect_notes_db(vault_path).expect("initialize export database");
+        for (id, parent_id, sort_key, title, note, is_collapsed, completed_at, deleted_at) in [
+            (
+                ROOT_ID,
+                None,
+                1024,
+                "Project",
+                "Root note",
+                true,
+                None,
+                None,
+            ),
+            (
+                SPLIT_ID,
+                Some(ROOT_ID),
+                1024,
+                "Completed child",
+                "",
+                true,
+                Some("2026-07-10T01:00:00.000Z"),
+                None,
+            ),
+            (
+                EMPTY_ID,
+                Some(SPLIT_ID),
+                1024,
+                "Visible below collapsed",
+                "",
+                false,
+                None,
+                None,
+            ),
+            (
+                "44444444-4444-4444-8444-444444444444",
+                Some(ROOT_ID),
+                2048,
+                "Deleted child",
+                "",
+                false,
+                None,
+                Some("2026-07-10T02:00:00.000Z"),
+            ),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes (\
+                       id, parent_id, sort_key, title, note, is_collapsed, completed_at, \
+                       created_at, updated_at, deleted_at\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, \
+                               '2026-07-10T00:00:00.000Z', \
+                               '2026-07-10T00:00:00.000Z', ?8)",
+                    rusqlite::params![
+                        id,
+                        parent_id,
+                        sort_key,
+                        title,
+                        note,
+                        is_collapsed,
+                        completed_at,
+                        deleted_at
+                    ],
+                )
+                .expect("seed export node");
+        }
     }
 
     #[test]
@@ -436,5 +550,116 @@ mod tests {
 
         notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+    }
+
+    #[test]
+    fn markdown_export_conflict_is_reported_before_notes_storage_is_opened() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("existing.md");
+        std::fs::write(&destination, b"keep me").expect("seed destination");
+
+        let error = notes_export_markdown(
+            "   ".to_string(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("occupied destination");
+
+        assert_eq!(error, "Destination already exists.");
+        assert_eq!(
+            std::fs::read(destination).expect("read destination"),
+            b"keep me"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn markdown_export_preflight_treats_a_dangling_symlink_as_occupied() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("dangling.md");
+        symlink("missing-target", &destination).expect("seed dangling symlink");
+
+        let error = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("dangling destination");
+
+        assert_eq!(error, "Destination already exists.");
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(std::fs::symlink_metadata(destination).is_ok());
+    }
+
+    #[test]
+    fn markdown_export_validates_root_and_destination_before_opening_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("export.md");
+
+        let invalid_root = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            "not-a-uuid".to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("invalid root");
+        assert_eq!(invalid_root, "Note ID must be a canonical UUID v4 string.");
+
+        let invalid_destination = notes_export_markdown(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            String::new(),
+            false,
+        )
+        .expect_err("invalid destination");
+        assert_eq!(invalid_destination, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+    }
+
+    #[test]
+    fn markdown_export_writes_active_snapshot_bytes_and_returns_the_typed_result() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let destination = temp_dir.path().join("nested/project.md");
+        let destination_string = destination.to_string_lossy().into_owned();
+
+        let result = notes_export_markdown(
+            vault_path_string.clone(),
+            ROOT_ID.to_string(),
+            destination_string.clone(),
+            false,
+        )
+        .expect("export Markdown");
+
+        assert_eq!(result.destination, destination_string);
+        assert_eq!(result.format, NotesExportFormat::Markdown);
+        let markdown = std::fs::read_to_string(&destination).expect("read Markdown export");
+        assert!(markdown.contains("- [ ] Project <!-- yonalist-node-id:"));
+        assert!(markdown.contains("  - [x] Completed child <!-- yonalist-node-id:"));
+        assert!(markdown.contains("    - [ ] Visible below collapsed <!-- yonalist-node-id:"));
+        assert!(!markdown.contains("Deleted child"));
+        assert!(markdown.ends_with('\n'));
+        assert!(!markdown.ends_with("\n\n"));
+
+        std::fs::write(&destination, b"stale").expect("replace with stale destination");
+        notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect("overwrite Markdown");
+        assert_ne!(
+            std::fs::read(&destination).expect("read overwritten Markdown"),
+            b"stale"
+        );
     }
 }

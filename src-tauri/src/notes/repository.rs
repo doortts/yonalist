@@ -4,7 +4,7 @@ use crate::notes::types::{
     NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
-    params, Connection, Error, ErrorCode, OptionalExtension, Params, Row, Transaction,
+    params, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params, Row, Transaction,
     TransactionBehavior,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -118,6 +118,34 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     let mut connection = Connection::open(notes_db_path(vault_path))
         .map_err(|error| format!("Could not open Notes storage: {error}"))?;
     initialize_notes_db(&mut connection)?;
+    Ok(connection)
+}
+
+pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+
+    let database_path = notes_db_path(vault_path);
+    match fs::symlink_metadata(&database_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err("Notes database does not exist.".to_string());
+        }
+        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
+    }
+
+    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Could not open Notes storage for export: {error}"))?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if user_version != NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "This Notes database uses unsupported schema version {user_version}."
+        ));
+    }
+
     Ok(connection)
 }
 
@@ -1543,8 +1571,9 @@ mod tests {
     use super::{
         connect_notes_db, create_node, create_version_one_schema, delete_database, duplicate_node,
         empty_trash, initialize_notes_db, list_tags, load_workspace, move_node, notes_db_path,
-        observe_next_migration_busy, remove_empty_node, restore_node, search_nodes,
-        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
+        observe_next_migration_busy, open_notes_export_db, remove_empty_node, restore_node,
+        search_nodes, soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
+        update_node,
     };
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField,
@@ -1585,6 +1614,48 @@ mod tests {
             .pragma_update(None, "user_version", 1)
             .expect("record version one");
         transaction.commit().expect("commit version one schema");
+    }
+
+    #[test]
+    fn export_open_rejects_a_missing_database_without_creating_notes_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+
+        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
+            .expect_err("missing export database");
+
+        assert!(error.contains("does not exist"));
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(!notes_db_path(vault_path.to_str().expect("vault path")).exists());
+    }
+
+    #[test]
+    fn export_open_rejects_a_future_schema_without_migration_or_file_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata fixture");
+        let connection = Connection::open(&database_path).expect("create database fixture");
+        connection
+            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 3;")
+            .expect("seed future schema");
+        drop(connection);
+        let bytes_before = std::fs::read(&database_path).expect("read database before export open");
+
+        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
+            .expect_err("future schema must be rejected");
+
+        assert_eq!(
+            error,
+            "This Notes database uses unsupported schema version 3."
+        );
+        assert_eq!(
+            std::fs::read(&database_path).expect("read database after export open"),
+            bytes_before
+        );
+        assert!(!database_path.with_file_name("notes.sqlite-wal").exists());
+        assert!(!database_path.with_file_name("notes.sqlite-shm").exists());
     }
 
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {

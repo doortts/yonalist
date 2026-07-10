@@ -38,6 +38,19 @@ pub struct ExportNode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+pub enum NotesExportFormat {
+    Markdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesExportResult {
+    pub destination: String,
+    pub format: NotesExportFormat,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum NoteLayoutMode {
     Bullets,
 }
@@ -191,7 +204,8 @@ impl SplitNodeInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_note_id, MoveNodeInput};
+    use super::{validate_note_id, MoveNodeInput, NotesExportFormat, NotesExportResult};
+    use serde_json::json;
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SECOND_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -237,6 +251,22 @@ mod tests {
         assert_eq!(
             self_anchored.validate().expect_err("self before anchor"),
             "A node cannot be placed before itself."
+        );
+    }
+
+    #[test]
+    fn markdown_export_result_uses_the_exact_camel_case_lowercase_wire_contract() {
+        let result = NotesExportResult {
+            destination: "/tmp/project.md".to_string(),
+            format: NotesExportFormat::Markdown,
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).expect("serialize export result"),
+            json!({
+                "destination": "/tmp/project.md",
+                "format": "markdown"
+            })
         );
     }
 }

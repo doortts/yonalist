@@ -15,10 +15,10 @@ mod notes;
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
     notes_create_node, notes_delete_database, notes_duplicate_node, notes_empty_trash,
-    notes_initialize, notes_list_tags, notes_load_workspace, notes_move_node,
-    notes_remove_empty_node, notes_restore_node, notes_search, notes_soft_delete_node,
-    notes_split_node, notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star,
-    notes_update_node,
+    notes_export_markdown, notes_initialize, notes_list_tags, notes_load_workspace,
+    notes_move_node, notes_remove_empty_node, notes_restore_node, notes_search,
+    notes_soft_delete_node, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
+    notes_toggle_star, notes_update_node,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1466,15 +1466,12 @@ fn macos_major_version() -> Option<u32> {
 /// it across resize/fullscreen, unlike a manual `NSWindow` button nudge.
 fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     #[allow(unused_mut)]
-    let mut builder = tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Yonalist")
-    .inner_size(1280.0, 820.0)
-    .min_inner_size(900.0, 650.0)
-    .decorations(true);
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("Yonalist")
+            .inner_size(1280.0, 820.0)
+            .min_inner_size(900.0, 650.0)
+            .decorations(true);
 
     // Overlay title bar, hidden title and traffic-light placement are macOS-only
     // concepts, so keep them off other platforms (the task's "no-op elsewhere").
@@ -1494,6 +1491,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(OAuthServerState::default())
         .setup(|app| {
@@ -1547,7 +1545,8 @@ pub fn run() {
             notes_empty_trash,
             notes_search,
             notes_list_tags,
-            notes_delete_database
+            notes_delete_database,
+            notes_export_markdown
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
@@ -2191,7 +2190,10 @@ mod tests {
         // further right and further down than on earlier macOS.
         let (legacy_x, legacy_y) = traffic_light_inset(Some(15));
         let (tahoe_x, tahoe_y) = traffic_light_inset(Some(26));
-        assert!(tahoe_x > legacy_x, "Tahoe controls should sit further right");
+        assert!(
+            tahoe_x > legacy_x,
+            "Tahoe controls should sit further right"
+        );
         assert!(tahoe_y > legacy_y, "Tahoe controls should sit further down");
     }
 

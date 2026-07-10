@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Offline-first GitHub issue and pull request client"
 authors = ["doortts"]
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.77.2"
 
 [lib]
 name = "yonalist_lib"
@@ -21,6 +21,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "=2.8.0", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-notification = "2"
 tauri-runtime = "=2.8.0"
 tempfile = "3"
