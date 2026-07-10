@@ -31,11 +31,30 @@ pub struct NotesWorkspace {
     pub nodes: Vec<NoteNode>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum NotesWorkspaceScope {
     Active,
+    Starred,
+    Recent,
+    Tag { tag: String },
     Trash,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteSearchMatchedField {
+    Title,
+    Note,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteSearchResult {
+    pub node_id: NoteId,
+    pub title: String,
+    pub parent_trail: Vec<String>,
+    pub matched_field: NoteSearchMatchedField,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

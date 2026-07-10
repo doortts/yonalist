@@ -2,6 +2,7 @@ import type {
   CreateNoteNodeInput,
   MoveNoteNodeInput,
   NoteId,
+  NoteSearchResult,
   NotesStore,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -84,6 +85,13 @@ export function notesToggleCollapsed(
   return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId);
 }
 
+export function notesToggleStar(
+  vaultPath: string,
+  nodeId: NoteId
+): Promise<NotesWorkspace> {
+  return invokeNodeMutation("notes_toggle_star", vaultPath, nodeId);
+}
+
 export function notesDuplicateNode(
   vaultPath: string,
   nodeId: NoteId
@@ -116,7 +124,29 @@ export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
   return invokeNotes<NotesWorkspace>("notes_empty_trash", { vaultPath });
 }
 
-export const notesStore: NotesStore = {
+export function notesSearch(
+  vaultPath: string,
+  query: string
+): Promise<NoteSearchResult[]> {
+  return invokeNotes<NoteSearchResult[]>("notes_search", { vaultPath, query });
+}
+
+export function notesListTags(vaultPath: string): Promise<string[]> {
+  return invokeNotes<string[]>("notes_list_tags", { vaultPath });
+}
+
+export function notesDeleteDatabase(vaultPath: string): Promise<void> {
+  return invokeNotes<void>("notes_delete_database", { vaultPath });
+}
+
+type NotesDiscoveryMethod =
+  | "toggleStar"
+  | "search"
+  | "listTags"
+  | "deleteDatabase";
+
+export const notesStore: NotesStore &
+  Required<Pick<NotesStore, NotesDiscoveryMethod>> = {
   initialize: notesInitialize,
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,
@@ -125,9 +155,13 @@ export const notesStore: NotesStore = {
   moveNode: notesMoveNode,
   toggleComplete: notesToggleComplete,
   toggleCollapsed: notesToggleCollapsed,
+  toggleStar: notesToggleStar,
   duplicateNode: notesDuplicateNode,
   removeEmptyNode: notesRemoveEmptyNode,
   softDeleteNode: notesSoftDeleteNode,
   restoreNode: notesRestoreNode,
-  emptyTrash: notesEmptyTrash
+  emptyTrash: notesEmptyTrash,
+  search: notesSearch,
+  listTags: notesListTags,
+  deleteDatabase: notesDeleteDatabase
 };

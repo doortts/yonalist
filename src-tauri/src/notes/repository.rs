@@ -1,12 +1,15 @@
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, MoveNodeInput, NoteLayoutMode, NoteNode, NotesWorkspace,
-    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, MoveNodeInput, NoteLayoutMode, NoteNode,
+    NoteSearchMatchedField, NoteSearchResult, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
+    UpdateNodeInput,
 };
 use rusqlite::{
-    params, Connection, Error, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior,
+    params, Connection, Error, ErrorCode, OptionalExtension, Params, Row, Transaction,
+    TransactionBehavior,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -67,6 +70,41 @@ fn install_migration_busy_observer(connection: &Connection) -> Result<(), String
 
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
     crate::metadata_dir(vault_path).join("notes.sqlite")
+}
+
+fn sqlite_companion_path(database_path: &PathBuf, suffix: &str) -> PathBuf {
+    let mut path = database_path.as_os_str().to_os_string();
+    path.push(suffix);
+    PathBuf::from(path)
+}
+
+pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+
+    let database_path = notes_db_path(vault_path);
+    let owned_paths = [
+        database_path.clone(),
+        sqlite_companion_path(&database_path, "-wal"),
+        sqlite_companion_path(&database_path, "-shm"),
+    ];
+    let mut failures = Vec::new();
+    for path in owned_paths {
+        if let Err(error) = fs::remove_file(&path) {
+            if error.kind() != ErrorKind::NotFound {
+                failures.push(format!("{}: {error}", path.display()));
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not delete Notes storage: {}",
+            failures.join("; ")
+        ))
+    }
 }
 
 pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
@@ -305,28 +343,249 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     })
 }
 
-pub(crate) fn load_workspace(
+fn query_workspace<P: Params>(
     connection: &Connection,
-    scope: NotesWorkspaceScope,
+    sql: &str,
+    params: P,
 ) -> Result<NotesWorkspace, String> {
-    let deleted_filter = match scope {
-        NotesWorkspaceScope::Active => "deleted_at IS NULL",
-        NotesWorkspaceScope::Trash => "deleted_at IS NOT NULL",
-    };
     let mut statement = connection
-        .prepare(&format!(
-            "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, created_at, updated_at, deleted_at \
-             FROM notes_nodes WHERE {deleted_filter} \
-             ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id"
-        ))
+        .prepare(sql)
         .map_err(|error| format!("Could not prepare the Notes workspace: {error}"))?;
     let nodes = statement
-        .query_map([], note_node_from_row)
+        .query_map(params, note_node_from_row)
         .map_err(|error| format!("Could not load the Notes workspace: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes workspace: {error}"))?;
     Ok(NotesWorkspace { nodes })
+}
+
+pub(crate) fn load_workspace(
+    connection: &Connection,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesWorkspace, String> {
+    const ACTIVE_SQL: &str =
+        "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                is_starred, completed_at, created_at, updated_at, deleted_at \
+         FROM notes_nodes WHERE deleted_at IS NULL \
+         ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
+    const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
+           SELECT id, parent_id FROM notes_nodes \
+           WHERE deleted_at IS NULL AND is_starred = 1 \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE parent.deleted_at IS NULL\
+         ) \
+         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
+                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
+                node.updated_at, node.deleted_at \
+         FROM notes_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
+                  node.parent_id, node.sort_key, node.id";
+    const RECENT_SQL: &str = "WITH RECURSIVE \
+         matched(id, parent_id) AS (\
+           SELECT id, parent_id FROM notes_nodes \
+           WHERE deleted_at IS NULL \
+           ORDER BY updated_at DESC, id LIMIT 100\
+         ), \
+         included(id, parent_id) AS (\
+           SELECT id, parent_id FROM matched \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE parent.deleted_at IS NULL\
+         ) \
+         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
+                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
+                node.updated_at, node.deleted_at \
+         FROM notes_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
+                  node.parent_id, node.sort_key, node.id";
+    const TAG_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
+           SELECT node.id, node.parent_id FROM notes_nodes node \
+           JOIN notes_tags tag ON tag.node_id = node.id \
+           WHERE node.deleted_at IS NULL AND tag.normalized_tag = ?1 \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE parent.deleted_at IS NULL\
+         ) \
+         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
+                node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
+                node.updated_at, node.deleted_at \
+         FROM notes_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
+                  node.parent_id, node.sort_key, node.id";
+    const TRASH_SQL: &str = "SELECT node.id, \
+                CASE WHEN node.parent_id IS NULL OR EXISTS (\
+                  SELECT 1 FROM notes_nodes parent \
+                  WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
+                ) THEN node.parent_id ELSE NULL END, \
+                node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
+                node.is_starred, node.completed_at, node.created_at, node.updated_at, \
+                node.deleted_at \
+         FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
+         ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
+                    SELECT 1 FROM notes_nodes parent \
+                    WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
+                  ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id";
+
+    match scope {
+        NotesWorkspaceScope::Active => query_workspace(connection, ACTIVE_SQL, []),
+        NotesWorkspaceScope::Starred => query_workspace(connection, STARRED_SQL, []),
+        NotesWorkspaceScope::Recent => query_workspace(connection, RECENT_SQL, []),
+        NotesWorkspaceScope::Tag { tag } => {
+            let normalized_tag = tag.trim().trim_start_matches('#').to_lowercase();
+            if normalized_tag.is_empty() {
+                return Ok(NotesWorkspace { nodes: Vec::new() });
+            }
+            query_workspace(connection, TAG_SQL, [normalized_tag])
+        }
+        NotesWorkspaceScope::Trash => query_workspace(connection, TRASH_SQL, []),
+    }
+}
+
+pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
+             JOIN notes_nodes node ON node.id = tag.node_id \
+             WHERE node.deleted_at IS NULL \
+             ORDER BY tag.normalized_tag",
+        )
+        .map_err(|error| format!("Could not prepare the Notes tag list: {error}"))?;
+    let tags = statement
+        .query_map([], |row| row.get(0))
+        .map_err(|error| format!("Could not load the Notes tag list: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the Notes tag list: {error}"))?;
+    Ok(tags)
+}
+
+fn fts_match_expression(query: &str) -> Option<String> {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    for character in query.trim().chars() {
+        if character.is_alphanumeric() || character == '_' {
+            token.push(character);
+        } else if !token.is_empty() {
+            tokens.push(std::mem::take(&mut token));
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+
+    Some(
+        tokens
+            .into_iter()
+            .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" AND "),
+    )
+}
+
+fn live_parent_map(
+    connection: &Connection,
+) -> Result<HashMap<String, (Option<String>, String)>, String> {
+    let mut statement = connection
+        .prepare("SELECT id, parent_id, title FROM notes_nodes WHERE deleted_at IS NULL")
+        .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
+    let mut parents = HashMap::new();
+    for row in rows {
+        let (id, parent_id, title) =
+            row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
+        parents.insert(id, (parent_id, title));
+    }
+    Ok(parents)
+}
+
+fn parent_trail(
+    node_id: &str,
+    parents: &HashMap<String, (Option<String>, String)>,
+) -> Result<Vec<String>, String> {
+    let mut trail = Vec::new();
+    let mut seen = HashSet::new();
+    let mut parent_id = parents
+        .get(node_id)
+        .and_then(|(parent_id, _)| parent_id.clone());
+    while let Some(id) = parent_id {
+        if !seen.insert(id.clone()) {
+            return Err(format!(
+                "Could not assemble the Notes search parent trail for {node_id}: cycle detected."
+            ));
+        }
+        let (next_parent_id, title) = parents.get(&id).ok_or_else(|| {
+            format!(
+                "Could not assemble the Notes search parent trail for {node_id}: live ancestor {id} is missing."
+            )
+        })?;
+        trail.push(title.clone());
+        parent_id = next_parent_id.clone();
+    }
+    trail.reverse();
+    Ok(trail)
+}
+
+pub(crate) fn search_nodes(
+    connection: &Connection,
+    query: &str,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let Some(match_expression) = fts_match_expression(query) else {
+        return Ok(Vec::new());
+    };
+    let mut statement = connection
+        .prepare(
+            "SELECT notes_search.node_id, notes_search.title, \
+                    highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
+                      <> notes_search.title \
+             FROM notes_search \
+             JOIN notes_nodes node ON node.id = notes_search.node_id \
+             WHERE notes_search MATCH ?1 AND node.deleted_at IS NULL \
+             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+             LIMIT 100",
+        )
+        .map_err(|error| format!("Could not prepare the Notes search: {error}"))?;
+    let matches = statement
+        .query_map([match_expression], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not search Notes: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
+    let parents = live_parent_map(connection)?;
+
+    matches
+        .into_iter()
+        .map(|(node_id, title, matched_title)| {
+            Ok(NoteSearchResult {
+                parent_trail: parent_trail(&node_id, &parents)?,
+                node_id,
+                title,
+                matched_field: if matched_title {
+                    NoteSearchMatchedField::Title
+                } else {
+                    NoteSearchMatchedField::Note
+                },
+            })
+        })
+        .collect()
 }
 
 fn with_workspace_transaction(
@@ -755,6 +1014,25 @@ pub(crate) fn toggle_collapsed(
     })
 }
 
+pub(crate) fn toggle_star(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        require_live_node(transaction, node_id)?;
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET is_starred = CASE is_starred WHEN 0 THEN 1 ELSE 0 END, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                [node_id],
+            )
+            .map_err(|error| format!("Could not toggle Note star: {error}"))?;
+        Ok(())
+    })
+}
+
 fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<StoredNode>, String> {
     let mut statement = transaction
         .prepare(
@@ -1123,14 +1401,14 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_notes_db, create_node, create_version_one_schema, duplicate_node, empty_trash,
-        initialize_notes_db, load_workspace, move_node, notes_db_path, observe_next_migration_busy,
-        remove_empty_node, restore_node, soft_delete_node, split_node, toggle_collapsed,
-        toggle_complete, update_node,
+        connect_notes_db, create_node, create_version_one_schema, delete_database, duplicate_node,
+        empty_trash, initialize_notes_db, list_tags, load_workspace, move_node, notes_db_path,
+        observe_next_migration_busy, remove_empty_node, restore_node, search_nodes,
+        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
     };
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, MoveNodeInput, NotesWorkspaceScope, SplitNodeInput,
-        UpdateNodeInput,
+        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField,
+        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
     use std::sync::mpsc;
@@ -2785,5 +3063,215 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect tags");
         assert_eq!(tags, vec!["next-step", "project"]);
+    }
+
+    #[test]
+    fn update_indexes_tags_and_fts_content_together() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
+        create_test_node(&mut connection, CHILD_ID, Some(NODE_ID), None, "Draft", "");
+
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: CHILD_ID.to_string(),
+                title: "#Roadmap search target".to_string(),
+                note: "#Offline detail #ROADMAP".to_string(),
+            },
+        )
+        .expect("update");
+
+        assert_eq!(
+            list_tags(&connection).expect("tags"),
+            vec!["offline", "roadmap"]
+        );
+        let title_results = search_nodes(&connection, "  target  ").expect("title search");
+        assert_eq!(title_results.len(), 1);
+        assert_eq!(title_results[0].node_id, CHILD_ID);
+        assert_eq!(title_results[0].parent_trail, vec!["Root"]);
+        assert_eq!(
+            title_results[0].matched_field,
+            NoteSearchMatchedField::Title
+        );
+
+        let note_results = search_nodes(&connection, "detail").expect("note search");
+        assert_eq!(note_results.len(), 1);
+        assert_eq!(note_results[0].matched_field, NoteSearchMatchedField::Note);
+        assert!(search_nodes(&connection, " \n\t ")
+            .expect("blank search")
+            .is_empty());
+        assert!(search_nodes(&connection, "\" OR *")
+            .expect("escaped FTS syntax")
+            .is_empty());
+        assert_eq!(
+            search_nodes(&connection, "#Roadmap")
+                .expect("tag-like search")
+                .len(),
+            1
+        );
+        for literal_query in [
+            "target OR missing",
+            "NEAR(target detail)",
+            "tar\"get",
+            "---",
+            "#",
+        ] {
+            assert!(
+                search_nodes(&connection, literal_query)
+                    .unwrap_or_else(|error| panic!("literal query {literal_query:?}: {error}"))
+                    .is_empty(),
+                "FTS syntax must not change the meaning of {literal_query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn starred_recent_tag_and_trash_scopes_are_disjoint() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "All", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "Starred",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            None,
+            "Tagged #Élan",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            FOURTH_ID,
+            Some(NODE_ID),
+            Some(CHILD_ID),
+            "Trash #Hidden",
+            "",
+        );
+
+        let workspace = toggle_star(&mut connection, CHILD_ID).expect("toggle star");
+        assert!(
+            workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("starred node")
+                .is_starred
+        );
+        soft_delete_node(&mut connection, FOURTH_ID).expect("delete trash node");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = CASE id \
+                   WHEN ?1 THEN '2026-07-10T01:00:00.000Z' \
+                   WHEN ?2 THEN '2026-07-10T02:00:00.000Z' \
+                   WHEN ?3 THEN '2026-07-10T03:00:00.000Z' \
+                   ELSE updated_at END",
+                params![NODE_ID, CHILD_ID, THIRD_ID],
+            )
+            .expect("set deterministic recency");
+
+        let starred =
+            load_workspace(&connection, NotesWorkspaceScope::Starred).expect("starred workspace");
+        assert_eq!(
+            starred
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID, CHILD_ID]
+        );
+        let recent =
+            load_workspace(&connection, NotesWorkspaceScope::Recent).expect("recent workspace");
+        assert_eq!(
+            recent
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID, CHILD_ID, THIRD_ID]
+        );
+        let tagged = load_workspace(
+            &connection,
+            NotesWorkspaceScope::Tag {
+                tag: "#ÉLAN".to_string(),
+            },
+        )
+        .expect("tag workspace");
+        assert_eq!(
+            tagged
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID, CHILD_ID, THIRD_ID]
+        );
+        let trash =
+            load_workspace(&connection, NotesWorkspaceScope::Trash).expect("trash workspace");
+        assert_eq!(
+            trash
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+        assert_eq!(trash.nodes[0].parent_id, None);
+        assert_eq!(list_tags(&connection).expect("live tags"), vec!["élan"]);
+    }
+
+    #[test]
+    fn search_limits_results_to_one_hundred_nodes() {
+        let connection = test_connection();
+        for index in 0..101 {
+            let id = format!("{index:08x}-1111-4111-8111-111111111111");
+            insert_node(
+                &connection,
+                &id,
+                None,
+                i64::from(index + 1) * 1024,
+                "limit-target",
+            );
+        }
+
+        assert_eq!(
+            search_nodes(&connection, "limit-target")
+                .expect("limited search")
+                .len(),
+            100
+        );
+    }
+
+    #[test]
+    fn delete_database_removes_only_notes_owned_sqlite_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("vault path");
+        let connection = connect_notes_db(vault_path).expect("connect notes");
+        let notes_path = notes_db_path(vault_path);
+        let metadata_path = notes_path.parent().expect("metadata path");
+        let index_path = metadata_path.join("index.sqlite");
+        let settings_path = metadata_path.join("settings.json");
+        std::fs::write(&index_path, b"index").expect("write index fixture");
+        std::fs::write(&settings_path, b"{}").expect("write metadata fixture");
+        drop(connection);
+
+        let wal_path = metadata_path.join("notes.sqlite-wal");
+        let shm_path = metadata_path.join("notes.sqlite-shm");
+        std::fs::write(&wal_path, b"wal").expect("write WAL fixture");
+        std::fs::write(&shm_path, b"shm").expect("write SHM fixture");
+
+        delete_database(vault_path).expect("delete Notes database");
+        delete_database(vault_path).expect("repeat missing Notes database deletion");
+
+        assert!(!notes_path.exists());
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
+        assert_eq!(std::fs::read(index_path).expect("read index"), b"index");
+        assert_eq!(std::fs::read(settings_path).expect("read settings"), b"{}");
+        assert!(metadata_path.exists());
     }
 }

@@ -8,17 +8,21 @@ import type {
 } from "../domain/notes";
 import {
   notesCreateNode,
+  notesDeleteDatabase,
   notesDuplicateNode,
   notesEmptyTrash,
   notesInitialize,
+  notesListTags,
   notesLoadWorkspace,
   notesMoveNode,
   notesRemoveEmptyNode,
   notesRestoreNode,
+  notesSearch,
   notesSoftDeleteNode,
   notesSplitNode,
   notesToggleCollapsed,
   notesToggleComplete,
+  notesToggleStar,
   notesUpdateNode
 } from "./notesStore";
 
@@ -74,6 +78,52 @@ describe("notesStore in Tauri", () => {
       vaultPath,
       scope: { kind: "trash" }
     });
+  });
+
+  it("maps discovery queries and lifecycle commands to exact native payloads", async () => {
+    const searchResults = [
+      {
+        nodeId,
+        title: "Page",
+        parentTrail: ["Home"],
+        matchedField: "title" as const
+      }
+    ];
+    invokeMock
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(searchResults)
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(["offline", "roadmap"])
+      .mockResolvedValueOnce(undefined);
+
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "starred" })
+    ).resolves.toBe(workspace);
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "recent" })
+    ).resolves.toBe(workspace);
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "tag", tag: "roadmap" })
+    ).resolves.toBe(workspace);
+    await expect(notesSearch(vaultPath, "target")).resolves.toBe(searchResults);
+    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toBe(workspace);
+    await expect(notesListTags(vaultPath)).resolves.toEqual(["offline", "roadmap"]);
+    await expect(notesDeleteDatabase(vaultPath)).resolves.toBeUndefined();
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["notes_load_workspace", { vaultPath, scope: { kind: "starred" } }],
+      ["notes_load_workspace", { vaultPath, scope: { kind: "recent" } }],
+      [
+        "notes_load_workspace",
+        { vaultPath, scope: { kind: "tag", tag: "roadmap" } }
+      ],
+      ["notes_search", { vaultPath, query: "target" }],
+      ["notes_toggle_star", { vaultPath, nodeId }],
+      ["notes_list_tags", { vaultPath }],
+      ["notes_delete_database", { vaultPath }]
+    ]);
   });
 
   it("maps typed input mutations to exact camelCase native payloads", async () => {

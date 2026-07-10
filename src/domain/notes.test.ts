@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createNoteId, isNoteNode } from "./notes";
-import type { NoteNode } from "./notes";
+import { createNoteId, isNoteNode, isNoteSearchResult } from "./notes";
+import type { NoteNode, NotesWorkspaceScope } from "./notes";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -39,6 +39,37 @@ describe("Notes domain contract", () => {
 
     expect(isNoteNode(missingNote)).toBe(false);
     expect(isNoteNode(null)).toBe(false);
+  });
+
+  it("recognizes typed search results and rejects malformed parent trails", () => {
+    const result = {
+      nodeId: UUID,
+      title: "Target",
+      parentTrail: ["Page", "Section"],
+      matchedField: "note"
+    };
+
+    expect(isNoteSearchResult(result)).toBe(true);
+    expect(isNoteSearchResult({ ...result, parentTrail: ["Page", 42] })).toBe(false);
+    expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
+  });
+
+  it("supports active, starred, recent, tag, and trash workspace scopes", () => {
+    const scopes: NotesWorkspaceScope[] = [
+      { kind: "active" },
+      { kind: "starred" },
+      { kind: "recent" },
+      { kind: "tag", tag: "roadmap" },
+      { kind: "trash" }
+    ];
+
+    expect(scopes.map((scope) => scope.kind)).toEqual([
+      "active",
+      "starred",
+      "recent",
+      "tag",
+      "trash"
+    ]);
   });
 
   it("creates a canonical UUID for a new node", () => {

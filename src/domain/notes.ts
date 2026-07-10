@@ -20,7 +20,19 @@ export interface NotesWorkspace {
   nodes: NoteNode[];
 }
 
-export type NotesWorkspaceScope = { kind: "active" } | { kind: "trash" };
+export type NotesWorkspaceScope =
+  | { kind: "active" }
+  | { kind: "starred" }
+  | { kind: "recent" }
+  | { kind: "tag"; tag: string }
+  | { kind: "trash" };
+
+export interface NoteSearchResult {
+  nodeId: NoteId;
+  title: string;
+  parentTrail: string[];
+  matchedField: "title" | "note";
+}
 
 export interface CreateNoteNodeInput {
   id: NoteId;
@@ -59,11 +71,15 @@ export interface NotesStore {
   moveNode(vaultPath: string, input: MoveNoteNodeInput): Promise<NotesWorkspace>;
   toggleComplete(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   toggleCollapsed(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
+  toggleStar?(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   duplicateNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   removeEmptyNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   softDeleteNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   restoreNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
+  search?(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
+  listTags?(vaultPath: string): Promise<string[]>;
+  deleteDatabase?(vaultPath: string): Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -89,6 +105,17 @@ export function isNoteNode(value: unknown): value is NoteNode {
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string" &&
     isNullableString(value.deletedAt)
+  );
+}
+
+export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
+  return (
+    isRecord(value) &&
+    typeof value.nodeId === "string" &&
+    typeof value.title === "string" &&
+    Array.isArray(value.parentTrail) &&
+    value.parentTrail.every((item) => typeof item === "string") &&
+    (value.matchedField === "title" || value.matchedField === "note")
   );
 }
 

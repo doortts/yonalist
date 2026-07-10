@@ -1,11 +1,11 @@
 use crate::notes::repository::{
-    connect_notes_db, create_node, duplicate_node, empty_trash, load_workspace, move_node,
-    remove_empty_node, restore_node, soft_delete_node, split_node, toggle_collapsed,
-    toggle_complete, update_node,
+    connect_notes_db, create_node, delete_database, duplicate_node, empty_trash, list_tags,
+    load_workspace, move_node, remove_empty_node, restore_node, search_nodes, soft_delete_node,
+    split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
 };
 use crate::notes::types::{
-    CreateNodeInput, MoveNodeInput, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput,
+    CreateNodeInput, MoveNodeInput, NoteSearchResult, NotesWorkspace, NotesWorkspaceScope,
+    SplitNodeInput, UpdateNodeInput,
 };
 
 #[tauri::command(rename_all = "camelCase")]
@@ -77,6 +77,15 @@ pub(crate) fn notes_toggle_collapsed(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_toggle_star(
+    vault_path: String,
+    node_id: String,
+) -> Result<NotesWorkspace, String> {
+    let mut connection = connect_notes_db(&vault_path)?;
+    toggle_star(&mut connection, &node_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_duplicate_node(
     vault_path: String,
     node_id: String,
@@ -118,10 +127,30 @@ pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, St
     empty_trash(&mut connection)
 }
 
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_search(
+    vault_path: String,
+    query: String,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let connection = connect_notes_db(&vault_path)?;
+    search_nodes(&connection, &query)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
+    let connection = connect_notes_db(&vault_path)?;
+    list_tags(&connection)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_delete_database(vault_path: String) -> Result<(), String> {
+    delete_database(&vault_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notes::types::{NoteLayoutMode, NoteNode};
+    use crate::notes::types::{NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult};
     use serde_json::json;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -176,6 +205,30 @@ mod tests {
         let scope: NotesWorkspaceScope =
             serde_json::from_value(json!({ "kind": "trash" })).expect("trash scope");
         assert_eq!(scope, NotesWorkspaceScope::Trash);
+        let tag_scope: NotesWorkspaceScope =
+            serde_json::from_value(json!({ "kind": "tag", "tag": "roadmap" })).expect("tag scope");
+        assert_eq!(
+            tag_scope,
+            NotesWorkspaceScope::Tag {
+                tag: "roadmap".to_string()
+            }
+        );
+
+        let search_result = NoteSearchResult {
+            node_id: ROOT_ID.to_string(),
+            title: "Page".to_string(),
+            parent_trail: vec!["Home".to_string()],
+            matched_field: NoteSearchMatchedField::Title,
+        };
+        assert_eq!(
+            serde_json::to_value(search_result).expect("search result JSON"),
+            json!({
+                "nodeId": ROOT_ID,
+                "title": "Page",
+                "parentTrail": ["Home"],
+                "matchedField": "title"
+            })
+        );
 
         let workspace = NotesWorkspace {
             nodes: vec![NoteNode {
@@ -344,5 +397,44 @@ mod tests {
             .expect("empty trash workspace")
             .nodes
             .is_empty());
+    }
+
+    #[test]
+    fn discovery_commands_return_typed_local_results_and_delete_notes_data() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "#Roadmap target".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect("create searchable node");
+
+        assert_eq!(
+            notes_search(vault_path.clone(), "target".to_string())
+                .expect("search")
+                .first()
+                .expect("search result")
+                .node_id,
+            ROOT_ID
+        );
+        assert_eq!(
+            notes_list_tags(vault_path.clone()).expect("list tags"),
+            vec!["roadmap"]
+        );
+        assert!(
+            notes_toggle_star(vault_path.clone(), ROOT_ID.to_string())
+                .expect("toggle star")
+                .nodes[0]
+                .is_starred
+        );
+
+        notes_delete_database(vault_path.clone()).expect("delete database");
+        assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
     }
 }
