@@ -61,6 +61,9 @@ interface InitialLoadEntry {
   repository: NotesStore;
   subscribers: number;
   confirmedMutationVersion: number;
+  pendingCommands: Set<number>;
+  settledWorkspace: NotesWorkspace | null;
+  workspacePublished: boolean;
   promise: Promise<NotesWorkspace | null>;
 }
 
@@ -101,6 +104,10 @@ export function useNotesWorkspace({
   const confirmedMutationVersion = useRef(0);
   const mountedRef = useRef(false);
   const initialLoadRef = useRef<InitialLoadEntry | null>(null);
+  const initialLoadPublicationRef = useRef<{
+    entry: InitialLoadEntry;
+    publishWorkspace: () => void;
+  } | null>(null);
   stateRef.current = state;
   identityRef.current = { vaultRoot, repository };
 
@@ -120,6 +127,9 @@ export function useNotesWorkspace({
         repository,
         subscribers: 0,
         confirmedMutationVersion: confirmedMutationVersion.current,
+        pendingCommands: new Set(),
+        settledWorkspace: null,
+        workspacePublished: false,
         promise: Promise.resolve(null)
       };
       initialLoadRef.current = entry;
@@ -151,16 +161,36 @@ export function useNotesWorkspace({
         subscribed &&
         mountedRef.current &&
         initialLoadRef.current === entry &&
+        entry.pendingCommands.size === 0 &&
         confirmedMutationVersion.current === entry.confirmedMutationVersion &&
         current.vaultRoot === vaultRoot &&
         current.repository === repository
       );
     };
 
+    const publishInitialWorkspace = () => {
+      const workspace = entry.settledWorkspace;
+      if (
+        !workspace ||
+        entry.workspacePublished ||
+        !canPublish()
+      ) {
+        return;
+      }
+      entry.workspacePublished = true;
+      dispatch({ type: "replaceWorkspace", workspace });
+    };
+    const publication = {
+      entry,
+      publishWorkspace: publishInitialWorkspace
+    };
+    initialLoadPublicationRef.current = publication;
+
     void entry.promise
       .then((workspace) => {
-        if (workspace && canPublish()) {
-          dispatch({ type: "replaceWorkspace", workspace });
+        if (workspace) {
+          entry.settledWorkspace = workspace;
+          publishInitialWorkspace();
         }
       })
       .catch((cause: unknown) => {
@@ -172,6 +202,9 @@ export function useNotesWorkspace({
     return () => {
       subscribed = false;
       entry.subscribers -= 1;
+      if (initialLoadPublicationRef.current === publication) {
+        initialLoadPublicationRef.current = null;
+      }
       mountedRef.current = false;
       operationSequence.current += 1;
     };
@@ -185,6 +218,13 @@ export function useNotesWorkspace({
       const commandVaultRoot = vaultRoot;
       const commandRepository = repository;
       const operation = ++operationSequence.current;
+      const currentInitialLoad = initialLoadRef.current;
+      const commandInitialLoad =
+        currentInitialLoad?.vaultRoot === commandVaultRoot &&
+        currentInitialLoad.repository === commandRepository
+          ? currentInitialLoad
+          : null;
+      commandInitialLoad?.pendingCommands.add(operation);
       dispatch({ type: "setLoading" });
 
       const isCurrent = () => {
@@ -212,6 +252,14 @@ export function useNotesWorkspace({
       } catch (cause) {
         if (isCurrent()) {
           dispatch({ type: "setError", error: errorMessage(cause) });
+        }
+      } finally {
+        if (commandInitialLoad) {
+          commandInitialLoad.pendingCommands.delete(operation);
+          const publication = initialLoadPublicationRef.current;
+          if (publication?.entry === commandInitialLoad) {
+            publication.publishWorkspace();
+          }
         }
       }
     },

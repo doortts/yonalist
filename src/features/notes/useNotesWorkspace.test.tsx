@@ -145,6 +145,46 @@ describe("useNotesWorkspace", () => {
     expect(store.loadWorkspace).toHaveBeenCalledWith("/vault", { kind: "active" });
   });
 
+  it("keeps a settled initial load buffered until a pending command fails", async () => {
+    const initialLoad = deferred<NotesWorkspace>();
+    const command = deferred<NotesWorkspace>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockReturnValue(initialLoad.promise),
+      updateNode: vi.fn().mockReturnValue(command.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+
+    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
+
+    let commandCompletion!: Promise<void>;
+    act(() => {
+      commandCompletion = result.current.actions.updateNode("root", {
+        title: "new",
+        note: ""
+      });
+    });
+
+    expect(result.current).toMatchObject({ status: "loading", error: null });
+
+    await act(async () =>
+      initialLoad.resolve(workspace([node({ id: "initial" })]))
+    );
+
+    expect(result.current).toMatchObject({ status: "loading", error: null });
+    expect(result.current.state.rootIds).toEqual([]);
+    expect(result.current.state.nodesById.initial).toBeUndefined();
+
+    await act(async () => {
+      command.reject(new Error("write failed"));
+      await commandCompletion;
+    });
+
+    expect(result.current.state.nodesById.initial).toBeDefined();
+    expect(result.current).toMatchObject({ status: "ready", error: null });
+  });
+
   it("does not load after initialization finishes for a canceled effect", async () => {
     const initialization = deferred<void>();
     const store = repository({
