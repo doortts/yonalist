@@ -1,12 +1,12 @@
 use super::types::{validate_note_id, ExportNode, NotesExportSnapshot};
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
-    PdfParseErrorSeverity, PdfParseOptions, PdfSaveOptions, Point, Pt, TextItem,
+    PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, TextItem,
 };
 use rusqlite::Connection;
 use std::fmt::Write;
 
-const PDF_FONT_BYTES: &[u8] = include_bytes!("../../resources/NotoSansCJKkr-Regular.otf");
+const PDF_FONT_BYTES: &[u8] = include_bytes!("../../resources/NanumGothic-Regular.ttf");
 const PDF_PAGE_WIDTH_MM: f32 = 210.0;
 const PDF_PAGE_HEIGHT_MM: f32 = 297.0;
 const PDF_MARGIN_X_MM: f32 = 18.0;
@@ -389,6 +389,20 @@ fn build_pdf_pages(
     Ok(pages)
 }
 
+fn validate_serialized_pdf(bytes: &[u8], expected_page_count: usize) -> Result<(), String> {
+    if !bytes.starts_with(b"%PDF-") || !bytes.windows(5).any(|window| window == b"%%EOF") {
+        return Err("PDF serialization returned an invalid document.".to_string());
+    }
+
+    let parsed = lopdf::Document::load_mem(bytes)
+        .map_err(|error| format!("Generated PDF could not be parsed: {error}"))?;
+    if parsed.get_pages().len() != expected_page_count {
+        return Err("Generated PDF page count changed during serialization.".to_string());
+    }
+
+    Ok(())
+}
+
 pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
     validate_export_node_ids(&snapshot.root)?;
@@ -422,37 +436,18 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
             "PDF serialization reported errors: {save_warnings:?}"
         ));
     }
-    if !bytes.starts_with(b"%PDF-") || !bytes.windows(5).any(|window| window == b"%%EOF") {
-        return Err(format!(
-            "PDF serialization returned an invalid document: {save_warnings:?}"
-        ));
-    }
-
-    let mut parse_warnings = Vec::new();
-    let parsed = PdfDocument::parse(&bytes, &PdfParseOptions::default(), &mut parse_warnings)
-        .map_err(|error| {
-            format!("Generated PDF could not be parsed: {error}; warnings: {parse_warnings:?}")
-        })?;
-    if parse_warnings
-        .iter()
-        .any(|warning| warning.severity == PdfParseErrorSeverity::Error)
-    {
-        return Err(format!(
-            "Generated PDF validation reported errors: {parse_warnings:?}"
-        ));
-    }
-    if parsed.page_count() != expected_page_count {
-        return Err("Generated PDF page count changed during serialization.".to_string());
-    }
+    validate_serialized_pdf(&bytes, expected_page_count)?;
 
     Ok(bytes)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{load_export_snapshot, render_markdown, render_pdf};
+    use super::{
+        load_export_snapshot, render_markdown, render_pdf, validate_serialized_pdf, PDF_FONT_BYTES,
+    };
     use crate::notes::types::{ExportNode, NotesExportSnapshot};
-    use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfParseOptions, Pt, TextItem};
+    use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
     use rusqlite::{params, Connection};
     use std::collections::{BTreeMap, BTreeSet};
 
@@ -492,13 +487,13 @@ mod tests {
     fn korean_snapshot() -> NotesExportSnapshot {
         snapshot(export_node(
             ROOT_ID,
-            "프로젝트 Project 2026",
-            "한글 메모 Korean note",
+            "프로젝트 · Project 2026",
+            "한글 메모 “Korean note”",
             false,
             vec![export_node(
                 FIRST_ID,
-                "완료 작업 ASCII 42",
-                "지원 설명 supporting detail",
+                "완료 작업 - ASCII 42",
+                "지원 설명… supporting detail!",
                 true,
                 Vec::new(),
             )],
@@ -857,17 +852,43 @@ mod tests {
     }
 
     #[test]
-    fn pdf_font_asset_parses_and_maps_korean_glyphs() {
-        let font_bytes = include_bytes!("../../resources/NotoSansCJKkr-Regular.otf");
+    fn pdf_font_asset_parses_and_maps_required_korean_punctuation_and_ascii_glyphs() {
         let mut warnings = Vec::new();
-        let font = ParsedFont::from_bytes(font_bytes, 0, &mut warnings).expect("parse Noto font");
+        let font =
+            ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("parse bundled font");
 
-        for character in ['한', '글'] {
+        for codepoint in 0xAC00..=0xD7A3 {
+            let character = char::from_u32(codepoint).expect("modern Hangul syllable");
             let glyph = font
                 .lookup_glyph_index(character as u32)
-                .expect("Korean glyph");
-            assert!(font.get_horizontal_advance(glyph) > 0);
+                .unwrap_or_else(|| panic!("missing Korean glyph U+{codepoint:04X}"));
+            assert!(
+                font.get_horizontal_advance(glyph) > 0,
+                "Korean glyph U+{codepoint:04X} has no advance"
+            );
         }
+
+        for character in "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ·…“”‘’「」『』〈〉《》()[]{}<>.,!?;:'\"-_/\\#&+*= 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".chars() {
+            let glyph = font
+                .lookup_glyph_index(character as u32)
+                .unwrap_or_else(|| panic!("missing required glyph U+{:04X}", character as u32));
+            assert!(
+                font.get_horizontal_advance(glyph) > 0,
+                "required glyph U+{:04X} has no advance",
+                character as u32
+            );
+        }
+    }
+
+    #[test]
+    fn pdf_export_keeps_small_korean_document_under_three_megabytes() {
+        let bytes = render_pdf(&korean_snapshot()).expect("render small Korean PDF");
+
+        assert!(
+            bytes.len() < 3_000_000,
+            "small Korean PDF was {} bytes",
+            bytes.len()
+        );
     }
 
     #[test]
@@ -887,14 +908,29 @@ mod tests {
     }
 
     #[test]
+    fn pdf_serialization_validation_checks_the_structural_page_count() {
+        let mut document = PdfDocument::new("validation fixture");
+        document.with_pages(vec![PdfPage::new(Mm(210.0), Mm(297.0), Vec::new())]);
+        let mut warnings = Vec::new();
+        let bytes = document.save(&Default::default(), &mut warnings);
+
+        validate_serialized_pdf(&bytes, 1).expect("validate one-page PDF");
+        assert_eq!(
+            validate_serialized_pdf(&bytes, 2).expect_err("reject changed page count"),
+            "Generated PDF page count changed during serialization."
+        );
+    }
+
+    #[test]
     fn pdf_export_preserves_korean_text_and_embeds_a_unicode_font() {
         let bytes = render_pdf(&korean_snapshot()).expect("render PDF");
         let mut parsed = parse_pdf(&bytes);
         let text = extracted_pdf_pages(&mut parsed).join(" ");
 
-        assert!(text.contains("프로젝트 Project 2026"));
-        assert!(text.contains("한글 메모 Korean note"));
-        assert!(text.contains("[x] 완료 작업 ASCII 42"));
+        assert!(text.contains("프로젝트 · Project 2026"));
+        assert!(text.contains("한글 메모 “Korean note”"));
+        assert!(text.contains("[x] 완료 작업 - ASCII 42"));
+        assert!(text.contains("지원 설명… supporting detail!"));
         assert!(text.contains("Page 1 / 1"));
         assert_eq!(parsed.resources.fonts.map.len(), 1);
         assert!(bytes

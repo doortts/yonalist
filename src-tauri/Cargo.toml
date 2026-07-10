@@ -16,6 +16,7 @@ tauri-build = { version = "=2.4.1", features = [] }
 [dependencies]
 base64 = "0.22"
 keyring = "3"
+lopdf = { version = "0.39", default-features = false }
 open = "5"
 printpdf = { version = "0.9.1", default-features = false, features = ["text_layout"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
