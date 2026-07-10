@@ -44,6 +44,33 @@ describe("notesWorkspaceReducer", () => {
     expect(state.nodesById.hidden).toMatchObject({ id: "hidden" });
   });
 
+  it("normalizes duplicate and prototype-like IDs into consistent safe indexes", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "duplicate", title: "discarded root", sortKey: 1 }),
+        node({ id: "__proto__", sortKey: 2 }),
+        node({ id: "child", parentId: "__proto__", sortKey: 3 }),
+        node({
+          id: "duplicate",
+          parentId: "__proto__",
+          title: "winning child",
+          sortKey: 4
+        })
+      ])
+    );
+
+    expect(Object.getPrototypeOf(state.nodesById)).toBeNull();
+    expect(Object.getPrototypeOf(state.childIdsByParent)).toBeNull();
+    expect(Object.keys(state.nodesById)).toEqual([
+      "duplicate",
+      "__proto__",
+      "child"
+    ]);
+    expect(state.nodesById.duplicate.title).toBe("winning child");
+    expect(state.rootIds).toEqual(["__proto__"]);
+    expect(state.childIdsByParent.__proto__).toEqual(["child", "duplicate"]);
+  });
+
   it("retains compatible UI state on authoritative replacement and clears stale IDs", () => {
     let state = normalizeWorkspace(workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })]));
     state = notesWorkspaceReducer(state, {

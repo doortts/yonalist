@@ -19,6 +19,7 @@ type UiState = Pick<
 
 export type NotesWorkspaceReducerAction =
   | { type: "replaceWorkspace"; workspace: NotesWorkspace }
+  | { type: "startWorkspaceLoad" }
   | { type: "setLoading" }
   | { type: "setError"; error: string }
   | ({ type: "setUiState" } & Partial<UiState>)
@@ -48,15 +49,15 @@ function normalizedUiState(
 }
 
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
-  const nodesById: Record<NoteId, NoteNode> = {};
-  const childIdsByParent: Record<string, NoteId[]> = {};
+  const nodesById = Object.create(null) as Record<NoteId, NoteNode>;
+  const childIdsByParent = Object.create(null) as Record<string, NoteId[]>;
   const rootIds: NoteId[] = [];
 
   for (const node of workspace.nodes) {
     nodesById[node.id] = node;
   }
 
-  for (const node of [...workspace.nodes].sort(compareNodes)) {
+  for (const node of Object.values(nodesById).sort(compareNodes)) {
     if (node.parentId === null) {
       rootIds.push(node.id);
       continue;
@@ -89,6 +90,11 @@ export function notesWorkspaceReducer(
         ...normalizedUiState(workspace, state)
       };
     }
+    case "startWorkspaceLoad":
+      return {
+        ...normalizeWorkspace({ nodes: [] }),
+        status: "loading"
+      };
     case "setLoading":
       return { ...state, status: "loading", error: null };
     case "setError":

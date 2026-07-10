@@ -56,6 +56,14 @@ type UiUpdate = Partial<
   >
 >;
 
+interface InitialLoadEntry {
+  vaultRoot: string;
+  repository: NotesStore;
+  subscribers: number;
+  operation: number;
+  promise: Promise<NotesWorkspace | null>;
+}
+
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
@@ -89,31 +97,80 @@ export function useNotesWorkspace({
   );
   const stateRef = useRef(state);
   const identityRef = useRef({ vaultRoot, repository });
-  const loadSequence = useRef(0);
+  const operationSequence = useRef(0);
+  const mountedRef = useRef(false);
+  const initialLoadRef = useRef<InitialLoadEntry | null>(null);
   stateRef.current = state;
   identityRef.current = { vaultRoot, repository };
 
   useEffect(() => {
-    let cancelled = false;
-    const sequence = ++loadSequence.current;
-    dispatch({ type: "setLoading" });
+    mountedRef.current = true;
+    const operation = ++operationSequence.current;
+    dispatch({ type: "startWorkspaceLoad" });
 
-    void repository
-      .initialize(vaultRoot)
-      .then(() => repository.loadWorkspace(vaultRoot, { kind: "active" }))
+    let entry = initialLoadRef.current;
+    if (
+      !entry ||
+      entry.vaultRoot !== vaultRoot ||
+      entry.repository !== repository
+    ) {
+      entry = {
+        vaultRoot,
+        repository,
+        subscribers: 0,
+        operation,
+        promise: Promise.resolve(null)
+      };
+      initialLoadRef.current = entry;
+
+      let initialization: Promise<void>;
+      try {
+        initialization = repository.initialize(vaultRoot);
+      } catch (cause) {
+        initialization = Promise.reject(cause);
+      }
+
+      const loadEntry = entry;
+      entry.promise = initialization.then(() => {
+        if (
+          loadEntry.subscribers === 0 ||
+          initialLoadRef.current !== loadEntry ||
+          operationSequence.current !== loadEntry.operation
+        ) {
+          return null;
+        }
+        return repository.loadWorkspace(vaultRoot, { kind: "active" });
+      });
+    }
+    entry.operation = operation;
+    entry.subscribers += 1;
+
+    const isCurrent = () => {
+      const current = identityRef.current;
+      return (
+        mountedRef.current &&
+        operationSequence.current === operation &&
+        current.vaultRoot === vaultRoot &&
+        current.repository === repository
+      );
+    };
+
+    void entry.promise
       .then((workspace) => {
-        if (!cancelled && loadSequence.current === sequence) {
+        if (workspace && isCurrent()) {
           dispatch({ type: "replaceWorkspace", workspace });
         }
       })
       .catch((cause: unknown) => {
-        if (!cancelled && loadSequence.current === sequence) {
+        if (isCurrent()) {
           dispatch({ type: "setError", error: errorMessage(cause) });
         }
       });
 
     return () => {
-      cancelled = true;
+      entry.subscribers -= 1;
+      mountedRef.current = false;
+      operationSequence.current += 1;
     };
   }, [repository, vaultRoot]);
 
@@ -124,14 +181,22 @@ export function useNotesWorkspace({
     ) => {
       const commandVaultRoot = vaultRoot;
       const commandRepository = repository;
+      const operation = ++operationSequence.current;
       dispatch({ type: "setLoading" });
+
+      const isCurrent = () => {
+        const current = identityRef.current;
+        return (
+          mountedRef.current &&
+          operationSequence.current === operation &&
+          current.vaultRoot === commandVaultRoot &&
+          current.repository === commandRepository
+        );
+      };
+
       try {
         const workspace = await command(commandRepository, commandVaultRoot);
-        const current = identityRef.current;
-        if (
-          current.vaultRoot !== commandVaultRoot ||
-          current.repository !== commandRepository
-        ) {
+        if (!isCurrent()) {
           return;
         }
         dispatch({ type: "replaceWorkspace", workspace });
@@ -141,11 +206,7 @@ export function useNotesWorkspace({
           dispatch({ type: "setUiState", ...nextUi });
         }
       } catch (cause) {
-        const current = identityRef.current;
-        if (
-          current.vaultRoot === commandVaultRoot &&
-          current.repository === commandRepository
-        ) {
+        if (isCurrent()) {
           dispatch({ type: "setError", error: errorMessage(cause) });
         }
       }
