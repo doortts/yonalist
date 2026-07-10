@@ -125,6 +125,34 @@ describe("notesWorkspaceReducer", () => {
     });
   });
 
+  it("clears pending focus only for the matching acknowledgement", () => {
+    const pending = notesWorkspaceReducer(
+      normalizeWorkspace(
+        workspace([
+          node({ id: "root" }),
+          node({ id: "child", parentId: "root" })
+        ])
+      ),
+      {
+        type: "setUiState",
+        pendingFocusId: "child"
+      }
+    );
+
+    const ignored = notesWorkspaceReducer(pending, {
+      type: "acknowledgePendingFocus",
+      nodeId: "root"
+    });
+    expect(ignored).toBeDefined();
+    expect(ignored.pendingFocusId).toBe("child");
+
+    const acknowledged = notesWorkspaceReducer(pending, {
+      type: "acknowledgePendingFocus",
+      nodeId: "child"
+    });
+    expect(acknowledged.pendingFocusId).toBeNull();
+  });
+
   it("keeps the confirmed tree on failures and settles status from remaining work", () => {
     const initial = normalizeWorkspace(workspace([node({ id: "root" })]));
     const pending = notesWorkspaceReducer(initial, {

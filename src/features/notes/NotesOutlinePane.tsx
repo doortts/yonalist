@@ -1,5 +1,8 @@
 import { ChevronRight, Home } from "lucide-react";
-import { TooltipProvider } from "../../components/ui/Tooltip";
+import {
+  IconTooltip,
+  TooltipProvider
+} from "../../components/ui/Tooltip";
 import type { NoteId, NoteNode } from "../../domain/notes";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
@@ -38,15 +41,17 @@ function NotesBreadcrumb() {
 
   return (
     <nav className="notes-breadcrumb" aria-label="Notes breadcrumb">
-      <button
-        className="notes-breadcrumb-button notes-breadcrumb-home"
-        type="button"
-        aria-label="All notes"
-        aria-current={state.zoomRootId === null ? "page" : undefined}
-        onClick={() => void actions.zoomTo(null)}
-      >
-        <Home size={15} aria-hidden="true" />
-      </button>
+      <IconTooltip label="All notes" side="bottom">
+        <button
+          className="notes-breadcrumb-button notes-breadcrumb-home"
+          type="button"
+          aria-label="All notes"
+          aria-current={state.zoomRootId === null ? "page" : undefined}
+          onClick={() => void actions.zoomTo(null)}
+        >
+          <Home size={15} aria-hidden="true" />
+        </button>
+      </IconTooltip>
       {trail.map((nodeId) => {
         const node = state.nodesById[nodeId];
         if (!node) {
@@ -83,30 +88,39 @@ export function NotesOutlinePane() {
       aria-label="Notes outline"
       aria-busy={state.status === "loading"}
     >
-      <NotesBreadcrumb />
-      <div className="notes-outline-rows">
-        {initialLoading && <p className="notes-pane-state">Loading notes...</p>}
-        {state.status === "error" && state.rootIds.length === 0 && (
-          <p className="notes-pane-state notes-pane-error">{state.error}</p>
-        )}
-        {!initialLoading &&
-          state.status !== "error" &&
-          visibleIds.length === 0 && (
-            <p className="notes-pane-state">No outline yet.</p>
+      <TooltipProvider>
+        <NotesBreadcrumb />
+        <div className="notes-outline-rows">
+          {initialLoading && (
+            <p className="notes-pane-state">Loading notes...</p>
           )}
-        {state.status === "error" && state.rootIds.length > 0 && (
-          <p className="notes-inline-error">{state.error}</p>
-        )}
-        <TooltipProvider>
-          {visibleIds.map((nodeId) => (
-            <OutlineNodeRow
-              key={nodeId}
-              nodeId={nodeId}
-              depth={nodeDepth(state, nodeId, state.zoomRootId)}
-            />
-          ))}
-        </TooltipProvider>
-      </div>
+          {state.status === "error" && state.rootIds.length === 0 && (
+            <p className="notes-pane-state notes-pane-error">{state.error}</p>
+          )}
+          {!initialLoading &&
+            state.status !== "error" &&
+            visibleIds.length === 0 && (
+              <p className="notes-pane-state">No outline yet.</p>
+            )}
+          {state.status === "error" && state.rootIds.length > 0 && (
+            <p className="notes-inline-error">{state.error}</p>
+          )}
+          <ol className="notes-outline-list">
+            {visibleIds.map((nodeId) => {
+              const depth = nodeDepth(state, nodeId, state.zoomRootId);
+              return (
+                <li
+                  className="notes-outline-item"
+                  key={nodeId}
+                  aria-level={depth + 1}
+                >
+                  <OutlineNodeRow nodeId={nodeId} depth={depth} />
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      </TooltipProvider>
     </section>
   );
 }

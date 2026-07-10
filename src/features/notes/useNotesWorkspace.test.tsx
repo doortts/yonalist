@@ -392,6 +392,35 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("acknowledges matching pending focus through a command-neutral public promise", async () => {
+    createNoteIdMock.mockReturnValue("created");
+    const store = repository({
+      createNode: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "created", title: "" })]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.createRoot());
+    expect(result.current.state.pendingFocusId).toBe("created");
+
+    expect(result.current.actions.acknowledgeFocus).toEqual(
+      expect.any(Function)
+    );
+    let acknowledgement!: Promise<void>;
+    act(() => {
+      acknowledgement = result.current.actions.acknowledgeFocus("created");
+    });
+    expect(acknowledgement).toBeInstanceOf(Promise);
+    await act(async () => acknowledgement);
+
+    expect(result.current.state.pendingFocusId).toBeNull();
+    expect(store.createNode).toHaveBeenCalledOnce();
+    expect(store.updateNode).not.toHaveBeenCalled();
+  });
+
   it("publishes two successful commands in invocation order", async () => {
     const first = deferred<NotesWorkspace>();
     const second = deferred<NotesWorkspace>();

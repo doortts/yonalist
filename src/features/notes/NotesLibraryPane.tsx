@@ -51,6 +51,9 @@ export function NotesLibraryPane() {
               type="button"
               key={nodeId}
               aria-label={label}
+              aria-current={
+                state.zoomRootId === nodeId ? "page" : undefined
+              }
               onClick={() => void actions.zoomTo(nodeId)}
             >
               <FileText size={16} aria-hidden="true" />

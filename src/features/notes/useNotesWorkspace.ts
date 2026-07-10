@@ -22,6 +22,7 @@ import {
 } from "./notesWorkspaceReducer";
 
 export interface NotesWorkspaceActions {
+  acknowledgeFocus(nodeId: NoteId): Promise<void>;
   createRoot(): Promise<void>;
   splitNode(
     nodeId: NoteId,
@@ -138,6 +139,10 @@ export function useNotesWorkspace({
 
   const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
     return sessionRef.current?.enqueue(work) ?? Promise.resolve();
+  }, []);
+
+  const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
+    dispatch({ type: "acknowledgePendingFocus", nodeId });
   }, []);
 
   const createRoot = useCallback(() => {
@@ -348,6 +353,7 @@ export function useNotesWorkspace({
 
   const actions = useMemo<NotesWorkspaceActions>(
     () => ({
+      acknowledgeFocus,
       createRoot,
       splitNode,
       createChild,
@@ -362,6 +368,7 @@ export function useNotesWorkspace({
       zoomTo
     }),
     [
+      acknowledgeFocus,
       createRoot,
       splitNode,
       createChild,

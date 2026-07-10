@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -82,6 +83,14 @@ function initialNodes(): NoteNode[] {
 
 function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes: nodes.map((current) => ({ ...current })) };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 let confirmedNodes: NoteNode[];
@@ -251,7 +260,7 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("creates a root page and focuses its title once after render", async () => {
+  it("focuses a created title exactly once across row unmount and remount", async () => {
     const user = userEvent.setup();
     const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
     renderNotesWorkspace();
@@ -267,6 +276,84 @@ describe("Notes workspace", () => {
       await screen.findByRole("textbox", { name: "Edit node title" })
     ).toHaveFocus();
     expect(focusSpy).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("textbox", { name: "Edit node title" })
+      ).not.toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: "All notes" }));
+
+    expect(
+      await screen.findByRole("textbox", { name: "Edit node title" })
+    ).toBeInTheDocument();
+    expect(focusSpy).toHaveBeenCalledOnce();
+    expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
+  });
+
+  it("marks the active library root as the current page", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+
+    const library = screen.getByLabelText("Notes library");
+    const project = await within(library).findByRole("button", {
+      name: "Project"
+    });
+
+    await user.click(project);
+
+    expect(project).toHaveAttribute("aria-current", "page");
+  });
+
+  it("exposes visible outline rows as list items with accurate levels", async () => {
+    renderNotesWorkspace();
+
+    const outline = screen.getByLabelText("Notes outline");
+    await within(outline).findByRole("textbox", {
+      name: "Edit node title: Project"
+    });
+
+    expect(within(outline).getByRole("list")).toBeInTheDocument();
+    expect(
+      within(outline)
+        .getAllByRole("listitem")
+        .map((item) => item.getAttribute("aria-level"))
+    ).toEqual(["1", "2", "3", "1"]);
+  });
+
+  it("composes the labelled breadcrumb home button with an icon tooltip", async () => {
+    renderNotesWorkspace();
+    await screen.findByRole("textbox", { name: "Edit node title: Project" });
+
+    const home = screen.getByRole("button", { name: "All notes" });
+
+    expect(home).toHaveAttribute("aria-label", "All notes");
+    expect(home).toHaveAttribute("data-base-ui-tooltip-trigger");
+  });
+
+  it("caps indentation for deeply nested rows", async () => {
+    configureRepository(
+      Array.from({ length: 12 }, (_, index) =>
+        node({
+          id: `depth-${index + 1}`,
+          parentId: index === 0 ? null : `depth-${index}`,
+          sortKey: 1,
+          title: `Depth ${index + 1}`
+        })
+      )
+    );
+    renderNotesWorkspace();
+
+    const deepestTitle = await screen.findByRole("textbox", {
+      name: "Edit node title: Depth 12"
+    });
+    const deepestRow = deepestTitle.closest<HTMLElement>(".notes-node");
+
+    expect(deepestRow).not.toBeNull();
+    expect(deepestRow?.style.getPropertyValue("--notes-indent")).toBe(
+      "min(264px, 20%)"
+    );
   });
 
   it("persists collapse and completion only after authoritative responses", async () => {
@@ -355,6 +442,56 @@ describe("Notes workspace", () => {
         note: "Updated context"
       })
     );
+  });
+
+  it("preserves newer title and note drafts when an older blur save resolves", async () => {
+    const save = deferred<NotesWorkspace>();
+    notesStoreMock.updateNode.mockReturnValueOnce(save.promise);
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    const title = await screen.findByRole("textbox", {
+      name: "Edit node title: Project"
+    });
+    await user.click(
+      screen.getByRole("button", { name: "Show supporting note for Project" })
+    );
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+
+    fireEvent.change(title, { target: { value: "Submitted title" } });
+    fireEvent.change(note, { target: { value: "Submitted note" } });
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "project",
+        title: "Submitted title",
+        note: "Submitted note"
+      })
+    );
+
+    fireEvent.change(title, { target: { value: "Newer title" } });
+    fireEvent.change(note, { target: { value: "Newer note" } });
+    await act(async () =>
+      save.resolve(
+        workspace(
+          initialNodes().map((current) =>
+            current.id === "project"
+              ? {
+                  ...current,
+                  title: "Submitted title",
+                  note: "Submitted note"
+                }
+              : current
+          )
+        )
+      )
+    );
+
+    await waitFor(() => {
+      expect(title).toHaveValue("Newer title");
+      expect(note).toHaveValue("Newer note");
+    });
   });
 
   it("exposes named duplicate and delete controls", async () => {

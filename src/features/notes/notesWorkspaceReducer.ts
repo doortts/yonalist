@@ -33,6 +33,7 @@ export type NotesWorkspaceReducerAction =
       hasPendingWork: boolean;
     }
   | ({ type: "setUiState" } & Partial<UiState>)
+  | { type: "acknowledgePendingFocus"; nodeId: NoteId }
   | { type: "setZoomRoot"; zoomRootId: NoteId | null };
 
 function compareNodes(left: NoteNode, right: NoteNode): number {
@@ -151,6 +152,10 @@ export function notesWorkspaceReducer(
         ...state,
         zoomRootId: existingId(state, action.zoomRootId)
       };
+    case "acknowledgePendingFocus":
+      return state.pendingFocusId === action.nodeId
+        ? { ...state, pendingFocusId: null }
+        : state;
     case "setUiState": {
       const ui: UiState = {
         selectedId:

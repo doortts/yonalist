@@ -141,6 +141,16 @@
   padding: 20px 24px 44px;
 }
 
+.notes-outline-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.notes-outline-item {
+  min-width: 0;
+}
+
 .notes-pane-state {
   margin: 18px 10px;
   color: var(--text-3);
@@ -168,7 +178,7 @@
 
 .notes-node-main {
   display: grid;
-  grid-template-columns: 24px 18px minmax(120px, 1fr) auto;
+  grid-template-columns: 24px 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px;
   min-height: 38px;
