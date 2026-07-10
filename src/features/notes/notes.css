@@ -143,6 +143,7 @@
 }
 
 .notes-search-result:hover,
+.notes-search-result[aria-selected="true"],
 .notes-tag-list button:hover,
 .notes-tag-list button[aria-pressed="true"] {
   background: var(--list-hover-bg);

@@ -103,6 +103,7 @@ export interface UseNotesWorkspaceOptions {
 export interface UseNotesWorkspaceResult {
   state: NormalizedNotesWorkspace;
   actions: NotesWorkspaceActions;
+  deletingNotesData: boolean;
   libraryView: NotesLibraryView;
   activeTag: string | null;
   tags: readonly string[];
@@ -474,13 +475,14 @@ async function runCompoundQueueWork(
     );
   } catch (cause) {
     if (hasAuthoritativeStep && scope.kind !== "active") {
+      workspace = context.confirmedWorkspace;
       try {
         workspace = await context.repository.loadWorkspace(
           context.vaultRoot,
           scope
         );
       } catch {
-        // Preserve the last authoritative response when scoped reload fails.
+        // The last confirmed projection still belongs to the selected scope.
       }
     }
     return {
@@ -572,8 +574,11 @@ export function useNotesWorkspace({
   >(() => new Set());
   const [currentWriteError, setCurrentWriteError] =
     useState<NotesStoreError | null>(null);
+  const [deletingNotesData, setDeletingNotesData] = useState(false);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
+  const deletingNotesDataRef = useRef(false);
+  const deletionTokenRef = useRef<object | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const persistDraftRef = useRef<
@@ -645,6 +650,9 @@ export function useNotesWorkspace({
     dispatch({ type: "startWorkspaceLoad" });
     setDraftsByNodeId({});
     setCurrentWriteError(null);
+    deletingNotesDataRef.current = false;
+    deletionTokenRef.current = null;
+    setDeletingNotesData(false);
     activeScopeRef.current = { kind: "active" };
     locallyExpandedNodeIdsRef.current = new Set();
     setLibraryView("all");
@@ -766,6 +774,9 @@ export function useNotesWorkspace({
   }, [beginRecordShutdown]);
 
   const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
+    if (deletingNotesDataRef.current) {
+      return Promise.resolve();
+    }
     const session = sessionRef.current;
     if (session) {
       return session.enqueue(work);
@@ -1018,6 +1029,9 @@ export function useNotesWorkspace({
 
   const retryFailedDraft = useCallback(
     async (nodeId: NoteId): Promise<void> => {
+      if (deletingNotesDataRef.current) {
+        return;
+      }
       const record = sessionRecordRef.current;
       if (
         !record ||
@@ -1807,60 +1821,84 @@ export function useNotesWorkspace({
     if (!record || record.closing || sessionRef.current !== record.session) {
       throw new Error("The Notes workspace is unavailable.");
     }
-    if (
-      record.drafts.size > 0 &&
-      !(await flushAllDraftsBeforeStructural())
-    ) {
-      throw record.writeError ?? new Error("Pending Notes changes could not be saved.");
+    if (deletingNotesDataRef.current) {
+      throw new Error("Notes data deletion is already in progress.");
     }
 
-    let deletionError: unknown = null;
-    let deleted = false;
-    await runCommand(async (context) => {
-      try {
-        await context.repository.deleteDatabase(context.vaultRoot);
-        deleted = true;
-        return authoritative(
-          { nodes: [] },
-          {
-            selectedId: null,
-            zoomRootId: null,
-            editingNoteId: null,
-            pendingFocusId: null
-          }
+    const deletionToken = {};
+    deletionTokenRef.current = deletionToken;
+    deletingNotesDataRef.current = true;
+    setDeletingNotesData(true);
+
+    try {
+      if (
+        record.drafts.size > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        throw (
+          record.writeError ??
+          new Error("Pending Notes changes could not be saved.")
         );
-      } catch (cause) {
-        deletionError = cause;
-        return { kind: "failure", error: errorMessage(cause) };
       }
-    });
-    if (deletionError) {
-      throw deletionError;
-    }
-    if (!deleted) {
-      throw new Error("Notes data deletion did not complete.");
-    }
 
-    record.drafts.clear();
-    record.pendingDebounceByNodeId.clear();
-    record.inFlightDraftByNodeId.clear();
-    record.retryWriteByNodeId.clear();
-    record.failedWritesByNodeId.clear();
-    record.writeError = null;
-    record.recoveryEntry = null;
-    clearRecoveryEntry(repository, vaultRoot);
-    publishDraftState(record);
-    activeScopeRef.current = { kind: "active" };
-    setLibraryView("all");
-    setActiveTag(null);
-    setTags([]);
-    replaceLocalExpansions(new Set());
+      let deletionError: unknown = null;
+      let deleted = false;
+      await record.session.enqueue(async (context) => {
+        try {
+          await context.repository.deleteDatabase(context.vaultRoot);
+          deleted = true;
+          return authoritative(
+            { nodes: [] },
+            {
+              selectedId: null,
+              zoomRootId: null,
+              editingNoteId: null,
+              pendingFocusId: null
+            }
+          );
+        } catch (cause) {
+          deletionError = cause;
+          return { kind: "failure", error: errorMessage(cause) };
+        }
+      });
+      if (deletionError) {
+        throw deletionError;
+      }
+      if (!deleted) {
+        throw new Error("Notes data deletion did not complete.");
+      }
+
+      record.drafts.clear();
+      record.pendingDebounceByNodeId.clear();
+      record.inFlightDraftByNodeId.clear();
+      record.retryWriteByNodeId.clear();
+      record.failedWritesByNodeId.clear();
+      record.writeError = null;
+      record.recoveryEntry = null;
+      clearRecoveryEntry(repository, vaultRoot);
+      publishDraftState(record);
+      if (
+        sessionRecordRef.current === record &&
+        sessionRef.current === record.session
+      ) {
+        activeScopeRef.current = { kind: "active" };
+        setLibraryView("all");
+        setActiveTag(null);
+        setTags([]);
+        replaceLocalExpansions(new Set());
+      }
+    } finally {
+      if (deletionTokenRef.current === deletionToken) {
+        deletionTokenRef.current = null;
+        deletingNotesDataRef.current = false;
+        setDeletingNotesData(false);
+      }
+    }
   }, [
     flushAllDraftsBeforeStructural,
     publishDraftState,
     replaceLocalExpansions,
     repository,
-    runCommand,
     vaultRoot
   ]);
 
@@ -1868,62 +1906,75 @@ export function useNotesWorkspace({
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
   }, []);
 
-  const actions = useMemo<NotesWorkspaceActions>(
-    () => ({
-      acknowledgeFocus,
-      focusNode,
-      createRoot,
-      splitNode,
-      createChild,
-      updateNode,
-      updateNodeDraft,
-      flushNodeDraft,
-      moveNode,
-      toggleComplete,
-      toggleCollapsed,
-      toggleStar,
-      duplicateNode,
-      removeEmptyNode,
-      deleteNode,
-      restoreNode,
-      emptyTrash,
-      selectLibraryView,
-      selectTag,
-      searchNotes,
-      openSearchResult,
+  const actions = useMemo<NotesWorkspaceActions>(() => {
+    const gate = <Args extends unknown[]>(
+      action: (...args: Args) => Promise<void>
+    ) =>
+      (...args: Args): Promise<void> =>
+        deletingNotesDataRef.current ? Promise.resolve() : action(...args);
+
+    return {
+      acknowledgeFocus: gate(acknowledgeFocus),
+      focusNode: gate(focusNode),
+      createRoot: gate(createRoot),
+      splitNode: gate(splitNode),
+      createChild: gate(createChild),
+      updateNode: gate(updateNode),
+      updateNodeDraft: (nodeId, patch) => {
+        if (!deletingNotesDataRef.current) {
+          updateNodeDraft(nodeId, patch);
+        }
+      },
+      flushNodeDraft: gate(flushNodeDraft),
+      moveNode: gate(moveNode),
+      toggleComplete: gate(toggleComplete),
+      toggleCollapsed: gate(toggleCollapsed),
+      toggleStar: gate(toggleStar),
+      duplicateNode: gate(duplicateNode),
+      removeEmptyNode: gate(removeEmptyNode),
+      deleteNode: gate(deleteNode),
+      restoreNode: gate(restoreNode),
+      emptyTrash: gate(emptyTrash),
+      selectLibraryView: gate(selectLibraryView),
+      selectTag: gate(selectTag),
+      searchNotes: (query) =>
+        deletingNotesDataRef.current
+          ? Promise.resolve([])
+          : searchNotes(query),
+      openSearchResult: gate(openSearchResult),
       deleteAllNotesData,
-      zoomTo
-    }),
-    [
-      acknowledgeFocus,
-      focusNode,
-      createRoot,
-      splitNode,
-      createChild,
-      updateNode,
-      updateNodeDraft,
-      flushNodeDraft,
-      moveNode,
-      toggleComplete,
-      toggleCollapsed,
-      toggleStar,
-      duplicateNode,
-      removeEmptyNode,
-      deleteNode,
-      restoreNode,
-      emptyTrash,
-      selectLibraryView,
-      selectTag,
-      searchNotes,
-      openSearchResult,
-      deleteAllNotesData,
-      zoomTo
-    ]
-  );
+      zoomTo: gate(zoomTo)
+    };
+  }, [
+    acknowledgeFocus,
+    focusNode,
+    createRoot,
+    splitNode,
+    createChild,
+    updateNode,
+    updateNodeDraft,
+    flushNodeDraft,
+    moveNode,
+    toggleComplete,
+    toggleCollapsed,
+    toggleStar,
+    duplicateNode,
+    removeEmptyNode,
+    deleteNode,
+    restoreNode,
+    emptyTrash,
+    selectLibraryView,
+    selectTag,
+    searchNotes,
+    openSearchResult,
+    deleteAllNotesData,
+    zoomTo
+  ]);
 
   return {
     state,
     actions,
+    deletingNotesData,
     libraryView,
     activeTag,
     tags,

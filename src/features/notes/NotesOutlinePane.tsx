@@ -33,11 +33,13 @@ const outlineScreenReaderInstructions = {
 };
 
 interface NotesBreadcrumbProps {
+  disabled: boolean;
   trashView: boolean;
   onRequestEmptyTrash(): void;
 }
 
 function NotesBreadcrumb({
+  disabled,
   trashView,
   onRequestEmptyTrash
 }: NotesBreadcrumbProps) {
@@ -52,6 +54,7 @@ function NotesBreadcrumb({
           type="button"
           aria-label="All notes"
           aria-current={state.zoomRootId === null ? "page" : undefined}
+          disabled={disabled}
           onClick={() => void actions.zoomTo(null)}
         >
           <Home size={15} aria-hidden="true" />
@@ -70,6 +73,7 @@ function NotesBreadcrumb({
               className="notes-breadcrumb-button"
               type="button"
               aria-current={state.zoomRootId === nodeId ? "page" : undefined}
+              disabled={disabled}
               onClick={() => void actions.zoomTo(nodeId)}
             >
               {label}
@@ -81,6 +85,7 @@ function NotesBreadcrumb({
         <button
           className="notes-empty-trash-button"
           type="button"
+          disabled={disabled}
           onClick={onRequestEmptyTrash}
         >
           <Trash2 size={15} aria-hidden="true" />
@@ -93,7 +98,13 @@ function NotesBreadcrumb({
 
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
-  const { actions, libraryView, locallyExpandedNodeIds, state } = workspace;
+  const {
+    actions,
+    deletingNotesData,
+    libraryView,
+    locallyExpandedNodeIds,
+    state
+  } = workspace;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const trashView = libraryView === "trash";
@@ -115,7 +126,10 @@ export function NotesOutlinePane() {
   const visibleIds = rows.map((row) => row.id);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const dragUnavailable =
-    trashView || state.status === "loading" || rows.length === 0;
+    deletingNotesData ||
+    trashView ||
+    state.status === "loading" ||
+    rows.length === 0;
   const projectDragEnd = useCallback(
     (event: DragEndEvent) => {
       const activeId = String(event.active.id);
@@ -217,10 +231,11 @@ export function NotesOutlinePane() {
     <section
       className="notes-outline"
       aria-label="Notes outline"
-      aria-busy={state.status === "loading"}
+      aria-busy={state.status === "loading" || deletingNotesData}
     >
       <TooltipProvider>
         <NotesBreadcrumb
+          disabled={deletingNotesData}
           trashView={trashView}
           onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
         />
@@ -274,6 +289,7 @@ export function NotesOutlinePane() {
                       nodeId={row.id}
                       depth={row.depth}
                       readOnly={trashView}
+                      disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
                         dragUnavailable || row.id === state.zoomRootId

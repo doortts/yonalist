@@ -1681,6 +1681,126 @@ describe("Notes workspace", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("hides rendered search results as soon as the query changes", async () => {
+    const oldSearch = deferred<
+      Array<{
+        nodeId: string;
+        title: string;
+        parentTrail: string[];
+        matchedField: "title";
+      }>
+    >();
+    const newSearch = deferred<
+      Array<{
+        nodeId: string;
+        title: string;
+        parentTrail: string[];
+        matchedField: "title";
+      }>
+    >();
+    notesStoreMock.search.mockImplementation(
+      async (_vaultRoot: string, query: string) =>
+        query === "Old" ? oldSearch.promise : newSearch.promise
+    );
+    renderNotesWorkspace();
+    const search = await screen.findByRole("searchbox", {
+      name: "Search notes"
+    });
+
+    fireEvent.change(search, { target: { value: "Old" } });
+    oldSearch.resolve([
+      {
+        nodeId: "project",
+        title: "Old result",
+        parentTrail: [],
+        matchedField: "title"
+      }
+    ]);
+    expect(
+      await screen.findByRole("option", { name: /Old result/ })
+    ).toBeInTheDocument();
+
+    fireEvent.change(search, { target: { value: "New" } });
+
+    expect(
+      screen.queryByRole("option", { name: /Old result/ })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("listbox", { name: "Search results" })).toBeNull();
+
+    newSearch.resolve([
+      {
+        nodeId: "outside",
+        title: "New result",
+        parentTrail: [],
+        matchedField: "title"
+      }
+    ]);
+    expect(
+      await screen.findByRole("option", { name: /New result/ })
+    ).toBeInTheDocument();
+  });
+
+  it("supports complete keyboard navigation and selection in search results", async () => {
+    const user = userEvent.setup();
+    notesStoreMock.search.mockResolvedValue([
+      {
+        nodeId: "project",
+        title: "Project",
+        parentTrail: [],
+        matchedField: "title"
+      },
+      {
+        nodeId: "plan",
+        title: "Plan",
+        parentTrail: ["Project"],
+        matchedField: "title"
+      },
+      {
+        nodeId: "outside",
+        title: "Outside branch",
+        parentTrail: [],
+        matchedField: "title"
+      }
+    ]);
+    renderNotesWorkspace();
+    const search = await screen.findByRole("searchbox", {
+      name: "Search notes"
+    });
+
+    await user.type(search, "result");
+    let options = await screen.findAllByRole("option");
+    expect(options).toHaveLength(3);
+    expect(options[0]).toHaveAttribute("aria-selected", "true");
+    expect(options[0]).toHaveAttribute("tabindex", "0");
+    expect(options[1]).toHaveAttribute("aria-selected", "false");
+    expect(options[1]).toHaveAttribute("tabindex", "-1");
+
+    options[0].focus();
+    await user.keyboard("{ArrowDown}");
+    expect(options[1]).toHaveFocus();
+    expect(options[1]).toHaveAttribute("aria-selected", "true");
+    expect(options[0]).toHaveAttribute("tabindex", "-1");
+
+    await user.keyboard("{End}");
+    expect(options[2]).toHaveFocus();
+    await user.keyboard("{Home}");
+    expect(options[0]).toHaveFocus();
+    await user.keyboard("{ArrowUp}");
+    expect(options[2]).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(options[0]).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    expect(await findTitleInput("Project")).toHaveFocus();
+
+    await user.type(search, "result");
+    options = await screen.findAllByRole("option");
+    options[0].focus();
+    await user.keyboard("{End}");
+    await user.keyboard(" ");
+    expect(await findTitleInput("Outside branch")).toHaveFocus();
+  });
+
   it("opens a search result in active context without persisting expansion", async () => {
     const user = userEvent.setup();
     configureRepository([
@@ -1876,6 +1996,57 @@ describe("Notes workspace", () => {
     expect(screen.queryByRole("textbox", { name: "Edit node title" })).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
+  });
+
+  it("disables workspace controls while Notes data deletion is pending", async () => {
+    const user = userEvent.setup();
+    const deletion = deferred<void>();
+    notesStoreMock.deleteDatabase.mockReturnValue(deletion.promise);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(
+      screen.getByRole("button", { name: "Notes data settings" })
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+    await waitFor(() => expect(notesStoreMock.deleteDatabase).toHaveBeenCalledOnce());
+
+    expect(
+      screen.getByRole("searchbox", { name: "Search notes", hidden: true })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "New page", hidden: true })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Starred", hidden: true })
+    ).toBeDisabled();
+    for (const titleInput of screen.getAllByRole("textbox", {
+      name: "Edit node title",
+      hidden: true
+    })) {
+      expect(titleInput).toBeDisabled();
+    }
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Mark Project complete",
+        hidden: true
+      })
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Close Notes data settings" })
+    ).toBeDisabled();
+
+    await act(async () => deletion.resolve());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Notes data" })).toBeNull()
+    );
   });
 
   it("renders loading, empty, and error states", async () => {

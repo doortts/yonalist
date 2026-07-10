@@ -9,7 +9,13 @@ import {
   Tags,
   Trash2
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 import type { NoteSearchResult } from "../../domain/notes";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
@@ -42,14 +48,16 @@ function resultLabel(result: NoteSearchResult): string {
 }
 
 export function NotesLibraryPane() {
-  const { actions, activeTag, libraryView, state, tags } =
+  const { actions, activeTag, deletingNotesData, libraryView, state, tags } =
     useNotesWorkspaceContext();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly NoteSearchResult[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  const [activeResultIndex, setActiveResultIndex] = useState(-1);
   const [dataSettingsOpen, setDataSettingsOpen] = useState(false);
   const searchRequestRef = useRef(0);
+  const resultOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const showingTags = libraryView === "tags";
   const choosingTag = showingTags && activeTag === null;
@@ -61,10 +69,13 @@ export function NotesLibraryPane() {
       setResults([]);
       setSearchError(null);
       setSearching(false);
+      setActiveResultIndex(-1);
       return;
     }
+    setResults([]);
     setSearching(true);
     setSearchError(null);
+    setActiveResultIndex(-1);
     void actions.searchNotes(trimmedQuery).then(
       (nextResults) => {
         if (searchRequestRef.current !== requestId) {
@@ -72,12 +83,14 @@ export function NotesLibraryPane() {
         }
         setResults(nextResults);
         setSearching(false);
+        setActiveResultIndex(nextResults.length > 0 ? 0 : -1);
       },
       (cause: unknown) => {
         if (searchRequestRef.current !== requestId) {
           return;
         }
         setResults([]);
+        setActiveResultIndex(-1);
         setSearchError(
           cause instanceof Error ? cause.message : "Notes search failed."
         );
@@ -86,17 +99,80 @@ export function NotesLibraryPane() {
     );
   }, [actions, query]);
 
+  useEffect(() => {
+    if (!deletingNotesData) {
+      return;
+    }
+    searchRequestRef.current += 1;
+    resultOptionRefs.current = [];
+    setResults([]);
+    setActiveResultIndex(-1);
+    setSearchError(null);
+    setSearching(false);
+  }, [deletingNotesData]);
+
+  const handleSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextQuery = event.target.value;
+    searchRequestRef.current += 1;
+    resultOptionRefs.current = [];
+    setQuery(nextQuery);
+    setResults([]);
+    setActiveResultIndex(-1);
+    setSearchError(null);
+    setSearching(nextQuery.trim().length > 0);
+  };
+
   const openResult = async (nodeId: string) => {
     await actions.openSearchResult(nodeId);
+    searchRequestRef.current += 1;
+    resultOptionRefs.current = [];
     setQuery("");
     setResults([]);
+    setActiveResultIndex(-1);
+  };
+
+  const focusResult = (index: number) => {
+    if (results.length === 0) {
+      return;
+    }
+    const nextIndex = (index + results.length) % results.length;
+    setActiveResultIndex(nextIndex);
+    resultOptionRefs.current[nextIndex]?.focus();
+  };
+
+  const handleResultKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number
+  ) => {
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusResult(index + 1);
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        focusResult(index - 1);
+        return;
+      case "Home":
+        event.preventDefault();
+        focusResult(0);
+        return;
+      case "End":
+        event.preventDefault();
+        focusResult(results.length - 1);
+        return;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        void openResult(results[index].nodeId);
+    }
   };
 
   return (
     <section
       className="list-pane notes-library-pane"
       aria-label="Notes library"
-      aria-busy={state.status === "loading"}
+      aria-busy={state.status === "loading" || deletingNotesData}
     >
       <TooltipProvider>
         <div className="pane-titlebar-spacer" />
@@ -107,7 +183,7 @@ export function NotesLibraryPane() {
               <button
                 className="text-button notes-new-page"
                 type="button"
-                disabled={state.status === "loading"}
+                disabled={state.status === "loading" || deletingNotesData}
                 onClick={() => void actions.createRoot()}
               >
                 <Plus size={16} aria-hidden="true" />
@@ -119,6 +195,7 @@ export function NotesLibraryPane() {
                 className="notes-library-icon-button"
                 type="button"
                 aria-label="Notes data settings"
+                disabled={deletingNotesData}
                 onClick={() => setDataSettingsOpen(true)}
               >
                 <Settings2 size={16} aria-hidden="true" />
@@ -135,7 +212,8 @@ export function NotesLibraryPane() {
               aria-label="Search notes"
               placeholder="Search notes"
               value={query}
-              onChange={(event) => setQuery(event.target.value)}
+              disabled={deletingNotesData}
+              onChange={handleSearchChange}
             />
           </label>
 
@@ -145,6 +223,7 @@ export function NotesLibraryPane() {
                 key={id}
                 type="button"
                 aria-pressed={libraryView === id}
+                disabled={deletingNotesData}
                 onClick={() => void actions.selectLibraryView(id)}
               >
                 <Icon size={14} aria-hidden="true" />
@@ -165,14 +244,21 @@ export function NotesLibraryPane() {
               )}
               {results.length > 0 && (
                 <div role="listbox" aria-label="Search results">
-                  {results.map((result) => (
+                  {results.map((result, index) => (
                     <button
                       className="notes-search-result"
                       key={result.nodeId}
+                      ref={(element) => {
+                        resultOptionRefs.current[index] = element;
+                      }}
                       type="button"
                       role="option"
-                      aria-selected="false"
+                      aria-selected={activeResultIndex === index}
                       aria-label={resultLabel(result)}
+                      disabled={deletingNotesData}
+                      tabIndex={activeResultIndex === index ? 0 : -1}
+                      onFocus={() => setActiveResultIndex(index)}
+                      onKeyDown={(event) => handleResultKeyDown(event, index)}
                       onClick={() => void openResult(result.nodeId)}
                     >
                       <strong>{pageLabel(result.title)}</strong>
@@ -196,6 +282,7 @@ export function NotesLibraryPane() {
                     type="button"
                     key={tag}
                     aria-pressed={activeTag === tag}
+                    disabled={deletingNotesData}
                     onClick={() => void actions.selectTag(tag)}
                   >
                     <Tags size={14} aria-hidden="true" />
@@ -234,6 +321,7 @@ export function NotesLibraryPane() {
                   key={nodeId}
                   aria-label={label}
                   aria-current={state.zoomRootId === nodeId ? "page" : undefined}
+                  disabled={deletingNotesData}
                   onClick={() => void actions.zoomTo(nodeId)}
                 >
                   <FileText size={16} aria-hidden="true" />

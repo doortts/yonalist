@@ -14,12 +14,16 @@ export function NotesDataSettingsDialog({
   open,
   onOpenChange
 }: NotesDataSettingsDialogProps) {
-  const { actions } = useNotesWorkspaceContext();
+  const { actions, deletingNotesData } = useNotesWorkspaceContext();
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [deletionRequestPending, setDeletionRequestPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const deleting = deletingNotesData || deletionRequestPending;
 
   const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen && deleting) {
+      return;
+    }
     if (!nextOpen) {
       setConfirmOpen(false);
       setError(null);
@@ -28,17 +32,22 @@ export function NotesDataSettingsDialog({
   };
 
   const deleteNotesData = async () => {
-    setDeleting(true);
+    if (deleting) {
+      return;
+    }
+    setDeletionRequestPending(true);
     setError(null);
     try {
       await actions.deleteAllNotesData();
-      handleOpenChange(false);
+      setConfirmOpen(false);
+      setError(null);
+      onOpenChange(false);
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Notes data could not be deleted."
       );
     } finally {
-      setDeleting(false);
+      setDeletionRequestPending(false);
     }
   };
 
@@ -62,6 +71,7 @@ export function NotesDataSettingsDialog({
               <Dialog.Close
                 className="icon-button"
                 aria-label="Close Notes data settings"
+                disabled={deleting}
               >
                 <X size={18} aria-hidden="true" />
               </Dialog.Close>

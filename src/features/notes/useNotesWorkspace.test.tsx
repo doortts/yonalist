@@ -1311,6 +1311,136 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.root).toBeDefined();
   });
 
+  it("retains the last scoped projection when reload fails after a mutation", async () => {
+    const starred = node({ id: "starred", title: "Starred", isStarred: true });
+    const outside = node({ id: "outside", title: "Outside" });
+    const split = node({
+      id: "split",
+      parentId: null,
+      sortKey: 1536,
+      title: "Split"
+    });
+    let rejectScopedReload = false;
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) => {
+        if (scope.kind === "starred") {
+          if (rejectScopedReload) {
+            throw new Error("Scoped reload failed");
+          }
+          return workspace([starred]);
+        }
+        return workspace([starred, outside]);
+      }),
+      splitNode: vi.fn().mockResolvedValue(workspace([starred, outside, split]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    expect(result.current.state.rootIds).toEqual(["starred"]);
+
+    rejectScopedReload = true;
+    await act(async () =>
+      result.current.actions.splitNode(
+        "starred",
+        "split",
+        "Star",
+        "red"
+      )
+    );
+
+    expect(result.current.error).toBe("Scoped reload failed");
+    expect(result.current.libraryView).toBe("starred");
+    expect(result.current.state.rootIds).toEqual(["starred"]);
+    expect(result.current.state.nodesById.outside).toBeUndefined();
+    expect(result.current.state.nodesById.split).toBeUndefined();
+  });
+
+  it("gates hook actions while Notes data deletion is in progress", async () => {
+    const deletion = deferred<void>();
+    const store = repository({
+      deleteDatabase: vi.fn().mockReturnValue(deletion.promise),
+      createNode: vi.fn().mockResolvedValue(workspace([node({ id: "created" })])),
+      updateNode: vi.fn().mockResolvedValue(workspace([node({ id: "updated" })]))
+    });
+    createNoteIdMock.mockReturnValue("created");
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let deletionCompletion!: Promise<void>;
+    act(() => {
+      deletionCompletion = result.current.actions.deleteAllNotesData();
+    });
+    await waitFor(() => expect(store.deleteDatabase).toHaveBeenCalledOnce());
+    expect(result.current.deletingNotesData).toBe(true);
+
+    await act(async () => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Blocked draft",
+        note: ""
+      });
+      await Promise.all([
+        result.current.actions.createRoot(),
+        result.current.actions.updateNode("root", {
+          title: "Blocked update",
+          note: ""
+        }),
+        result.current.actions.selectLibraryView("recent"),
+        result.current.actions.searchNotes("blocked")
+      ]);
+    });
+
+    expect(store.createNode).not.toHaveBeenCalled();
+    expect(store.updateNode).not.toHaveBeenCalled();
+    expect(store.search).not.toHaveBeenCalled();
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+    expect(result.current.draftsByNodeId.root).toBeUndefined();
+
+    await act(async () => {
+      deletion.resolve();
+      await deletionCompletion;
+    });
+
+    expect(result.current.deletingNotesData).toBe(false);
+    expect(result.current.state.rootIds).toEqual([]);
+    expect(store.loadWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("releases the deletion gate and retains a draft when flushing fails", async () => {
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("Draft save failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Recoverable draft",
+        note: "Keep me"
+      });
+    });
+
+    await act(async () => {
+      await expect(
+        result.current.actions.deleteAllNotesData()
+      ).rejects.toThrow("Draft save failed");
+    });
+
+    expect(store.deleteDatabase).not.toHaveBeenCalled();
+    expect(result.current.deletingNotesData).toBe(false);
+    expect(result.current.draftsByNodeId.root).toMatchObject({
+      title: "Recoverable draft",
+      note: "Keep me",
+      status: "failed"
+    });
+    expect(result.current.state.nodesById.root).toBeDefined();
+  });
+
   it("coalesces rapid node drafts and writes the latest patch after 300 ms", async () => {
     const store = repository({
       updateNode: vi.fn((_vaultRoot, input) =>

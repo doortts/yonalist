@@ -25,6 +25,7 @@ interface OutlineNodeRowProps {
   nodeId: NoteId;
   depth: number;
   dragDisabled: boolean;
+  disabled?: boolean;
   readOnly?: boolean;
   locallyExpanded?: boolean;
 }
@@ -37,6 +38,7 @@ export function OutlineNodeRow({
   nodeId,
   depth,
   dragDisabled,
+  disabled = false,
   readOnly = false,
   locallyExpanded = false
 }: OutlineNodeRowProps) {
@@ -58,7 +60,7 @@ export function OutlineNodeRow({
     transition
   } = useSortable({
     id: nodeId,
-    disabled: dragDisabled || readOnly,
+    disabled: disabled || dragDisabled || readOnly,
     attributes: {
       role: "button",
       roleDescription: "sortable note",
@@ -128,6 +130,7 @@ export function OutlineNodeRow({
                 className="notes-row-icon-button"
                 type="button"
                 aria-label={`Restore ${label}`}
+                disabled={disabled}
                 onClick={() => void actions.restoreNode(nodeId)}
               >
                 <RotateCcw size={15} aria-hidden="true" />
@@ -290,7 +293,7 @@ export function OutlineNodeRow({
             ref={setActivatorNodeRef}
             className="notes-row-icon-button notes-drag-handle"
             type="button"
-            disabled={dragDisabled}
+            disabled={disabled || dragDisabled}
             {...attributes}
             {...listeners}
             aria-label={`Move ${label}`}
@@ -307,6 +310,7 @@ export function OutlineNodeRow({
                 type="button"
                 aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${label}`}
                 aria-expanded={!isCollapsed}
+                disabled={disabled}
                 onClick={() =>
                   runStructuralCommand(() => actions.toggleCollapsed(nodeId))
                 }
@@ -326,6 +330,7 @@ export function OutlineNodeRow({
           type="checkbox"
           checked={completed}
           aria-label={`Mark ${label} ${completed ? "incomplete" : "complete"}`}
+          disabled={disabled}
           onChange={() => void actions.toggleComplete(nodeId)}
         />
 
@@ -335,6 +340,7 @@ export function OutlineNodeRow({
           value={titleValue}
           aria-label="Edit node title"
           placeholder="Untitled"
+          disabled={disabled}
           onChange={(event) =>
             actions.updateNodeDraft(nodeId, {
               title: event.target.value,
@@ -353,6 +359,7 @@ export function OutlineNodeRow({
                 className="notes-row-icon-button"
                 type="button"
                 aria-label="Retry save"
+                disabled={disabled}
                 onClick={() => void retryFailedDraft(nodeId)}
               >
                 <RotateCcw size={15} aria-hidden="true" />
@@ -365,6 +372,7 @@ export function OutlineNodeRow({
               type="button"
               aria-label={`${node.isStarred ? "Unstar" : "Star"} ${label}`}
               aria-pressed={node.isStarred}
+              disabled={disabled}
               onClick={() => void actions.toggleStar(nodeId)}
             >
               <Star
@@ -380,6 +388,7 @@ export function OutlineNodeRow({
               type="button"
               aria-label={`${noteOpen ? "Hide" : "Show"} supporting note for ${label}`}
               aria-pressed={noteOpen}
+              disabled={disabled}
               onClick={() => setNoteOpen((open) => !open)}
             >
               <MessageSquareText size={15} aria-hidden="true" />
@@ -390,6 +399,7 @@ export function OutlineNodeRow({
               className="notes-row-icon-button"
               type="button"
               aria-label={`Duplicate ${label}`}
+              disabled={disabled}
               onClick={() => void actions.duplicateNode(nodeId)}
             >
               <Copy size={15} aria-hidden="true" />
@@ -400,6 +410,7 @@ export function OutlineNodeRow({
               className="notes-row-icon-button notes-delete-button"
               type="button"
               aria-label={`Delete ${label}`}
+              disabled={disabled}
               onClick={() => void actions.deleteNode(nodeId)}
             >
               <Trash2 size={15} aria-hidden="true" />
@@ -414,6 +425,7 @@ export function OutlineNodeRow({
           value={noteValue}
           aria-label={`Supporting note: ${label}`}
           rows={2}
+          disabled={disabled}
           onChange={(event) =>
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
