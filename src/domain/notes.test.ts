@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { createNoteId, isNoteNode, isNoteSearchResult } from "./notes";
-import type { NoteNode, NotesWorkspaceScope } from "./notes";
+import type { NoteNode, NotesStore, NotesWorkspaceScope } from "./notes";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -70,6 +70,15 @@ describe("Notes domain contract", () => {
       "tag",
       "trash"
     ]);
+  });
+
+  it("requires every NotesStore to provide discovery capabilities", () => {
+    expectTypeOf<NotesStore>().toMatchTypeOf<{
+      toggleStar: NonNullable<NotesStore["toggleStar"]>;
+      search: NonNullable<NotesStore["search"]>;
+      listTags: NonNullable<NotesStore["listTags"]>;
+      deleteDatabase: NonNullable<NotesStore["deleteDatabase"]>;
+    }>();
   });
 
   it("creates a canonical UUID for a new node", () => {

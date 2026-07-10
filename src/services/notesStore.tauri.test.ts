@@ -126,6 +126,21 @@ describe("notesStore in Tauri", () => {
     ]);
   });
 
+  it("rejects a malformed native search payload", async () => {
+    invokeMock.mockResolvedValue([
+      {
+        nodeId,
+        title: "Page",
+        parentTrail: ["Home", 42],
+        matchedField: "title"
+      }
+    ]);
+
+    await expect(notesSearch(vaultPath, "target")).rejects.toEqual(
+      new Error("Notes search returned an invalid result.")
+    );
+  });
+
   it("maps typed input mutations to exact camelCase native payloads", async () => {
     const createInput: CreateNoteNodeInput = {
       id: nodeId,

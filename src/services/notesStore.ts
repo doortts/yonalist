@@ -1,3 +1,4 @@
+import { isNoteSearchResult } from "../domain/notes";
 import type {
   CreateNoteNodeInput,
   MoveNoteNodeInput,
@@ -124,11 +125,15 @@ export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
   return invokeNotes<NotesWorkspace>("notes_empty_trash", { vaultPath });
 }
 
-export function notesSearch(
+export async function notesSearch(
   vaultPath: string,
   query: string
 ): Promise<NoteSearchResult[]> {
-  return invokeNotes<NoteSearchResult[]>("notes_search", { vaultPath, query });
+  const results = await invokeNotes<unknown>("notes_search", { vaultPath, query });
+  if (!Array.isArray(results) || !results.every(isNoteSearchResult)) {
+    throw new Error("Notes search returned an invalid result.");
+  }
+  return results;
 }
 
 export function notesListTags(vaultPath: string): Promise<string[]> {
@@ -139,14 +144,7 @@ export function notesDeleteDatabase(vaultPath: string): Promise<void> {
   return invokeNotes<void>("notes_delete_database", { vaultPath });
 }
 
-type NotesDiscoveryMethod =
-  | "toggleStar"
-  | "search"
-  | "listTags"
-  | "deleteDatabase";
-
-export const notesStore: NotesStore &
-  Required<Pick<NotesStore, NotesDiscoveryMethod>> = {
+export const notesStore: NotesStore = {
   initialize: notesInitialize,
   loadWorkspace: notesLoadWorkspace,
   createNode: notesCreateNode,

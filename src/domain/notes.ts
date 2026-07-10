@@ -71,15 +71,15 @@ export interface NotesStore {
   moveNode(vaultPath: string, input: MoveNoteNodeInput): Promise<NotesWorkspace>;
   toggleComplete(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   toggleCollapsed(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  toggleStar?(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
+  toggleStar(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   duplicateNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   removeEmptyNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   softDeleteNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   restoreNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
-  search?(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
-  listTags?(vaultPath: string): Promise<string[]>;
-  deleteDatabase?(vaultPath: string): Promise<void>;
+  search(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
+  listTags(vaultPath: string): Promise<string[]>;
+  deleteDatabase(vaultPath: string): Promise<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

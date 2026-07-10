@@ -3225,6 +3225,68 @@ mod tests {
     }
 
     #[test]
+    fn recent_scope_limits_matches_but_keeps_an_older_live_ancestor() {
+        let connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "older ancestor");
+        insert_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            1024,
+            "recent descendant",
+        );
+        insert_node(&connection, THIRD_ID, None, 2048, "older unrelated node");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = CASE id \
+                   WHEN ?1 THEN '2026-07-08T00:00:00.000Z' \
+                   WHEN ?2 THEN '2026-07-10T00:00:00.999Z' \
+                   WHEN ?3 THEN '2026-07-09T00:00:00.000Z' END \
+                 WHERE id IN (?1, ?2, ?3)",
+                params![NODE_ID, CHILD_ID, THIRD_ID],
+            )
+            .expect("set anchor recency");
+
+        let mut recent_peer_ids = Vec::new();
+        for index in 0..99 {
+            let id = format!("{index:08x}-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+            insert_node(
+                &connection,
+                &id,
+                None,
+                i64::from(index + 3) * 1024,
+                "recent peer",
+            );
+            connection
+                .execute(
+                    "UPDATE notes_nodes SET updated_at = ?1 WHERE id = ?2",
+                    params![format!("2026-07-10T00:00:00.{:03}Z", index + 1), id],
+                )
+                .expect("set peer recency");
+            recent_peer_ids.push(id);
+        }
+
+        let active =
+            load_workspace(&connection, NotesWorkspaceScope::Active).expect("active workspace");
+        let recent =
+            load_workspace(&connection, NotesWorkspaceScope::Recent).expect("recent workspace");
+        let recent_ids = recent
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(active.nodes.len(), 102);
+        assert_eq!(recent.nodes.len(), 101);
+        assert!(recent_ids.contains(&NODE_ID));
+        assert!(recent_ids.contains(&CHILD_ID));
+        assert!(!recent_ids.contains(&THIRD_ID));
+        assert!(recent_peer_ids
+            .iter()
+            .all(|id| recent_ids.contains(&id.as_str())));
+    }
+
+    #[test]
     fn search_limits_results_to_one_hundred_nodes() {
         let connection = test_connection();
         for index in 0..101 {
@@ -3273,5 +3335,37 @@ mod tests {
         assert_eq!(std::fs::read(index_path).expect("read index"), b"index");
         assert_eq!(std::fs::read(settings_path).expect("read settings"), b"{}");
         assert!(metadata_path.exists());
+    }
+
+    #[test]
+    fn deleted_database_reinitializes_empty_without_changing_other_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("vault path");
+        let connection = connect_notes_db(vault_path).expect("connect notes");
+        insert_node(&connection, NODE_ID, None, 1024, "stored note");
+
+        let notes_path = notes_db_path(vault_path);
+        let metadata_path = notes_path.parent().expect("metadata path");
+        let index_path = metadata_path.join("index.sqlite");
+        let settings_path = metadata_path.join("settings.json");
+        std::fs::write(&index_path, b"index fixture").expect("write index fixture");
+        std::fs::write(&settings_path, b"metadata fixture").expect("write metadata fixture");
+        drop(connection);
+
+        delete_database(vault_path).expect("delete Notes database");
+        let reopened = connect_notes_db(vault_path).expect("reinitialize Notes database");
+        let workspace =
+            load_workspace(&reopened, NotesWorkspaceScope::Active).expect("load empty workspace");
+
+        assert!(workspace.nodes.is_empty());
+        assert!(notes_path.exists());
+        assert_eq!(
+            std::fs::read(index_path).expect("read index fixture"),
+            b"index fixture"
+        );
+        assert_eq!(
+            std::fs::read(settings_path).expect("read metadata fixture"),
+            b"metadata fixture"
+        );
     }
 }

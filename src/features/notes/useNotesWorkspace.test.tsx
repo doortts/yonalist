@@ -71,11 +71,15 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     moveNode: empty,
     toggleComplete: empty,
     toggleCollapsed: empty,
+    toggleStar: empty,
     duplicateNode: empty,
     removeEmptyNode: empty,
     softDeleteNode: empty,
     restoreNode: empty,
     emptyTrash: empty,
+    search: vi.fn().mockResolvedValue([]),
+    listTags: vi.fn().mockResolvedValue([]),
+    deleteDatabase: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
 }
