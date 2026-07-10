@@ -5,6 +5,7 @@ import {
   NotesExportConflictError
 } from "../domain/notesExport";
 import type {
+  NotesExportFormat,
   NotesExportRequest,
   NotesExportResult,
   NotesExportSaveRequest
@@ -19,12 +20,25 @@ function assertTauriDesktop(): void {
 export async function renderMarkdownExport(
   request: NotesExportRequest
 ): Promise<NotesExportResult> {
+  return renderNotesExport(request, "markdown");
+}
+
+export async function renderPdfExport(
+  request: NotesExportRequest
+): Promise<NotesExportResult> {
+  return renderNotesExport(request, "pdf");
+}
+
+async function renderNotesExport(
+  request: NotesExportRequest,
+  format: NotesExportFormat
+): Promise<NotesExportResult> {
   assertTauriDesktop();
   const { invoke } = await import("@tauri-apps/api/core");
 
   let result: unknown;
   try {
-    result = await invoke<unknown>("notes_export_markdown", {
+    result = await invoke<unknown>(`notes_export_${format}`, {
       vaultPath: request.vaultPath,
       rootNodeId: request.rootNodeId,
       destination: request.destination,
@@ -37,7 +51,7 @@ export async function renderMarkdownExport(
     throw cause;
   }
 
-  if (!isNotesExportResult(result)) {
+  if (!isNotesExportResult(result, format)) {
     throw new Error("Notes export returned an invalid result.");
   }
   return result;
@@ -47,20 +61,31 @@ export async function saveNotesExport(
   request: NotesExportSaveRequest
 ): Promise<NotesExportResult | null> {
   assertTauriDesktop();
+  const options =
+    request.format === "pdf"
+      ? { name: "PDF", extension: "pdf" }
+      : { name: "Markdown", extension: "md" };
   const { save } = await import("@tauri-apps/plugin-dialog");
   const destination = await save({
-    defaultPath: defaultNotesExportFileName(request.defaultFileName),
-    filters: [{ name: "Markdown", extensions: ["md"] }]
+    defaultPath: defaultNotesExportFileName(
+      request.defaultFileName,
+      request.format
+    ),
+    filters: [{ name: options.name, extensions: [options.extension] }]
   });
 
   if (destination === null) {
     return null;
   }
 
-  return renderMarkdownExport({
+  const exportRequest = {
     vaultPath: request.vaultPath,
     rootNodeId: request.rootNodeId,
     destination,
     overwrite: false
-  });
+  };
+
+  return request.format === "pdf"
+    ? renderPdfExport(exportRequest)
+    : renderMarkdownExport(exportRequest);
 }

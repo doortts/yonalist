@@ -40,6 +40,7 @@ pub struct ExportNode {
 #[serde(rename_all = "lowercase")]
 pub enum NotesExportFormat {
     Markdown,
+    Pdf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -266,6 +267,22 @@ mod tests {
             json!({
                 "destination": "/tmp/project.md",
                 "format": "markdown"
+            })
+        );
+    }
+
+    #[test]
+    fn pdf_export_result_uses_the_exact_camel_case_lowercase_wire_contract() {
+        let result = NotesExportResult {
+            destination: "/tmp/project.pdf".to_string(),
+            format: NotesExportFormat::Pdf,
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).expect("serialize PDF export result"),
+            json!({
+                "destination": "/tmp/project.pdf",
+                "format": "pdf"
             })
         );
     }

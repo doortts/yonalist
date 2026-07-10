@@ -1,5 +1,5 @@
 use crate::file_io::write_atomic_file;
-use crate::notes::export::{load_export_snapshot, render_markdown};
+use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
 use crate::notes::repository::{
     connect_notes_db, create_node, delete_database, duplicate_node, empty_trash, list_tags,
     load_workspace, move_node, open_notes_export_db, remove_empty_node, restore_node, search_nodes,
@@ -7,7 +7,8 @@ use crate::notes::repository::{
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchResult, NotesExportFormat,
-    NotesExportResult, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    NotesExportResult, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
+    UpdateNodeInput,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -184,6 +185,41 @@ pub(crate) fn notes_export_markdown(
     destination: String,
     overwrite: bool,
 ) -> Result<NotesExportResult, String> {
+    export_notes_file(
+        vault_path,
+        root_node_id,
+        destination,
+        overwrite,
+        NotesExportFormat::Markdown,
+        render_markdown,
+    )
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_export_pdf(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    export_notes_file(
+        vault_path,
+        root_node_id,
+        destination,
+        overwrite,
+        NotesExportFormat::Pdf,
+        render_pdf,
+    )
+}
+
+fn export_notes_file(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+    format: NotesExportFormat,
+    renderer: fn(&NotesExportSnapshot) -> Result<Vec<u8>, String>,
+) -> Result<NotesExportResult, String> {
     validate_note_id(&root_node_id)?;
     let destination_path = export_destination_path(&destination)?;
     ensure_export_destination_is_not_directory(&destination_path)?;
@@ -193,12 +229,12 @@ pub(crate) fn notes_export_markdown(
 
     let connection = open_notes_export_db(&vault_path)?;
     let snapshot = load_export_snapshot(&connection, &root_node_id)?;
-    let markdown = render_markdown(&snapshot)?;
-    write_atomic_file(&destination_path, &markdown, overwrite)?;
+    let bytes = renderer(&snapshot)?;
+    write_atomic_file(&destination_path, &bytes, overwrite)?;
 
     Ok(NotesExportResult {
         destination,
-        format: NotesExportFormat::Markdown,
+        format,
     })
 }
 
@@ -799,5 +835,127 @@ mod tests {
 
         assert_eq!(error, "Note ID must be a canonical UUID v4 string.");
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn pdf_export_conflict_is_reported_before_notes_storage_is_opened() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("existing.pdf");
+        std::fs::write(&destination, b"keep me").expect("seed destination");
+
+        let error = notes_export_pdf(
+            "   ".to_string(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("occupied destination");
+
+        assert_eq!(error, "Destination already exists.");
+        assert_eq!(
+            std::fs::read(destination).expect("read destination"),
+            b"keep me"
+        );
+    }
+
+    #[test]
+    fn pdf_export_rejects_an_overwrite_directory_before_opening_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("export.pdf");
+        std::fs::create_dir(&destination).expect("seed destination directory");
+
+        let error = notes_export_pdf(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect_err("directory destination");
+
+        assert_eq!(error, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+        assert!(destination.is_dir());
+    }
+
+    #[test]
+    fn pdf_export_validates_root_and_destination_before_opening_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("missing-vault");
+        let destination = temp_dir.path().join("export.pdf");
+
+        let invalid_root = notes_export_pdf(
+            vault_path.to_string_lossy().into_owned(),
+            "not-a-uuid".to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("invalid root");
+        assert_eq!(invalid_root, "Note ID must be a canonical UUID v4 string.");
+
+        let invalid_destination = notes_export_pdf(
+            vault_path.to_string_lossy().into_owned(),
+            ROOT_ID.to_string(),
+            String::new(),
+            false,
+        )
+        .expect_err("invalid destination");
+        assert_eq!(invalid_destination, "File path must name a file.");
+        assert!(!vault_path.join(".yonalist").exists());
+    }
+
+    #[test]
+    fn pdf_export_writes_active_snapshot_atomically_without_mutating_source_db() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let db_path = crate::notes::repository::notes_db_path(&vault_path_string);
+        let source_before = std::fs::read(&db_path).expect("read source database before export");
+        let destination = temp_dir.path().join("nested/project.pdf");
+        let destination_string = destination.to_string_lossy().into_owned();
+
+        let result = notes_export_pdf(
+            vault_path_string.clone(),
+            ROOT_ID.to_string(),
+            destination_string.clone(),
+            false,
+        )
+        .expect("export PDF");
+
+        assert_eq!(result.destination, destination_string);
+        assert_eq!(result.format, NotesExportFormat::Pdf);
+        let bytes = std::fs::read(&destination).expect("read PDF export");
+        let mut warnings = Vec::new();
+        let parsed = printpdf::PdfDocument::parse(
+            &bytes,
+            &printpdf::PdfParseOptions::default(),
+            &mut warnings,
+        )
+        .expect("parse PDF export");
+        let text = parsed
+            .extract_text()
+            .into_iter()
+            .flatten()
+            .collect::<String>();
+        assert!(text.contains("Project"));
+        assert!(text.contains("Completed child"));
+        assert!(!text.contains("Deleted child"));
+        assert_eq!(
+            std::fs::read(&db_path).expect("read source database after export"),
+            source_before
+        );
+
+        std::fs::write(&destination, b"stale").expect("replace with stale destination");
+        notes_export_pdf(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect("overwrite PDF");
+        assert!(std::fs::read(&destination)
+            .expect("read overwritten PDF")
+            .starts_with(b"%PDF-"));
     }
 }

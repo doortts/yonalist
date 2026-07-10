@@ -1,6 +1,6 @@
 import type { NoteId } from "./notes";
 
-export type NotesExportFormat = "markdown";
+export type NotesExportFormat = "markdown" | "pdf";
 
 export interface NotesExportRequest {
   vaultPath: string;
@@ -12,7 +12,7 @@ export interface NotesExportRequest {
 export interface NotesExportSaveRequest {
   vaultPath: string;
   rootNodeId: NoteId;
-  format: "markdown";
+  format: NotesExportFormat;
   defaultFileName?: string;
 }
 
@@ -22,7 +22,10 @@ export interface NotesExportResult {
 }
 
 const NOTES_EXPORT_CONFLICT_MESSAGE = "Destination already exists.";
-const DEFAULT_MARKDOWN_FILE_NAME = "notes-export.md";
+const NOTES_EXPORT_EXTENSIONS: Record<NotesExportFormat, string> = {
+  markdown: "md",
+  pdf: "pdf"
+};
 const WINDOWS_RESERVED_DEVICE_STEMS = new Set([
   "CON",
   "PRN",
@@ -49,11 +52,17 @@ function normalizeTerminalFileNameEdges(value: string): string {
   return value.replace(/^\.+/, "").replace(/[. ]+$/, "");
 }
 
-function consumeTerminalMarkdownSuffixes(value: string): string {
+function consumeTerminalExportSuffixes(
+  value: string,
+  extension: string
+): string {
   let baseName = value;
+  const suffix = `.${extension}`;
 
-  while (baseName.toLowerCase().endsWith(".md")) {
-    baseName = normalizeTerminalFileNameEdges(baseName.slice(0, -3));
+  while (baseName.toLowerCase().endsWith(suffix)) {
+    baseName = normalizeTerminalFileNameEdges(
+      baseName.slice(0, -suffix.length)
+    );
   }
 
   return baseName;
@@ -72,20 +81,26 @@ function isWindowsReservedDeviceStem(stem: string): boolean {
 }
 
 export function defaultNotesExportFileName(
-  title: string | null | undefined
+  title: string | null | undefined,
+  format: NotesExportFormat = "markdown"
 ): string {
+  const extension = NOTES_EXPORT_EXTENSIONS[format];
   const sanitizedTitle = sanitizeNotesExportTitle(title ?? "");
-  const baseName = consumeTerminalMarkdownSuffixes(
-    normalizeTerminalFileNameEdges(sanitizedTitle)
+  const baseName = consumeTerminalExportSuffixes(
+    normalizeTerminalFileNameEdges(sanitizedTitle),
+    extension
   );
   const comparableStem = windowsComparisonStem(baseName);
 
   return baseName && !isWindowsReservedDeviceStem(comparableStem)
-    ? `${baseName}.md`
-    : DEFAULT_MARKDOWN_FILE_NAME;
+    ? `${baseName}.${extension}`
+    : `notes-export.${extension}`;
 }
 
-export function isNotesExportResult(value: unknown): value is NotesExportResult {
+export function isNotesExportResult(
+  value: unknown,
+  expectedFormat?: NotesExportFormat
+): value is NotesExportResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -95,7 +110,8 @@ export function isNotesExportResult(value: unknown): value is NotesExportResult 
     Object.keys(result).length === 2 &&
     typeof result.destination === "string" &&
     result.destination.length > 0 &&
-    result.format === "markdown"
+    (result.format === "markdown" || result.format === "pdf") &&
+    (expectedFormat === undefined || result.format === expectedFormat)
   );
 }
 
