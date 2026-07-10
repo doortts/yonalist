@@ -200,7 +200,9 @@ export function NotesOutlinePane() {
             <p className="notes-pane-state">Loading notes...</p>
           )}
           {state.status === "error" && state.rootIds.length === 0 && (
-            <p className="notes-pane-state notes-pane-error">{state.error}</p>
+            <p className="notes-pane-state notes-pane-error" role="alert">
+              {state.error}
+            </p>
           )}
           {!initialLoading &&
             state.status !== "error" &&
@@ -208,7 +210,9 @@ export function NotesOutlinePane() {
               <p className="notes-pane-state">No outline yet.</p>
             )}
           {state.status === "error" && state.rootIds.length > 0 && (
-            <p className="notes-inline-error">{state.error}</p>
+            <p className="notes-inline-error" role="alert">
+              {state.error}
+            </p>
           )}
           <DndContext
             accessibility={{
@@ -228,12 +232,14 @@ export function NotesOutlinePane() {
               <ol
                 className="notes-outline-list"
                 data-drag-active={activeDragId === null ? undefined : "true"}
+                role="list"
               >
                 {rows.map((row) => (
                   <li
                     className="notes-outline-item"
                     key={row.id}
                     aria-level={row.depth + 1}
+                    role="listitem"
                   >
                     <OutlineNodeRow
                       nodeId={row.id}

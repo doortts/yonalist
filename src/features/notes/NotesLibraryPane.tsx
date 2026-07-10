@@ -21,6 +21,7 @@ export function NotesLibraryPane() {
         <button
           className="text-button notes-new-page"
           type="button"
+          disabled={state.status === "loading"}
           onClick={() => void actions.createRoot()}
         >
           <Plus size={16} aria-hidden="true" />

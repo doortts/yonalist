@@ -173,6 +173,7 @@
 
 .notes-node {
   --notes-indent: 0px;
+  --notes-content-offset: 84px;
   position: relative;
   min-width: 0;
 }
@@ -184,7 +185,7 @@
 
 .notes-node-main {
   display: grid;
-  grid-template-columns: 24px 24px 18px minmax(0, 1fr) auto;
+  grid-template-columns: 24px 24px 24px minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px;
   min-height: 38px;
@@ -244,10 +245,11 @@
 }
 
 .notes-complete-checkbox {
-  width: 15px;
-  height: 15px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .notes-node-title {
@@ -297,9 +299,9 @@
 
 .notes-node-note {
   display: block;
-  width: calc(100% - var(--notes-indent) - 78px);
+  width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
   min-height: 58px;
-  margin: 2px 0 8px calc(var(--notes-indent) + 78px);
+  margin: 2px 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
   padding: 7px 9px;
   resize: vertical;
   border: 1px solid var(--border);

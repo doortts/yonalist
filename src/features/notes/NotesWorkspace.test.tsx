@@ -7,6 +7,8 @@ import {
   within
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
@@ -39,6 +41,11 @@ vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 import { NotesFeatureProvider } from "./NotesFeature";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -213,6 +220,31 @@ function renderNotesWorkspace() {
   );
 }
 
+function queryTitleInput(value: string): HTMLInputElement | null {
+  return (
+    screen
+      .queryAllByRole<HTMLInputElement>("textbox", {
+        name: "Edit node title"
+      })
+      .find(
+        (input) =>
+          input.value === value || input.value.trim() === value.trim()
+      ) ?? null
+  );
+}
+
+function getTitleInput(value: string): HTMLInputElement {
+  const input = queryTitleInput(value);
+  if (!input) {
+    throw new Error(`Unable to find a node title input with value ${value}`);
+  }
+  return input;
+}
+
+async function findTitleInput(value: string): Promise<HTMLInputElement> {
+  return waitFor(() => getTitleInput(value));
+}
+
 function mockOutlineRowRects() {
   const rectangle = (top: number, left = 0, width = 640, height = 38) =>
     ({
@@ -251,9 +283,7 @@ describe("Notes workspace", () => {
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
     renderNotesWorkspace();
 
-    expect(
-      await screen.findByRole("textbox", { name: "Edit node title: Project" })
-    ).toBeInTheDocument();
+    expect(await findTitleInput("Project")).toBeInTheDocument();
     expect(notesStoreMock.initialize).toHaveBeenCalledOnce();
     expect(notesStoreMock.initialize).toHaveBeenCalledWith("/vault");
     expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
@@ -266,14 +296,10 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
 
-    const title = await screen.findByRole("textbox", {
-      name: "Edit node title: Project"
-    });
+    const title = await findTitleInput("Project");
     expect(title.closest("li")).toHaveAttribute("aria-level", "1");
     expect(
-      screen
-        .getByRole("textbox", { name: "Edit node title: Plan" })
-        .closest("li")
+      getTitleInput("Plan").closest("li")
     ).toHaveAttribute("aria-level", "2");
     const projectHandle = screen.getByRole("button", { name: "Move Project" });
     expect(projectHandle).toBeEnabled();
@@ -299,14 +325,10 @@ describe("Notes workspace", () => {
     expect(screen.getByRole("button", { name: /Move Project/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Move Plan" })).toBeEnabled();
     expect(
-      screen
-        .getByRole("textbox", { name: /Edit node title: Project/ })
-        .closest("li")
+      getTitleInput("Project").closest("li")
     ).toHaveAttribute("aria-level", "1");
     expect(
-      screen
-        .getByRole("textbox", { name: "Edit node title: Plan" })
-        .closest("li")
+      getTitleInput("Plan").closest("li")
     ).toHaveAttribute("aria-level", "2");
   });
 
@@ -317,9 +339,11 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await screen.findByRole("button", { name: "Move Project" });
 
-    await user.click(
-      screen.getByRole("checkbox", { name: "Mark Project complete" })
-    );
+    const completionCheckbox = screen.getByRole("checkbox", {
+      name: "Mark Project complete"
+    });
+    expect(completionCheckbox).toHaveClass("notes-complete-checkbox");
+    await user.click(completionCheckbox);
     await waitFor(() =>
       expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
     );
@@ -376,8 +400,10 @@ describe("Notes workspace", () => {
     });
     expect(
       screen
-        .getAllByRole("textbox", { name: /Edit node title:/ })
-        .map((input) => (input as HTMLInputElement).value)
+        .getAllByRole<HTMLInputElement>("textbox", {
+          name: "Edit node title"
+        })
+        .map((input) => input.value)
     ).toEqual(["First", "Second"]);
 
     move.resolve(
@@ -389,8 +415,10 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(
         screen
-          .getAllByRole("textbox", { name: /Edit node title:/ })
-          .map((input) => (input as HTMLInputElement).value)
+          .getAllByRole<HTMLInputElement>("textbox", {
+            name: "Edit node title"
+          })
+          .map((input) => input.value)
       ).toEqual(["Second", "First"])
     );
   });
@@ -462,24 +490,18 @@ describe("Notes workspace", () => {
     expect(within(library).getByRole("button", { name: "Outside branch" })).toBeInTheDocument();
     expect(within(library).queryByRole("button", { name: "Plan" })).not.toBeInTheDocument();
 
-    await user.dblClick(
-      screen.getByRole("textbox", { name: "Edit node title: Project" })
-    );
+    await user.dblClick(getTitleInput("Project"));
     const breadcrumb = screen.getByLabelText("Notes breadcrumb");
     expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("textbox", {
-        name: "Edit node title: Outside branch"
-      })
+      queryTitleInput("Outside branch")
     ).not.toBeInTheDocument();
 
-    await user.dblClick(
-      screen.getByRole("textbox", { name: "Edit node title: Plan" })
-    );
+    await user.dblClick(getTitleInput("Plan"));
     expect(within(breadcrumb).getByRole("button", { name: "Project" })).toBeInTheDocument();
     expect(within(breadcrumb).getByRole("button", { name: "Plan" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("textbox", { name: "Edit node title: Project" })
+      queryTitleInput("Project")
     ).not.toBeInTheDocument();
   });
 
@@ -487,7 +509,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     const focusSpy = vi.spyOn(HTMLInputElement.prototype, "focus");
     renderNotesWorkspace();
-    await screen.findByRole("textbox", { name: "Edit node title: Project" });
+    await findTitleInput("Project");
 
     await user.click(screen.getByRole("button", { name: "New page" }));
 
@@ -496,20 +518,20 @@ describe("Notes workspace", () => {
       expect.objectContaining({ parentId: null, title: "", note: "" })
     );
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title" })
+      await findTitleInput("")
     ).toHaveFocus();
     expect(focusSpy).toHaveBeenCalledOnce();
 
     await user.click(screen.getByRole("button", { name: "Project" }));
     await waitFor(() =>
       expect(
-        screen.queryByRole("textbox", { name: "Edit node title" })
+        queryTitleInput("")
       ).not.toBeInTheDocument()
     );
     await user.click(screen.getByRole("button", { name: "All notes" }));
 
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title" })
+      await findTitleInput("")
     ).toBeInTheDocument();
     expect(focusSpy).toHaveBeenCalledOnce();
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
@@ -533,21 +555,22 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
 
     const outline = screen.getByLabelText("Notes outline");
-    await within(outline).findByRole("textbox", {
-      name: "Edit node title: Project"
-    });
+    await findTitleInput("Project");
 
-    expect(within(outline).getByRole("list")).toBeInTheDocument();
+    expect(within(outline).getByRole("list")).toHaveAttribute("role", "list");
     expect(
       within(outline)
         .getAllByRole("listitem")
         .map((item) => item.getAttribute("aria-level"))
     ).toEqual(["1", "2", "3", "1"]);
+    for (const item of within(outline).getAllByRole("listitem")) {
+      expect(item).toHaveAttribute("role", "listitem");
+    }
   });
 
   it("composes the labelled breadcrumb home button with an icon tooltip", async () => {
     renderNotesWorkspace();
-    await screen.findByRole("textbox", { name: "Edit node title: Project" });
+    await findTitleInput("Project");
 
     const home = screen.getByRole("button", { name: "All notes" });
 
@@ -568,9 +591,7 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
 
-    const deepestTitle = await screen.findByRole("textbox", {
-      name: "Edit node title: Depth 12"
-    });
+    const deepestTitle = await findTitleInput("Depth 12");
     const deepestRow = deepestTitle.closest<HTMLElement>(".notes-node");
 
     expect(deepestRow).not.toBeNull();
@@ -582,7 +603,7 @@ describe("Notes workspace", () => {
   it("persists collapse and completion only after authoritative responses", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    await screen.findByRole("textbox", { name: "Edit node title: Plan" });
+    await findTitleInput("Plan");
 
     const collapse = screen.getByRole("button", { name: "Collapse Project" });
     expect(collapse).toHaveAttribute("aria-expanded", "true");
@@ -594,7 +615,7 @@ describe("Notes workspace", () => {
     );
     await waitFor(() =>
       expect(
-        screen.queryByRole("textbox", { name: "Edit node title: Plan" })
+        queryTitleInput("Plan")
       ).not.toBeInTheDocument()
     );
     expect(screen.getByRole("button", { name: "Expand Project" })).toHaveAttribute(
@@ -619,12 +640,12 @@ describe("Notes workspace", () => {
   it("writes a title on blur with the current supporting note", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    const title = await screen.findByRole("textbox", {
-      name: "Edit node title: Project"
-    });
+    const title = await findTitleInput("Project");
+    expect(title).toHaveAccessibleName("Edit node title");
 
     await user.clear(title);
     await user.type(title, "Renamed project");
+    expect(title).toHaveAccessibleName("Edit node title");
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     fireEvent.blur(title);
 
@@ -640,7 +661,7 @@ describe("Notes workspace", () => {
   it("toggles and writes a supporting note on blur with the current title", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    await screen.findByRole("textbox", { name: "Edit node title: Project" });
+    await findTitleInput("Project");
 
     expect(
       screen.queryByRole("textbox", { name: "Supporting note: Project" })
@@ -672,9 +693,7 @@ describe("Notes workspace", () => {
     notesStoreMock.updateNode.mockReturnValueOnce(save.promise);
     const user = userEvent.setup();
     renderNotesWorkspace();
-    const title = await screen.findByRole("textbox", {
-      name: "Edit node title: Project"
-    });
+    const title = await findTitleInput("Project");
     await user.click(
       screen.getByRole("button", { name: "Show supporting note for Project" })
     );
@@ -727,13 +746,13 @@ describe("Notes workspace", () => {
       .spyOn(globalThis.crypto, "randomUUID")
       .mockReturnValue("00000000-0000-4000-8000-000000000001");
     renderNotesWorkspace();
-    const title = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: alphaXYZomega"
-    });
+    const title = await findTitleInput("alphaXYZomega");
     title.focus();
     title.setSelectionRange(5, 8);
 
     expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    expect(randomUUID).toHaveBeenCalledOnce();
     await waitFor(() => expect(notesStoreMock.splitNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.splitNode).toHaveBeenCalledWith("/vault", {
       id: "source",
@@ -758,9 +777,39 @@ describe("Notes workspace", () => {
     );
 
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title: omega" })
+      await findTitleInput("omega")
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.splitNode).toHaveBeenCalledOnce();
+    randomUUID.mockRestore();
+  });
+
+  it("keeps a dirty title blur-saveable when split UUID generation fails", async () => {
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "alphaomega" })
+    ]);
+    const randomUUID = vi
+      .spyOn(globalThis.crypto, "randomUUID")
+      .mockImplementation(() => {
+        throw new Error("uuid failed");
+      });
+    renderNotesWorkspace();
+    const title = await findTitleInput("alphaomega");
+    fireEvent.change(title, { target: { value: "alpha omega" } });
+    title.focus();
+    title.setSelectionRange(5, 5);
+
+    expect(() => fireEvent.keyDown(title, { key: "Enter" })).not.toThrow();
+    fireEvent.blur(title);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "source",
+        title: "alpha omega",
+        note: ""
+      })
+    );
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
     randomUUID.mockRestore();
   });
 
@@ -795,9 +844,7 @@ describe("Notes workspace", () => {
       .mockReturnValue("00000000-0000-4000-8000-000000000002");
     const user = userEvent.setup();
     renderNotesWorkspace();
-    const title = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: alphaXYZomega"
-    });
+    const title = await findTitleInput("alphaXYZomega");
     await user.click(
       screen.getByRole("button", {
         name: "Show supporting note for alphaXYZomega"
@@ -841,10 +888,10 @@ describe("Notes workspace", () => {
     });
 
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title: alpha" })
+      await findTitleInput("alpha")
     ).toHaveValue("alpha");
     expect(
-      screen.getByRole("textbox", { name: "Edit node title: omega!" })
+      getTitleInput("omega!")
     ).toHaveFocus();
     randomUUID.mockRestore();
   });
@@ -871,9 +918,7 @@ describe("Notes workspace", () => {
       .spyOn(globalThis.crypto, "randomUUID")
       .mockReturnValue("00000000-0000-4000-8000-000000000003");
     renderNotesWorkspace();
-    const title = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: alphaXYZomega"
-    });
+    const title = await findTitleInput("alphaXYZomega");
     fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
     title.focus();
     title.setSelectionRange(5, 8);
@@ -923,16 +968,15 @@ describe("Notes workspace", () => {
       return move.promise;
     });
     renderNotesWorkspace();
-    const title = await screen.findByRole("textbox", {
-      name: "Edit node title: Second"
-    });
+    const title = await findTitleInput("Second");
     fireEvent.change(title, { target: { value: "Second edited" } });
     title.focus();
 
     expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
+    expect(fireEvent.keyDown(title, { key: "Tab" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
-    screen.getByRole("button", { name: "New page" }).focus();
+    screen.getByRole("button", { name: "All notes" }).focus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
 
     const saved = before.map((current) =>
@@ -946,7 +990,7 @@ describe("Notes workspace", () => {
       parentId: "first",
       afterId: "leaf"
     });
-    expect(screen.getByRole("button", { name: "New page" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
       move.resolve(
@@ -960,11 +1004,10 @@ describe("Notes workspace", () => {
       )
     );
     expect(
-      await screen.findByRole("textbox", {
-        name: "Edit node title: Second edited"
-      })
+      await findTitleInput("Second edited")
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.moveNode).toHaveBeenCalledOnce();
   });
 
   it("expands a collapsed previous sibling before indenting and focusing", async () => {
@@ -979,9 +1022,7 @@ describe("Notes workspace", () => {
     notesStoreMock.toggleCollapsed.mockReturnValue(expand.promise);
     notesStoreMock.moveNode.mockReturnValue(move.promise);
     renderNotesWorkspace();
-    const second = await screen.findByRole("textbox", {
-      name: "Edit node title: Second"
-    });
+    const second = await findTitleInput("Second");
     second.focus();
 
     expect(fireEvent.keyDown(second, { key: "Tab" })).toBe(false);
@@ -1016,15 +1057,13 @@ describe("Notes workspace", () => {
       )
     );
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title: Second" })
+      await findTitleInput("Second")
     ).toHaveFocus();
   });
 
   it("saves before Shift+Tab outdent and does not duplicate the handled blur", async () => {
     renderNotesWorkspace();
-    const title = await screen.findByRole("textbox", {
-      name: "Edit node title: Milestone"
-    });
+    const title = await findTitleInput("Milestone");
     fireEvent.change(title, { target: { value: "Milestone edited" } });
     title.focus();
 
@@ -1054,17 +1093,13 @@ describe("Notes workspace", () => {
     const save = deferred<NotesWorkspace>();
     notesStoreMock.updateNode.mockReturnValue(save.promise);
     renderNotesWorkspace();
-    const plan = await screen.findByRole("textbox", {
-      name: "Edit node title: Plan"
-    });
+    const plan = await findTitleInput("Plan");
     fireEvent.change(plan, { target: { value: "Plan edited" } });
     plan.focus();
 
     expect(fireEvent.keyDown(plan, { key: "ArrowDown" })).toBe(false);
     expect(
-      await screen.findByRole("textbox", {
-        name: "Edit node title: Milestone"
-      })
+      await findTitleInput("Milestone")
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -1080,24 +1115,18 @@ describe("Notes workspace", () => {
         )
       )
     );
-    const milestone = screen.getByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: Milestone"
-    });
+    const milestone = getTitleInput("Milestone");
     milestone.setSelectionRange(0, 0);
     expect(fireEvent.keyDown(milestone, { key: "ArrowUp" })).toBe(false);
     expect(
-      await screen.findByRole("textbox", {
-        name: "Edit node title: Plan edited"
-      })
+      await findTitleInput("Plan edited")
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
   });
 
   it("keeps horizontal caret movement native except at collapse boundaries", async () => {
     renderNotesWorkspace();
-    const project = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: Project"
-    });
+    const project = await findTitleInput("Project");
     project.focus();
     project.setSelectionRange(1, 1);
     expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(true);
@@ -1108,20 +1137,52 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce());
     await waitFor(() =>
       expect(
-        screen.queryByRole("textbox", { name: "Edit node title: Plan" })
+        queryTitleInput("Plan")
       ).not.toBeInTheDocument()
     );
 
     project.setSelectionRange(project.value.length, project.value.length);
     expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledTimes(2));
-    const plan = await screen.findByRole("textbox", {
-      name: "Edit node title: Plan"
-    });
+    const plan = await findTitleInput("Plan");
 
     project.setSelectionRange(project.value.length, project.value.length);
     expect(fireEvent.keyDown(project, { key: "ArrowRight" })).toBe(false);
     expect(plan).toHaveFocus();
+  });
+
+  it("serializes rapid non-repeat collapse commands until the first settles", async () => {
+    const before = [
+      node({ id: "project", sortKey: 1, title: "Project" }),
+      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" })
+    ];
+    configureRepository(before);
+    const collapse = deferred<NotesWorkspace>();
+    notesStoreMock.toggleCollapsed.mockReturnValue(collapse.promise);
+    renderNotesWorkspace();
+    const project = await findTitleInput("Project");
+    project.focus();
+    project.setSelectionRange(0, 0);
+
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
+    expect(fireEvent.keyDown(project, { key: "ArrowLeft" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce()
+    );
+
+    await act(async () =>
+      collapse.resolve(
+        workspace(
+          before.map((current) =>
+            current.id === "project"
+              ? { ...current, isCollapsed: true }
+              : current
+          )
+        )
+      )
+    );
+    await waitFor(() => expect(queryTitleInput("Plan")).not.toBeInTheDocument());
+    expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledOnce();
   });
 
   it("persists an empty draft before removal and focuses only after success", async () => {
@@ -1136,12 +1197,11 @@ describe("Notes workspace", () => {
     notesStoreMock.updateNode.mockReturnValue(save.promise);
     notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
     renderNotesWorkspace();
-    const empty = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title"
-    });
+    const empty = await findTitleInput("");
     empty.focus();
     empty.setSelectionRange(0, 0);
 
+    expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
     expect(fireEvent.keyDown(empty, { key: "Backspace" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
@@ -1150,7 +1210,7 @@ describe("Notes workspace", () => {
       note: ""
     });
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
-    screen.getByRole("button", { name: "New page" }).focus();
+    screen.getByRole("button", { name: "All notes" }).focus();
 
     await act(async () => save.resolve(workspace(before)));
     await waitFor(() =>
@@ -1159,15 +1219,16 @@ describe("Notes workspace", () => {
         "empty"
       )
     );
-    expect(screen.getByRole("button", { name: "New page" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
       remove.resolve(workspace(before.filter((current) => current.id !== "empty")))
     );
     expect(
-      await screen.findByRole("textbox", { name: "Edit node title: First" })
+      await findTitleInput("First")
     ).toHaveFocus();
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledOnce();
   });
 
   it("focuses the first lifted child after removing a collapsed empty parent", async () => {
@@ -1181,9 +1242,7 @@ describe("Notes workspace", () => {
     const remove = deferred<NotesWorkspace>();
     notesStoreMock.removeEmptyNode.mockReturnValue(remove.promise);
     renderNotesWorkspace();
-    const empty = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title"
-    });
+    const empty = await findTitleInput("");
     empty.focus();
     empty.setSelectionRange(0, 0);
 
@@ -1205,9 +1264,7 @@ describe("Notes workspace", () => {
       )
     );
     expect(
-      await screen.findByRole("textbox", {
-        name: "Edit node title: Lifted A"
-      })
+      await findTitleInput("Lifted A")
     ).toHaveFocus();
   });
 
@@ -1216,9 +1273,7 @@ describe("Notes workspace", () => {
       node({ id: "kept", title: "", note: "supporting context" })
     ]);
     renderNotesWorkspace();
-    const title = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title"
-    });
+    const title = await findTitleInput("");
     title.focus();
     title.setSelectionRange(0, 0);
 
@@ -1230,9 +1285,7 @@ describe("Notes workspace", () => {
   it("does not intercept composing, Process, or supporting-note keys", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    const title = await screen.findByRole<HTMLInputElement>("textbox", {
-      name: "Edit node title: Project"
-    });
+    const title = await findTitleInput("Project");
     title.focus();
     title.setSelectionRange(0, 0);
 
@@ -1258,7 +1311,7 @@ describe("Notes workspace", () => {
   it("exposes named duplicate and delete controls", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
-    await screen.findByRole("textbox", { name: "Edit node title: Project" });
+    await findTitleInput("Project");
 
     await user.click(
       screen.getByRole("button", { name: "Duplicate Outside branch" })
@@ -1283,6 +1336,29 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
 
     expect(screen.getAllByText("Loading notes...")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "New page" })).toBeDisabled();
     expect(await screen.findAllByText("Load failed")).toHaveLength(2);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(
+      within(screen.getByLabelText("Notes outline")).getByRole("alert")
+    ).toHaveTextContent("Load failed");
+    expect(
+      within(screen.getByLabelText("Notes library")).queryByRole("alert")
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses a 24px completion target and keeps note content aligned", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*24px 24px 24px minmax\(0, 1fr\) auto;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-complete-checkbox\s*{[^}]*width:\s*24px;[^}]*height:\s*24px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node\s*{[^}]*--notes-content-offset:\s*84px;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
+    );
   });
 });

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef
+} from "react";
 import { createNoteId } from "../../domain/notes";
 import type {
   MoveNoteNodeInput,
@@ -82,6 +89,37 @@ function authoritative(
 }
 
 type NotesWorkspaceQueueStep = () => Promise<NotesWorkspace>;
+
+interface BufferedWorkspaceCommand {
+  work: NotesWorkspaceQueueWork;
+  resolve(): void;
+}
+
+interface NotesWorkspaceSessionRecord {
+  session: NotesWorkspaceCoordinatorSession;
+}
+
+function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
+  for (const command of commands) {
+    command.resolve();
+  }
+}
+
+function enqueueBufferedCommands(
+  session: NotesWorkspaceCoordinatorSession,
+  commands: BufferedWorkspaceCommand[]
+): void {
+  for (const command of commands) {
+    let completion: Promise<void>;
+    try {
+      completion = session.enqueue(command.work);
+    } catch {
+      command.resolve();
+      continue;
+    }
+    void completion.then(command.resolve, command.resolve);
+  }
+}
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -175,11 +213,20 @@ export function useNotesWorkspace({
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
     undefined,
-    () => normalizeWorkspace({ nodes: [] })
+    (): NormalizedNotesWorkspace => ({
+      ...normalizeWorkspace({ nodes: [] }),
+      status: "loading"
+    })
   );
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
+  const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
+  const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
+  const finalCleanupTokenRef = useRef<object | null>(null);
+  const closedRef = useRef(false);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    closedRef.current = false;
+    sessionRecordRef.current?.session.close();
     dispatch({ type: "startWorkspaceLoad" });
     const session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
@@ -196,18 +243,55 @@ export function useNotesWorkspace({
         });
       }
     });
+    const record = { session };
+    sessionRecordRef.current = record;
     sessionRef.current = session;
+    enqueueBufferedCommands(
+      session,
+      bufferedCommandsRef.current.splice(0)
+    );
 
     return () => {
       if (sessionRef.current === session) {
         sessionRef.current = null;
+        resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       }
-      session.close();
     };
   }, [repository, vaultRoot]);
 
+  useEffect(() => {
+    finalCleanupTokenRef.current = null;
+    return () => {
+      const token = {};
+      finalCleanupTokenRef.current = token;
+      queueMicrotask(() => {
+        if (finalCleanupTokenRef.current !== token) {
+          return;
+        }
+        finalCleanupTokenRef.current = null;
+        closedRef.current = true;
+        const record = sessionRecordRef.current;
+        sessionRecordRef.current = null;
+        if (record && sessionRef.current === record.session) {
+          sessionRef.current = null;
+        }
+        resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
+        record?.session.close();
+      });
+    };
+  }, []);
+
   const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
-    return sessionRef.current?.enqueue(work) ?? Promise.resolve();
+    const session = sessionRef.current;
+    if (session) {
+      return session.enqueue(work);
+    }
+    if (closedRef.current) {
+      return Promise.resolve();
+    }
+    return new Promise<void>((resolve) => {
+      bufferedCommandsRef.current.push({ work, resolve });
+    });
   }, []);
 
   const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {

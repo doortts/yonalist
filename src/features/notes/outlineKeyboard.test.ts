@@ -184,6 +184,48 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
+  it("ignores repeated structural keys while keeping vertical focus navigation responsive", () => {
+    expect(resolveOutlineKey(input({ key: "Enter", repeat: true }))).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({ key: "Tab", nodeId: "child-b", title: "child-b", repeat: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "grandchild",
+          title: "grandchild",
+          repeat: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({ key: "ArrowLeft", selectionStart: 0, selectionEnd: 0, repeat: true })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowRight",
+          nodeId: "root-c",
+          title: "root-c",
+          selectionStart: 6,
+          selectionEnd: 6,
+          repeat: true
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        input({ key: "ArrowDown", nodeId: "root-a", repeat: true })
+      )
+    ).toEqual({ type: "focus", nodeId: "child-a" });
+  });
+
   it("uses Left only at the title start to collapse or focus the visible parent", () => {
     expect(
       resolveOutlineKey(

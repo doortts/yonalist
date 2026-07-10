@@ -46,6 +46,16 @@ export function resolveOutlineKey(
     return null;
   }
 
+  if (
+    input.repeat &&
+    (input.key === "Enter" ||
+      input.key === "Tab" ||
+      input.key === "ArrowLeft" ||
+      input.key === "ArrowRight")
+  ) {
+    return null;
+  }
+
   const { selectionStart, selectionEnd } = input;
   if (
     selectionStart === null ||

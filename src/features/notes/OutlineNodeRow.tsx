@@ -94,6 +94,7 @@ export function OutlineNodeRow({
   const [noteOpen, setNoteOpen] = useState(false);
   const titleRef = useRef<HTMLInputElement>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const structuralCommandInFlightRef = useRef(false);
   const pendingSplitRef = useRef<{
     sourceTitle: string;
     prefix: string;
@@ -209,6 +210,24 @@ export function OutlineNodeRow({
     saveDrafts();
   };
 
+  const runStructuralCommand = (command: () => Promise<void>) => {
+    if (structuralCommandInFlightRef.current) {
+      return;
+    }
+    structuralCommandInFlightRef.current = true;
+    let completion: Promise<void>;
+    try {
+      completion = command();
+    } catch {
+      structuralCommandInFlightRef.current = false;
+      return;
+    }
+    const settle = () => {
+      structuralCommandInFlightRef.current = false;
+    };
+    void completion.then(settle, settle);
+  };
+
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
@@ -231,45 +250,61 @@ export function OutlineNodeRow({
     }
 
     event.preventDefault();
+    if (
+      resolution.type !== "focus" &&
+      structuralCommandInFlightRef.current
+    ) {
+      return;
+    }
     switch (resolution.type) {
       case "split": {
-        const patch = draftToSave();
-        if (patch) {
-          markDraftPending(patch);
+        let newNodeId: NoteId;
+        try {
+          newNodeId = createNoteId();
+        } catch {
+          return;
         }
-        const sourceTitle = titleDraft.value;
-        const pendingSplit = {
-          sourceTitle,
-          prefix: resolution.prefix,
-          succeeded: false
-        };
-        pendingSplitRef.current = pendingSplit;
-        suppressHandledBlur();
-        void actions.splitNode(
-          nodeId,
-          createNoteId(),
-          resolution.prefix,
-          resolution.suffix,
-          {
-            draft: patch,
-            onSuccess: () => {
-              if (pendingSplitRef.current === pendingSplit) {
-                pendingSplit.succeeded = true;
+        runStructuralCommand(() => {
+          const patch = draftToSave();
+          if (patch) {
+            markDraftPending(patch);
+          }
+          const sourceTitle = titleDraft.value;
+          const pendingSplit = {
+            sourceTitle,
+            prefix: resolution.prefix,
+            succeeded: false
+          };
+          pendingSplitRef.current = pendingSplit;
+          suppressHandledBlur();
+          return actions.splitNode(
+            nodeId,
+            newNodeId,
+            resolution.prefix,
+            resolution.suffix,
+            {
+              draft: patch,
+              onSuccess: () => {
+                if (pendingSplitRef.current === pendingSplit) {
+                  pendingSplit.succeeded = true;
+                }
               }
             }
-          }
-        );
+          );
+        });
         return;
       }
       case "move": {
-        const patch = draftToSave();
-        if (patch) {
-          markDraftPending(patch);
-        }
-        suppressHandledBlur();
-        void actions.moveNode(resolution.input, resolution.focusNodeId, {
-          draft: patch,
-          expandNodeId: resolution.expandNodeId
+        runStructuralCommand(() => {
+          const patch = draftToSave();
+          if (patch) {
+            markDraftPending(patch);
+          }
+          suppressHandledBlur();
+          return actions.moveNode(resolution.input, resolution.focusNodeId, {
+            draft: patch,
+            expandNodeId: resolution.expandNodeId
+          });
         });
         return;
       }
@@ -279,14 +314,16 @@ export function OutlineNodeRow({
         void actions.focusNode(resolution.nodeId);
         return;
       case "toggleCollapsed":
-        void actions.toggleCollapsed(nodeId);
+        runStructuralCommand(() => actions.toggleCollapsed(nodeId));
         return;
       case "remove": {
-        const patch = draftToSave(true)!;
-        markDraftPending(patch);
-        suppressHandledBlur();
-        void actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
-          draft: patch
+        runStructuralCommand(() => {
+          const patch = draftToSave(true)!;
+          markDraftPending(patch);
+          suppressHandledBlur();
+          return actions.removeEmptyNode(nodeId, resolution.focusNodeId, {
+            draft: patch
+          });
         });
       }
     }
@@ -324,7 +361,9 @@ export function OutlineNodeRow({
                 type="button"
                 aria-label={`${node.isCollapsed ? "Expand" : "Collapse"} ${label}`}
                 aria-expanded={!node.isCollapsed}
-                onClick={() => void actions.toggleCollapsed(nodeId)}
+                onClick={() =>
+                  runStructuralCommand(() => actions.toggleCollapsed(nodeId))
+                }
               >
                 {node.isCollapsed ? (
                   <ChevronRight size={15} aria-hidden="true" />
@@ -348,11 +387,7 @@ export function OutlineNodeRow({
           className="notes-node-title"
           ref={titleRef}
           value={titleDraft.value}
-          aria-label={
-            titleDraft.value.trim()
-              ? `Edit node title: ${titleDraft.value}`
-              : "Edit node title"
-          }
+          aria-label="Edit node title"
           placeholder="Untitled"
           onChange={(event) =>
             setTitleDraft((draft) => ({

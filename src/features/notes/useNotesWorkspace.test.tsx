@@ -1,8 +1,18 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
-import { StrictMode, Suspense, type PropsWithChildren } from "react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
+import {
+  StrictMode,
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  type PropsWithChildren
+} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
-import { useNotesWorkspace } from "./useNotesWorkspace";
+import {
+  useNotesWorkspace,
+  type NotesWorkspaceActions,
+  type UseNotesWorkspaceResult
+} from "./useNotesWorkspace";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 
@@ -70,6 +80,61 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   };
 }
 
+interface StartupCommandProps {
+  actions: NotesWorkspaceActions;
+  identity: string;
+  onCompletion(completion: Promise<void>): void;
+}
+
+function LayoutStartupCommand({
+  actions,
+  identity,
+  onCompletion
+}: StartupCommandProps) {
+  useLayoutEffect(() => {
+    onCompletion(actions.createRoot());
+  }, [actions, identity, onCompletion]);
+  return null;
+}
+
+function PassiveStartupCommand({
+  actions,
+  identity,
+  onCompletion
+}: StartupCommandProps) {
+  useEffect(() => {
+    onCompletion(actions.createRoot());
+  }, [actions, identity, onCompletion]);
+  return null;
+}
+
+interface StartupHarnessProps {
+  effect: "layout" | "passive";
+  repository: NotesStore;
+  vaultRoot: string;
+  onCompletion(completion: Promise<void>): void;
+  onWorkspace(workspace: UseNotesWorkspaceResult): void;
+}
+
+function StartupHarness({
+  effect,
+  repository: store,
+  vaultRoot,
+  onCompletion,
+  onWorkspace
+}: StartupHarnessProps) {
+  const current = useNotesWorkspace({ vaultRoot, repository: store });
+  onWorkspace(current);
+  const Command = effect === "layout" ? LayoutStartupCommand : PassiveStartupCommand;
+  return (
+    <Command
+      actions={current.actions}
+      identity={vaultRoot}
+      onCompletion={onCompletion}
+    />
+  );
+}
+
 describe("useNotesWorkspace", () => {
   beforeEach(() => {
     createNoteIdMock.mockReset();
@@ -77,6 +142,150 @@ describe("useNotesWorkspace", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("exposes loading on the first render before the workspace effect runs", async () => {
+    const initialization = deferred<void>();
+    const store = repository({
+      initialize: vi.fn().mockReturnValue(initialization.promise)
+    });
+    const renderedStatuses: string[] = [];
+    const { result } = renderHook(() => {
+      const workspace = useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store
+      });
+      renderedStatuses.push(workspace.status);
+      return workspace;
+    });
+
+    expect(renderedStatuses[0]).toBe("loading");
+
+    await act(async () => initialization.resolve());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+  });
+
+  it.each(["layout", "passive"] as const)(
+    "flushes a child %s-effect command through the session after loading",
+    async (effect) => {
+      const initialization = deferred<void>();
+      createNoteIdMock.mockReturnValue("pre-session-root");
+      const store = repository({
+        initialize: vi.fn().mockReturnValue(initialization.promise),
+        loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
+        createNode: vi
+          .fn()
+          .mockResolvedValue(workspace([node({ id: "pre-session-root" })]))
+      });
+      const completions: Promise<void>[] = [];
+      let latestWorkspace: UseNotesWorkspaceResult | undefined;
+      render(
+        <StartupHarness
+          effect={effect}
+          repository={store}
+          vaultRoot="/vault"
+          onCompletion={(completion) => completions.push(completion)}
+          onWorkspace={(current) => {
+            latestWorkspace = current;
+          }}
+        />
+      );
+
+      expect(store.createNode).not.toHaveBeenCalled();
+
+      await act(async () => initialization.resolve());
+      await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+      await act(async () => Promise.all(completions));
+
+      expect(store.createNode).toHaveBeenCalledWith("/vault", {
+        id: "pre-session-root",
+        parentId: null,
+        afterId: null,
+        title: "",
+        note: ""
+      });
+      expect(
+        latestWorkspace?.state.nodesById["pre-session-root"]
+      ).toBeDefined();
+      expect(latestWorkspace?.status).toBe("ready");
+    }
+  );
+
+  it("does not duplicate a buffered child command during StrictMode replay", async () => {
+    const initialization = deferred<void>();
+    createNoteIdMock.mockReturnValue("strict-root");
+    const store = repository({
+      initialize: vi.fn().mockReturnValue(initialization.promise),
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
+      createNode: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "strict-root" })]))
+    });
+    const completions: Promise<void>[] = [];
+
+    render(
+      <StrictMode>
+        <StartupHarness
+          effect="layout"
+          repository={store}
+          vaultRoot="/vault"
+          onCompletion={(completion) => completions.push(completion)}
+          onWorkspace={() => undefined}
+        />
+      </StrictMode>
+    );
+
+    expect(store.initialize).toHaveBeenCalledOnce();
+    await act(async () => initialization.resolve());
+    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    await act(async () => Promise.all(completions));
+
+    expect(completions).toHaveLength(2);
+    expect(store.createNode).toHaveBeenCalledOnce();
+  });
+
+  it("routes a child layout-effect command after a vault change only to the new vault", async () => {
+    const oldInitialization = deferred<void>();
+    createNoteIdMock.mockReturnValue("new-vault-root");
+    const store = repository({
+      initialize: vi.fn((vaultRoot) =>
+        vaultRoot === "/old" ? oldInitialization.promise : Promise.resolve()
+      ),
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
+      createNode: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "new-vault-root" })]))
+    });
+    const completions: Promise<void>[] = [];
+    const view = render(
+      <StartupHarness
+        effect="layout"
+        repository={store}
+        vaultRoot="/old"
+        onCompletion={(completion) => completions.push(completion)}
+        onWorkspace={() => undefined}
+      />
+    );
+
+    view.rerender(
+      <StartupHarness
+        effect="layout"
+        repository={store}
+        vaultRoot="/new"
+        onCompletion={(completion) => completions.push(completion)}
+        onWorkspace={() => undefined}
+      />
+    );
+
+    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    expect(store.createNode).toHaveBeenCalledWith(
+      "/new",
+      expect.objectContaining({ id: "new-vault-root" })
+    );
+
+    await act(async () => oldInitialization.resolve());
+    await act(async () => Promise.all(completions));
+    expect(store.createNode).toHaveBeenCalledOnce();
   });
 
   it("initializes and loads once for each vault and repository identity", async () => {
