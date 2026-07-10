@@ -89,6 +89,7 @@ export interface UseNotesWorkspaceResult {
   actions: NotesWorkspaceActions;
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
+  retryFailedDraft(nodeId: NoteId): Promise<void>;
   retryLastFailedWrite(): Promise<void>;
   status: NormalizedNotesWorkspace["status"];
   loading: boolean;
@@ -118,7 +119,22 @@ interface BufferedWorkspaceCommand {
   resolve(): void;
 }
 
+interface FailedDraftWrite {
+  patch: Pick<NoteNode, "title" | "note">;
+  revision: number;
+  error: NotesStoreError;
+}
+
+interface NotesWorkspaceRecoveryEntry {
+  status: "pending" | "failed";
+  drafts: Map<NoteId, NotesNodeDraft>;
+  failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
+  subscribers: Set<(entry: NotesWorkspaceRecoveryEntry) => void>;
+}
+
 interface NotesWorkspaceSessionRecord {
+  repository: NotesStore;
+  vaultRoot: string;
   session: NotesWorkspaceCoordinatorSession;
   writeQueue: NotesWriteQueue;
   drafts: Map<NoteId, NotesNodeDraft>;
@@ -126,15 +142,17 @@ interface NotesWorkspaceSessionRecord {
   inFlightDraftByNodeId: Map<NoteId, number>;
   retryWriteByNodeId: Map<NoteId, () => Promise<boolean>>;
   nextDraftRevision: number;
-  failedWrite: {
-    nodeId: NoteId;
-    patch: Pick<NoteNode, "title" | "note">;
-    revision: number;
-  } | null;
+  failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
+  recoveryEntry: NotesWorkspaceRecoveryEntry | null;
   closing: boolean;
   closeCompletion: Promise<void> | null;
 }
+
+const notesWorkspaceRecoveryRegistry = new WeakMap<
+  NotesStore,
+  Map<string, NotesWorkspaceRecoveryEntry>
+>();
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
@@ -173,6 +191,159 @@ function draftSnapshot(
   drafts: Map<NoteId, NotesNodeDraft>
 ): Record<NoteId, NotesNodeDraft> {
   return Object.fromEntries(drafts) as Record<NoteId, NotesNodeDraft>;
+}
+
+function cloneDrafts(
+  drafts: Map<NoteId, NotesNodeDraft>
+): Map<NoteId, NotesNodeDraft> {
+  return new Map(
+    [...drafts].map(([nodeId, draft]) => [nodeId, { ...draft }])
+  );
+}
+
+function cloneFailedWrites(
+  failedWrites: Map<NoteId, FailedDraftWrite>,
+  drafts?: Map<NoteId, NotesNodeDraft>
+): Map<NoteId, FailedDraftWrite> {
+  return new Map(
+    [...failedWrites]
+      .filter(([nodeId]) => !drafts || drafts.has(nodeId))
+      .map(([nodeId, failed]) => [
+        nodeId,
+        { ...failed, patch: { ...failed.patch } }
+      ])
+  );
+}
+
+function latestWriteError(
+  failedWrites: Map<NoteId, FailedDraftWrite>
+): NotesStoreError | null {
+  return [...failedWrites.values()].at(-1)?.error ?? null;
+}
+
+function recoveryEntryFor(
+  repository: NotesStore,
+  vaultRoot: string
+): NotesWorkspaceRecoveryEntry | null {
+  return notesWorkspaceRecoveryRegistry.get(repository)?.get(vaultRoot) ?? null;
+}
+
+function setRecoveryEntry(
+  repository: NotesStore,
+  vaultRoot: string,
+  entry: NotesWorkspaceRecoveryEntry
+): void {
+  let entries = notesWorkspaceRecoveryRegistry.get(repository);
+  if (!entries) {
+    entries = new Map();
+    notesWorkspaceRecoveryRegistry.set(repository, entries);
+  }
+  entries.set(vaultRoot, entry);
+}
+
+function deleteRecoveryEntry(
+  repository: NotesStore,
+  vaultRoot: string,
+  entry: NotesWorkspaceRecoveryEntry
+): void {
+  const entries = notesWorkspaceRecoveryRegistry.get(repository);
+  if (entries?.get(vaultRoot) !== entry) {
+    return;
+  }
+  entries.delete(vaultRoot);
+  if (entries.size === 0) {
+    notesWorkspaceRecoveryRegistry.delete(repository);
+  }
+}
+
+function beginShutdownRecovery(
+  record: NotesWorkspaceSessionRecord
+): NotesWorkspaceRecoveryEntry {
+  const existing = recoveryEntryFor(record.repository, record.vaultRoot);
+  const entry: NotesWorkspaceRecoveryEntry = {
+    status: "pending",
+    drafts: cloneDrafts(record.drafts),
+    failedWritesByNodeId: cloneFailedWrites(record.failedWritesByNodeId),
+    subscribers: existing?.subscribers ?? new Set()
+  };
+  setRecoveryEntry(record.repository, record.vaultRoot, entry);
+  record.recoveryEntry = entry;
+  return entry;
+}
+
+function finishShutdownRecovery(
+  record: NotesWorkspaceSessionRecord,
+  entry: NotesWorkspaceRecoveryEntry
+): void {
+  if (record.drafts.size === 0) {
+    deleteRecoveryEntry(record.repository, record.vaultRoot, entry);
+    entry.subscribers.clear();
+    record.recoveryEntry = null;
+    return;
+  }
+
+  entry.status = "failed";
+  entry.drafts = cloneDrafts(record.drafts);
+  entry.failedWritesByNodeId = cloneFailedWrites(
+    record.failedWritesByNodeId,
+    record.drafts
+  );
+  for (const subscriber of entry.subscribers) {
+    subscriber(entry);
+  }
+  entry.subscribers.clear();
+}
+
+function subscribeToRecovery(
+  repository: NotesStore,
+  vaultRoot: string,
+  subscriber: (entry: NotesWorkspaceRecoveryEntry) => void
+): () => void {
+  const entry = recoveryEntryFor(repository, vaultRoot);
+  if (!entry) {
+    return () => undefined;
+  }
+  if (entry.status === "failed") {
+    subscriber(entry);
+    return () => undefined;
+  }
+  entry.subscribers.add(subscriber);
+  return () => entry.subscribers.delete(subscriber);
+}
+
+function syncRecoveredDraft(
+  record: NotesWorkspaceSessionRecord,
+  nodeId: NoteId
+): void {
+  const entry = record.recoveryEntry;
+  if (
+    !entry ||
+    entry.status !== "failed" ||
+    recoveryEntryFor(record.repository, record.vaultRoot) !== entry ||
+    !entry.drafts.has(nodeId)
+  ) {
+    return;
+  }
+
+  const draft = record.drafts.get(nodeId);
+  const failed = record.failedWritesByNodeId.get(nodeId);
+  if (draft) {
+    entry.drafts.set(nodeId, { ...draft });
+    if (failed) {
+      entry.failedWritesByNodeId.set(nodeId, {
+        ...failed,
+        patch: { ...failed.patch }
+      });
+    }
+    return;
+  }
+
+  entry.drafts.delete(nodeId);
+  entry.failedWritesByNodeId.delete(nodeId);
+  if (entry.drafts.size === 0) {
+    deleteRecoveryEntry(record.repository, record.vaultRoot, entry);
+    record.recoveryEntry = null;
+  }
 }
 
 function canRunDraftCompound(
@@ -287,6 +458,14 @@ export function useNotesWorkspace({
     useState<NotesStoreError | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
+  const persistDraftRef = useRef<
+    | ((
+        record: NotesWorkspaceSessionRecord,
+        nodeId: NoteId,
+        draft: NotesNodeDraft
+      ) => Promise<boolean>)
+    | null
+  >(null);
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
   const closedRef = useRef(false);
@@ -313,6 +492,7 @@ export function useNotesWorkspace({
         record.closeCompletion = Promise.resolve();
         return record.closeCompletion;
       }
+      const recoveryEntry = beginShutdownRecovery(record);
       for (const [nodeId] of record.drafts) {
         if (
           record.pendingDebounceByNodeId.has(nodeId) ||
@@ -325,9 +505,13 @@ export function useNotesWorkspace({
           void record.writeQueue.enqueue(retry).catch(() => undefined);
         }
       }
+      const finish = (): void => {
+        finishShutdownRecovery(record, recoveryEntry);
+        record.session.close();
+      };
       record.closeCompletion = record.writeQueue.flush().then(
-        () => record.session.close(),
-        () => record.session.close()
+        finish,
+        finish
       );
       return record.closeCompletion;
     },
@@ -363,6 +547,8 @@ export function useNotesWorkspace({
       }
     });
     record = {
+      repository,
+      vaultRoot,
       session,
       writeQueue: createNotesWriteQueue(),
       drafts: new Map(),
@@ -370,19 +556,59 @@ export function useNotesWorkspace({
       inFlightDraftByNodeId: new Map(),
       retryWriteByNodeId: new Map(),
       nextDraftRevision: 1,
-      failedWrite: null,
+      failedWritesByNodeId: new Map(),
       writeError: null,
+      recoveryEntry: null,
       closing: false,
       closeCompletion: null
     };
     sessionRecordRef.current = record;
     sessionRef.current = session;
+    const unsubscribeRecovery = subscribeToRecovery(
+      repository,
+      vaultRoot,
+      (entry) => {
+        queueMicrotask(() => {
+          if (
+            entry.status !== "failed" ||
+            recoveryEntryFor(repository, vaultRoot) !== entry ||
+            record.closing ||
+            sessionRecordRef.current !== record ||
+            sessionRef.current !== session
+          ) {
+            return;
+          }
+          record.drafts = cloneDrafts(entry.drafts);
+          record.failedWritesByNodeId = cloneFailedWrites(
+            entry.failedWritesByNodeId,
+            entry.drafts
+          );
+          record.nextDraftRevision = Math.max(
+            record.nextDraftRevision,
+            ...[...record.drafts.values()].map((draft) => draft.revision + 1)
+          );
+          record.writeError = latestWriteError(record.failedWritesByNodeId);
+          record.recoveryEntry = entry;
+          for (const [nodeId] of record.drafts) {
+            record.retryWriteByNodeId.set(nodeId, () => {
+              const latest = record.drafts.get(nodeId);
+              const persist = persistDraftRef.current;
+              return latest && persist
+                ? persist(record, nodeId, latest)
+                : Promise.resolve(false);
+            });
+          }
+          publishDraftState(record);
+        });
+      }
+    );
     enqueueBufferedCommands(
       session,
       bufferedCommandsRef.current.splice(0)
     );
 
     return () => {
+      unsubscribeRecovery();
       if (sessionRef.current === session) {
         sessionRef.current = null;
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
@@ -441,12 +667,14 @@ export function useNotesWorkspace({
         if (latest) {
           record.drafts.set(nodeId, { ...latest, status: "failed" });
         }
-        record.failedWrite = {
-          nodeId,
+        const failure = writeError(result.error);
+        record.failedWritesByNodeId.set(nodeId, {
           patch: { title: draft.title, note: draft.note },
-          revision: draft.revision
-        };
-        record.writeError = writeError(result.error);
+          revision: draft.revision,
+          error: failure
+        });
+        record.writeError = failure;
+        syncRecoveredDraft(record, nodeId);
         publishDraftState(record);
         return false;
       }
@@ -457,17 +685,19 @@ export function useNotesWorkspace({
       } else if (writeSucceeded && latest?.revision === draft.revision) {
         record.drafts.delete(nodeId);
       }
+      const failed = record.failedWritesByNodeId.get(nodeId);
       if (
-        writeSucceeded &&
-        record.failedWrite?.nodeId === nodeId &&
-        record.failedWrite.revision <= draft.revision
+        (result.kind === "skipped" || writeSucceeded) &&
+        failed &&
+        failed.revision <= draft.revision
       ) {
-        record.failedWrite = null;
-        record.writeError = null;
+        record.failedWritesByNodeId.delete(nodeId);
       }
+      record.writeError = latestWriteError(record.failedWritesByNodeId);
       if (!record.drafts.has(nodeId)) {
         record.retryWriteByNodeId.delete(nodeId);
       }
+      syncRecoveredDraft(record, nodeId);
       publishDraftState(record);
       return result.kind !== "failure" || writeSucceeded;
     },
@@ -524,6 +754,7 @@ export function useNotesWorkspace({
     },
     [publishDraftState, settleDraftWrite]
   );
+  persistDraftRef.current = persistDraft;
 
   const runPendingDraftCompound = useCallback(
     async (
@@ -626,6 +857,7 @@ export function useNotesWorkspace({
           : Promise.resolve(true);
       });
       record.pendingDebounceByNodeId.set(nodeId, draft.revision);
+      syncRecoveredDraft(record, nodeId);
       publishDraftState(record);
       void record.writeQueue
         .enqueueDebounced(nodeId, () =>
@@ -644,36 +876,47 @@ export function useNotesWorkspace({
     return record.writeQueue.flush(nodeId);
   }, []);
 
+  const retryFailedDraft = useCallback(
+    async (nodeId: NoteId): Promise<void> => {
+      const record = sessionRecordRef.current;
+      if (
+        !record ||
+        !record.failedWritesByNodeId.has(nodeId) ||
+        record.closing ||
+        sessionRef.current !== record.session
+      ) {
+        return;
+      }
+      const latest = record.drafts.get(nodeId);
+      if (!latest) {
+        record.failedWritesByNodeId.delete(nodeId);
+        record.writeError = latestWriteError(record.failedWritesByNodeId);
+        syncRecoveredDraft(record, nodeId);
+        publishDraftState(record);
+        return;
+      }
+
+      if (
+        record.pendingDebounceByNodeId.get(nodeId) === latest.revision ||
+        record.inFlightDraftByNodeId.get(nodeId) === latest.revision
+      ) {
+        await record.writeQueue.flush(nodeId);
+        return;
+      }
+      await record.writeQueue.enqueue(() => persistDraft(record, nodeId, latest));
+    },
+    [persistDraft, publishDraftState]
+  );
+
   const retryLastFailedWrite = useCallback(async (): Promise<void> => {
     const record = sessionRecordRef.current;
-    const failed = record?.failedWrite;
-    if (
-      !record ||
-      !failed ||
-      record.closing ||
-      sessionRef.current !== record.session
-    ) {
-      return;
+    const nodeId = record
+      ? [...record.failedWritesByNodeId.keys()].at(-1)
+      : undefined;
+    if (nodeId) {
+      await retryFailedDraft(nodeId);
     }
-    const latest = record.drafts.get(failed.nodeId);
-    if (!latest) {
-      record.failedWrite = null;
-      record.writeError = null;
-      publishDraftState(record);
-      return;
-    }
-
-    if (
-      record.pendingDebounceByNodeId.get(failed.nodeId) === latest.revision ||
-      record.inFlightDraftByNodeId.get(failed.nodeId) === latest.revision
-    ) {
-      await record.writeQueue.flush(failed.nodeId);
-      return;
-    }
-    await record.writeQueue.enqueue(() =>
-      persistDraft(record, failed.nodeId, latest)
-    );
-  }, [persistDraft, publishDraftState]);
+  }, [retryFailedDraft]);
 
   const flushDraftBeforeStructural = useCallback(
     async (nodeId: NoteId): Promise<boolean> => {
@@ -1220,6 +1463,7 @@ export function useNotesWorkspace({
     actions,
     draftsByNodeId,
     writeError: currentWriteError,
+    retryFailedDraft,
     retryLastFailedWrite,
     status: state.status,
     loading: state.status === "loading",

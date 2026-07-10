@@ -88,6 +88,64 @@ describe("createNotesWriteQueue", () => {
     expect(operation).toHaveBeenCalledOnce();
   });
 
+  it("flushes every pending key before it resolves", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const first = vi.fn(async () => "first saved");
+    const second = vi.fn(async () => "second saved");
+
+    const firstCompletion = queue.enqueueDebounced("first", first);
+    const secondCompletion = queue.enqueueDebounced("second", second);
+
+    await queue.flush();
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    await expect(firstCompletion).resolves.toBe("first saved");
+    await expect(secondCompletion).resolves.toBe("second saved");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: "asynchronous rejection",
+      operation: () => Promise.reject(new Error("async failure")),
+      message: "async failure"
+    },
+    {
+      label: "synchronous throw",
+      operation: () => {
+        throw new Error("sync failure");
+      },
+      message: "sync failure"
+    }
+  ])(
+    "settles every coalesced caller after $label and continues the queue",
+    async ({ operation, message }) => {
+      vi.useFakeTimers();
+      const queue = createNotesWriteQueue();
+      const superseded = queue.enqueueDebounced("node", async () => "stale");
+      const latest = queue.enqueueDebounced("node", operation);
+      const coalescedSettlements = Promise.allSettled([superseded, latest]);
+
+      const flush = queue.flush("node");
+      const later = queue.enqueue(async () => "recovered");
+
+      await flush;
+      const settlements = await coalescedSettlements;
+      expect(settlements).toHaveLength(2);
+      for (const settlement of settlements) {
+        expect(settlement.status).toBe("rejected");
+        expect(
+          settlement.status === "rejected" ? settlement.reason : null
+        ).toEqual(new Error(message));
+      }
+      await expect(later).resolves.toBe("recovered");
+    }
+  );
+
   it("keeps independent vault queues from blocking each other", async () => {
     const firstVaultWrite = deferred<void>();
     const firstVault = createNotesWriteQueue();

@@ -1492,6 +1492,106 @@ describe("useNotesWorkspace", () => {
     expect(result.current.draftsByNodeId).toEqual({});
   });
 
+  it("recovers a failed shutdown draft only when its vault becomes active again", async () => {
+    const oldBefore = workspace([node({ id: "old-root", title: "Old title" })]);
+    const oldSaved = workspace([
+      node({ id: "old-root", title: "Recovered old draft" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn((vaultRoot) =>
+        Promise.resolve(
+          vaultRoot === "/old"
+            ? oldBefore
+            : workspace([node({ id: "new-root", title: "New title" })])
+        )
+      ),
+      updateNode: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("old vault disk full"))
+        .mockResolvedValueOnce(oldSaved)
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/old" } }
+    );
+    await waitFor(() =>
+      expect(result.current.state.nodesById["old-root"]).toBeDefined()
+    );
+
+    act(() => {
+      result.current.actions.updateNodeDraft("old-root", {
+        title: "Recovered old draft",
+        note: ""
+      });
+    });
+    rerender({ vaultRoot: "/new" });
+
+    await waitFor(() =>
+      expect(result.current.state.nodesById["new-root"]).toBeDefined()
+    );
+    expect(result.current.draftsByNodeId).toEqual({});
+    expect(result.current.writeError).toBeNull();
+
+    rerender({ vaultRoot: "/old" });
+    await waitFor(() =>
+      expect(result.current.draftsByNodeId["old-root"]).toMatchObject({
+        title: "Recovered old draft",
+        status: "failed"
+      })
+    );
+    expect(result.current.writeError).toMatchObject({
+      operation: "write",
+      retryable: true,
+      message: "old vault disk full"
+    });
+
+    await act(async () => result.current.retryFailedDraft("old-root"));
+
+    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/old", {
+      id: "old-root",
+      title: "Recovered old draft",
+      note: ""
+    });
+    await waitFor(() =>
+      expect(result.current.draftsByNodeId["old-root"]).toBeUndefined()
+    );
+    expect(result.current.writeError).toBeNull();
+  });
+
+  it("isolates shutdown recovery by repository object for the same vault path", async () => {
+    const firstStore = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("first store failed"))
+    });
+    const secondStore = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "second-root" })]))
+    });
+    const firstMount = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared", repository: firstStore })
+    );
+    await waitFor(() => expect(firstMount.result.current.status).toBe("ready"));
+
+    act(() => {
+      firstMount.result.current.actions.updateNodeDraft("root", {
+        title: "First store draft",
+        note: ""
+      });
+    });
+    firstMount.unmount();
+    await waitFor(() => expect(firstStore.updateNode).toHaveBeenCalledOnce());
+
+    const secondMount = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared", repository: secondStore })
+    );
+    await waitFor(() =>
+      expect(secondMount.result.current.state.nodesById["second-root"]).toBeDefined()
+    );
+
+    expect(secondMount.result.current.draftsByNodeId).toEqual({});
+    expect(secondMount.result.current.writeError).toBeNull();
+  });
+
   it("flushes a dirty unmount before a same-vault remount activation", async () => {
     const unmountWrite = deferred<NotesWorkspace>();
     let loadCount = 0;
@@ -1542,6 +1642,8 @@ describe("useNotesWorkspace", () => {
       )
     );
     expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(secondMount.result.current.draftsByNodeId).toEqual({});
+    expect(secondMount.result.current.writeError).toBeNull();
   });
 
   it("retries a retained failed draft before closing its unmounted session", async () => {

@@ -38,7 +38,7 @@ export function OutlineNodeRow({
   const {
     actions,
     draftsByNodeId,
-    retryLastFailedWrite,
+    retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
   const node = state.nodesById[nodeId];
@@ -320,7 +320,7 @@ export function OutlineNodeRow({
                 className="notes-row-icon-button"
                 type="button"
                 aria-label="Retry save"
-                onClick={() => void retryLastFailedWrite()}
+                onClick={() => void retryFailedDraft(nodeId)}
               >
                 <RotateCcw size={15} aria-hidden="true" />
               </button>

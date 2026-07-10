@@ -765,6 +765,90 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
   });
 
+  it("renders and retries a failed unmount draft after a same-vault remount", async () => {
+    notesStoreMock.updateNode.mockRejectedValueOnce(new Error("disk full"));
+    const firstMount = renderNotesWorkspace();
+    const firstTitle = await findTitleInput("Project");
+
+    fireEvent.change(firstTitle, { target: { value: "Recovered project" } });
+    firstMount.unmount();
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+
+    renderNotesWorkspace();
+    const recoveredTitle = await findTitleInput("Recovered project");
+    const retry = await screen.findByRole("button", { name: "Retry save" });
+    expect(recoveredTitle).toHaveValue("Recovered project");
+
+    fireEvent.click(retry);
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2)
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "project",
+      title: "Recovered project",
+      note: "Project note"
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Retry save" })
+      ).not.toBeInTheDocument()
+    );
+  });
+
+  it("retries only the failed draft belonging to the clicked row", async () => {
+    notesStoreMock.updateNode
+      .mockRejectedValueOnce(new Error("project failed"))
+      .mockRejectedValueOnce(new Error("outside failed"));
+    renderNotesWorkspace();
+    const projectTitle = await findTitleInput("Project");
+    const outsideTitle = getTitleInput("Outside branch");
+
+    fireEvent.change(projectTitle, {
+      target: { value: "Failed project draft" }
+    });
+    fireEvent.blur(projectTitle);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1)
+    );
+
+    fireEvent.change(outsideTitle, {
+      target: { value: "Failed outside draft" }
+    });
+    fireEvent.blur(outsideTitle);
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Retry save" })).toHaveLength(
+        2
+      )
+    );
+
+    const projectRow = projectTitle.closest<HTMLElement>(".notes-node");
+    const outsideRow = outsideTitle.closest<HTMLElement>(".notes-node");
+    expect(projectRow).not.toBeNull();
+    expect(outsideRow).not.toBeNull();
+    fireEvent.click(
+      within(projectRow!).getByRole("button", { name: "Retry save" })
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(3)
+    );
+    expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(3, "/vault", {
+      id: "project",
+      title: "Failed project draft",
+      note: "Project note"
+    });
+    await waitFor(() =>
+      expect(
+        within(projectRow!).queryByRole("button", { name: "Retry save" })
+      ).not.toBeInTheDocument()
+    );
+    expect(
+      within(outsideRow!).getByRole("button", { name: "Retry save" })
+    ).toBeInTheDocument();
+    expect(outsideTitle).toHaveValue("Failed outside draft");
+  });
+
   it("toggles and writes a supporting note on blur with the current title", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
