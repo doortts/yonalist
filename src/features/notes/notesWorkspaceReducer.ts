@@ -18,10 +18,19 @@ type UiState = Pick<
 >;
 
 export type NotesWorkspaceReducerAction =
-  | { type: "replaceWorkspace"; workspace: NotesWorkspace }
   | { type: "startWorkspaceLoad" }
   | { type: "setLoading" }
-  | { type: "setError"; error: string }
+  | {
+      type: "settleQueueWork";
+      result:
+        | {
+            kind: "success";
+            workspace: NotesWorkspace;
+            uiUpdate?: Partial<UiState>;
+          }
+        | { kind: "failure"; error: string };
+      hasPendingWork: boolean;
+    }
   | ({ type: "setUiState" } & Partial<UiState>)
   | { type: "setZoomRoot"; zoomRootId: NoteId | null };
 
@@ -83,11 +92,39 @@ export function notesWorkspaceReducer(
   action: NotesWorkspaceReducerAction
 ): NormalizedNotesWorkspace {
   switch (action.type) {
-    case "replaceWorkspace": {
-      const workspace = normalizeWorkspace(action.workspace);
+    case "settleQueueWork": {
+      if (action.result.kind === "failure") {
+        return {
+          ...state,
+          status: action.hasPendingWork ? "loading" : "error",
+          error: action.result.error
+        };
+      }
+
+      const workspace = normalizeWorkspace(action.result.workspace);
+      const retainedUi = normalizedUiState(workspace, state);
+      const uiUpdate = action.result.uiUpdate;
       return {
         ...workspace,
-        ...normalizedUiState(workspace, state)
+        ...normalizedUiState(workspace, {
+          selectedId:
+            uiUpdate?.selectedId === undefined
+              ? retainedUi.selectedId
+              : uiUpdate.selectedId,
+          zoomRootId:
+            uiUpdate?.zoomRootId === undefined
+              ? retainedUi.zoomRootId
+              : uiUpdate.zoomRootId,
+          editingNoteId:
+            uiUpdate?.editingNoteId === undefined
+              ? retainedUi.editingNoteId
+              : uiUpdate.editingNoteId,
+          pendingFocusId:
+            uiUpdate?.pendingFocusId === undefined
+              ? retainedUi.pendingFocusId
+              : uiUpdate.pendingFocusId
+        }),
+        status: action.hasPendingWork ? "loading" : "ready"
       };
     }
     case "startWorkspaceLoad":
@@ -97,8 +134,6 @@ export function notesWorkspaceReducer(
       };
     case "setLoading":
       return { ...state, status: "loading", error: null };
-    case "setError":
-      return { ...state, status: "error", error: action.error };
     case "setZoomRoot":
       return {
         ...state,

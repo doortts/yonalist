@@ -71,7 +71,7 @@ describe("notesWorkspaceReducer", () => {
     expect(state.childIdsByParent.__proto__).toEqual(["child", "duplicate"]);
   });
 
-  it("retains compatible UI state on authoritative replacement and clears stale IDs", () => {
+  it("atomically publishes a successful result and reconciles UI state", () => {
     let state = normalizeWorkspace(workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })]));
     state = notesWorkspaceReducer(state, {
       type: "setUiState",
@@ -82,35 +82,68 @@ describe("notesWorkspaceReducer", () => {
     });
 
     const retained = notesWorkspaceReducer(state, {
-      type: "replaceWorkspace",
-      workspace: workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })])
+      type: "settleQueueWork",
+      result: {
+        kind: "success",
+        workspace: workspace([
+          node({ id: "root" }),
+          node({ id: "child", parentId: "root" }),
+          node({ id: "created", parentId: "root" })
+        ]),
+        uiUpdate: {
+          selectedId: "created",
+          editingNoteId: "created",
+          pendingFocusId: "created"
+        }
+      },
+      hasPendingWork: true
     });
     expect(retained).toMatchObject({
-      selectedId: "child",
+      selectedId: "created",
       zoomRootId: "root",
-      editingNoteId: "child",
-      pendingFocusId: "child",
-      status: "ready",
+      editingNoteId: "created",
+      pendingFocusId: "created",
+      status: "loading",
       error: null
     });
 
     const cleared = notesWorkspaceReducer(retained, {
-      type: "replaceWorkspace",
-      workspace: workspace([node({ id: "root" })])
+      type: "settleQueueWork",
+      result: {
+        kind: "success",
+        workspace: workspace([node({ id: "root" })])
+      },
+      hasPendingWork: false
     });
     expect(cleared).toMatchObject({
       selectedId: null,
       zoomRootId: "root",
       editingNoteId: null,
-      pendingFocusId: null
+      pendingFocusId: null,
+      status: "ready",
+      error: null
     });
   });
 
-  it("keeps confirmed nodes when load errors and ignores invalid UI IDs", () => {
-    const state = notesWorkspaceReducer(
-      normalizeWorkspace(workspace([node({ id: "root" })])),
-      { type: "setError", error: "offline" }
-    );
+  it("keeps the confirmed tree on failures and settles status from remaining work", () => {
+    const initial = normalizeWorkspace(workspace([node({ id: "root" })]));
+    const pending = notesWorkspaceReducer(initial, {
+      type: "settleQueueWork",
+      result: { kind: "failure", error: "first failed" },
+      hasPendingWork: true
+    });
+
+    expect(pending).toMatchObject({
+      status: "loading",
+      error: "first failed"
+    });
+    expect(pending.nodesById.root).toBeDefined();
+
+    const state = notesWorkspaceReducer(pending, {
+      type: "settleQueueWork",
+      result: { kind: "failure", error: "offline" },
+      hasPendingWork: false
+    });
 
     expect(state.status).toBe("error");
     expect(state.error).toBe("offline");

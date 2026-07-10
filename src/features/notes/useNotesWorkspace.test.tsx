@@ -111,7 +111,7 @@ describe("useNotesWorkspace", () => {
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
   });
 
-  it("still loads once and recovers when a command fails during initialization", async () => {
+  it("runs a command only after initialization and loading, then retains the loaded tree on failure", async () => {
     const initialization = deferred<void>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise),
@@ -127,77 +127,176 @@ describe("useNotesWorkspace", () => {
     expect(store.initialize).toHaveBeenCalledOnce();
     expect(store.loadWorkspace).not.toHaveBeenCalled();
 
-    await act(async () =>
-      result.current.actions.updateNode("root", { title: "new", note: "" })
-    );
-
-    expect(result.current).toMatchObject({ status: "error", error: "write failed" });
-    expect(result.current.state.rootIds).toEqual([]);
-    expect(store.loadWorkspace).not.toHaveBeenCalled();
-
-    await act(async () => initialization.resolve());
-
-    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
-    await waitFor(() =>
-      expect(result.current.state.nodesById.loaded).toBeDefined()
-    );
-    expect(result.current).toMatchObject({ status: "ready", error: null });
-    expect(store.loadWorkspace).toHaveBeenCalledWith("/vault", { kind: "active" });
-  });
-
-  it("keeps a settled initial load buffered until a pending command fails", async () => {
-    const initialLoad = deferred<NotesWorkspace>();
-    const command = deferred<NotesWorkspace>();
-    const store = repository({
-      loadWorkspace: vi.fn().mockReturnValue(initialLoad.promise),
-      updateNode: vi.fn().mockReturnValue(command.promise)
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-
-    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
-
-    let commandCompletion!: Promise<void>;
+    let completion!: Promise<void>;
     act(() => {
-      commandCompletion = result.current.actions.updateNode("root", {
+      completion = result.current.actions.updateNode("root", {
         title: "new",
         note: ""
       });
     });
 
     expect(result.current).toMatchObject({ status: "loading", error: null });
+    expect(store.updateNode).not.toHaveBeenCalled();
+    expect(store.loadWorkspace).not.toHaveBeenCalled();
+
+    await act(async () => initialization.resolve());
+    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
+    await act(async () => {
+      await completion;
+    });
+
+    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    expect(result.current.state.nodesById.loaded).toBeDefined();
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "write failed"
+    });
+  });
+
+  it("invokes initialization, loading, and commands in FIFO order", async () => {
+    const initialization = deferred<void>();
+    const initialLoad = deferred<NotesWorkspace>();
+    const firstCommand = deferred<NotesWorkspace>();
+    const secondCommand = deferred<NotesWorkspace>();
+    const invocations: string[] = [];
+    const store = repository({
+      initialize: vi.fn(() => {
+        invocations.push("initialize");
+        return initialization.promise;
+      }),
+      loadWorkspace: vi.fn(() => {
+        invocations.push("load");
+        return initialLoad.promise;
+      }),
+      updateNode: vi
+        .fn((_vaultRoot, input) => {
+          invocations.push(`update:${input.title}`);
+          return input.title === "first"
+            ? firstCommand.promise
+            : secondCommand.promise;
+        })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.updateNode("root", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = result.current.actions.updateNode("root", {
+        title: "second",
+        note: ""
+      });
+    });
+
+    expect(invocations).toEqual(["initialize"]);
+
+    await act(async () => initialization.resolve());
+    expect(invocations).toEqual(["initialize", "load"]);
 
     await act(async () =>
       initialLoad.resolve(workspace([node({ id: "initial" })]))
     );
+    expect(invocations).toEqual(["initialize", "load", "update:first"]);
+    expect(result.current.state.nodesById.initial).toBeDefined();
+    expect(result.current.status).toBe("loading");
 
-    expect(result.current).toMatchObject({ status: "loading", error: null });
-    expect(result.current.state.rootIds).toEqual([]);
+    await act(async () =>
+      firstCommand.resolve(workspace([node({ id: "first" })]))
+    );
+    expect(invocations).toEqual([
+      "initialize",
+      "load",
+      "update:first",
+      "update:second"
+    ]);
+    expect(result.current.state.nodesById.first).toBeDefined();
     expect(result.current.state.nodesById.initial).toBeUndefined();
+    expect(result.current.status).toBe("loading");
 
     await act(async () => {
-      command.reject(new Error("write failed"));
-      await commandCompletion;
+      secondCommand.resolve(workspace([node({ id: "second" })]));
+      await Promise.all([firstCompletion, secondCompletion]);
     });
-
-    expect(result.current.state.nodesById.initial).toBeDefined();
+    expect(result.current.state.nodesById.second).toBeDefined();
+    expect(result.current.state.nodesById.first).toBeUndefined();
     expect(result.current).toMatchObject({ status: "ready", error: null });
   });
 
-  it("does not load after initialization finishes for a canceled effect", async () => {
+  it("keeps the first confirmed command workspace when the next command fails", async () => {
+    const firstCommand = deferred<NotesWorkspace>();
+    const secondCommand = deferred<NotesWorkspace>();
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "initial" })])),
+      updateNode: vi
+        .fn()
+        .mockReturnValueOnce(firstCommand.promise)
+        .mockReturnValueOnce(secondCommand.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.updateNode("initial", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = result.current.actions.updateNode("initial", {
+        title: "second",
+        note: ""
+      });
+    });
+
+    await act(async () =>
+      firstCommand.resolve(workspace([node({ id: "first-confirmed" })]))
+    );
+    await act(async () => {
+      secondCommand.reject(new Error("second failed"));
+      await Promise.all([firstCompletion, secondCompletion]);
+    });
+
+    expect(result.current.state.nodesById["first-confirmed"]).toBeDefined();
+    expect(result.current.state.nodesById.initial).toBeUndefined();
+    expect(result.current).toMatchObject({
+      status: "error",
+      error: "second failed"
+    });
+  });
+
+  it("does not launch loading or queued commands after unmount during initialization", async () => {
     const initialization = deferred<void>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise)
     });
-    const { unmount } = renderHook(() =>
+    const { result, unmount } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
 
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.updateNode("root", {
+        title: "late",
+        note: ""
+      });
+    });
     unmount();
-    await act(async () => initialization.resolve());
+    await act(async () => {
+      initialization.resolve();
+      await completion;
+    });
 
     expect(store.loadWorkspace).not.toHaveBeenCalled();
+    expect(store.updateNode).not.toHaveBeenCalled();
   });
 
   it("replaces state with each authoritative command response and derives creation placement", async () => {
@@ -257,107 +356,293 @@ describe("useNotesWorkspace", () => {
     });
   });
 
-  it("does not let an older initial load overwrite a newer command", async () => {
-    const initialLoad = deferred<NotesWorkspace>();
+  it("publishes two successful commands in invocation order", async () => {
+    const first = deferred<NotesWorkspace>();
+    const second = deferred<NotesWorkspace>();
     const store = repository({
-      loadWorkspace: vi.fn().mockReturnValue(initialLoad.promise),
-      updateNode: vi.fn().mockResolvedValue(workspace([node({ id: "command" })]))
+      updateNode: vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise)
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.updateNode("root", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = result.current.actions.updateNode("root", {
+        title: "second",
+        note: ""
+      });
+    });
+
+    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    await act(async () => {
+      first.resolve(workspace([node({ id: "first" })]));
+      await firstCompletion;
+    });
+    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(result.current.state.nodesById.first).toBeDefined();
+    expect(result.current.status).toBe("loading");
+
+    await act(async () => {
+      second.resolve(workspace([node({ id: "second" })]));
+      await secondCompletion;
+    });
+
+    expect(result.current.state.nodesById.second).toBeDefined();
+    expect(result.current.state.nodesById.first).toBeUndefined();
+    expect(result.current).toMatchObject({ status: "ready", error: null });
+  });
+
+  it("continues from a failed command to a later successful command", async () => {
+    const first = deferred<NotesWorkspace>();
+    const second = deferred<NotesWorkspace>();
+    const store = repository({
+      updateNode: vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.updateNode("root", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = result.current.actions.updateNode("root", {
+        title: "second",
+        note: ""
+      });
+    });
+
+    await act(async () => {
+      first.reject(new Error("first failed"));
+      await firstCompletion;
+    });
+    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(result.current.state.nodesById.root).toBeDefined();
+    expect(result.current).toMatchObject({
+      status: "loading",
+      error: "first failed"
+    });
+
+    await act(async () => {
+      second.resolve(workspace([node({ id: "second" })]));
+      await secondCompletion;
+    });
+
+    expect(result.current.state.nodesById.second).toBeDefined();
+    expect(result.current).toMatchObject({ status: "ready", error: null });
+  });
+
+  it("derives rapid creation placement when each queued command starts", async () => {
+    createNoteIdMock
+      .mockReturnValueOnce("new-root-1")
+      .mockReturnValueOnce("new-root-2");
+    const first = deferred<NotesWorkspace>();
+    const second = deferred<NotesWorkspace>();
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "initial", sortKey: 1 })])),
+      createNode: vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.createRoot();
+      secondCompletion = result.current.actions.createRoot();
+    });
+
+    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    expect(store.createNode).toHaveBeenNthCalledWith(1, "/vault", {
+      id: "new-root-1",
+      parentId: null,
+      afterId: "initial",
+      title: "",
+      note: ""
+    });
+
     await act(async () =>
-      result.current.actions.updateNode("root", { title: "new", note: "" })
+      first.resolve(workspace([
+        node({ id: "initial", sortKey: 1 }),
+        node({ id: "new-root-1", sortKey: 2 })
+      ]))
     );
-    expect(result.current.state.nodesById.command).toBeDefined();
+    expect(store.createNode).toHaveBeenCalledTimes(2);
+    expect(store.createNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "new-root-2",
+      parentId: null,
+      afterId: "new-root-1",
+      title: "",
+      note: ""
+    });
 
-    await act(async () => initialLoad.resolve(workspace([node({ id: "load" })])));
-
-    expect(result.current.state.nodesById.command).toBeDefined();
-    expect(result.current.state.nodesById.load).toBeUndefined();
-    expect(result.current).toMatchObject({ status: "ready", error: null });
+    await act(async () => {
+      second.resolve(workspace([
+        node({ id: "initial", sortKey: 1 }),
+        node({ id: "new-root-1", sortKey: 2 }),
+        node({ id: "new-root-2", sortKey: 3 })
+      ]));
+      await Promise.all([firstCompletion, secondCompletion]);
+    });
   });
 
-  it("does not let an older command success overwrite a newer command", async () => {
-    const older = deferred<NotesWorkspace>();
-    const newer = deferred<NotesWorkspace>();
+  it("derives a queued child creation from a parent created by prior work", async () => {
+    createNoteIdMock
+      .mockReturnValueOnce("new-parent")
+      .mockReturnValueOnce("new-child");
+    const parentCreation = deferred<NotesWorkspace>();
+    const childCreation = deferred<NotesWorkspace>();
     const store = repository({
-      updateNode: vi
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
+      createNode: vi
         .fn()
-        .mockReturnValueOnce(older.promise)
-        .mockReturnValueOnce(newer.promise)
+        .mockReturnValueOnce(parentCreation.promise)
+        .mockReturnValueOnce(childCreation.promise)
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let olderCommand!: Promise<void>;
-    let newerCommand!: Promise<void>;
+    let parentCompletion!: Promise<void>;
+    let childCompletion!: Promise<void>;
     act(() => {
-      olderCommand = result.current.actions.updateNode("root", {
-        title: "older",
-        note: ""
-      });
-      newerCommand = result.current.actions.updateNode("root", {
-        title: "newer",
-        note: ""
-      });
+      parentCompletion = result.current.actions.createRoot();
+      childCompletion = result.current.actions.createChild("new-parent");
+    });
+
+    await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
+    await act(async () =>
+      parentCreation.resolve(workspace([node({ id: "new-parent" })]))
+    );
+    expect(store.createNode).toHaveBeenNthCalledWith(2, "/vault", {
+      id: "new-child",
+      parentId: "new-parent",
+      afterId: null,
+      title: "",
+      note: ""
     });
 
     await act(async () => {
-      newer.resolve(workspace([node({ id: "newer" })]));
-      await newerCommand;
+      childCreation.resolve(workspace([
+        node({ id: "new-parent" }),
+        node({ id: "new-child", parentId: "new-parent" })
+      ]));
+      await Promise.all([parentCompletion, childCompletion]);
     });
-    await act(async () => {
-      older.resolve(workspace([node({ id: "older" })]));
-      await olderCommand;
-    });
-
-    expect(result.current.state.nodesById.newer).toBeDefined();
-    expect(result.current.state.nodesById.older).toBeUndefined();
-    expect(result.current).toMatchObject({ status: "ready", error: null });
   });
 
-  it("does not let an older command error overwrite a newer command", async () => {
-    const older = deferred<NotesWorkspace>();
-    const newer = deferred<NotesWorkspace>();
+  it("detects a duplicate against the confirmed workspace at queue start", async () => {
+    createNoteIdMock.mockReturnValue("new-root");
+    const create = deferred<NotesWorkspace>();
+    const duplicate = deferred<NotesWorkspace>();
     const store = repository({
-      updateNode: vi
+      loadWorkspace: vi
         .fn()
-        .mockReturnValueOnce(older.promise)
-        .mockReturnValueOnce(newer.promise)
+        .mockResolvedValue(workspace([node({ id: "source", sortKey: 1 })])),
+      createNode: vi.fn().mockReturnValue(create.promise),
+      duplicateNode: vi.fn().mockReturnValue(duplicate.promise)
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let olderCommand!: Promise<void>;
-    let newerCommand!: Promise<void>;
+    let createCompletion!: Promise<void>;
+    let duplicateCompletion!: Promise<void>;
     act(() => {
-      olderCommand = result.current.actions.updateNode("root", {
-        title: "older",
-        note: ""
-      });
-      newerCommand = result.current.actions.updateNode("root", {
-        title: "newer",
-        note: ""
-      });
+      createCompletion = result.current.actions.createRoot();
+      duplicateCompletion = result.current.actions.duplicateNode("source");
     });
 
+    expect(store.duplicateNode).not.toHaveBeenCalled();
+    await act(async () =>
+      create.resolve(workspace([
+        node({ id: "source", sortKey: 1 }),
+        node({ id: "new-root", sortKey: 2 })
+      ]))
+    );
+    expect(store.duplicateNode).toHaveBeenCalledWith("/vault", "source");
+
     await act(async () => {
-      newer.resolve(workspace([node({ id: "newer" })]));
-      await newerCommand;
-    });
-    await act(async () => {
-      older.reject(new Error("older failed"));
-      await olderCommand;
+      duplicate.resolve(workspace([
+        node({ id: "source", sortKey: 1 }),
+        node({ id: "new-root", sortKey: 2 }),
+        node({ id: "duplicate", sortKey: 3 })
+      ]));
+      await Promise.all([createCompletion, duplicateCompletion]);
     });
 
-    expect(result.current.state.nodesById.newer).toBeDefined();
+    expect(result.current.state).toMatchObject({
+      selectedId: "duplicate",
+      editingNoteId: "duplicate",
+      pendingFocusId: "duplicate"
+    });
+  });
+
+  it("continues after a synchronous command throw and resolves public promises", async () => {
+    const store = repository({
+      updateNode: vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error("synchronous failure");
+        })
+        .mockResolvedValueOnce(workspace([node({ id: "second" })]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
+    let zoomCompletion!: Promise<void>;
+    act(() => {
+      firstCompletion = result.current.actions.updateNode("root", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = result.current.actions.updateNode("root", {
+        title: "second",
+        note: ""
+      });
+      zoomCompletion = result.current.actions.zoomTo("root");
+    });
+
+    expect(firstCompletion).toBeInstanceOf(Promise);
+    expect(secondCompletion).toBeInstanceOf(Promise);
+    expect(zoomCompletion).toBeInstanceOf(Promise);
+    await act(async () => {
+      expect(await firstCompletion).toBeUndefined();
+      expect(await secondCompletion).toBeUndefined();
+      expect(await zoomCompletion).toBeUndefined();
+    });
+    expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(result.current.state.nodesById.second).toBeDefined();
     expect(result.current).toMatchObject({ status: "ready", error: null });
   });
 
@@ -441,28 +726,55 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.root).toBeDefined();
   });
 
-  it("ignores a stale load after the vault changes", async () => {
-    let resolveFirst: (value: NotesWorkspace) => void = () => {};
-    const firstLoad = new Promise<NotesWorkspace>((resolve) => {
-      resolveFirst = resolve;
+  it("does not launch or publish old-identity queued work after a vault change", async () => {
+    const oldLoad = deferred<NotesWorkspace>();
+    const newLoad = deferred<NotesWorkspace>();
+    const oldStore = repository({
+      loadWorkspace: vi.fn().mockReturnValue(oldLoad.promise),
+      updateNode: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "old-command" })]))
     });
-    const store = repository({
-      loadWorkspace: vi.fn().mockImplementation((vaultRoot: string) =>
-        vaultRoot === "/old" ? firstLoad : Promise.resolve(workspace([node({ id: "new" })]))
-      )
+    const newStore = repository({
+      loadWorkspace: vi.fn().mockReturnValue(newLoad.promise)
     });
     const { result, rerender } = renderHook(
-      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
-      { initialProps: { vaultRoot: "/old" } }
+      ({ vaultRoot, repository: current }) =>
+        useNotesWorkspace({ vaultRoot, repository: current }),
+      { initialProps: { vaultRoot: "/old", repository: oldStore } }
     );
+    await waitFor(() => expect(oldStore.loadWorkspace).toHaveBeenCalledOnce());
 
-    rerender({ vaultRoot: "/new" });
-    await waitFor(() => expect(result.current.state.nodesById.new).toBeDefined());
-    await act(async () => resolveFirst(workspace([node({ id: "old" })])));
+    let oldCompletion!: Promise<void>;
+    act(() => {
+      oldCompletion = result.current.actions.updateNode("old", {
+        title: "stale",
+        note: ""
+      });
+    });
+
+    rerender({ vaultRoot: "/new", repository: newStore });
+    expect(result.current.status).toBe("loading");
+    expect(result.current.state.rootIds).toEqual([]);
+    await waitFor(() => expect(newStore.loadWorkspace).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      oldLoad.resolve(workspace([node({ id: "old" })]));
+      await oldCompletion;
+    });
+
+    expect(oldStore.updateNode).not.toHaveBeenCalled();
     expect(result.current.state.nodesById.old).toBeUndefined();
+    expect(result.current.status).toBe("loading");
+
+    await act(async () =>
+      newLoad.resolve(workspace([node({ id: "new" })]))
+    );
+    expect(result.current.state.nodesById.new).toBeDefined();
+    expect(result.current).toMatchObject({ status: "ready", error: null });
   });
 
-  it("does not publish deferred load or command completions after unmount", async () => {
+  it("does not publish in-flight work or launch later queued work after unmount", async () => {
     const load = deferred<NotesWorkspace>();
     const loadingStore = repository({ loadWorkspace: vi.fn().mockReturnValue(load.promise) });
     const loadingHook = renderHook(() =>
@@ -475,24 +787,38 @@ describe("useNotesWorkspace", () => {
     expect(loadingHook.result.current.state.nodesById["late-load"]).toBeUndefined();
 
     const command = deferred<NotesWorkspace>();
-    const commandStore = repository({ updateNode: vi.fn().mockReturnValue(command.promise) });
+    const commandStore = repository({
+      updateNode: vi
+        .fn()
+        .mockReturnValueOnce(command.promise)
+        .mockResolvedValueOnce(workspace([node({ id: "never-launched" })]))
+    });
     const commandHook = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/command", repository: commandStore })
     );
     await waitFor(() => expect(commandHook.result.current.status).toBe("ready"));
-    let completion!: Promise<void>;
+    let firstCompletion!: Promise<void>;
+    let secondCompletion!: Promise<void>;
     act(() => {
-      completion = commandHook.result.current.actions.updateNode("root", {
-        title: "late",
+      firstCompletion = commandHook.result.current.actions.updateNode("root", {
+        title: "first",
+        note: ""
+      });
+      secondCompletion = commandHook.result.current.actions.updateNode("root", {
+        title: "second",
         note: ""
       });
     });
+    await waitFor(() =>
+      expect(commandStore.updateNode).toHaveBeenCalledOnce()
+    );
     commandHook.unmount();
 
     await act(async () => {
       command.resolve(workspace([node({ id: "late-command" })]));
-      await completion;
+      await Promise.all([firstCompletion, secondCompletion]);
     });
+    expect(commandStore.updateNode).toHaveBeenCalledOnce();
     expect(commandHook.result.current.state.nodesById["late-command"]).toBeUndefined();
   });
 });

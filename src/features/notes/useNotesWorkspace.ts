@@ -33,7 +33,7 @@ export interface NotesWorkspaceActions {
   removeEmptyNode(nodeId: NoteId): Promise<void>;
   deleteNode(nodeId: NoteId): Promise<void>;
   restoreNode(nodeId: NoteId): Promise<void>;
-  zoomTo(nodeId: NoteId | null): void;
+  zoomTo(nodeId: NoteId | null): Promise<void>;
 }
 
 export interface UseNotesWorkspaceOptions {
@@ -56,16 +56,37 @@ type UiUpdate = Partial<
   >
 >;
 
-interface InitialLoadEntry {
+interface WorkspaceCoordinator {
   vaultRoot: string;
   repository: NotesStore;
   subscribers: number;
-  confirmedMutationVersion: number;
-  pendingCommands: Set<number>;
-  settledWorkspace: NotesWorkspace | null;
-  workspacePublished: boolean;
-  promise: Promise<NotesWorkspace | null>;
+  active: boolean;
+  initialLoadQueued: boolean;
+  pendingWork: number;
+  confirmedWorkspace: NotesWorkspace;
+  tail: Promise<void>;
 }
+
+interface QueueSuccess {
+  workspace: NotesWorkspace;
+  uiUpdate?: UiUpdate;
+}
+
+type QueueWork = (
+  confirmedWorkspace: NotesWorkspace
+) => Promise<QueueSuccess | null>;
+
+type WorkspaceCommand = (
+  store: NotesStore,
+  vaultPath: string,
+  confirmedState: NormalizedNotesWorkspace,
+  confirmedWorkspace: NotesWorkspace
+) => Promise<NotesWorkspace> | NotesWorkspace;
+
+type UiUpdateFactory = (
+  before: NormalizedNotesWorkspace,
+  after: NotesWorkspace
+) => UiUpdate;
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -98,42 +119,108 @@ export function useNotesWorkspace({
     undefined,
     () => normalizeWorkspace({ nodes: [] })
   );
-  const stateRef = useRef(state);
   const identityRef = useRef({ vaultRoot, repository });
-  const operationSequence = useRef(0);
-  const confirmedMutationVersion = useRef(0);
   const mountedRef = useRef(false);
-  const initialLoadRef = useRef<InitialLoadEntry | null>(null);
-  const initialLoadPublicationRef = useRef<{
-    entry: InitialLoadEntry;
-    publishWorkspace: () => void;
-  } | null>(null);
-  stateRef.current = state;
+  const coordinatorRef = useRef<WorkspaceCoordinator | null>(null);
   identityRef.current = { vaultRoot, repository };
+
+  const isCurrentCoordinator = useCallback(
+    (coordinator: WorkspaceCoordinator) => {
+      const current = identityRef.current;
+      return (
+        mountedRef.current &&
+        coordinator.active &&
+        coordinator.subscribers > 0 &&
+        coordinatorRef.current === coordinator &&
+        current.vaultRoot === coordinator.vaultRoot &&
+        current.repository === coordinator.repository
+      );
+    },
+    []
+  );
+
+  const enqueueCoordinatorWork = useCallback(
+    (
+      coordinator: WorkspaceCoordinator,
+      work: QueueWork,
+      announceLoading = true
+    ): Promise<void> => {
+      coordinator.pendingWork += 1;
+      if (announceLoading && isCurrentCoordinator(coordinator)) {
+        dispatch({ type: "setLoading" });
+      }
+
+      const completion = coordinator.tail.then(async () => {
+        if (!isCurrentCoordinator(coordinator)) {
+          coordinator.pendingWork -= 1;
+          return;
+        }
+
+        try {
+          const result = await work(coordinator.confirmedWorkspace);
+          if (!result || !isCurrentCoordinator(coordinator)) {
+            coordinator.pendingWork -= 1;
+            return;
+          }
+
+          coordinator.confirmedWorkspace = result.workspace;
+          coordinator.pendingWork -= 1;
+          dispatch({
+            type: "settleQueueWork",
+            result: {
+              kind: "success",
+              workspace: result.workspace,
+              uiUpdate: result.uiUpdate
+            },
+            hasPendingWork: coordinator.pendingWork > 0
+          });
+        } catch (cause) {
+          coordinator.pendingWork -= 1;
+          if (isCurrentCoordinator(coordinator)) {
+            dispatch({
+              type: "settleQueueWork",
+              result: { kind: "failure", error: errorMessage(cause) },
+              hasPendingWork: coordinator.pendingWork > 0
+            });
+          }
+        }
+      });
+
+      coordinator.tail = completion;
+      return completion;
+    },
+    [isCurrentCoordinator]
+  );
 
   useEffect(() => {
     mountedRef.current = true;
-    operationSequence.current += 1;
-    dispatch({ type: "startWorkspaceLoad" });
-
-    let entry = initialLoadRef.current;
+    let coordinator = coordinatorRef.current;
     if (
-      !entry ||
-      entry.vaultRoot !== vaultRoot ||
-      entry.repository !== repository
+      !coordinator ||
+      coordinator.vaultRoot !== vaultRoot ||
+      coordinator.repository !== repository
     ) {
-      entry = {
+      if (coordinator) {
+        coordinator.active = false;
+      }
+      coordinator = {
         vaultRoot,
         repository,
         subscribers: 0,
-        confirmedMutationVersion: confirmedMutationVersion.current,
-        pendingCommands: new Set(),
-        settledWorkspace: null,
-        workspacePublished: false,
-        promise: Promise.resolve(null)
+        active: true,
+        initialLoadQueued: false,
+        pendingWork: 0,
+        confirmedWorkspace: { nodes: [] },
+        tail: Promise.resolve()
       };
-      initialLoadRef.current = entry;
+      coordinatorRef.current = coordinator;
+    }
+    coordinator.subscribers += 1;
+    coordinator.active = true;
+    dispatch({ type: "startWorkspaceLoad" });
 
+    if (!coordinator.initialLoadQueued) {
+      coordinator.initialLoadQueued = true;
       let initialization: Promise<void>;
       try {
         initialization = repository.initialize(vaultRoot);
@@ -141,157 +228,111 @@ export function useNotesWorkspace({
         initialization = Promise.reject(cause);
       }
 
-      const loadEntry = entry;
-      entry.promise = initialization.then(() => {
-        if (
-          loadEntry.subscribers === 0 ||
-          initialLoadRef.current !== loadEntry
-        ) {
-          return null;
-        }
-        return repository.loadWorkspace(vaultRoot, { kind: "active" });
-      });
-    }
-    entry.subscribers += 1;
-    let subscribed = true;
-
-    const canPublish = () => {
-      const current = identityRef.current;
-      return (
-        subscribed &&
-        mountedRef.current &&
-        initialLoadRef.current === entry &&
-        entry.pendingCommands.size === 0 &&
-        confirmedMutationVersion.current === entry.confirmedMutationVersion &&
-        current.vaultRoot === vaultRoot &&
-        current.repository === repository
+      void enqueueCoordinatorWork(
+        coordinator,
+        async () => {
+          await initialization;
+          if (!isCurrentCoordinator(coordinator)) {
+            return null;
+          }
+          const workspace = await repository.loadWorkspace(vaultRoot, {
+            kind: "active"
+          });
+          return { workspace };
+        },
+        false
       );
-    };
-
-    const publishInitialWorkspace = () => {
-      const workspace = entry.settledWorkspace;
-      if (
-        !workspace ||
-        entry.workspacePublished ||
-        !canPublish()
-      ) {
-        return;
-      }
-      entry.workspacePublished = true;
-      dispatch({ type: "replaceWorkspace", workspace });
-    };
-    const publication = {
-      entry,
-      publishWorkspace: publishInitialWorkspace
-    };
-    initialLoadPublicationRef.current = publication;
-
-    void entry.promise
-      .then((workspace) => {
-        if (workspace) {
-          entry.settledWorkspace = workspace;
-          publishInitialWorkspace();
-        }
-      })
-      .catch((cause: unknown) => {
-        if (canPublish()) {
-          dispatch({ type: "setError", error: errorMessage(cause) });
-        }
-      });
+    }
 
     return () => {
-      subscribed = false;
-      entry.subscribers -= 1;
-      if (initialLoadPublicationRef.current === publication) {
-        initialLoadPublicationRef.current = null;
+      coordinator.subscribers -= 1;
+      if (coordinator.subscribers === 0) {
+        coordinator.active = false;
       }
       mountedRef.current = false;
-      operationSequence.current += 1;
     };
-  }, [repository, vaultRoot]);
+  }, [
+    enqueueCoordinatorWork,
+    isCurrentCoordinator,
+    repository,
+    vaultRoot
+  ]);
 
   const runCommand = useCallback(
-    async (
-      command: (store: NotesStore, vaultPath: string) => Promise<NotesWorkspace>,
-      uiUpdate: UiUpdate | ((workspace: NotesWorkspace) => UiUpdate) = {}
-    ) => {
-      const commandVaultRoot = vaultRoot;
-      const commandRepository = repository;
-      const operation = ++operationSequence.current;
-      const currentInitialLoad = initialLoadRef.current;
-      const commandInitialLoad =
-        currentInitialLoad?.vaultRoot === commandVaultRoot &&
-        currentInitialLoad.repository === commandRepository
-          ? currentInitialLoad
-          : null;
-      commandInitialLoad?.pendingCommands.add(operation);
-      dispatch({ type: "setLoading" });
-
-      const isCurrent = () => {
-        const current = identityRef.current;
-        return (
-          mountedRef.current &&
-          operationSequence.current === operation &&
-          current.vaultRoot === commandVaultRoot &&
-          current.repository === commandRepository
-        );
-      };
-
-      try {
-        const workspace = await command(commandRepository, commandVaultRoot);
-        if (!isCurrent()) {
-          return;
-        }
-        confirmedMutationVersion.current += 1;
-        dispatch({ type: "replaceWorkspace", workspace });
-        const nextUi =
-          typeof uiUpdate === "function" ? uiUpdate(workspace) : uiUpdate;
-        if (Object.keys(nextUi).length > 0) {
-          dispatch({ type: "setUiState", ...nextUi });
-        }
-      } catch (cause) {
-        if (isCurrent()) {
-          dispatch({ type: "setError", error: errorMessage(cause) });
-        }
-      } finally {
-        if (commandInitialLoad) {
-          commandInitialLoad.pendingCommands.delete(operation);
-          const publication = initialLoadPublicationRef.current;
-          if (publication?.entry === commandInitialLoad) {
-            publication.publishWorkspace();
-          }
-        }
+    (
+      command: WorkspaceCommand,
+      uiUpdate: UiUpdate | UiUpdateFactory = {}
+    ): Promise<void> => {
+      const coordinator = coordinatorRef.current;
+      if (
+        !coordinator ||
+        coordinator.vaultRoot !== vaultRoot ||
+        coordinator.repository !== repository ||
+        !isCurrentCoordinator(coordinator)
+      ) {
+        return Promise.resolve();
       }
+
+      return enqueueCoordinatorWork(
+        coordinator,
+        async (confirmedWorkspace) => {
+          const before = normalizeWorkspace(confirmedWorkspace);
+          const workspace = await command(
+            coordinator.repository,
+            coordinator.vaultRoot,
+            before,
+            confirmedWorkspace
+          );
+          return {
+            workspace,
+            uiUpdate:
+              typeof uiUpdate === "function"
+                ? uiUpdate(before, workspace)
+                : uiUpdate
+          };
+        }
+      );
     },
-    [repository, vaultRoot]
+    [
+      enqueueCoordinatorWork,
+      isCurrentCoordinator,
+      repository,
+      vaultRoot
+    ]
   );
 
   const createRoot = useCallback(async () => {
     const id = createNoteId();
-    const afterId = stateRef.current.rootIds.at(-1) ?? null;
     await runCommand(
-      (store, vaultPath) =>
-        store.createNode(vaultPath, { id, parentId: null, afterId, title: "", note: "" }),
+      (store, vaultPath, confirmed) =>
+        store.createNode(vaultPath, {
+          id,
+          parentId: null,
+          afterId: confirmed.rootIds.at(-1) ?? null,
+          title: "",
+          note: ""
+        }),
       { selectedId: id, editingNoteId: id, pendingFocusId: id }
     );
   }, [runCommand]);
 
   const createChild = useCallback(
     async (nodeId: NoteId) => {
-      if (!stateRef.current.nodesById[nodeId]) {
-        return;
-      }
       const id = createNoteId();
-      const afterId = stateRef.current.childIdsByParent[nodeId]?.at(-1) ?? null;
       await runCommand(
-        (store, vaultPath) =>
-          store.createNode(vaultPath, {
+        (store, vaultPath, confirmed, confirmedWorkspace) => {
+          if (!confirmed.nodesById[nodeId]) {
+            return confirmedWorkspace;
+          }
+          const afterId = confirmed.childIdsByParent[nodeId]?.at(-1) ?? null;
+          return store.createNode(vaultPath, {
             id,
             parentId: nodeId,
             afterId,
             title: "",
             note: ""
-          }),
+          });
+        },
         { selectedId: id, editingNoteId: id, pendingFocusId: id }
       );
     },
@@ -359,10 +400,9 @@ export function useNotesWorkspace({
 
   const duplicateNode = useCallback(
     async (nodeId: NoteId) => {
-      const before = stateRef.current;
       await runCommand(
         (store, vaultPath) => store.duplicateNode(vaultPath, nodeId),
-        (workspace) => {
+        (before, workspace) => {
           const duplicateId = duplicateRootId(before, workspace, nodeId);
           return duplicateId
             ? {
@@ -400,7 +440,7 @@ export function useNotesWorkspace({
     [runCommand]
   );
 
-  const zoomTo = useCallback((nodeId: NoteId | null) => {
+  const zoomTo = useCallback(async (nodeId: NoteId | null) => {
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
   }, []);
 
