@@ -60,7 +60,7 @@ interface InitialLoadEntry {
   vaultRoot: string;
   repository: NotesStore;
   subscribers: number;
-  operation: number;
+  confirmedMutationVersion: number;
   promise: Promise<NotesWorkspace | null>;
 }
 
@@ -98,6 +98,7 @@ export function useNotesWorkspace({
   const stateRef = useRef(state);
   const identityRef = useRef({ vaultRoot, repository });
   const operationSequence = useRef(0);
+  const confirmedMutationVersion = useRef(0);
   const mountedRef = useRef(false);
   const initialLoadRef = useRef<InitialLoadEntry | null>(null);
   stateRef.current = state;
@@ -105,7 +106,7 @@ export function useNotesWorkspace({
 
   useEffect(() => {
     mountedRef.current = true;
-    const operation = ++operationSequence.current;
+    operationSequence.current += 1;
     dispatch({ type: "startWorkspaceLoad" });
 
     let entry = initialLoadRef.current;
@@ -118,7 +119,7 @@ export function useNotesWorkspace({
         vaultRoot,
         repository,
         subscribers: 0,
-        operation,
+        confirmedMutationVersion: confirmedMutationVersion.current,
         promise: Promise.resolve(null)
       };
       initialLoadRef.current = entry;
@@ -134,22 +135,23 @@ export function useNotesWorkspace({
       entry.promise = initialization.then(() => {
         if (
           loadEntry.subscribers === 0 ||
-          initialLoadRef.current !== loadEntry ||
-          operationSequence.current !== loadEntry.operation
+          initialLoadRef.current !== loadEntry
         ) {
           return null;
         }
         return repository.loadWorkspace(vaultRoot, { kind: "active" });
       });
     }
-    entry.operation = operation;
     entry.subscribers += 1;
+    let subscribed = true;
 
-    const isCurrent = () => {
+    const canPublish = () => {
       const current = identityRef.current;
       return (
+        subscribed &&
         mountedRef.current &&
-        operationSequence.current === operation &&
+        initialLoadRef.current === entry &&
+        confirmedMutationVersion.current === entry.confirmedMutationVersion &&
         current.vaultRoot === vaultRoot &&
         current.repository === repository
       );
@@ -157,17 +159,18 @@ export function useNotesWorkspace({
 
     void entry.promise
       .then((workspace) => {
-        if (workspace && isCurrent()) {
+        if (workspace && canPublish()) {
           dispatch({ type: "replaceWorkspace", workspace });
         }
       })
       .catch((cause: unknown) => {
-        if (isCurrent()) {
+        if (canPublish()) {
           dispatch({ type: "setError", error: errorMessage(cause) });
         }
       });
 
     return () => {
+      subscribed = false;
       entry.subscribers -= 1;
       mountedRef.current = false;
       operationSequence.current += 1;
@@ -199,6 +202,7 @@ export function useNotesWorkspace({
         if (!isCurrent()) {
           return;
         }
+        confirmedMutationVersion.current += 1;
         dispatch({ type: "replaceWorkspace", workspace });
         const nextUi =
           typeof uiUpdate === "function" ? uiUpdate(workspace) : uiUpdate;

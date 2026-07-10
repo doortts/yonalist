@@ -111,6 +111,40 @@ describe("useNotesWorkspace", () => {
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
   });
 
+  it("still loads once and recovers when a command fails during initialization", async () => {
+    const initialization = deferred<void>();
+    const store = repository({
+      initialize: vi.fn().mockReturnValue(initialization.promise),
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "loaded" })])),
+      updateNode: vi.fn().mockRejectedValue(new Error("write failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+
+    expect(store.initialize).toHaveBeenCalledOnce();
+    expect(store.loadWorkspace).not.toHaveBeenCalled();
+
+    await act(async () =>
+      result.current.actions.updateNode("root", { title: "new", note: "" })
+    );
+
+    expect(result.current).toMatchObject({ status: "error", error: "write failed" });
+    expect(result.current.state.rootIds).toEqual([]);
+    expect(store.loadWorkspace).not.toHaveBeenCalled();
+
+    await act(async () => initialization.resolve());
+
+    await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(result.current.state.nodesById.loaded).toBeDefined()
+    );
+    expect(result.current).toMatchObject({ status: "ready", error: null });
+    expect(store.loadWorkspace).toHaveBeenCalledWith("/vault", { kind: "active" });
+  });
+
   it("does not load after initialization finishes for a canceled effect", async () => {
     const initialization = deferred<void>();
     const store = repository({
