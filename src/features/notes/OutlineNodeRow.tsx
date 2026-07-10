@@ -1,7 +1,9 @@
+import { useSortable } from "@dnd-kit/sortable";
 import {
   ChevronDown,
   ChevronRight,
   Copy,
+  GripVertical,
   MessageSquareText,
   Trash2
 } from "lucide-react";
@@ -20,6 +22,7 @@ import { resolveOutlineKey } from "./outlineKeyboard";
 interface OutlineNodeRowProps {
   nodeId: NoteId;
   depth: number;
+  dragDisabled: boolean;
 }
 
 interface DraftField {
@@ -58,9 +61,30 @@ function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
 }
 
-export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
+export function OutlineNodeRow({
+  nodeId,
+  depth,
+  dragDisabled
+}: OutlineNodeRowProps) {
   const { actions, state } = useNotesWorkspaceContext();
   const node = state.nodesById[nodeId];
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition
+  } = useSortable({
+    id: nodeId,
+    disabled: dragDisabled,
+    attributes: {
+      role: "button",
+      roleDescription: "sortable note",
+      tabIndex: 0
+    }
+  });
   const [titleDraft, setTitleDraft] = useState(() =>
     initialDraft(node?.title ?? "")
   );
@@ -129,7 +153,11 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
   const hasChildren = (state.childIdsByParent[nodeId]?.length ?? 0) > 0;
   const completed = node.completedAt !== null;
   const rowStyle = {
-    "--notes-indent": `min(${depth * 24}px, 20%)`
+    "--notes-indent": `min(${depth * 24}px, 20%)`,
+    transform: transform
+      ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
+      : undefined,
+    transition
   } as CSSProperties;
 
   const draftPatch = () => ({
@@ -266,11 +294,28 @@ export function OutlineNodeRow({ nodeId, depth }: OutlineNodeRowProps) {
 
   return (
     <div
+      ref={setNodeRef}
       className="notes-node"
+      data-outline-id={nodeId}
       data-completed={completed ? "true" : undefined}
+      data-dragging={isDragging ? "true" : undefined}
       style={rowStyle}
     >
       <div className="notes-node-main">
+        <IconTooltip label="Move">
+          <button
+            ref={setActivatorNodeRef}
+            className="notes-row-icon-button notes-drag-handle"
+            type="button"
+            disabled={dragDisabled}
+            {...attributes}
+            {...listeners}
+            aria-label={`Move ${label}`}
+          >
+            <GripVertical size={15} aria-hidden="true" />
+          </button>
+        </IconTooltip>
+
         <span className="notes-collapse-slot">
           {hasChildren && (
             <IconTooltip label={node.isCollapsed ? "Expand" : "Collapse"}>

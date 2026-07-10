@@ -173,12 +173,18 @@
 
 .notes-node {
   --notes-indent: 0px;
+  position: relative;
   min-width: 0;
+}
+
+.notes-node[data-dragging="true"] {
+  z-index: 2;
+  opacity: 0.72;
 }
 
 .notes-node-main {
   display: grid;
-  grid-template-columns: 24px 18px minmax(0, 1fr) auto;
+  grid-template-columns: 24px 24px 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px;
   min-height: 38px;
@@ -216,6 +222,20 @@
 .notes-row-icon-button[aria-pressed="true"] {
   background: var(--bg-active);
   color: var(--text-1);
+}
+
+.notes-drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.notes-drag-handle:active {
+  cursor: grabbing;
+}
+
+.notes-drag-handle:disabled {
+  cursor: default;
+  opacity: 0.42;
 }
 
 .notes-delete-button:hover {
@@ -277,9 +297,9 @@
 
 .notes-node-note {
   display: block;
-  width: calc(100% - var(--notes-indent) - 50px);
+  width: calc(100% - var(--notes-indent) - 78px);
   min-height: 58px;
-  margin: 2px 0 8px calc(var(--notes-indent) + 50px);
+  margin: 2px 0 8px calc(var(--notes-indent) + 78px);
   padding: 7px 9px;
   resize: vertical;
   border: 1px solid var(--border);

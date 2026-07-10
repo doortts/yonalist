@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { NoteNode, NotesWorkspace } from "../../domain/notes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
-import { parentTrail, visibleNodeIds } from "./outlineTree";
+import {
+  flattenVisibleOutlineRows,
+  parentTrail,
+  visibleNodeIds
+} from "./outlineTree";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -78,6 +82,91 @@ describe("outlineTree", () => {
       "detail"
     ]);
     expect(visibleNodeIds(state, "missing")).toEqual([]);
+  });
+
+  it("flattens deterministic visible rows with collapse-aware ancestry", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "root-b", sortKey: 20 }),
+        node({ id: "hidden", parentId: "child-b" }),
+        node({
+          id: "child-b",
+          parentId: "root-a",
+          sortKey: 20,
+          isCollapsed: true
+        }),
+        node({ id: "root-a", sortKey: 10 }),
+        node({ id: "grandchild", parentId: "child-a" }),
+        node({ id: "child-a", parentId: "root-a", sortKey: 10 })
+      ])
+    );
+
+    expect(flattenVisibleOutlineRows(state, null)).toEqual([
+      {
+        id: "root-a",
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: []
+      },
+      {
+        id: "child-a",
+        parentId: "root-a",
+        depth: 1,
+        isCollapsed: false,
+        ancestorIds: ["root-a"]
+      },
+      {
+        id: "grandchild",
+        parentId: "child-a",
+        depth: 2,
+        isCollapsed: false,
+        ancestorIds: ["root-a", "child-a"]
+      },
+      {
+        id: "child-b",
+        parentId: "root-a",
+        depth: 1,
+        isCollapsed: true,
+        ancestorIds: ["root-a"]
+      },
+      {
+        id: "root-b",
+        parentId: null,
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: []
+      }
+    ]);
+  });
+
+  it("resets visible depth and ancestry at the zoom root boundary", () => {
+    const state = normalizeWorkspace(
+      workspace([
+        node({ id: "outside" }),
+        node({ id: "project", sortKey: 20 }),
+        node({ id: "task", parentId: "project" }),
+        node({ id: "detail", parentId: "task" })
+      ])
+    );
+
+    expect(flattenVisibleOutlineRows(state, "task")).toEqual([
+      {
+        id: "task",
+        parentId: "project",
+        depth: 0,
+        isCollapsed: false,
+        ancestorIds: []
+      },
+      {
+        id: "detail",
+        parentId: "task",
+        depth: 1,
+        isCollapsed: false,
+        ancestorIds: ["task"]
+      }
+    ]);
+    expect(flattenVisibleOutlineRows(state, "missing")).toEqual([]);
   });
 
   it("builds an ordered parent trail and safely stops at missing parents", () => {

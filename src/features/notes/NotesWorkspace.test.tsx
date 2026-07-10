@@ -213,6 +213,32 @@ function renderNotesWorkspace() {
   );
 }
 
+function mockOutlineRowRects() {
+  const rectangle = (top: number, left = 0, width = 640, height = 38) =>
+    ({
+      x: left,
+      y: top,
+      top,
+      left,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      toJSON: () => ({})
+    }) as DOMRect;
+
+  return vi
+    .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+    .mockImplementation(function (this: HTMLElement) {
+      const row = this.closest<HTMLElement>(".notes-node");
+      if (!row) {
+        return rectangle(0);
+      }
+      const rows = Array.from(document.querySelectorAll(".notes-node"));
+      return rectangle(rows.indexOf(row) * 38);
+    });
+}
+
 describe("Notes workspace", () => {
   beforeEach(() => {
     configureRepository();
@@ -234,6 +260,173 @@ describe("Notes workspace", () => {
       kind: "active"
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
+  });
+
+  it("exposes dedicated sortable handles without capturing title or note input", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+
+    const title = await screen.findByRole("textbox", {
+      name: "Edit node title: Project"
+    });
+    expect(title.closest("li")).toHaveAttribute("aria-level", "1");
+    expect(
+      screen
+        .getByRole("textbox", { name: "Edit node title: Plan" })
+        .closest("li")
+    ).toHaveAttribute("aria-level", "2");
+    const projectHandle = screen.getByRole("button", { name: "Move Project" });
+    expect(projectHandle).toBeEnabled();
+    expect(projectHandle).toHaveAttribute("aria-describedby");
+
+    projectHandle.focus();
+    expect(projectHandle).toHaveFocus();
+    await user.click(title);
+    await user.keyboard(" [ArrowLeft][ArrowRight]");
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole("button", { name: /Show supporting note for Project/ })
+    );
+    const supportingNote = screen.getByRole("textbox", {
+      name: /Supporting note: Project/
+    });
+    await user.click(supportingNote);
+    await user.keyboard(" [ArrowUp][ArrowDown]");
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+
+    await user.dblClick(title);
+    expect(screen.getByRole("button", { name: /Move Project/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Move Plan" })).toBeEnabled();
+    expect(
+      screen
+        .getByRole("textbox", { name: /Edit node title: Project/ })
+        .closest("li")
+    ).toHaveAttribute("aria-level", "1");
+    expect(
+      screen
+        .getByRole("textbox", { name: "Edit node title: Plan" })
+        .closest("li")
+    ).toHaveAttribute("aria-level", "2");
+  });
+
+  it("disables visible drag handles while queued workspace work is loading", async () => {
+    const user = userEvent.setup();
+    const completion = deferred<NotesWorkspace>();
+    notesStoreMock.toggleComplete.mockReturnValue(completion.promise);
+    renderNotesWorkspace();
+    await screen.findByRole("button", { name: "Move Project" });
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Mark Project complete" })
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce()
+    );
+    for (const handle of screen.getAllByRole("button", { name: /^Move / })) {
+      expect(handle).toBeDisabled();
+    }
+
+    completion.resolve(workspace(confirmedNodes));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Move Project" })).toBeEnabled()
+    );
+  });
+
+  it("moves before the first row by keyboard through one queued action without optimistic order", async () => {
+    const user = userEvent.setup();
+    const move = deferred<NotesWorkspace>();
+    configureRepository([
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "second", sortKey: 2, title: "Second" })
+    ]);
+    notesStoreMock.moveNode.mockReturnValue(move.promise);
+    renderNotesWorkspace();
+    const handle = await screen.findByRole("button", { name: "Move Second" });
+    mockOutlineRowRects();
+
+    handle.focus();
+    await user.keyboard("[Space][ArrowUp][Space]");
+
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "second",
+      parentId: null,
+      afterId: null,
+      beforeId: "first"
+    });
+    expect(
+      screen
+        .getAllByRole("textbox", { name: /Edit node title:/ })
+        .map((input) => (input as HTMLInputElement).value)
+    ).toEqual(["First", "Second"]);
+
+    move.resolve(
+      workspace([
+        node({ id: "first", sortKey: 2, title: "First" }),
+        node({ id: "second", sortKey: 1, title: "Second" })
+      ])
+    );
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("textbox", { name: /Edit node title:/ })
+          .map((input) => (input as HTMLInputElement).value)
+      ).toEqual(["Second", "First"])
+    );
+  });
+
+  it("expands a collapsed drop parent before one pointer-driven child move", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "active", sortKey: 1, title: "Active" }),
+      node({ id: "parent", sortKey: 2, title: "Parent", isCollapsed: true }),
+      node({ id: "hidden", parentId: "parent", title: "Hidden" })
+    ]);
+    renderNotesWorkspace();
+    const activeHandle = await screen.findByRole("button", {
+      name: "Move Active"
+    });
+    const parentHandle = screen.getByRole("button", { name: "Move Parent" });
+    mockOutlineRowRects();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: activeHandle,
+      coords: { clientX: 12, clientY: 18 }
+    });
+    await user.pointer({
+      target: parentHandle,
+      coords: { clientX: 20, clientY: 26 }
+    });
+    expect(activeHandle.closest(".notes-node")).toHaveAttribute(
+      "data-dragging",
+      "true"
+    );
+    await user.pointer({
+      target: parentHandle,
+      coords: { clientX: 40, clientY: 56 }
+    });
+    expect(document.body).toHaveTextContent("Active is over Parent.");
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: parentHandle,
+      coords: { clientX: 40, clientY: 56 }
+    });
+
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
+      "/vault",
+      "parent"
+    );
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "active",
+      parentId: "parent",
+      afterId: "hidden"
+    });
+    expect(
+      notesStoreMock.toggleCollapsed.mock.invocationCallOrder[0]
+    ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
   });
 
   it("lists root pages only and zooms through the full breadcrumb trail", async () => {

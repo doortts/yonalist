@@ -1,14 +1,22 @@
 import type { NoteId, NoteNode } from "../../domain/notes";
 import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
 
-export function visibleNodeIds(
+export interface FlattenedOutlineRow {
+  id: NoteId;
+  parentId: NoteId | null;
+  depth: number;
+  isCollapsed: boolean;
+  ancestorIds: NoteId[];
+}
+
+export function flattenVisibleOutlineRows(
   workspace: NormalizedNotesWorkspace,
   zoomRootId: NoteId | null
-): NoteId[] {
-  const visible: NoteId[] = [];
+): FlattenedOutlineRow[] {
+  const rows: FlattenedOutlineRow[] = [];
   const visited = new Set<NoteId>();
 
-  const visit = (nodeId: NoteId) => {
+  const visit = (nodeId: NoteId, ancestorIds: NoteId[]) => {
     if (visited.has(nodeId)) {
       return;
     }
@@ -17,24 +25,37 @@ export function visibleNodeIds(
       return;
     }
     visited.add(nodeId);
-    visible.push(nodeId);
+    rows.push({
+      id: node.id,
+      parentId: node.parentId,
+      depth: ancestorIds.length,
+      isCollapsed: node.isCollapsed,
+      ancestorIds
+    });
     if (node.isCollapsed) {
       return;
     }
     for (const childId of workspace.childIdsByParent[nodeId] ?? []) {
-      visit(childId);
+      visit(childId, [...ancestorIds, nodeId]);
     }
   };
 
   if (zoomRootId !== null) {
-    visit(zoomRootId);
+    visit(zoomRootId, []);
   } else {
     for (const rootId of workspace.rootIds) {
-      visit(rootId);
+      visit(rootId, []);
     }
   }
 
-  return visible;
+  return rows;
+}
+
+export function visibleNodeIds(
+  workspace: NormalizedNotesWorkspace,
+  zoomRootId: NoteId | null
+): NoteId[] {
+  return flattenVisibleOutlineRows(workspace, zoomRootId).map((row) => row.id);
 }
 
 export function parentTrail(
