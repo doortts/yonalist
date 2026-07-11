@@ -745,17 +745,32 @@ fn publish_directory_noreplace(_staged: &Path, _destination: &Path) -> Result<()
     Err("Atomic no-replace Notes asset publication is unsupported on this platform.".to_string())
 }
 
+fn unique_export_cleanup_path(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
+    let path = tempfile::Builder::new()
+        .prefix(prefix)
+        .tempdir_in(parent)
+        .map_err(|error| error.to_string())?
+        .keep();
+    fs::remove_dir(&path).map_err(|error| error.to_string())?;
+    Ok(path)
+}
+
+fn preserve_export_directory(
+    directory: &Path,
+    parent: &Path,
+    prefix: &str,
+) -> Result<PathBuf, String> {
+    let preserved = unique_export_cleanup_path(parent, prefix)?;
+    publish_directory_noreplace(directory, &preserved)?;
+    Ok(preserved)
+}
+
 fn rollback_published_directory(
     published: &Path,
     parent: &Path,
     expected_identity: ExportDirectoryIdentity,
-) -> Result<(), String> {
-    let quarantine = tempfile::Builder::new()
-        .prefix(".yonalist-notes-rollback-")
-        .tempdir_in(parent)
-        .map_err(|error| error.to_string())?
-        .keep();
-    fs::remove_dir(&quarantine).map_err(|error| error.to_string())?;
+) -> Result<String, String> {
+    let quarantine = unique_export_cleanup_path(parent, ".yonalist-notes-rollback-")?;
     publish_directory_noreplace(published, &quarantine)
         .map_err(|error| format!("Could not quarantine Notes export assets: {error}"))?;
 
@@ -788,7 +803,10 @@ fn rollback_published_directory(
         };
     }
 
-    remove_path_nofollow(&quarantine)
+    Ok(format!(
+        "Notes export rollback cleanup warning: published assets were preserved for startup/manual cleanup at {}.",
+        quarantine.display()
+    ))
 }
 
 fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), String> {
@@ -819,6 +837,18 @@ thread_local! {
     static INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INJECT_EXPORT_PARENT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXPORT_CLEANUP_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn report_export_cleanup_warning(warning: String) {
+    eprintln!("{warning}");
+    #[cfg(test)]
+    EXPORT_CLEANUP_WARNINGS.with(|warnings| warnings.borrow_mut().push(warning));
+}
+
+#[cfg(test)]
+fn take_export_cleanup_warnings() -> Vec<String> {
+    EXPORT_CLEANUP_WARNINGS.with(|warnings| std::mem::take(&mut *warnings.borrow_mut()))
 }
 
 #[cfg(test)]
@@ -968,7 +998,10 @@ pub(crate) fn publish_markdown_export(
                     parent,
                     staged_asset_identity,
                 ) {
-                    Ok(()) => Err(error),
+                    Ok(warning) => {
+                        report_export_cleanup_warning(warning);
+                        Err(error)
+                    }
                     Err(rollback_error) => Err(format!(
                         "{error} Notes export rollback also failed: {rollback_error}"
                     )),
@@ -1009,27 +1042,51 @@ pub(crate) fn publish_markdown_export(
 
     if let Err(error) = publish_result {
         let mut rollback_errors = Vec::new();
+        let mut preserve_stage = false;
         if published_document {
             if let Err(rollback_error) = remove_path_nofollow(destination) {
                 rollback_errors.push(rollback_error);
             }
         }
         if published_assets {
-            if let Err(rollback_error) =
-                rollback_published_directory(asset_destination, parent, staged_asset_identity)
-            {
-                rollback_errors.push(rollback_error);
+            match rollback_published_directory(asset_destination, parent, staged_asset_identity) {
+                Ok(warning) => report_export_cleanup_warning(warning),
+                Err(rollback_error) => rollback_errors.push(rollback_error),
             }
         }
         if had_assets && old_assets.exists() {
-            if let Err(rollback_error) = fs::rename(&old_assets, asset_destination) {
-                rollback_errors.push(rollback_error.to_string());
+            if let Err(restore_error) = publish_directory_noreplace(&old_assets, asset_destination)
+            {
+                match preserve_export_directory(
+                    &old_assets,
+                    parent,
+                    ".yonalist-notes-old-assets-",
+                ) {
+                    Ok(preserved) => rollback_errors.push(format!(
+                        "Notes export incomplete rollback: the asset destination remained occupied; the old asset backup was preserved at {}: {restore_error}",
+                        preserved.display()
+                    )),
+                    Err(preserve_error) => {
+                        preserve_stage = true;
+                        rollback_errors.push(format!(
+                            "Notes export incomplete rollback: the asset destination remained occupied and the old asset backup could not be moved out of private staging: {restore_error}; preservation failed: {preserve_error}"
+                        ));
+                    }
+                }
             }
         }
         if had_document && old_document.exists() {
             if let Err(rollback_error) = fs::rename(&old_document, destination) {
+                preserve_stage = true;
                 rollback_errors.push(rollback_error.to_string());
             }
+        }
+        if preserve_stage {
+            let preserved_stage = stage.keep();
+            rollback_errors.push(format!(
+                "Notes export incomplete rollback: private staging was preserved at {} for startup/manual cleanup.",
+                preserved_stage.display()
+            ));
         }
         return if rollback_errors.is_empty() {
             Err(error)
@@ -2702,6 +2759,155 @@ mod tests {
             [1, 2, 3]
         );
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_rollback_preserves_racer_and_old_asset_backup() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("overwrite-race.md");
+        let assets = temp_dir.path().join("overwrite-race_assets");
+        let displaced_assets = temp_dir.path().join("displaced-new-assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "overwrite-race_assets")
+            .expect("prepare export");
+        let racer_identity = Rc::new(RefCell::new(None));
+        let injected_identity = racer_identity.clone();
+        let raced_assets = assets.clone();
+        let raced_displaced = displaced_assets.clone();
+        inject_markdown_post_asset_publication_swap_once(move || {
+            std::fs::rename(&raced_assets, &raced_displaced).expect("displace new assets");
+            std::fs::create_dir(&raced_assets).expect("empty racer directory");
+            *injected_identity.borrow_mut() =
+                Some(super::export_directory_identity(&raced_assets).expect("racer identity"));
+        });
+        super::inject_markdown_publish_failure_once();
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("injected overwrite failure");
+
+        assert!(error.contains("incomplete rollback"), "{error}");
+        assert_eq!(
+            super::export_directory_identity(&assets).expect("surviving racer identity"),
+            racer_identity.borrow().expect("recorded racer identity")
+        );
+        assert_eq!(
+            std::fs::read_dir(&assets)
+                .expect("empty racer survives")
+                .count(),
+            0
+        );
+        let old_backups = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-old-assets-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(old_backups.len(), 1, "{error}");
+        assert_eq!(
+            std::fs::read(old_backups[0].path().join("old.png")).expect("preserved old backup"),
+            b"old asset"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document restored"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(displaced_assets.join("0001.png")).expect("new assets displaced"),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn notes_export_rollback_retains_owned_quarantine_without_recursive_deletion() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("retained.md");
+        let assets = temp_dir.path().join("retained_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "retained_assets").expect("prepare export");
+        let _ = super::take_export_cleanup_warnings();
+        super::inject_markdown_publish_failure_once();
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("injected publish failure");
+
+        assert_eq!(error, "Injected Notes Markdown publish failure.");
+        let warnings = super::take_export_cleanup_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("cleanup warning"), "{warnings:?}");
+        assert!(
+            warnings[0].contains("startup/manual cleanup"),
+            "{warnings:?}"
+        );
+        let quarantines = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-rollback-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(quarantines.len(), 1, "{error}");
+        assert_eq!(
+            std::fs::read(quarantines[0].path().join("0001.png"))
+                .expect("retained quarantine asset"),
+            [1, 2, 3]
+        );
+        assert!(!assets.exists());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn notes_export_success_removes_private_staging_without_quarantine() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("success.md");
+        let assets = temp_dir.path().join("success_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "success_assets").expect("prepare export");
+
+        publish_markdown_export(&destination, &assets, &prepared, false).expect("publish export");
+
+        assert!(destination.is_file());
+        assert!(assets.join("0001.png").is_file());
+        let private_artifacts = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-")
+            })
+            .collect::<Vec<_>>();
+        assert!(private_artifacts.is_empty(), "{private_artifacts:?}");
     }
 
     #[test]
