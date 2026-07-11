@@ -2454,4 +2454,185 @@ describe("useNotesWorkspace", () => {
     expect(store.restoreNode).toHaveBeenCalledWith("/vault", "restored");
     expect(result.current.state.nodesById.restored).toBeDefined();
   });
+
+  it("flushes every draft before archiving a root and selects the next visible root", async () => {
+    const before = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 }),
+      node({ id: "second-child", parentId: "second", sortKey: 1 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const after = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      updateNode: vi.fn().mockResolvedValue(before),
+      archiveNode: vi.fn().mockResolvedValue(after),
+      listTags: vi.fn().mockResolvedValue(["#remaining"])
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.rootIds).toEqual([
+      "first",
+      "second",
+      "third"
+    ]));
+
+    act(() => {
+      void result.current.actions.zoomTo("second");
+      result.current.actions.updateNodeDraft("second-child", {
+        title: "Saved before archive",
+        note: ""
+      });
+    });
+    await act(async () => result.current.actions.archiveNode("second"));
+
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "second-child",
+      title: "Saved before archive",
+      note: ""
+    });
+    expect(store.archiveNode).toHaveBeenCalledWith("/vault", "second");
+    expect(
+      vi.mocked(store.updateNode).mock.invocationCallOrder[0]
+    ).toBeLessThan(vi.mocked(store.archiveNode).mock.invocationCallOrder[0]);
+    expect(store.listTags).toHaveBeenCalledWith("/vault");
+    expect(result.current.tags).toEqual(["#remaining"]);
+    expect(result.current.state).toMatchObject({
+      rootIds: ["first", "third"],
+      selectedId: "third",
+      zoomRootId: "third"
+    });
+  });
+
+  it("falls back to the previous root and then the empty state", async () => {
+    let current = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => current),
+      archiveNode: vi.fn().mockImplementation(async (_vault, nodeId) => {
+        current = workspace(current.nodes.filter((currentNode) => currentNode.id !== nodeId));
+        return current;
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.rootIds).toEqual(["first", "second"]));
+
+    await act(async () => result.current.actions.zoomTo("second"));
+    await act(async () => result.current.actions.archiveNode("second"));
+    expect(result.current.state.zoomRootId).toBe("first");
+
+    await act(async () => result.current.actions.archiveNode("first"));
+    expect(result.current.state).toMatchObject({
+      rootIds: [],
+      selectedId: null,
+      zoomRootId: null
+    });
+  });
+
+  it("uses the same deterministic fallback when an open root moves to Trash", async () => {
+    const before = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const after = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      softDeleteNode: vi.fn().mockResolvedValue(after)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.rootIds).toEqual([
+      "first",
+      "second",
+      "third"
+    ]));
+
+    await act(async () => result.current.actions.zoomTo("second"));
+    await act(async () => result.current.actions.deleteNode("second"));
+
+    expect(result.current.state).toMatchObject({
+      rootIds: ["first", "third"],
+      selectedId: "third",
+      zoomRootId: "third"
+    });
+  });
+
+  it("rejects non-root archive and unarchive targets before invoking storage", async () => {
+    const child = node({ id: "child", parentId: "root" });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([
+        node({ id: "root" }),
+        child
+      ]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.nodesById.child).toBeDefined());
+
+    await act(async () => {
+      await result.current.actions.archiveNode("child");
+      await result.current.actions.unarchiveNode("child");
+    });
+
+    expect(store.archiveNode).not.toHaveBeenCalled();
+    expect(store.unarchiveNode).not.toHaveBeenCalled();
+  });
+
+  it("unarchives a root through the archive scope and chooses its next archived sibling", async () => {
+    const active = workspace([node({ id: "active" })]);
+    let archived = workspace([
+      node({
+        id: "archived-first",
+        sortKey: 1,
+        archivedAt: "2026-07-11T01:00:00Z",
+        archiveRootId: "archived-first"
+      }),
+      node({
+        id: "archived-second",
+        sortKey: 2,
+        archivedAt: "2026-07-11T01:00:00Z",
+        archiveRootId: "archived-second"
+      })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async (_vault, scope) =>
+        scope.kind === "archive" ? archived : active
+      ),
+      unarchiveNode: vi.fn().mockImplementation(async () => {
+        archived = workspace(archived.nodes.filter((current) => current.id !== "archived-first"));
+        return active;
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("archive"));
+    await act(async () => result.current.actions.zoomTo("archived-first"));
+    await act(async () => result.current.actions.unarchiveNode("archived-first"));
+
+    expect(store.unarchiveNode).toHaveBeenCalledWith("/vault", "archived-first");
+    expect(store.loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+      kind: "archive"
+    });
+    expect(result.current.state).toMatchObject({
+      rootIds: ["archived-second"],
+      selectedId: "archived-second",
+      zoomRootId: "archived-second"
+    });
+  });
 });

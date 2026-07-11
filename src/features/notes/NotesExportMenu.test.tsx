@@ -224,6 +224,8 @@ function workspaceValue(
     removeEmptyNode: resolved(),
     deleteNode: resolved(),
     restoreNode: resolved(),
+    archiveNode: resolved(),
+    unarchiveNode: resolved(),
     emptyTrash: resolved(),
     selectLibraryView: resolved(),
     selectTag: resolved(),

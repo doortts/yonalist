@@ -1,6 +1,6 @@
 import {
+  Archive,
   Clock3,
-  FileText,
   ListTree,
   Plus,
   Search,
@@ -17,8 +17,14 @@ import {
   useState
 } from "react";
 import type { NoteSearchResult } from "../../domain/notes";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { IconTooltip, TooltipProvider } from "../../components/ui/Tooltip";
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";
+import {
+  NotesExportControllerProvider,
+  useNotesExportController
+} from "./NotesExportController";
+import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesLibraryView } from "./useNotesWorkspace";
 
@@ -27,6 +33,7 @@ const libraryViews = [
   { id: "starred", label: "Starred", icon: Star },
   { id: "recent", label: "Recent", icon: Clock3 },
   { id: "tags", label: "Tags", icon: Tags },
+  { id: "archive", label: "Archive", icon: Archive },
   { id: "trash", label: "Trash", icon: Trash2 }
 ] as const satisfies ReadonlyArray<{
   id: NotesLibraryView;
@@ -47,9 +54,10 @@ function resultLabel(result: NoteSearchResult): string {
   return `${title}${context}, ${result.matchedField} match`;
 }
 
-export function NotesLibraryPane() {
+function NotesLibraryPaneContent() {
   const { actions, activeTag, deletingNotesData, libraryView, state, tags } =
     useNotesWorkspaceContext();
+  const exportController = useNotesExportController();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly NoteSearchResult[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -179,7 +187,7 @@ export function NotesLibraryPane() {
         <header className="notes-library-header">
           <h2>Notes</h2>
           <div className="notes-library-header-actions">
-            {libraryView !== "trash" && (
+            {libraryView !== "trash" && libraryView !== "archive" && (
               <button
                 className="text-button notes-new-page"
                 type="button"
@@ -304,7 +312,11 @@ export function NotesLibraryPane() {
               state.status !== "error" &&
               state.rootIds.length === 0 && (
                 <p className="notes-pane-state">
-                  {libraryView === "trash" ? "Trash is empty." : "No pages yet."}
+                  {libraryView === "trash"
+                    ? "Trash is empty."
+                    : libraryView === "archive"
+                      ? "Archive is empty."
+                      : "No pages yet."}
                 </p>
               )}
             {state.rootIds.map((nodeId) => {
@@ -314,23 +326,69 @@ export function NotesLibraryPane() {
               }
               const label = pageLabel(node.title);
               return (
-                <button
-                  className="notes-library-page"
-                  data-active={state.zoomRootId === nodeId ? "true" : undefined}
-                  type="button"
+                <NotesLibraryPageRow
                   key={nodeId}
-                  aria-label={label}
-                  aria-current={state.zoomRootId === nodeId ? "page" : undefined}
-                  disabled={deletingNotesData}
-                  onClick={() => void actions.zoomTo(nodeId)}
-                >
-                  <FileText size={16} aria-hidden="true" />
-                  <span>{label}</span>
-                </button>
+                  node={node}
+                  mode={
+                    libraryView === "archive"
+                      ? "archive"
+                      : libraryView === "trash"
+                        ? "trash"
+                        : "active"
+                  }
+                  active={state.zoomRootId === nodeId}
+                  disabled={deletingNotesData || state.status === "loading"}
+                  onOpen={() => void actions.zoomTo(nodeId)}
+                  onToggleStar={() => void actions.toggleStar(nodeId)}
+                  onArchive={() => void actions.archiveNode(nodeId)}
+                  onUnarchive={() => void actions.unarchiveNode(nodeId)}
+                  onMoveToTrash={() => void actions.deleteNode(nodeId)}
+                  onDuplicate={() => void actions.duplicateNode(nodeId)}
+                  onExport={(format) =>
+                    exportController.startExport(nodeId, label, format)
+                  }
+                />
               );
             })}
           </div>
         )}
+
+        {exportController.busy && (
+          <span className="notes-library-export-feedback" role="status">
+            Exporting...
+          </span>
+        )}
+        {!exportController.busy && exportController.feedback && (
+          <span
+            className="notes-library-export-feedback"
+            role={exportController.feedback.kind === "error" ? "alert" : "status"}
+          >
+            {exportController.feedback.message}
+          </span>
+        )}
+
+        <ConfirmDialog
+          open={exportController.pendingOverwrite !== null}
+          onOpenChange={(open) => {
+            if (!open) {
+              exportController.clearPendingOverwrite();
+            }
+          }}
+          title="Replace existing export?"
+          description={
+            <>
+              Replace the existing export at{" "}
+              <code className="notes-export-destination">
+                {exportController.pendingOverwrite?.request.destination}
+              </code>
+              ?
+            </>
+          }
+          confirmLabel="Replace"
+          cancelLabel="Cancel"
+          popupClassName="notes-export-confirm-dialog"
+          onConfirm={exportController.replaceExistingExport}
+        />
 
         <NotesDataSettingsDialog
           open={dataSettingsOpen}
@@ -338,5 +396,22 @@ export function NotesLibraryPane() {
         />
       </TooltipProvider>
     </section>
+  );
+}
+
+export function NotesLibraryPane() {
+  const { actions, deletingNotesData, libraryView, state } =
+    useNotesWorkspaceContext();
+  const lifecycleReadOnly = libraryView === "archive" || libraryView === "trash";
+
+  return (
+    <NotesExportControllerProvider
+      available={!lifecycleReadOnly && state.rootIds.length > 0}
+      disabled={deletingNotesData || lifecycleReadOnly}
+      loading={state.status === "loading"}
+      onFlushDrafts={actions.flushAllDrafts}
+    >
+      <NotesLibraryPaneContent />
+    </NotesExportControllerProvider>
   );
 }

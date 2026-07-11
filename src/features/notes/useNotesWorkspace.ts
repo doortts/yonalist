@@ -74,6 +74,8 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   deleteNode(nodeId: NoteId): Promise<void>;
   restoreNode(nodeId: NoteId): Promise<void>;
+  archiveNode(nodeId: NoteId): Promise<void>;
+  unarchiveNode(nodeId: NoteId): Promise<void>;
   emptyTrash(): Promise<void>;
   selectLibraryView(view: NotesLibraryView): Promise<void>;
   selectTag(tag: string): Promise<void>;
@@ -88,6 +90,7 @@ export type NotesLibraryView =
   | "starred"
   | "recent"
   | "tags"
+  | "archive"
   | "trash";
 
 export interface NotesWorkspaceCompoundOptions {
@@ -227,6 +230,8 @@ function scopeForLibraryView(
       return { kind: "starred" };
     case "recent":
       return { kind: "recent" };
+    case "archive":
+      return { kind: "archive" };
     case "trash":
       return { kind: "trash" };
   }
@@ -540,6 +545,110 @@ function duplicateRootId(
   );
 }
 
+export interface NotesLifecycleNavigationSnapshot {
+  selectedId: NoteId | null;
+  zoomRootId: NoteId | null;
+  editingNoteId: NoteId | null;
+  pendingFocusId: NoteId | null;
+  locallyExpandedNodeIds: ReadonlySet<NoteId>;
+  scope: NotesWorkspaceScope;
+}
+
+export interface NotesLifecycleNavigationTransition {
+  before: NotesLifecycleNavigationSnapshot;
+  after: NotesLifecycleNavigationSnapshot;
+}
+
+function rootIdForNode(
+  workspace: NormalizedNotesWorkspace,
+  nodeId: NoteId | null
+): NoteId | null {
+  let currentId = nodeId;
+  const visited = new Set<NoteId>();
+  while (currentId !== null && !visited.has(currentId)) {
+    const node = workspace.nodesById[currentId];
+    if (!node) {
+      return null;
+    }
+    if (node.parentId === null) {
+      return node.id;
+    }
+    visited.add(currentId);
+    currentId = node.parentId;
+  }
+  return null;
+}
+
+function fallbackRootAfterRemoval(
+  beforeRootIds: readonly NoteId[],
+  afterRootIds: readonly NoteId[],
+  removedRootId: NoteId
+): NoteId | null {
+  const removedIndex = beforeRootIds.indexOf(removedRootId);
+  const remaining = new Set(afterRootIds);
+  if (removedIndex < 0) {
+    return afterRootIds[0] ?? null;
+  }
+  for (let index = removedIndex + 1; index < beforeRootIds.length; index += 1) {
+    const candidate = beforeRootIds[index];
+    if (remaining.has(candidate)) {
+      return candidate;
+    }
+  }
+  for (let index = removedIndex - 1; index >= 0; index -= 1) {
+    const candidate = beforeRootIds[index];
+    if (remaining.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+export function resolveRootLifecycleNavigation(
+  beforeWorkspace: NormalizedNotesWorkspace,
+  afterWorkspace: NormalizedNotesWorkspace,
+  removedRootId: NoteId,
+  before: NotesLifecycleNavigationSnapshot
+): NotesLifecycleNavigationTransition {
+  const openRootId = rootIdForNode(beforeWorkspace, before.zoomRootId);
+  if (openRootId !== removedRootId) {
+    const existing = (nodeId: NoteId | null) =>
+      nodeId !== null && afterWorkspace.nodesById[nodeId] ? nodeId : null;
+    return {
+      before,
+      after: {
+        ...before,
+        selectedId: existing(before.selectedId),
+        zoomRootId: existing(before.zoomRootId),
+        editingNoteId: existing(before.editingNoteId),
+        pendingFocusId: existing(before.pendingFocusId),
+        locallyExpandedNodeIds: new Set(
+          [...before.locallyExpandedNodeIds].filter(
+            (nodeId) => afterWorkspace.nodesById[nodeId]
+          )
+        )
+      }
+    };
+  }
+
+  const fallbackRootId = fallbackRootAfterRemoval(
+    beforeWorkspace.rootIds,
+    afterWorkspace.rootIds,
+    removedRootId
+  );
+  return {
+    before,
+    after: {
+      ...before,
+      selectedId: fallbackRootId,
+      zoomRootId: fallbackRootId,
+      editingNoteId: null,
+      pendingFocusId: null,
+      locallyExpandedNodeIds: new Set()
+    }
+  };
+}
+
 function hasMoveDependencies(
   workspace: NormalizedNotesWorkspace,
   input: MoveNoteNodeInput
@@ -578,6 +687,10 @@ export function useNotesWorkspace({
   const [deletingNotesData, setDeletingNotesData] = useState(false);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const lifecycleNavigationTransitionRef =
+    useRef<NotesLifecycleNavigationTransition | null>(null);
   const deletingNotesDataRef = useRef(false);
   const deletionTokenRef = useRef<object | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
@@ -1699,6 +1812,96 @@ export function useNotesWorkspace({
     [flushDraftBeforeStructural, runCommand]
   );
 
+  const runRootLifecycle = useCallback(
+    async (
+      nodeId: NoteId,
+      mutation: "archive" | "unarchive" | "trash"
+    ): Promise<void> => {
+      const visibleNode = stateRef.current.nodesById[nodeId];
+      if (!visibleNode || visibleNode.parentId !== null) {
+        return;
+      }
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
+
+      const beforeNavigation: NotesLifecycleNavigationSnapshot = {
+        selectedId: stateRef.current.selectedId,
+        zoomRootId: stateRef.current.zoomRootId,
+        editingNoteId: stateRef.current.editingNoteId,
+        pendingFocusId: stateRef.current.pendingFocusId,
+        locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current),
+        scope: activeScopeRef.current
+      };
+      const lifecycleResult: {
+        transition: NotesLifecycleNavigationTransition | null;
+        refreshedTags: string[] | null;
+      } = { transition: null, refreshedTags: null };
+
+      await runCommand(async (context) => {
+        const beforeWorkspace = confirmedState(context);
+        const root = beforeWorkspace.nodesById[nodeId];
+        if (!root || root.parentId !== null) {
+          return { kind: "skipped" };
+        }
+        const mutationWorkspace = await (mutation === "archive"
+          ? context.repository.archiveNode(context.vaultRoot, nodeId)
+          : mutation === "unarchive"
+            ? context.repository.unarchiveNode(context.vaultRoot, nodeId)
+            : context.repository.softDeleteNode(context.vaultRoot, nodeId));
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          mutationWorkspace,
+          activeScopeRef.current
+        );
+        lifecycleResult.transition = resolveRootLifecycleNavigation(
+          beforeWorkspace,
+          normalizeWorkspace(projectedWorkspace),
+          nodeId,
+          beforeNavigation
+        );
+        try {
+          lifecycleResult.refreshedTags = await context.repository.listTags(
+            context.vaultRoot
+          );
+        } catch {
+          // The lifecycle result remains authoritative if tag discovery fails.
+        }
+        return authoritative(projectedWorkspace, {
+          selectedId: lifecycleResult.transition.after.selectedId,
+          zoomRootId: lifecycleResult.transition.after.zoomRootId,
+          editingNoteId: lifecycleResult.transition.after.editingNoteId,
+          pendingFocusId: lifecycleResult.transition.after.pendingFocusId
+        });
+      });
+
+      if (lifecycleResult.transition) {
+        // Task 2B can attach this single transition to backend history metadata.
+        lifecycleNavigationTransitionRef.current = lifecycleResult.transition;
+        replaceLocalExpansions(
+          lifecycleResult.transition.after.locallyExpandedNodeIds
+        );
+      }
+      if (lifecycleResult.refreshedTags) {
+        setTags(lifecycleResult.refreshedTags);
+      }
+    },
+    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+  );
+
+  const archiveNode = useCallback(
+    (nodeId: NoteId) => runRootLifecycle(nodeId, "archive"),
+    [runRootLifecycle]
+  );
+
+  const unarchiveNode = useCallback(
+    (nodeId: NoteId) => runRootLifecycle(nodeId, "unarchive"),
+    [runRootLifecycle]
+  );
+
   const removeEmptyNode = useCallback(
     async (
       nodeId: NoteId,
@@ -1774,6 +1977,9 @@ export function useNotesWorkspace({
 
   const deleteNode = useCallback(
     async (nodeId: NoteId) => {
+      if (stateRef.current.nodesById[nodeId]?.parentId === null) {
+        return runRootLifecycle(nodeId, "trash");
+      }
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
@@ -1794,7 +2000,7 @@ export function useNotesWorkspace({
         );
       });
     },
-    [flushDraftBeforeStructural, runCommand]
+    [flushDraftBeforeStructural, runCommand, runRootLifecycle]
   );
 
   const restoreNode = useCallback(
@@ -1960,6 +2166,8 @@ export function useNotesWorkspace({
       removeEmptyNode: gate(removeEmptyNode),
       deleteNode: gate(deleteNode),
       restoreNode: gate(restoreNode),
+      archiveNode: gate(archiveNode),
+      unarchiveNode: gate(unarchiveNode),
       emptyTrash: gate(emptyTrash),
       selectLibraryView: gate(selectLibraryView),
       selectTag: gate(selectTag),
@@ -1989,6 +2197,8 @@ export function useNotesWorkspace({
     removeEmptyNode,
     deleteNode,
     restoreNode,
+    archiveNode,
+    unarchiveNode,
     emptyTrash,
     selectLibraryView,
     selectTag,

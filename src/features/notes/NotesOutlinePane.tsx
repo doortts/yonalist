@@ -198,6 +198,7 @@ export function NotesOutlinePane() {
   const [showCompleted, setShowCompleted] = useState(true);
   const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
+  const lifecycleReadOnly = trashView || libraryView === "archive";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -234,7 +235,7 @@ export function NotesOutlinePane() {
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const dragUnavailable =
     deletingNotesData ||
-    trashView ||
+    lifecycleReadOnly ||
     state.status === "loading" ||
     bodyRows.length === 0;
   const projectDrag = useCallback(
@@ -354,7 +355,7 @@ export function NotesOutlinePane() {
   return (
     <NotesExportControllerProvider
       available={state.zoomRootId !== null || bodyRows.length > 0}
-      disabled={deletingNotesData || trashView}
+      disabled={deletingNotesData || lifecycleReadOnly}
       loading={state.status === "loading"}
       onFlushDrafts={actions.flushAllDrafts}
     >
@@ -384,7 +385,7 @@ export function NotesOutlinePane() {
               type="button"
               aria-label="Completed items"
               aria-pressed={showCompleted}
-              disabled={deletingNotesData || trashView}
+              disabled={deletingNotesData || lifecycleReadOnly}
               onClick={() => setShowCompleted((visible) => !visible)}
             >
               <ListChecks size={16} aria-hidden="true" />
@@ -406,7 +407,7 @@ export function NotesOutlinePane() {
                   state.nodesById[state.zoomRootId]?.title)
             }
             onFlushDrafts={actions.flushAllDrafts}
-            disabled={deletingNotesData || trashView}
+            disabled={deletingNotesData || lifecycleReadOnly}
             loading={state.status === "loading"}
           />
         </div>
@@ -439,7 +440,7 @@ export function NotesOutlinePane() {
             <NotesPageHeader
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
-              disabled={deletingNotesData || trashView}
+              disabled={deletingNotesData || lifecycleReadOnly}
             />
           )}
           <DndContext
@@ -483,7 +484,7 @@ export function NotesOutlinePane() {
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
                       visibleNodeIds={structuralVisibleIds}
-                      readOnly={trashView}
+                      readOnly={lifecycleReadOnly}
                       disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
@@ -507,7 +508,7 @@ export function NotesOutlinePane() {
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesChildComposer
               parentId={state.zoomRootId}
-              disabled={deletingNotesData || trashView}
+              disabled={deletingNotesData || lifecycleReadOnly}
               hasChildren={
                 (state.childIdsByParent[state.zoomRootId]?.length ?? 0) > 0
               }

@@ -34,9 +34,12 @@ const notesStoreMock = vi.hoisted(() => ({
   removeEmptyNode: vi.fn(),
   softDeleteNode: vi.fn(),
   restoreNode: vi.fn(),
+  archiveNode: vi.fn(),
+  unarchiveNode: vi.fn(),
   emptyTrash: vi.fn(),
   search: vi.fn(),
   listTags: vi.fn(),
+  listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn()
 }));
 
@@ -229,6 +232,12 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   notesStoreMock.restoreNode.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
+  notesStoreMock.archiveNode.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.unarchiveNode.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
   notesStoreMock.splitNode.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
@@ -240,6 +249,7 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   );
   notesStoreMock.search.mockResolvedValue([]);
   notesStoreMock.listTags.mockResolvedValue([]);
+  notesStoreMock.listTagsWithCounts.mockResolvedValue([]);
   notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
 }
 
@@ -2388,7 +2398,7 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("reloads All, Starred, Recent, tagged, and Trash library views", async () => {
+  it("reloads All, Starred, Recent, tagged, Archive, and Trash library views", async () => {
     const user = userEvent.setup();
     notesStoreMock.listTags.mockResolvedValue(["Personal", "Work"]);
     renderNotesWorkspace();
@@ -2418,6 +2428,12 @@ describe("Notes workspace", () => {
     expect(screen.getByRole("button", { name: "Work" })).toHaveAttribute(
       "aria-pressed",
       "true"
+    );
+    await user.click(within(views).getByRole("button", { name: "Archive" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "archive"
+      })
     );
     await user.click(within(views).getByRole("button", { name: "Trash" }));
     await waitFor(() =>
@@ -2703,6 +2719,84 @@ describe("Notes workspace", () => {
       })
     );
     expect(queryTitleInput("Outside page")).toBeNull();
+  });
+
+  it("archives root pages from the library and exposes a read-only Archive workflow", async () => {
+    const user = userEvent.setup();
+    let activeNodes = [
+      node({ id: "project", sortKey: 1, title: "Project" }),
+      node({ id: "child", parentId: "project", sortKey: 1, title: "Child" }),
+      node({ id: "outside", sortKey: 2, title: "Outside" })
+    ];
+    let archivedNodes: NoteNode[] = [];
+    configureRepository(activeNodes);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(scope.kind === "archive" ? archivedNodes : activeNodes)
+    );
+    notesStoreMock.archiveNode.mockImplementation(async (_vault, rootId) => {
+      const subtree = activeNodes.filter(
+        (current) => current.id === rootId || current.parentId === rootId
+      );
+      activeNodes = activeNodes.filter((current) => !subtree.includes(current));
+      archivedNodes = subtree.map((current) => ({
+        ...current,
+        archivedAt: "2026-07-11T01:00:00Z",
+        archiveRootId: rootId
+      }));
+      return workspace(activeNodes);
+    });
+    notesStoreMock.unarchiveNode.mockImplementation(async () => {
+      activeNodes = [
+        ...activeNodes,
+        ...archivedNodes.map((current) => ({
+          ...current,
+          archivedAt: null,
+          archiveRootId: null
+        }))
+      ];
+      archivedNodes = [];
+      return workspace(activeNodes);
+    });
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const library = screen.getByLabelText("Notes library");
+
+    await user.click(
+      within(library).getByRole("button", { name: "Project" })
+    );
+    await user.click(
+      within(library).getByRole("button", { name: "Page actions for Project" })
+    );
+    const pageMenu = await screen.findByRole("menu");
+    await user.click(within(pageMenu).getByRole("menuitem", { name: "Archive" }));
+    await waitFor(() =>
+      expect(notesStoreMock.archiveNode).toHaveBeenCalledWith("/vault", "project")
+    );
+    expect(await screen.findByRole("textbox", { name: "Edit page title" })).toHaveValue(
+      "Outside"
+    );
+
+    await user.click(within(library).getByRole("button", { name: "Archive" }));
+    await user.click(
+      await within(library).findByRole("button", { name: "Project" })
+    );
+    expect(screen.getByRole("textbox", { name: "Edit page title" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add child" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
+
+    await user.click(
+      within(library).getByRole("button", { name: "Page actions for Project" })
+    );
+    const archivedMenu = await screen.findByRole("menu");
+    expect(within(archivedMenu).getAllByRole("menuitem")).toHaveLength(2);
+    await user.click(
+      within(archivedMenu).getByRole("menuitem", { name: "Unarchive" })
+    );
+    await waitFor(() =>
+      expect(notesStoreMock.unarchiveNode).toHaveBeenCalledWith("/vault", "project")
+    );
+    expect(await within(library).findByText("Archive is empty.")).toBeVisible();
   });
 
   it("keeps Trash read-only while allowing restore and confirmed emptying", async () => {
