@@ -1999,7 +1999,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_export_writes_ordered_links_and_collision_safe_adjacent_assets() {
+    fn markdown_export_writes_ordered_placements_with_deduplicated_adjacent_assets() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().join("vault");
         let vault_path_string = vault_path.to_string_lossy().into_owned();
@@ -2028,25 +2028,18 @@ mod tests {
         .expect("export Markdown attachments");
 
         let markdown = fs::read_to_string(&destination).expect("read Markdown");
-        let first_link = "![same name.png](ordered_assets/0001.png)";
-        let second_link = "![same name.png](ordered_assets/0002.png)";
-        assert!(
-            markdown.find(first_link) < markdown.find(second_link),
-            "{markdown}"
-        );
+        let shared_link = "![same name.png](ordered_assets/0001.png)";
+        assert_eq!(markdown.matches(shared_link).count(), 2, "{markdown}");
+        assert!(!markdown.contains("ordered_assets/0002.png"), "{markdown}");
         let assets = temp_dir.path().join("ordered_assets");
         assert_eq!(
             fs::read(assets.join("0001.png")).expect("first exported attachment"),
             expected_bytes
         );
         assert_eq!(
-            fs::read(assets.join("0002.png")).expect("second exported attachment"),
-            expected_bytes
-        );
-        assert_eq!(
             fs::read_dir(assets).expect("list assets").count(),
-            2,
-            "only ordered exported assets should be published"
+            1,
+            "duplicate placements should share one physical exported asset"
         );
     }
 

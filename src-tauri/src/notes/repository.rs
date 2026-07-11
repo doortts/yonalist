@@ -854,6 +854,28 @@ pub(crate) struct ExportSnapshotRowCounts {
     pub(crate) date_rows: usize,
 }
 
+#[cfg(test)]
+thread_local! {
+    static INJECT_EXPORT_SNAPSHOT_QUERY_BOUNDARY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn inject_export_snapshot_query_boundary_once(action: impl FnOnce() + 'static) {
+    INJECT_EXPORT_SNAPSHOT_QUERY_BOUNDARY.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_export_snapshot_query_boundary() {
+    #[cfg(test)]
+    INJECT_EXPORT_SNAPSHOT_QUERY_BOUNDARY.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
     root_node_id: &str,
@@ -870,6 +892,20 @@ pub(crate) fn load_export_snapshot_with_row_counts(
 }
 
 fn load_export_snapshot_inner(
+    connection: &Connection,
+    root_node_id: &str,
+) -> Result<(NotesExportSnapshot, ExportSnapshotRowCounts), String> {
+    let transaction = connection
+        .unchecked_transaction()
+        .map_err(|error| format!("Could not start the Notes export read transaction: {error}"))?;
+    let snapshot = load_export_snapshot_queries(&transaction, root_node_id)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not finish the Notes export read transaction: {error}"))?;
+    Ok(snapshot)
+}
+
+fn load_export_snapshot_queries(
     connection: &Connection,
     root_node_id: &str,
 ) -> Result<(NotesExportSnapshot, ExportSnapshotRowCounts), String> {
@@ -936,6 +972,7 @@ fn load_export_snapshot_inner(
             return Err("The Notes export subtree contains duplicate nodes.".to_string());
         }
     }
+    maybe_inject_export_snapshot_query_boundary();
 
     let mut date_statement = connection
         .prepare(

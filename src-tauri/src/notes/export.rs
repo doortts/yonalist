@@ -5,7 +5,7 @@ use crate::notes::date_index::LocalDate;
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
     PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, RawImage, RawImageData, RawImageFormat,
-    TextItem, XObjectTransform,
+    TextItem, XObject, XObjectId, XObjectTransform,
 };
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -41,6 +41,9 @@ const PDF_IMAGE_CAPTION_GAP: f32 = 5.0;
 const PDF_CSS_PIXEL_POINTS: f32 = 72.0 / 96.0;
 const MAX_EXPORT_ENCODED_BYTES: u64 = 40 * 1024 * 1024;
 const MAX_EXPORT_DECODED_PIXELS: u64 = 40_000_000;
+const MAX_PDF_ATTACHMENT_WORKING_BYTES: u64 = 256 * 1024 * 1024;
+const PDF_DECODER_BYTES_PER_PIXEL: u64 = 16;
+const PDF_RETAINED_RGBA_BYTES_PER_PIXEL: u64 = 4;
 
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
@@ -137,6 +140,67 @@ struct ExportPayloadMetadata {
     byte_size: u64,
     intrinsic_width: u64,
     intrinsic_height: u64,
+}
+
+fn validate_pdf_attachment_working_budget(
+    snapshot: &NotesExportSnapshot,
+    max_working_bytes: u64,
+) -> Result<u64, String> {
+    fn inspect(
+        node: &ExportNode,
+        seen: &mut HashMap<ExportPayloadKey, ()>,
+        working_bytes: &mut u64,
+        max_working_bytes: u64,
+    ) -> Result<(), String> {
+        for attachment in &node.attachments {
+            let key = ExportPayloadKey {
+                relative_path: attachment.relative_path.clone(),
+                content_hash: attachment.content_hash.clone(),
+            };
+            if seen.insert(key, ()).is_some() {
+                continue;
+            }
+            let byte_size = u64::try_from(attachment.byte_size)
+                .map_err(|_| "A Notes PDF attachment has an invalid byte size.".to_string())?;
+            let width = u64::try_from(attachment.intrinsic_width)
+                .map_err(|_| "A Notes PDF attachment has an invalid width.".to_string())?;
+            let height = u64::try_from(attachment.intrinsic_height)
+                .map_err(|_| "A Notes PDF attachment has an invalid height.".to_string())?;
+            let pixels = width
+                .checked_mul(height)
+                .ok_or_else(|| "A Notes PDF attachment pixel count is too large.".to_string())?;
+            let decoded_bytes = pixels
+                .checked_mul(PDF_DECODER_BYTES_PER_PIXEL + PDF_RETAINED_RGBA_BYTES_PER_PIXEL)
+                .ok_or_else(|| {
+                    "The Notes PDF attachment working-memory total is too large.".to_string()
+                })?;
+            *working_bytes = working_bytes
+                .checked_add(byte_size)
+                .and_then(|total| total.checked_add(decoded_bytes))
+                .ok_or_else(|| {
+                    "The Notes PDF attachment working-memory total is too large.".to_string()
+                })?;
+            if *working_bytes > max_working_bytes {
+                return Err(format!(
+                    "Notes PDF attachments exceed the {max_working_bytes} byte aggregate working-memory budget."
+                ));
+            }
+        }
+        for child in &node.children {
+            inspect(child, seen, working_bytes, max_working_bytes)?;
+        }
+        Ok(())
+    }
+
+    let mut seen = HashMap::new();
+    let mut working_bytes = 0;
+    inspect(
+        &snapshot.root,
+        &mut seen,
+        &mut working_bytes,
+        max_working_bytes,
+    )?;
+    Ok(working_bytes)
 }
 
 pub(crate) fn hydrate_export_attachments_with_budget(
@@ -348,6 +412,7 @@ fn render_node_with_assets(
     depth: usize,
     asset_directory_name: &str,
     ordinal: &mut usize,
+    asset_links: &mut HashMap<ExportPayloadKey, String>,
     assets: &mut Vec<MarkdownExportAsset>,
 ) -> Result<(), String> {
     let indentation = "  ".repeat(depth);
@@ -374,14 +439,30 @@ fn render_node_with_assets(
 
     let attachment_indentation = "  ".repeat(depth + 1);
     for attachment in &node.attachments {
-        *ordinal = ordinal
-            .checked_add(1)
-            .ok_or_else(|| "The Notes export attachment count is too large.".to_string())?;
-        let file_name = format!(
-            "{:04}.{}",
-            *ordinal,
-            markdown_asset_extension(&attachment.mime_type)?
-        );
+        let payload_key = ExportPayloadKey {
+            relative_path: attachment.relative_path.clone(),
+            content_hash: attachment.content_hash.clone(),
+        };
+        let file_name = if let Some(file_name) = asset_links.get(&payload_key) {
+            file_name.clone()
+        } else {
+            *ordinal = ordinal
+                .checked_add(1)
+                .ok_or_else(|| "The Notes export attachment count is too large.".to_string())?;
+            let file_name = format!(
+                "{:04}.{}",
+                *ordinal,
+                markdown_asset_extension(&attachment.mime_type)?
+            );
+            assets.push(MarkdownExportAsset {
+                file_name: file_name.clone(),
+                bytes: attachment.bytes.clone().ok_or_else(|| {
+                    "Notes export attachment bytes were not validated.".to_string()
+                })?,
+            });
+            asset_links.insert(payload_key, file_name.clone());
+            file_name
+        };
         let link = format!(
             "{}/{}",
             percent_encode_path_component(asset_directory_name),
@@ -393,13 +474,6 @@ fn render_node_with_assets(
             escape_markdown_alt(&attachment.original_name)
         )
         .expect("writing to a String cannot fail");
-        assets.push(MarkdownExportAsset {
-            file_name,
-            bytes: attachment
-                .bytes
-                .clone()
-                .ok_or_else(|| "Notes export attachment bytes were not validated.".to_string())?,
-        });
     }
 
     for child in &node.children {
@@ -409,6 +483,7 @@ fn render_node_with_assets(
             depth + 1,
             asset_directory_name,
             ordinal,
+            asset_links,
             assets,
         )?;
     }
@@ -469,6 +544,7 @@ pub(crate) fn prepare_markdown_export(
 
     let mut markdown = render_markdown_frontmatter(snapshot);
     let mut ordinal = 0;
+    let mut asset_links = HashMap::new();
     let mut assets = Vec::new();
     render_node_with_assets(
         &mut markdown,
@@ -476,6 +552,7 @@ pub(crate) fn prepare_markdown_export(
         0,
         asset_directory_name,
         &mut ordinal,
+        &mut asset_links,
         &mut assets,
     )?;
     Ok(PreparedMarkdownExport {
@@ -541,11 +618,43 @@ fn sync_export_directory(_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 thread_local! {
     static INJECT_MARKDOWN_PUBLISH_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static INJECT_MARKDOWN_COMMIT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_EXPORT_PARENT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
 pub(crate) fn inject_markdown_publish_failure_once() {
     INJECT_MARKDOWN_PUBLISH_FAILURE.with(|injected| injected.set(true));
+}
+
+#[cfg(test)]
+fn inject_markdown_commit_race_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_COMMIT_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_commit_race() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_COMMIT_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_export_parent_sync_failure_once() {
+    INJECT_EXPORT_PARENT_SYNC_FAILURE.with(|injected| injected.set(true));
+}
+
+fn sync_export_parent(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if INJECT_EXPORT_PARENT_SYNC_FAILURE.with(|injected| injected.replace(false)) {
+        return Err("Injected Notes export parent sync failure.".to_string());
+    }
+    sync_export_directory(path)
 }
 
 fn maybe_fail_markdown_publish() -> Result<(), String> {
@@ -603,6 +712,45 @@ pub(crate) fn publish_markdown_export(
         .map_err(|error| error.to_string())?;
     document.sync_all().map_err(|error| error.to_string())?;
     sync_export_directory(&staged_assets)?;
+    maybe_inject_markdown_commit_race();
+
+    if !overwrite {
+        match fs::create_dir(asset_destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err("Destination already exists.".to_string())
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+        let publish_result = (|| {
+            for asset in &prepared.assets {
+                fs::rename(
+                    staged_assets.join(&asset.file_name),
+                    asset_destination.join(&asset.file_name),
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            sync_export_directory(asset_destination)?;
+            maybe_fail_markdown_publish()?;
+            match fs::hard_link(&staged_document, destination) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err("Destination already exists.".to_string())
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        })();
+        if let Err(error) = publish_result {
+            return match remove_path_nofollow(asset_destination) {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(format!(
+                    "{error} Notes export rollback also failed: {rollback_error}"
+                )),
+            };
+        }
+        let _ = sync_export_parent(parent);
+        return Ok(());
+    }
 
     let old_document = stage.path().join("old-document");
     let old_assets = stage.path().join("old-assets");
@@ -662,7 +810,7 @@ pub(crate) fn publish_markdown_export(
         };
     }
 
-    sync_export_directory(parent)?;
+    let _ = sync_export_parent(parent);
     Ok(())
 }
 
@@ -1193,6 +1341,7 @@ fn validate_serialized_pdf(bytes: &[u8], expected_page_count: usize) -> Result<(
 pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
     validate_export_node_ids(&snapshot.root)?;
+    validate_pdf_attachment_working_budget(snapshot, MAX_PDF_ATTACHMENT_WORKING_BYTES)?;
 
     let mut font_warnings = Vec::new();
     let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut font_warnings)
@@ -1211,7 +1360,7 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
             } else {
                 let decoded = image::load_from_memory(&image.bytes)
                     .map_err(|error| format!("Could not decode a PDF attachment image: {error}"))?;
-                let rgba = decoded.to_rgba8();
+                let rgba = decoded.into_rgba8();
                 if rgba.width() as usize != image.intrinsic_width
                     || rgba.height() as usize != image.intrinsic_height
                 {
@@ -1227,7 +1376,12 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
                     data_format: RawImageFormat::RGBA8,
                     tag: image.attachment_id.into_bytes(),
                 };
-                let image_id = document.add_image(&raw);
+                let image_id = XObjectId::new();
+                document
+                    .resources
+                    .xobjects
+                    .map
+                    .insert(image_id.clone(), XObject::Image(raw));
                 image_ids.insert(image.payload_key, image_id.clone());
                 image_id
             };
@@ -1274,10 +1428,11 @@ mod tests {
     use super::{
         build_pdf_pages, classify_export_directory_sync, format_date_matches_for_pdf_display,
         format_date_matches_for_pdf_display_with_work, hydrate_export_attachments,
-        hydrate_export_attachments_with_budget, load_export_snapshot, prepare_markdown_export,
-        render_markdown, render_pdf, sync_export_directory, validate_serialized_pdf,
-        ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM,
-        PDF_PAGE_HEIGHT_MM,
+        hydrate_export_attachments_with_budget, inject_export_parent_sync_failure_once,
+        inject_markdown_commit_race_once, load_export_snapshot, prepare_markdown_export,
+        publish_markdown_export, render_markdown, render_pdf, sync_export_directory,
+        validate_pdf_attachment_working_budget, validate_serialized_pdf, ExportAttachmentBudget,
+        PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
@@ -1447,8 +1602,7 @@ mod tests {
             .collect()
     }
 
-    fn export_connection() -> Connection {
-        let connection = Connection::open_in_memory().expect("open in-memory database");
+    fn initialize_export_connection(connection: &Connection) {
         connection
             .execute_batch(
                 "CREATE TABLE notes_nodes (\
@@ -1487,6 +1641,11 @@ mod tests {
                  );",
             )
             .expect("create notes table");
+    }
+
+    fn export_connection() -> Connection {
+        let connection = Connection::open_in_memory().expect("open in-memory database");
+        initialize_export_connection(&connection);
         connection
     }
 
@@ -1894,7 +2053,7 @@ mod tests {
         let prepared =
             prepare_markdown_export(&snapshot, "project_assets").expect("prepare Markdown");
 
-        assert_eq!(prepared.assets.len(), 2);
+        assert_eq!(prepared.assets.len(), 1);
         assert!(Arc::ptr_eq(
             &prepared.assets[0].bytes,
             snapshot.root.attachments[0]
@@ -1902,10 +2061,8 @@ mod tests {
                 .as_ref()
                 .expect("snapshot payload"),
         ));
-        assert!(Arc::ptr_eq(
-            &prepared.assets[0].bytes,
-            &prepared.assets[1].bytes,
-        ));
+        let markdown = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        assert_eq!(markdown.matches("(project_assets/0001.png)").count(), 2);
     }
 
     #[test]
@@ -2018,6 +2175,101 @@ mod tests {
     }
 
     #[test]
+    fn notes_export_markdown_deduplicates_512_placements_of_one_large_payload() {
+        const PAYLOAD_BYTES: usize = 20 * 1024 * 1024;
+        let payload = Arc::<[u8]>::from(vec![0x5a; PAYLOAD_BYTES]);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        for index in 0..512 {
+            let mut attachment = export_attachment(
+                &format!("00000000-0000-4000-8000-{index:012}"),
+                &format!("placement-{index}.png"),
+                None,
+            );
+            attachment.byte_size = PAYLOAD_BYTES as i64;
+            attachment.bytes = Some(payload.clone());
+            root.attachments.push(attachment);
+        }
+
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "large_assets").expect("prepare export");
+        let markdown = String::from_utf8(prepared.markdown).expect("UTF-8 Markdown");
+
+        assert_eq!(prepared.assets.len(), 1, "one physical payload file");
+        assert_eq!(prepared.assets[0].file_name, "0001.png");
+        assert_eq!(prepared.assets[0].bytes.len(), PAYLOAD_BYTES);
+        assert_eq!(markdown.matches("(large_assets/0001.png)").count(), 512);
+        assert!(!markdown.contains("large_assets/0002.png"));
+    }
+
+    #[test]
+    fn notes_export_markdown_reuses_first_deterministic_link_for_later_duplicates() {
+        let first = export_attachment(FIRST_ID, "first.png", Some(vec![1, 2, 3]));
+        let mut second = export_attachment(SECOND_ID, "second.png", Some(vec![4, 5, 6]));
+        second.content_hash = "b".repeat(64);
+        second.relative_path = format!("notes-assets/{}.png", second.content_hash);
+        let mut duplicate = first.clone();
+        duplicate.id = LATER_ID.to_string();
+        duplicate.original_name = "first-again.png".to_string();
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments = vec![first, second, duplicate];
+
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "ordered_assets").expect("prepare export");
+        let markdown = String::from_utf8(prepared.markdown).expect("UTF-8 Markdown");
+
+        assert_eq!(prepared.assets.len(), 2);
+        assert_eq!(prepared.assets[0].file_name, "0001.png");
+        assert_eq!(prepared.assets[1].file_name, "0002.png");
+        assert!(markdown.contains("![first.png](ordered_assets/0001.png)"));
+        assert!(markdown.contains("![second.png](ordered_assets/0002.png)"));
+        assert!(markdown.contains("![first-again.png](ordered_assets/0001.png)"));
+    }
+
+    #[test]
+    fn notes_export_pdf_working_budget_counts_encoded_decoder_and_owned_rgba_bytes() {
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        let mut attachment = export_attachment(FIRST_ID, "six-pixels.png", Some(vec![1, 2, 3]));
+        attachment.intrinsic_width = 2;
+        attachment.intrinsic_height = 3;
+        root.attachments = vec![attachment.clone(), attachment];
+        let snapshot = snapshot(root);
+
+        assert_eq!(
+            validate_pdf_attachment_working_budget(&snapshot, 123),
+            Ok(123),
+            "3 encoded bytes + 6 pixels * (16 decoder + 4 retained RGBA)"
+        );
+        assert_eq!(
+            validate_pdf_attachment_working_budget(&snapshot, 122),
+            Err(
+                "Notes PDF attachments exceed the 122 byte aggregate working-memory budget."
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn notes_export_pdf_rejects_realistic_aggregate_working_memory_before_decoding() {
+        let mut first = export_attachment(FIRST_ID, "first.png", Some(vec![1, 2, 3]));
+        first.intrinsic_width = 3000;
+        first.intrinsic_height = 3000;
+        let mut second = first.clone();
+        second.id = SECOND_ID.to_string();
+        second.original_name = "second.png".to_string();
+        second.content_hash = "b".repeat(64);
+        second.relative_path = format!("notes-assets/{}.png", second.content_hash);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments = vec![first, second];
+
+        let error = render_pdf(&snapshot(root)).expect_err("working-memory budget");
+
+        assert_eq!(
+            error,
+            "Notes PDF attachments exceed the 268435456 byte aggregate working-memory budget."
+        );
+    }
+
+    #[test]
     fn notes_export_directory_sync_ignores_unsupported_platform_errors() {
         let unsupported = std::io::Error::new(
             std::io::ErrorKind::Unsupported,
@@ -2039,6 +2291,92 @@ mod tests {
     fn notes_export_directory_sync_accepts_a_real_directory_on_unix() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         sync_export_directory(temp_dir.path()).expect("sync directory");
+    }
+
+    #[test]
+    fn notes_export_no_overwrite_preserves_document_created_at_markdown_commit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("race.md");
+        let assets = temp_dir.path().join("race_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "race_assets").expect("prepare");
+        let raced_destination = destination.clone();
+        inject_markdown_commit_race_once(move || {
+            std::fs::write(raced_destination, b"racer document").expect("create racer document");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("commit-time document conflict");
+
+        assert_eq!(error, "Destination already exists.");
+        assert_eq!(
+            std::fs::read(&destination).expect("racer survives"),
+            b"racer document"
+        );
+        assert!(!assets.exists(), "staged assets must not be published");
+    }
+
+    #[test]
+    fn notes_export_no_overwrite_preserves_assets_created_at_markdown_commit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("race.md");
+        let assets = temp_dir.path().join("race_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "race_assets").expect("prepare");
+        let raced_assets = assets.clone();
+        inject_markdown_commit_race_once(move || {
+            std::fs::create_dir(&raced_assets).expect("create racer assets");
+            std::fs::write(raced_assets.join("owned.txt"), b"racer assets")
+                .expect("create racer asset");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("commit-time asset conflict");
+
+        assert_eq!(error, "Destination already exists.");
+        assert_eq!(
+            std::fs::read(assets.join("owned.txt")).expect("racer survives"),
+            b"racer assets"
+        );
+        assert!(
+            !destination.exists(),
+            "staged document must not be published"
+        );
+    }
+
+    #[test]
+    fn notes_export_post_publish_parent_sync_failure_keeps_success_semantics() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("synced.md");
+        let assets = temp_dir.path().join("synced_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "synced_assets").expect("prepare export");
+        inject_export_parent_sync_failure_once();
+
+        publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect("committed output remains a successful export");
+
+        assert!(destination.is_file());
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("asset"),
+            [1, 2, 3]
+        );
     }
 
     #[cfg(not(unix))]
@@ -2280,6 +2618,61 @@ mod tests {
         assert!(text.contains("> Jun 7, 2050"), "{text}");
         assert!(!text.contains("today"), "{text}");
         assert!(!text.contains("tomorrow"), "{text}");
+    }
+
+    #[test]
+    fn notes_export_snapshot_keeps_node_text_and_dates_in_one_concurrent_read_generation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let database_path = temp_dir.path().join("snapshot.sqlite");
+        let reader = Connection::open(&database_path).expect("open reader");
+        reader
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("enable WAL");
+        initialize_export_connection(&reader);
+        insert_node(&reader, SeedNode::active(ROOT_ID, None, 0, "today"));
+        insert_date_span(
+            &reader,
+            ROOT_ID,
+            "title",
+            &ExportDateSpan {
+                start_utf16: 0,
+                end_utf16: 5,
+                normalized_start: "2026-07-12".to_string(),
+                normalized_end: "2026-07-12".to_string(),
+            },
+            "today",
+        );
+        let writer = Connection::open(&database_path).expect("open writer");
+        crate::notes::repository::inject_export_snapshot_query_boundary_once(move || {
+            let transaction = writer.unchecked_transaction().expect("writer transaction");
+            transaction
+                .execute(
+                    "UPDATE notes_nodes SET title = 'later' WHERE id = ?1",
+                    [ROOT_ID],
+                )
+                .expect("update concurrent text");
+            transaction
+                .execute("DELETE FROM notes_dates WHERE node_id = ?1", [ROOT_ID])
+                .expect("delete old date");
+            transaction
+                .execute(
+                    "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                       normalized_start, normalized_end, token_text) \
+                     VALUES (?1, 'title', 0, 5, '2030-01-02', '2030-01-02', 'later')",
+                    [ROOT_ID],
+                )
+                .expect("insert concurrent date");
+            transaction.commit().expect("commit concurrent edit");
+        });
+
+        let snapshot = load_export_snapshot(&reader, ROOT_ID).expect("coherent snapshot");
+
+        assert_eq!(snapshot.root.title, "today");
+        assert_eq!(snapshot.root.title_date_spans.len(), 1);
+        assert_eq!(
+            snapshot.root.title_date_spans[0].normalized_start,
+            "2026-07-12"
+        );
     }
 
     #[test]
