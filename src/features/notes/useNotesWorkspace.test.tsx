@@ -2630,14 +2630,16 @@ describe("useNotesWorkspace", () => {
     const prepared = await result.current.prepareMoveNode!("source");
     activeWorkspace = workspace([source]);
 
-    const outcome = await result.current.commitPreparedMove!(
-      prepared,
-      "target"
-    );
+    let outcome!: Awaited<
+      ReturnType<NonNullable<typeof result.current.commitPreparedMove>>
+    >;
+    await act(async () => {
+      outcome = await result.current.commitPreparedMove!(prepared, "target");
+    });
 
-    expect(outcome).toEqual({
+    expect(outcome).toMatchObject({
       ok: false,
-      error: "That destination is no longer active. Refresh Move To."
+      error: expect.stringContaining("changed")
     });
     expect(moveNode).not.toHaveBeenCalled();
   });
@@ -2674,6 +2676,360 @@ describe("useNotesWorkspace", () => {
     expect(
       await result.current.commitPreparedMove!(vaultPrepared, "target")
     ).toMatchObject({ ok: false, error: expect.stringContaining("changed") });
+  });
+
+  it("rejects a prepared move when an earlier queued move changes its source parent", async () => {
+    const initial = workspace([
+      node({ id: "first-parent" }),
+      node({ id: "other-parent", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 }),
+      node({ id: "source", parentId: "first-parent" })
+    ]);
+    const sourceMoved = workspace([
+      node({ id: "first-parent" }),
+      node({ id: "other-parent", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 }),
+      node({ id: "source", parentId: "other-parent" })
+    ]);
+    let activeWorkspace = initial;
+    const earlier = deferred<NotesMutationResult>();
+    const moveNode = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => {
+        if (moveNode.mock.calls.length === 1) {
+          return earlier.promise;
+        }
+        return {
+          workspace: activeWorkspace,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/queued-source", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    let earlierCompletion!: Promise<void>;
+    act(() => {
+      earlierCompletion = result.current.actions.moveNode({
+        id: "source",
+        parentId: "other-parent",
+        afterId: null
+      });
+    });
+    await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
+    const preparedCompletion = result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+    await act(async () => Promise.resolve());
+    expect(moveNode).toHaveBeenCalledOnce();
+
+    activeWorkspace = sourceMoved;
+    const earlierContext = moveNode.mock.calls[0]?.[2];
+    earlier.resolve({
+      workspace: sourceMoved,
+      historyEntryId: earlierContext?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    let outcome!: Awaited<typeof preparedCompletion>;
+    await act(async () => {
+      await earlierCompletion;
+      outcome = await preparedCompletion;
+    });
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("changed")
+    });
+    expect(moveNode).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a prepared move when an earlier queued move changes its target", async () => {
+    const initial = workspace([
+      node({ id: "source" }),
+      node({ id: "target", sortKey: 2048 }),
+      node({ id: "other-parent", sortKey: 3072 })
+    ]);
+    const targetMoved = workspace([
+      node({ id: "source" }),
+      node({ id: "other-parent", sortKey: 3072 }),
+      node({ id: "target", parentId: "other-parent" })
+    ]);
+    let activeWorkspace = initial;
+    const earlier = deferred<NotesMutationResult>();
+    const moveNode = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => {
+        if (moveNode.mock.calls.length === 1) {
+          return earlier.promise;
+        }
+        return {
+          workspace: activeWorkspace,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/queued-target", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    let earlierCompletion!: Promise<void>;
+    act(() => {
+      earlierCompletion = result.current.actions.moveNode({
+        id: "target",
+        parentId: "other-parent",
+        afterId: null
+      });
+    });
+    await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
+    const preparedCompletion = result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+
+    activeWorkspace = targetMoved;
+    const earlierContext = moveNode.mock.calls[0]?.[2];
+    earlier.resolve({
+      workspace: targetMoved,
+      historyEntryId: earlierContext?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    const outcome = await preparedCompletion;
+    await earlierCompletion;
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("changed")
+    });
+    expect(moveNode).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a prepared move when an earlier queued delete removes its target", async () => {
+    const initial = workspace([
+      node({ id: "source" }),
+      node({ id: "target", sortKey: 2048 })
+    ]);
+    const targetRemoved = workspace([node({ id: "source" })]);
+    let activeWorkspace = initial;
+    const earlier = deferred<NotesMutationResult>();
+    const softDeleteNode = vi.fn().mockReturnValue(earlier.promise);
+    const moveNode = vi.fn().mockResolvedValue({
+      workspace: targetRemoved,
+      historyEntryId: null,
+      canUndo: true,
+      canRedo: false
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      softDeleteNode,
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/queued-delete", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    const earlierCompletion = result.current.actions.deleteNode("target");
+    await waitFor(() => expect(softDeleteNode).toHaveBeenCalledOnce());
+    const preparedCompletion = result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+
+    activeWorkspace = targetRemoved;
+    const earlierContext = softDeleteNode.mock.calls[0]?.[2];
+    earlier.resolve({
+      workspace: targetRemoved,
+      historyEntryId: earlierContext?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    const outcome = await preparedCompletion;
+    await earlierCompletion;
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("changed")
+    });
+    expect(moveNode).not.toHaveBeenCalled();
+  });
+
+  it("rejects a prepared move when a queued scope generation settles first", async () => {
+    const initial = workspace([
+      node({ id: "blocker" }),
+      node({ id: "source", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    let activeWorkspace = initial;
+    const earlier = deferred<NotesMutationResult>();
+    const moveNode = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => {
+        if (moveNode.mock.calls.length === 1) {
+          return earlier.promise;
+        }
+        return {
+          workspace: activeWorkspace,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/queued-scope", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    const earlierCompletion = result.current.actions.moveNode({
+      id: "blocker",
+      parentId: "target",
+      afterId: null
+    });
+    await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
+    const scopeCompletion = result.current.actions.selectLibraryView("recent");
+    const preparedCompletion = result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+
+    const earlierContext = moveNode.mock.calls[0]?.[2];
+    earlier.resolve({
+      workspace: initial,
+      historyEntryId: earlierContext?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    const outcome = await preparedCompletion;
+    await earlierCompletion;
+    await scopeCompletion;
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("changed")
+    });
+    expect(moveNode).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a queued prepared move when its vault generation changes", async () => {
+    const initial = workspace([
+      node({ id: "blocker" }),
+      node({ id: "source", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    const earlier = deferred<NotesMutationResult>();
+    const oldMoveNode = vi.fn().mockReturnValue(earlier.promise);
+    const oldStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      moveNode: oldMoveNode
+    });
+    const newStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial)
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot, store }) =>
+        useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/queued-old", store: oldStore } }
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    const earlierCompletion = result.current.actions.moveNode({
+      id: "blocker",
+      parentId: "target",
+      afterId: null
+    });
+    await waitFor(() => expect(oldMoveNode).toHaveBeenCalledOnce());
+    const preparedCompletion = result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+    rerender({ vaultRoot: "/queued-new", store: newStore });
+
+    const earlierContext = oldMoveNode.mock.calls[0]?.[2];
+    earlier.resolve({
+      workspace: initial,
+      historyEntryId: earlierContext?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    const outcome = await preparedCompletion;
+    await earlierCompletion;
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: expect.stringContaining("changed")
+    });
+    expect(oldMoveNode).toHaveBeenCalledOnce();
+  });
+
+  it("commits one valid deferred prepared move and creates one Undo", async () => {
+    const initial = workspace([
+      node({ id: "source" }),
+      node({ id: "target", sortKey: 2048 })
+    ]);
+    const moved = workspace([
+      node({ id: "target", sortKey: 2048 }),
+      node({ id: "source", parentId: "target" })
+    ]);
+    let activeWorkspace = initial;
+    const pendingMove = deferred<NotesMutationResult>();
+    const moveNode = vi.fn().mockReturnValue(pendingMove.promise);
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      moveNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/queued-valid", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+
+    const completion = result.current.commitPreparedMove!(prepared, "target");
+    await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
+    activeWorkspace = moved;
+    const context = moveNode.mock.calls[0]?.[2];
+    pendingMove.resolve({
+      workspace: moved,
+      historyEntryId: context?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    });
+    expect(await completion).toEqual({ ok: true });
+
+    await act(async () => result.current.actions.undo!());
+    expect(moveNode).toHaveBeenCalledOnce();
+    expect(undo).toHaveBeenCalledOnce();
   });
 
   it("broadcasts atomic subtree actions to sibling hooks without replacing navigation", async () => {

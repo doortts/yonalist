@@ -288,6 +288,30 @@ function expansionsOutsideSubtree(
   return next;
 }
 
+function samePreparedMoveNode(
+  prepared: NoteNode | undefined,
+  current: NoteNode | undefined
+): boolean {
+  return Boolean(
+    prepared &&
+      current &&
+      prepared.id === current.id &&
+      prepared.parentId === current.parentId &&
+      prepared.sortKey === current.sortKey &&
+      prepared.title === current.title &&
+      prepared.note === current.note &&
+      prepared.layoutMode === current.layoutMode &&
+      prepared.isCollapsed === current.isCollapsed &&
+      prepared.isStarred === current.isStarred &&
+      prepared.completedAt === current.completedAt &&
+      prepared.createdAt === current.createdAt &&
+      prepared.updatedAt === current.updatedAt &&
+      prepared.deletedAt === current.deletedAt &&
+      prepared.archivedAt === current.archivedAt &&
+      prepared.archiveRootId === current.archiveRootId
+  );
+}
+
 async function workspaceForScope(
   context: NotesWorkspaceQueueContext,
   mutationWorkspace: NotesWorkspace,
@@ -3417,8 +3441,7 @@ export function useNotesWorkspace({
     async (
       input: MoveNoteNodeInput,
       focusNodeId?: NoteId | null,
-      options?: NotesWorkspaceCompoundOptions,
-      validatedActiveWorkspace = false
+      options?: NotesWorkspaceCompoundOptions
     ) => {
       const hadCentralDraft =
         sessionRecordRef.current?.drafts.has(input.id) ?? false;
@@ -3432,8 +3455,7 @@ export function useNotesWorkspace({
         const before = confirmedState(context);
         const expandNodeId = options?.expandNodeId;
         if (
-          (!validatedActiveWorkspace &&
-            !hasMoveDependencies(before, input)) ||
+          !hasMoveDependencies(before, input) ||
           (expandNodeId !== undefined && !before.nodesById[expandNodeId])
         ) {
           return { kind: "skipped" };
@@ -4831,91 +4853,114 @@ export function useNotesWorkspace({
       prepared: NotesPreparedMove,
       destinationId: NoteId | null
     ): Promise<NotesPreparedMoveCommitResult> => {
-      const stale = () =>
-        prepared.token !== movePreparationTokenRef.current ||
-        prepared.vaultRoot !== vaultRootRef.current ||
-        !sameScope(prepared.scope, activeScopeRef.current) ||
-        prepared.generation !== activeWorkspaceGenerationRef.current;
-      if (stale()) {
-        return {
-          ok: false,
-          error: "Notes changed while Move To was open. Refresh Move To and try again."
-        };
-      }
-      const preparedNodesById = Object.fromEntries(
-        prepared.nodes.map((node) => [node.id, node])
-      ) as Record<NoteId, NoteNode>;
-      if (
-        destinationId !== null &&
-        !isActiveMoveNode(preparedNodesById[destinationId])
-      ) {
-        return {
-          ok: false,
-          error: "Notes changed while Move To was open. Refresh Move To and try again."
-        };
-      }
+      const staleError: NotesPreparedMoveCommitResult = {
+        ok: false,
+        error: "Notes changed while Move To was open. Refresh Move To and try again."
+      };
+      let outcome: NotesPreparedMoveCommitResult = staleError;
+      await runStructuralCommand(
+        "move",
+        async (context, historyContext) => {
+          const stale = () =>
+            prepared.token !== movePreparationTokenRef.current ||
+            prepared.vaultRoot !== vaultRootRef.current ||
+            prepared.vaultRoot !== context.vaultRoot ||
+            !sameScope(prepared.scope, activeScopeRef.current) ||
+            prepared.generation !== activeWorkspaceGenerationRef.current;
+          if (stale()) {
+            return { kind: "skipped" };
+          }
 
-      let activeNodes: readonly NoteNode[];
-      try {
-        activeNodes = await loadActiveNodesForMove();
-      } catch {
-        return {
-          ok: false,
-          error: "Could not refresh move destinations. Try again."
-        };
-      }
-      if (stale()) {
-        return {
-          ok: false,
-          error: "Notes changed while Move To was open. Refresh Move To and try again."
-        };
-      }
+          let activeWorkspace: NotesWorkspace;
+          try {
+            activeWorkspace = await context.repository.loadWorkspace(
+              context.vaultRoot,
+              { kind: "active" }
+            );
+          } catch {
+            outcome = {
+              ok: false,
+              error: "Could not refresh move destinations. Try again."
+            };
+            return { kind: "skipped" };
+          }
+          if (stale()) {
+            return { kind: "skipped" };
+          }
 
-      const nodesById = Object.fromEntries(
-        activeNodes.map((node) => [node.id, node])
-      ) as Record<NoteId, NoteNode>;
-      if (!isActiveMoveNode(nodesById[prepared.sourceId])) {
-        return {
-          ok: false,
-          error: "This note is no longer active. Refresh Move To."
-        };
-      }
-      if (
-        destinationId !== null &&
-        !isActiveMoveNode(nodesById[destinationId])
-      ) {
-        return {
-          ok: false,
-          error: "That destination is no longer active. Refresh Move To."
-        };
-      }
-      const input = buildNotesMoveNodeInput(
-        nodesById,
-        prepared.sourceId,
-        destinationId
+          const preparedNodesById = Object.fromEntries(
+            prepared.nodes.map((node) => [node.id, node])
+          ) as Record<NoteId, NoteNode>;
+          const currentNodesById = Object.fromEntries(
+            activeWorkspace.nodes.map((node) => [node.id, node])
+          ) as Record<NoteId, NoteNode>;
+          if (
+            !samePreparedMoveNode(
+              preparedNodesById[prepared.sourceId],
+              currentNodesById[prepared.sourceId]
+            ) ||
+            (destinationId !== null &&
+              !samePreparedMoveNode(
+                preparedNodesById[destinationId],
+                currentNodesById[destinationId]
+              ))
+          ) {
+            return { kind: "skipped" };
+          }
+
+          const input = buildNotesMoveNodeInput(
+            currentNodesById,
+            prepared.sourceId,
+            destinationId
+          );
+          if (!input) {
+            return { kind: "skipped" };
+          }
+
+          let mutation: UnwrappedNotesMutation;
+          try {
+            mutation = unwrapNotesMutation(
+              await context.repository.moveNode(
+                context.vaultRoot,
+                input,
+                ...historyArguments(historyContext)
+              )
+            );
+          } catch (cause) {
+            outcome = {
+              ok: false,
+              error: "Move could not be completed. Refresh Move To and try again."
+            };
+            throw cause;
+          }
+          const projection = await projectNotesMutation(
+            context,
+            mutation,
+            activeScopeRef.current
+          );
+          const appliedContext = appliedHistoryContext(
+            historyContext,
+            mutation
+          );
+          rememberHistoryAfter(
+            appliedContext,
+            projection.workspace,
+            focusedUiUpdate(prepared.sourceId)
+          );
+          if (!historyContext || appliedContext) {
+            movePreparationTokenRef.current += 1;
+            outcome = { ok: true };
+          }
+          return directMutationResult(
+            mutation,
+            projection,
+            focusedUiUpdate(prepared.sourceId)
+          );
+        }
       );
-      if (!input) {
-        return {
-          ok: false,
-          error: "That destination is no longer valid. Refresh Move To."
-        };
-      }
-
-      movePreparationTokenRef.current += 1;
-      const moved = await moveNode(
-        input,
-        prepared.sourceId,
-        undefined,
-        true
-      );
-      return moved
-        ? { ok: true }
-        : {
-            ok: false,
-            error: "Move could not be completed. Refresh Move To and try again."
-          };
+      return outcome;
     },
-    [loadActiveNodesForMove, moveNode]
+    [rememberHistoryAfter, runStructuralCommand]
   );
 
   return {
