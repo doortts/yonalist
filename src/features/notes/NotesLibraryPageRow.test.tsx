@@ -30,6 +30,7 @@ function callbacks() {
     onToggleStar: vi.fn(),
     onArchive: vi.fn(),
     onUnarchive: vi.fn(),
+    onRestore: vi.fn(),
     onMoveToTrash: vi.fn(),
     onDuplicate: vi.fn(),
     onExport: vi.fn()
@@ -161,6 +162,36 @@ describe("NotesLibraryPageRow", () => {
     ).toEqual(["Unarchive", "Move to Trash"]);
     await user.click(within(menu).getByRole("menuitem", { name: "Unarchive" }));
     expect(handlers.onUnarchive).toHaveBeenCalledOnce();
+  });
+
+  it("exposes Restore from the trash row action menu by keyboard", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow
+        node={node({ deletedAt: "2026-07-11T02:00:00Z" })}
+        mode="trash"
+        active
+        {...handlers}
+      />
+    );
+
+    const selection = screen.getByRole("button", { name: "Project plan" });
+    const trigger = screen.getByRole("button", {
+      name: "Page actions for Project plan"
+    });
+    expect(selection.nextElementSibling).toBe(trigger);
+
+    trigger.focus();
+    await user.keyboard("{Enter}");
+    const menu = await screen.findByRole("menu");
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items.map((item) => item.textContent)).toEqual(["Restore"]);
+    await waitFor(() => expect(items[0]).toHaveFocus());
+
+    await user.keyboard("{Enter}");
+    expect(handlers.onRestore).toHaveBeenCalledOnce();
+    expect(handlers.onOpen).not.toHaveBeenCalled();
   });
 
   it("returns focus to the menu trigger when the menu closes", async () => {

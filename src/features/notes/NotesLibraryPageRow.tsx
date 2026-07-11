@@ -28,6 +28,7 @@ export interface NotesLibraryPageRowProps {
   onToggleStar(): void;
   onArchive(): void;
   onUnarchive(): void;
+  onRestore(): void;
   onMoveToTrash(): void;
   onDuplicate(): void;
   onExport(format: NotesExportFormat): void;
@@ -77,6 +78,7 @@ export function NotesLibraryPageRow({
   onToggleStar,
   onArchive,
   onUnarchive,
+  onRestore,
   onMoveToTrash,
   onDuplicate,
   onExport
@@ -116,128 +118,133 @@ export function NotesLibraryPageRow({
         <span>{label}</span>
       </button>
 
-      {mode !== "trash" && (
-        <Menu.Root
-          modal={false}
-          open={menuOpen}
+      <Menu.Root
+        modal={false}
+        open={menuOpen}
+        disabled={disabled}
+        onOpenChange={(open) => {
+          setMenuOpen(open);
+          if (!open) {
+            setExportView(false);
+          }
+        }}
+      >
+        <Menu.Trigger
+          className="notes-library-page-menu-trigger"
+          type="button"
+          aria-label={`Page actions for ${label}`}
           disabled={disabled}
-          onOpenChange={(open) => {
-            setMenuOpen(open);
-            if (!open) {
-              setExportView(false);
-            }
-          }}
         >
-          <Menu.Trigger
-            className="notes-library-page-menu-trigger"
-            type="button"
-            aria-label={`Page actions for ${label}`}
-            disabled={disabled}
-          >
-            <MoreHorizontal size={16} aria-hidden="true" />
-          </Menu.Trigger>
-          <Menu.Portal>
-            <Menu.Positioner side="bottom" align="start" sideOffset={4}>
-              <Menu.Popup className="notes-library-page-menu">
-                {mode === "archive" ? (
-                  <>
-                    <CommandItem
-                      icon={<RotateCcw size={15} aria-hidden="true" />}
-                      onClick={onUnarchive}
-                    >
-                      Unarchive
-                    </CommandItem>
-                    <CommandItem
-                      danger
-                      icon={<Trash2 size={15} aria-hidden="true" />}
-                      onClick={() => setTrashConfirmOpen(true)}
-                    >
-                      Move to Trash
-                    </CommandItem>
-                  </>
-                ) : exportView ? (
-                  <>
-                    <CommandItem
-                      closeOnClick={false}
-                      itemRef={exportBackRef}
-                      icon={<ChevronLeft size={15} aria-hidden="true" />}
-                      onClick={() => {
-                        viewFocusTargetRef.current = "export";
-                        setExportView(false);
-                      }}
-                    >
-                      Back
-                    </CommandItem>
-                    <CommandItem
-                      icon={<FileText size={15} aria-hidden="true" />}
-                      onClick={() => onExport("markdown")}
-                    >
-                      Export as Markdown
-                    </CommandItem>
-                    <CommandItem
-                      icon={<FileDown size={15} aria-hidden="true" />}
-                      onClick={() => onExport("pdf")}
-                    >
-                      Export as PDF
-                    </CommandItem>
-                  </>
-                ) : (
-                  <>
-                    <CommandItem
-                      icon={<FolderOpen size={15} aria-hidden="true" />}
-                      onClick={onOpen}
-                    >
-                      Open
-                    </CommandItem>
-                    <CommandItem
-                      icon={
-                        <Star
-                          size={15}
-                          fill={node.isStarred ? "currentColor" : "none"}
-                          aria-hidden="true"
-                        />
-                      }
-                      onClick={onToggleStar}
-                    >
-                      {node.isStarred ? "Unstar" : "Star"}
-                    </CommandItem>
-                    <CommandItem
-                      icon={<Archive size={15} aria-hidden="true" />}
-                      onClick={onArchive}
-                    >
-                      Archive
-                    </CommandItem>
-                    <CommandItem
-                      danger
-                      icon={<Trash2 size={15} aria-hidden="true" />}
-                      onClick={() => setTrashConfirmOpen(true)}
-                    >
-                      Move to Trash
-                    </CommandItem>
-                    <CommandItem
-                      icon={<Copy size={15} aria-hidden="true" />}
-                      onClick={onDuplicate}
-                    >
-                      Duplicate
-                    </CommandItem>
-                    <CommandItem
-                      closeOnClick={false}
-                      itemRef={exportCommandRef}
-                      icon={<Download size={15} aria-hidden="true" />}
-                      onClick={() => {
-                        viewFocusTargetRef.current = "back";
-                        setExportView(true);
-                      }}
-                    >
-                      Export
-                    </CommandItem>
-                  </>
-                )}
-              </Menu.Popup>
-            </Menu.Positioner>
-          </Menu.Portal>
-        </Menu.Root>
-      )}
+          <MoreHorizontal size={16} aria-hidden="true" />
+        </Menu.Trigger>
+        <Menu.Portal>
+          <Menu.Positioner side="bottom" align="start" sideOffset={4}>
+            <Menu.Popup className="notes-library-page-menu">
+              {mode === "trash" ? (
+                <CommandItem
+                  icon={<RotateCcw size={15} aria-hidden="true" />}
+                  onClick={onRestore}
+                >
+                  Restore
+                </CommandItem>
+              ) : mode === "archive" ? (
+                <>
+                  <CommandItem
+                    icon={<RotateCcw size={15} aria-hidden="true" />}
+                    onClick={onUnarchive}
+                  >
+                    Unarchive
+                  </CommandItem>
+                  <CommandItem
+                    danger
+                    icon={<Trash2 size={15} aria-hidden="true" />}
+                    onClick={() => setTrashConfirmOpen(true)}
+                  >
+                    Move to Trash
+                  </CommandItem>
+                </>
+              ) : exportView ? (
+                <>
+                  <CommandItem
+                    closeOnClick={false}
+                    itemRef={exportBackRef}
+                    icon={<ChevronLeft size={15} aria-hidden="true" />}
+                    onClick={() => {
+                      viewFocusTargetRef.current = "export";
+                      setExportView(false);
+                    }}
+                  >
+                    Back
+                  </CommandItem>
+                  <CommandItem
+                    icon={<FileText size={15} aria-hidden="true" />}
+                    onClick={() => onExport("markdown")}
+                  >
+                    Export as Markdown
+                  </CommandItem>
+                  <CommandItem
+                    icon={<FileDown size={15} aria-hidden="true" />}
+                    onClick={() => onExport("pdf")}
+                  >
+                    Export as PDF
+                  </CommandItem>
+                </>
+              ) : (
+                <>
+                  <CommandItem
+                    icon={<FolderOpen size={15} aria-hidden="true" />}
+                    onClick={onOpen}
+                  >
+                    Open
+                  </CommandItem>
+                  <CommandItem
+                    icon={
+                      <Star
+                        size={15}
+                        fill={node.isStarred ? "currentColor" : "none"}
+                        aria-hidden="true"
+                      />
+                    }
+                    onClick={onToggleStar}
+                  >
+                    {node.isStarred ? "Unstar" : "Star"}
+                  </CommandItem>
+                  <CommandItem
+                    icon={<Archive size={15} aria-hidden="true" />}
+                    onClick={onArchive}
+                  >
+                    Archive
+                  </CommandItem>
+                  <CommandItem
+                    danger
+                    icon={<Trash2 size={15} aria-hidden="true" />}
+                    onClick={() => setTrashConfirmOpen(true)}
+                  >
+                    Move to Trash
+                  </CommandItem>
+                  <CommandItem
+                    icon={<Copy size={15} aria-hidden="true" />}
+                    onClick={onDuplicate}
+                  >
+                    Duplicate
+                  </CommandItem>
+                  <CommandItem
+                    closeOnClick={false}
+                    itemRef={exportCommandRef}
+                    icon={<Download size={15} aria-hidden="true" />}
+                    onClick={() => {
+                      viewFocusTargetRef.current = "back";
+                      setExportView(true);
+                    }}
+                  >
+                    Export
+                  </CommandItem>
+                </>
+              )}
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.Root>
 
       <ConfirmDialog
         open={trashConfirmOpen}

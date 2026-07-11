@@ -405,6 +405,7 @@ function NotesLibraryPaneContent() {
                   onToggleStar={() => void actions.toggleStar(nodeId)}
                   onArchive={() => void actions.archiveNode(nodeId)}
                   onUnarchive={() => void actions.unarchiveNode(nodeId)}
+                  onRestore={() => void actions.restoreNode(nodeId)}
                   onMoveToTrash={() => void actions.deleteNode(nodeId)}
                   onDuplicate={() => void actions.duplicateNode(nodeId)}
                   onExport={(format) =>
