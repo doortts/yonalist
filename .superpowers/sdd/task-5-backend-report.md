@@ -7,6 +7,9 @@ DONE_WITH_CONCURRENT_BUILD_BLOCKER
 Implementation commit:
 `9dd286a5ef6919a0b6d4814ff384a65c993c088a`
 
+Quality remediation commit:
+`761ade937064d003492b3b21e696f36b041f9b7a`
+
 Starting commit:
 `857ad71c2328dcfb8d98430a6fe10222e838a237`
 
@@ -152,16 +155,80 @@ and `bool_assert_comparison` in an existing history test. Strict `-D warnings`
 therefore exits 101 on those same five baseline warnings; it reports no Task 5
 warning.
 
+## Quality Remediation
+
+### Tokenizer-Versioned Derived Index
+
+- Added durable `notes_preferences` key `derived.tagTokenizerVersion`, with current
+  JSON integer value `1`.
+- Initialization reads the marker inside the existing immediate migration
+  transaction. Missing, malformed, or older values rebuild `notes_tags` once from
+  every stored node, including Archive and Trash, before recording the marker.
+- Current or newer markers return without any tag writes. Queries continue to
+  exclude archived and trashed nodes even though their rebuilt tag rows remain.
+
+RED command:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml \
+  version_three_initialization_rebuilds_old_tag_tokens_once_for_every_node
+```
+
+Exit 101: old schema-v3 rows still contained URL-fragment `#fragment` and truncated
+combining tag `#cafe`. GREEN: 1/1 passed; audit triggers proved the second initialize
+performed no tag writes, and a downgraded marker caused exactly one new rebuild.
+
+### Bounded Structured Queries
+
+- Text is limited to 4,096 UTF-8 bytes.
+- Total unique normalized prefix/tag pairs are limited to 64 across required,
+  excluded, and OR alternatives.
+- Raw typed payloads are limited to 16 OR groups and 16 alternatives per group,
+  before canonicalization can deduplicate them.
+- Backend validation runs before FTS expression or dynamic predicate construction
+  and returns stable errors. No query is silently truncated.
+- TypeScript exports `NOTE_SEARCH_QUERY_LIMITS`,
+  `validateAndCanonicalizeNoteSearchQuery`, and
+  `parseAndValidateNoteSearchQuery`. The compatibility parser still returns the
+  canonical query directly.
+
+RED commands:
+
+```bash
+npm test -- src/features/notes/noteSearchQuery.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml \
+  notes_tag_structured_search_enforces
+```
+
+The TypeScript RED had 5 expected missing-policy failures. The Rust RED had 4
+expected limit failures; the 65-tag test reached a deliberately removed
+`notes_tags` table, proving validation was not yet pre-SQL. A later parser RED
+proved duplicate raw OR groups were being deduplicated before validation; raw
+parsing now validates first.
+
+### Remediation Verification
+
+```bash
+npm test -- src/features/notes/noteTokens.test.ts \
+  src/features/notes/noteSearchQuery.test.ts src/domain/notes.test.ts \
+  src/services/notesStore.test.ts src/services/notesStore.tauri.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml 'notes::'
+```
+
+Exit 0: 5 TypeScript files and 80 tests passed; all 143 Notes Rust tests passed.
+Focused Rust evidence was 10 tag tests, 3 initialization tests, 6 migration tests,
+and 17 history tests, all passing.
+
+The isolated strict TypeScript source check, Vite production bundle of 2,286
+modules, Rust format check, and standard all-target clippy also passed. Clippy
+retains the same five pre-existing warnings documented above.
+
 ## Concurrent Blocker
 
 `npm run build` exits 2 only on concurrent, out-of-scope history work:
 
-- `src/features/notes/useNotesWorkspace.test.tsx:690` and `:1039`: calls currently
-  pass two arguments to a one-argument function.
-- `src/features/notes/useNotesWorkspace.ts:1286`: the `skipped` union member has no
-  `committedHistoryEntryIds` field.
-- `src/features/notes/useNotesWorkspace.ts:2498`: a possibly undefined workspace is
-  passed where `NotesWorkspace` is required.
+- `src/features/notes/useNotesWorkspace.test.tsx:2172` has four tuple/index type
+  errors in the current concurrent edit.
 
-Those files, the coordinator files, and `.superpowers/sdd/task-2b-report.md` were
-not staged or committed by this task.
+The current concurrent `useNotesWorkspace` and coordinator test files were not
+staged or committed by this task.
