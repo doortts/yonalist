@@ -16,6 +16,7 @@ use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
     Row, Transaction, TransactionBehavior,
 };
+use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Read};
@@ -541,6 +542,72 @@ fn noncanonical_history_schema_error() -> String {
         .to_string()
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct HistoricalNodeSnapshot {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    layout_mode: String,
+    is_collapsed: i64,
+    is_starred: i64,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+    deleted_batch_id: Option<String>,
+    archived_at: Option<String>,
+    archive_root_id: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct HistoricalAttachmentSnapshot {
+    id: String,
+    node_id: String,
+    sort_key: i64,
+    relative_path: String,
+    content_hash: String,
+    original_name: String,
+    mime_type: String,
+    byte_size: i64,
+    intrinsic_width: i64,
+    intrinsic_height: i64,
+    display_width: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+fn validate_historical_snapshot(
+    table_name: &str,
+    row_id: &str,
+    snapshot: &str,
+) -> Result<(), String> {
+    let snapshot_id = match table_name {
+        "notes_nodes" => serde_json::from_str::<HistoricalNodeSnapshot>(snapshot)
+            .map(|snapshot| snapshot.id)
+            .map_err(|error| format!("Could not decode historical Notes node snapshot: {error}"))?,
+        "notes_attachments" => serde_json::from_str::<HistoricalAttachmentSnapshot>(snapshot)
+            .map(|snapshot| snapshot.id)
+            .map_err(|error| {
+                format!("Could not decode historical Notes attachment snapshot: {error}")
+            })?,
+        _ => {
+            return Err(format!(
+                "Unsupported historical Notes history table {table_name}."
+            ))
+        }
+    };
+    if snapshot_id != row_id {
+        return Err(
+            "A historical Notes snapshot row ID does not match its history row.".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_historical_history_data(transaction: &Transaction<'_>) -> Result<(), String> {
     let repair_name_exists: bool = transaction
         .query_row(
@@ -588,6 +655,32 @@ fn validate_historical_history_data(transaction: &Transaction<'_>) -> Result<(),
         .map_err(|error| format!("Could not validate historical Notes history tables: {error}"))?;
     if has_unsupported_table {
         return Err("Historical Notes history contains unsupported tables.".to_string());
+    }
+    let snapshots = transaction
+        .prepare(
+            "SELECT table_name, row_id, before_json, after_json \
+             FROM notes_history_changes ORDER BY entry_id, sequence",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!("Could not read historical Notes snapshots: {error}"))?;
+    for (table_name, row_id, before_json, after_json) in snapshots {
+        if let Some(snapshot) = before_json.as_deref() {
+            validate_historical_snapshot(&table_name, &row_id, snapshot)?;
+        }
+        if let Some(snapshot) = after_json.as_deref() {
+            validate_historical_snapshot(&table_name, &row_id, snapshot)?;
+        }
     }
     // Current journaling keeps the first state and last state for each touched row.
     let has_broken_chain: bool = transaction
@@ -4294,6 +4387,26 @@ mod tests {
             .expect("build node history snapshot")
     }
 
+    fn attachment_history_snapshot(connection: &Connection, attachment_id: &str) -> String {
+        connection
+            .query_row(
+                "SELECT json_object(\
+                   'id', attachment.id, 'node_id', attachment.node_id, \
+                   'sort_key', attachment.sort_key, 'relative_path', attachment.relative_path, \
+                   'content_hash', attachment.content_hash, \
+                   'original_name', attachment.original_name, 'mime_type', attachment.mime_type, \
+                   'byte_size', attachment.byte_size, \
+                   'intrinsic_width', attachment.intrinsic_width, \
+                   'intrinsic_height', attachment.intrinsic_height, \
+                   'display_width', attachment.display_width, \
+                   'created_at', attachment.created_at, 'updated_at', attachment.updated_at\
+                 ) FROM notes_attachments attachment WHERE attachment.id = ?1",
+                [attachment_id],
+                |row| row.get(0),
+            )
+            .expect("build attachment history snapshot")
+    }
+
     fn historical_history_snapshot(
         connection: &Connection,
     ) -> (
@@ -4362,6 +4475,57 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect historical history change snapshot");
         (objects, entries, changes)
+    }
+
+    fn assert_invalid_historical_snapshot_rejected(
+        connection: &mut Connection,
+        table_name: &str,
+        row_id: &str,
+        before_json: Option<&str>,
+        after_json: Option<&str>,
+        expected_error: &str,
+    ) {
+        seed_historical_history_schema(connection, false);
+        connection
+            .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
+            .expect("drop post-history-repair index");
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind, created_at\
+                 ) VALUES (?1, ?2, 1, 'updateText', '2026-07-12T00:00:00.000Z')",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ],
+            )
+            .expect("seed invalid snapshot history entry");
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, sequence, table_name, row_id, before_json, after_json\
+                 ) VALUES (?1, 1, ?2, ?3, ?4, ?5)",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    table_name,
+                    row_id,
+                    before_json,
+                    after_json
+                ],
+            )
+            .expect("seed invalid historical snapshot");
+        let snapshot = historical_history_snapshot(connection);
+
+        let error = initialize_notes_db(connection)
+            .expect_err("invalid historical snapshot must be rejected");
+
+        assert!(error.contains(expected_error), "{error}");
+        assert_eq!(historical_history_snapshot(connection), snapshot);
+        assert!(!object_exists(
+            connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
     }
 
     fn assert_historical_history_pair_repairs_and_replays_trash(hybrid: bool) {
@@ -5511,6 +5675,141 @@ mod tests {
                 })
                 .expect("populated historical history foreign key check"),
             0
+        );
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_malformed_historical_snapshot_json_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root");
+
+        assert_invalid_historical_snapshot_rejected(
+            &mut connection,
+            "notes_nodes",
+            NODE_ID,
+            Some("{"),
+            None,
+            "decode historical Notes node snapshot",
+        );
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_mismatched_historical_snapshot_ids_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Child");
+        let mismatched = node_history_snapshot(&connection, CHILD_ID, "Child");
+
+        assert_invalid_historical_snapshot_rejected(
+            &mut connection,
+            "notes_nodes",
+            NODE_ID,
+            None,
+            Some(&mismatched),
+            "row ID does not match",
+        );
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_wrong_historical_snapshot_kinds_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root");
+        let attachment_id = insert_test_attachment(&connection, 91, NODE_ID);
+        let attachment = attachment_history_snapshot(&connection, &attachment_id);
+
+        assert_invalid_historical_snapshot_rejected(
+            &mut connection,
+            "notes_nodes",
+            &attachment_id,
+            None,
+            Some(&attachment),
+            "decode historical Notes node snapshot",
+        );
+    }
+
+    #[test]
+    fn version_three_initialization_migrates_valid_node_and_attachment_null_states() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Deleted child");
+        let attachment_id = insert_test_attachment(&connection, 92, NODE_ID);
+        let deleted_node = node_history_snapshot(&connection, CHILD_ID, "Deleted child");
+        let created_attachment = attachment_history_snapshot(&connection, &attachment_id);
+        connection
+            .execute("DELETE FROM notes_nodes WHERE id = ?1", [CHILD_ID])
+            .expect("apply historical node deletion");
+        seed_historical_history_schema(&connection, false);
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind, created_at\
+                 ) VALUES (?1, ?2, 1, 'mixed', '2026-07-12T00:00:00.000Z')",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ],
+            )
+            .expect("seed valid mixed historical entry");
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, sequence, table_name, row_id, before_json, after_json\
+                 ) VALUES (?1, 1, 'notes_nodes', ?2, ?3, NULL)",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    CHILD_ID,
+                    deleted_node
+                ],
+            )
+            .expect("seed valid historical node deletion");
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, sequence, table_name, row_id, before_json, after_json\
+                 ) VALUES (?1, 2, 'notes_attachments', ?2, NULL, ?3)",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    attachment_id,
+                    created_attachment
+                ],
+            )
+            .expect("seed valid historical attachment creation");
+
+        initialize_notes_db(&mut connection).expect("migrate valid mixed historical snapshots");
+
+        let migrated = connection
+            .prepare(
+                "SELECT table_name, row_id, before_json, after_json \
+                 FROM notes_history_changes ORDER BY ordinal",
+            )
+            .expect("prepare valid migrated snapshots")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .expect("query valid migrated snapshots")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect valid migrated snapshots");
+        assert_eq!(
+            migrated,
+            vec![
+                (
+                    "notes_nodes".to_string(),
+                    CHILD_ID.to_string(),
+                    Some(deleted_node),
+                    None
+                ),
+                (
+                    "notes_attachments".to_string(),
+                    attachment_id,
+                    None,
+                    Some(created_attachment)
+                )
+            ]
         );
     }
 
