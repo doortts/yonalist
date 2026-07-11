@@ -61,6 +61,20 @@ pub struct NotesExportSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportAttachment {
+    pub id: String,
+    pub relative_path: String,
+    pub content_hash: String,
+    pub original_name: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub intrinsic_width: i64,
+    pub intrinsic_height: i64,
+    pub display_width: i64,
+    pub bytes: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportDateSpan {
     pub start_utf16: usize,
     pub end_utf16: usize,
@@ -76,6 +90,7 @@ pub struct ExportNode {
     pub title_date_spans: Vec<ExportDateSpan>,
     pub note_date_spans: Vec<ExportDateSpan>,
     pub completed: bool,
+    pub attachments: Vec<ExportAttachment>,
     pub children: Vec<ExportNode>,
 }
 

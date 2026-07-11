@@ -15,7 +15,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::notes::types::NoteAttachment;
+use crate::notes::types::{ExportAttachment, NoteAttachment};
 
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_PIXELS: u64 = 40_000_000;
@@ -922,13 +922,41 @@ impl AttachmentStorageLease {
         &self,
         attachment: &NoteAttachment,
     ) -> Result<Vec<u8>, String> {
-        resolve_owned_asset_path(
-            Path::new("."),
+        self.read_validated_attachment_fields(
             &attachment.relative_path,
             &attachment.content_hash,
             &attachment.mime_type,
-        )?;
-        let file_name = safe_owned_file_name(&attachment.relative_path)?;
+            attachment.byte_size,
+            attachment.intrinsic_width,
+            attachment.intrinsic_height,
+        )
+    }
+
+    pub(crate) fn read_validated_export_attachment_bytes(
+        &self,
+        attachment: &ExportAttachment,
+    ) -> Result<Vec<u8>, String> {
+        self.read_validated_attachment_fields(
+            &attachment.relative_path,
+            &attachment.content_hash,
+            &attachment.mime_type,
+            attachment.byte_size,
+            attachment.intrinsic_width,
+            attachment.intrinsic_height,
+        )
+    }
+
+    fn read_validated_attachment_fields(
+        &self,
+        relative_path: &str,
+        content_hash: &str,
+        mime_type: &str,
+        byte_size: i64,
+        intrinsic_width: i64,
+        intrinsic_height: i64,
+    ) -> Result<Vec<u8>, String> {
+        resolve_owned_asset_path(Path::new("."), relative_path, content_hash, mime_type)?;
+        let file_name = safe_owned_file_name(relative_path)?;
         let file = self.open_owned_file(file_name)?;
         if !file
             .metadata()
@@ -938,16 +966,13 @@ impl AttachmentStorageLease {
             return Err("A Notes attachment owned path must contain a regular file.".to_string());
         }
         let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
-        let validated = validate_image_bytes(
-            Path::new(&attachment.relative_path),
-            &bytes,
-            ValidationLimits::DEFAULT,
-        )?;
-        if validated.content_hash != attachment.content_hash
-            || validated.mime_type != attachment.mime_type
-            || validated.byte_size != attachment.byte_size as u64
-            || i64::from(validated.width) != attachment.intrinsic_width
-            || i64::from(validated.height) != attachment.intrinsic_height
+        let validated =
+            validate_image_bytes(Path::new(relative_path), &bytes, ValidationLimits::DEFAULT)?;
+        if validated.content_hash != content_hash
+            || validated.mime_type != mime_type
+            || validated.byte_size != byte_size as u64
+            || i64::from(validated.width) != intrinsic_width
+            || i64::from(validated.height) != intrinsic_height
         {
             return Err(
                 "The Notes attachment file no longer matches its stored metadata.".to_string(),

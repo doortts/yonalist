@@ -22,7 +22,7 @@ image = { version = "=0.25.6", default-features = false, features = ["gif", "jpe
 keyring = "3"
 lopdf = { version = "0.39", default-features = false }
 open = "5"
-printpdf = { version = "0.9.1", default-features = false, features = ["text_layout"] }
+printpdf = { version = "0.9.1", default-features = false, features = ["images", "text_layout"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 rustix = { version = "1.1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }

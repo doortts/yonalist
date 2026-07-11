@@ -5,10 +5,11 @@ use crate::notes::date_index::{
 use crate::notes::history;
 use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ExportDateSpan, ExportNode, MoveNodeInput, NoteAttachment,
-    NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope,
-    NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, ExportAttachment, ExportDateSpan, ExportNode, MoveNodeInput,
+    NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
+    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
+    UpdateNodeInput,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -847,10 +848,31 @@ struct StoredExportDate {
     normalized_end: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExportSnapshotRowCounts {
+    pub(crate) node_rows: usize,
+    pub(crate) date_rows: usize,
+}
+
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
     root_node_id: &str,
 ) -> Result<NotesExportSnapshot, String> {
+    load_export_snapshot_inner(connection, root_node_id).map(|(snapshot, _)| snapshot)
+}
+
+#[cfg(test)]
+pub(crate) fn load_export_snapshot_with_row_counts(
+    connection: &Connection,
+    root_node_id: &str,
+) -> Result<(NotesExportSnapshot, ExportSnapshotRowCounts), String> {
+    load_export_snapshot_inner(connection, root_node_id)
+}
+
+fn load_export_snapshot_inner(
+    connection: &Connection,
+    root_node_id: &str,
+) -> Result<(NotesExportSnapshot, ExportSnapshotRowCounts), String> {
     validate_note_id(root_node_id)?;
     let mut statement = connection
         .prepare(
@@ -869,14 +891,11 @@ pub(crate) fn load_export_snapshot(
                WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                    node.completed_at, subtree.cycle, export_context.exported_at, \
-                    date.field, date.start_utf16, date.end_utf16, \
-                    date.normalized_start, date.normalized_end \
+                    node.completed_at, subtree.cycle, export_context.exported_at \
              FROM subtree \
              JOIN notes_nodes node ON node.id = subtree.id \
              CROSS JOIN export_context \
-             LEFT JOIN notes_dates date ON date.node_id = node.id \
-             ORDER BY node.id, date.field, date.start_utf16, date.end_utf16",
+             ORDER BY node.id",
         )
         .map_err(|error| format!("Could not prepare the Notes export snapshot: {error}"))?;
     let rows = statement
@@ -894,16 +913,6 @@ pub(crate) fn load_export_snapshot(
                 },
                 row.get::<_, i64>(6)? != 0,
                 row.get::<_, String>(7)?,
-                match row.get::<_, Option<String>>(8)? {
-                    Some(field) => Some(StoredExportDate {
-                        field,
-                        start_utf16: row.get(9)?,
-                        end_utf16: row.get(10)?,
-                        normalized_start: row.get(11)?,
-                        normalized_end: row.get(12)?,
-                    }),
-                    None => None,
-                },
             ))
         })
         .map_err(|error| format!("Could not load the Notes export snapshot: {error}"))?
@@ -915,18 +924,60 @@ pub(crate) fn load_export_snapshot(
             "Note node {root_node_id} is missing or deleted and cannot be exported."
         ));
     }
-    if rows.iter().any(|(_, cycle, _, _)| *cycle) {
+    if rows.iter().any(|(_, cycle, _)| *cycle) {
         return Err("The Notes tree contains a cycle and cannot be exported.".to_string());
     }
 
+    let node_rows = rows.len();
     let exported_at = rows[0].2.clone();
     let mut by_id = HashMap::new();
-    for (node, _, _, indexed_date) in rows {
-        let node_id = node.id.clone();
-        let stored = by_id.entry(node_id.clone()).or_insert(node);
-        let Some(indexed_date) = indexed_date else {
-            continue;
-        };
+    for (node, _, _) in rows {
+        if by_id.insert(node.id.clone(), node).is_some() {
+            return Err("The Notes export subtree contains duplicate nodes.".to_string());
+        }
+    }
+
+    let mut date_statement = connection
+        .prepare(
+            "WITH RECURSIVE subtree(id, path, cycle) AS (\
+               SELECT id, '|' || id || '|', 0 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT child.id, subtree.path || child.id || '|', \
+                      instr(subtree.path, '|' || child.id || '|') > 0 \
+               FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+             ) \
+             SELECT date.node_id, date.field, date.start_utf16, date.end_utf16, \
+                    date.normalized_start, date.normalized_end \
+             FROM notes_dates date \
+             JOIN subtree ON subtree.id = date.node_id \
+             WHERE subtree.cycle = 0 \
+             ORDER BY date.node_id, date.field, date.start_utf16, date.end_utf16",
+        )
+        .map_err(|error| format!("Could not prepare Notes export dates: {error}"))?;
+    let date_rows = date_statement
+        .query_map([root_node_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                StoredExportDate {
+                    field: row.get(1)?,
+                    start_utf16: row.get(2)?,
+                    end_utf16: row.get(3)?,
+                    normalized_start: row.get(4)?,
+                    normalized_end: row.get(5)?,
+                },
+            ))
+        })
+        .map_err(|error| format!("Could not load Notes export dates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes export dates: {error}"))?;
+    let date_row_count = date_rows.len();
+    for (node_id, indexed_date) in date_rows {
+        let stored = by_id.get_mut(&node_id).ok_or_else(|| {
+            format!("Note node {node_id} has an indexed date outside the export subtree.")
+        })?;
         let start_utf16 = usize::try_from(indexed_date.start_utf16)
             .map_err(|_| format!("Note node {node_id} has an invalid export date start offset."))?;
         let end_utf16 = usize::try_from(indexed_date.end_utf16)
@@ -992,10 +1043,62 @@ pub(crate) fn load_export_snapshot(
         });
     }
 
+    let mut attachments_by_node_id: HashMap<String, Vec<ExportAttachment>> = HashMap::new();
+    let mut attachment_statement = connection
+        .prepare(
+            "WITH RECURSIVE subtree(id, path, cycle) AS (\
+               SELECT id, '|' || id || '|', 0 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT child.id, subtree.path || child.id || '|', \
+                      instr(subtree.path, '|' || child.id || '|') > 0 \
+               FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+             ) \
+             SELECT attachment.id, attachment.node_id, attachment.relative_path, \
+                    attachment.content_hash, attachment.original_name, attachment.mime_type, \
+                    attachment.byte_size, attachment.intrinsic_width, \
+                    attachment.intrinsic_height, attachment.display_width \
+             FROM notes_attachments attachment \
+             JOIN subtree ON subtree.id = attachment.node_id \
+             WHERE subtree.cycle = 0 \
+             ORDER BY attachment.node_id, attachment.sort_key, attachment.id",
+        )
+        .map_err(|error| format!("Could not prepare Notes export attachments: {error}"))?;
+    let attachment_rows = attachment_statement
+        .query_map([root_node_id], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                ExportAttachment {
+                    id: row.get(0)?,
+                    relative_path: row.get(2)?,
+                    content_hash: row.get(3)?,
+                    original_name: row.get(4)?,
+                    mime_type: row.get(5)?,
+                    byte_size: row.get(6)?,
+                    intrinsic_width: row.get(7)?,
+                    intrinsic_height: row.get(8)?,
+                    display_width: row.get(9)?,
+                    bytes: None,
+                },
+            ))
+        })
+        .map_err(|error| format!("Could not load Notes export attachments: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes export attachments: {error}"))?;
+    for (node_id, attachment) in attachment_rows {
+        attachments_by_node_id
+            .entry(node_id)
+            .or_default()
+            .push(attachment);
+    }
+
     fn build_node(
         node_id: &str,
         by_id: &mut HashMap<String, StoredExportNode>,
         children: &HashMap<String, Vec<String>>,
+        attachments_by_node_id: &mut HashMap<String, Vec<ExportAttachment>>,
         visited: &mut HashSet<String>,
     ) -> Result<ExportNode, String> {
         if !visited.insert(node_id.to_string()) {
@@ -1007,7 +1110,7 @@ pub(crate) fn load_export_snapshot(
         let child_ids = children.get(node_id).cloned().unwrap_or_default();
         let child_nodes = child_ids
             .iter()
-            .map(|child_id| build_node(child_id, by_id, children, visited))
+            .map(|child_id| build_node(child_id, by_id, children, attachments_by_node_id, visited))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ExportNode {
             id: node.id,
@@ -1016,21 +1119,37 @@ pub(crate) fn load_export_snapshot(
             title_date_spans: node.title_date_spans,
             note_date_spans: node.note_date_spans,
             completed: node.completed_at.is_some(),
+            attachments: attachments_by_node_id.remove(node_id).unwrap_or_default(),
             children: child_nodes,
         })
     }
 
-    let root = build_node(root_node_id, &mut by_id, &children, &mut HashSet::new())?;
+    let root = build_node(
+        root_node_id,
+        &mut by_id,
+        &children,
+        &mut attachments_by_node_id,
+        &mut HashSet::new(),
+    )?;
     if !by_id.is_empty() {
         return Err("The Notes export subtree could not be assembled safely.".to_string());
     }
+    if !attachments_by_node_id.is_empty() {
+        return Err("The Notes export attachments could not be assembled safely.".to_string());
+    }
 
-    Ok(NotesExportSnapshot {
-        root_node_id: root_node_id.to_string(),
-        title: root.title.clone(),
-        exported_at,
-        root,
-    })
+    Ok((
+        NotesExportSnapshot {
+            root_node_id: root_node_id.to_string(),
+            title: root.title.clone(),
+            exported_at,
+            root,
+        },
+        ExportSnapshotRowCounts {
+            node_rows,
+            date_rows: date_row_count,
+        },
+    ))
 }
 
 pub(crate) fn load_workspace(

@@ -1,7 +1,10 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
-use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
+use crate::notes::export::{
+    hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
+    prepare_markdown_export, publish_markdown_export, render_markdown, render_pdf,
+};
 use crate::notes::history::{
     clear_all_history, clear_history, history_status, redo_with_attachment_storage_at,
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
@@ -592,14 +595,37 @@ pub(crate) fn notes_export_markdown(
     destination: String,
     overwrite: bool,
 ) -> Result<NotesExportResult, String> {
-    export_notes_file(
-        vault_path,
-        root_node_id,
+    validate_note_id(&root_node_id)?;
+    let destination_path = export_destination_path(&destination)?;
+    ensure_export_destination_is_not_directory(&destination_path)?;
+    if !overwrite {
+        ensure_export_destination_is_available(&destination_path)?;
+    }
+
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let connection = open_notes_export_db(&vault_path)?;
+    let mut snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    hydrate_export_attachments(&mut snapshot, |attachment| {
+        storage.read_validated_export_attachment_bytes(attachment)
+    })?;
+
+    fn has_attachments(node: &crate::notes::types::ExportNode) -> bool {
+        !node.attachments.is_empty() || node.children.iter().any(has_attachments)
+    }
+    if has_attachments(&snapshot.root) {
+        let (asset_destination, asset_directory_name) =
+            markdown_asset_destination(&destination_path)?;
+        let prepared = prepare_markdown_export(&snapshot, &asset_directory_name)?;
+        publish_markdown_export(&destination_path, &asset_destination, &prepared, overwrite)?;
+    } else {
+        let bytes = render_markdown(&snapshot)?;
+        write_atomic_file(&destination_path, &bytes, overwrite)?;
+    }
+
+    Ok(NotesExportResult {
         destination,
-        overwrite,
-        NotesExportFormat::Markdown,
-        render_markdown,
-    )
+        format: NotesExportFormat::Markdown,
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -634,8 +660,12 @@ fn export_notes_file(
         ensure_export_destination_is_available(&destination_path)?;
     }
 
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let connection = open_notes_export_db(&vault_path)?;
-    let snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    let mut snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    hydrate_export_attachments(&mut snapshot, |attachment| {
+        storage.read_validated_export_attachment_bytes(attachment)
+    })?;
     let bytes = renderer(&snapshot)?;
     write_atomic_file(&destination_path, &bytes, overwrite)?;
 
@@ -650,8 +680,9 @@ mod tests {
     use super::*;
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        ImportAttachmentInput, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
+        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+        NotesExportFormat,
     };
     use serde_json::json;
 
@@ -739,6 +770,50 @@ mod tests {
                 )
                 .expect("seed export node");
         }
+    }
+
+    fn encoded_png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("PNG header");
+            writer
+                .write_image_data(&vec![0x55; width as usize * height as usize * 3])
+                .expect("PNG pixels");
+        }
+        bytes
+    }
+
+    fn import_export_attachment(
+        temp_dir: &tempfile::TempDir,
+        vault_path: &str,
+        attachment_id: &str,
+        source_name: &str,
+    ) -> PathBuf {
+        let source = temp_dir.path().join(source_name);
+        fs::write(&source, encoded_png(4, 3)).expect("write attachment source");
+        notes_import_attachment(
+            vault_path.to_string(),
+            ImportAttachmentInput {
+                id: attachment_id.to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: source.to_string_lossy().into_owned(),
+                display_width: Some(4),
+            },
+            None,
+        )
+        .expect("import export attachment");
+        let connection = connect_notes_db(vault_path).expect("open attachment database");
+        let relative_path: String = connection
+            .query_row(
+                "SELECT relative_path FROM notes_attachments WHERE id = ?1",
+                [attachment_id],
+                |row| row.get(0),
+            )
+            .expect("read owned attachment path");
+        crate::metadata_dir(vault_path).join(relative_path)
     }
 
     #[test]
@@ -1576,6 +1651,302 @@ mod tests {
 
         assert_eq!(error, "Note ID must be a canonical UUID v4 string.");
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn markdown_export_fails_before_publish_when_attachment_bytes_are_missing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let owned_path = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "missing.png",
+        );
+        fs::remove_file(&owned_path).expect("remove owned bytes");
+        let destination = temp_dir.path().join("missing-export.md");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("missing attachment must fail export");
+
+        assert!(
+            error.contains("Could not open the Notes attachment image"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        assert!(!temp_dir.path().join("missing-export_assets").exists());
+    }
+
+    #[test]
+    fn pdf_export_fails_before_publish_when_attachment_bytes_are_missing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let owned_path = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "missing-pdf.png",
+        );
+        fs::remove_file(&owned_path).expect("remove owned bytes");
+        let destination = temp_dir.path().join("missing-export.pdf");
+
+        let error = notes_export_pdf(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("missing PDF attachment must fail export");
+
+        assert!(
+            error.contains("Could not open the Notes attachment image"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn markdown_export_fails_before_publish_when_attachment_bytes_are_corrupt() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let owned_path = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "corrupt.png",
+        );
+        fs::write(&owned_path, b"not an image").expect("corrupt owned bytes");
+        let destination = temp_dir.path().join("corrupt-export.md");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("corrupt attachment must fail export");
+
+        assert!(
+            error.contains("Could not decode the Notes attachment image format"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        assert!(!temp_dir.path().join("corrupt-export_assets").exists());
+    }
+
+    #[test]
+    fn markdown_export_rejects_attachment_path_traversal_before_publish() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "safe.png",
+        );
+        let connection = connect_notes_db(&vault_path_string).expect("open attachment database");
+        connection
+            .execute(
+                "UPDATE notes_attachments SET relative_path = '../outside.png' WHERE id = ?1",
+                ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+            )
+            .expect("corrupt owned path");
+        let destination = temp_dir.path().join("unsafe-export.md");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("unsafe attachment path must fail export");
+
+        assert_eq!(
+            error,
+            "A Notes attachment path must be a safe owned relative path."
+        );
+        assert!(!destination.exists());
+        assert!(!temp_dir.path().join("unsafe-export_assets").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_an_owned_attachment_file_symlink_without_reading_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let owned_path = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "owned.png",
+        );
+        let outside = temp_dir.path().join("outside.png");
+        fs::write(&outside, encoded_png(4, 3)).expect("outside image");
+        fs::remove_file(&owned_path).expect("remove owned file");
+        symlink(&outside, &owned_path).expect("replace owned file with symlink");
+        let destination = temp_dir.path().join("symlink-source.md");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("owned attachment symlink must fail export");
+
+        assert!(
+            error.contains("Could not open the Notes attachment image"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn markdown_export_writes_ordered_links_and_collision_safe_adjacent_assets() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let first_owned = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "same name.png",
+        );
+        import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "same name.png",
+        );
+        let expected_bytes = fs::read(first_owned).expect("read imported attachment");
+        let destination = temp_dir.path().join("ordered.md");
+
+        notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect("export Markdown attachments");
+
+        let markdown = fs::read_to_string(&destination).expect("read Markdown");
+        let first_link = "![same name.png](ordered_assets/0001.png)";
+        let second_link = "![same name.png](ordered_assets/0002.png)";
+        assert!(
+            markdown.find(first_link) < markdown.find(second_link),
+            "{markdown}"
+        );
+        let assets = temp_dir.path().join("ordered_assets");
+        assert_eq!(
+            fs::read(assets.join("0001.png")).expect("first exported attachment"),
+            expected_bytes
+        );
+        assert_eq!(
+            fs::read(assets.join("0002.png")).expect("second exported attachment"),
+            expected_bytes
+        );
+        assert_eq!(
+            fs::read_dir(assets).expect("list assets").count(),
+            2,
+            "only ordered exported assets should be published"
+        );
+    }
+
+    #[test]
+    fn markdown_export_rolls_back_existing_document_and_assets_on_publish_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "rollback.png",
+        );
+        let destination = temp_dir.path().join("rollback.md");
+        let assets = temp_dir.path().join("rollback_assets");
+        fs::write(&destination, b"old Markdown").expect("seed old Markdown");
+        fs::create_dir(&assets).expect("seed old assets");
+        fs::write(assets.join("old.png"), b"old attachment").expect("seed old attachment");
+        crate::notes::export::inject_markdown_publish_failure_once();
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect_err("injected publish failure");
+
+        assert_eq!(error, "Injected Notes Markdown publish failure.");
+        assert_eq!(
+            fs::read(&destination).expect("restored Markdown"),
+            b"old Markdown"
+        );
+        assert_eq!(
+            fs::read(assets.join("old.png")).expect("restored attachment"),
+            b"old attachment"
+        );
+        assert_eq!(
+            fs::read_dir(&assets).expect("list restored assets").count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn markdown_export_rejects_an_asset_directory_symlink_without_touching_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "symlink.png",
+        );
+        let destination = temp_dir.path().join("symlink.md");
+        let outside = temp_dir.path().join("outside");
+        fs::create_dir(&outside).expect("outside directory");
+        fs::write(outside.join("keep.txt"), b"keep").expect("outside sentinel");
+        symlink(&outside, temp_dir.path().join("symlink_assets")).expect("asset symlink");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            true,
+        )
+        .expect_err("asset symlink must be rejected");
+
+        assert_eq!(error, "Notes export asset directory must not be a symlink.");
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(outside.join("keep.txt")).expect("sentinel"),
+            b"keep"
+        );
     }
 
     #[test]
