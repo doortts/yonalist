@@ -110,6 +110,26 @@ describe("tokenizeNoteText", () => {
     expectLosslessCoverage("(#one),[@two];!#three.more");
   });
 
+  it("keeps ordinary punctuation boundaries outside URL-like segments", () => {
+    const tokens = tokenizeNoteText("(#tag) hello, #next");
+
+    expect(tokens.filter((token) => token.kind === "tag")).toEqual([
+      expect.objectContaining({ raw: "#tag", display: "tag" }),
+      expect.objectContaining({ raw: "#next", display: "next" })
+    ]);
+    expectLosslessCoverage("(#tag) hello, #next");
+  });
+
+  it.each([
+    "https://example.test/search?q=#todo",
+    "https://example.test/?user=@alice",
+    "?user=@alice"
+  ])("rejects markers inside the URL-like segment %j", (source) => {
+    expect(tokenizeNoteText(source).filter((token) => token.kind === "tag"))
+      .toHaveLength(0);
+    expectLosslessCoverage(source);
+  });
+
   it.each([
     "foo#bar",
     "name@example.com",
@@ -161,6 +181,61 @@ describe("tokenizeNoteText", () => {
     expectLosslessCoverage("#Topic, #topic, @ALICE @alice");
   });
 
+  it.each(["cafe\u0301#todo", "नमस्ते#todo"])(
+    "treats combining marks as word continuation in %j",
+    (source) => {
+      expect(tokenizeNoteText(source).filter((token) => token.kind === "tag"))
+        .toHaveLength(0);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it.each(["#cafe\u0301", "#नमस्ते"])(
+    "keeps combining marks in the tag body %j",
+    (source) => {
+      expect(tokenizeNoteText(source)).toEqual([
+        {
+          kind: "tag",
+          prefix: "#",
+          display: source.slice(1),
+          normalized: source.slice(1).toLowerCase(),
+          raw: source,
+          startUtf16: 0,
+          endUtf16: source.length
+        }
+      ]);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it("requires a letter, number, underscore, or hyphen before body marks", () => {
+    const source = "#\u0301todo";
+
+    expect(tokenizeNoteText(source)).toEqual([
+      {
+        kind: "text",
+        raw: source,
+        startUtf16: 0,
+        endUtf16: source.length
+      }
+    ]);
+  });
+
+  it("uses UTF-16 offsets for astral Unicode tag letters", () => {
+    expect(tokenizeNoteText("#𐐷")).toEqual([
+      {
+        kind: "tag",
+        prefix: "#",
+        display: "𐐷",
+        normalized: "𐐷",
+        raw: "#𐐷",
+        startUtf16: 0,
+        endUtf16: 3
+      }
+    ]);
+    expectLosslessCoverage("#𐐷");
+  });
+
   it("returns lossless text tokens for plain and empty source", () => {
     expect(tokenizeNoteText("plain text")).toEqual([
       {
@@ -187,6 +262,20 @@ describe("tokenizeNoteText", () => {
       normalized: "끝",
       raw: "#끝",
       startUtf16: source.length - 2,
+      endUtf16: source.length
+    });
+    expectLosslessCoverage(source);
+  });
+
+  it("scans a long URL-like segment with many markers in linear time", () => {
+    const source = `https://example.test/?q=${"#todo&next=".repeat(20_000)}end`;
+    const tokens = tokenizeNoteText(source);
+
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toEqual({
+      kind: "text",
+      raw: source,
+      startUtf16: 0,
       endUtf16: source.length
     });
     expectLosslessCoverage(source);
