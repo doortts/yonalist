@@ -131,7 +131,7 @@ export function NotesLibraryPageRow({
     if (saving || commitInFlightRef.current) {
       return;
     }
-    if (editTitle === node.title) {
+    if (editTitle === node.title && displayTitle === node.title) {
       setEditing(false);
       return;
     }
@@ -178,10 +178,10 @@ export function NotesLibraryPageRow({
             readOnly={saving}
             onChange={(event) => setEditTitle(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) {
+                return;
+              }
               if (event.key === "Enter") {
-                if (event.nativeEvent.isComposing) {
-                  return;
-                }
                 event.preventDefault();
                 void commitRename();
               } else if (event.key === "Escape" && !saving) {

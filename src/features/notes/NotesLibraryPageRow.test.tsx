@@ -165,6 +165,31 @@ describe("NotesLibraryPageRow", () => {
     expect(input).toHaveFocus();
   });
 
+  it.each([
+    ["Korean", "프로젝트"],
+    ["Japanese", "プロジェクト"]
+  ])(
+    "does not cancel Escape while %s IME composition is active",
+    async (_language, composedTitle) => {
+      const user = userEvent.setup();
+      const handlers = callbacks();
+      render(
+        <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Project plan" }));
+      const input = screen.getByRole("textbox", {
+        name: "Rename Project plan"
+      });
+      fireEvent.change(input, { target: { value: composedTitle } });
+      fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+      expect(handlers.onRename).not.toHaveBeenCalled();
+      expect(input).toHaveValue(composedTitle);
+      expect(input).toHaveFocus();
+    }
+  );
+
   it("keeps the typed title editable when saving fails", async () => {
     const user = userEvent.setup();
     const handlers = callbacks();
@@ -231,6 +256,47 @@ describe("NotesLibraryPageRow", () => {
     expect(handlers.onRename).not.toHaveBeenCalled();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
+
+  it.each(["Enter", "blur"] as const)(
+    "commits a revert from a divergent failed draft exactly once with %s",
+    async (commitMethod) => {
+      const user = userEvent.setup();
+      const handlers = callbacks();
+      let resolveRename!: (saved: boolean) => void;
+      handlers.onRename.mockImplementation(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveRename = resolve;
+          })
+      );
+      render(
+        <NotesLibraryPageRow
+          node={node({ title: "Project" })}
+          displayTitle="Renamed"
+          mode="active"
+          active
+          {...handlers}
+        />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Renamed" }));
+      const input = screen.getByRole("textbox", { name: "Rename Renamed" });
+      await user.clear(input);
+      await user.type(input, "Project");
+
+      if (commitMethod === "Enter") {
+        fireEvent.keyDown(input, { key: "Enter" });
+        fireEvent.blur(input);
+      } else {
+        fireEvent.blur(input);
+      }
+
+      expect(handlers.onRename).toHaveBeenCalledOnce();
+      expect(handlers.onRename).toHaveBeenCalledWith("Project");
+      await act(async () => resolveRename(true));
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    }
+  );
 
   it.each([
     ["rejects", () => Promise.reject(new Error("rename rejected"))],
