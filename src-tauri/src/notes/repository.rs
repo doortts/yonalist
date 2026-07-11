@@ -332,6 +332,19 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
     if column_type == "TEXT" && not_null && default_value.as_deref() == Some("'legacy'") {
         return Ok(());
     }
+    if column_type == "TEXT" && not_null && default_value.is_none() {
+        return transaction
+            .execute_batch(
+                "ALTER TABLE notes_history_entries \
+                   ADD COLUMN yonalist_command_kind_repair TEXT NOT NULL DEFAULT 'legacy'; \
+                 UPDATE notes_history_entries \
+                   SET yonalist_command_kind_repair = command_kind; \
+                 ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
+                 ALTER TABLE notes_history_entries \
+                   RENAME COLUMN yonalist_command_kind_repair TO command_kind;",
+            )
+            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
+    }
     Err(format!(
         "Notes history command_kind has incompatible schema metadata \
          (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
@@ -3568,11 +3581,12 @@ mod tests {
         SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
+    use crate::notes::history::with_history_transaction_and_prunes;
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
-        MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::HashMap;
@@ -4751,6 +4765,99 @@ mod tests {
                 "legacy".to_string()
             )
         );
+    }
+
+    #[test]
+    fn version_three_initialization_repairs_history_command_kind_without_default() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("vault path");
+        {
+            let mut connection = connect_notes_db(vault_path).expect("create notes database");
+            create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
+            connection
+                .execute_batch(
+                    "ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
+                     ALTER TABLE notes_history_entries \
+                       ADD COLUMN command_kind TEXT NOT NULL; \
+                     INSERT INTO notes_history_entries(\
+                       id, session_id, sequence, command_kind\
+                     ) VALUES \
+                       (\
+                         '00000000-0000-4000-8000-000000000001', \
+                         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
+                         1, \
+                         'legacy-trash'\
+                       ), \
+                       (\
+                         '00000000-0000-4000-8000-000000000002', \
+                         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
+                         2, \
+                         'updateText'\
+                       );",
+                )
+                .expect("seed no-default version three history command kind");
+            assert_eq!(
+                table_column_metadata(&connection, "notes_history_entries", "command_kind"),
+                Some(("TEXT".to_string(), 1, None))
+            );
+        }
+
+        let mut connection = connect_notes_db(vault_path)
+            .expect("repair no-default version three history command kind");
+
+        assert_eq!(
+            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
+            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
+        );
+        let retained = connection
+            .prepare(
+                "SELECT id, command_kind FROM notes_history_entries \
+                 ORDER BY sequence",
+            )
+            .expect("prepare retained history entries")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query retained history entries")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect retained history entries");
+        assert_eq!(
+            retained,
+            vec![
+                (
+                    "00000000-0000-4000-8000-000000000001".to_string(),
+                    "legacy-trash".to_string()
+                ),
+                (
+                    "00000000-0000-4000-8000-000000000002".to_string(),
+                    "updateText".to_string()
+                )
+            ]
+        );
+
+        let context = NotesHistoryContext {
+            session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
+            entry_id: "00000000-0000-4000-8000-000000000003".to_string(),
+            command_kind: "trash".to_string(),
+        };
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                soft_delete_node(connection, NODE_ID)
+            })
+            .expect("move note to trash after schema repair");
+
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        let stored: String = connection
+            .query_row(
+                "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("stored trash command kind");
+        assert_eq!(stored, "trash");
     }
 
     #[test]
