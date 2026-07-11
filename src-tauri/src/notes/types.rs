@@ -162,6 +162,23 @@ pub struct NoteTagFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NoteSearchTag {
+    pub prefix: NoteTagPrefix,
+    pub normalized_tag: String,
+    pub display_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteStructuredSearchQuery {
+    pub text: String,
+    pub required_tags: Vec<NoteSearchTag>,
+    pub excluded_tags: Vec<NoteSearchTag>,
+    pub or_groups: Vec<Vec<NoteSearchTag>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NoteTagSummary {
     pub prefix: NoteTagPrefix,
     pub normalized_tag: String,
@@ -315,9 +332,10 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, MoveNodeInput, NoteAttachment, NoteTagFilter, NoteTagPrefix,
-        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
-        NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
+        validate_note_id, MoveNodeInput, NoteAttachment, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult,
+        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace,
+        NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -445,6 +463,35 @@ mod tests {
                 "count": 2
             })
         );
+    }
+
+    #[test]
+    fn notes_tag_search_query_uses_the_exact_camel_case_wire_shape() {
+        let query: NoteStructuredSearchQuery = serde_json::from_value(json!({
+            "text": "release notes",
+            "requiredTags": [
+                { "prefix": "#", "normalizedTag": "roadmap", "displayTag": "Roadmap" }
+            ],
+            "excludedTags": [
+                { "prefix": "@", "normalizedTag": "bot", "displayTag": "BOT" }
+            ],
+            "orGroups": [[
+                { "prefix": "#", "normalizedTag": "desktop", "displayTag": "Desktop" },
+                { "prefix": "@", "normalizedTag": "platform", "displayTag": "Platform" }
+            ]]
+        }))
+        .expect("structured search query");
+
+        assert_eq!(query.text, "release notes");
+        assert_eq!(
+            query.required_tags,
+            vec![NoteSearchTag {
+                prefix: NoteTagPrefix::Hash,
+                normalized_tag: "roadmap".to_string(),
+                display_tag: "Roadmap".to_string(),
+            }]
+        );
+        assert_eq!(query.or_groups[0][1].prefix, NoteTagPrefix::Mention);
     }
 
     #[test]

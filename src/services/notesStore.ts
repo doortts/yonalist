@@ -4,6 +4,7 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
+  NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesHistoryContext,
   NotesHistoryReplayResult,
@@ -198,6 +199,20 @@ export async function notesSearch(
   return results;
 }
 
+export async function notesSearchStructured(
+  vaultPath: string,
+  query: NoteStructuredSearchQuery
+): Promise<NoteSearchResult[]> {
+  const results = await invokeNotes<unknown>("notes_search_structured", {
+    vaultPath,
+    query
+  });
+  if (!Array.isArray(results) || !results.every(isNoteSearchResult)) {
+    throw new Error("Notes search returned an invalid result.");
+  }
+  return results;
+}
+
 export function notesListTags(vaultPath: string): Promise<string[]> {
   return invokeNotes<string[]>("notes_list_tags", { vaultPath });
 }
@@ -234,6 +249,7 @@ export const notesStore: NotesStore = {
   clearHistory: notesClearHistory,
   emptyTrash: notesEmptyTrash,
   search: notesSearch,
+  searchStructured: notesSearchStructured,
   listTags: notesListTags,
   listTagsWithCounts: notesListTagsWithCounts,
   deleteDatabase: notesDeleteDatabase

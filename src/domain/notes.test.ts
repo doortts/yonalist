@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { createNoteId, isNoteNode, isNoteSearchResult } from "./notes";
+import {
+  createNoteId,
+  isNoteNode,
+  isNoteSearchResult,
+  isNoteStructuredSearchQuery
+} from "./notes";
 import type {
   NoteNode,
+  NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesStore,
   NotesWorkspaceScope
@@ -65,6 +71,35 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
   });
 
+  it("recognizes structured search queries and rejects malformed tag groups", () => {
+    const query: NoteStructuredSearchQuery = {
+      text: "release notes",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "roadmap", displayTag: "Roadmap" }
+      ],
+      excludedTags: [
+        { prefix: "@", normalizedTag: "bot", displayTag: "BOT" }
+      ],
+      orGroups: [
+        [
+          { prefix: "#", normalizedTag: "desktop", displayTag: "Desktop" },
+          { prefix: "@", normalizedTag: "platform", displayTag: "Platform" }
+        ]
+      ]
+    };
+
+    expect(isNoteStructuredSearchQuery(query)).toBe(true);
+    expect(
+      isNoteStructuredSearchQuery({
+        ...query,
+        orGroups: [[{ prefix: "hash", normalizedTag: "desktop" }]]
+      })
+    ).toBe(false);
+    expect(
+      isNoteStructuredSearchQuery({ ...query, excludedTags: ["#blocked"] })
+    ).toBe(false);
+  });
+
   it("supports active, discovery, structured tag, archive, and trash scopes", () => {
     const scopes: NotesWorkspaceScope[] = [
       { kind: "active" },
@@ -115,6 +150,12 @@ describe("Notes domain contract", () => {
       listTagsWithCounts: NonNullable<NotesStore["listTagsWithCounts"]>;
       deleteDatabase: NonNullable<NotesStore["deleteDatabase"]>;
     }>();
+    expectTypeOf<NonNullable<NotesStore["searchStructured"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        query: NoteStructuredSearchQuery
+      ) => Promise<import("./notes").NoteSearchResult[]>
+    >();
   });
 
   it("creates a canonical UUID for a new node", () => {

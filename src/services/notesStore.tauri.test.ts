@@ -5,6 +5,7 @@ import type {
   NotesHistoryContext,
   NotesHistoryReplayResult,
   NotesHistoryStatus,
+  NoteStructuredSearchQuery,
   NotesWorkspace,
   SplitNoteNodeInput,
   UpdateNoteNodeInput
@@ -25,6 +26,7 @@ import {
   notesRemoveEmptyNode,
   notesRestoreNode,
   notesSearch,
+  notesSearchStructured,
   notesSoftDeleteNode,
   notesSplitNode,
   notesToggleCollapsed,
@@ -185,6 +187,40 @@ describe("notesStore in Tauri", () => {
     await expect(notesSearch(vaultPath, "target")).rejects.toEqual(
       new Error("Notes search returned an invalid result.")
     );
+  });
+
+  it("maps structured search to an additive typed native command", async () => {
+    const query: NoteStructuredSearchQuery = {
+      text: "release notes",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "roadmap", displayTag: "Roadmap" }
+      ],
+      excludedTags: [
+        { prefix: "@", normalizedTag: "bot", displayTag: "BOT" }
+      ],
+      orGroups: [
+        [
+          { prefix: "#", normalizedTag: "desktop", displayTag: "Desktop" },
+          { prefix: "@", normalizedTag: "platform", displayTag: "Platform" }
+        ]
+      ]
+    };
+    const results = [
+      {
+        nodeId,
+        title: "Page",
+        parentTrail: ["Home"],
+        matchedField: "title" as const
+      }
+    ];
+    invokeMock.mockResolvedValue(results);
+
+    await expect(notesSearchStructured(vaultPath, query)).resolves.toBe(results);
+
+    expect(invokeMock).toHaveBeenCalledWith("notes_search_structured", {
+      vaultPath,
+      query
+    });
   });
 
   it("maps typed input mutations to exact camelCase native payloads", async () => {

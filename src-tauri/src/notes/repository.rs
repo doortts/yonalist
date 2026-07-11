@@ -1,9 +1,10 @@
 use crate::notes::history;
+use crate::notes::tags::{extract_note_tags, tokenize_note_text};
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode,
-    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteTagFilter, NoteTagPrefix,
-    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput,
+    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery,
+    NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesWorkspace,
+    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -1152,6 +1153,197 @@ pub(crate) fn search_nodes(
         .collect()
 }
 
+fn normalized_search_tag(tag: &NoteSearchTag) -> Option<(NoteTagPrefix, String)> {
+    let normalized_tag = tag
+        .normalized_tag
+        .trim()
+        .trim_start_matches(['#', '@'])
+        .to_lowercase();
+    (!normalized_tag.is_empty()).then_some((tag.prefix, normalized_tag))
+}
+
+type NormalizedNoteTag = (NoteTagPrefix, String);
+
+struct CanonicalSearchFilters {
+    required: BTreeSet<NormalizedNoteTag>,
+    excluded: BTreeSet<NormalizedNoteTag>,
+    or_groups: BTreeSet<Vec<NormalizedNoteTag>>,
+}
+
+fn canonical_search_filters(query: &NoteStructuredSearchQuery) -> CanonicalSearchFilters {
+    let mut required = query
+        .required_tags
+        .iter()
+        .filter_map(normalized_search_tag)
+        .collect::<BTreeSet<_>>();
+    let excluded = query
+        .excluded_tags
+        .iter()
+        .filter_map(normalized_search_tag)
+        .collect::<BTreeSet<_>>();
+    let mut groups = BTreeSet::new();
+    for group in &query.or_groups {
+        let alternatives = group
+            .iter()
+            .filter_map(normalized_search_tag)
+            .collect::<BTreeSet<_>>();
+        if alternatives.len() == 1 {
+            required.extend(alternatives);
+        } else if !alternatives.is_empty() {
+            groups.insert(alternatives.into_iter().collect());
+        }
+    }
+    CanonicalSearchFilters {
+        required,
+        excluded,
+        or_groups: groups,
+    }
+}
+
+fn push_tag_parameters(
+    parameters: &mut Vec<String>,
+    prefix: NoteTagPrefix,
+    normalized_tag: &str,
+) -> (usize, usize) {
+    parameters.push(prefix.as_str().to_string());
+    let prefix_parameter = parameters.len();
+    parameters.push(normalized_tag.to_string());
+    (prefix_parameter, parameters.len())
+}
+
+pub(crate) fn search_nodes_structured(
+    connection: &Connection,
+    query: &NoteStructuredSearchQuery,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let match_expression = fts_match_expression(&query.text);
+    let CanonicalSearchFilters {
+        required,
+        excluded,
+        or_groups,
+    } = canonical_search_filters(query);
+    if match_expression.is_none()
+        && required.is_empty()
+        && excluded.is_empty()
+        && or_groups.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+
+    let positive_tags = required
+        .iter()
+        .cloned()
+        .chain(or_groups.iter().flatten().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut parameters = Vec::new();
+    let mut predicates = Vec::new();
+    if let Some(expression) = &match_expression {
+        parameters.push(expression.clone());
+        predicates.push(format!("notes_search MATCH ?{}", parameters.len()));
+    }
+    for (prefix, normalized_tag) in required {
+        let (prefix_parameter, tag_parameter) =
+            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+        predicates.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+    }
+    for (prefix, normalized_tag) in excluded {
+        let (prefix_parameter, tag_parameter) =
+            push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+        predicates.push(format!(
+            "NOT EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+    }
+    for group in or_groups {
+        let alternatives = group
+            .into_iter()
+            .map(|(prefix, normalized_tag)| {
+                let (prefix_parameter, tag_parameter) =
+                    push_tag_parameters(&mut parameters, prefix, &normalized_tag);
+                format!(
+                    "(tag.prefix = ?{prefix_parameter} AND tag.normalized_tag = ?{tag_parameter})"
+                )
+            })
+            .collect::<Vec<_>>();
+        predicates.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag WHERE tag.node_id = node.id AND ({}))",
+            alternatives.join(" OR ")
+        ));
+    }
+
+    let tag_predicates = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", predicates.join(" AND "))
+    };
+    let sql = if match_expression.is_some() {
+        format!(
+            "SELECT notes_search.node_id, node.title, node.note, \
+                    highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
+                      <> notes_search.title \
+             FROM notes_search \
+             JOIN notes_nodes node ON node.id = notes_search.node_id \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
+             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+             LIMIT 100"
+        )
+    } else {
+        format!(
+            "SELECT node.id, node.title, node.note, 0 \
+             FROM notes_nodes node \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
+             ORDER BY node.updated_at DESC, node.id LIMIT 100"
+        )
+    };
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare the structured Notes search: {error}"))?;
+    let matches = statement
+        .query_map(params_from_iter(parameters.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
+    let parents = live_parent_map(connection)?;
+
+    matches
+        .into_iter()
+        .map(|(node_id, title, _note, matched_title)| {
+            let matched_field = if match_expression.is_some() {
+                if matched_title {
+                    NoteSearchMatchedField::Title
+                } else {
+                    NoteSearchMatchedField::Note
+                }
+            } else if positive_tags.is_empty()
+                || tokenize_note_text(&title)
+                    .iter()
+                    .any(|tag| positive_tags.contains(&(tag.prefix, tag.normalized.clone())))
+            {
+                NoteSearchMatchedField::Title
+            } else {
+                NoteSearchMatchedField::Note
+            };
+            Ok(NoteSearchResult {
+                parent_trail: parent_trail(&node_id, &parents)?,
+                node_id,
+                title,
+                matched_field,
+            })
+        })
+        .collect()
+}
+
 fn with_workspace_transaction(
     connection: &mut Connection,
     operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
@@ -1364,49 +1556,6 @@ fn next_sort_key_excluding(
     })
 }
 
-fn extract_tags(title: &str, note: &str) -> BTreeMap<(NoteTagPrefix, String), String> {
-    let mut tags = BTreeMap::new();
-    for text in [title, note] {
-        let characters: Vec<char> = text.chars().collect();
-        let mut index = 0;
-        while index < characters.len() {
-            let prefix = match characters[index] {
-                '#' => NoteTagPrefix::Hash,
-                '@' => NoteTagPrefix::Mention,
-                _ => {
-                    index += 1;
-                    continue;
-                }
-            };
-            let has_valid_boundary = index == 0
-                || !matches!(
-                    characters[index - 1],
-                    character if character.is_alphanumeric()
-                        || matches!(character, '_' | '-' | '#' | '@' | '/')
-                );
-            if !has_valid_boundary {
-                index += 1;
-                continue;
-            }
-            let start = index + 1;
-            let mut end = start;
-            while end < characters.len()
-                && (characters[end].is_alphanumeric()
-                    || characters[end] == '_'
-                    || characters[end] == '-')
-            {
-                end += 1;
-            }
-            if end > start {
-                let tag: String = characters[start..end].iter().collect();
-                tags.entry((prefix, tag.to_lowercase())).or_insert(tag);
-            }
-            index = end.max(index + 1);
-        }
-    }
-    tags
-}
-
 fn replace_tags(
     transaction: &Transaction<'_>,
     node_id: &str,
@@ -1416,7 +1565,7 @@ fn replace_tags(
     transaction
         .execute("DELETE FROM notes_tags WHERE node_id = ?1", [node_id])
         .map_err(|error| format!("Could not clear Note tags: {error}"))?;
-    for ((prefix, normalized_tag), tag) in extract_tags(title, note) {
+    for ((prefix, normalized_tag), tag) in extract_note_tags(title, note) {
         transaction
             .execute(
                 "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
@@ -2097,6 +2246,11 @@ pub(crate) fn restore_node(
                 params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not restore the Note subtree: {error}"))?;
+        let restored_node_ids = active_subtree(transaction, node_id)?
+            .into_iter()
+            .map(|node| node.id)
+            .collect::<BTreeSet<_>>();
+        rebuild_derived_for_nodes(transaction, &restored_node_ids)?;
         Ok(())
     })
 }
@@ -2388,13 +2542,14 @@ mod tests {
         duplicate_node, empty_trash, initialize_notes_db, list_tags, list_tags_with_counts,
         load_workspace, migrate_version_one_to_two, move_node, notes_db_path,
         observe_next_migration_busy, open_notes_export_db, preflight_existing_notes_schema,
-        remove_empty_node, restore_node, search_nodes, soft_delete_node, split_node,
-        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
-        update_node,
+        remove_empty_node, restore_node, search_nodes, search_nodes_structured, soft_delete_node,
+        split_node, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node,
     };
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteTagFilter,
-        NoteTagPrefix, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NotesWorkspaceScope,
+        SplitNodeInput, UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
     use std::sync::mpsc;
@@ -4438,6 +4593,396 @@ mod tests {
                 ("@".to_string(), "same".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn notes_tag_index_matches_unicode_and_url_tokenizer_rules() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "😀#Tag #𐐷 #café https://x/?q=#hidden",
+            "/path/?q=@hidden #नमस्ते",
+        );
+
+        let tags = connection
+            .prepare(
+                "SELECT prefix, tag, normalized_tag FROM notes_tags WHERE node_id = ?1 \
+                 ORDER BY prefix, normalized_tag",
+            )
+            .expect("prepare Unicode tags")
+            .query_map([NODE_ID], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query Unicode tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect Unicode tags");
+
+        assert_eq!(
+            tags,
+            vec![
+                ("#".to_string(), "café".to_string(), "café".to_string()),
+                ("#".to_string(), "Tag".to_string(), "tag".to_string()),
+                ("#".to_string(), "नमस्ते".to_string(), "नमस्ते".to_string()),
+                ("#".to_string(), "𐐷".to_string(), "𐐷".to_string()),
+            ]
+        );
+    }
+
+    fn search_tag(prefix: NoteTagPrefix, tag: &str) -> NoteSearchTag {
+        NoteSearchTag {
+            prefix,
+            normalized_tag: tag.to_string(),
+            display_tag: tag.to_string(),
+        }
+    }
+
+    fn structured_query(
+        text: &str,
+        required_tags: Vec<NoteSearchTag>,
+        excluded_tags: Vec<NoteSearchTag>,
+        or_groups: Vec<Vec<NoteSearchTag>>,
+    ) -> NoteStructuredSearchQuery {
+        NoteStructuredSearchQuery {
+            text: text.to_string(),
+            required_tags,
+            excluded_tags,
+            or_groups,
+        }
+    }
+
+    #[test]
+    fn notes_tag_structured_search_combines_fts_and_parameterized_filters() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "Home", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "Release #Roadmap @Minji",
+            "shipping detail",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(NODE_ID),
+            Some(CHILD_ID),
+            "Release blocked #Roadmap @Minji #Blocked",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            FOURTH_ID,
+            Some(NODE_ID),
+            Some(THIRD_ID),
+            "Platform @Platform #Desktop",
+            "release notes",
+        );
+        create_test_node(
+            &mut connection,
+            FIFTH_ID,
+            Some(NODE_ID),
+            Some(FOURTH_ID),
+            "Note tag",
+            "#Roadmap release notes",
+        );
+        create_test_node(
+            &mut connection,
+            SIXTH_ID,
+            None,
+            Some(NODE_ID),
+            "Archived #Roadmap release",
+            "",
+        );
+        archive_node(&mut connection, SIXTH_ID).expect("archive fixture");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = CASE id \
+                   WHEN ?1 THEN '2026-07-10T01:00:00.000Z' \
+                   WHEN ?2 THEN '2026-07-10T04:00:00.000Z' \
+                   WHEN ?3 THEN '2026-07-10T03:00:00.000Z' \
+                   WHEN ?4 THEN '2026-07-10T02:00:00.000Z' \
+                   ELSE '2026-07-10T00:00:00.000Z' END",
+                params![CHILD_ID, THIRD_ID, FOURTH_ID, FIFTH_ID],
+            )
+            .expect("set deterministic search order");
+
+        let mixed = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "release",
+                vec![
+                    search_tag(NoteTagPrefix::Hash, "ROADMAP"),
+                    search_tag(NoteTagPrefix::Mention, "MINJI"),
+                ],
+                vec![search_tag(NoteTagPrefix::Hash, "blocked")],
+                vec![],
+            ),
+        )
+        .expect("mixed structured search");
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].node_id, CHILD_ID);
+        assert_eq!(mixed[0].parent_trail, vec!["Home"]);
+        assert_eq!(mixed[0].matched_field, NoteSearchMatchedField::Title);
+
+        let grouped = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "release notes",
+                vec![],
+                vec![],
+                vec![vec![
+                    search_tag(NoteTagPrefix::Hash, "desktop"),
+                    search_tag(NoteTagPrefix::Mention, "platform"),
+                ]],
+            ),
+        )
+        .expect("OR group search");
+        assert_eq!(
+            grouped
+                .iter()
+                .map(|result| result.node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+
+        let tag_only = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "roadmap")],
+                vec![],
+                vec![],
+            ),
+        )
+        .expect("tag-only search");
+        assert_eq!(
+            tag_only
+                .iter()
+                .map(|result| (result.node_id.as_str(), result.matched_field))
+                .collect::<Vec<_>>(),
+            vec![
+                (THIRD_ID, NoteSearchMatchedField::Title),
+                (FIFTH_ID, NoteSearchMatchedField::Note),
+                (CHILD_ID, NoteSearchMatchedField::Title),
+            ]
+        );
+
+        let exclusion_only = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![],
+                vec![search_tag(NoteTagPrefix::Hash, "blocked")],
+                vec![],
+            ),
+        )
+        .expect("exclusion-only search");
+        assert_eq!(
+            exclusion_only
+                .iter()
+                .map(|result| (result.node_id.as_str(), result.matched_field))
+                .collect::<Vec<_>>(),
+            vec![
+                (FOURTH_ID, NoteSearchMatchedField::Title),
+                (FIFTH_ID, NoteSearchMatchedField::Title),
+                (CHILD_ID, NoteSearchMatchedField::Title),
+                (NODE_ID, NoteSearchMatchedField::Title),
+            ]
+        );
+
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Mention, "roadmap")],
+                vec![],
+                vec![],
+            )
+        )
+        .expect("prefix-distinct search")
+        .is_empty());
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "x') OR 1=1 --")],
+                vec![],
+                vec![],
+            )
+        )
+        .expect("parameterized hostile tag")
+        .is_empty());
+    }
+
+    #[test]
+    fn notes_tag_structured_search_limits_tag_only_results_to_one_hundred() {
+        let mut connection = test_connection();
+        for index in 0..101 {
+            let id = format!("00000000-0000-4000-8000-{index:012x}");
+            create_test_node(&mut connection, &id, None, None, "#Bulk", "");
+        }
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = '2026-07-10T00:00:00.000Z'",
+                [],
+            )
+            .expect("set equal timestamps");
+
+        let results = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "bulk")],
+                vec![],
+                vec![],
+            ),
+        )
+        .expect("limited tag search");
+
+        assert_eq!(results.len(), 100);
+        assert!(results
+            .windows(2)
+            .all(|pair| pair[0].node_id < pair[1].node_id));
+    }
+
+    #[test]
+    fn notes_tag_lifecycle_rebuilds_exact_tags_and_cascades_empty_trash() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "#Left middle #Right",
+            "",
+        );
+        split_node(
+            &mut connection,
+            SplitNodeInput {
+                id: NODE_ID.to_string(),
+                new_node_id: CHILD_ID.to_string(),
+                prefix: "#Left".to_string(),
+                suffix: "#Right".to_string(),
+            },
+        )
+        .expect("split tagged node");
+        assert_eq!(
+            search_nodes_structured(
+                &connection,
+                &structured_query(
+                    "",
+                    vec![search_tag(NoteTagPrefix::Hash, "left")],
+                    vec![],
+                    vec![],
+                )
+            )
+            .expect("left after split")
+            .len(),
+            1
+        );
+        assert_eq!(
+            search_nodes_structured(
+                &connection,
+                &structured_query(
+                    "",
+                    vec![search_tag(NoteTagPrefix::Hash, "right")],
+                    vec![],
+                    vec![],
+                )
+            )
+            .expect("right after split")
+            .len(),
+            1
+        );
+
+        let workspace = duplicate_node(&mut connection, NODE_ID).expect("duplicate tagged node");
+        let duplicate_id = workspace
+            .nodes
+            .iter()
+            .find(|node| node.id != NODE_ID && node.id != CHILD_ID && node.title == "#Left")
+            .expect("duplicate tagged node")
+            .id
+            .clone();
+        let left_query = structured_query(
+            "",
+            vec![search_tag(NoteTagPrefix::Hash, "left")],
+            vec![],
+            vec![],
+        );
+        assert_eq!(
+            search_nodes_structured(&connection, &left_query)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        soft_delete_node(&mut connection, &duplicate_id).expect("trash duplicate");
+        assert_eq!(
+            search_nodes_structured(&connection, &left_query)
+                .unwrap()
+                .len(),
+            1
+        );
+        let stored_while_trashed: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_tags WHERE node_id = ?1",
+                [&duplicate_id],
+                |row| row.get(0),
+            )
+            .expect("trashed tags remain");
+        assert_eq!(stored_while_trashed, 1);
+        connection
+            .execute(
+                "UPDATE notes_tags SET tag = 'stale', normalized_tag = 'stale' \
+                 WHERE node_id = ?1",
+                [&duplicate_id],
+            )
+            .expect("seed stale trashed tag");
+
+        restore_node(&mut connection, &duplicate_id).expect("restore duplicate");
+        assert_eq!(
+            search_nodes_structured(&connection, &left_query)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "stale")],
+                vec![],
+                vec![],
+            )
+        )
+        .expect("stale tag after restore")
+        .is_empty());
+        archive_node(&mut connection, &duplicate_id).expect("archive duplicate");
+        assert_eq!(
+            search_nodes_structured(&connection, &left_query)
+                .unwrap()
+                .len(),
+            1
+        );
+        unarchive_node(&mut connection, &duplicate_id).expect("unarchive duplicate");
+        soft_delete_node(&mut connection, &duplicate_id).expect("trash duplicate again");
+        empty_trash(&mut connection).expect("empty trash");
+        let stored_after_empty: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_tags WHERE node_id = ?1",
+                [&duplicate_id],
+                |row| row.get(0),
+            )
+            .expect("cascaded tags");
+        assert_eq!(stored_after_empty, 0);
     }
 
     #[test]

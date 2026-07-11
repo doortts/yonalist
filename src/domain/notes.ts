@@ -50,6 +50,17 @@ export interface NoteTagSummary extends NoteTagFilter {
   count: number;
 }
 
+export interface NoteSearchTag extends NoteTagFilter {
+  displayTag: string;
+}
+
+export interface NoteStructuredSearchQuery {
+  text: string;
+  requiredTags: NoteSearchTag[];
+  excludedTags: NoteSearchTag[];
+  orGroups: NoteSearchTag[][];
+}
+
 export type NotesWorkspaceScope =
   | { kind: "active" }
   | { kind: "starred" }
@@ -121,6 +132,7 @@ export interface NotesStore {
   clearHistory?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
   search(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
+  searchStructured?(vaultPath: string, query: NoteStructuredSearchQuery): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
   listTagsWithCounts(vaultPath: string): Promise<NoteTagSummary[]>;
   deleteDatabase(vaultPath: string): Promise<void>;
@@ -162,6 +174,32 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     Array.isArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&
     (value.matchedField === "title" || value.matchedField === "note")
+  );
+}
+
+function isNoteSearchTag(value: unknown): value is NoteSearchTag {
+  return (
+    isRecord(value) &&
+    (value.prefix === "#" || value.prefix === "@") &&
+    typeof value.normalizedTag === "string" &&
+    typeof value.displayTag === "string"
+  );
+}
+
+export function isNoteStructuredSearchQuery(
+  value: unknown
+): value is NoteStructuredSearchQuery {
+  return (
+    isRecord(value) &&
+    typeof value.text === "string" &&
+    Array.isArray(value.requiredTags) &&
+    value.requiredTags.every(isNoteSearchTag) &&
+    Array.isArray(value.excludedTags) &&
+    value.excludedTags.every(isNoteSearchTag) &&
+    Array.isArray(value.orGroups) &&
+    value.orGroups.every(
+      (group) => Array.isArray(group) && group.every(isNoteSearchTag)
+    )
   );
 }
 

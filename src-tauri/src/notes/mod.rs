@@ -9,4 +9,6 @@ pub(crate) mod history;
 #[allow(dead_code)]
 pub(crate) mod repository;
 #[allow(dead_code)]
+pub(crate) mod tags;
+#[allow(dead_code)]
 pub(crate) mod types;

@@ -973,12 +973,13 @@ mod tests {
     };
     use crate::notes::repository::{
         archive_node, connect_notes_db, create_node, delete_database, duplicate_node, empty_trash,
-        list_tags, load_workspace, move_node, restore_node, search_nodes, soft_delete_node,
-        split_node, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
+        list_tags, load_workspace, move_node, restore_node, search_nodes, search_nodes_structured,
+        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node,
     };
     use crate::notes::types::{
-        CreateNodeInput, MoveNodeInput, NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope,
-        SplitNodeInput, UpdateNodeInput,
+        CreateNodeInput, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix,
+        NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
 
@@ -1389,6 +1390,22 @@ mod tests {
         assert!(search_nodes(&connection, "After")
             .expect("after search")
             .is_empty());
+        let before_query = NoteStructuredSearchQuery {
+            text: String::new(),
+            required_tags: vec![NoteSearchTag {
+                prefix: NoteTagPrefix::Hash,
+                normalized_tag: "before".to_string(),
+                display_tag: "before".to_string(),
+            }],
+            excluded_tags: vec![],
+            or_groups: vec![],
+        };
+        assert_eq!(
+            search_nodes_structured(&connection, &before_query)
+                .expect("structured before search")
+                .len(),
+            1
+        );
         let date_count: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM notes_dates WHERE node_id = ?1",
@@ -1406,6 +1423,9 @@ mod tests {
                 .len(),
             1
         );
+        assert!(search_nodes_structured(&connection, &before_query)
+            .expect("structured before search after redo")
+            .is_empty());
     }
 
     #[test]

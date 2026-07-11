@@ -10,14 +10,14 @@ use crate::notes::repository::{
     delete_database, duplicate_node, empty_trash, list_tags, list_tags_with_counts, load_workspace,
     move_node, open_notes_export_db, remove_attachment, remove_empty_node,
     removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node, search_nodes,
-    soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
-    update_node, NewAttachment,
+    search_nodes_structured, soft_delete_node, split_node, toggle_collapsed, toggle_complete,
+    toggle_star, unarchive_node, update_node, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, MoveNodeInput, NoteSearchResult,
-    NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
-    NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
-    ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
+    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
+    NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
+    NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -450,6 +450,15 @@ pub(crate) fn notes_search(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_search_structured(
+    vault_path: String,
+    query: NoteStructuredSearchQuery,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let connection = connect_notes_db(&vault_path)?;
+    search_nodes_structured(&connection, &query)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
     let connection = connect_notes_db(&vault_path)?;
     list_tags(&connection)
@@ -560,8 +569,8 @@ fn export_notes_file(
 mod tests {
     use super::*;
     use crate::notes::types::{
-        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteTagFilter,
-        NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
     };
     use serde_json::json;
 
@@ -913,6 +922,26 @@ mod tests {
                 .first()
                 .expect("search result")
                 .node_id,
+            ROOT_ID
+        );
+        assert_eq!(
+            notes_search_structured(
+                vault_path.clone(),
+                NoteStructuredSearchQuery {
+                    text: String::new(),
+                    required_tags: vec![NoteSearchTag {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                        display_tag: "Roadmap".to_string(),
+                    }],
+                    excluded_tags: vec![],
+                    or_groups: vec![],
+                },
+            )
+            .expect("structured search")
+            .first()
+            .expect("structured search result")
+            .node_id,
             ROOT_ID
         );
         assert_eq!(
