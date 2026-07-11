@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type { NoteNode } from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { NotesNodeDraft, UseNotesWorkspaceResult } from "./useNotesWorkspace";
@@ -37,6 +38,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 function workspaceValue(options: {
   title?: string;
   note?: string;
+  childTitle?: string;
+  childNote?: string;
   draft?: NotesNodeDraft;
   pendingFocus?: { nodeId: string; field: "title" | "note" };
 } = {}): UseNotesWorkspaceResult {
@@ -47,7 +50,12 @@ function workspaceValue(options: {
         title: options.title ?? "Project",
         note: options.note ?? "Project context"
       }),
-      node({ id: "child", parentId: "project", title: "First child" }),
+      node({
+        id: "child",
+        parentId: "project",
+        title: options.childTitle ?? "First child",
+        note: options.childNote ?? ""
+      }),
       node({ id: "detail", parentId: "child", title: "Detail" })
     ]
   });
@@ -107,11 +115,13 @@ function workspaceValue(options: {
 
 function zoomedOutline(workspace: UseNotesWorkspaceResult) {
   return (
-    <VaultRootContext.Provider value="/vault">
-      <NotesWorkspaceContext.Provider value={workspace}>
-        <NotesOutlinePane />
-      </NotesWorkspaceContext.Provider>
-    </VaultRootContext.Provider>
+    <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
+      <VaultRootContext.Provider value="/vault">
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <NotesOutlinePane />
+        </NotesWorkspaceContext.Provider>
+      </VaultRootContext.Provider>
+    </NotesDateTodayProvider>
   );
 }
 
@@ -304,6 +314,7 @@ describe("NotesPageHeader", () => {
       "Complete",
       "Star",
       "Edit note",
+      "Add date",
       "Remove note",
       "Duplicate",
       "Export subtree",
@@ -312,6 +323,199 @@ describe("NotesPageHeader", () => {
 
     await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     expect(workspace.actions.toggleComplete).toHaveBeenCalledWith("project");
+  });
+
+  it("opens a title picker from non-composing !! and commits one flush and one Undo step", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "Plan", note: "Context" })
+    );
+    const title = editTextareaByName("Edit page title");
+
+    fireEvent.input(title, {
+      target: {
+        value: "Plan !!",
+        selectionStart: 7,
+        selectionEnd: 7
+      },
+      inputType: "insertText",
+      data: "!"
+    });
+
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      { title: "Plan 07/11/2026", note: "Context" },
+      "title"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledTimes(1);
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    expect(title).toHaveFocus();
+
+    fireEvent.keyDown(title, { key: "z", ctrlKey: true });
+    expect(workspace.actions.undo).toHaveBeenCalledOnce();
+  });
+
+  it("suppresses the !! picker while the page title is IME composing", () => {
+    renderZoomedOutline(workspaceValue({ title: "Plan" }));
+    const title = editTextareaByName("Edit page title");
+    fireEvent.compositionStart(title, { data: "!" });
+
+    fireEvent.input(title, {
+      target: {
+        value: "Plan !!",
+        selectionStart: 7,
+        selectionEnd: 7
+      },
+      inputType: "insertCompositionText",
+      data: "!",
+      isComposing: true
+    });
+
+    expect(
+      screen.queryByRole("dialog", { name: "Choose date" })
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens Add date at the resting page-title end and restores title focus", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "Plan", note: "Context" })
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Plan" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add date"
+      })
+    );
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Plan07/12/2026", note: "Context" },
+      "title"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
+    expect(getTextareaByName("Edit page title")).toHaveFocus();
+  });
+
+  it("edits and removes one page-title pill without changing a tag or second date", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        title: "🚀 #today today and 07/13/2026",
+        note: "Context"
+      })
+    );
+
+    expect(
+      screen.getByRole("button", { name: "#today tag filter is inactive" })
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Edit date today" })
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Edit date 07/13/2026" })
+    );
+    await user.click(screen.getByRole("button", { name: "Remove date" }));
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "🚀 #today today and ", note: "Context" },
+      "title"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
+    expect(getTextareaByName("Edit page title")).toHaveFocus();
+  });
+
+  it("formats a page supporting-note date range and leaves title text untouched", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "Plan #tag", note: "Window 07/12/2026 only" })
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit date 07/12/2026" })
+    );
+    const picker = screen.getByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("checkbox", { name: "Range" }));
+    await user.click(
+      within(picker).getByRole("button", {
+        name: "Tuesday, July 14, 2026"
+      })
+    );
+    await user.click(
+      within(picker).getByRole("button", {
+        name: "Thursday, July 16, 2026"
+      })
+    );
+    await user.selectOptions(
+      within(picker).getByRole("combobox", { name: "Format" }),
+      "MM-DD-YY"
+    );
+    within(picker).getByRole("textbox", { name: "Date" }).focus();
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Plan #tag", note: "Window 07-14-26 - 07-16-26 only" },
+      "note"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce();
+    expect(getTextareaByName("Supporting note: Plan #tag")).toHaveFocus();
+  });
+
+  it("supports independent date pills in outline title and supporting-note fields", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({
+        childTitle: "Child 07/14/2026",
+        childNote: "Follow up tomorrow"
+      })
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Edit date 07/14/2026" })
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Edit date tomorrow" })
+    );
+    await user.click(screen.getByRole("button", { name: "Remove date" }));
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "child",
+      { title: "Child 07/14/2026", note: "Follow up " },
+      "note"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("child");
+  });
+
+  it("dismisses a pill picker with Escape and returns focus without writing", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ title: "Plan today", note: "Context" })
+    );
+
+    await user.click(screen.getByRole("button", { name: "Edit date today" }));
+    await user.keyboard("{Escape}");
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Choose date" })
+      ).not.toBeInTheDocument()
+    );
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+    expect(getTextareaByName("Edit page title")).toHaveFocus();
   });
 
   it("removes and flushes the page note, hides its editor, and restores menu focus", async () => {

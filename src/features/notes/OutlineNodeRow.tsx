@@ -14,6 +14,7 @@ import {
 import { IconTooltip } from "../../components/ui/Tooltip";
 import { createNoteId, type NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
+import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -84,6 +85,7 @@ export function OutlineNodeRow({
   );
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const titleCaretRef = useRef<number | null>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const structuralCommandInFlightRef = useRef(false);
@@ -93,6 +95,20 @@ export function OutlineNodeRow({
   } | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
+  const datePicker = useNotesDatePickerIntegration({
+    values: { title: titleValue, note: noteValue },
+    refs: { title: titleRef, note: noteRef },
+    onCommit: (field, value) => {
+      actions.updateNodeDraft(
+        nodeId,
+        field === "title"
+          ? { title: value, note: noteValue }
+          : { title: titleValue, note: value },
+        field
+      );
+      void actions.flushNodeDraft(nodeId);
+    }
+  });
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteOpen);
@@ -407,6 +423,10 @@ export function OutlineNodeRow({
               runStructuralCommand(() => actions.toggleStar(nodeId))
             }
             onOpenNote={openAndFocusNote}
+            onAddDate={() => {
+              datePicker.openTitleDate(titleCaretRef.current ?? undefined);
+              titleCaretRef.current = null;
+            }}
             onRemoveNote={removeNote}
             onDuplicate={() =>
               runStructuralCommand(() => actions.duplicateNode(nodeId))
@@ -471,6 +491,13 @@ export function OutlineNodeRow({
           rows={1}
           wrap="soft"
           disabled={disabled}
+          today={datePicker.today}
+          onDateClick={(token, anchor) =>
+            datePicker.openExistingDate("title", token, anchor)
+          }
+          onDateTrigger={(range, anchor) =>
+            datePicker.openTypedDate("title", range, anchor)
+          }
           onTagClick={(token) =>
             void actions.toggleTagFilter({
               prefix: token.prefix,
@@ -492,7 +519,15 @@ export function OutlineNodeRow({
             }, "title")
           }}
           onKeyDown={handleTitleKeyDown}
-          onBlur={commitDrafts}
+          onSelect={(event) => {
+            titleCaretRef.current = event.currentTarget.selectionStart;
+          }}
+          onBlur={(event) => {
+            titleCaretRef.current = event.currentTarget.selectionStart;
+            if (!datePicker.shouldSuppressBlur()) {
+              commitDrafts();
+            }
+          }}
         />
       </div>
 
@@ -505,6 +540,13 @@ export function OutlineNodeRow({
           aria-label={`Supporting note: ${label}`}
           rows={2}
           disabled={disabled}
+          today={datePicker.today}
+          onDateClick={(token, anchor) =>
+            datePicker.openExistingDate("note", token, anchor)
+          }
+          onDateTrigger={(range, anchor) =>
+            datePicker.openTypedDate("note", range, anchor)
+          }
           onTagClick={(token) =>
             void actions.toggleTagFilter({
               prefix: token.prefix,
@@ -540,9 +582,14 @@ export function OutlineNodeRow({
               note: event.target.value
             }, "note");
           }}
-          onBlur={commitDrafts}
+          onBlur={() => {
+            if (!datePicker.shouldSuppressBlur()) {
+              commitDrafts();
+            }
+          }}
         />
       )}
+      {datePicker.picker}
     </div>
   );
 }

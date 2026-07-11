@@ -1,5 +1,6 @@
 import { Menu } from "@base-ui/react/menu";
 import {
+  Calendar,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -36,6 +37,7 @@ export interface NotesBulletMenuProps {
   onToggleComplete?(): void;
   onToggleStar?(): void;
   onOpenNote?(): void;
+  onAddDate?(): void;
   onRemoveNote?(): void;
   onDuplicate?(): void;
   onExport?(format: NotesExportFormat): void;
@@ -91,6 +93,7 @@ export function NotesBulletMenu({
   onToggleComplete,
   onToggleStar,
   onOpenNote,
+  onAddDate,
   onRemoveNote,
   onDuplicate,
   onExport,
@@ -104,7 +107,7 @@ export function NotesBulletMenu({
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
-  const noteHandoffPendingRef = useRef(false);
+  const handoffPendingRef = useRef<"note" | "date" | null>(null);
 
   useLayoutEffect(() => {
     if (viewFocusTargetRef.current === "back" && exportView) {
@@ -128,9 +131,14 @@ export function NotesBulletMenu({
         }
       }}
       onOpenChangeComplete={(nextOpen) => {
-        if (!nextOpen && noteHandoffPendingRef.current) {
-          noteHandoffPendingRef.current = false;
-          onOpenNote?.();
+        if (!nextOpen && handoffPendingRef.current) {
+          const handoff = handoffPendingRef.current;
+          handoffPendingRef.current = null;
+          if (handoff === "note") {
+            onOpenNote?.();
+          } else {
+            onAddDate?.();
+          }
         }
       }}
     >
@@ -148,7 +156,7 @@ export function NotesBulletMenu({
         <Menu.Positioner side="bottom" align="start" sideOffset={4}>
           <Menu.Popup
             className="notes-bullet-menu"
-            finalFocus={noteHandoffPendingRef.current ? false : undefined}
+            finalFocus={handoffPendingRef.current ? false : undefined}
           >
             {mode === "trash" ? (
               <CommandItem
@@ -222,10 +230,18 @@ export function NotesBulletMenu({
                 <CommandItem
                   icon={<MessageSquareText size={15} aria-hidden="true" />}
                   onClick={() => {
-                    noteHandoffPendingRef.current = true;
+                    handoffPendingRef.current = "note";
                   }}
                 >
                   {hasNote ? "Edit note" : "Add note"}
+                </CommandItem>
+                <CommandItem
+                  icon={<Calendar size={15} aria-hidden="true" />}
+                  onClick={() => {
+                    handoffPendingRef.current = "date";
+                  }}
+                >
+                  Add date
                 </CommandItem>
                 {hasNote && (
                   <CommandItem

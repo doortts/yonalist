@@ -8,6 +8,7 @@ import {
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteId } from "../../domain/notes";
 import { NoteTextField } from "./NoteTextField";
+import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -45,6 +46,7 @@ export function NotesPageHeader({
   const draft = draftsByNodeId[nodeId];
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const titleCaretRef = useRef<number | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
@@ -56,6 +58,20 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
+  const datePicker = useNotesDatePickerIntegration({
+    values: { title: titleValue, note: noteValue },
+    refs: { title: titleRef, note: noteRef },
+    onCommit: (field, value) => {
+      actions.updateNodeDraft(
+        nodeId,
+        field === "title"
+          ? { title: value, note: noteValue }
+          : { title: titleValue, note: value },
+        field
+      );
+      void actions.flushNodeDraft(nodeId);
+    }
+  });
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteVisible);
@@ -215,6 +231,10 @@ export function NotesPageHeader({
                 runCommand(() => actions.toggleStar(nodeId))
               }
               onOpenNote={openAndFocusNote}
+              onAddDate={() => {
+                datePicker.openTitleDate(titleCaretRef.current ?? undefined);
+                titleCaretRef.current = null;
+              }}
               onRemoveNote={removeNote}
               onDuplicate={() =>
                 runCommand(() => actions.duplicateNode(nodeId))
@@ -248,6 +268,19 @@ export function NotesPageHeader({
               wrap="soft"
               disabled={disabled}
               readOnly={readOnly}
+              today={datePicker.today}
+              onDateClick={
+                readOnly || disabled
+                  ? undefined
+                  : (token, anchor) =>
+                      datePicker.openExistingDate("title", token, anchor)
+              }
+              onDateTrigger={
+                readOnly || disabled
+                  ? undefined
+                  : (range, anchor) =>
+                      datePicker.openTypedDate("title", range, anchor)
+              }
               onTagClick={(token) =>
                 void actions.toggleTagFilter({
                   prefix: token.prefix,
@@ -262,6 +295,9 @@ export function NotesPageHeader({
                 )
               }
               onKeyDown={readOnly ? undefined : handleTitleKeyDown}
+              onSelect={(event) => {
+                titleCaretRef.current = event.currentTarget.selectionStart;
+              }}
               onChange={(event) => {
                 resizeTextarea(event.currentTarget);
                 actions.updateNodeDraft(nodeId, {
@@ -269,7 +305,12 @@ export function NotesPageHeader({
                   note: noteValue
                 }, "title");
               }}
-              onBlur={() => void actions.flushNodeDraft(nodeId)}
+              onBlur={(event) => {
+                titleCaretRef.current = event.currentTarget.selectionStart;
+                if (!datePicker.shouldSuppressBlur()) {
+                  void actions.flushNodeDraft(nodeId);
+                }
+              }}
             />
           </h1>
         </div>
@@ -284,6 +325,19 @@ export function NotesPageHeader({
             rows={1}
             disabled={disabled}
             readOnly={readOnly}
+            today={datePicker.today}
+            onDateClick={
+              readOnly || disabled
+                ? undefined
+                : (token, anchor) =>
+                    datePicker.openExistingDate("note", token, anchor)
+            }
+            onDateTrigger={
+              readOnly || disabled
+                ? undefined
+                : (range, anchor) =>
+                    datePicker.openTypedDate("note", range, anchor)
+            }
             onTagClick={(token) =>
               void actions.toggleTagFilter({
                 prefix: token.prefix,
@@ -325,10 +379,15 @@ export function NotesPageHeader({
                 note: event.target.value
               }, "note");
             }}
-            onBlur={() => void actions.flushNodeDraft(nodeId)}
+            onBlur={() => {
+              if (!datePicker.shouldSuppressBlur()) {
+                void actions.flushNodeDraft(nodeId);
+              }
+            }}
           />
         )}
       </header>
+      {datePicker.picker}
       <ConfirmDialog
         open={trashConfirmOpen}
         onOpenChange={setTrashConfirmOpen}

@@ -1,5 +1,6 @@
 import {
   forwardRef,
+  type ChangeEvent,
   type CSSProperties,
   type FocusEvent,
   type ForwardedRef,
@@ -12,16 +13,23 @@ import {
   useRef,
   useState
 } from "react";
+import type { LocalDate, NoteDateMatch } from "./noteDates";
 import type { NoteTagToken } from "./noteTokens";
 import { NoteTokenText } from "./NoteTokenText";
 
 export interface NoteTextFieldProps
   extends Omit<
     TextareaHTMLAttributes<HTMLTextAreaElement>,
-    "children" | "value"
+    "children" | "value" | "onDateClick"
   > {
   value: string;
   onTagClick: (token: NoteTagToken) => void;
+  today?: LocalDate;
+  onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
+  onDateTrigger?: (
+    range: { readonly startUtf16: number; readonly endUtf16: number },
+    anchor: HTMLTextAreaElement
+  ) => void;
   isTagActive?: (token: NoteTagToken) => boolean;
   containerClassName?: string;
 }
@@ -43,12 +51,16 @@ export const NoteTextField = forwardRef<
   {
     value,
     onTagClick,
+    today,
+    onDateClick,
+    onDateTrigger,
     isTagActive,
     containerClassName,
     className,
     style,
     onFocus,
     onBlur,
+    onChange,
     onCompositionStart,
     onCompositionEnd,
     tabIndex,
@@ -113,6 +125,26 @@ export const NoteTextField = forwardRef<
     onCompositionEnd?.(event);
   };
 
+  const handleChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
+    onChange?.(event);
+    const inputEvent = event.nativeEvent as InputEvent;
+    const caret = event.currentTarget.selectionStart;
+    if (
+      composingRef.current ||
+      inputEvent.isComposing ||
+      inputEvent.inputType !== "insertText" ||
+      inputEvent.data !== "!" ||
+      caret !== event.currentTarget.selectionEnd ||
+      event.currentTarget.value.slice(caret - 2, caret) !== "!!"
+    ) {
+      return;
+    }
+    onDateTrigger?.(
+      { startUtf16: caret - 2, endUtf16: caret },
+      event.currentTarget
+    );
+  };
+
   const revealAndFocusTextarea = () => {
     if (textareaRef.current?.disabled) {
       return;
@@ -164,6 +196,8 @@ export const NoteTextField = forwardRef<
         className={className}
         text={value}
         onTagClick={onTagClick}
+        today={today}
+        onDateClick={onDateClick}
         isTagActive={isTagActive}
         role="group"
         aria-label={ariaLabel}
@@ -186,6 +220,7 @@ export const NoteTextField = forwardRef<
         style={textareaLayout}
         onFocus={handleFocus}
         onBlur={handleBlur}
+        onChange={handleChange}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
       />

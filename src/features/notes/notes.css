@@ -697,6 +697,38 @@
   outline-offset: 1px;
 }
 
+.notes-date-token {
+  box-sizing: border-box;
+  appearance: none;
+  margin: 0 1px;
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-active);
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  line-height: calc(1em + 2px);
+  vertical-align: 1px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.notes-date-token:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+}
+
+.notes-date-token:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.notes-date-picker-host > .notes-date-picker {
+  width: 100% !important;
+  max-width: 100%;
+}
+
 .notes-page-title {
   display: block;
   width: 100%;

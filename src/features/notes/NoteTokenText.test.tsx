@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { NoteTokenText } from "./NoteTokenText";
 
 describe("NoteTokenText", () => {
+  const today = { year: 2026, month: 7, day: 11 } as const;
+
   it("reconstructs the source text losslessly with textarea whitespace semantics", () => {
     const source = "  Plan\t#Today  \n담당: @수원\n";
     const { container } = render(
@@ -73,5 +75,51 @@ describe("NoteTokenText", () => {
 
     expect(onTagClick).toHaveBeenCalledTimes(2);
     expect(tag).toHaveFocus();
+  });
+
+  it("renders independent date pills and tags without changing source text or UTF-16 spans", async () => {
+    const user = userEvent.setup();
+    const onDateClick = vi.fn();
+    const source = "🚀 #today today, then 07/13/2026 and @owner";
+    const { container } = render(
+      <NoteTokenText
+        text={source}
+        today={today}
+        onTagClick={vi.fn()}
+        onDateClick={onDateClick}
+      />
+    );
+
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent(
+      source,
+      { normalizeWhitespace: false }
+    );
+    expect(
+      screen.getByRole("button", { name: "#today tag filter is inactive" })
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "@owner tag filter is inactive" })
+    ).toBeVisible();
+
+    const naturalDate = screen.getByRole("button", {
+      name: "Edit date today"
+    });
+    const numericDate = screen.getByRole("button", {
+      name: "Edit date 07/13/2026"
+    });
+    expect(naturalDate).toHaveClass("notes-date-token");
+    expect(numericDate).toHaveClass("notes-date-token");
+
+    await user.click(numericDate);
+
+    expect(onDateClick).toHaveBeenCalledOnce();
+    expect(onDateClick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        raw: "07/13/2026",
+        startUtf16: 22,
+        endUtf16: 32
+      }),
+      numericDate
+    );
   });
 });

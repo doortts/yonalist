@@ -16,6 +16,7 @@ function standardProps(
     onToggleComplete: vi.fn(),
     onToggleStar: vi.fn(),
     onOpenNote: vi.fn(),
+    onAddDate: vi.fn(),
     onRemoveNote: vi.fn(),
     onDuplicate: vi.fn(),
     onExport: vi.fn(),
@@ -45,6 +46,7 @@ describe("NotesBulletMenu", () => {
       "Complete",
       "Star",
       "Add note",
+      "Add date",
       "Duplicate",
       "Export subtree",
       "Delete"
@@ -132,7 +134,7 @@ describe("NotesBulletMenu", () => {
       expect(screen.getByRole("menuitem", { name: "Complete" })).toHaveFocus()
     );
     await user.keyboard(
-      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
+      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
     );
 
     const back = await screen.findByRole("menuitem", { name: "Back" });
@@ -198,6 +200,27 @@ describe("NotesBulletMenu", () => {
 
     await waitFor(() => expect(onOpenNote).toHaveBeenCalledOnce());
     expect(note).toHaveFocus();
+  });
+
+  it("hands Add date off after closing and uses the Calendar icon", async () => {
+    const user = userEvent.setup();
+    const onAddDate = vi.fn(() => {
+      expect(screen.getByRole("menu")).toHaveAttribute("data-closed");
+    });
+    render(<NotesBulletMenu {...standardProps({ onAddDate })} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Project" })
+    );
+    const item = within(await screen.findByRole("menu")).getByRole(
+      "menuitem",
+      { name: "Add date" }
+    );
+    expect(item.querySelector(".lucide-calendar")).not.toBeNull();
+
+    await user.click(item);
+
+    await waitFor(() => expect(onAddDate).toHaveBeenCalledOnce());
   });
 
   it("closes on an outside pointer press", async () => {

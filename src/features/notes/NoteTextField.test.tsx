@@ -10,6 +10,8 @@ import { describe, expect, it, vi } from "vitest";
 import { NoteTextField } from "./NoteTextField";
 
 describe("NoteTextField", () => {
+  const today = { year: 2026, month: 7, day: 11 } as const;
+
   it("exposes and activates exactly one text representation per mode", async () => {
     const user = userEvent.setup();
     const textareaRef = createRef<HTMLTextAreaElement>();
@@ -256,5 +258,101 @@ describe("NoteTextField", () => {
       "data-editing",
       "false"
     );
+  });
+
+  it("keeps raw date text in the mounted textarea while a resting pill opens its exact token", async () => {
+    const user = userEvent.setup();
+    const onDateClick = vi.fn();
+    const source = "🚀 Review today and 07/13/2026";
+    const { container } = render(
+      <NoteTextField
+        value={source}
+        today={today}
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+        onDateClick={onDateClick}
+      />
+    );
+    const textarea = container.querySelector("textarea");
+    const date = screen.getByRole("button", {
+      name: "Edit date 07/13/2026"
+    });
+
+    expect(textarea).toHaveValue(source);
+    await user.click(date);
+
+    expect(textarea).toHaveValue(source);
+    expect(textarea).not.toHaveFocus();
+    expect(onDateClick).toHaveBeenCalledWith(
+      expect.objectContaining({
+        raw: "07/13/2026",
+        startUtf16: 20,
+        endUtf16: 30
+      }),
+      date
+    );
+  });
+
+  it("opens a typed date replacement for exactly the second non-composing exclamation", () => {
+    const onDateTrigger = vi.fn();
+    const { container } = render(
+      <NoteTextField
+        value="Plan !"
+        today={today}
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+        onDateTrigger={onDateTrigger}
+      />
+    );
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => textarea.focus());
+
+    fireEvent.input(textarea, {
+      target: {
+        value: "Plan !!",
+        selectionStart: 7,
+        selectionEnd: 7
+      },
+      inputType: "insertText",
+      data: "!"
+    });
+
+    expect(onDateTrigger).toHaveBeenCalledOnce();
+    expect(onDateTrigger).toHaveBeenCalledWith(
+      { startUtf16: 5, endUtf16: 7 },
+      textarea
+    );
+  });
+
+  it("does not open the typed date replacement during IME composition", () => {
+    const onDateTrigger = vi.fn();
+    const { container } = render(
+      <NoteTextField
+        value="Plan !"
+        today={today}
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+        onDateTrigger={onDateTrigger}
+      />
+    );
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => textarea.focus());
+    fireEvent.compositionStart(textarea, { data: "!" });
+
+    fireEvent.input(textarea, {
+      target: {
+        value: "Plan !!",
+        selectionStart: 7,
+        selectionEnd: 7
+      },
+      inputType: "insertCompositionText",
+      data: "!",
+      isComposing: true
+    });
+
+    expect(onDateTrigger).not.toHaveBeenCalled();
   });
 });
