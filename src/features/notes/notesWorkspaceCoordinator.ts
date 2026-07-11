@@ -40,6 +40,7 @@ export type NotesWorkspaceQueueWork = (
 
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending" }
+  | { type: "synchronized"; result: NotesWorkspaceQueueSettlement }
   | {
       type: "settled";
       result: NotesWorkspaceQueueSettlement;
@@ -243,6 +244,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           result,
           hasPendingWork: owner.pendingWork > 0
         });
+      }
+      if (authoritativeWorkspace && owner?.active) {
+        for (const session of entry.sessions) {
+          if (session !== owner) {
+            notify(session, { type: "synchronized", result });
+          }
+        }
       }
     }
 

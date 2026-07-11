@@ -4,7 +4,9 @@
 
 DONE_WITH_CONCERNS
 
-Implementation commit: `c23ffc3`
+Original implementation commit: `c23ffc3`
+
+Review-fix commit: the commit containing this report
 
 ## Owned Files
 
@@ -105,6 +107,29 @@ GREEN: the same command exited 0 with 14 tests passed.
 - `git diff --cached --check` before the implementation commit: exit 0.
 
 ## Concerns
+
+- Review fixes now drain every pending draft before structural work, allocate
+  structural UI ownership at FIFO execution time, retain in-flight snapshots beyond
+  the completed-snapshot bound, broadcast live-owner settlements to sibling mounts,
+  preserve lifecycle focus fields, and expose backend history status as `canUndo` /
+  `canRedo`.
+- Review RED: the new cross-node in-flight regression failed because the later edit
+  was omitted, then failed because both text writes reused one entry ID. GREEN: the
+  focused hook suite passed 71/71 after scheduled drafts captured their stable context.
+- Review RED: the in-flight retention test failed because entry one was evicted before
+  completion. GREEN: `notesHistory.test.ts` passed 6/6 after bounding completed pairs
+  only. A stale-owner broadcast also regressed two remount barriers; GREEN was 75/75
+  after broadcasts were restricted to commands with a still-live owner.
+- Review verification: hook plus workspace suites passed 153/153; all 20 Notes
+  test files outside the concurrently edited DatePicker passed 450/450;
+  `npm run build` passed with 2,286 modules.
+- The full Notes-folder run currently has 434 passing tests and failures rooted in two
+  concurrently edited `NotesDatePicker.test.tsx` controlled-value cases; their failure
+  leaves shared test state dirty and cascades into later workspace timeouts. Task 2B
+  does not touch those date files.
+- Atomic `NotesMutationResult` wrapping remains a coordinated backend wire follow-up.
+  This frontend continues to accept today's `NotesWorkspace` mutation response and
+  derives history status through the existing backend status contract.
 
 - The confirmed Task 4 Archive race is not broadened into this task. Task 2B replaces
   render-lagging history reads with a synchronous navigation ref, but the remaining

@@ -128,6 +128,8 @@ export interface UseNotesWorkspaceResult {
   status: NormalizedNotesWorkspace["status"];
   loading: boolean;
   error: string | null;
+  canUndo?: boolean;
+  canRedo?: boolean;
 }
 
 export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
@@ -654,6 +656,7 @@ export interface NotesLifecycleNavigationSnapshot {
   zoomRootId: NoteId | null;
   editingNoteId: NoteId | null;
   pendingFocusId: NoteId | null;
+  pendingFocusField: NotesHistoryFocusField | null;
   locallyExpandedNodeIds: ReadonlySet<NoteId>;
   scope: NotesWorkspaceScope;
 }
@@ -718,6 +721,7 @@ export function resolveRootLifecycleNavigation(
   if (openRootId !== removedRootId) {
     const existing = (nodeId: NoteId | null) =>
       nodeId !== null && afterWorkspace.nodesById[nodeId] ? nodeId : null;
+    const pendingFocusId = existing(before.pendingFocusId);
     return {
       before,
       after: {
@@ -725,7 +729,9 @@ export function resolveRootLifecycleNavigation(
         selectedId: existing(before.selectedId),
         zoomRootId: existing(before.zoomRootId),
         editingNoteId: existing(before.editingNoteId),
-        pendingFocusId: existing(before.pendingFocusId),
+        pendingFocusId,
+        pendingFocusField:
+          pendingFocusId === null ? null : before.pendingFocusField,
         locallyExpandedNodeIds: new Set(
           [...before.locallyExpandedNodeIds].filter(
             (nodeId) => afterWorkspace.nodesById[nodeId]
@@ -754,6 +760,8 @@ export function resolveRootLifecycleNavigation(
       zoomRootId: fallbackRootId,
       editingNoteId: focusFallback ? fallbackRootId : null,
       pendingFocusId: focusFallback ? fallbackRootId : null,
+      pendingFocusField:
+        focusFallback ? before.pendingFocusField ?? "title" : null,
       locallyExpandedNodeIds: new Set()
     }
   };
@@ -795,6 +803,10 @@ export function useNotesWorkspace({
   const [currentWriteError, setCurrentWriteError] =
     useState<NotesStoreError | null>(null);
   const [deletingNotesData, setDeletingNotesData] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState({
+    canUndo: false,
+    canRedo: false
+  });
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   const stateRef = useRef(state);
@@ -899,6 +911,20 @@ export function useNotesWorkspace({
           dispatch({ type: "setLoading" });
           return;
         }
+        if (event.type === "synchronized" && repository.historyStatus) {
+          void repository
+            .historyStatus(vaultRoot, session.history.sessionId)
+            .then((status) => {
+              if (
+                !record.closing &&
+                sessionRecordRef.current === record &&
+                sessionRef.current === session
+              ) {
+                setHistoryStatus(status);
+              }
+            })
+            .catch(() => undefined);
+        }
         const authoritativeWorkspace =
           event.result.kind === "authoritative"
             ? event.result.workspace
@@ -917,7 +943,8 @@ export function useNotesWorkspace({
         dispatch({
           type: "settleQueueWork",
           result: event.result,
-          hasPendingWork: event.hasPendingWork
+          hasPendingWork:
+            event.type === "synchronized" ? false : event.hasPendingWork
         });
       }
     });
@@ -1024,7 +1051,19 @@ export function useNotesWorkspace({
     }
     const session = sessionRef.current;
     if (session) {
-      return session.enqueue(work);
+      return session.enqueue(async (context) => {
+        const result = await work(context);
+        if (result.kind === "authoritative" && context.repository.historyStatus) {
+          const status = await context.repository.historyStatus(
+            context.vaultRoot,
+            session.history.sessionId
+          );
+          if (sessionRef.current === session) {
+            setHistoryStatus(status);
+          }
+        }
+        return result;
+      });
     }
     if (closedRef.current) {
       return Promise.resolve();
@@ -1073,13 +1112,6 @@ export function useNotesWorkspace({
     ): NotesHistoryContext => {
       const owners = historyOwnerByEntryIdRef.current;
       owners.set(context.entryId, owner);
-      while (owners.size > 200) {
-        const oldestEntryId = owners.keys().next().value;
-        if (oldestEntryId === undefined) {
-          break;
-        }
-        owners.delete(oldestEntryId);
-      }
       return context;
     },
     []
@@ -1111,15 +1143,27 @@ export function useNotesWorkspace({
     (commandKind: string): NotesHistoryContext | null => {
       const session = sessionRef.current;
       const record = sessionRecordRef.current;
-      return session && record && supportsHistory(record.repository)
-        ? registerHistoryOwner(
+      if (!session || !record || !supportsHistory(record.repository)) {
+        return null;
+      }
+      let allocated: NotesHistoryContext | null = null;
+      const ensure = (): NotesHistoryContext => {
+        if (!allocated) {
+          allocated = registerHistoryOwner(
             session.history.beginStructuralEntry(
               commandKind,
               captureHistorySnapshot()
             ),
             session
-          )
-        : null;
+          );
+        }
+        return allocated;
+      };
+      return Object.defineProperties({} as NotesHistoryContext, {
+        sessionId: { enumerable: true, get: () => ensure().sessionId },
+        entryId: { enumerable: true, get: () => ensure().entryId },
+        commandKind: { enumerable: true, get: () => ensure().commandKind }
+      });
     },
     [captureHistorySnapshot, registerHistoryOwner]
   );
@@ -1137,8 +1181,7 @@ export function useNotesWorkspace({
       }
       const owner = historyOwnerByEntryIdRef.current.get(context.entryId);
       if (
-        (owner && sessionRef.current !== owner) ||
-        (!owner && sessionRef.current?.history.sessionId !== context.sessionId)
+        !owner || sessionRef.current !== owner
       ) {
         historyOwnerByEntryIdRef.current.delete(context.entryId);
         return;
@@ -1149,7 +1192,7 @@ export function useNotesWorkspace({
         uiUpdate
       );
       const after = captureHistorySnapshot(focus);
-      (owner ?? sessionRef.current)?.history.rememberAfter(context.entryId, {
+      owner.history.rememberAfter(context.entryId, {
         ...after,
         locallyExpandedNodeIds:
           expandedNodeIds === undefined
@@ -1224,7 +1267,8 @@ export function useNotesWorkspace({
     async (
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
-      draft: NotesNodeDraft
+      draft: NotesNodeDraft,
+      scheduledHistoryContext?: NotesHistoryContext | null
     ): Promise<boolean> => {
       const current = record.drafts.get(nodeId);
       if (current?.revision === draft.revision && current.status !== "pending") {
@@ -1233,6 +1277,7 @@ export function useNotesWorkspace({
       }
       record.inFlightDraftByNodeId.set(nodeId, draft.revision);
       let historyContext: NotesHistoryContext | null | undefined =
+        scheduledHistoryContext ??
         record.draftHistoryContextByNodeId.get(nodeId);
       if (!historyContext) {
         const focus = record.draftHistoryFocusByNodeId.get(nodeId) ?? {
@@ -1380,12 +1425,13 @@ export function useNotesWorkspace({
     (
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
-      draft: NotesNodeDraft
+      draft: NotesNodeDraft,
+      historyContext?: NotesHistoryContext | null
     ): Promise<boolean> => {
       if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
         record.pendingDebounceByNodeId.delete(nodeId);
       }
-      return persistDraft(record, nodeId, draft);
+      return persistDraft(record, nodeId, draft, historyContext);
     },
     [persistDraft]
   );
@@ -1428,11 +1474,18 @@ export function useNotesWorkspace({
           : Promise.resolve(true);
       });
       record.pendingDebounceByNodeId.set(nodeId, draft.revision);
+      const scheduledHistoryContext =
+        record.draftHistoryContextByNodeId.get(nodeId);
       syncRecoveredDraft(record, nodeId);
       publishDraftState(record);
       void record.writeQueue
         .enqueueDebounced(nodeId, () =>
-          writeScheduledDraft(record, nodeId, draft)
+          writeScheduledDraft(
+            record,
+            nodeId,
+            draft,
+            scheduledHistoryContext
+          )
         )
         .catch(() => undefined);
     },
@@ -1517,46 +1570,61 @@ export function useNotesWorkspace({
     }
   }, [retryFailedDraft]);
 
-  const flushDraftBeforeStructural = useCallback(
-    (nodeId: NoteId): Promise<boolean> => {
-      closeTextBurst();
-      return flushNodeDraft(nodeId);
-    },
-    [closeTextBurst, flushNodeDraft]
-  );
-
   const flushAllDraftsBeforeStructural = useCallback(
     async (): Promise<boolean> => {
-      closeTextBurst();
       const record = sessionRecordRef.current;
       if (!record || record.closing || sessionRef.current !== record.session) {
         return false;
       }
-      for (const [nodeId, draft] of record.drafts) {
-        if (
-          draft.status !== "failed" ||
-          record.pendingDebounceByNodeId.has(nodeId) ||
-          record.inFlightDraftByNodeId.has(nodeId)
-        ) {
-          continue;
+      record.draftHistoryContextByNodeId.clear();
+      closeTextBurst();
+      while (true) {
+        for (const [nodeId, draft] of record.drafts) {
+          if (
+            draft.status !== "failed" ||
+            record.pendingDebounceByNodeId.has(nodeId) ||
+            record.inFlightDraftByNodeId.has(nodeId)
+          ) {
+            continue;
+          }
+          const retry = record.retryWriteByNodeId.get(nodeId);
+          if (retry) {
+            void record.writeQueue.enqueue(retry).catch(() => undefined);
+          }
         }
-        const retry = record.retryWriteByNodeId.get(nodeId);
-        if (retry) {
-          void record.writeQueue.enqueue(retry).catch(() => undefined);
+        await record.writeQueue.flush();
+        if (
+          record.closing ||
+          sessionRecordRef.current !== record ||
+          sessionRef.current !== record.session
+        ) {
+          return false;
+        }
+        if (record.drafts.size === 0) {
+          return true;
+        }
+        const hasRetryableWork = [...record.drafts].some(
+          ([nodeId, draft]) =>
+            draft.status !== "failed" ||
+            record.pendingDebounceByNodeId.has(nodeId) ||
+            record.inFlightDraftByNodeId.has(nodeId)
+        );
+        if (!hasRetryableWork) {
+          return false;
         }
       }
-      await record.writeQueue.flush();
-      return (
-        !record.closing &&
-        sessionRecordRef.current === record &&
-        record.drafts.size === 0
-      );
     },
     [closeTextBurst]
   );
 
+  const flushDraftBeforeStructural = useCallback(
+    (_nodeId: NoteId): Promise<boolean> => flushAllDraftsBeforeStructural(),
+    [flushAllDraftsBeforeStructural]
+  );
+
   const replayHistory = useCallback(
     async (direction: "undo" | "redo"): Promise<void> => {
+      const record = sessionRecordRef.current;
       closeTextBurst();
       if (
         (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
@@ -1565,7 +1633,7 @@ export function useNotesWorkspace({
         return;
       }
       const session = sessionRef.current;
-      if (!session) {
+      if (!record || !session || record.session !== session) {
         return;
       }
       let replayedSnapshot: NotesHistorySnapshot | null = null;
@@ -1583,6 +1651,19 @@ export function useNotesWorkspace({
           session.history.sessionId,
           currentScope
         );
+        if (
+          record.closing ||
+          sessionRecordRef.current !== record ||
+          sessionRef.current !== session
+        ) {
+          return { kind: "skipped" };
+        }
+        if (sessionRef.current === session) {
+          setHistoryStatus({
+            canUndo: result.canUndo,
+            canRedo: result.canRedo
+          });
+        }
         replayedSnapshot = session.history.snapshotForReplay(
           result.replayedEntryId,
           direction
@@ -1616,6 +1697,13 @@ export function useNotesWorkspace({
             : undefined
         );
       });
+      if (
+        record.closing ||
+        sessionRecordRef.current !== record ||
+        sessionRef.current !== session
+      ) {
+        return;
+      }
       if (replayedExpansionIds) {
         replaceLocalExpansions(replayedExpansionIds);
       }
@@ -1648,12 +1736,17 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      const record = sessionRecordRef.current;
+      if (!record) return;
       let loaded = false;
       await runCommand(async (context) => {
         const workspace = await context.repository.loadWorkspace(
           context.vaultRoot,
           scope
         );
+        if (record.closing || sessionRecordRef.current !== record) {
+          return { kind: "skipped" };
+        }
         loaded = true;
         activeScopeRef.current = scope;
         return authoritative(workspace, {
@@ -1663,7 +1756,7 @@ export function useNotesWorkspace({
           pendingFocusId: null
         });
       });
-      if (!loaded) {
+      if (!loaded || record.closing || sessionRecordRef.current !== record) {
         return;
       }
       setLibraryView(view);
@@ -1735,6 +1828,8 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      const record = sessionRecordRef.current;
+      if (!record) return;
       let expandedNodeIds: ReadonlySet<NoteId> = new Set();
       let loaded = false;
       await runCommand(async (context) => {
@@ -1742,6 +1837,9 @@ export function useNotesWorkspace({
           context.vaultRoot,
           { kind: "active" }
         );
+        if (record.closing || sessionRecordRef.current !== record) {
+          return { kind: "skipped" };
+        }
         loaded = true;
         activeScopeRef.current = { kind: "active" };
         const navigation = searchNavigation(workspace, nodeId);
@@ -1763,7 +1861,7 @@ export function useNotesWorkspace({
               }
         );
       });
-      if (!loaded) {
+      if (!loaded || record.closing || sessionRecordRef.current !== record) {
         return;
       }
       setLibraryView("all");
@@ -1921,6 +2019,14 @@ export function useNotesWorkspace({
       suffix: string,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const hadCentralDraft =
+        sessionRecordRef.current?.drafts.has(nodeId) ?? false;
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
       const record = sessionRecordRef.current;
       const centralDraft = record?.drafts.get(nodeId);
       if (
@@ -1979,7 +2085,8 @@ export function useNotesWorkspace({
       ) {
         return;
       }
-      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineDraft =
+        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
       const inlineTextContext =
         inlineDraft && record
           ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
@@ -2048,6 +2155,7 @@ export function useNotesWorkspace({
     [
       beginStructuralEntry,
       beginTextEntry,
+      flushAllDraftsBeforeStructural,
       flushDraftBeforeStructural,
       flushPendingDraftCompound,
       rememberHistoryAfter,
@@ -2056,7 +2164,10 @@ export function useNotesWorkspace({
   );
 
   const updateNode = useCallback(
-    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
+    async (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
+      if (!(await flushAllDraftsBeforeStructural())) {
+        return;
+      }
       const historyContext = beginStructuralEntry("update");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
@@ -2081,7 +2192,7 @@ export function useNotesWorkspace({
         );
       });
     },
-    [beginStructuralEntry, rememberHistoryAfter, runCommand]
+    [beginStructuralEntry, flushAllDraftsBeforeStructural, rememberHistoryAfter, runCommand]
   );
 
   const moveNode = useCallback(
@@ -2090,6 +2201,14 @@ export function useNotesWorkspace({
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const hadCentralDraft =
+        sessionRecordRef.current?.drafts.has(input.id) ?? false;
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
       const record = sessionRecordRef.current;
       const centralDraft = record?.drafts.get(input.id);
       if (
@@ -2155,7 +2274,8 @@ export function useNotesWorkspace({
       ) {
         return;
       }
-      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineDraft =
+        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
       const inlineTextContext =
         inlineDraft && record
           ? beginTextEntry(record, input.id, {
@@ -2227,6 +2347,7 @@ export function useNotesWorkspace({
     },
     [
       beginStructuralEntry,
+      flushAllDraftsBeforeStructural,
       beginTextEntry,
       flushDraftBeforeStructural,
       flushPendingDraftCompound,
@@ -2390,6 +2511,10 @@ export function useNotesWorkspace({
       nodeId: NoteId,
       mutation: "archive" | "unarchive" | "trash"
     ): Promise<void> => {
+      const ownerRecord = sessionRecordRef.current;
+      if (!ownerRecord) {
+        return;
+      }
       const visibleNode = stateRef.current.nodesById[nodeId];
       if (!visibleNode || visibleNode.parentId !== null) {
         return;
@@ -2408,6 +2533,7 @@ export function useNotesWorkspace({
         zoomRootId: liveNavigation.zoomRootId,
         editingNoteId: liveNavigation.editingNoteId,
         pendingFocusId: liveNavigation.pendingFocusId,
+        pendingFocusField: liveNavigation.pendingFocusField,
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current),
         scope: activeScopeRef.current
       };
@@ -2447,6 +2573,13 @@ export function useNotesWorkspace({
                 nodeId,
                 ...historyArguments(historyContext)
               ));
+        if (
+          ownerRecord.closing ||
+          sessionRecordRef.current !== ownerRecord ||
+          sessionRef.current !== ownerRecord.session
+        ) {
+          return { kind: "skipped" };
+        }
         const requestedScope = activeScopeRef.current;
         let projectedWorkspace: NotesWorkspace;
         try {
@@ -2455,6 +2588,12 @@ export function useNotesWorkspace({
             mutationWorkspace,
             requestedScope
           );
+          if (
+            ownerRecord.closing ||
+            sessionRecordRef.current !== ownerRecord
+          ) {
+            return { kind: "skipped" };
+          }
         } catch {
           lifecycleResult.recoveredToActive = true;
           activeScopeRef.current = { kind: "active" };
@@ -2483,6 +2622,8 @@ export function useNotesWorkspace({
                 zoomRootId: liveNavigationRef.current.zoomRootId,
                 editingNoteId: liveNavigationRef.current.editingNoteId,
                 pendingFocusId: liveNavigationRef.current.pendingFocusId,
+                pendingFocusField:
+                  liveNavigationRef.current.pendingFocusField,
                 locallyExpandedNodeIds: new Set(
                   locallyExpandedNodeIdsRef.current
                 ),
@@ -2513,9 +2654,7 @@ export function useNotesWorkspace({
           editingNoteId: lifecycleResult.transition.after.editingNoteId,
           pendingFocusId: lifecycleResult.transition.after.pendingFocusId,
           pendingFocusField:
-            lifecycleResult.transition.after.pendingFocusId === null
-              ? null
-              : "title" as const
+            lifecycleResult.transition.after.pendingFocusField
         };
         rememberHistoryAfter(
           historyContext,
@@ -2526,6 +2665,14 @@ export function useNotesWorkspace({
         );
         return authoritative(projectedWorkspace, uiUpdate);
       });
+
+      if (
+        ownerRecord.closing ||
+        sessionRecordRef.current !== ownerRecord ||
+        sessionRef.current !== ownerRecord.session
+      ) {
+        return;
+      }
 
       if (lifecycleResult.transition) {
         if (
@@ -2570,6 +2717,14 @@ export function useNotesWorkspace({
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
     ) => {
+      const hadCentralDraft =
+        sessionRecordRef.current?.drafts.has(nodeId) ?? false;
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
       const record = sessionRecordRef.current;
       const centralDraft = record?.drafts.get(nodeId);
       if (
@@ -2618,7 +2773,8 @@ export function useNotesWorkspace({
       ) {
         return;
       }
-      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineDraft =
+        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
       const inlineTextContext =
         inlineDraft && record
           ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
@@ -2671,6 +2827,7 @@ export function useNotesWorkspace({
     [
       beginStructuralEntry,
       beginTextEntry,
+      flushAllDraftsBeforeStructural,
       flushDraftBeforeStructural,
       flushPendingDraftCompound,
       rememberHistoryAfter,
@@ -2951,6 +3108,8 @@ export function useNotesWorkspace({
     retryLastFailedWrite,
     status: state.status,
     loading: state.status === "loading",
-    error: state.error
+    error: state.error,
+    canUndo: historyStatus.canUndo,
+    canRedo: historyStatus.canRedo
   };
 }

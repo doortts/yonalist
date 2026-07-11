@@ -95,14 +95,41 @@ describe("notes history session", () => {
       maxSnapshots: 2
     });
     const first = history.beginStructuralEntry("create", snapshot("node-a"));
+    history.rememberAfter(first.entryId, snapshot("node-a"));
     const second = history.beginStructuralEntry("move", snapshot("node-b"));
-    history.beginStructuralEntry("star", snapshot("node-c"));
+    history.rememberAfter(second.entryId, snapshot("node-b"));
+    const third = history.beginStructuralEntry("star", snapshot("node-c"));
+    history.rememberAfter(third.entryId, snapshot("node-c"));
 
     expect(history.snapshotForReplay(first.entryId, "undo")).toBeNull();
     expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
       snapshot("node-b")
     );
     expect(history.snapshotForReplay(ids[5], "redo")).toBeNull();
+  });
+
+  it("never evicts entries that are still awaiting authoritative completion", () => {
+    const history = createNotesHistorySession({
+      createId: idFactory(),
+      maxSnapshots: 1
+    });
+    const first = history.beginStructuralEntry("create", snapshot("node-a"));
+    const second = history.beginStructuralEntry("move", snapshot("node-b"));
+
+    expect(history.snapshotForReplay(first.entryId, "undo")).toEqual(
+      snapshot("node-a")
+    );
+    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
+      snapshot("node-b")
+    );
+
+    history.rememberAfter(first.entryId, snapshot("node-c"));
+    history.rememberAfter(second.entryId, snapshot("node-d"));
+
+    expect(history.snapshotForReplay(first.entryId, "undo")).toBeNull();
+    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
+      snapshot("node-b")
+    );
   });
 
   it("creates independent session IDs for separate vault coordinator entries", () => {

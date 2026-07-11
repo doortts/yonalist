@@ -1616,7 +1616,7 @@ describe("useNotesWorkspace", () => {
     );
     await act(async () => Promise.all([splitCompletion, otherCompletion]));
 
-    expect(invocations).toEqual(["update:source", "split", "update:other"]);
+    expect(invocations).toEqual(["update:source", "update:other", "split"]);
   });
 
   it("orders a pending text burst before split with stable distinct history IDs", async () => {
@@ -1664,6 +1664,71 @@ describe("useNotesWorkspace", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     );
     expect(textContext?.entryId).not.toBe("source");
+  });
+
+  it("drains cross-node edits arriving behind an in-flight draft before structural work", async () => {
+    const initial = workspace([
+      node({ id: "draft", title: "before" }),
+      node({ id: "target", sortKey: 2048, title: "target" })
+    ]);
+    const firstWrite = deferred<NotesWorkspace>();
+    const updateNode = vi
+      .fn()
+      .mockImplementationOnce(() => firstWrite.promise)
+      .mockResolvedValue(
+        workspace([
+          node({ id: "draft", title: "second" }),
+          node({ id: "target", sortKey: 2048, title: "target" })
+        ])
+      );
+    const splitNode = vi.fn().mockResolvedValue(initial);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      splitNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "draft",
+        { title: "first", note: "" },
+        "title"
+      );
+    });
+    let structural!: Promise<void>;
+    act(() => {
+      structural = result.current.actions.splitNode(
+        "target",
+        "split",
+        "tar",
+        "get"
+      );
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "draft",
+        { title: "second", note: "" },
+        "title"
+      );
+    });
+    await act(async () => firstWrite.resolve(initial));
+    await act(async () => structural);
+
+    expect(updateNode).toHaveBeenCalledTimes(2);
+    expect(updateNode.mock.invocationCallOrder[1]).toBeLessThan(
+      splitNode.mock.invocationCallOrder[0]!
+    );
+    expect(updateNode.mock.calls[0]?.[2]?.entryId).not.toBe(
+      updateNode.mock.calls[1]?.[2]?.entryId
+    );
+    expect(updateNode.mock.calls[1]?.[2]?.entryId).not.toBe(
+      splitNode.mock.calls[0]?.[2]?.entryId
+    );
   });
 
   it("flushes a visible note draft before undo and restores field-aware UI", async () => {
@@ -1724,6 +1789,8 @@ describe("useNotesWorkspace", () => {
       pendingFocusId: "root",
       pendingFocusField: "note"
     });
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(true);
   });
 
   it("applies replayed backend data and normalizes live UI without a snapshot", async () => {
@@ -1804,6 +1871,46 @@ describe("useNotesWorkspace", () => {
       { kind: "active" }
     );
     expect(result.current.state.nodesById.root.completedAt).not.toBeNull();
+  });
+
+  it("broadcasts mutation and replay authority to sibling hooks without replacing local navigation", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const toggleStar = vi.fn().mockResolvedValue(starred);
+    const undo = vi.fn().mockResolvedValue({
+      workspace: initial,
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: true
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      undo
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared", repository: store })
+    );
+    await waitFor(() => {
+      expect(first.result.current.status).toBe("ready");
+      expect(second.result.current.status).toBe("ready");
+    });
+    await act(async () => second.result.current.actions.zoomTo("root"));
+
+    await act(async () => first.result.current.actions.toggleStar("root"));
+    await waitFor(() =>
+      expect(second.result.current.state.nodesById.root?.isStarred).toBe(true)
+    );
+    expect(second.result.current.state.zoomRootId).toBe("root");
+
+    await act(async () => first.result.current.actions.undo!());
+    await waitFor(() =>
+      expect(second.result.current.state.nodesById.root?.isStarred).toBe(false)
+    );
+    expect(second.result.current.state.zoomRootId).toBe("root");
   });
 
   it("flushes pending drafts before creating a new root", async () => {

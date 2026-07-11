@@ -24,6 +24,7 @@ export type NotesHistoryReplayDirection = "undo" | "redo";
 interface NotesHistorySnapshotPair {
   before: NotesHistorySnapshot | null;
   after: NotesHistorySnapshot | null;
+  completed: boolean;
 }
 
 export interface CreateNotesHistorySessionOptions {
@@ -75,14 +76,11 @@ export function createNotesHistorySession({
     entryId: string,
     before: NotesHistorySnapshot
   ): void => {
-    snapshots.set(entryId, { before: cloneSnapshot(before), after: null });
-    while (snapshots.size > Math.max(0, maxSnapshots)) {
-      const oldestEntryId = snapshots.keys().next().value;
-      if (oldestEntryId === undefined) {
-        break;
-      }
-      snapshots.delete(oldestEntryId);
-    }
+    snapshots.set(entryId, {
+      before: cloneSnapshot(before),
+      after: null,
+      completed: false
+    });
   };
 
   const context = (entryId: string, commandKind: string): NotesHistoryContext => ({
@@ -119,6 +117,19 @@ export function createNotesHistorySession({
       const pair = snapshots.get(entryId);
       if (pair) {
         pair.after = cloneSnapshot(after);
+        pair.completed = true;
+        let completedCount = [...snapshots.values()].filter(
+          (snapshotPair) => snapshotPair.completed
+        ).length;
+        for (const [candidateId, candidate] of snapshots) {
+          if (completedCount <= Math.max(0, maxSnapshots)) {
+            break;
+          }
+          if (candidate.completed) {
+            snapshots.delete(candidateId);
+            completedCount -= 1;
+          }
+        }
       }
     },
     snapshotForReplay(entryId, direction) {
