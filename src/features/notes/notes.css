@@ -1299,6 +1299,16 @@ button.notes-date-token:hover {
   text-align: center;
 }
 
+.notes-move-error {
+  margin: 4px 2px 1px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 15px;
+}
+
 .notes-node-note {
   display: block;
   width: calc(100% - var(--notes-indent) - var(--notes-content-offset));

@@ -217,6 +217,31 @@ describe("NotesBulletMenu", () => {
     expect(search).not.toBeInTheDocument();
   });
 
+  it("keeps Move To open and announces a rejected stale destination", async () => {
+    const onMoveTo = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "That destination is no longer active. Refresh Move To."
+    });
+    const user = userEvent.setup();
+    render(<NotesBulletMenu {...standardProps({ onMoveTo })} />);
+    const { menu } = await openMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Move To..." })
+    );
+    const search = await screen.findByRole("searchbox", {
+      name: "Search move destinations"
+    });
+
+    await user.click(screen.getByRole("option", { name: "Planning" }));
+
+    expect(onMoveTo).toHaveBeenCalledWith("planning");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "That destination is no longer active"
+    );
+    expect(screen.getByRole("menu")).toBeVisible();
+    expect(search).toHaveFocus();
+  });
+
   it("invokes subtree actions once while their command is busy", async () => {
     let resolveExpand!: () => void;
     const onExpandAll = vi.fn(

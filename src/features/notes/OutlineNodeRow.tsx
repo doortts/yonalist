@@ -27,6 +27,7 @@ import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import type { NotesPreparedMove } from "./useNotesWorkspace";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
@@ -67,7 +68,9 @@ export function OutlineNodeRow({
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    commitPreparedMove,
     loadActiveNodesForMove,
+    prepareMoveNode,
     retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
@@ -104,6 +107,7 @@ export function OutlineNodeRow({
   } | null>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const focusNoteOnOpenRef = useRef(false);
+  const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const structuralCommandInFlightRef = useRef(false);
   const suppressedBlurPatchRef = useRef<{
     title: string;
@@ -469,6 +473,18 @@ export function OutlineNodeRow({
             createdAt={node.createdAt}
             updatedAt={node.updatedAt}
             getMoveDestinations={() => {
+              preparedMoveRef.current = null;
+              if (prepareMoveNode) {
+                return prepareMoveNode(nodeId).then((prepared) => {
+                  preparedMoveRef.current = prepared;
+                  return buildNotesMoveDestinations(
+                    Object.fromEntries(
+                      prepared.nodes.map((item) => [item.id, item])
+                    ),
+                    nodeId
+                  );
+                });
+              }
               if (!loadActiveNodesForMove) {
                 return buildNotesMoveDestinations(state.nodesById, nodeId);
               }
@@ -501,6 +517,12 @@ export function OutlineNodeRow({
                 : undefined
             }
             onMoveTo={(destinationId) => {
+              if (preparedMoveRef.current && commitPreparedMove) {
+                return commitPreparedMove(
+                  preparedMoveRef.current,
+                  destinationId
+                );
+              }
               const input = buildNotesMoveNodeInput(
                 state.nodesById,
                 nodeId,
@@ -508,7 +530,12 @@ export function OutlineNodeRow({
               );
               if (input) {
                 runStructuralCommand(() => actions.moveNode(input, nodeId));
+                return { ok: true } as const;
               }
+              return {
+                ok: false,
+                error: "That destination is no longer valid. Refresh Move To."
+              } as const;
             }}
             onExpandAll={() =>
               runStructuralCommand(() => actions.expandAll(nodeId))

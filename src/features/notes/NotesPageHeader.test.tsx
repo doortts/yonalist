@@ -9,12 +9,20 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteAttachment, NoteNode } from "../../domain/notes";
+import type {
+  NoteAttachment,
+  NoteNode,
+  NotesWorkspaceScope
+} from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
-import type { NotesNodeDraft, UseNotesWorkspaceResult } from "./useNotesWorkspace";
+import type {
+  NotesNodeDraft,
+  NotesPreparedMove,
+  UseNotesWorkspaceResult
+} from "./useNotesWorkspace";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -176,6 +184,33 @@ function zoomedOutline(workspace: UseNotesWorkspaceResult) {
 function renderZoomedOutline(workspace = workspaceValue()) {
   render(zoomedOutline(workspace));
   return workspace;
+}
+
+function preparedMove(
+  sourceId: string,
+  scope: NotesWorkspaceScope
+): NotesPreparedMove {
+  return {
+    token: 1,
+    vaultRoot: "/vault",
+    scope,
+    generation: 1,
+    sourceId,
+    nodes: [
+      node({ id: "project", title: "Project" }),
+      node({ id: "child", parentId: "project", title: "First child" }),
+      node({ id: "detail", parentId: "child", title: "Detail" }),
+      node({ id: "inbox", sortKey: 2048, title: "Inbox" })
+    ]
+  };
+}
+
+function moveScopeForView(
+  libraryView: "starred" | "recent" | "tags"
+): NotesWorkspaceScope {
+  return libraryView === "tags"
+    ? { kind: "tags", tags: [] }
+    : { kind: libraryView };
 }
 
 function textareasByName(name: string): HTMLTextAreaElement[] {
@@ -459,6 +494,120 @@ describe("NotesPageHeader", () => {
       { id: "child", parentId: "inbox", afterId: null },
       "child"
     );
+  });
+
+  it.each(["starred", "recent", "tags"] as const)(
+    "moves rows from the %s projection using its full-active snapshot",
+    async (libraryView) => {
+      const user = userEvent.setup();
+      const workspace = workspaceValue({ libraryView });
+      const prepared = preparedMove(
+        "child",
+        moveScopeForView(libraryView)
+      );
+      workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
+      workspace.commitPreparedMove = vi.fn().mockResolvedValue({ ok: true });
+      renderZoomedOutline(workspace);
+
+      await user.click(
+        screen.getByRole("button", { name: "More actions for First child" })
+      );
+      await user.click(
+        within(await screen.findByRole("menu")).getByRole("menuitem", {
+          name: "Move To..."
+        })
+      );
+      await user.click(await screen.findByRole("option", { name: "Inbox" }));
+
+      expect(workspace.prepareMoveNode).toHaveBeenCalledWith("child");
+      expect(workspace.commitPreparedMove).toHaveBeenCalledWith(
+        prepared,
+        "inbox"
+      );
+      expect(workspace.actions.moveNode).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(["starred", "recent", "tags"] as const)(
+    "moves page headers from the %s projection using its full-active snapshot",
+    async (libraryView) => {
+      const user = userEvent.setup();
+      const workspace = workspaceValue({ libraryView });
+      const prepared = preparedMove(
+        "project",
+        moveScopeForView(libraryView)
+      );
+      workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
+      workspace.commitPreparedMove = vi.fn().mockResolvedValue({ ok: true });
+      renderZoomedOutline(workspace);
+
+      await user.click(
+        screen.getByRole("button", { name: "More actions for Project" })
+      );
+      await user.click(
+        within(await screen.findByRole("menu")).getByRole("menuitem", {
+          name: "Move To..."
+        })
+      );
+      await user.click(await screen.findByRole("option", { name: "Inbox" }));
+
+      expect(workspace.prepareMoveNode).toHaveBeenCalledWith("project");
+      expect(workspace.commitPreparedMove).toHaveBeenCalledWith(
+        prepared,
+        "inbox"
+      );
+      expect(workspace.actions.moveNode).not.toHaveBeenCalled();
+    }
+  );
+
+  it("commits the root destination from the row snapshot", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({ libraryView: "starred" });
+    const prepared = preparedMove("child", { kind: "starred" });
+    workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
+    workspace.commitPreparedMove = vi.fn().mockResolvedValue({ ok: true });
+    renderZoomedOutline(workspace);
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for First child" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move To..."
+      })
+    );
+    await user.click(
+      await screen.findByRole("option", { name: "Top level" })
+    );
+
+    expect(workspace.commitPreparedMove).toHaveBeenCalledWith(prepared, null);
+  });
+
+  it("keeps a page Move To chooser open when its prepared target was removed", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({ libraryView: "recent" });
+    const prepared = preparedMove("project", { kind: "recent" });
+    workspace.prepareMoveNode = vi.fn().mockResolvedValue(prepared);
+    workspace.commitPreparedMove = vi.fn().mockResolvedValue({
+      ok: false,
+      error: "That destination is no longer active. Refresh Move To."
+    });
+    renderZoomedOutline(workspace);
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Project" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move To..."
+      })
+    );
+    await user.click(await screen.findByRole("option", { name: "Inbox" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "destination is no longer active"
+    );
+    expect(screen.getByRole("menu")).toBeVisible();
   });
 
   it("gives the page root subtree actions and readable timestamps", async () => {

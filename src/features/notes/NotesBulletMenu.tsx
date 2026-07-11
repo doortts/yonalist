@@ -36,8 +36,14 @@ import {
   useState
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
-import type { MoveNoteNodeInput, NoteId, NoteNode } from "../../domain/notes";
 import type { NotesExportFormat } from "../../domain/notesExport";
+import type { NotesMoveDestination } from "./notesMoveTargets";
+
+export {
+  buildNotesMoveDestinations,
+  buildNotesMoveNodeInput,
+  type NotesMoveDestination
+} from "./notesMoveTargets";
 
 export interface NotesBulletMenuProps {
   mode?: "standard" | "archive" | "trash";
@@ -61,7 +67,12 @@ export interface NotesBulletMenuProps {
   onOpenNote?(): void;
   onAddDate?(): void;
   onUploadImage?(): void;
-  onMoveTo?(destinationId: string | null): void;
+  onMoveTo?(
+    destinationId: string | null
+  ):
+    | void
+    | NotesMoveCommitOutcome
+    | Promise<void | NotesMoveCommitOutcome>;
   onExpandAll?(): void;
   onCollapseAll?(): void;
   onSortAscending?(): void;
@@ -75,116 +86,9 @@ export interface NotesBulletMenuProps {
   onUnarchive?(): void;
 }
 
-export interface NotesMoveDestination {
-  id: NoteId | null;
-  label: string;
-  depth: number;
-}
-
-function compareMoveNodes(left: NoteNode, right: NoteNode): number {
-  return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
-}
-
-function activeMoveNode(node: NoteNode | undefined): node is NoteNode {
-  return Boolean(
-    node &&
-      node.deletedAt === null &&
-      node.archivedAt === null &&
-      node.archiveRootId === null
-  );
-}
-
-function insideSubtree(
-  nodesById: Readonly<Record<NoteId, NoteNode>>,
-  candidateId: NoteId,
-  rootId: NoteId
-): boolean {
-  let current: NoteNode | undefined = nodesById[candidateId];
-  const visited = new Set<NoteId>();
-  while (current && !visited.has(current.id)) {
-    if (current.id === rootId) {
-      return true;
-    }
-    visited.add(current.id);
-    current = current.parentId ? nodesById[current.parentId] : undefined;
-  }
-  return false;
-}
-
-export function buildNotesMoveDestinations(
-  nodesById: Readonly<Record<NoteId, NoteNode>>,
-  movingNodeId: NoteId
-): NotesMoveDestination[] {
-  const childrenByParent = new Map<NoteId | null, NoteNode[]>();
-  for (const node of Object.values(nodesById)) {
-    if (
-      !activeMoveNode(node) ||
-      insideSubtree(nodesById, node.id, movingNodeId)
-    ) {
-      continue;
-    }
-    const parent =
-      node.parentId === null ? undefined : nodesById[node.parentId];
-    if (node.parentId !== null && !activeMoveNode(parent)) {
-      continue;
-    }
-    const siblings = childrenByParent.get(node.parentId) ?? [];
-    siblings.push(node);
-    childrenByParent.set(node.parentId, siblings);
-  }
-  for (const siblings of childrenByParent.values()) {
-    siblings.sort(compareMoveNodes);
-  }
-
-  const destinations: NotesMoveDestination[] = [
-    { id: null, label: "Top level", depth: 0 }
-  ];
-  const appendChildren = (parentId: NoteId | null, depth: number) => {
-    for (const node of childrenByParent.get(parentId) ?? []) {
-      destinations.push({
-        id: node.id,
-        label: node.title.trim() || "Untitled node",
-        depth
-      });
-      appendChildren(node.id, depth + 1);
-    }
-  };
-  appendChildren(null, 0);
-  return destinations;
-}
-
-export function buildNotesMoveNodeInput(
-  nodesById: Readonly<Record<NoteId, NoteNode>>,
-  movingNodeId: NoteId,
-  destinationId: NoteId | null
-): MoveNoteNodeInput | null {
-  const moving = nodesById[movingNodeId];
-  if (
-    !activeMoveNode(moving) ||
-    (destinationId !== null &&
-      (!activeMoveNode(nodesById[destinationId]) ||
-        insideSubtree(nodesById, destinationId, movingNodeId)))
-  ) {
-    return null;
-  }
-  const siblings = Object.values(nodesById)
-    .filter(
-      (node) => activeMoveNode(node) && node.parentId === destinationId
-    )
-    .sort(compareMoveNodes);
-  if (
-    moving.parentId === destinationId &&
-    siblings[siblings.length - 1]?.id === movingNodeId
-  ) {
-    return null;
-  }
-  const remainingSiblings = siblings.filter((node) => node.id !== movingNodeId);
-  return {
-    id: movingNodeId,
-    parentId: destinationId,
-    afterId: remainingSiblings[remainingSiblings.length - 1]?.id ?? null
-  };
-}
+export type NotesMoveCommitOutcome =
+  | { ok: true }
+  | { ok: false; error: string };
 
 export function formatNotesTimestamp(value: string): string {
   const date = new Date(value);
@@ -273,6 +177,8 @@ export function NotesBulletMenu({
     readonly NotesMoveDestination[]
   >([]);
   const [moveDestinationsLoading, setMoveDestinationsLoading] = useState(false);
+  const [moveCommitPending, setMoveCommitPending] = useState(false);
+  const [moveError, setMoveError] = useState<string | null>(null);
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const moveCommandRef = useRef<HTMLElement>(null);
@@ -313,17 +219,32 @@ export function NotesBulletMenu({
     requestAnimationFrame(() => moveCommandRef.current?.focus());
   };
 
-  const chooseMoveDestination = (destinationId: string | null) => {
-    if (actionBusy) {
+  const chooseMoveDestination = async (destinationId: string | null) => {
+    if (actionBusy || moveCommitPending) {
       return;
     }
-    onMoveTo?.(destinationId);
-    setOpen(false);
+    setMoveCommitPending(true);
+    setMoveError(null);
+    try {
+      const outcome = await onMoveTo?.(destinationId);
+      if (outcome && !outcome.ok) {
+        setMoveError(outcome.error);
+        moveSearchRef.current?.focus();
+        return;
+      }
+      setOpen(false);
+    } catch {
+      setMoveError("Move failed. Refresh Move To and try again.");
+      moveSearchRef.current?.focus();
+    } finally {
+      setMoveCommitPending(false);
+    }
   };
 
   const handleMoveSearchChange = (event: ChangeEvent<HTMLInputElement>) => {
     setMoveQuery(event.currentTarget.value);
     setMoveSelection(-1);
+    setMoveError(null);
   };
 
   const handleMoveSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -352,7 +273,7 @@ export function NotesBulletMenu({
       event.preventDefault();
       const destination = filteredMoveDestinations[moveSelection];
       if (destination) {
-        chooseMoveDestination(destination.id);
+        void chooseMoveDestination(destination.id);
       }
     }
   };
@@ -371,6 +292,8 @@ export function NotesBulletMenu({
           setMoveSelection(-1);
           setAvailableMoveDestinations([]);
           setMoveDestinationsLoading(false);
+          setMoveCommitPending(false);
+          setMoveError(null);
           moveRequestRef.current += 1;
         }
       }}
@@ -450,6 +373,7 @@ export function NotesBulletMenu({
                   className="notes-move-destinations"
                   role="listbox"
                   aria-label="Move destinations"
+                  aria-busy={moveDestinationsLoading || moveCommitPending}
                 >
                   {filteredMoveDestinations.map((destination, index) => (
                     <button
@@ -458,10 +382,15 @@ export function NotesBulletMenu({
                       type="button"
                       role="option"
                       aria-selected={moveSelection === index}
+                      disabled={moveCommitPending}
                       key={destination.id ?? "root"}
-                      style={{ "--notes-move-depth": destination.depth } as CSSProperties}
+                      style={
+                        {
+                          "--notes-move-depth": destination.depth
+                        } as CSSProperties
+                      }
                       onMouseMove={() => setMoveSelection(index)}
-                      onClick={() => chooseMoveDestination(destination.id)}
+                      onClick={() => void chooseMoveDestination(destination.id)}
                     >
                       {destination.label}
                     </button>
@@ -478,6 +407,11 @@ export function NotesBulletMenu({
                     <p className="notes-move-empty">No destinations found</p>
                   )}
                 </div>
+                {moveError && (
+                  <p className="notes-move-error" role="alert">
+                    {moveError}
+                  </p>
+                )}
               </div>
             ) : exportView ? (
               <>
@@ -565,6 +499,7 @@ export function NotesBulletMenu({
                     setMoveQuery("");
                     setMoveSelection(-1);
                     setMoveView(true);
+                    setMoveError(null);
                     const destinations =
                       getMoveDestinations?.() ?? moveDestinations;
                     if (Array.isArray(destinations)) {
@@ -581,9 +516,14 @@ export function NotesBulletMenu({
                           setMoveDestinationsLoading(false);
                         }
                       },
-                      () => {
+                      (cause) => {
                         if (moveRequestRef.current === requestId) {
                           setMoveDestinationsLoading(false);
+                          setMoveError(
+                            cause instanceof Error
+                              ? `${cause.message} Refresh Move To and try again.`
+                              : "Could not load move destinations. Try again."
+                          );
                         }
                       }
                     );

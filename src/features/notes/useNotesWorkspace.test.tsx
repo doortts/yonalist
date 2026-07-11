@@ -2549,6 +2549,133 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.child.parentId).toBe("project");
   });
 
+  it("prepares Move To from full active state and commits a root move with one Undo", async () => {
+    const initial = workspace([
+      node({ id: "project" }),
+      node({ id: "child", parentId: "project" }),
+      node({ id: "inbox", sortKey: 2048 })
+    ]);
+    const moved = workspace([
+      node({ id: "project" }),
+      node({ id: "inbox", sortKey: 2048 }),
+      node({ id: "child", sortKey: 3072 })
+    ]);
+    let activeWorkspace = initial;
+    const moveNode = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => {
+        activeWorkspace = moved;
+        return {
+          workspace: moved,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        };
+      }
+    );
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "starred"
+          ? workspace([initial.nodes[0], initial.nodes[1]])
+          : activeWorkspace
+      ),
+      moveNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/prepared-root", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () =>
+      result.current.actions.selectLibraryView("starred")
+    );
+
+    const prepared = await result.current.prepareMoveNode!("child");
+    expect(prepared.nodes.map((item) => item.id)).toEqual([
+      "project",
+      "child",
+      "inbox"
+    ]);
+    const outcome = await result.current.commitPreparedMove!(prepared, null);
+
+    expect(outcome).toEqual({ ok: true });
+    expect(moveNode).toHaveBeenCalledOnce();
+    expect(moveNode).toHaveBeenCalledWith(
+      "/prepared-root",
+      { id: "child", parentId: null, afterId: "inbox" },
+      historyContext("move")
+    );
+    await act(async () => result.current.actions.undo!());
+    expect(undo).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a target removed after Move To opens without closing authority", async () => {
+    const source = node({ id: "source" });
+    const target = node({ id: "target", sortKey: 2048 });
+    let activeWorkspace = workspace([source, target]);
+    const moveNode = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockImplementation(async () => activeWorkspace),
+      moveNode
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/removed-target", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const prepared = await result.current.prepareMoveNode!("source");
+    activeWorkspace = workspace([source]);
+
+    const outcome = await result.current.commitPreparedMove!(
+      prepared,
+      "target"
+    );
+
+    expect(outcome).toEqual({
+      ok: false,
+      error: "That destination is no longer active. Refresh Move To."
+    });
+    expect(moveNode).not.toHaveBeenCalled();
+  });
+
+  it("rejects a prepared move after its scope or vault changes", async () => {
+    const active = workspace([
+      node({ id: "source" }),
+      node({ id: "target", sortKey: 2048 })
+    ]);
+    const oldStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(active)
+    });
+    const newStore = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(active)
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot, store }) =>
+        useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/old-move", store: oldStore } }
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const scopePrepared = await result.current.prepareMoveNode!("source");
+    await act(async () =>
+      result.current.actions.selectLibraryView("recent")
+    );
+
+    expect(
+      await result.current.commitPreparedMove!(scopePrepared, "target")
+    ).toMatchObject({ ok: false, error: expect.stringContaining("changed") });
+
+    const vaultPrepared = await result.current.prepareMoveNode!("source");
+    rerender({ vaultRoot: "/new-move", store: newStore });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(
+      await result.current.commitPreparedMove!(vaultPrepared, "target")
+    ).toMatchObject({ ok: false, error: expect.stringContaining("changed") });
+  });
+
   it("broadcasts atomic subtree actions to sibling hooks without replacing navigation", async () => {
     const initial = workspace([
       node({ id: "root", isCollapsed: true }),

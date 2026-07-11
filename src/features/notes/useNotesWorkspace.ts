@@ -54,6 +54,10 @@ import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
 } from "./notesAttachmentController";
+import {
+  buildNotesMoveNodeInput,
+  isActiveMoveNode
+} from "./notesMoveTargets";
 
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
@@ -137,6 +141,19 @@ export interface UseNotesWorkspaceOptions {
   attachmentUi?: NotesAttachmentUiBoundary;
 }
 
+export interface NotesPreparedMove {
+  readonly token: number;
+  readonly vaultRoot: string;
+  readonly scope: NotesWorkspaceScope;
+  readonly generation: number;
+  readonly sourceId: NoteId;
+  readonly nodes: readonly NoteNode[];
+}
+
+export type NotesPreparedMoveCommitResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
 export interface UseNotesWorkspaceResult {
   state: NormalizedNotesWorkspace;
   actions: NotesWorkspaceActions;
@@ -157,6 +174,11 @@ export interface UseNotesWorkspaceResult {
   canUndo?: boolean;
   canRedo?: boolean;
   loadActiveNodesForMove?(): Promise<readonly NoteNode[]>;
+  prepareMoveNode?(nodeId: NoteId): Promise<NotesPreparedMove>;
+  commitPreparedMove?(
+    prepared: NotesPreparedMove,
+    destinationId: NoteId | null
+  ): Promise<NotesPreparedMoveCommitResult>;
 }
 
 export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
@@ -1229,6 +1251,10 @@ export function useNotesWorkspace({
   });
   const historyVersionRef = useRef(0);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
+  const activeWorkspaceGenerationRef = useRef(0);
+  const movePreparationTokenRef = useRef(0);
+  const vaultRootRef = useRef(vaultRoot);
+  vaultRootRef.current = vaultRoot;
   const requestedTagFiltersRef = useRef<readonly NoteTagFilter[]>([]);
   const tagFilterOriginRef = useRef<TagFilterOrigin | null>(null);
   const tagFilterRequestRef = useRef(0);
@@ -1429,6 +1455,8 @@ export function useNotesWorkspace({
     setHistoryStatus({ canUndo: false, canRedo: false });
     historyVersionRef.current = 0;
     activeScopeRef.current = { kind: "active" };
+    activeWorkspaceGenerationRef.current += 1;
+    movePreparationTokenRef.current += 1;
     requestedTagFiltersRef.current = [];
     tagFilterOriginRef.current = null;
     tagFilterRequestRef.current += 1;
@@ -1456,6 +1484,12 @@ export function useNotesWorkspace({
         if (event.type === "pending") {
           dispatch({ type: "setLoading" });
           return;
+        }
+        if (
+          event.result.kind === "authoritative" ||
+          (event.result.kind === "failure" && event.result.workspace)
+        ) {
+          activeWorkspaceGenerationRef.current += 1;
         }
         if (
           event.result.kind !== "skipped" &&
@@ -3383,7 +3417,8 @@ export function useNotesWorkspace({
     async (
       input: MoveNoteNodeInput,
       focusNodeId?: NoteId | null,
-      options?: NotesWorkspaceCompoundOptions
+      options?: NotesWorkspaceCompoundOptions,
+      validatedActiveWorkspace = false
     ) => {
       const hadCentralDraft =
         sessionRecordRef.current?.drafts.has(input.id) ?? false;
@@ -3392,11 +3427,13 @@ export function useNotesWorkspace({
       const hasCentralDraft = centralDraft !== undefined;
       const inlineDraft =
         hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      return runStructuralCommand("move", async (context, historyContext, executionRecord) => {
+      let succeeded = false;
+      await runStructuralCommand("move", async (context, historyContext, executionRecord) => {
         const before = confirmedState(context);
         const expandNodeId = options?.expandNodeId;
         if (
-          !hasMoveDependencies(before, input) ||
+          (!validatedActiveWorkspace &&
+            !hasMoveDependencies(before, input)) ||
           (expandNodeId !== undefined && !before.nodesById[expandNodeId])
         ) {
           return { kind: "skipped" };
@@ -3476,8 +3513,17 @@ export function useNotesWorkspace({
             result.workspace
           );
         }
+        succeeded =
+          result.kind === "authoritative" &&
+          (!historyContext ||
+            Boolean(
+              result.committedHistoryEntryIds?.includes(
+                historyContext.entryId
+              )
+            ));
         return result;
       });
+      return succeeded;
     },
     [
       beginStructuralEntry,
@@ -4662,7 +4708,9 @@ export function useNotesWorkspace({
         deletingNotesDataRef.current
           ? Promise.resolve(false)
           : flushAllDraftsBeforeStructural(),
-      moveNode: gate(moveNode),
+      moveNode: gate(async (...args) => {
+        await moveNode(...args);
+      }),
       toggleComplete: gate(toggleComplete),
       toggleCollapsed: gate(toggleCollapsed),
       expandAll: gate(expandAll),
@@ -4742,6 +4790,134 @@ export function useNotesWorkspace({
     [repository, vaultRoot]
   );
 
+  const prepareMoveNode = useCallback(
+    async (nodeId: NoteId): Promise<NotesPreparedMove> => {
+      const token = movePreparationTokenRef.current + 1;
+      movePreparationTokenRef.current = token;
+      const preparedVaultRoot = vaultRoot;
+      const preparedScope = cloneWorkspaceScope(activeScopeRef.current);
+      const generation = activeWorkspaceGenerationRef.current;
+      const nodes = (await loadActiveNodesForMove()).map((node) => ({
+        ...node
+      }));
+      if (
+        token !== movePreparationTokenRef.current ||
+        vaultRootRef.current !== preparedVaultRoot ||
+        !sameScope(activeScopeRef.current, preparedScope) ||
+        activeWorkspaceGenerationRef.current !== generation
+      ) {
+        throw new Error("Notes changed while Move To was opening.");
+      }
+      const nodesById = Object.fromEntries(
+        nodes.map((node) => [node.id, node])
+      ) as Record<NoteId, NoteNode>;
+      if (!isActiveMoveNode(nodesById[nodeId])) {
+        throw new Error("This note is no longer active.");
+      }
+      return {
+        token,
+        vaultRoot: preparedVaultRoot,
+        scope: preparedScope,
+        generation,
+        sourceId: nodeId,
+        nodes
+      };
+    },
+    [loadActiveNodesForMove, vaultRoot]
+  );
+
+  const commitPreparedMove = useCallback(
+    async (
+      prepared: NotesPreparedMove,
+      destinationId: NoteId | null
+    ): Promise<NotesPreparedMoveCommitResult> => {
+      const stale = () =>
+        prepared.token !== movePreparationTokenRef.current ||
+        prepared.vaultRoot !== vaultRootRef.current ||
+        !sameScope(prepared.scope, activeScopeRef.current) ||
+        prepared.generation !== activeWorkspaceGenerationRef.current;
+      if (stale()) {
+        return {
+          ok: false,
+          error: "Notes changed while Move To was open. Refresh Move To and try again."
+        };
+      }
+      const preparedNodesById = Object.fromEntries(
+        prepared.nodes.map((node) => [node.id, node])
+      ) as Record<NoteId, NoteNode>;
+      if (
+        destinationId !== null &&
+        !isActiveMoveNode(preparedNodesById[destinationId])
+      ) {
+        return {
+          ok: false,
+          error: "Notes changed while Move To was open. Refresh Move To and try again."
+        };
+      }
+
+      let activeNodes: readonly NoteNode[];
+      try {
+        activeNodes = await loadActiveNodesForMove();
+      } catch {
+        return {
+          ok: false,
+          error: "Could not refresh move destinations. Try again."
+        };
+      }
+      if (stale()) {
+        return {
+          ok: false,
+          error: "Notes changed while Move To was open. Refresh Move To and try again."
+        };
+      }
+
+      const nodesById = Object.fromEntries(
+        activeNodes.map((node) => [node.id, node])
+      ) as Record<NoteId, NoteNode>;
+      if (!isActiveMoveNode(nodesById[prepared.sourceId])) {
+        return {
+          ok: false,
+          error: "This note is no longer active. Refresh Move To."
+        };
+      }
+      if (
+        destinationId !== null &&
+        !isActiveMoveNode(nodesById[destinationId])
+      ) {
+        return {
+          ok: false,
+          error: "That destination is no longer active. Refresh Move To."
+        };
+      }
+      const input = buildNotesMoveNodeInput(
+        nodesById,
+        prepared.sourceId,
+        destinationId
+      );
+      if (!input) {
+        return {
+          ok: false,
+          error: "That destination is no longer valid. Refresh Move To."
+        };
+      }
+
+      movePreparationTokenRef.current += 1;
+      const moved = await moveNode(
+        input,
+        prepared.sourceId,
+        undefined,
+        true
+      );
+      return moved
+        ? { ok: true }
+        : {
+            ok: false,
+            error: "Move could not be completed. Refresh Move To and try again."
+          };
+    },
+    [loadActiveNodesForMove, moveNode]
+  );
+
   return {
     state,
     actions,
@@ -4761,6 +4937,8 @@ export function useNotesWorkspace({
     error: state.error,
     canUndo: historyStatus.canUndo,
     canRedo: historyStatus.canRedo,
-    loadActiveNodesForMove
+    loadActiveNodesForMove,
+    prepareMoveNode,
+    commitPreparedMove
   };
 }
