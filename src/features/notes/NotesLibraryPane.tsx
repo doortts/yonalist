@@ -389,14 +389,14 @@ function NotesLibraryPaneContent() {
                 return null;
               }
               const draft = draftsByNodeId[nodeId];
-              const visibleNode = draft
-                ? { ...node, title: draft.title, note: draft.note }
-                : node;
-              const label = pageLabel(visibleNode.title);
+              const displayTitle = draft?.title ?? node.title;
+              const visibleNote = draft?.note ?? node.note;
+              const label = pageLabel(displayTitle);
               return (
                 <NotesLibraryPageRow
                   key={nodeId}
-                  node={visibleNode}
+                  node={node}
+                  displayTitle={displayTitle}
                   mode={
                     libraryView === "archive"
                       ? "archive"
@@ -422,7 +422,7 @@ function NotesLibraryPaneContent() {
                     }
                     actions.updateNodeDraft(
                       nodeId,
-                      { title, note: visibleNode.note },
+                      { title, note: visibleNote },
                       "title"
                     );
                     return actions.flushNodeDraft(nodeId);

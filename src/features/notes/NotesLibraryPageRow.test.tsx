@@ -185,6 +185,85 @@ describe("NotesLibraryPageRow", () => {
     expect(input).toBeInTheDocument();
   });
 
+  it("retries a visible failed title draft that differs from the committed title", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    handlers.onRename.mockResolvedValue(false);
+    render(
+      <NotesLibraryPageRow
+        node={node({ title: "Project plan" })}
+        displayTitle="Retry me"
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Retry me" }));
+    const input = screen.getByRole("textbox", { name: "Rename Retry me" });
+    await user.type(input, "{Enter}");
+
+    await waitFor(() => expect(handlers.onRename).toHaveBeenCalledOnce());
+    expect(handlers.onRename).toHaveBeenCalledWith("Retry me");
+    expect(input).toHaveValue("Retry me");
+    expect(input).not.toHaveAttribute("readonly");
+  });
+
+  it("keeps an unchanged title from a note-only draft as a no-op", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow
+        node={node({ title: "Project plan" })}
+        displayTitle="Project plan"
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Rename Project plan" }),
+      "{Enter}"
+    );
+
+    expect(handlers.onRename).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["rejects", () => Promise.reject(new Error("rename rejected"))],
+    [
+      "throws",
+      () => {
+        throw new Error("rename threw");
+      }
+    ]
+  ])(
+    "keeps the editor usable without an unhandled rejection when onRename %s",
+    async (_failureMode, rename) => {
+      const user = userEvent.setup();
+      const handlers = callbacks();
+      handlers.onRename.mockImplementation(rename);
+      render(
+        <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Project plan" }));
+      const input = screen.getByRole("textbox", {
+        name: "Rename Project plan"
+      });
+      await user.clear(input);
+      await user.type(input, "Retry me{Enter}");
+
+      await waitFor(() => expect(input).not.toHaveAttribute("readonly"));
+      expect(handlers.onRename).toHaveBeenCalledOnce();
+      expect(input).toHaveValue("Retry me");
+      expect(input).toHaveFocus();
+    }
+  );
+
   it("commits whitespace titles unchanged and presents them as Untitled page", async () => {
     const user = userEvent.setup();
     const handlers = callbacks();

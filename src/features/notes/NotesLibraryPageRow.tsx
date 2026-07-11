@@ -21,6 +21,7 @@ export type NotesLibraryPageRowMode = "active" | "archive" | "trash";
 
 export interface NotesLibraryPageRowProps {
   node: NoteNode;
+  displayTitle?: string;
   mode: NotesLibraryPageRowMode;
   active: boolean;
   disabled?: boolean;
@@ -72,6 +73,7 @@ function CommandItem({
 
 export function NotesLibraryPageRow({
   node,
+  displayTitle = node.title,
   mode,
   active,
   disabled = false,
@@ -89,7 +91,7 @@ export function NotesLibraryPageRow({
   const [exportView, setExportView] = useState(false);
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [editTitle, setEditTitle] = useState(node.title);
+  const [editTitle, setEditTitle] = useState(displayTitle);
   const [saving, setSaving] = useState(false);
   const skipBlurCommitRef = useRef(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -97,7 +99,7 @@ export function NotesLibraryPageRow({
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
-  const label = pageLabel(node.title);
+  const label = pageLabel(displayTitle);
 
   useLayoutEffect(() => {
     if (!editing) {
@@ -110,10 +112,10 @@ export function NotesLibraryPageRow({
   useLayoutEffect(() => {
     if (editing && (!active || mode !== "active")) {
       skipBlurCommitRef.current = true;
-      setEditTitle(node.title);
+      setEditTitle(displayTitle);
       setEditing(false);
     }
-  }, [active, editing, mode, node.title]);
+  }, [active, displayTitle, editing, mode]);
 
   useLayoutEffect(() => {
     if (viewFocusTargetRef.current === "back" && exportView) {
@@ -140,6 +142,8 @@ export function NotesLibraryPageRow({
       if (saved) {
         setEditing(false);
       }
+    } catch {
+      // A failed save stays editable so the same title can be retried.
     } finally {
       commitInFlightRef.current = false;
       setSaving(false);
@@ -152,7 +156,7 @@ export function NotesLibraryPageRow({
       return;
     }
     skipBlurCommitRef.current = false;
-    setEditTitle(node.title);
+    setEditTitle(displayTitle);
     setEditing(true);
   };
 
@@ -183,7 +187,7 @@ export function NotesLibraryPageRow({
               } else if (event.key === "Escape" && !saving) {
                 event.preventDefault();
                 skipBlurCommitRef.current = true;
-                setEditTitle(node.title);
+                setEditTitle(displayTitle);
                 setEditing(false);
               }
             }}

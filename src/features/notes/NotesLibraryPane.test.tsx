@@ -198,6 +198,22 @@ describe("NotesLibraryPane", () => {
     expect(screen.getByRole("textbox", { name: "Rename Renamed" })).toHaveValue(
       "Renamed"
     );
+
+    await user.type(
+      screen.getByRole("textbox", { name: "Rename Renamed" }),
+      "{Enter}"
+    );
+    await waitFor(() =>
+      expect(failedWorkspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+        root.id,
+        { title: "Renamed", note: "Unsaved supporting note" },
+        "title"
+      )
+    );
+    expect(failedWorkspace.actions.flushNodeDraft).toHaveBeenCalledWith(root.id);
+    expect(screen.getByRole("textbox", { name: "Rename Renamed" })).toHaveValue(
+      "Renamed"
+    );
   });
 
   it.each(["archive", "trash"] as const)(
