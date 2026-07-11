@@ -16,6 +16,8 @@ Fourth adversarial review commit: the commit containing this report
 
 Final cutoff review commit: the commit containing this report
 
+Duplicate-admission review commit: the commit containing this report
+
 ## Owned Files
 
 - `src/features/notes/notesHistory.ts`
@@ -92,6 +94,13 @@ Final cutoff review commit: the commit containing this report
 - Each coordinator participant captures its finalizer together with its cutoff. The
   finalizer is idempotent and runs on success, abort, exception, requester close, or
   participant departure even after the live session callbacks are cleared.
+- Each immutable draft attempt has a record-local monotonic ID and an atomic
+  reservation keyed by attempt ID, node ID, and revision. Reservation is installed
+  before local queue admission, spans queued and running states, and is shared by
+  debounce, flush, cutoff drain, explicit retry, recovery, and shutdown callers.
+  Duplicate callers await the same promise, so only the admitted operation can create
+  a history context; terminal success, failure, replacement settlement, or cancellation
+  releases that reservation once.
 
 ## TDD Evidence
 
@@ -228,6 +237,19 @@ wrote the stale failed patch instead of the newest visible draft. GREEN: retry
 selection is now scope-sensitive: the cutoff chooses its historical failed revision,
 while ordinary retry clones the latest visible revision at invocation.
 
+### Duplicate Admission Review
+
+Reservation RED: the blocked-local-write test expected the original failed update plus
+one retry, but observed four root updates: cutoff drain, explicit retry, and shutdown
+all admitted the same immutable failed attempt before its first queued callback began.
+GREEN: all three paths receive one reserved promise, producing one successful update
+entry, one distinct history ID, and `canUndo: false` after one backend Undo.
+
+Integration RED: using `crypto.randomUUID()` for reservation IDs triggered the existing
+split UUID-failure fixture and cascaded through the workspace suite. GREEN: attempt IDs
+are monotonic within their session record, preserving atomic identity without sharing
+the application UUID failure surface.
+
 ## Verification
 
 - Focused command covering history, keyboard, coordinator, reducer, hook, and header:
@@ -248,6 +270,9 @@ while ordinary retry clones the latest visible revision at invocation.
 - Final-cutoff focused history/coordinator/hook run: 3 files, 109/109 passed.
 - Final-cutoff full Notes run (`--maxWorkers=1`): 22 files, 556/556 passed.
 - Final-cutoff `npm run build`: exit 0; 2,288 modules transformed.
+- Duplicate-admission focused history/coordinator/hook run: 3 files, 110/110 passed.
+- Duplicate-admission full Notes run (`--maxWorkers=1`): 22 files, 557/557 passed.
+- Duplicate-admission `npm run build`: exit 0; 2,288 modules transformed.
 
 ## Concerns
 

@@ -2332,6 +2332,87 @@ describe("useNotesWorkspace", () => {
     ]);
   });
 
+  it("admits one failed retry when cutoff, explicit retry, and shutdown race", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "blocker", sortKey: 2048 })
+    ]);
+    const blockedWrite = deferred<NotesWorkspace>();
+    const successfulEntryIds: string[] = [];
+    let rootAttempt = 0;
+    const updateNode = vi.fn((_vaultRoot, input, history) => {
+      if (input.id === "root" && rootAttempt++ === 0) {
+        return Promise.reject(new Error("disk full"));
+      }
+      if (input.id === "blocker") {
+        return blockedWrite.promise;
+      }
+      if (input.id === "root" && history) {
+        successfulEntryIds.push(history.entryId);
+      }
+      return Promise.resolve(initial);
+    });
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: successfulEntryIds.at(-1) ?? null,
+      canUndo: successfulEntryIds.length > 1,
+      canRedo: successfulEntryIds.length > 0
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      undo
+    });
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/reserved-cutoff", repository: store })
+    );
+    const requester = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/reserved-cutoff", repository: store })
+    );
+    await waitFor(() => {
+      expect(editor.result.current.status).toBe("ready");
+      expect(requester.result.current.status).toBe("ready");
+    });
+
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "failed value",
+        note: "failed note"
+      });
+    });
+    await act(async () => editor.result.current.actions.flushNodeDraft("root"));
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("blocker", {
+        title: "blocking",
+        note: ""
+      });
+    });
+    const blockerFlush = editor.result.current.actions.flushNodeDraft("blocker");
+    await waitFor(() =>
+      expect(updateNode.mock.calls.at(-1)?.[1].id).toBe("blocker")
+    );
+
+    const replay = requester.result.current.actions.undo!();
+    await Promise.resolve();
+    const explicitRetry = editor.result.current.retryFailedDraft("root");
+    editor.unmount();
+
+    blockedWrite.resolve(initial);
+    await act(async () =>
+      Promise.all([blockerFlush, explicitRetry, replay])
+    );
+
+    const rootCalls = vi
+      .mocked(store.updateNode)
+      .mock.calls.filter(([, input]) => input.id === "root");
+    expect(rootCalls).toHaveLength(2);
+    expect(successfulEntryIds).toHaveLength(1);
+    expect(new Set(successfulEntryIds).size).toBe(1);
+    expect(undo).toHaveBeenCalledOnce();
+    expect(requester.result.current.canUndo).toBe(false);
+    expect(requester.result.current.canRedo).toBe(true);
+  });
+
   it("flushes a visible note draft before undo and restores field-aware UI", async () => {
     const initial = workspace([
       node({ id: "root", title: "before" }),

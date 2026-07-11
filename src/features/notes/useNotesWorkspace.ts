@@ -188,6 +188,7 @@ interface BufferedWorkspaceCommand {
 }
 
 interface FailedDraftWrite {
+  attemptId: string;
   patch: Pick<NoteNode, "title" | "note">;
   revision: number;
   focus: NotesHistoryFocus;
@@ -195,6 +196,7 @@ interface FailedDraftWrite {
 }
 
 interface DraftWriteAttempt {
+  readonly attemptId: string;
   readonly nodeId: NoteId;
   readonly draft: Readonly<NotesNodeDraft>;
   readonly focus: Readonly<NotesHistoryFocus>;
@@ -218,9 +220,11 @@ interface NotesWorkspaceSessionRecord {
   pendingDebounceByNodeId: Map<NoteId, number>;
   inFlightDraftByNodeId: Map<NoteId, number>;
   retryWriteByNodeId: Map<NoteId, DraftWriteAttempt>;
+  draftAttemptReservations: Map<string, Promise<boolean>>;
   draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
   draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
   nextDraftRevision: number;
+  nextDraftAttemptId: number;
   structuralIntents: Array<{
     cutoff: number;
     historyContexts: Set<NotesHistoryContext>;
@@ -445,6 +449,7 @@ function cloneFailedWrites(
 }
 
 function draftWriteAttempt(
+  attemptId: string,
   nodeId: NoteId,
   draft: NotesNodeDraft,
   focus: NotesHistoryFocus,
@@ -452,6 +457,7 @@ function draftWriteAttempt(
   standaloneHistoryEntry = false
 ): DraftWriteAttempt {
   return {
+    attemptId,
     nodeId,
     draft: { ...draft },
     focus: { ...focus },
@@ -460,11 +466,30 @@ function draftWriteAttempt(
   };
 }
 
+function newDraftWriteAttempt(
+  record: NotesWorkspaceSessionRecord,
+  nodeId: NoteId,
+  draft: NotesNodeDraft,
+  focus: NotesHistoryFocus,
+  historyContext: NotesHistoryContext | null,
+  standaloneHistoryEntry = false
+): DraftWriteAttempt {
+  return draftWriteAttempt(
+    `attempt-${record.nextDraftAttemptId++}`,
+    nodeId,
+    draft,
+    focus,
+    historyContext,
+    standaloneHistoryEntry
+  );
+}
+
 function failedDraftAttempt(
   nodeId: NoteId,
   failed: FailedDraftWrite
 ): DraftWriteAttempt {
   return draftWriteAttempt(
+    failed.attemptId,
     nodeId,
     {
       ...failed.patch,
@@ -475,6 +500,51 @@ function failedDraftAttempt(
     null,
     true
   );
+}
+
+function draftAttemptReservationKey(attempt: DraftWriteAttempt): string {
+  return `${attempt.attemptId}:${attempt.nodeId}:${attempt.draft.revision}`;
+}
+
+function reserveDraftAttempt(
+  record: NotesWorkspaceSessionRecord,
+  attempt: DraftWriteAttempt,
+  enqueue: () => Promise<boolean>
+): Promise<boolean> {
+  const key = draftAttemptReservationKey(attempt);
+  const existing = record.draftAttemptReservations.get(key);
+  if (existing) {
+    return existing;
+  }
+
+  let resolveCompletion!: (value: boolean) => void;
+  let rejectCompletion!: (cause: unknown) => void;
+  const completion = new Promise<boolean>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  let released = false;
+  const release = (settle: () => void): void => {
+    if (released) {
+      return;
+    }
+    released = true;
+    if (record.draftAttemptReservations.get(key) === completion) {
+      record.draftAttemptReservations.delete(key);
+    }
+    settle();
+  };
+
+  record.draftAttemptReservations.set(key, completion);
+  try {
+    void enqueue().then(
+      (value) => release(() => resolveCompletion(value)),
+      (cause) => release(() => rejectCompletion(cause))
+    );
+  } catch (cause) {
+    release(() => rejectCompletion(cause));
+  }
+  return completion;
 }
 
 function retryDraftAttempt(
@@ -956,8 +1026,9 @@ export function useNotesWorkspace({
           persist &&
           (cutoff === undefined || attempt.draft.revision <= cutoff)
         ) {
-          void record.writeQueue
-            .enqueue(() => persist(record, attempt))
+          void reserveDraftAttempt(record, attempt, () =>
+            record.writeQueue.enqueue(() => persist(record, attempt))
+          )
             .catch(() => undefined);
         }
       }
@@ -1097,9 +1168,11 @@ export function useNotesWorkspace({
       pendingDebounceByNodeId: new Map(),
       inFlightDraftByNodeId: new Map(),
       retryWriteByNodeId: new Map(),
+      draftAttemptReservations: new Map(),
       draftHistoryContextByNodeId: new Map(),
       draftHistoryFocusByNodeId: new Map(),
       nextDraftRevision: 1,
+      nextDraftAttemptId: 1,
       structuralIntents: [],
       failedWritesByNodeId: new Map(),
       writeError: null,
@@ -1138,7 +1211,8 @@ export function useNotesWorkspace({
             const failed = record.failedWritesByNodeId.get(nodeId);
             record.retryWriteByNodeId.set(
               nodeId,
-              draftWriteAttempt(
+              newDraftWriteAttempt(
+                record,
                 nodeId,
                 draft,
                 failed?.focus ?? { nodeId, field: "title" },
@@ -1493,6 +1567,7 @@ export function useNotesWorkspace({
         }
         const failure = writeError(result.error);
         record.failedWritesByNodeId.set(nodeId, {
+          attemptId: attempt.attemptId,
           patch: { title: draft.title, note: draft.note },
           revision: draft.revision,
           focus: { ...attempt.focus },
@@ -1638,6 +1713,17 @@ export function useNotesWorkspace({
   );
   persistDraftRef.current = persistDraft;
 
+  const enqueueDraftAttempt = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      attempt: DraftWriteAttempt
+    ): Promise<boolean> =>
+      reserveDraftAttempt(record, attempt, () =>
+        record.writeQueue.enqueue(() => persistDraft(record, attempt))
+      ),
+    [persistDraft]
+  );
+
   const writeScheduledDraft = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
@@ -1663,8 +1749,11 @@ export function useNotesWorkspace({
         return;
       }
       record.pendingDebounceByNodeId.set(nodeId, draft.revision);
-      void record.writeQueue
-        .enqueueDebounced(nodeId, () => writeScheduledDraft(record, attempt))
+      void reserveDraftAttempt(record, attempt, () =>
+        record.writeQueue.enqueueDebounced(nodeId, () =>
+          writeScheduledDraft(record, attempt)
+        )
+      )
         .catch(() => undefined);
     },
     [writeScheduledDraft]
@@ -1703,7 +1792,8 @@ export function useNotesWorkspace({
       record.drafts.set(nodeId, draft);
       const scheduledHistoryContext =
         record.draftHistoryContextByNodeId.get(nodeId);
-      const attempt = draftWriteAttempt(
+      const attempt = newDraftWriteAttempt(
+        record,
         nodeId,
         draft,
         focus,
@@ -1742,9 +1832,7 @@ export function useNotesWorkspace({
             ) {
               return false;
             }
-            await record.writeQueue.enqueue(() =>
-              persistDraft(record, attempt)
-            );
+            await enqueueDraftAttempt(record, attempt);
           } else {
             await record.writeQueue.flush(nodeId);
           }
@@ -1759,7 +1847,7 @@ export function useNotesWorkspace({
         !record.drafts.has(nodeId)
       );
     },
-    [persistDraft]
+    [enqueueDraftAttempt]
   );
 
   const retryFailedDraft = useCallback(
@@ -1802,9 +1890,9 @@ export function useNotesWorkspace({
       if (cutoff !== undefined && attempt.draft.revision > cutoff) {
         return;
       }
-      await record.writeQueue.enqueue(() => persistDraft(record, attempt));
+      await enqueueDraftAttempt(record, attempt);
     },
-    [persistDraft, publishDraftState]
+    [enqueueDraftAttempt, publishDraftState]
   );
 
   const retryLastFailedWrite = useCallback(async (): Promise<void> => {
@@ -1837,9 +1925,7 @@ export function useNotesWorkspace({
             attempt &&
             (cutoff === undefined || attempt.draft.revision <= cutoff)
           ) {
-            void record.writeQueue
-              .enqueue(() => persistDraft(record, attempt))
-              .catch(() => undefined);
+            void enqueueDraftAttempt(record, attempt).catch(() => undefined);
           }
         }
         await record.writeQueue.flush();
@@ -1871,7 +1957,7 @@ export function useNotesWorkspace({
         }
       }
     },
-    [closeTextBurst, persistDraft]
+    [closeTextBurst, enqueueDraftAttempt]
   );
 
   const flushDraftsThroughCutoff = useCallback(
@@ -1889,9 +1975,7 @@ export function useNotesWorkspace({
           }
           const attempt = retryDraftAttempt(record, nodeId, cutoff);
           if (attempt && attempt.draft.revision <= cutoff) {
-            void record.writeQueue
-              .enqueue(() => persistDraft(record, attempt))
-              .catch(() => undefined);
+            void enqueueDraftAttempt(record, attempt).catch(() => undefined);
           }
         }
         await record.writeQueue.flush();
@@ -1929,7 +2013,7 @@ export function useNotesWorkspace({
         }
       }
     },
-    [completeHistoryOwner, persistDraft]
+    [completeHistoryOwner, enqueueDraftAttempt]
   );
 
   flushDraftBarrierRef.current = async (record, cutoff) => {
@@ -3272,6 +3356,7 @@ export function useNotesWorkspace({
       record.pendingDebounceByNodeId.clear();
       record.inFlightDraftByNodeId.clear();
       record.retryWriteByNodeId.clear();
+      record.draftAttemptReservations.clear();
       record.draftHistoryContextByNodeId.clear();
       record.draftHistoryFocusByNodeId.clear();
       record.failedWritesByNodeId.clear();
