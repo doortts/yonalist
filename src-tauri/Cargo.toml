@@ -24,6 +24,7 @@ lopdf = { version = "0.39", default-features = false }
 open = "5"
 printpdf = { version = "0.9.1", default-features = false, features = ["text_layout"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
+rustix = { version = "1.1", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -33,6 +34,9 @@ tauri-plugin-notification = "2"
 tauri-runtime = "=2.8.0"
 tempfile = "3"
 ureq = "2"
+
+[dev-dependencies]
+png = "0.17.16"
 
 # macOS-only: read the OS major version (NSProcessInfo) so the window controls
 # can follow the native inset conventions per release (Tahoe vs earlier).

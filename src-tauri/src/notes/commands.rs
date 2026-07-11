@@ -6,7 +6,7 @@ use crate::notes::history::{
     undo_with_attachment_storage, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, connect_notes_db, create_attachment, create_node,
+    archive_node, attachment_by_id, connect_notes_db, create_attachment_coordinated, create_node,
     delete_database, duplicate_node, empty_trash, list_tags, list_tags_with_counts, load_workspace,
     move_node, open_notes_export_db, remove_attachment, remove_empty_node,
     removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node, search_nodes,
@@ -28,7 +28,7 @@ pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     clear_all_history(&mut connection)?;
-    storage.reconcile_attachment_files(&connection)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(())
 }
 
@@ -41,7 +41,11 @@ fn run_mutation(
     let mut connection = connect_notes_db(vault_path)?;
     let result =
         with_history_transaction_and_prunes(&mut connection, history_context.as_ref(), operation)?;
-    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
     Ok(result.workspace)
 }
 
@@ -240,7 +244,7 @@ pub(crate) fn notes_clear_history(
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let status = clear_history(&mut connection, &session_id)?;
-    storage.reconcile_attachment_files(&connection)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(status)
 }
 
@@ -249,7 +253,7 @@ pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, St
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let workspace = empty_trash(&mut connection)?;
-    storage.reconcile_attachment_files(&connection)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(workspace)
 }
 
@@ -261,8 +265,19 @@ fn attachment_metadata_error(
     match storage.reconcile_attachment_files(connection) {
         Ok(_) => error,
         Err(reconcile_error) => {
+            let _ = storage.mark_reconciliation_needed();
             format!("{error} Attachment reconciliation also failed: {reconcile_error}")
         }
+    }
+}
+
+fn record_cleanup_warning(storage: &AttachmentStorageLease, error: String) {
+    let marker_error = storage.mark_reconciliation_needed().err();
+    match marker_error {
+        Some(marker_error) => eprintln!(
+            "Notes attachment cleanup warning: {error} Reconciliation marker also failed: {marker_error}"
+        ),
+        None => eprintln!("Notes attachment cleanup warning: {error}"),
     }
 }
 
@@ -270,7 +285,28 @@ fn reconcile_after_committed_attachment_change(
     storage: &AttachmentStorageLease,
     connection: &rusqlite::Connection,
 ) {
-    let _ = storage.reconcile_attachment_files(connection);
+    match storage.reconcile_attachment_files(connection) {
+        Ok(_) => {
+            if let Err(error) = storage.clear_reconciliation_marker() {
+                eprintln!("Notes attachment cleanup warning: {error}");
+            }
+        }
+        Err(error) => record_cleanup_warning(storage, error),
+    }
+}
+
+fn reconcile_candidates_after_committed_change(
+    storage: &AttachmentStorageLease,
+    connection: &rusqlite::Connection,
+    candidates: &[String],
+) {
+    if storage.reconciliation_needed().unwrap_or(true) {
+        reconcile_after_committed_attachment_change(storage, connection);
+        return;
+    }
+    if let Err(error) = storage.reconcile_attachment_candidates(connection, candidates) {
+        record_cleanup_warning(storage, error);
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -290,29 +326,34 @@ pub(crate) fn notes_import_attachment(
     let byte_size = i64::try_from(prepared.image.byte_size)
         .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
     let mut connection = connect_notes_db(&vault_path)?;
-    let relative_path = storage
-        .publish_attachment_bytes(&prepared)
-        .map_err(|error| attachment_metadata_error(&storage, &connection, error))?;
-    let attachment = NewAttachment {
-        id: input.id,
-        node_id: input.node_id,
-        relative_path,
-        content_hash: prepared.image.content_hash.clone(),
-        original_name: prepared.original_name.clone(),
-        mime_type: prepared.image.mime_type.to_string(),
-        byte_size,
-        intrinsic_width: i64::from(prepared.image.width),
-        intrinsic_height: i64::from(prepared.image.height),
-        display_width,
-    };
+    let identity = storage.capture_database_identity(&connection)?;
     match with_history_transaction_and_prunes(
         &mut connection,
         history_context.as_ref(),
-        |connection| create_attachment(connection, attachment),
+        |connection| {
+            create_attachment_coordinated(
+                connection,
+                || {
+                    let relative_path =
+                        storage.publish_attachment_bytes_for_import(&prepared, &identity)?;
+                    Ok(NewAttachment {
+                        id: input.id,
+                        node_id: input.node_id,
+                        relative_path,
+                        content_hash: prepared.image.content_hash.clone(),
+                        original_name: prepared.original_name.clone(),
+                        mime_type: prepared.image.mime_type.to_string(),
+                        byte_size,
+                        intrinsic_width: i64::from(prepared.image.width),
+                        intrinsic_height: i64::from(prepared.image.height),
+                        display_width,
+                    })
+                },
+                || storage.validate_identity(&identity),
+            )
+        },
     ) {
         Ok(result) => {
-            storage
-                .reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
             reconcile_after_committed_attachment_change(&storage, &connection);
             Ok(result.workspace)
         }
@@ -345,7 +386,11 @@ pub(crate) fn notes_resize_attachment(
         history_context.as_ref(),
         |connection| resize_attachment(connection, &input.id, input.display_width),
     )?;
-    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.workspace)
 }
@@ -363,7 +408,11 @@ pub(crate) fn notes_remove_attachment(
         history_context.as_ref(),
         |connection| remove_attachment(connection, &attachment_id),
     )?;
-    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.workspace)
 }
@@ -384,8 +433,6 @@ pub(crate) fn notes_restore_attachment(
         |connection| restore_attachment(connection, attachment),
     ) {
         Ok(result) => {
-            storage
-                .reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
             reconcile_after_committed_attachment_change(&storage, &connection);
             Ok(result.workspace)
         }
@@ -420,7 +467,8 @@ pub(crate) fn notes_list_tags_with_counts(
 pub(crate) fn notes_delete_database(vault_path: String) -> Result<(), String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     delete_database(&vault_path)?;
-    storage.delete_attachment_files()
+    let _ = storage.delete_attachment_files();
+    Ok(())
 }
 
 fn export_destination_path(destination: &str) -> Result<PathBuf, String> {

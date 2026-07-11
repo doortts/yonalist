@@ -1,55 +1,66 @@
-# Task 7 Backend Review Fix Report
+# Task 7 Backend Second Re-review Report
 
 ## Status
 
 DONE_WITH_CONCERNS
 
-Fix commit: this commit (exact SHA reported in the task response).
+Fix commit: the commit containing this report (exact SHA is returned in the task
+response).
 
-## Owned Files
+## Changed Files
 
 - `src-tauri/Cargo.toml`
 - `src-tauri/Cargo.lock`
 - `src-tauri/src/notes/attachments.rs`
 - `src-tauri/src/notes/commands.rs`
-- `src-tauri/src/notes/history.rs`
+- `src-tauri/src/notes/repository.rs`
 - `.superpowers/sdd/task-7-backend-report.md`
 
 No frontend TypeScript, TSX, or CSS file was modified, staged, reverted, or
-committed by this backend fix.
+committed by this backend fix. Concurrent frontend work remains untouched.
 
 ## Review Fixes
 
-- Replaced the process-local storage mutex with an exclusive per-vault file lock
-  at `.yonalist/.notes-assets.lock`. Every backend mutation now takes the storage
-  lease before opening its database transaction, preserving one lock order across
-  import publication, metadata history, replay, reconciliation, and cleanup.
-- Added a process-global import budget mutex inside the per-vault lease. Source
-  inspection, the bounded 20 MiB read, format validation, hashing, and all decoded
-  frame work occur while both limits are held.
-- Replaced ambient asset operations with `cap-std`/`cap-fs-ext` directory-handle
-  operations. `notes-assets` is opened without following its final symlink and the
-  verified directory identity is retained for create-new temporary files, fsync,
-  rename, read, enumeration, targeted removal, and recursive deletion.
-- Kept hash deduplication and publish durability: temporary files are created in
-  the held asset directory, flushed and fsynced, atomically renamed relative to
-  that same handle, and cleaned after failure. Metadata failure still runs full
-  reachability reconciliation instead of deleting a possibly shared hash.
-- Fully iterates GIF, animated WebP, and APNG frames through the maintained
-  `image` decoders. Validation enforces 256 frames and 40,000,000 cumulative
-  decoded pixels in addition to the existing per-image 40,000,000-pixel and
-  20 MiB limits. Static PNG/JPEG/WebP/GIF remain accepted.
-- Undo/Redo now decodes each target attachment snapshot and validates that its
-  owned bytes still exist and match hash, MIME type, byte size, and intrinsic
-  dimensions before any replay row is applied. Validation errors roll back both
-  metadata and history position atomically.
-- History pruning records attachment paths from globally evicted entries and
-  invalidated redo entries in a connection-local temporary table. Ordinary note
-  mutations reconcile only those candidates after commit and recheck complete
-  live/history reachability, avoiding a directory scan for every edit.
-- Full reconciliation remains on attachment lifecycle, startup expiry, history
-  clear, Empty Trash, and database deletion, preserving live/Trash/Archive/history
-  retention and prompt cleanup.
+- Post-commit attachment cleanup is best effort for ordinary mutations, import,
+  Undo/Redo, history clear, Empty Trash, startup expiry, restore, and database
+  deletion. Reconcile/remove/directory-sync failures no longer turn a committed
+  operation into an API error. They create and fsync
+  `.yonalist/.notes-assets-reconcile-needed`; startup performs full reachability
+  repair and clears the marker. If the marker itself cannot be persisted, the
+  successful command emits an explicit cleanup warning.
+- PNG, GIF, and WebP containers are inspected with bounded, allocation-free
+  header/chunk walks before image decoding. APNG `acTL`, a second GIF image
+  descriptor, and WebP animation flags/chunks are rejected. Valid static
+  PNG/JPEG/GIF/WebP continue through bounded maintained `image` decoding. Tests
+  use real static files plus real/structured animated, truncated, and
+  container-work-limit fixtures for all three animation-capable formats.
+- Every attachment mutation takes the per-vault interprocess storage lease before
+  opening SQLite work. Import then starts `BEGIN IMMEDIATE` before publication,
+  retains both locks through metadata/history commit, and revalidates the held
+  `.yonalist`, lock, asset-directory, and database identities immediately before
+  rename and before commit. Identity capture is also bound to the actual SQLite
+  connection path. Independent lock handles and connections prove reconciliation
+  cannot enter between publication and metadata commit.
+- Asset operations use held `cap-std` directory handles opened without following
+  the final symlink. Publication, read, enumeration, and removal stay relative to
+  those handles. Database deletion enumerates only canonical owned names, opens
+  each entry no-follow, verifies it is a regular file, removes it relative to the
+  held handle, syncs, and removes only the now-empty directory. There is no
+  recursive deletion API in the attachment/database-delete path.
+- The process-global import budget guard is stored inside `PreparedAttachment`,
+  so the source byte allocation remains serialized across vaults through
+  publication and database completion. The per-vault file lease provides the
+  cooperating cross-process budget. Both guards release by RAII on every error.
+- Source import opens the parent capability and then opens the source basename
+  no-follow. Unix adds `O_NONBLOCK`; only after open does `fstat` verify regular
+  file type and the 1..=20 MiB size bound. This closes the pathname metadata/FIFO
+  race while preserving bounded reads and the 40M decoded-pixel limit.
+
+Prior contracts remain intact: hash dedupe, atomic owned-directory temp publish
+with file and directory fsync, metadata-failure reconciliation without deleting a
+potentially shared hash, live/Trash/Archive/history retention, targeted cleanup
+after global history eviction, and full byte validation before Undo/Redo restores
+attachment metadata.
 
 ## API And Wire Contract
 
@@ -62,68 +73,92 @@ The command surface is unchanged:
 - `notes_restore_attachment`
 
 Reads remain attachment-ID-only; no command accepts an arbitrary read path.
-`attachmentsByNodeId` remains a deterministic map whose vectors are ordered by
-`sortKey`, then `id`. Width validation remains
-`min(160, intrinsicWidth)..=intrinsicWidth`, so persisted widths cannot upscale.
-The attachment audit JSON and global expected-state replay checks are unchanged.
+`attachmentsByNodeId` remains deterministic and each vector is ordered by
+`sortKey`, then `id`. Display width remains bounded to
+`min(160, intrinsicWidth)..=intrinsicWidth`, so metadata cannot upscale an image.
+Cleanup warnings are backend diagnostics and do not change the wire schema.
 
 ## Strict TDD Evidence
 
-### Behavioral RED
+### RED
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --manifest-path src-tauri/Cargo.toml notes_attachment -- --nocapture
+```
+
+Exit 101: 16 passed, 2 failed. Animated GIF bytes were accepted and source
+import followed a symlink.
+
+```bash
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --manifest-path src-tauri/Cargo.toml \
+  notes_attachment_import_budget_lives_until_prepared_bytes_are_released -- --nocapture
+```
+
+Exit 101: 0 passed, 1 failed. A second vault multiplied the live prepared-byte
+allocation.
+
+```bash
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_attachment --no-run
+```
+
+Exit 101 at compile time before implementation: the cleanup failpoints,
+coordinated attachment transaction, bounded container limit, storage/database
+identity APIs, and reconciliation marker APIs required by the tests were absent.
+
+```bash
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
   cargo test --locked --manifest-path src-tauri/Cargo.toml \
-  notes_attachment -- --nocapture
+  notes_attachment_storage_detects_replaced_database_and_lock_identities -- --nocapture
 ```
 
-Exit 101: 12 passed and 3 failed. The failures proved that a corrupt later GIF
-frame was accepted, Redo resurrected metadata with missing bytes, and an ordinary
-history-limit eviction left attachment bytes unreachable.
-
-### Storage Boundary RED
+Exit 101: 0 passed, 1 failed. Identity capture accepted an unrelated SQLite
+connection.
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
-  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_attachment
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --locked --manifest-path src-tauri/Cargo.toml \
+  notes_attachment_import_and_empty_trash_cleanup_failures_do_not_mask_commits -- --nocapture
 ```
 
-Exit 101 at compile time: `AttachmentStorageLease` was absent and
-`ValidationLimits` had no frame-count or cumulative-pixel fields. This was observed
-after adding the independent lock-handle, directory-identity, and frame-budget
-tests and before implementing the new boundary.
+Exit 101: 0 passed, 1 failed. Injected sync failure was consumed during
+publication and masked the import instead of exercising post-commit cleanup.
+A later RED extension of the same test also exited 101 because startup cleared
+the repair marker without retrying a previously failed asset-directory fsync.
 
-### Focused GREEN
+### GREEN
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
-  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_attachment
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_attachment -- --nocapture
 ```
 
-Exit 0: 16 passed, 0 failed.
+Exit 0: 24 passed, 0 failed.
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
-  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_history
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
+  cargo test --locked --manifest-path src-tauri/Cargo.toml notes_history -- --nocapture
 ```
 
 Exit 0: 17 passed, 0 failed.
 
-Coverage includes two independently opened lock handles/connections, a published
-but not yet committed file, pathname replacement after directory acquisition,
-post-replacement publish/read/list/remove, static and valid animated decoding,
-later-frame corruption, frame and cumulative-pixel budgets, missing/corrupt replay
-bytes, atomic replay state, and non-attachment eviction cleanup without a full
-scan.
+Coverage includes reconcile/remove/sync failure recovery after committed import,
+history clear, Empty Trash, and ordinary history eviction; independently opened
+storage/SQLite contenders; directory/database/lock identity replacement; static,
+animated, truncated, and container-limit image fixtures; no-follow symlink/FIFO
+source handling; held import-budget lifetime; missing/corrupt replay bytes; and
+nonrecursive database deletion around nested directories and symlinks.
 
 ## Verification
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
   cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-Exit 0: 163 Rust tests passed, 0 failed; binary and doc tests also passed.
+Exit 0: 171 passed, 0 failed; binary and doc tests also passed.
 
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
@@ -132,26 +167,37 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 Exit 0.
 
 ```bash
-CARGO_TARGET_DIR=/tmp/yonalist-task7-review-target \
+CARGO_TARGET_DIR=/tmp/yonalist-task7-rereview-target \
   cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- \
   -D warnings -A clippy::ptr-arg -A clippy::too-many-arguments \
   -A clippy::manual-split-once -A clippy::flat-map-identity \
   -A clippy::bool-assert-comparison
 ```
 
-Exit 0. An unqualified `-D warnings` run reports only the existing repository,
-lib, export, and history lint classes listed in the allowances; the one new test
-assertion warning found during that run was fixed.
+Exit 0. Ordinary Clippy also exits 0 and reports only those five established
+repository-wide lint classes; no new attachment lint was reported.
 
-## Concerns
+```bash
+test -z "$(rg -n 'remove_(open_dir_all|dir_all)|remove_dir_all' \
+  src-tauri/src/notes/attachments.rs src-tauri/src/notes/commands.rs)"
+```
 
-- The lock/identity race uses independent OS file handles and SQLite connections
-  in separate threads, which exercises the same kernel lock primitive but does not
-  spawn a second test executable.
-- Capability and lock behavior was executed on macOS. The selected crates provide
-  cross-platform Unix/Windows implementations, but no Windows target was available
-  for this run.
-- The crate declares Rust 1.77.2. `fs4` declares Rust 1.75 and the relevant
-  capability transitive crates declare Rust 1.70, while `cap-std`/`cap-fs-ext` do
-  not publish an explicit `rust-version`. This machine has Rust 1.96.1 and no
-  `rustup`, so an actual 1.77.2 compiler run could not be performed.
+Exit 0: no recursive removal API is present in the cross-platform deletion path.
+
+## Threat Model And Concerns
+
+- Cooperating Yonalist processes are serialized by the same per-vault file lease
+  and SQLite `BEGIN IMMEDIATE` protocol, including publish-before-metadata and
+  reconciliation. This is the supported multi-process threat model.
+- An actively malicious local process that replaces an already-open vault root or
+  lock inode is outside the local application threat model. Stable-path identity
+  replacement is detected before publication and commit, but the backend does not
+  claim containment against an attacker continuously renaming those roots between
+  checks.
+- Capability, file-lock, no-follow, and FIFO behavior was executed on macOS. No
+  Windows runner was available. Windows safety is covered structurally by the
+  held-directory enumeration/removal design and the no-recursive-API check, not by
+  a Windows runtime test.
+- Tests use independent OS lock handles and SQLite connections in separate
+  threads, exercising the same kernel/interprocess primitives without spawning a
+  second test executable.

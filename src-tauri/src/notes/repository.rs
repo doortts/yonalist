@@ -2147,10 +2147,7 @@ pub(crate) fn attachment_by_id(
         .map_err(|error| format!("Could not read Notes attachment {attachment_id}: {error}"))
 }
 
-pub(crate) fn create_attachment(
-    connection: &mut Connection,
-    attachment: NewAttachment,
-) -> Result<NotesWorkspace, String> {
+fn validate_new_attachment(attachment: &NewAttachment) -> Result<(), String> {
     validate_note_id(&attachment.id)
         .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
     validate_note_id(&attachment.node_id)?;
@@ -2163,56 +2160,93 @@ pub(crate) fn create_attachment(
     if attachment.original_name.trim().is_empty() || attachment.original_name.len() > 1024 {
         return Err("A Notes attachment original name must contain 1 to 1024 bytes.".to_string());
     }
+    Ok(())
+}
 
+fn insert_new_attachment(
+    transaction: &Transaction<'_>,
+    attachment: NewAttachment,
+) -> Result<(), String> {
+    require_active_node(transaction, &attachment.node_id)?;
+    let id_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+            [&attachment.id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
+    if id_exists {
+        return Err(format!(
+            "Notes attachment ID {} is already in use.",
+            attachment.id
+        ));
+    }
+    let sort_key: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
+            [&attachment.node_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?
+        .checked_add(SORT_KEY_STEP)
+        .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
+    transaction
+        .execute(
+            "INSERT INTO notes_attachments(\
+               id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+               byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![
+                attachment.id,
+                attachment.node_id,
+                sort_key,
+                attachment.relative_path,
+                attachment.content_hash,
+                attachment.original_name,
+                attachment.mime_type,
+                attachment.byte_size,
+                attachment.intrinsic_width,
+                attachment.intrinsic_height,
+                attachment.display_width,
+            ],
+        )
+        .map_err(|error| format!("Could not create the Notes attachment metadata: {error}"))?;
+    Ok(())
+}
+
+pub(crate) fn create_attachment(
+    connection: &mut Connection,
+    attachment: NewAttachment,
+) -> Result<NotesWorkspace, String> {
+    validate_new_attachment(&attachment)?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, &attachment.node_id)?;
-        let id_exists: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-                [&attachment.id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
-        if id_exists {
-            return Err(format!(
-                "Notes attachment ID {} is already in use.",
-                attachment.id
-            ));
-        }
-        let sort_key: i64 = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
-                [&attachment.node_id],
-                |row| row.get::<_, i64>(0),
-            )
-            .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?
-            .checked_add(SORT_KEY_STEP)
-            .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
-        transaction
-            .execute(
-                "INSERT INTO notes_attachments(\
-                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
-                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-                params![
-                    attachment.id,
-                    attachment.node_id,
-                    sort_key,
-                    attachment.relative_path,
-                    attachment.content_hash,
-                    attachment.original_name,
-                    attachment.mime_type,
-                    attachment.byte_size,
-                    attachment.intrinsic_width,
-                    attachment.intrinsic_height,
-                    attachment.display_width,
-                ],
-            )
-            .map_err(|error| format!("Could not create the Notes attachment metadata: {error}"))?;
-        Ok(())
+        insert_new_attachment(transaction, attachment)
     })
+}
+
+pub(crate) fn create_attachment_coordinated(
+    connection: &mut Connection,
+    prepare: impl FnOnce() -> Result<NewAttachment, String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    let journaled = history::has_active_context(connection)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes attachment transaction: {error}"))?;
+    let attachment = prepare()?;
+    validate_new_attachment(&attachment)?;
+    insert_new_attachment(&transaction, attachment)?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    if journaled {
+        history::finalize_transaction(&transaction)?;
+    }
+    before_commit()?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes attachment transaction: {error}"))?;
+    Ok(workspace)
 }
 
 pub(crate) fn resize_attachment(
