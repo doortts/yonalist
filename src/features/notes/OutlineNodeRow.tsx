@@ -166,11 +166,11 @@ export function OutlineNodeRow({
         className="notes-node notes-node-readonly"
         data-outline-id={nodeId}
         data-guide-end-id={visibleDescendantEndId ?? undefined}
+        data-selected={state.selectedId === nodeId ? "true" : undefined}
         style={rowStyle}
       >
         {guides}
         <div className="notes-node-main notes-node-main-readonly">
-          <span className="notes-node-readonly-title">{label}</span>
           <div className="notes-node-menu-slot">
             <NotesBulletMenu
               mode="trash"
@@ -179,6 +179,7 @@ export function OutlineNodeRow({
               onRestore={() => void actions.restoreNode(nodeId)}
             />
           </div>
+          <span className="notes-node-readonly-title">{label}</span>
         </div>
       </div>
     );
@@ -360,10 +361,43 @@ export function OutlineNodeRow({
       data-completed={completed ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
+      data-selected={state.selectedId === nodeId ? "true" : undefined}
       style={rowStyle}
     >
       {guides}
       <div className="notes-node-main">
+        <div className="notes-node-menu-slot">
+          <NotesBulletMenu
+            label={label}
+            completed={completed}
+            starred={node.isStarred}
+            hasNote={Boolean(noteValue.trim())}
+            saveFailed={draft?.status === "failed"}
+            disabled={disabled}
+            exportDisabled={exportController.unavailable || exportController.busy}
+            onToggleComplete={() =>
+              runStructuralCommand(() => actions.toggleComplete(nodeId))
+            }
+            onToggleStar={() =>
+              runStructuralCommand(() => actions.toggleStar(nodeId))
+            }
+            onOpenNote={openAndFocusNote}
+            onRemoveNote={removeNote}
+            onDuplicate={() =>
+              runStructuralCommand(() => actions.duplicateNode(nodeId))
+            }
+            onExport={(format) =>
+              exportController.startExport(nodeId, titleValue, format)
+            }
+            onDelete={() =>
+              runStructuralCommand(() => actions.deleteNode(nodeId))
+            }
+            onRetrySave={() =>
+              runStructuralCommand(() => retryFailedDraft(nodeId))
+            }
+          />
+        </div>
+
         <span className="notes-node-arrow-slot">
           {hasChildren && (
             <IconTooltip label={isCollapsed ? "Expand" : "Collapse"}>
@@ -401,38 +435,6 @@ export function OutlineNodeRow({
         >
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
-
-        <div className="notes-node-menu-slot">
-          <NotesBulletMenu
-            label={label}
-            completed={completed}
-            starred={node.isStarred}
-            hasNote={Boolean(noteValue.trim())}
-            saveFailed={draft?.status === "failed"}
-            disabled={disabled}
-            exportDisabled={exportController.unavailable || exportController.busy}
-            onToggleComplete={() =>
-              runStructuralCommand(() => actions.toggleComplete(nodeId))
-            }
-            onToggleStar={() =>
-              runStructuralCommand(() => actions.toggleStar(nodeId))
-            }
-            onOpenNote={openAndFocusNote}
-            onRemoveNote={removeNote}
-            onDuplicate={() =>
-              runStructuralCommand(() => actions.duplicateNode(nodeId))
-            }
-            onExport={(format) =>
-              exportController.startExport(nodeId, titleValue, format)
-            }
-            onDelete={() =>
-              runStructuralCommand(() => actions.deleteNode(nodeId))
-            }
-            onRetrySave={() =>
-              runStructuralCommand(() => retryFailedDraft(nodeId))
-            }
-          />
-        </div>
 
         <textarea
           className="notes-node-title"

@@ -30,6 +30,7 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
+import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
 import { NotesPageHeader } from "./NotesPageHeader";
@@ -503,6 +504,15 @@ export function NotesOutlinePane() {
               </ol>
             </SortableContext>
           </DndContext>
+          {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
+            <NotesChildComposer
+              parentId={state.zoomRootId}
+              disabled={deletingNotesData || trashView}
+              hasChildren={
+                (state.childIdsByParent[state.zoomRootId]?.length ?? 0) > 0
+              }
+            />
+          )}
           </div>
         </div>
         <ConfirmDialog

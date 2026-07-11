@@ -52,6 +52,15 @@ describe("NotesBulletMenu", () => {
     expect(within(menu).queryByRole("menuitem", { name: "Restore" })).toBeNull();
   });
 
+  it("start-aligns the popup to its left-rail trigger", async () => {
+    render(<NotesBulletMenu {...standardProps()} />);
+
+    const { menu, trigger } = await openMenu();
+
+    expect(trigger).toHaveAttribute("data-popup-open");
+    expect(menu.parentElement).toHaveAttribute("data-align", "start");
+  });
+
   it("uses state-aware labels and invokes the matching commands", async () => {
     const props = standardProps({
       completed: true,

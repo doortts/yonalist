@@ -50,6 +50,7 @@ const notesStyles = readFileSync(
   join(process.cwd(), "src/features/notes/notes.css"),
   "utf8"
 );
+const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
 function mockNarrowViewport(narrow: boolean): void {
   vi.stubGlobal(
@@ -80,6 +81,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }
@@ -321,6 +324,7 @@ describe("Notes workspace", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    document.documentElement.removeAttribute("data-theme");
   });
 
   it("uses the vault root and mocked repository without a Tauri runtime", async () => {
@@ -368,10 +372,116 @@ describe("Notes workspace", () => {
       screen.queryByRole("button", { name: "Move Project" })
     ).not.toBeInTheDocument();
 
+    const projectRow = projectBullet.closest(".notes-node-main");
+    expect(
+      Array.from(projectRow?.children ?? []).map((element) =>
+        element.classList.contains("notes-node-menu-slot")
+          ? "menu"
+          : element.classList.contains("notes-node-arrow-slot")
+            ? "arrow"
+            : element.classList.contains("notes-node-bullet")
+              ? "bullet"
+              : element.classList.contains("notes-node-title")
+                ? "content"
+                : "other"
+      )
+    ).toEqual(["menu", "arrow", "bullet", "content"]);
+
     const leafRow = getTitleInput("Outside branch").closest(".notes-node-main");
     expect(
       leafRow?.querySelector(".notes-node-arrow-slot")
     ).toBeEmptyDOMElement();
+  });
+
+  it("snapshots leaf, expanded, collapsed, and completed collapsed bullet states", async () => {
+    configureRepository([
+      node({ id: "leaf", sortKey: 1, title: "Leaf" }),
+      node({ id: "expanded", sortKey: 2, title: "Expanded" }),
+      node({ id: "expanded-child", parentId: "expanded", title: "Expanded child" }),
+      node({ id: "collapsed", sortKey: 3, title: "Collapsed", isCollapsed: true }),
+      node({ id: "collapsed-child", parentId: "collapsed", title: "Collapsed child" }),
+      node({
+        id: "completed-collapsed",
+        sortKey: 4,
+        title: "Completed collapsed",
+        isCollapsed: true,
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({
+        id: "completed-child",
+        parentId: "completed-collapsed",
+        title: "Completed child"
+      })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Leaf");
+
+    const states = ["Leaf", "Expanded", "Collapsed", "Completed collapsed"].map(
+      (title) => {
+        const row = getTitleInput(title).closest<HTMLElement>(".notes-node")!;
+        const main = row.querySelector(".notes-node-main")!;
+        const bullet = within(row).getByRole("button", {
+          name: `Zoom into ${title}`
+        });
+        return {
+          title,
+          completed: row.dataset.completed ?? "false",
+          collapsed: bullet.dataset.collapsed ?? "false",
+          controls: Array.from(main.children).map((element) =>
+            element.className
+          )
+        };
+      }
+    );
+
+    expect(states).toMatchInlineSnapshot(`
+      [
+        {
+          "collapsed": "false",
+          "completed": "false",
+          "controls": [
+            "notes-node-menu-slot",
+            "notes-node-arrow-slot",
+            "notes-node-bullet",
+            "notes-node-title",
+          ],
+          "title": "Leaf",
+        },
+        {
+          "collapsed": "false",
+          "completed": "false",
+          "controls": [
+            "notes-node-menu-slot",
+            "notes-node-arrow-slot",
+            "notes-node-bullet",
+            "notes-node-title",
+          ],
+          "title": "Expanded",
+        },
+        {
+          "collapsed": "true",
+          "completed": "false",
+          "controls": [
+            "notes-node-menu-slot",
+            "notes-node-arrow-slot",
+            "notes-node-bullet",
+            "notes-node-title",
+          ],
+          "title": "Collapsed",
+        },
+        {
+          "collapsed": "true",
+          "completed": "true",
+          "controls": [
+            "notes-node-menu-slot",
+            "notes-node-arrow-slot",
+            "notes-node-bullet",
+            "notes-node-title",
+          ],
+          "title": "Completed collapsed",
+        },
+      ]
+    `);
   });
 
   it("keeps title and supporting-note input outside drag activation", async () => {
@@ -474,7 +584,7 @@ describe("Notes workspace", () => {
     const bullet = screen.getByRole("button", { name: "Zoom into Project" });
 
     bullet.focus();
-    await user.tab();
+    await user.tab({ shift: true });
     expect(
       screen.getByRole("button", { name: "More actions for Project" })
     ).toHaveFocus();
@@ -2820,13 +2930,13 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-bullet-center-offset:\s*33px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-bullet-center-offset:\s*61px;/s
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*46px;/s
+      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*74px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s
@@ -2838,7 +2948,10 @@ describe("Notes workspace", () => {
       /\.notes-page-header\s*{[^}]*width:\s*100%;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*20px 18px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
+      /\.notes-page-title-row\s*{[^}]*grid-template-columns:\s*24px minmax\(0, 1fr\);[^}]*align-items:\s*start;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-arrow-slot\s*{[^}]*width:\s*20px;[^}]*height:\s*28px;/s
@@ -2850,10 +2963,10 @@ describe("Notes workspace", () => {
       /\.notes-node-bullet-dot\s*{[^}]*width:\s*7px;[^}]*height:\s*7px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title\s*{[^}]*grid-column:\s*3;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
+      /\.notes-node-title\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*min-height:\s*28px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*16px;[^}]*line-height:\s*24px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
+      /\.notes-node-menu-slot\s*{[^}]*grid-column:\s*1;[^}]*grid-row:\s*1;[^}]*width:\s*var\(--notes-menu-width\);[^}]*min-width:\s*var\(--notes-menu-width\);/s
     );
     expect(notesStyles).toMatch(
       /\.notes-bullet-menu-trigger\s*{[^}]*width:\s*24px;[^}]*height:\s*28px;/s
@@ -2862,10 +2975,10 @@ describe("Notes workspace", () => {
       /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row \.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-node\[data-selected="true"\] \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header\[data-selected="true"\] \.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled\s*{[^}]*opacity:\s*0\.34;/s
+      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled,[\s\S]*\.notes-child-composer-button:disabled\s*{[^}]*opacity:\s*0\.34;/s
     );
     expect(notesStyles).not.toContain("--notes-actions-width: 149px");
     expect(notesStyles).not.toContain(".notes-node-actions");
@@ -2886,7 +2999,7 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).not.toContain(".notes-complete-checkbox");
     expect(notesStyles).toMatch(
-      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*{[^}]*background:\s*var\(--bg-active\);/s
+      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*{[^}]*width:\s*26px;[^}]*height:\s*26px;[^}]*background:\s*var\(--bg-hover\);/s
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node-main:(?:hover|focus-within)[^{]*{[^}]*background:/s
@@ -2901,7 +3014,7 @@ describe("Notes workspace", () => {
       /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-bullet-center-offset:\s*42px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-bullet-center-offset:\s*70px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s
@@ -2910,10 +3023,49 @@ describe("Notes workspace", () => {
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*56px;[\s\S]*\.notes-node-main\s*{[^}]*grid-template-columns:\s*28px 28px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*width:\s*28px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*84px;[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
     );
+  });
+
+  it("resolves collapsed halo tokens in light and dark themes", () => {
+    const style = document.createElement("style");
+    style.textContent = appStyles.replace(/^@import .*;$/gm, "");
+    document.head.append(style);
+
+    document.documentElement.removeAttribute("data-theme");
+    const lightStyle = getComputedStyle(document.documentElement);
+    const lightHalo = lightStyle
+      .getPropertyValue("--bg-hover")
+      .trim();
+    const lightHaloStrong = lightStyle
+      .getPropertyValue("--bg-active")
+      .trim();
+    document.documentElement.dataset.theme = "dark";
+    const darkStyle = getComputedStyle(document.documentElement);
+    const darkHalo = darkStyle
+      .getPropertyValue("--bg-hover")
+      .trim();
+    const darkHaloStrong = darkStyle
+      .getPropertyValue("--bg-active")
+      .trim();
+
+    expect(lightHalo).toBe("rgb(17 24 39 / 5%)");
+    expect(lightHaloStrong).toBe("rgb(17 24 39 / 8%)");
+    expect(darkHalo).toBe("rgb(255 255 255 / 6%)");
+    expect(darkHaloStrong).toBe("rgb(255 255 255 / 10%)");
+    expect(darkHalo).not.toBe(lightHalo);
+    expect(darkHaloStrong).not.toBe(lightHaloStrong);
+    expect(notesStyles).toMatch(
+      /\.notes-node-bullet\[data-collapsed="true"\]::before[^}]*background:\s*var\(--bg-hover\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-node-bullet\[data-collapsed="true"\](?::hover|:focus-visible)::before[^}]*background:\s*var\(--bg-active\);/s
+    );
+
+    style.remove();
+    document.documentElement.removeAttribute("data-theme");
   });
 });

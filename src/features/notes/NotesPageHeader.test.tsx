@@ -28,6 +28,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }
@@ -147,7 +149,7 @@ describe("NotesPageHeader", () => {
     ).toEqual(["1", "2"]);
   });
 
-  it("auto-grows a long Korean page title without sharing the menu track", () => {
+  it("auto-grows a long Korean page title beside a stable left menu rail", () => {
     const longTitle =
       "길고 자세한 한국어 페이지 제목도 메뉴 버튼 아래로 숨지 않고 필요한 만큼 여러 줄로 줄바꿈됩니다";
     vi.spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get").mockReturnValue(
@@ -157,13 +159,20 @@ describe("NotesPageHeader", () => {
 
     const title = screen.getByRole("textbox", { name: "Edit page title" });
     const titleRow = title.closest(".notes-page-title-row");
+    const heading = title.closest(".notes-page-heading");
+    const menu = screen.getByRole("button", {
+      name: `More actions for ${longTitle}`
+    });
 
     expect(title).toBeInstanceOf(HTMLTextAreaElement);
     expect(title).toHaveAttribute("rows", "1");
     expect(title).toHaveStyle({ height: "102px" });
-    expect(titleRow).toContainElement(
-      screen.getByRole("button", { name: `More actions for ${longTitle}` })
-    );
+    expect(titleRow).toContainElement(menu);
+    expect(menu.closest(".notes-page-menu-slot")).not.toBeNull();
+    expect(Array.from(titleRow?.children ?? [])).toEqual([
+      menu.closest(".notes-page-menu-slot"),
+      heading
+    ]);
   });
 
   it("does not mount an empty page note before a reveal action", () => {

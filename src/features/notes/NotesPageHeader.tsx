@@ -164,8 +164,30 @@ export function NotesPageHeader({
     <header
       className="notes-page-header"
       data-completed={node.completedAt !== null ? "true" : undefined}
+      data-selected={state.selectedId === nodeId ? "true" : undefined}
     >
       <div className="notes-page-title-row">
+        <div className="notes-page-menu-slot">
+          <NotesBulletMenu
+            label={label}
+            completed={node.completedAt !== null}
+            starred={node.isStarred}
+            hasNote={Boolean(noteValue.trim())}
+            saveFailed={draft?.status === "failed"}
+            disabled={disabled}
+            exportDisabled={exportController.unavailable || exportController.busy}
+            onToggleComplete={() => runCommand(() => actions.toggleComplete(nodeId))}
+            onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
+            onOpenNote={openAndFocusNote}
+            onRemoveNote={removeNote}
+            onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
+            onExport={(format) =>
+              exportController.startExport(nodeId, titleValue, format)
+            }
+            onDelete={() => runCommand(() => actions.deleteNode(nodeId))}
+            onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
+          />
+        </div>
         <h1 className="notes-page-heading" aria-label={label}>
           <textarea
             ref={titleRef}
@@ -187,25 +209,6 @@ export function NotesPageHeader({
             onBlur={() => void actions.flushNodeDraft(nodeId)}
           />
         </h1>
-        <NotesBulletMenu
-          label={label}
-          completed={node.completedAt !== null}
-          starred={node.isStarred}
-          hasNote={Boolean(noteValue.trim())}
-          saveFailed={draft?.status === "failed"}
-          disabled={disabled}
-          exportDisabled={exportController.unavailable || exportController.busy}
-          onToggleComplete={() => runCommand(() => actions.toggleComplete(nodeId))}
-          onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
-          onOpenNote={openAndFocusNote}
-          onRemoveNote={removeNote}
-          onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
-          onExport={(format) =>
-            exportController.startExport(nodeId, titleValue, format)
-          }
-          onDelete={() => runCommand(() => actions.deleteNode(nodeId))}
-          onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
-        />
       </div>
       {noteVisible && (
         <textarea

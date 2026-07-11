@@ -143,7 +143,7 @@ export function NotesBulletMenu({
         </Menu.Trigger>
       </IconTooltip>
       <Menu.Portal>
-        <Menu.Positioner side="bottom" align="end" sideOffset={4}>
+        <Menu.Positioner side="bottom" align="start" sideOffset={4}>
           <Menu.Popup
             className="notes-bullet-menu"
             finalFocus={noteHandoffPendingRef.current ? false : undefined}
