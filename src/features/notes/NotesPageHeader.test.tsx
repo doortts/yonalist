@@ -66,6 +66,7 @@ function workspaceValue(options: {
   pendingFocus?: { nodeId: string; field: "title" | "note" };
   attachments?: NoteAttachment[];
   attachmentUploadError?: string;
+  attachmentUploadRetryAttemptId?: string;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
@@ -138,6 +139,10 @@ function workspaceValue(options: {
     attachmentUploadErrorsByNodeId: options.attachmentUploadError
       ? { project: options.attachmentUploadError }
       : {},
+    attachmentUploadRetryAttemptIdsByNodeId:
+      options.attachmentUploadRetryAttemptId
+        ? { project: options.attachmentUploadRetryAttemptId }
+        : {},
     draftsByNodeId: options.draft ? { project: options.draft } : {},
     writeError: null,
     retryFailedDraft: resolved(),
@@ -227,7 +232,8 @@ describe("NotesPageHeader", () => {
     const image = attachment({ id: "image-1", nodeId: "project" });
     const workspace = workspaceValue({
       attachments: [image],
-      attachmentUploadError: "Image upload failed: disk full"
+      attachmentUploadError: "Image upload failed: disk full",
+      attachmentUploadRetryAttemptId: "attempt-1"
     });
 
     renderZoomedOutline(workspace);
@@ -251,7 +257,10 @@ describe("NotesPageHeader", () => {
     await user.click(
       within(alert).getByRole("button", { name: "Retry image upload" })
     );
-    expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith("project");
+    expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith(
+      "project",
+      "attempt-1"
+    );
   });
 
   it("routes unified history shortcuts from page and outline text fields", () => {

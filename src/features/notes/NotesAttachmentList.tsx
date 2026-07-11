@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState
+} from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   MAX_NOTE_ATTACHMENTS_PER_NODE,
@@ -12,40 +18,74 @@ interface NotesAttachmentListProps {
   readonly nodeId: NoteId;
   readonly attachments: readonly NoteAttachment[];
   readonly uploadError?: string;
+  readonly uploadRetryAttemptId?: string;
   readonly className?: string;
   readonly readOnly?: boolean;
 }
 
+const maxResidentImages = 8;
+const offscreenReleaseDelayMs = 240;
+
 function DeferredNotesImage({
   attachment,
+  active,
+  onActivate,
+  onDeactivate,
   onRequestRemove,
   readOnly
 }: {
   readonly attachment: NoteAttachment;
+  readonly active: boolean;
+  readonly onActivate: (attachmentId: string) => void;
+  readonly onDeactivate: (attachmentId: string) => void;
   readonly onRequestRemove?: () => void;
   readonly readOnly: boolean;
 }) {
   const { actions } = useNotesWorkspaceContext();
-  const placeholderRef = useRef<HTMLDivElement>(null);
-  const [active, setActive] = useState(false);
+  const slotRef = useRef<HTMLDivElement>(null);
+  const manualFocusPendingRef = useRef(false);
 
   useEffect(() => {
-    const placeholder = placeholderRef.current;
-    if (active || !placeholder || typeof IntersectionObserver === "undefined") {
+    const slot = slotRef.current;
+    if (!slot || typeof IntersectionObserver === "undefined") {
       return;
     }
 
+    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelRelease = () => {
+      if (releaseTimer !== null) {
+        clearTimeout(releaseTimer);
+        releaseTimer = null;
+      }
+    };
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) {
-          setActive(true);
-          observer.disconnect();
+        const entry = entries.find((candidate) => candidate.target === slot);
+        if (!entry) return;
+        if (entry.isIntersecting) {
+          cancelRelease();
+          onActivate(attachment.id);
+          return;
         }
+        cancelRelease();
+        releaseTimer = setTimeout(
+          () => onDeactivate(attachment.id),
+          offscreenReleaseDelayMs
+        );
       },
-      { rootMargin: "600px 0px" }
+      { rootMargin: "160px 0px" }
     );
-    observer.observe(placeholder);
-    return () => observer.disconnect();
+    observer.observe(slot);
+    return () => {
+      cancelRelease();
+      observer.disconnect();
+    };
+  }, [attachment.id, onActivate, onDeactivate]);
+
+  useLayoutEffect(() => {
+    if (!active || !manualFocusPendingRef.current) return;
+    manualFocusPendingRef.current = false;
+    slotRef.current?.focus();
   }, [active]);
 
   const loadBytes = useCallback(() => {
@@ -61,37 +101,44 @@ function DeferredNotesImage({
     [actions, attachment.id]
   );
 
-  if (active) {
-    return (
-      <NotesImageAttachment
-        attachment={attachment}
-        loadBytes={loadBytes}
-        onDisplayWidthCommit={commitWidth}
-        onRemove={onRequestRemove}
-        readOnly={readOnly}
-      />
-    );
-  }
-
   return (
     <div
-      ref={placeholderRef}
-      className="notes-image-attachment-placeholder"
+      ref={slotRef}
+      className="notes-image-attachment-slot"
       role="group"
       aria-label={`Image: ${attachment.originalName}`}
-      style={{
-        maxWidth: attachment.intrinsicWidth,
-        aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`
-      }}
+      tabIndex={active ? -1 : undefined}
+      style={{ maxWidth: attachment.intrinsicWidth }}
     >
-      <button
-        type="button"
-        className="text-button"
-        aria-label={`Load image ${attachment.originalName}`}
-        onClick={() => setActive(true)}
-      >
-        Load image
-      </button>
+      {active ? (
+        <NotesImageAttachment
+          attachment={attachment}
+          embedded
+          loadBytes={loadBytes}
+          onDisplayWidthCommit={commitWidth}
+          onRemove={onRequestRemove}
+          readOnly={readOnly}
+        />
+      ) : (
+        <div
+          className="notes-image-attachment-placeholder"
+          style={{
+            aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`
+          }}
+        >
+          <button
+            type="button"
+            className="text-button"
+            aria-label={`Load image ${attachment.originalName}`}
+            onClick={() => {
+              manualFocusPendingRef.current = true;
+              onActivate(attachment.id);
+            }}
+          >
+            Load image
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -100,12 +147,30 @@ export function NotesAttachmentList({
   nodeId,
   attachments,
   uploadError,
+  uploadRetryAttemptId,
   className,
   readOnly = false
 }: NotesAttachmentListProps) {
   const { actions } = useNotesWorkspaceContext();
   const [pendingRemoval, setPendingRemoval] =
     useState<NoteAttachment | null>(null);
+  const [residentAttachmentIds, setResidentAttachmentIds] = useState<
+    readonly string[]
+  >([]);
+  const activateAttachment = useCallback((attachmentId: string) => {
+    setResidentAttachmentIds((current) => {
+      const next = current.filter((currentId) => currentId !== attachmentId);
+      next.push(attachmentId);
+      return next.slice(-maxResidentImages);
+    });
+  }, []);
+  const deactivateAttachment = useCallback((attachmentId: string) => {
+    setResidentAttachmentIds((current) =>
+      current.includes(attachmentId)
+        ? current.filter((currentId) => currentId !== attachmentId)
+        : current
+    );
+  }, []);
   const classes = ["notes-attachment-list", className]
     .filter(Boolean)
     .join(" ");
@@ -124,8 +189,11 @@ export function NotesAttachmentList({
         <div className={classes}>
           {boundedAttachments.map((attachment) => (
             <DeferredNotesImage
+              active={residentAttachmentIds.includes(attachment.id)}
               attachment={attachment}
               key={attachment.id}
+              onActivate={activateAttachment}
+              onDeactivate={deactivateAttachment}
               readOnly={readOnly}
               onRequestRemove={
                 readOnly ? undefined : () => setPendingRemoval(attachment)
@@ -141,11 +209,13 @@ export function NotesAttachmentList({
           aria-label="Image upload failed"
         >
           <span>{uploadError}</span>
-          {!readOnly && actions.retryImageUpload && (
+          {!readOnly && uploadRetryAttemptId && actions.retryImageUpload && (
             <button
               type="button"
               className="text-button"
-              onClick={() => void actions.retryImageUpload?.(nodeId)}
+              onClick={() =>
+                void actions.retryImageUpload?.(nodeId, uploadRetryAttemptId)
+              }
             >
               Retry image upload
             </button>

@@ -39,6 +39,7 @@ export function NotesPageHeader({
     actions,
     activeTagFilters,
     attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -407,6 +408,9 @@ export function NotesPageHeader({
           nodeId={nodeId}
           attachments={attachments}
           uploadError={attachmentUploadErrorsByNodeId?.[nodeId]}
+          uploadRetryAttemptId={
+            attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
+          }
           className="notes-page-attachments"
           readOnly={readOnly || disabled}
         />

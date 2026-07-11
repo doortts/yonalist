@@ -308,7 +308,12 @@ describe("useNotesWorkspace", () => {
     secondImport.reject(new Error("second failed"));
     await act(async () => Promise.all([first, second]));
 
-    await act(async () => result.current.actions.retryImageUpload!(root.id));
+    const visibleAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
+    expect(visibleAttemptId).toBeDefined();
+    await act(async () =>
+      result.current.actions.retryImageUpload!(root.id, visibleAttemptId)
+    );
 
     expect(openImageFile).toHaveBeenCalledTimes(2);
     expect(importAttachment).toHaveBeenCalledTimes(3);
@@ -369,7 +374,12 @@ describe("useNotesWorkspace", () => {
     });
     await act(async () => Promise.all([first, second]));
 
-    await act(async () => result.current.actions.retryImageUpload!(root.id));
+    const visibleAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
+    expect(visibleAttemptId).toBeDefined();
+    await act(async () =>
+      result.current.actions.retryImageUpload!(root.id, visibleAttemptId)
+    );
 
     expect(openImageFile).toHaveBeenCalledTimes(2);
     expect(importAttachment).toHaveBeenCalledTimes(3);
@@ -459,13 +469,14 @@ describe("useNotesWorkspace", () => {
     }
   ])("rejects $name before import", async ({ files, message }) => {
     const pathForDroppedFile = vi.fn().mockReturnValue(null);
+    const openImageFile = vi.fn();
     const store = repository({ importAttachment: vi.fn() });
     const { result } = renderHook(() =>
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
         attachmentUi: {
-          openImageFile: vi.fn(),
+          openImageFile,
           pathForDroppedFile
         }
       })
@@ -477,7 +488,94 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(result.current.attachmentUploadErrorsByNodeId?.root).toBe(message);
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
+    ).toBeUndefined();
     expect(store.importAttachment).not.toHaveBeenCalled();
+
+    await act(async () =>
+      result.current.actions.retryImageUpload!("root", "stale-attempt")
+    );
+    expect(openImageFile).not.toHaveBeenCalled();
+  });
+
+  it("does not expose a stale retry target for picker failures", async () => {
+    const openImageFile = vi.fn().mockRejectedValue(new Error("dialog failed"));
+    const store = repository({ importAttachment: vi.fn() });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.uploadImage!("root"));
+
+    expect(result.current.attachmentUploadErrorsByNodeId?.root).toContain(
+      "dialog failed"
+    );
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
+    ).toBeUndefined();
+    expect(store.importAttachment).not.toHaveBeenCalled();
+  });
+
+  it("preserves a pending import retry identity across a newer validation error", async () => {
+    const pendingImport = deferred<NotesMutationResult>();
+    let idCounter = 0;
+    createNoteIdMock.mockImplementation(
+      () =>
+        `20000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
+    );
+    const openImageFile = vi.fn().mockResolvedValue("/incoming/pending.png");
+    const importAttachment = vi
+      .fn()
+      .mockReturnValueOnce(pendingImport.promise)
+      .mockResolvedValue(workspace([node({ id: "root" })]));
+    const store = repository({ importAttachment });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: {
+          openImageFile,
+          pathForDroppedFile: vi.fn()
+        }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const upload = result.current.actions.uploadImage!("root");
+    await waitFor(() => expect(importAttachment).toHaveBeenCalledOnce());
+    await act(async () =>
+      result.current.actions.importDroppedImages!("root", [
+        new File(["x"], "vector.svg", { type: "image/svg+xml" })
+      ])
+    );
+    expect(result.current.attachmentUploadErrorsByNodeId?.root).toContain(
+      "PNG, JPEG, WebP, or GIF"
+    );
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
+    ).toBeUndefined();
+
+    pendingImport.reject(new Error("pending failed"));
+    await act(async () => upload);
+    const visibleAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root;
+    expect(result.current.attachmentUploadErrorsByNodeId?.root).toContain(
+      "pending failed"
+    );
+    expect(visibleAttemptId).toBeDefined();
+
+    await act(async () =>
+      result.current.actions.retryImageUpload!("root", visibleAttemptId)
+    );
+    expect(importAttachment.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ sourcePath: "/incoming/pending.png" })
+    );
   });
 
   it("ignores a non-file drop without creating an error or import", async () => {

@@ -1227,6 +1227,16 @@ button.notes-date-token:hover {
   margin: 12px 0 0 var(--notes-content-offset);
 }
 
+.notes-image-attachment-slot {
+  width: 100%;
+  min-width: 0;
+}
+
+.notes-image-attachment-slot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .notes-image-attachment-placeholder {
   display: grid;
   width: 100%;

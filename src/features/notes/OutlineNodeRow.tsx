@@ -61,6 +61,7 @@ export function OutlineNodeRow({
     actions,
     activeTagFilters,
     attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -106,6 +107,8 @@ export function OutlineNodeRow({
   const noteValue = draft?.note ?? node?.note ?? "";
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const attachmentUploadError = attachmentUploadErrorsByNodeId?.[nodeId];
+  const attachmentUploadRetryAttemptId =
+    attachmentUploadRetryAttemptIdsByNodeId?.[nodeId];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
@@ -655,6 +658,7 @@ export function OutlineNodeRow({
         nodeId={nodeId}
         attachments={attachments}
         uploadError={attachmentUploadError}
+        uploadRetryAttemptId={attachmentUploadRetryAttemptId}
         className="notes-node-attachments"
         readOnly={disabled}
       />

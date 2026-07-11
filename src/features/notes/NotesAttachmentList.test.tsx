@@ -19,6 +19,7 @@ vi.mock("./NotesWorkspaceContext", () => ({
 }));
 
 const intersectionCallbacks = new Map<Element, IntersectionObserverCallback>();
+const intersectionOptions: IntersectionObserverInit[] = [];
 const disconnectIntersection = vi.fn();
 const createObjectURL = vi.fn(() => "blob:attachment");
 const revokeObjectURL = vi.fn();
@@ -55,8 +56,12 @@ function installIntersectionObserver() {
     class {
       private readonly callback: IntersectionObserverCallback;
 
-      constructor(callback: IntersectionObserverCallback) {
+      constructor(
+        callback: IntersectionObserverCallback,
+        options?: IntersectionObserverInit
+      ) {
         this.callback = callback;
+        intersectionOptions.push(options ?? {});
       }
 
       observe(target: Element) {
@@ -82,6 +87,7 @@ function installIntersectionObserver() {
 
 beforeEach(() => {
   intersectionCallbacks.clear();
+  intersectionOptions.length = 0;
   disconnectIntersection.mockClear();
   createObjectURL.mockClear();
   revokeObjectURL.mockClear();
@@ -122,7 +128,38 @@ afterEach(() => {
 });
 
 describe("NotesAttachmentList", () => {
-  it("loads only an attachment that approaches the viewport and revokes its URL", async () => {
+  it("binds retry to the visible failed attempt and suppresses it for validation errors", async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={[]}
+        uploadError="Image upload failed: disk full"
+        uploadRetryAttemptId="attempt-1"
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Retry image upload" })
+    );
+    expect(workspaceActions.retryImageUpload).toHaveBeenCalledWith(
+      "node-1",
+      "attempt-1"
+    );
+
+    view.rerender(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={[]}
+        uploadError="Drop one image at a time."
+      />
+    );
+    expect(
+      screen.queryByRole("button", { name: "Retry image upload" })
+    ).toBeNull();
+  });
+
+  it("releases an offscreen image after hysteresis and reloads it on return", async () => {
     installIntersectionObserver();
     const view = render(
       <NotesAttachmentList
@@ -154,9 +191,101 @@ describe("NotesAttachmentList", () => {
     );
     expect(createObjectURL).toHaveBeenCalledOnce();
 
+    act(() => {
+      firstObserver?.(
+        [
+          {
+            target: first,
+            isIntersecting: false
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+      firstObserver?.(
+        [
+          {
+            target: first,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getByRole("img", { name: "image-1.png" })).toBeVisible();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+
+    act(() => {
+      firstObserver?.(
+        [
+          {
+            target: first,
+            isIntersecting: false
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("img", { name: "image-1.png" })
+      ).toBeNull()
+    );
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
+
+    act(() => {
+      firstObserver?.(
+        [
+          {
+            target: first,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await screen.findByRole("img", { name: "image-1.png" });
+    expect(workspaceActions.loadAttachmentBytes).toHaveBeenCalledTimes(2);
+    expect(createObjectURL).toHaveBeenCalledTimes(2);
+
     view.unmount();
     expect(disconnectIntersection).toHaveBeenCalled();
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
+  });
+
+  it("uses a small observation margin and bounds concurrently resident images", async () => {
+    installIntersectionObserver();
+    render(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={Array.from({ length: 10 }, (_, index) =>
+          attachment(index + 1)
+        )}
+      />
+    );
+    const groups = screen.getAllByRole("group", { name: /^Image:/ });
+
+    for (const group of groups) {
+      const observer = intersectionCallbacks.get(group);
+      act(() => {
+        observer?.(
+          [
+            {
+              target: group,
+              isIntersecting: true
+            } as unknown as IntersectionObserverEntry
+          ],
+          {} as IntersectionObserver
+        );
+      });
+    }
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(10));
+    expect(screen.getAllByRole("img")).toHaveLength(8);
+    expect(revokeObjectURL).toHaveBeenCalledTimes(2);
+    expect(intersectionOptions.every(({ rootMargin }) => rootMargin === "160px 0px")).toBe(
+      true
+    );
   });
 
   it("offers a manual accessible loader when viewport observation is unavailable", async () => {
@@ -175,6 +304,7 @@ describe("NotesAttachmentList", () => {
     expect(workspaceActions.loadAttachmentBytes).toHaveBeenCalledWith(
       "attachment-1"
     );
+    expect(group).toHaveFocus();
   });
 
   it("disconnects a dormant observer without loading bytes on cleanup", () => {

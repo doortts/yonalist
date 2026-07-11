@@ -38,6 +38,7 @@ export interface NotesImageAttachmentProps {
   readonly onDisplayWidthCommit: (displayWidth: number) => void;
   readonly onRemove?: () => void;
   readonly readOnly?: boolean;
+  readonly embedded?: boolean;
 }
 
 interface WidthLimits {
@@ -226,7 +227,8 @@ export function NotesImageAttachment({
   loadBytes,
   onDisplayWidthCommit,
   onRemove,
-  readOnly = false
+  readOnly = false,
+  embedded = false
 }: NotesImageAttachmentProps) {
   const metadataValid = isValidAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
@@ -534,9 +536,9 @@ export function NotesImageAttachment({
     return (
       <div
         ref={groupRef}
-        role="group"
-        aria-label={`Image: ${attachment.originalName}`}
-        aria-busy="false"
+        role={embedded ? undefined : "group"}
+        aria-label={embedded ? undefined : `Image: ${attachment.originalName}`}
+        aria-busy={embedded ? undefined : "false"}
         style={groupStyle}
       >
         <div className="notes-image-attachment-frame" style={invalidFrameStyle}>
@@ -558,9 +560,9 @@ export function NotesImageAttachment({
   return (
     <div
       ref={groupRef}
-      role="group"
-      aria-label={`Image: ${attachment.originalName}`}
-      aria-busy={source.status === "loading"}
+      role={embedded ? undefined : "group"}
+      aria-label={embedded ? undefined : `Image: ${attachment.originalName}`}
+      aria-busy={embedded ? undefined : source.status === "loading"}
       style={groupStyle}
     >
       <div className="notes-image-attachment-frame" style={frameStyle}>

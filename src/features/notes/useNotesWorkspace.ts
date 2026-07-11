@@ -105,7 +105,7 @@ export interface NotesWorkspaceActions {
   zoomTo(nodeId: NoteId | null): Promise<void>;
   uploadImage?(nodeId: NoteId): Promise<void>;
   importDroppedImages?(nodeId: NoteId, files: readonly File[]): Promise<void>;
-  retryImageUpload?(nodeId: NoteId): Promise<void>;
+  retryImageUpload?(nodeId: NoteId, attachmentId?: string): Promise<void>;
   loadAttachmentBytes?(attachmentId: string): Promise<Uint8Array>;
   resizeImage?(attachmentId: string, displayWidth: number): Promise<void>;
   removeImage?(attachmentId: string): Promise<void>;
@@ -144,6 +144,7 @@ export interface UseNotesWorkspaceResult {
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
   attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
+  attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
   retryFailedDraft(nodeId: NoteId): Promise<void>;
   retryLastFailedWrite(): Promise<void>;
   status: NormalizedNotesWorkspace["status"];
@@ -1183,6 +1184,10 @@ export function useNotesWorkspace({
     useState<NotesStoreError | null>(null);
   const [attachmentUploadErrorsByNodeId, setAttachmentUploadErrorsByNodeId] =
     useState<Readonly<Record<NoteId, string>>>({});
+  const [
+    attachmentUploadRetryAttemptIdsByNodeId,
+    setAttachmentUploadRetryAttemptIdsByNodeId
+  ] = useState<Readonly<Record<NoteId, string>>>({});
   const attachmentUploadAttemptsByNodeIdRef = useRef(
     new Map<NoteId, Map<string, AttachmentUploadAttempt>>()
   );
@@ -1385,6 +1390,7 @@ export function useNotesWorkspace({
     setDraftsByNodeId({});
     setCurrentWriteError(null);
     setAttachmentUploadErrorsByNodeId({});
+    setAttachmentUploadRetryAttemptIdsByNodeId({});
     attachmentUploadAttemptsByNodeIdRef.current.clear();
     deletingNotesDataRef.current = false;
     deletionTokenRef.current = null;
@@ -4170,7 +4176,22 @@ export function useNotesWorkspace({
   }, []);
 
   const setAttachmentUploadError = useCallback(
-    (nodeId: NoteId, error: string | null): void => {
+    (
+      nodeId: NoteId,
+      error: string | null,
+      retryAttachmentId?: string
+    ): void => {
+      if (error !== null && retryAttachmentId === undefined) {
+        const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
+        if (attempts) {
+          for (const [attachmentId, attempt] of attempts) {
+            if (attempt.status === "failed") attempts.delete(attachmentId);
+          }
+          if (attempts.size === 0) {
+            attachmentUploadAttemptsByNodeIdRef.current.delete(nodeId);
+          }
+        }
+      }
       setAttachmentUploadErrorsByNodeId((current) => {
         if (error === null) {
           if (current[nodeId] === undefined) return current;
@@ -4182,6 +4203,17 @@ export function useNotesWorkspace({
           ? current
           : { ...current, [nodeId]: error };
       });
+      setAttachmentUploadRetryAttemptIdsByNodeId((current) => {
+        if (error === null || retryAttachmentId === undefined) {
+          if (current[nodeId] === undefined) return current;
+          const next = { ...current };
+          delete next[nodeId];
+          return next;
+        }
+        return current[nodeId] === retryAttachmentId
+          ? current
+          : { ...current, [nodeId]: retryAttachmentId };
+      });
     },
     []
   );
@@ -4189,11 +4221,15 @@ export function useNotesWorkspace({
   const publishLatestAttachmentAttemptError = useCallback(
     (nodeId: NoteId): void => {
       const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
-      let latestError: string | null = null;
+      let latestFailedAttempt: AttachmentUploadAttempt | undefined;
       for (const attempt of attempts?.values() ?? []) {
-        if (attempt.status === "failed") latestError = attempt.error;
+        if (attempt.status === "failed") latestFailedAttempt = attempt;
       }
-      setAttachmentUploadError(nodeId, latestError);
+      setAttachmentUploadError(
+        nodeId,
+        latestFailedAttempt?.error ?? null,
+        latestFailedAttempt?.attachmentId
+      );
     },
     [setAttachmentUploadError]
   );
@@ -4328,18 +4364,19 @@ export function useNotesWorkspace({
   );
 
   const retryImageUpload = useCallback(
-    async (nodeId: NoteId): Promise<void> => {
+    async (nodeId: NoteId, attachmentId?: string): Promise<void> => {
       const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
-      let failedAttempt: AttachmentUploadAttempt | undefined;
-      for (const attempt of attempts?.values() ?? []) {
-        if (attempt.status === "failed") failedAttempt = attempt;
-      }
-      if (failedAttempt) {
-        await importImagePath(
-          nodeId,
-          failedAttempt.sourcePath,
-          failedAttempt.attachmentId
-        );
+      const failedAttempt = attachmentId
+        ? attempts?.get(attachmentId)
+        : undefined;
+      if (attachmentId) {
+        if (failedAttempt?.status === "failed") {
+          await importImagePath(
+            nodeId,
+            failedAttempt.sourcePath,
+            failedAttempt.attachmentId
+          );
+        }
         return;
       }
       await uploadImage(nodeId);
@@ -4556,6 +4593,7 @@ export function useNotesWorkspace({
     draftsByNodeId,
     writeError: currentWriteError,
     attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
     retryFailedDraft,
     retryLastFailedWrite,
     status: state.status,
