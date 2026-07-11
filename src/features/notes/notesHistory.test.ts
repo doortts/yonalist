@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { NotesWorkspaceScope } from "../../domain/notes";
 import {
+  createNotesHistoryOwnerRegistry,
   createNotesHistorySession,
   type NotesHistorySnapshot
 } from "./notesHistory";
@@ -34,6 +35,29 @@ function snapshot(
 }
 
 describe("notes history session", () => {
+  it("bounds completed owners without evicting in-flight metadata", () => {
+    const owners = createNotesHistoryOwnerRegistry<string>(2);
+    owners.begin("one", "owner");
+    owners.begin("two", "owner");
+    owners.begin("three", "owner");
+
+    expect(owners.size()).toBe(3);
+    expect(owners.owner("one")).toBe("owner");
+
+    owners.complete("one");
+    owners.complete("two");
+    owners.complete("three");
+    expect(owners.size()).toBe(2);
+    expect(owners.owner("one")).toBeUndefined();
+
+    for (let index = 0; index < 300; index += 1) {
+      const entryId = `failed-${index}`;
+      owners.begin(entryId, "owner");
+      owners.discard(entryId);
+    }
+    expect(owners.size()).toBe(2);
+  });
+
   it("allocates a stable text entry when a draft begins and replaces it after closure", () => {
     const history = createNotesHistorySession({ createId: idFactory() });
 

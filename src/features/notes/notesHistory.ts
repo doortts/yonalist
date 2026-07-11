@@ -50,6 +50,61 @@ export interface NotesHistorySession {
   clearSnapshots(): void;
 }
 
+export interface NotesHistoryOwnerRegistry<Owner> {
+  begin(entryId: string, owner: Owner): void;
+  complete(entryId: string): void;
+  discard(entryId: string): void;
+  owner(entryId: string): Owner | undefined;
+  isInFlight(entryId: string): boolean;
+  size(): number;
+}
+
+export function createNotesHistoryOwnerRegistry<Owner>(
+  maxCompleted = 200
+): NotesHistoryOwnerRegistry<Owner> {
+  const entries = new Map<string, { owner: Owner; inFlight: boolean }>();
+
+  const trimCompleted = (): void => {
+    let completedCount = [...entries.values()].filter(
+      (entry) => !entry.inFlight
+    ).length;
+    for (const [entryId, entry] of entries) {
+      if (completedCount <= Math.max(0, maxCompleted)) {
+        break;
+      }
+      if (!entry.inFlight) {
+        entries.delete(entryId);
+        completedCount -= 1;
+      }
+    }
+  };
+
+  return {
+    begin(entryId, owner) {
+      entries.set(entryId, { owner, inFlight: true });
+    },
+    complete(entryId) {
+      const entry = entries.get(entryId);
+      if (entry) {
+        entry.inFlight = false;
+        trimCompleted();
+      }
+    },
+    discard(entryId) {
+      entries.delete(entryId);
+    },
+    owner(entryId) {
+      return entries.get(entryId)?.owner;
+    },
+    isInFlight(entryId) {
+      return entries.get(entryId)?.inFlight ?? false;
+    },
+    size() {
+      return entries.size;
+    }
+  };
+}
+
 function cloneScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   if (scope.kind === "tags") {
     return { kind: "tags", tags: scope.tags.map((tag) => ({ ...tag })) };

@@ -2,7 +2,8 @@ import type {
   NoteId,
   NotesHistoryStatus,
   NotesStore,
-  NotesWorkspace
+  NotesWorkspace,
+  NotesWorkspaceScope
 } from "../../domain/notes";
 import {
   createNotesHistorySession,
@@ -24,9 +25,15 @@ export type NotesWorkspaceQueueResult =
       workspace: NotesWorkspace;
       uiUpdate?: NotesWorkspaceUiUpdate;
       historyStatus?: NotesHistoryStatus;
+      suppressSynchronization?: boolean;
     }
   | { kind: "skipped" }
-  | { kind: "failure"; error: string; workspace?: NotesWorkspace };
+  | {
+      kind: "failure";
+      error: string;
+      workspace?: NotesWorkspace;
+      historyStatus?: NotesHistoryStatus;
+    };
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
 
@@ -42,7 +49,12 @@ export type NotesWorkspaceQueueWork = (
 
 export type NotesWorkspaceCoordinatorEvent =
   | { type: "pending" }
-  | { type: "synchronized"; result: NotesWorkspaceQueueSettlement }
+  | {
+      type: "synchronized";
+      result: NotesWorkspaceQueueSettlement;
+      hasPendingWork: boolean;
+      sourceScope: NotesWorkspaceScope;
+    }
   | {
       type: "settled";
       result: NotesWorkspaceQueueSettlement;
@@ -54,6 +66,8 @@ export interface OpenNotesWorkspaceSessionOptions {
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
   beforeStructural?: () => Promise<boolean>;
+  draftGeneration?: () => number;
+  getScope?: () => NotesWorkspaceScope;
 }
 
 export interface NotesWorkspaceCoordinatorSession {
@@ -93,8 +107,11 @@ interface SessionState {
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
   beforeStructural: (() => Promise<boolean>) | null;
+  draftGeneration: (() => number) | null;
+  getScope: (() => NotesWorkspaceScope) | null;
   closeCompletion: Promise<void>;
   resolveClose: () => void;
+  confirmedWorkspace: NotesWorkspace;
 }
 
 interface QueueItemBase {
@@ -115,6 +132,7 @@ interface CommandItem extends QueueItemBase {
   kind: "command";
   owner: SessionState | null;
   work: NotesWorkspaceQueueWork | null;
+  sourceScope: NotesWorkspaceScope;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -236,6 +254,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         if (!session.active) {
           continue;
         }
+        if (authoritativeWorkspace) {
+          session.confirmedWorkspace = authoritativeWorkspace;
+        }
         session.pendingWork = Math.max(0, session.pendingWork - 1);
         notify(session, {
           type: "settled",
@@ -247,6 +268,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     } else {
       const owner = item.owner;
       item.work = null;
+      if (owner && authoritativeWorkspace) {
+        owner.confirmedWorkspace = authoritativeWorkspace;
+      }
       if (owner?.active) {
         owner.pendingWork = Math.max(0, owner.pendingWork - 1);
         notify(owner, {
@@ -255,7 +279,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           hasPendingWork: owner.pendingWork > 0
         });
       }
-      if (authoritativeWorkspace) {
+      if (
+        authoritativeWorkspace &&
+        !(result.kind === "authoritative" && result.suppressSynchronization)
+      ) {
+        const sourceScope =
+          owner?.active && owner.getScope
+            ? owner.getScope()
+            : item.sourceScope;
         const synchronizedResult: NotesWorkspaceQueueSettlement =
           result.kind === "authoritative"
             ? {
@@ -266,9 +297,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             : result;
         for (const session of entry.sessions) {
           if (session !== owner) {
+            if (
+              session.getScope &&
+              JSON.stringify(session.getScope()) === JSON.stringify(sourceScope)
+            ) {
+              session.confirmedWorkspace = authoritativeWorkspace;
+            }
             notify(session, {
               type: "synchronized",
-              result: synchronizedResult
+              result: synchronizedResult,
+              hasPendingWork: session.pendingWork > 0,
+              sourceScope
             });
           }
         }
@@ -312,11 +351,15 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           result = await work({
             repository: item.entry.repository,
             vaultRoot: item.entry.vaultRoot,
-            confirmedWorkspace: item.entry.confirmedWorkspace
+            confirmedWorkspace:
+              item.owner?.confirmedWorkspace ?? item.entry.confirmedWorkspace
           });
         }
       }
-      if (result.kind === "authoritative") {
+      if (
+        result.kind === "authoritative" ||
+        (result.kind === "failure" && result.workspace)
+      ) {
         let status = result.historyStatus;
         if (!status && item.entry.repository.historyStatus) {
           try {
@@ -409,6 +452,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.entry.sessions.delete(session);
     session.onEvent = null;
     session.beforeStructural = null;
+    session.draftGeneration = null;
+    session.getScope = null;
     session.resolveClose();
 
     const activation = session.activationItem;
@@ -438,7 +483,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       repository,
       vaultRoot,
       onEvent,
-      beforeStructural
+      beforeStructural,
+      draftGeneration,
+      getScope
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
       const session: SessionState = {
@@ -454,7 +501,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         pendingWork: 1,
         activationItem: null,
         onEvent,
-        beforeStructural: beforeStructural ?? null
+        beforeStructural: beforeStructural ?? null,
+        draftGeneration: draftGeneration ?? null,
+        getScope: getScope ?? null,
+        confirmedWorkspace: entry.confirmedWorkspace
       };
       entry.sessions.add(session);
 
@@ -486,6 +536,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           entry,
           owner: session,
           work,
+          sourceScope: session.getScope?.() ?? { kind: "active" },
           canceled: false,
           ...completion
         };
@@ -507,16 +558,42 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             if (!session.active) {
               return;
             }
-            const participants = [...entry.sessions];
-            for (const participant of participants) {
-              if (
-                !participant.active ||
-                !participant.beforeStructural ||
-                !(await participant.beforeStructural())
-              ) {
-                if (participant.active && participant.beforeStructural) {
+            let passes = 0;
+            while (session.active) {
+              const participants = [...entry.sessions].filter(
+                (participant) => participant.active
+              );
+              const generations = new Map(
+                participants.map((participant) => [
+                  participant,
+                  participant.draftGeneration?.() ?? 0
+                ])
+              );
+              for (const participant of participants) {
+                if (
+                  participant.beforeStructural &&
+                  !(await participant.beforeStructural())
+                ) {
                   return;
                 }
+              }
+              const liveParticipants = [...entry.sessions].filter(
+                (participant) => participant.active
+              );
+              const stable =
+                liveParticipants.length === participants.length &&
+                liveParticipants.every(
+                  (participant, index) =>
+                    participant === participants[index] &&
+                    (participant.draftGeneration?.() ?? 0) ===
+                      generations.get(participant)
+                );
+              if (stable) {
+                break;
+              }
+              passes += 1;
+              if (passes % 16 === 0) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
               }
             }
             if (session.active) {

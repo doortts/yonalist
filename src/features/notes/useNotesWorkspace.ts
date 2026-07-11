@@ -31,10 +31,11 @@ import {
   type NotesWorkspaceQueueWork,
   type NotesWorkspaceUiUpdate
 } from "./notesWorkspaceCoordinator";
-import type {
-  NotesHistoryFocus,
-  NotesHistoryFocusField,
-  NotesHistorySnapshot
+import {
+  createNotesHistoryOwnerRegistry,
+  type NotesHistoryFocus,
+  type NotesHistoryFocusField,
+  type NotesHistorySnapshot
 } from "./notesHistory";
 import {
   normalizeWorkspace,
@@ -198,6 +199,7 @@ interface NotesWorkspaceSessionRecord {
   draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
   draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
   nextDraftRevision: number;
+  draftGeneration: number;
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
   recoveryEntry: NotesWorkspaceRecoveryEntry | null;
@@ -216,11 +218,6 @@ interface LiveNotesNavigation {
   editingNoteId: NoteId | null;
   pendingFocusId: NoteId | null;
   pendingFocusField: NotesHistoryFocusField | null;
-}
-
-interface NotesHistoryOwner {
-  session: NotesWorkspaceCoordinatorSession;
-  inFlight: boolean;
 }
 
 const emptyLiveNavigation = (): LiveNotesNavigation => ({
@@ -810,7 +807,7 @@ export function useNotesWorkspace({
   const deletionTokenRef = useRef<object | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
   const historyOwnerByEntryIdRef = useRef(
-    new Map<string, NotesHistoryOwner>()
+    createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(200)
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const persistDraftRef = useRef<
@@ -908,8 +905,41 @@ export function useNotesWorkspace({
           dispatch({ type: "setLoading" });
           return;
         }
-        if (event.result.kind === "authoritative" && event.result.historyStatus) {
+        if (
+          event.result.kind !== "skipped" &&
+          event.result.historyStatus
+        ) {
           setHistoryStatus(event.result.historyStatus);
+        }
+        if (
+          event.type === "synchronized" &&
+          !sameScope(event.sourceScope, activeScopeRef.current)
+        ) {
+          const refreshScope = activeScopeRef.current;
+          void session.enqueue(async (context) => {
+            const workspace = await context.repository.loadWorkspace(
+              context.vaultRoot,
+              refreshScope
+            );
+            if (
+              record.closing ||
+              sessionRecordRef.current !== record ||
+              sessionRef.current !== session ||
+              !sameScope(activeScopeRef.current, refreshScope)
+            ) {
+              return { kind: "skipped" };
+            }
+            return {
+              kind: "authoritative",
+              workspace,
+              historyStatus:
+                event.result.kind === "skipped"
+                  ? undefined
+                  : event.result.historyStatus,
+              suppressSynchronization: true
+            };
+          });
+          return;
         }
         const authoritativeWorkspace =
           event.result.kind === "authoritative"
@@ -929,12 +959,13 @@ export function useNotesWorkspace({
         dispatch({
           type: "settleQueueWork",
           result: event.result,
-          hasPendingWork:
-            event.type === "synchronized" ? false : event.hasPendingWork
+          hasPendingWork: event.hasPendingWork
         });
       },
       beforeStructural: () =>
-        flushDraftBarrierRef.current?.(record) ?? Promise.resolve(true)
+        flushDraftBarrierRef.current?.(record) ?? Promise.resolve(true),
+      draftGeneration: () => record.draftGeneration,
+      getScope: () => activeScopeRef.current
     });
     record = {
       repository,
@@ -948,6 +979,7 @@ export function useNotesWorkspace({
       draftHistoryContextByNodeId: new Map(),
       draftHistoryFocusByNodeId: new Map(),
       nextDraftRevision: 1,
+      draftGeneration: 0,
       failedWritesByNodeId: new Map(),
       writeError: null,
       recoveryEntry: null,
@@ -1087,7 +1119,7 @@ export function useNotesWorkspace({
       owner: NotesWorkspaceCoordinatorSession
     ): NotesHistoryContext => {
       const owners = historyOwnerByEntryIdRef.current;
-      owners.set(context.entryId, { session: owner, inFlight: true });
+      owners.begin(context.entryId, owner);
       return context;
     },
     []
@@ -1135,24 +1167,7 @@ export function useNotesWorkspace({
   );
 
   const completeHistoryOwner = useCallback((entryId: string): void => {
-    const owners = historyOwnerByEntryIdRef.current;
-    const owner = owners.get(entryId);
-    if (!owner) {
-      return;
-    }
-    owner.inFlight = false;
-    let completedCount = [...owners.values()].filter(
-      (candidate) => !candidate.inFlight
-    ).length;
-    for (const [candidateId, candidate] of owners) {
-      if (completedCount <= 200) {
-        break;
-      }
-      if (!candidate.inFlight) {
-        owners.delete(candidateId);
-        completedCount -= 1;
-      }
-    }
+    historyOwnerByEntryIdRef.current.complete(entryId);
   }, []);
 
   const rememberHistoryAfter = useCallback(
@@ -1166,12 +1181,12 @@ export function useNotesWorkspace({
       if (!context) {
         return;
       }
-      const owner = historyOwnerByEntryIdRef.current.get(context.entryId);
+      const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
       if (
-        !owner || sessionRef.current !== owner.session
+        !owner || sessionRef.current !== owner
       ) {
-        owner?.session.history.discard(context.entryId);
-        historyOwnerByEntryIdRef.current.delete(context.entryId);
+        owner?.history.discard(context.entryId);
+        historyOwnerByEntryIdRef.current.discard(context.entryId);
         return;
       }
       liveNavigationRef.current = reconcileLiveNavigation(
@@ -1180,7 +1195,7 @@ export function useNotesWorkspace({
         uiUpdate
       );
       const after = captureHistorySnapshot(focus);
-      owner.session.history.rememberAfter(context.entryId, {
+      owner.history.rememberAfter(context.entryId, {
         ...after,
         locallyExpandedNodeIds:
           expandedNodeIds === undefined
@@ -1199,11 +1214,35 @@ export function useNotesWorkspace({
       if (!context) {
         return;
       }
-      const owner = historyOwnerByEntryIdRef.current.get(context.entryId);
-      owner?.session.history.discard(context.entryId);
-      historyOwnerByEntryIdRef.current.delete(context.entryId);
+      const owner = historyOwnerByEntryIdRef.current.owner(context.entryId);
+      owner?.history.discard(context.entryId);
+      historyOwnerByEntryIdRef.current.discard(context.entryId);
     },
     []
+  );
+
+  const settleInlineTextEntry = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      context: NotesHistoryContext | null,
+      result: NotesWorkspaceQueueResult
+    ): void => {
+      if (!context) {
+        return;
+      }
+      record.session.history.closeTextBurst(context.entryId);
+      if (
+        result.kind === "authoritative" &&
+        historyOwnerByEntryIdRef.current.owner(context.entryId) ===
+          record.session &&
+        sessionRef.current === record.session
+      ) {
+        completeHistoryOwner(context.entryId);
+      } else {
+        discardHistoryEntry(context);
+      }
+    },
+    [completeHistoryOwner, discardHistoryEntry]
   );
 
   const runStructuralCommand = useCallback(
@@ -1211,7 +1250,8 @@ export function useNotesWorkspace({
       commandKind: string,
       work: (
         context: NotesWorkspaceQueueContext,
-        historyContext: NotesHistoryContext | null
+        historyContext: NotesHistoryContext | null,
+        record: NotesWorkspaceSessionRecord
       ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult
     ): Promise<void> => {
       if (deletingNotesDataRef.current || closedRef.current) {
@@ -1224,13 +1264,17 @@ export function useNotesWorkspace({
         }
         const historyContext = beginStructuralEntry(record, commandKind);
         try {
-          const result = await work(context, historyContext);
+          const result = await work(context, historyContext, record);
           const owner = historyContext
-            ? historyOwnerByEntryIdRef.current.get(historyContext.entryId)
+            ? historyOwnerByEntryIdRef.current.owner(historyContext.entryId)
             : undefined;
           if (
             result.kind !== "authoritative" ||
-            (historyContext !== null && owner?.inFlight !== false)
+            (historyContext !== null &&
+              (owner === undefined ||
+                historyOwnerByEntryIdRef.current.isInFlight(
+                  historyContext.entryId
+                )))
           ) {
             discardHistoryEntry(historyContext);
           }
@@ -1450,6 +1494,7 @@ export function useNotesWorkspace({
         revision: record.nextDraftRevision++,
         status: previous?.status === "failed" ? "failed" : "pending"
       };
+      record.draftGeneration += 1;
       record.drafts.set(nodeId, draft);
       record.retryWriteByNodeId.set(nodeId, () => {
         const latest = record.drafts.get(nodeId);
@@ -1649,13 +1694,16 @@ export function useNotesWorkspace({
           sessionRecordRef.current !== record ||
           sessionRef.current !== session
         ) {
-          return { kind: "skipped" };
+          return authoritative(result.workspace, undefined, {
+            canUndo: result.canUndo,
+            canRedo: result.canRedo
+          });
         }
         const replayOwner = result.replayedEntryId
-          ? historyOwnerByEntryIdRef.current.get(result.replayedEntryId)
+          ? historyOwnerByEntryIdRef.current.owner(result.replayedEntryId)
           : undefined;
         replayedSnapshot =
-          replayOwner?.session === session
+          replayOwner === session
             ? session.history.snapshotForReplay(
                 result.replayedEntryId,
                 direction
@@ -1673,7 +1721,10 @@ export function useNotesWorkspace({
             sessionRecordRef.current !== record ||
             sessionRef.current !== session
           ) {
-            return { kind: "skipped" };
+            return authoritative(result.workspace, undefined, {
+              canUndo: result.canUndo,
+              canRedo: result.canRedo
+            });
           }
         }
         activeScopeRef.current = replayedScope;
@@ -2100,65 +2151,68 @@ export function useNotesWorkspace({
       }
       const inlineDraft =
         hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      const inlineTextContext =
-        inlineDraft && record
-          ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
-          : null;
       let succeeded = false;
       const completion = runStructuralCommand(
         "split",
-        async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const steps: NotesWorkspaceQueueStep[] = [];
-        if (inlineDraft) {
-          steps.push(async () => {
-            const workspace = await context.repository.updateNode(
+        async (context, historyContext, executionRecord) => {
+          if (!confirmedState(context).nodesById[nodeId]) {
+            return { kind: "skipped" };
+          }
+          const inlineTextContext = inlineDraft
+            ? beginTextEntry(executionRecord, nodeId, {
+                nodeId,
+                field: "title"
+              })
+            : null;
+          const steps: NotesWorkspaceQueueStep[] = [];
+          if (inlineDraft) {
+            steps.push(async () => {
+              const workspace = await context.repository.updateNode(
+                context.vaultRoot,
+                { id: nodeId, ...inlineDraft },
+                ...historyArguments(inlineTextContext)
+              );
+              rememberHistoryAfter(
+                inlineTextContext,
+                workspace,
+                undefined,
+                { nodeId, field: "title" }
+              );
+              return workspace;
+            });
+          }
+          steps.push(() =>
+            context.repository.splitNode(
               context.vaultRoot,
-              { id: nodeId, ...inlineDraft },
-              ...historyArguments(inlineTextContext)
-            );
-            rememberHistoryAfter(
-              inlineTextContext,
-              workspace,
-              undefined,
-              { nodeId, field: "title" }
-            );
-            return workspace;
-          });
-        }
-        steps.push(() =>
-          context.repository.splitNode(
-            context.vaultRoot,
-            {
-              id: nodeId,
-              newNodeId,
-              prefix,
-              suffix
-            },
-            ...historyArguments(historyContext)
-          )
-        );
-        const result = await runCompoundQueueWork(
-          context,
-          steps,
-          {
-            selectedId: newNodeId,
-            editingNoteId: newNodeId,
-            pendingFocusId: newNodeId
-          },
-          activeScopeRef.current
-        );
-        if (result.kind === "authoritative") {
-          rememberHistoryAfter(
-            historyContext,
-            result.workspace,
-            result.uiUpdate
+              {
+                id: nodeId,
+                newNodeId,
+                prefix,
+                suffix
+              },
+              ...historyArguments(historyContext)
+            )
           );
-        }
-        succeeded = result.kind === "authoritative";
-        return result;
+          const result = await runCompoundQueueWork(
+            context,
+            steps,
+            {
+              selectedId: newNodeId,
+              editingNoteId: newNodeId,
+              pendingFocusId: newNodeId
+            },
+            activeScopeRef.current
+          );
+          settleInlineTextEntry(executionRecord, inlineTextContext, result);
+          if (result.kind === "authoritative") {
+            rememberHistoryAfter(
+              historyContext,
+              result.workspace,
+              result.uiUpdate
+            );
+          }
+          succeeded = result.kind === "authoritative";
+          return result;
         }
       );
       return completion.then(() => {
@@ -2174,6 +2228,7 @@ export function useNotesWorkspace({
       flushAllDraftsBeforeStructural,
       flushDraftBeforeStructural,
       rememberHistoryAfter,
+      settleInlineTextEntry,
       runCommand
     ]
   );
@@ -2240,14 +2295,7 @@ export function useNotesWorkspace({
       }
       const inlineDraft =
         hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      const inlineTextContext =
-        inlineDraft && record
-          ? beginTextEntry(record, input.id, {
-              nodeId: input.id,
-              field: "title"
-            })
-          : null;
-      return runStructuralCommand("move", async (context, historyContext) => {
+      return runStructuralCommand("move", async (context, historyContext, executionRecord) => {
         const before = confirmedState(context);
         const expandNodeId = options?.expandNodeId;
         if (
@@ -2256,6 +2304,12 @@ export function useNotesWorkspace({
         ) {
           return { kind: "skipped" };
         }
+        const inlineTextContext = inlineDraft
+          ? beginTextEntry(executionRecord, input.id, {
+              nodeId: input.id,
+              field: "title"
+            })
+          : null;
         const steps: NotesWorkspaceQueueStep[] = [];
         if (inlineDraft) {
           steps.push(async () => {
@@ -2298,6 +2352,7 @@ export function useNotesWorkspace({
           focusedUiUpdate(focusNodeId),
           activeScopeRef.current
         );
+        settleInlineTextEntry(executionRecord, inlineTextContext, result);
         if (result.kind === "authoritative") {
           rememberHistoryAfter(
             historyContext,
@@ -2315,6 +2370,7 @@ export function useNotesWorkspace({
       beginTextEntry,
       flushDraftBeforeStructural,
       rememberHistoryAfter,
+      settleInlineTextEntry,
       runCommand
     ]
   );
@@ -2546,7 +2602,7 @@ export function useNotesWorkspace({
             sessionRecordRef.current !== ownerRecord ||
             sessionRef.current !== ownerRecord.session
           ) {
-            return { kind: "skipped" };
+            return authoritative(mutationWorkspace);
           }
           const requestedScope = activeScopeRef.current;
           let projectedWorkspace: NotesWorkspace;
@@ -2557,11 +2613,11 @@ export function useNotesWorkspace({
               requestedScope
             );
             if (!isLifecycleOwnerActive()) {
-              return { kind: "skipped" };
+              return authoritative(projectedWorkspace);
             }
           } catch {
             if (!isLifecycleOwnerActive()) {
-              return { kind: "skipped" };
+              return authoritative(mutationWorkspace);
             }
             lifecycleResult.recoveredToActive = true;
             activeScopeRef.current = { kind: "active" };
@@ -2571,7 +2627,7 @@ export function useNotesWorkspace({
                 activeScopeRef.current
               );
               if (!isLifecycleOwnerActive()) {
-                return { kind: "skipped" };
+                return authoritative(projectedWorkspace);
               }
             } catch {
               projectedWorkspace = mutationWorkspace;
@@ -2582,13 +2638,13 @@ export function useNotesWorkspace({
               context.vaultRoot
             );
             if (!isLifecycleOwnerActive()) {
-              return { kind: "skipped" };
+              return authoritative(projectedWorkspace);
             }
           } catch {
             // The lifecycle result remains authoritative if tag discovery fails.
           }
           if (!isLifecycleOwnerActive()) {
-            return { kind: "skipped" };
+            return authoritative(projectedWorkspace);
           }
           const navigationVersion = navigationVersionRef.current;
           const navigation =
@@ -2715,14 +2771,18 @@ export function useNotesWorkspace({
       }
       const inlineDraft =
         hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      const inlineTextContext =
-        inlineDraft && record
-          ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
-          : null;
-      return runStructuralCommand("remove", async (context, historyContext) => {
+      return runStructuralCommand(
+        "remove",
+        async (context, historyContext, executionRecord) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
+        const inlineTextContext = inlineDraft
+          ? beginTextEntry(executionRecord, nodeId, {
+              nodeId,
+              field: "title"
+            })
+          : null;
         const steps: NotesWorkspaceQueueStep[] = [];
         if (inlineDraft) {
           steps.push(async () => {
@@ -2753,6 +2813,7 @@ export function useNotesWorkspace({
           focusedUiUpdate(focusNodeId),
           activeScopeRef.current
         );
+        settleInlineTextEntry(executionRecord, inlineTextContext, result);
         if (result.kind === "authoritative") {
           rememberHistoryAfter(
             historyContext,
@@ -2761,7 +2822,8 @@ export function useNotesWorkspace({
           );
         }
         return result;
-      });
+        }
+      );
     },
     [
       beginStructuralEntry,
@@ -2770,6 +2832,7 @@ export function useNotesWorkspace({
       flushAllDraftsBeforeStructural,
       flushDraftBeforeStructural,
       rememberHistoryAfter,
+      settleInlineTextEntry,
       runCommand
     ]
   );

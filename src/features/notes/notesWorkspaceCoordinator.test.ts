@@ -75,6 +75,162 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("repeats a structural barrier until every participant generation is stable", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const laterDrain = deferred<void>();
+    const order: string[] = [];
+    let firstGeneration = 0;
+    let firstPasses = 0;
+    const first = registry.openSession({
+      repository: store,
+      vaultRoot: "/epoch",
+      onEvent: vi.fn(),
+      draftGeneration: () => firstGeneration,
+      beforeStructural: async () => {
+        firstPasses += 1;
+        order.push(`first:${firstPasses}`);
+        return true;
+      }
+    });
+    const second = registry.openSession({
+      repository: store,
+      vaultRoot: "/epoch",
+      onEvent: vi.fn(),
+      draftGeneration: () => 0,
+      beforeStructural: async () => {
+        order.push("second");
+        if (order.filter((item) => item === "second").length === 1) {
+          await laterDrain.promise;
+        }
+        return true;
+      }
+    });
+    await Promise.all([first.activation, second.activation]);
+
+    const structural = second.enqueueStructural(() => {
+      order.push("structural");
+      return { kind: "skipped" as const };
+    });
+    await vi.waitFor(() => expect(order).toEqual(["first:1", "second"]));
+    firstGeneration += 1;
+    laterDrain.resolve();
+    await structural;
+
+    expect(order).toEqual([
+      "first:1",
+      "second",
+      "first:2",
+      "second",
+      "structural"
+    ]);
+    first.close();
+    second.close();
+  });
+
+  it("queries and broadcasts status for partial-authority failures", async () => {
+    const confirmed = workspace([node({ id: "saved-draft" })]);
+    const store = repository({
+      historyStatus: vi.fn().mockResolvedValue({
+        canUndo: true,
+        canRedo: false
+      })
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const ownerEvents = vi.fn();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/partial",
+      onEvent: ownerEvents
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/partial",
+      onEvent: siblingEvents
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    ownerEvents.mockClear();
+    siblingEvents.mockClear();
+
+    await owner.enqueue(() => ({
+      kind: "failure" as const,
+      error: "move failed",
+      workspace: confirmed
+    }));
+
+    expect(ownerEvents).toHaveBeenCalledWith({
+      type: "settled",
+      result: {
+        kind: "failure",
+        error: "move failed",
+        workspace: confirmed,
+        historyStatus: { canUndo: true, canRedo: false }
+      },
+      hasPendingWork: false
+    });
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: { kind: "active" },
+      result: {
+        kind: "failure",
+        error: "move failed",
+        workspace: confirmed,
+        historyStatus: { canUndo: true, canRedo: false }
+      }
+    });
+    owner.close();
+    sibling.close();
+  });
+
+  it("does not clear sibling pending state when another owner settles", async () => {
+    const ownerWork = deferred<NotesWorkspace>();
+    const siblingWork = deferred<NotesWorkspace>();
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/pending",
+      onEvent: vi.fn()
+    });
+    const siblingEvents = vi.fn();
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/pending",
+      onEvent: siblingEvents
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    siblingEvents.mockClear();
+
+    const first = owner.enqueue(async () => ({
+      kind: "authoritative" as const,
+      workspace: await ownerWork.promise
+    }));
+    const second = sibling.enqueue(async () => ({
+      kind: "authoritative" as const,
+      workspace: await siblingWork.promise
+    }));
+    siblingEvents.mockClear();
+    ownerWork.resolve(workspace([node({ id: "owner-result" })]));
+    await first;
+
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: true,
+      sourceScope: { kind: "active" },
+      result: {
+        kind: "authoritative",
+        workspace: workspace([node({ id: "owner-result" })]),
+        historyStatus: undefined
+      }
+    });
+    siblingWork.resolve(workspace([node({ id: "sibling-result" })]));
+    await second;
+    owner.close();
+    sibling.close();
+  });
+
   it("drains every live session before enqueuing structural work", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -163,6 +319,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(ownerEvents).not.toHaveBeenCalled();
     expect(siblingEvents).toHaveBeenCalledWith({
       type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: { kind: "active" },
       result: {
         kind: "authoritative",
         workspace: confirmed,

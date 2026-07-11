@@ -10,6 +10,8 @@ Review-fix commit: the commit containing this report
 
 Second adversarial review commit: the commit containing this report
 
+Third adversarial review commit: the commit containing this report
+
 ## Owned Files
 
 - `src/features/notes/notesHistory.ts`
@@ -61,6 +63,15 @@ Second adversarial review commit: the commit containing this report
   workspace and versioned history status, including after owner unmount.
 - Completed owner metadata is bounded while in-flight metadata is never evicted.
   Failed/skipped text and structural entries are explicitly discarded.
+- Structural barriers compare every live participant's draft generation before and
+  after a full drain pass. Unstable passes restart, yielding every 16 retries so
+  continuous typing cannot monopolize the event loop.
+- Coordinator sessions own their scope and confirmed projection. Cross-scope
+  settlements trigger a generation-guarded subscriber reload; matching scopes receive
+  data directly. Both paths preserve subscriber navigation and pending counts.
+- Replay and lifecycle work return backend authority after owner unmount while omitting
+  owner UI changes. Inline split/move/remove text entries allocate only after barrier
+  admission and explicitly complete or discard through the bounded owner registry.
 
 ## TDD Evidence
 
@@ -133,6 +144,26 @@ Execution-time snapshot and vault-generation status fixtures also pass, covering
 navigation change during a pre-mutation repository await and a late Vault A status
 response after switching to Vault B.
 
+### Third Adversarial Review
+
+Coordinator RED: 3 failures and 8 passes. A one-pass barrier omitted a re-dirtied
+earlier participant, partial-authority failures omitted history status, and sibling
+synchronization omitted pending ownership. GREEN: 11/11 coordinator tests passed.
+
+Epoch hook RED: the three-mount test produced A1, B1, structural and omitted A2 when A
+was dirtied while B blocked. GREEN: A2 is drained during the repeated epoch before the
+structural call.
+
+Owner-loss and scope RED: all 3 focused tests failed. Replay and Archive returned no
+authority after owner unmount, and an Archive subscriber received no second Archive
+projection after an All mutation. GREEN: all 3 passed with ownerless authority and
+scope-aware reload.
+
+Owner registry RED: `createNotesHistoryOwnerRegistry` was absent. GREEN: its stress
+test retains all in-flight entries, bounds completed entries, and remains bounded after
+300 explicit failure discards. Inline compound paths use this registry for
+split/move/remove success, failure, and owner abandonment.
+
 ## Verification
 
 - Focused command covering history, keyboard, coordinator, reducer, hook, and header:
@@ -144,6 +175,9 @@ response after switching to Vault B.
 - Second-review hook plus workspace integration run: 4 files, 172/172 passed.
 - Second-review final full Notes run: 21 files, 498/498 passed.
 - Second-review `npm run build`: exit 0; 2,286 modules transformed.
+- Third-review focused coordinator/history/hook/workspace run: 4 files, 180/180 passed.
+- Third-review full Notes run: 21 files, 506/506 passed.
+- Third-review `npm run build`: exit 0; 2,286 modules transformed.
 
 ## Concerns
 

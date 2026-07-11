@@ -600,7 +600,11 @@ describe("useNotesWorkspace", () => {
     ]);
     const store = repository({
       updateNode: vi.fn().mockResolvedValue(saved),
-      splitNode: vi.fn().mockRejectedValue(new Error("split failed"))
+      splitNode: vi.fn().mockRejectedValue(new Error("split failed")),
+      historyStatus: vi
+        .fn()
+        .mockResolvedValueOnce({ canUndo: false, canRedo: false })
+        .mockResolvedValue({ canUndo: true, canRedo: false })
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -635,7 +639,9 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.pendingFocusId).toBeNull();
     expect(result.current).toMatchObject({
       status: "error",
-      error: "split failed"
+      error: "split failed",
+      canUndo: true,
+      canRedo: false
     });
   });
 
@@ -1871,6 +1877,80 @@ describe("useNotesWorkspace", () => {
     );
   });
 
+  it("restarts the shared barrier when an earlier hook is dirtied while a later hook drains", async () => {
+    const initial = workspace([
+      node({ id: "draft-a" }),
+      node({ id: "draft-b", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    const blockedB = deferred<NotesWorkspace>();
+    const order: string[] = [];
+    const updateNode = vi.fn((_vaultRoot, input) => {
+      order.push(`update:${input.id}:${input.title}`);
+      return input.id === "draft-b"
+        ? blockedB.promise
+        : Promise.resolve(initial);
+    });
+    const toggleStar = vi.fn().mockImplementation(async () => {
+      order.push("structural");
+      return initial;
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      toggleStar
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/epoch-hooks", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/epoch-hooks", repository: store })
+    );
+    const structuralOwner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/epoch-hooks", repository: store })
+    );
+    await waitFor(() => {
+      expect(first.result.current.status).toBe("ready");
+      expect(second.result.current.status).toBe("ready");
+      expect(structuralOwner.result.current.status).toBe("ready");
+    });
+    act(() => {
+      first.result.current.actions.updateNodeDraft("draft-a", {
+        title: "first",
+        note: ""
+      });
+      second.result.current.actions.updateNodeDraft("draft-b", {
+        title: "blocked",
+        note: ""
+      });
+    });
+
+    const structural = structuralOwner.result.current.actions.toggleStar(
+      "target"
+    );
+    await waitFor(() =>
+      expect(order).toEqual([
+        "update:draft-a:first",
+        "update:draft-b:blocked"
+      ])
+    );
+    act(() => {
+      first.result.current.actions.updateNodeDraft("draft-a", {
+        title: "second",
+        note: ""
+      });
+    });
+    blockedB.resolve(initial);
+    await act(async () => structural);
+
+    expect(order).toEqual([
+      "update:draft-a:first",
+      "update:draft-b:blocked",
+      "update:draft-a:second",
+      "structural"
+    ]);
+  });
+
   it("flushes a visible note draft before undo and restores field-aware UI", async () => {
     const initial = workspace([
       node({ id: "root", title: "before" }),
@@ -2117,6 +2197,148 @@ describe("useNotesWorkspace", () => {
       zoomRootId: "other",
       pendingFocusId: "other"
     });
+  });
+
+  it("broadcasts replay authority when the replay owner unmounts after commit", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const replay = deferred<{
+      workspace: NotesWorkspace;
+      replayedEntryId: string | null;
+      canUndo: boolean;
+      canRedo: boolean;
+    }>();
+    const undo = vi.fn().mockReturnValue(replay.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      undo
+    });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-unmount", repository: store })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/replay-unmount", repository: store })
+    );
+    await waitFor(() => {
+      expect(owner.result.current.status).toBe("ready");
+      expect(sibling.result.current.status).toBe("ready");
+    });
+    await act(async () => {
+      await sibling.result.current.actions.focusNode("other");
+      await sibling.result.current.actions.zoomTo("other");
+    });
+
+    const completion = owner.result.current.actions.undo!();
+    await waitFor(() => expect(undo).toHaveBeenCalledOnce());
+    owner.unmount();
+    replay.resolve({
+      workspace: workspace([
+        node({ id: "after-undo" }),
+        node({ id: "other", sortKey: 2048 })
+      ]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: true
+    });
+    await act(async () => completion);
+
+    await waitFor(() =>
+      expect(sibling.result.current.state.nodesById["after-undo"]).toBeDefined()
+    );
+    expect(sibling.result.current).toMatchObject({
+      canUndo: false,
+      canRedo: true
+    });
+    expect(sibling.result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other",
+      pendingFocusId: "other"
+    });
+  });
+
+  it("broadcasts archive authority when the lifecycle owner unmounts after commit", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const archived = deferred<NotesWorkspace>();
+    const archiveNode = vi.fn().mockReturnValue(archived.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      archiveNode
+    });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/archive-unmount", repository: store })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/archive-unmount", repository: store })
+    );
+    await waitFor(() => {
+      expect(owner.result.current.status).toBe("ready");
+      expect(sibling.result.current.status).toBe("ready");
+    });
+    await act(async () => {
+      await sibling.result.current.actions.focusNode("other");
+      await sibling.result.current.actions.zoomTo("other");
+    });
+
+    const completion = owner.result.current.actions.archiveNode("root");
+    await waitFor(() => expect(archiveNode).toHaveBeenCalledOnce());
+    owner.unmount();
+    archived.resolve(workspace([node({ id: "other" })]));
+    await act(async () => completion);
+
+    await waitFor(() =>
+      expect(sibling.result.current.state.nodesById.root).toBeUndefined()
+    );
+    expect(sibling.result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other",
+      pendingFocusId: "other"
+    });
+  });
+
+  it("reloads each sibling's own scope instead of installing the owner's projection", async () => {
+    const active = workspace([node({ id: "active-root" })]);
+    const archived = workspace([
+      node({ id: "archive-root", archivedAt: "2026-07-11T00:00:00Z" })
+    ]);
+    const loadWorkspace = vi.fn((_vaultRoot, scope) =>
+      Promise.resolve(scope?.kind === "archive" ? archived : active)
+    );
+    const toggleStar = vi.fn().mockResolvedValue(
+      workspace([node({ id: "active-root", isStarred: true })])
+    );
+    const store = repository({ loadWorkspace, toggleStar });
+    const all = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
+    );
+    const archive = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
+    );
+    await waitFor(() => {
+      expect(all.result.current.status).toBe("ready");
+      expect(archive.result.current.status).toBe("ready");
+    });
+    await act(async () =>
+      archive.result.current.actions.selectLibraryView("archive")
+    );
+    expect(archive.result.current.state.nodesById["archive-root"]).toBeDefined();
+
+    await act(async () => all.result.current.actions.toggleStar("active-root"));
+
+    await waitFor(() =>
+      expect(
+        loadWorkspace.mock.calls.filter(([, scope]) => scope?.kind === "archive")
+      ).toHaveLength(2)
+    );
+    expect(archive.result.current.state.nodesById["archive-root"]).toBeDefined();
+    expect(archive.result.current.state.nodesById["active-root"]).toBeUndefined();
+    expect(all.result.current.state.nodesById["active-root"]?.isStarred).toBe(
+      true
+    );
   });
 
   it("resets and generation-guards activation history status across vaults", async () => {
