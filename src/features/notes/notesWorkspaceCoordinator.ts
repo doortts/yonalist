@@ -587,43 +587,60 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void> {
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
-            .map((participant) => ({
-              participant,
-              cutoff: participant.captureDraftCutoff?.() ?? 0
-            }));
+            .map((participant) => {
+              const cutoff = participant.captureDraftCutoff?.() ?? 0;
+              const capturedFinalizer = participant.afterStructural;
+              let finalized = false;
+              return {
+                participant,
+                cutoff,
+                finalize(): void {
+                  if (finalized) {
+                    return;
+                  }
+                  finalized = true;
+                  try {
+                    capturedFinalizer?.(cutoff);
+                  } catch {
+                    // Finalization cannot be allowed to strand the structural queue.
+                  }
+                }
+              };
+            });
+          const finalizeParticipants = (): void => {
+            for (const intent of participants) {
+              intent.finalize();
+            }
+          };
           entry.pendingStructuralBarriers += 1;
           const runStructuralIntent = async (): Promise<void> => {
-            if (!session.active) {
+            try {
+              if (!session.active) {
+                return;
+              }
               for (const intent of participants) {
-                intent.participant.afterStructural?.(intent.cutoff);
-              }
-              return;
-            }
-            for (const intent of participants) {
-              const participant = intent.participant;
-              if (!participant.active) {
-                continue;
-              }
-              if (
-                participant.beforeStructural &&
-                !(await participant.beforeStructural(intent.cutoff))
-              ) {
+                const participant = intent.participant;
+                if (!participant.active) {
+                  continue;
+                }
                 if (
-                  participant.active &&
-                  (participant.isCurrent?.() ?? true)
+                  participant.beforeStructural &&
+                  !(await participant.beforeStructural(intent.cutoff))
                 ) {
-                  for (const release of participants) {
-                    release.participant.afterStructural?.(release.cutoff);
+                  if (
+                    participant.active &&
+                    (participant.isCurrent?.() ?? true)
+                  ) {
+                    return;
                   }
-                  return;
                 }
               }
+              const structural = enqueueCommand(work);
+              finalizeParticipants();
+              await structural;
+            } finally {
+              finalizeParticipants();
             }
-            const structural = enqueueCommand(work);
-            for (const intent of participants) {
-              intent.participant.afterStructural?.(intent.cutoff);
-            }
-            await structural;
           };
           const completion =
             entry.pendingStructuralBarriers === 1

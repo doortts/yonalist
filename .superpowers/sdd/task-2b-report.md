@@ -14,6 +14,8 @@ Third adversarial review commit: the commit containing this report
 
 Fourth adversarial review commit: the commit containing this report
 
+Final cutoff review commit: the commit containing this report
+
 ## Owned Files
 
 - `src/features/notes/notesHistory.ts`
@@ -82,6 +84,14 @@ Fourth adversarial review commit: the commit containing this report
 - History-status settlements carry a coordinator version. Cross-scope reloads query
   status at completion and hooks reject older versions, preserving the newest backend
   `canUndo` / `canRedo` state and each sibling's independent pending count.
+- Draft writes now enter scheduling as cloned attempts containing revision, title,
+  note, focus, and history context. Debounce, failed retry, explicit flush/retry,
+  recovery, and shutdown never dereference a newer draft when their queued work runs.
+  During a cutoff, failed attempts at or below the boundary run first and later visible
+  drafts retain their separate post-structural text entry.
+- Each coordinator participant captures its finalizer together with its cutoff. The
+  finalizer is idempotent and runs on success, abort, exception, requester close, or
+  participant departure even after the live session callbacks are cleared.
 
 ## TDD Evidence
 
@@ -200,6 +210,24 @@ Integration RED: the first cutoff implementation delayed the initial drain by on
 microtask, failing the existing structural-keyboard debounce assertion. GREEN: the
 first intent begins draining synchronously and later intents remain promise-serialized.
 
+### Final Cutoff Review
+
+Immutable-attempt RED: 3/3 focused hook tests failed. Automatic cutoff drain omitted
+the failed pre-click value, explicit retry wrote the post-click value before the
+structural call, and shutdown also wrote the post-click value. GREEN: all 3 preserve
+the failed snapshot before structure, then persist the newer value afterward under a
+different text entry when the owner remains mounted.
+
+Finalizer RED: the departure cleanup test observed zero finalizer calls and one token
+left in its active-intent set after the participant closed mid-pass. GREEN: the
+captured finalizer runs exactly once, removes the token, preserves requester execution,
+and lets the idle coordinator entry be released.
+
+Compatibility RED: the full Notes suite found that an ordinary retry outside a cutoff
+wrote the stale failed patch instead of the newest visible draft. GREEN: retry
+selection is now scope-sensitive: the cutoff chooses its historical failed revision,
+while ordinary retry clones the latest visible revision at invocation.
+
 ## Verification
 
 - Focused command covering history, keyboard, coordinator, reducer, hook, and header:
@@ -217,6 +245,9 @@ first intent begins draining synchronously and later intents remain promise-seri
 - Fourth-review focused coordinator and hook run: 2 files, 97/97 passed.
 - Fourth-review full Notes run (`--maxWorkers=1`): 22 files, 526/526 passed.
 - Fourth-review `npm run build`: exit 0; 2,286 modules transformed.
+- Final-cutoff focused history/coordinator/hook run: 3 files, 109/109 passed.
+- Final-cutoff full Notes run (`--maxWorkers=1`): 22 files, 556/556 passed.
+- Final-cutoff `npm run build`: exit 0; 2,288 modules transformed.
 
 ## Concerns
 

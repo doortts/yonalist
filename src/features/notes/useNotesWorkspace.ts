@@ -190,7 +190,16 @@ interface BufferedWorkspaceCommand {
 interface FailedDraftWrite {
   patch: Pick<NoteNode, "title" | "note">;
   revision: number;
+  focus: NotesHistoryFocus;
   error: NotesStoreError;
+}
+
+interface DraftWriteAttempt {
+  readonly nodeId: NoteId;
+  readonly draft: Readonly<NotesNodeDraft>;
+  readonly focus: Readonly<NotesHistoryFocus>;
+  readonly historyContext: NotesHistoryContext | null;
+  readonly standaloneHistoryEntry: boolean;
 }
 
 interface NotesWorkspaceRecoveryEntry {
@@ -208,7 +217,7 @@ interface NotesWorkspaceSessionRecord {
   drafts: Map<NoteId, NotesNodeDraft>;
   pendingDebounceByNodeId: Map<NoteId, number>;
   inFlightDraftByNodeId: Map<NoteId, number>;
-  retryWriteByNodeId: Map<NoteId, () => Promise<boolean>>;
+  retryWriteByNodeId: Map<NoteId, DraftWriteAttempt>;
   draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
   draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
   nextDraftRevision: number;
@@ -426,9 +435,64 @@ function cloneFailedWrites(
       .filter(([nodeId]) => !drafts || drafts.has(nodeId))
       .map(([nodeId, failed]) => [
         nodeId,
-        { ...failed, patch: { ...failed.patch } }
+        {
+          ...failed,
+          patch: { ...failed.patch },
+          focus: { ...failed.focus }
+        }
       ])
   );
+}
+
+function draftWriteAttempt(
+  nodeId: NoteId,
+  draft: NotesNodeDraft,
+  focus: NotesHistoryFocus,
+  historyContext: NotesHistoryContext | null,
+  standaloneHistoryEntry = false
+): DraftWriteAttempt {
+  return {
+    nodeId,
+    draft: { ...draft },
+    focus: { ...focus },
+    historyContext,
+    standaloneHistoryEntry
+  };
+}
+
+function failedDraftAttempt(
+  nodeId: NoteId,
+  failed: FailedDraftWrite
+): DraftWriteAttempt {
+  return draftWriteAttempt(
+    nodeId,
+    {
+      ...failed.patch,
+      revision: failed.revision,
+      status: "failed"
+    },
+    failed.focus,
+    null,
+    true
+  );
+}
+
+function retryDraftAttempt(
+  record: NotesWorkspaceSessionRecord,
+  nodeId: NoteId,
+  cutoff = record.structuralIntents.at(0)?.cutoff
+): DraftWriteAttempt | undefined {
+  const failed = record.failedWritesByNodeId.get(nodeId);
+  const current = record.retryWriteByNodeId.get(nodeId);
+  if (
+    failed &&
+    ((cutoff !== undefined && failed.revision <= cutoff) ||
+      !current ||
+      current.draft.revision <= failed.revision)
+  ) {
+    return failedDraftAttempt(nodeId, failed);
+  }
+  return current;
 }
 
 function latestWriteError(
@@ -837,8 +901,7 @@ export function useNotesWorkspace({
   const persistDraftRef = useRef<
     | ((
         record: NotesWorkspaceSessionRecord,
-        nodeId: NoteId,
-        draft: NotesNodeDraft
+        attempt: DraftWriteAttempt
       ) => Promise<boolean>)
     | null
   >(null);
@@ -878,6 +941,7 @@ export function useNotesWorkspace({
         return record.closeCompletion;
       }
       const recoveryEntry = beginShutdownRecovery(record);
+      const cutoff = record.structuralIntents.at(0)?.cutoff;
       for (const [nodeId] of record.drafts) {
         if (
           record.pendingDebounceByNodeId.has(nodeId) ||
@@ -885,9 +949,16 @@ export function useNotesWorkspace({
         ) {
           continue;
         }
-        const retry = record.retryWriteByNodeId.get(nodeId);
-        if (retry) {
-          void record.writeQueue.enqueue(retry).catch(() => undefined);
+        const attempt = retryDraftAttempt(record, nodeId, cutoff);
+        const persist = persistDraftRef.current;
+        if (
+          attempt &&
+          persist &&
+          (cutoff === undefined || attempt.draft.revision <= cutoff)
+        ) {
+          void record.writeQueue
+            .enqueue(() => persist(record, attempt))
+            .catch(() => undefined);
         }
       }
       const finish = (): void => {
@@ -1063,14 +1134,18 @@ export function useNotesWorkspace({
           );
           record.writeError = latestWriteError(record.failedWritesByNodeId);
           record.recoveryEntry = entry;
-          for (const [nodeId] of record.drafts) {
-            record.retryWriteByNodeId.set(nodeId, () => {
-              const latest = record.drafts.get(nodeId);
-              const persist = persistDraftRef.current;
-              return latest && persist
-                ? persist(record, nodeId, latest)
-                : Promise.resolve(false);
-            });
+          for (const [nodeId, draft] of record.drafts) {
+            const failed = record.failedWritesByNodeId.get(nodeId);
+            record.retryWriteByNodeId.set(
+              nodeId,
+              draftWriteAttempt(
+                nodeId,
+                draft,
+                failed?.focus ?? { nodeId, field: "title" },
+                null,
+                true
+              )
+            );
           }
           publishDraftState(record);
         });
@@ -1190,6 +1265,29 @@ export function useNotesWorkspace({
             record.session
           )
         : null,
+    [captureHistorySnapshot, registerHistoryOwner]
+  );
+
+  const beginStandaloneTextEntry = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      focus: NotesHistoryFocus
+    ): NotesHistoryContext | null => {
+      if (!supportsHistory(record.repository)) {
+        return null;
+      }
+      record.session.history.closeTextBurst();
+      const context = registerHistoryOwner(
+        record.session.history.beginTextBurst(
+          nodeId,
+          captureHistorySnapshot(focus)
+        ),
+        record.session
+      );
+      record.session.history.closeTextBurst(context.entryId);
+      return context;
+    },
     [captureHistorySnapshot, registerHistoryOwner]
   );
 
@@ -1376,24 +1474,28 @@ export function useNotesWorkspace({
   const settleDraftWrite = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      draft: NotesNodeDraft,
+      attempt: DraftWriteAttempt,
       result: NotesWorkspaceQueueResult,
       writeSucceeded: boolean
     ): boolean => {
+      const { nodeId, draft, historyContext } = attempt;
       const latest = record.drafts.get(nodeId);
       if (result.kind === "failure" && !writeSucceeded) {
-        const failedHistoryContext =
-          record.draftHistoryContextByNodeId.get(nodeId);
-        discardHistoryEntry(failedHistoryContext);
-        record.draftHistoryContextByNodeId.delete(nodeId);
-        if (latest) {
+        discardHistoryEntry(historyContext);
+        if (
+          record.draftHistoryContextByNodeId.get(nodeId)?.entryId ===
+          historyContext?.entryId
+        ) {
+          record.draftHistoryContextByNodeId.delete(nodeId);
+        }
+        if (latest?.revision === draft.revision) {
           record.drafts.set(nodeId, { ...latest, status: "failed" });
         }
         const failure = writeError(result.error);
         record.failedWritesByNodeId.set(nodeId, {
           patch: { title: draft.title, note: draft.note },
           revision: draft.revision,
+          focus: { ...attempt.focus },
           error: failure
         });
         record.writeError = failure;
@@ -1403,8 +1505,10 @@ export function useNotesWorkspace({
       }
 
       if (result.kind === "skipped") {
-        discardHistoryEntry(record.draftHistoryContextByNodeId.get(nodeId));
-        record.drafts.delete(nodeId);
+        discardHistoryEntry(historyContext);
+        if (latest?.revision === draft.revision) {
+          record.drafts.delete(nodeId);
+        }
         record.pendingDebounceByNodeId.delete(nodeId);
       } else if (writeSucceeded && latest?.revision === draft.revision) {
         record.drafts.delete(nodeId);
@@ -1416,6 +1520,14 @@ export function useNotesWorkspace({
         failed.revision <= draft.revision
       ) {
         record.failedWritesByNodeId.delete(nodeId);
+      }
+      if (attempt.standaloneHistoryEntry && historyContext) {
+        record.session.history.closeTextBurst(historyContext.entryId);
+        if (writeSucceeded) {
+          completeHistoryOwner(historyContext.entryId);
+        } else {
+          discardHistoryEntry(historyContext);
+        }
       }
       record.writeError = latestWriteError(record.failedWritesByNodeId);
       if (!record.drafts.has(nodeId)) {
@@ -1438,30 +1550,34 @@ export function useNotesWorkspace({
   const persistDraft = useCallback(
     async (
       record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      draft: NotesNodeDraft,
-      scheduledHistoryContext?: NotesHistoryContext | null
+      scheduledAttempt: DraftWriteAttempt
     ): Promise<boolean> => {
+      const cutoff = record.structuralIntents.at(0)?.cutoff;
+      if (
+        cutoff !== undefined &&
+        scheduledAttempt.draft.revision > cutoff
+      ) {
+        return false;
+      }
+      const attempt =
+        scheduledAttempt.standaloneHistoryEntry &&
+        !scheduledAttempt.historyContext
+          ? {
+              ...scheduledAttempt,
+              historyContext: beginStandaloneTextEntry(
+                record,
+                scheduledAttempt.nodeId,
+                scheduledAttempt.focus
+              )
+            }
+          : scheduledAttempt;
+      const { nodeId, draft, historyContext } = attempt;
       const current = record.drafts.get(nodeId);
       if (current?.revision === draft.revision && current.status !== "pending") {
         record.drafts.set(nodeId, { ...current, status: "pending" });
         publishDraftState(record);
       }
       record.inFlightDraftByNodeId.set(nodeId, draft.revision);
-      let historyContext: NotesHistoryContext | null | undefined =
-        scheduledHistoryContext ??
-        record.draftHistoryContextByNodeId.get(nodeId);
-      if (!historyContext) {
-        const focus = record.draftHistoryFocusByNodeId.get(nodeId) ?? {
-          nodeId,
-          field: "title"
-        };
-        historyContext = beginTextEntry(record, nodeId, focus);
-        if (historyContext) {
-          record.draftHistoryContextByNodeId.set(nodeId, historyContext);
-        }
-        record.draftHistoryFocusByNodeId.set(nodeId, focus);
-      }
 
       let result: NotesWorkspaceQueueResult | undefined;
       await record.session.enqueue(async (context) => {
@@ -1488,7 +1604,7 @@ export function useNotesWorkspace({
             historyContext,
             projectedWorkspace,
             undefined,
-            record.draftHistoryFocusByNodeId.get(nodeId) ?? null
+            attempt.focus
           );
           result = authoritative(
             projectedWorkspace
@@ -1508,27 +1624,30 @@ export function useNotesWorkspace({
 
       return settleDraftWrite(
         record,
-        nodeId,
-        draft,
+        attempt,
         result,
         result.kind === "authoritative"
       );
     },
-    [beginTextEntry, publishDraftState, rememberHistoryAfter, settleDraftWrite]
+    [
+      beginStandaloneTextEntry,
+      publishDraftState,
+      rememberHistoryAfter,
+      settleDraftWrite
+    ]
   );
   persistDraftRef.current = persistDraft;
 
   const writeScheduledDraft = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      draft: NotesNodeDraft,
-      historyContext?: NotesHistoryContext | null
+      attempt: DraftWriteAttempt
     ): Promise<boolean> => {
+      const { nodeId, draft } = attempt;
       if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
         record.pendingDebounceByNodeId.delete(nodeId);
       }
-      return persistDraft(record, nodeId, draft, historyContext);
+      return persistDraft(record, attempt);
     },
     [persistDraft]
   );
@@ -1536,15 +1655,16 @@ export function useNotesWorkspace({
   const scheduleDraftWrite = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
-      nodeId: NoteId,
-      draft: NotesNodeDraft,
-      historyContext?: NotesHistoryContext | null
+      attempt: DraftWriteAttempt
     ): void => {
+      const { nodeId, draft } = attempt;
+      const cutoff = record.structuralIntents.at(0)?.cutoff;
+      if (cutoff !== undefined && draft.revision > cutoff) {
+        return;
+      }
       record.pendingDebounceByNodeId.set(nodeId, draft.revision);
       void record.writeQueue
-        .enqueueDebounced(nodeId, () =>
-          writeScheduledDraft(record, nodeId, draft, historyContext)
-        )
+        .enqueueDebounced(nodeId, () => writeScheduledDraft(record, attempt))
         .catch(() => undefined);
     },
     [writeScheduledDraft]
@@ -1581,27 +1701,23 @@ export function useNotesWorkspace({
         status: previous?.status === "failed" ? "failed" : "pending"
       };
       record.drafts.set(nodeId, draft);
-      record.retryWriteByNodeId.set(nodeId, () => {
-        const latest = record.drafts.get(nodeId);
-        return latest
-          ? persistDraft(record, nodeId, latest)
-          : Promise.resolve(true);
-      });
       const scheduledHistoryContext =
         record.draftHistoryContextByNodeId.get(nodeId);
+      const attempt = draftWriteAttempt(
+        nodeId,
+        draft,
+        focus,
+        scheduledHistoryContext ?? null
+      );
+      record.retryWriteByNodeId.set(nodeId, attempt);
       syncRecoveredDraft(record, nodeId);
       publishDraftState(record);
       const earliestCutoff = record.structuralIntents.at(0)?.cutoff;
       if (earliestCutoff === undefined || draft.revision <= earliestCutoff) {
-        scheduleDraftWrite(
-          record,
-          nodeId,
-          draft,
-          scheduledHistoryContext
-        );
+        scheduleDraftWrite(record, attempt);
       }
     },
-    [beginTextEntry, persistDraft, publishDraftState, scheduleDraftWrite]
+    [beginTextEntry, publishDraftState, scheduleDraftWrite]
   );
 
   const flushNodeDraft = useCallback(
@@ -1613,12 +1729,21 @@ export function useNotesWorkspace({
       const draft = record.drafts.get(nodeId);
       if (draft) {
         try {
+          const cutoff = record.structuralIntents.at(0)?.cutoff;
+          const attempt = retryDraftAttempt(record, nodeId, cutoff);
           if (
-            draft.status === "failed" &&
-            record.pendingDebounceByNodeId.get(nodeId) !== draft.revision
+            attempt &&
+            !record.pendingDebounceByNodeId.has(nodeId) &&
+            !record.inFlightDraftByNodeId.has(nodeId)
           ) {
+            if (
+              cutoff !== undefined &&
+              attempt.draft.revision > cutoff
+            ) {
+              return false;
+            }
             await record.writeQueue.enqueue(() =>
-              persistDraft(record, nodeId, draft)
+              persistDraft(record, attempt)
             );
           } else {
             await record.writeQueue.flush(nodeId);
@@ -1643,16 +1768,16 @@ export function useNotesWorkspace({
         return;
       }
       const record = sessionRecordRef.current;
+      const failed = record?.failedWritesByNodeId.get(nodeId);
       if (
         !record ||
-        !record.failedWritesByNodeId.has(nodeId) ||
+        !failed ||
         record.closing ||
         sessionRef.current !== record.session
       ) {
         return;
       }
-      const latest = record.drafts.get(nodeId);
-      if (!latest) {
+      if (!record.drafts.has(nodeId)) {
         record.failedWritesByNodeId.delete(nodeId);
         record.writeError = latestWriteError(record.failedWritesByNodeId);
         syncRecoveredDraft(record, nodeId);
@@ -1660,14 +1785,24 @@ export function useNotesWorkspace({
         return;
       }
 
+      const cutoff = record.structuralIntents.at(0)?.cutoff;
+      const attempt = retryDraftAttempt(record, nodeId, cutoff);
+      if (!attempt) {
+        return;
+      }
       if (
-        record.pendingDebounceByNodeId.get(nodeId) === latest.revision ||
-        record.inFlightDraftByNodeId.get(nodeId) === latest.revision
+        record.pendingDebounceByNodeId.get(nodeId) ===
+          attempt.draft.revision ||
+        record.inFlightDraftByNodeId.get(nodeId) ===
+          attempt.draft.revision
       ) {
         await record.writeQueue.flush(nodeId);
         return;
       }
-      await record.writeQueue.enqueue(() => persistDraft(record, nodeId, latest));
+      if (cutoff !== undefined && attempt.draft.revision > cutoff) {
+        return;
+      }
+      await record.writeQueue.enqueue(() => persistDraft(record, attempt));
     },
     [persistDraft, publishDraftState]
   );
@@ -1689,17 +1824,22 @@ export function useNotesWorkspace({
         return false;
       }
       while (true) {
-        for (const [nodeId, draft] of record.drafts) {
+        const cutoff = record.structuralIntents.at(0)?.cutoff;
+        for (const [nodeId] of record.drafts) {
           if (
-            draft.status !== "failed" ||
             record.pendingDebounceByNodeId.has(nodeId) ||
             record.inFlightDraftByNodeId.has(nodeId)
           ) {
             continue;
           }
-          const retry = record.retryWriteByNodeId.get(nodeId);
-          if (retry) {
-            void record.writeQueue.enqueue(retry).catch(() => undefined);
+          const attempt = retryDraftAttempt(record, nodeId, cutoff);
+          if (
+            attempt &&
+            (cutoff === undefined || attempt.draft.revision <= cutoff)
+          ) {
+            void record.writeQueue
+              .enqueue(() => persistDraft(record, attempt))
+              .catch(() => undefined);
           }
         }
         await record.writeQueue.flush();
@@ -1714,18 +1854,24 @@ export function useNotesWorkspace({
           record.session.history.closeTextBurst();
           return true;
         }
-        const hasRetryableWork = [...record.drafts].some(
-          ([nodeId, draft]) =>
-            draft.status !== "failed" ||
-            record.pendingDebounceByNodeId.has(nodeId) ||
-            record.inFlightDraftByNodeId.has(nodeId)
-        );
+        const hasRetryableWork = [...record.drafts].some(([nodeId]) => {
+          const attempt = retryDraftAttempt(record, nodeId, cutoff);
+          return (
+            attempt !== undefined &&
+            (cutoff === undefined || attempt.draft.revision <= cutoff) &&
+            (record.pendingDebounceByNodeId.has(nodeId) ||
+              record.inFlightDraftByNodeId.has(nodeId) ||
+              (!record.failedWritesByNodeId.has(nodeId) &&
+                record.retryWriteByNodeId.has(nodeId))
+            )
+          );
+        });
         if (!hasRetryableWork) {
           return false;
         }
       }
     },
-    [closeTextBurst]
+    [closeTextBurst, persistDraft]
   );
 
   const flushDraftsThroughCutoff = useCallback(
@@ -1734,18 +1880,18 @@ export function useNotesWorkspace({
       cutoff: number
     ): Promise<boolean> => {
       while (true) {
-        for (const [nodeId, draft] of record.drafts) {
+        for (const [nodeId] of record.drafts) {
           if (
-            draft.revision > cutoff ||
-            draft.status !== "failed" ||
             record.pendingDebounceByNodeId.has(nodeId) ||
             record.inFlightDraftByNodeId.has(nodeId)
           ) {
             continue;
           }
-          const retry = record.retryWriteByNodeId.get(nodeId);
-          if (retry) {
-            void record.writeQueue.enqueue(retry).catch(() => undefined);
+          const attempt = retryDraftAttempt(record, nodeId, cutoff);
+          if (attempt && attempt.draft.revision <= cutoff) {
+            void record.writeQueue
+              .enqueue(() => persistDraft(record, attempt))
+              .catch(() => undefined);
           }
         }
         await record.writeQueue.flush();
@@ -1756,9 +1902,13 @@ export function useNotesWorkspace({
         ) {
           return false;
         }
-        const remaining = [...record.drafts].filter(
-          ([, draft]) => draft.revision <= cutoff
-        );
+        const remaining = [...record.drafts].filter(([nodeId, draft]) => {
+          const failed = record.failedWritesByNodeId.get(nodeId);
+          return (
+            draft.revision <= cutoff ||
+            (failed !== undefined && failed.revision <= cutoff)
+          );
+        });
         if (remaining.length === 0) {
           const intent = record.structuralIntents.find(
             (candidate) => candidate.cutoff === cutoff
@@ -1770,8 +1920,7 @@ export function useNotesWorkspace({
           return true;
         }
         const retryable = remaining.some(
-          ([nodeId, draft]) =>
-            draft.status !== "failed" ||
+          ([nodeId]) =>
             record.pendingDebounceByNodeId.has(nodeId) ||
             record.inFlightDraftByNodeId.has(nodeId)
         );
@@ -1780,7 +1929,7 @@ export function useNotesWorkspace({
         }
       }
     },
-    [completeHistoryOwner]
+    [completeHistoryOwner, persistDraft]
   );
 
   flushDraftBarrierRef.current = async (record, cutoff) => {
@@ -1803,24 +1952,31 @@ export function useNotesWorkspace({
         discardHistoryEntry(context);
       }
     }
+    if (record.closing) {
+      for (const context of record.draftHistoryContextByNodeId.values()) {
+        discardHistoryEntry(context);
+      }
+      record.draftHistoryContextByNodeId.clear();
+      record.draftHistoryFocusByNodeId.clear();
+      record.session.history.closeTextBurst();
+      return;
+    }
     scheduleDeferredDraftsRef.current?.(record);
   };
   scheduleDeferredDraftsRef.current = (record) => {
     const nextCutoff = record.structuralIntents.at(0)?.cutoff;
-    for (const [nodeId, draft] of record.drafts) {
+    for (const [nodeId] of record.drafts) {
+      const attempt = retryDraftAttempt(record, nodeId, nextCutoff);
       if (
-        (nextCutoff !== undefined && draft.revision > nextCutoff) ||
+        !attempt ||
+        (nextCutoff !== undefined &&
+          attempt.draft.revision > nextCutoff) ||
         record.pendingDebounceByNodeId.has(nodeId) ||
         record.inFlightDraftByNodeId.has(nodeId)
       ) {
         continue;
       }
-      scheduleDraftWrite(
-        record,
-        nodeId,
-        draft,
-        record.draftHistoryContextByNodeId.get(nodeId)
-      );
+      scheduleDraftWrite(record, attempt);
     }
   };
 

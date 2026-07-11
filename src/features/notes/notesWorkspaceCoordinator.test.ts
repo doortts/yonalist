@@ -103,6 +103,47 @@ describe("notesWorkspaceCoordinator registry", () => {
     requester.close();
   });
 
+  it("finalizes a departed participant's captured cutoff exactly once", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const drain = deferred<boolean>();
+    const activeIntentTokens = new Set<object>();
+    const token = {};
+    const finalize = vi.fn(() => activeIntentTokens.delete(token));
+    const departed = registry.openSession({
+      repository: store,
+      vaultRoot: "/departure-cleanup",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => {
+        activeIntentTokens.add(token);
+        return 7;
+      },
+      beforeStructural: () => drain.promise,
+      afterStructural: finalize
+    });
+    const requester = registry.openSession({
+      repository: store,
+      vaultRoot: "/departure-cleanup",
+      onEvent: vi.fn()
+    });
+    await Promise.all([departed.activation, requester.activation]);
+    const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    const completion = requester.enqueueStructural(structuralWork);
+    await Promise.resolve();
+    departed.close();
+    drain.resolve(false);
+    await completion;
+
+    expect(structuralWork).toHaveBeenCalledOnce();
+    expect(finalize).toHaveBeenCalledOnce();
+    expect(finalize).toHaveBeenCalledWith(7);
+    expect(activeIntentTokens.size).toBe(0);
+    requester.close();
+    await Promise.resolve();
+    expect(registry.hasCoordinator(store, "/departure-cleanup")).toBe(false);
+  });
+
   it("ignores a failed drain after a participant switches ownership", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

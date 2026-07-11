@@ -2087,6 +2087,251 @@ describe("useNotesWorkspace", () => {
     ]);
   });
 
+  it("retries the failed pre-cutoff snapshot before post-click typing", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "blocker", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    const blockedWrite = deferred<NotesWorkspace>();
+    const order: string[] = [];
+    let rootAttempt = 0;
+    const updateNode = vi.fn((_vaultRoot, input) => {
+      order.push(`update:${input.id}:${input.title}`);
+      if (input.id === "root" && rootAttempt++ === 0) {
+        return Promise.reject(new Error("disk full"));
+      }
+      return input.id === "blocker"
+        ? blockedWrite.promise
+        : Promise.resolve(initial);
+    });
+    const toggleStar = vi.fn().mockImplementation(async () => {
+      order.push("structural");
+      return initial;
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      toggleStar
+    });
+    const blocker = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/failed-cutoff", repository: store })
+    );
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/failed-cutoff", repository: store })
+    );
+    const requester = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/failed-cutoff", repository: store })
+    );
+    await waitFor(() => {
+      expect(blocker.result.current.status).toBe("ready");
+      expect(editor.result.current.status).toBe("ready");
+      expect(requester.result.current.status).toBe("ready");
+    });
+
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "before click",
+        note: "before note"
+      });
+    });
+    await act(async () => editor.result.current.actions.flushNodeDraft("root"));
+    act(() => {
+      blocker.result.current.actions.updateNodeDraft("blocker", {
+        title: "blocking",
+        note: ""
+      });
+    });
+    const structural = requester.result.current.actions.toggleStar("target");
+    await waitFor(() =>
+      expect(order.at(-1)).toBe("update:blocker:blocking")
+    );
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "after click",
+        note: "after note"
+      });
+    });
+
+    blockedWrite.resolve(initial);
+    await act(async () => structural);
+    await act(async () => editor.result.current.actions.flushAllDrafts());
+
+    expect(order).toEqual([
+      "update:root:before click",
+      "update:blocker:blocking",
+      "update:root:before click",
+      "structural",
+      "update:root:after click"
+    ]);
+    const rootCalls = vi
+      .mocked(store.updateNode)
+      .mock.calls.filter(([, input]) => input.id === "root");
+    expect(rootCalls[1]?.[1]).toMatchObject({
+      title: "before click",
+      note: "before note"
+    });
+    expect(rootCalls[1]?.[2]?.entryId).not.toBe(rootCalls[2]?.[2]?.entryId);
+  });
+
+  it("keeps explicit failed retry immutable during a structural cutoff", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "blocker", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    const blockedWrite = deferred<NotesWorkspace>();
+    const order: string[] = [];
+    let rootAttempt = 0;
+    const updateNode = vi.fn((_vaultRoot, input) => {
+      order.push(`update:${input.id}:${input.title}`);
+      if (input.id === "root" && rootAttempt++ === 0) {
+        return Promise.reject(new Error("disk full"));
+      }
+      return input.id === "blocker"
+        ? blockedWrite.promise
+        : Promise.resolve(initial);
+    });
+    const toggleStar = vi.fn().mockImplementation(async () => {
+      order.push("structural");
+      return initial;
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      toggleStar
+    });
+    const blocker = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/explicit-cutoff", repository: store })
+    );
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/explicit-cutoff", repository: store })
+    );
+    const requester = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/explicit-cutoff", repository: store })
+    );
+    await waitFor(() => {
+      expect(blocker.result.current.status).toBe("ready");
+      expect(editor.result.current.status).toBe("ready");
+      expect(requester.result.current.status).toBe("ready");
+    });
+
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "failed value",
+        note: "failed note"
+      });
+    });
+    await act(async () => editor.result.current.actions.flushNodeDraft("root"));
+    act(() => {
+      blocker.result.current.actions.updateNodeDraft("blocker", {
+        title: "blocking",
+        note: ""
+      });
+    });
+    const structural = requester.result.current.actions.toggleStar("target");
+    await waitFor(() =>
+      expect(order.at(-1)).toBe("update:blocker:blocking")
+    );
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "new value",
+        note: "new note"
+      });
+    });
+    const retry = editor.result.current.retryFailedDraft("root");
+
+    blockedWrite.resolve(initial);
+    await act(async () => Promise.all([retry, structural]));
+    await act(async () => editor.result.current.actions.flushAllDrafts());
+
+    expect(order).toEqual([
+      "update:root:failed value",
+      "update:blocker:blocking",
+      "update:root:failed value",
+      "structural",
+      "update:root:new value"
+    ]);
+  });
+
+  it("shuts down with the captured failed snapshot during a cutoff", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "blocker", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 })
+    ]);
+    const blockedWrite = deferred<NotesWorkspace>();
+    const order: string[] = [];
+    let rootAttempt = 0;
+    const updateNode = vi.fn((_vaultRoot, input) => {
+      order.push(`update:${input.id}:${input.title}`);
+      if (input.id === "root" && rootAttempt++ === 0) {
+        return Promise.reject(new Error("disk full"));
+      }
+      return input.id === "blocker"
+        ? blockedWrite.promise
+        : Promise.resolve(initial);
+    });
+    const toggleStar = vi.fn().mockImplementation(async () => {
+      order.push("structural");
+      return initial;
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      toggleStar
+    });
+    const blocker = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shutdown-cutoff", repository: store })
+    );
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shutdown-cutoff", repository: store })
+    );
+    const requester = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shutdown-cutoff", repository: store })
+    );
+    await waitFor(() => {
+      expect(blocker.result.current.status).toBe("ready");
+      expect(editor.result.current.status).toBe("ready");
+      expect(requester.result.current.status).toBe("ready");
+    });
+
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "shutdown value",
+        note: "shutdown note"
+      });
+    });
+    await act(async () => editor.result.current.actions.flushNodeDraft("root"));
+    act(() => {
+      blocker.result.current.actions.updateNodeDraft("blocker", {
+        title: "blocking",
+        note: ""
+      });
+    });
+    const structural = requester.result.current.actions.toggleStar("target");
+    await waitFor(() =>
+      expect(order.at(-1)).toBe("update:blocker:blocking")
+    );
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "post-click value",
+        note: "post-click note"
+      });
+    });
+    editor.unmount();
+
+    blockedWrite.resolve(initial);
+    await act(async () => structural);
+
+    expect(order).toEqual([
+      "update:root:shutdown value",
+      "update:blocker:blocking",
+      "update:root:shutdown value",
+      "structural"
+    ]);
+  });
+
   it("flushes a visible note draft before undo and restores field-aware UI", async () => {
     const initial = workspace([
       node({ id: "root", title: "before" }),
