@@ -3,13 +3,21 @@ import {
   NOTE_SEARCH_QUERY_LIMITS,
   canonicalNoteSearchQueryKey,
   canonicalizeNoteSearchQuery,
+  isCanonicalNoteTagBody,
   parseAndValidateNoteSearchQuery,
   parseNoteSearchQuery,
   validateAndCanonicalizeNoteSearchQuery
 } from "./noteSearchQuery";
 import type { NoteSearchTag, NoteStructuredSearchQuery } from "../../domain/notes";
 import { tokenizeNoteText } from "./noteTokens";
+import tagFilterFixtures from "./noteTagFilter.fixtures.json";
 import tokenizerFixtures from "./noteTokenizer.fixtures.json";
+
+describe("canonical typed tag bodies", () => {
+  it.each(tagFilterFixtures)("validates $normalizedTag", (fixture) => {
+    expect(isCanonicalNoteTagBody(fixture.normalizedTag)).toBe(fixture.valid);
+  });
+});
 
 describe("note tokenizer shared parity fixtures", () => {
   it.each(tokenizerFixtures)("matches shared UTF-16 tokens for $source", (fixture) => {
@@ -83,6 +91,20 @@ describe("parseNoteSearchQuery", () => {
       { prefix: "@", normalizedTag: "𐐷", displayTag: "𐐏" }
     ]);
   });
+
+  it("consumes exactly one syntactic marker and leaves mixed markers as text", () => {
+    expect(parseNoteSearchQuery("#X @Y -#Z ##bad @#bad")).toEqual({
+      text: "##bad @#bad",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "x", displayTag: "X" },
+        { prefix: "@", normalizedTag: "y", displayTag: "Y" }
+      ],
+      excludedTags: [
+        { prefix: "#", normalizedTag: "z", displayTag: "Z" }
+      ],
+      orGroups: []
+    });
+  });
 });
 
 describe("canonicalizeNoteSearchQuery", () => {
@@ -91,24 +113,24 @@ describe("canonicalizeNoteSearchQuery", () => {
       canonicalizeNoteSearchQuery({
         text: "  release   notes  ",
         requiredTags: [
-          { prefix: "@", normalizedTag: "MINJI", displayTag: "MINJI" },
-          { prefix: "#", normalizedTag: "Roadmap", displayTag: "Roadmap" },
+          { prefix: "@", normalizedTag: "minji", displayTag: "MINJI" },
+          { prefix: "#", normalizedTag: "roadmap", displayTag: "Roadmap" },
           { prefix: "#", normalizedTag: "roadmap", displayTag: "roadmap" }
         ],
         excludedTags: [
-          { prefix: "@", normalizedTag: "BOT", displayTag: "BOT" },
+          { prefix: "@", normalizedTag: "bot", displayTag: "BOT" },
           { prefix: "@", normalizedTag: "bot", displayTag: "bot" }
         ],
         orGroups: [
           [
-            { prefix: "@", normalizedTag: "QA", displayTag: "QA" },
-            { prefix: "#", normalizedTag: "Web", displayTag: "Web" }
+            { prefix: "@", normalizedTag: "qa", displayTag: "QA" },
+            { prefix: "#", normalizedTag: "web", displayTag: "Web" }
           ],
           [
             { prefix: "#", normalizedTag: "web", displayTag: "web" },
             { prefix: "@", normalizedTag: "qa", displayTag: "qa" }
           ],
-          [{ prefix: "#", normalizedTag: "Solo", displayTag: "Solo" }]
+          [{ prefix: "#", normalizedTag: "solo", displayTag: "Solo" }]
         ]
       })
     ).toEqual({
@@ -183,22 +205,40 @@ describe("structured Notes search query limits", () => {
     });
   });
 
-  it("accepts 64 unique tags and rejects 65 after normalization and deduplication", () => {
-    const boundaryTags = Array.from(
-      { length: NOTE_SEARCH_QUERY_LIMITS.maxUniqueTagAlternatives },
+  it("accepts exactly 64 canonical tags and rejects malformed values before counting", () => {
+    const normalTags = Array.from(
+      { length: NOTE_SEARCH_QUERY_LIMITS.maxUniqueTagAlternatives - 1 },
       (_, index) => queryTag(index)
     );
+    const x = { prefix: "#" as const, normalizedTag: "x", displayTag: "X" };
+    const boundaryTags = [...normalTags, x];
     expect(
       validateAndCanonicalizeNoteSearchQuery(
-        limitedQuery({
-          requiredTags: [...boundaryTags, { ...boundaryTags[0] }]
-        })
+        limitedQuery({ requiredTags: boundaryTags })
       )
     ).toMatchObject({ ok: true });
 
     expect(
       validateAndCanonicalizeNoteSearchQuery(
-        limitedQuery({ requiredTags: [...boundaryTags, queryTag(64)] })
+        limitedQuery({
+          requiredTags: [
+            ...boundaryTags,
+            { prefix: "#", normalizedTag: "##x", displayTag: "##x" }
+          ]
+        })
+      )
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "invalidTag",
+        message:
+          "Structured Notes search tag normalizedTag must be a canonical tag body."
+      }
+    });
+
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({ requiredTags: [...boundaryTags, queryTag(63)] })
       )
     ).toEqual({
       ok: false,

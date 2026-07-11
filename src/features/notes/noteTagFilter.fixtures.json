@@ -1,0 +1,21 @@
+[
+  { "normalizedTag": "x", "valid": true },
+  { "normalizedTag": "프로젝트", "valid": true },
+  { "normalizedTag": "café", "valid": true },
+  { "normalizedTag": "𐐷", "valid": true },
+  { "normalizedTag": "a-b_1", "valid": true },
+  { "normalizedTag": "_private", "valid": true },
+  { "normalizedTag": "", "valid": false },
+  { "normalizedTag": "#x", "valid": false },
+  { "normalizedTag": "##x", "valid": false },
+  { "normalizedTag": "@x", "valid": false },
+  { "normalizedTag": "#@x", "valid": false },
+  { "normalizedTag": "@#x", "valid": false },
+  { "normalizedTag": "x#y", "valid": false },
+  { "normalizedTag": "x@y", "valid": false },
+  { "normalizedTag": "x.y", "valid": false },
+  { "normalizedTag": "́x", "valid": false },
+  { "normalizedTag": "X", "valid": false },
+  { "normalizedTag": " x", "valid": false },
+  { "normalizedTag": "x ", "valid": false }
+]

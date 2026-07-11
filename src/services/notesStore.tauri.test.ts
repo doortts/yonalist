@@ -223,6 +223,77 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("validates canonical tag bodies and exact 64-tag bounds before forwarding", async () => {
+    const normalTags = Array.from({ length: 63 }, (_, index) => ({
+      prefix: index % 2 === 0 ? ("#" as const) : ("@" as const),
+      normalizedTag: `tag-${index}`,
+      displayTag: `Tag-${index}`
+    }));
+    const boundaryQuery: NoteStructuredSearchQuery = {
+      text: "",
+      requiredTags: [
+        ...normalTags,
+        { prefix: "#", normalizedTag: "x", displayTag: "X" }
+      ],
+      excludedTags: [],
+      orGroups: []
+    };
+    invokeMock.mockResolvedValue([]);
+
+    await expect(notesSearchStructured(vaultPath, boundaryQuery)).resolves.toEqual(
+      []
+    );
+    expect(invokeMock).toHaveBeenCalledWith("notes_search_structured", {
+      vaultPath,
+      query: boundaryQuery
+    });
+
+    invokeMock.mockClear();
+    await expect(
+      notesSearchStructured(vaultPath, {
+        ...boundaryQuery,
+        requiredTags: [
+          ...boundaryQuery.requiredTags,
+          { prefix: "#", normalizedTag: "##x", displayTag: "##x" }
+        ]
+      })
+    ).rejects.toEqual(
+      new Error(
+        "Structured Notes search tag normalizedTag must be a canonical tag body."
+      )
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    await expect(
+      notesSearchStructured(vaultPath, {
+        ...boundaryQuery,
+        requiredTags: [
+          ...boundaryQuery.requiredTags,
+          { prefix: "@", normalizedTag: "overflow", displayTag: "Overflow" }
+        ]
+      })
+    ).rejects.toEqual(
+      new Error(
+        "Structured Notes search has more than 64 unique tag alternatives."
+      )
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects noncanonical typed tag workspace scopes before forwarding", async () => {
+    await expect(
+      notesLoadWorkspace(vaultPath, {
+        kind: "tags",
+        tags: [{ prefix: "#", normalizedTag: "#x" }]
+      })
+    ).rejects.toEqual(
+      new Error(
+        "Structured Notes search tag normalizedTag must be a canonical tag body."
+      )
+    );
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("maps typed input mutations to exact camelCase native payloads", async () => {
     const createInput: CreateNoteNodeInput = {
       id: nodeId,

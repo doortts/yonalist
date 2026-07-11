@@ -11,7 +11,8 @@ use crate::notes::repository::{
     move_node, open_notes_export_db, remove_attachment, remove_empty_node,
     removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node, search_nodes,
     search_nodes_structured, soft_delete_node, split_node, toggle_collapsed, toggle_complete,
-    toggle_star, unarchive_node, update_node, NewAttachment,
+    toggle_star, unarchive_node, update_node, validate_note_tag_filters,
+    validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, MoveNodeInput, NoteSearchResult,
@@ -54,6 +55,9 @@ pub(crate) fn notes_load_workspace(
     vault_path: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
+    if let NotesWorkspaceScope::Tags { tags } = &scope {
+        validate_note_tag_filters(tags)?;
+    }
     let connection = connect_notes_db(&vault_path)?;
     load_workspace(&connection, scope)
 }
@@ -454,6 +458,7 @@ pub(crate) fn notes_search_structured(
     vault_path: String,
     query: NoteStructuredSearchQuery,
 ) -> Result<Vec<NoteSearchResult>, String> {
+    validate_structured_search_query_input(&query)?;
     let connection = connect_notes_db(&vault_path)?;
     search_nodes_structured(&connection, &query)
 }
@@ -957,6 +962,114 @@ mod tests {
 
         notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+    }
+
+    fn command_search_tag(index: usize) -> NoteSearchTag {
+        NoteSearchTag {
+            prefix: if index % 2 == 0 {
+                NoteTagPrefix::Hash
+            } else {
+                NoteTagPrefix::Mention
+            },
+            normalized_tag: format!("tag-{index}"),
+            display_tag: format!("Tag-{index}"),
+        }
+    }
+
+    fn command_search_query(required_tags: Vec<NoteSearchTag>) -> NoteStructuredSearchQuery {
+        NoteStructuredSearchQuery {
+            text: String::new(),
+            required_tags,
+            excluded_tags: vec![],
+            or_groups: vec![],
+        }
+    }
+
+    #[test]
+    fn notes_tag_command_validates_canonical_bodies_and_exact_limits_before_storage() {
+        let normal_tags = (0..63).map(command_search_tag).collect::<Vec<_>>();
+        let x = NoteSearchTag {
+            prefix: NoteTagPrefix::Hash,
+            normalized_tag: "x".to_string(),
+            display_tag: "X".to_string(),
+        };
+        let boundary_tags = normal_tags
+            .iter()
+            .cloned()
+            .chain([x.clone()])
+            .collect::<Vec<_>>();
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        assert!(
+            notes_search_structured(vault_path, command_search_query(boundary_tags.clone()))
+                .expect("64 canonical command tags")
+                .is_empty()
+        );
+
+        let malformed = NoteSearchTag {
+            prefix: NoteTagPrefix::Hash,
+            normalized_tag: "##x".to_string(),
+            display_tag: "##x".to_string(),
+        };
+        let error = notes_search_structured(
+            String::new(),
+            command_search_query(boundary_tags.iter().cloned().chain([malformed]).collect()),
+        )
+        .expect_err("malformed command tag before storage");
+        assert_eq!(
+            error,
+            "Structured Notes search tag normalizedTag must be a canonical tag body."
+        );
+
+        for normalized_tag in ["#x", "##x", "@x", "#@x", "@#x"] {
+            let error = notes_search_structured(
+                String::new(),
+                command_search_query(vec![NoteSearchTag {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: normalized_tag.to_string(),
+                    display_tag: normalized_tag.to_string(),
+                }]),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error,
+                "Structured Notes search tag normalizedTag must be a canonical tag body."
+            );
+        }
+
+        let error = notes_search_structured(
+            String::new(),
+            command_search_query(
+                boundary_tags
+                    .into_iter()
+                    .chain([command_search_tag(63)])
+                    .collect(),
+            ),
+        )
+        .expect_err("65 canonical command tags before storage");
+        assert_eq!(
+            error,
+            "Structured Notes search has more than 64 unique tag alternatives."
+        );
+    }
+
+    #[test]
+    fn notes_tag_workspace_command_rejects_noncanonical_body_before_storage() {
+        let error = notes_load_workspace(
+            String::new(),
+            NotesWorkspaceScope::Tags {
+                tags: vec![NoteTagFilter {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "#x".to_string(),
+                }],
+            },
+        )
+        .expect_err("invalid typed tag scope before storage");
+
+        assert_eq!(
+            error,
+            "Structured Notes search tag normalizedTag must be a canonical tag body."
+        );
     }
 
     #[test]

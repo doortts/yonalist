@@ -35,6 +35,16 @@ fn is_tag_body_continuation(character: char) -> bool {
     is_tag_body_start(character) || is_mark(character)
 }
 
+pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
+    let mut characters = source.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    is_tag_body_start(first)
+        && characters.all(is_tag_body_continuation)
+        && source.to_lowercase() == source
+}
+
 fn is_ascii_letter(byte: u8) -> bool {
     byte.is_ascii_alphabetic()
 }
@@ -247,7 +257,7 @@ pub(crate) fn extract_note_tags(
 
 #[cfg(test)]
 mod tests {
-    use super::tokenize_note_text;
+    use super::{is_canonical_tag_body, tokenize_note_text};
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -265,6 +275,30 @@ mod tests {
         normalized: String,
         start_utf16: usize,
         end_utf16: usize,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TagFilterFixture {
+        normalized_tag: String,
+        valid: bool,
+    }
+
+    #[test]
+    fn notes_tag_filter_body_matches_shared_typescript_fixtures() {
+        let fixtures: Vec<TagFilterFixture> = serde_json::from_str(include_str!(
+            "../../../src/features/notes/noteTagFilter.fixtures.json"
+        ))
+        .expect("shared tag filter fixtures");
+
+        for fixture in fixtures {
+            assert_eq!(
+                is_canonical_tag_body(&fixture.normalized_tag),
+                fixture.valid,
+                "normalizedTag: {:?}",
+                fixture.normalized_tag
+            );
+        }
     }
 
     #[test]

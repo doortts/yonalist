@@ -1,5 +1,5 @@
 use crate::notes::history;
-use crate::notes::tags::{extract_note_tags, tokenize_note_text};
+use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode,
     NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery,
@@ -949,16 +949,10 @@ fn load_tag_workspace(
     connection: &Connection,
     tags: Vec<NoteTagFilter>,
 ) -> Result<NotesWorkspace, String> {
+    validate_note_tag_filters(&tags)?;
     let tags = tags
         .into_iter()
-        .filter_map(|tag| {
-            let normalized = tag
-                .normalized_tag
-                .trim()
-                .trim_start_matches(['#', '@'])
-                .to_lowercase();
-            (!normalized.is_empty()).then_some((tag.prefix, normalized))
-        })
+        .map(|tag| (tag.prefix, tag.normalized_tag))
         .collect::<BTreeSet<_>>();
     if tags.is_empty() {
         return Ok(NotesWorkspace {
@@ -1001,6 +995,18 @@ fn load_tag_workspace(
         required.join(" AND ")
     );
     query_workspace(connection, &sql, params_from_iter(parameters.iter()))
+}
+
+pub(crate) fn validate_note_tag_filters(tags: &[NoteTagFilter]) -> Result<(), String> {
+    if tags
+        .iter()
+        .any(|tag| !is_canonical_tag_body(&tag.normalized_tag))
+    {
+        return Err(
+            "Structured Notes search tag normalizedTag must be a canonical tag body.".to_string(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> {
@@ -1203,13 +1209,8 @@ pub(crate) fn search_nodes(
         .collect()
 }
 
-fn normalized_search_tag(tag: &NoteSearchTag) -> Option<(NoteTagPrefix, String)> {
-    let normalized_tag = tag
-        .normalized_tag
-        .trim()
-        .trim_start_matches(['#', '@'])
-        .to_lowercase();
-    (!normalized_tag.is_empty()).then_some((tag.prefix, normalized_tag))
+fn canonical_search_tag(tag: &NoteSearchTag) -> (NoteTagPrefix, String) {
+    (tag.prefix, tag.normalized_tag.clone())
 }
 
 type NormalizedNoteTag = (NoteTagPrefix, String);
@@ -1224,18 +1225,18 @@ fn canonical_search_filters(query: &NoteStructuredSearchQuery) -> CanonicalSearc
     let mut required = query
         .required_tags
         .iter()
-        .filter_map(normalized_search_tag)
+        .map(canonical_search_tag)
         .collect::<BTreeSet<_>>();
     let excluded = query
         .excluded_tags
         .iter()
-        .filter_map(normalized_search_tag)
+        .map(canonical_search_tag)
         .collect::<BTreeSet<_>>();
     let mut groups = BTreeSet::new();
     for group in &query.or_groups {
         let alternatives = group
             .iter()
-            .filter_map(normalized_search_tag)
+            .map(canonical_search_tag)
             .collect::<BTreeSet<_>>();
         if alternatives.len() == 1 {
             required.extend(alternatives);
@@ -1250,9 +1251,9 @@ fn canonical_search_filters(query: &NoteStructuredSearchQuery) -> CanonicalSearc
     }
 }
 
-fn validate_structured_search_query(
+pub(crate) fn validate_structured_search_query_input(
     query: &NoteStructuredSearchQuery,
-) -> Result<CanonicalSearchFilters, String> {
+) -> Result<(), String> {
     if query.text.len() > NOTE_SEARCH_MAX_TEXT_UTF8_BYTES {
         return Err("Structured Notes search text exceeds 4096 UTF-8 bytes.".to_string());
     }
@@ -1267,6 +1268,20 @@ fn validate_structured_search_query(
         return Err("Structured Notes search OR group has more than 16 alternatives.".to_string());
     }
 
+    let tags = query
+        .required_tags
+        .iter()
+        .chain(query.excluded_tags.iter())
+        .chain(query.or_groups.iter().flatten());
+    if tags
+        .into_iter()
+        .any(|tag| !is_canonical_tag_body(&tag.normalized_tag))
+    {
+        return Err(
+            "Structured Notes search tag normalizedTag must be a canonical tag body.".to_string(),
+        );
+    }
+
     let filters = canonical_search_filters(query);
     let unique_tags = filters
         .required
@@ -1279,7 +1294,14 @@ fn validate_structured_search_query(
             "Structured Notes search has more than 64 unique tag alternatives.".to_string(),
         );
     }
-    Ok(filters)
+    Ok(())
+}
+
+fn validate_structured_search_query(
+    query: &NoteStructuredSearchQuery,
+) -> Result<CanonicalSearchFilters, String> {
+    validate_structured_search_query_input(query)?;
+    Ok(canonical_search_filters(query))
 }
 
 fn push_tag_parameters(
@@ -4867,6 +4889,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn notes_tag_workspace_scope_rejects_noncanonical_body() {
+        let connection = test_connection();
+        let error = load_workspace(
+            &connection,
+            NotesWorkspaceScope::Tags {
+                tags: vec![NoteTagFilter {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "##x".to_string(),
+                }],
+            },
+        )
+        .expect_err("invalid typed tag workspace scope");
+
+        assert_eq!(
+            error,
+            "Structured Notes search tag normalizedTag must be a canonical tag body."
+        );
+    }
+
     fn search_tag(prefix: NoteTagPrefix, tag: &str) -> NoteSearchTag {
         NoteSearchTag {
             prefix,
@@ -4951,8 +4993,8 @@ mod tests {
             &structured_query(
                 "release",
                 vec![
-                    search_tag(NoteTagPrefix::Hash, "ROADMAP"),
-                    search_tag(NoteTagPrefix::Mention, "MINJI"),
+                    search_tag(NoteTagPrefix::Hash, "roadmap"),
+                    search_tag(NoteTagPrefix::Mention, "minji"),
                 ],
                 vec![search_tag(NoteTagPrefix::Hash, "blocked")],
                 vec![],
@@ -5041,17 +5083,19 @@ mod tests {
         )
         .expect("prefix-distinct search")
         .is_empty());
-        assert!(search_nodes_structured(
-            &connection,
-            &structured_query(
-                "",
-                vec![search_tag(NoteTagPrefix::Hash, "x') OR 1=1 --")],
-                vec![],
-                vec![],
+        assert_eq!(
+            search_nodes_structured(
+                &connection,
+                &structured_query(
+                    "",
+                    vec![search_tag(NoteTagPrefix::Hash, "x') OR 1=1 --")],
+                    vec![],
+                    vec![],
+                )
             )
-        )
-        .expect("parameterized hostile tag")
-        .is_empty());
+            .expect_err("invalid hostile tag"),
+            "Structured Notes search tag normalizedTag must be a canonical tag body."
+        );
     }
 
     fn indexed_search_tags(count: usize) -> Vec<NoteSearchTag> {
@@ -5095,8 +5139,7 @@ mod tests {
     #[test]
     fn notes_tag_structured_search_enforces_total_unique_tag_limit_before_sql() {
         let connection = test_connection();
-        let mut boundary_tags = indexed_search_tags(64);
-        boundary_tags[0].normalized_tag = "tag-0') OR 1=1 --".to_string();
+        let boundary_tags = indexed_search_tags(64);
         assert!(search_nodes_structured(
             &connection,
             &structured_query("", boundary_tags, vec![], vec![])

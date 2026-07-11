@@ -1,4 +1,8 @@
 import { isNoteSearchResult } from "../domain/notes";
+import {
+  isCanonicalNoteTagBody,
+  validateAndCanonicalizeNoteSearchQuery
+} from "../features/notes/noteSearchQuery";
 import type {
   CreateNoteNodeInput,
   MoveNoteNodeInput,
@@ -35,6 +39,16 @@ export function notesLoadWorkspace(
   vaultPath: string,
   scope: NotesWorkspaceScope
 ): Promise<NotesWorkspace> {
+  if (
+    scope.kind === "tags" &&
+    scope.tags.some((tag) => !isCanonicalNoteTagBody(tag.normalizedTag))
+  ) {
+    return Promise.reject(
+      new Error(
+        "Structured Notes search tag normalizedTag must be a canonical tag body."
+      )
+    );
+  }
   return invokeNotes<NotesWorkspace>("notes_load_workspace", {
     vaultPath,
     scope
@@ -203,6 +217,10 @@ export async function notesSearchStructured(
   vaultPath: string,
   query: NoteStructuredSearchQuery
 ): Promise<NoteSearchResult[]> {
+  const validation = validateAndCanonicalizeNoteSearchQuery(query);
+  if (!validation.ok) {
+    throw new Error(validation.error.message);
+  }
   const results = await invokeNotes<unknown>("notes_search_structured", {
     vaultPath,
     query

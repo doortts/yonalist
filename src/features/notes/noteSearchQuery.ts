@@ -16,7 +16,8 @@ export type NoteSearchQueryValidationErrorCode =
   | "textTooLong"
   | "tooManyUniqueTags"
   | "tooManyOrGroups"
-  | "tooManyOrAlternatives";
+  | "tooManyOrAlternatives"
+  | "invalidTag";
 
 export type NoteSearchQueryValidationResult =
   | { ok: true; query: NoteStructuredSearchQuery }
@@ -43,18 +44,11 @@ function normalizeDisplay(displayTag: string, normalizedTag: string): string {
   return display || normalizedTag;
 }
 
-function canonicalTag(tag: NoteSearchTag): NoteSearchTag | null {
-  const normalizedTag = tag.normalizedTag
-    .trim()
-    .replace(/^[#@]/u, "")
-    .toLowerCase();
-  if (!normalizedTag) {
-    return null;
-  }
+function canonicalTag(tag: NoteSearchTag): NoteSearchTag {
   return {
     prefix: tag.prefix,
-    normalizedTag,
-    displayTag: normalizeDisplay(tag.displayTag, normalizedTag)
+    normalizedTag: tag.normalizedTag,
+    displayTag: normalizeDisplay(tag.displayTag, tag.normalizedTag)
   };
 }
 
@@ -62,9 +56,6 @@ function canonicalTags(tags: readonly NoteSearchTag[]): NoteSearchTag[] {
   const byKey = new Map<string, NoteSearchTag>();
   for (const source of tags) {
     const tag = canonicalTag(source);
-    if (!tag) {
-      continue;
-    }
     const key = tagKey(tag);
     const existing = byKey.get(key);
     if (!existing || tag.displayTag < existing.displayTag) {
@@ -108,6 +99,21 @@ export function canonicalizeNoteSearchQuery(
   };
 }
 
+export function isCanonicalNoteTagBody(normalizedTag: string): boolean {
+  if (!normalizedTag || normalizedTag !== normalizedTag.toLowerCase()) {
+    return false;
+  }
+  const source = `#${normalizedTag}`;
+  const tokens = tokenizeNoteText(source);
+  return (
+    tokens.length === 1 &&
+    tokens[0].kind === "tag" &&
+    tokens[0].raw === source &&
+    tokens[0].display === normalizedTag &&
+    tokens[0].normalized === normalizedTag
+  );
+}
+
 function validationError(
   code: NoteSearchQueryValidationErrorCode,
   message: string
@@ -142,6 +148,18 @@ export function validateAndCanonicalizeNoteSearchQuery(
     return validationError(
       "tooManyOrAlternatives",
       "Structured Notes search OR group has more than 16 alternatives."
+    );
+  }
+
+  const typedTags = [
+    ...query.requiredTags,
+    ...query.excludedTags,
+    ...query.orGroups.flat()
+  ];
+  if (typedTags.some((tag) => !isCanonicalNoteTagBody(tag.normalizedTag))) {
+    return validationError(
+      "invalidTag",
+      "Structured Notes search tag normalizedTag must be a canonical tag body."
     );
   }
 
