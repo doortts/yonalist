@@ -3,7 +3,8 @@ use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{
     hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
-    prepare_markdown_export, publish_markdown_export, render_markdown, render_pdf,
+    preflight_markdown_asset_destination, prepare_markdown_export, publish_markdown_export,
+    render_markdown, render_pdf,
 };
 use crate::notes::history::{
     clear_all_history, clear_history, history_status, redo_with_attachment_storage_at,
@@ -588,6 +589,32 @@ fn ensure_export_destination_is_not_directory(path: &PathBuf) -> Result<(), Stri
     }
 }
 
+fn export_snapshot_has_attachments(snapshot: &NotesExportSnapshot) -> bool {
+    fn node_has_attachments(node: &crate::notes::types::ExportNode) -> bool {
+        !node.attachments.is_empty() || node.children.iter().any(node_has_attachments)
+    }
+
+    node_has_attachments(&snapshot.root)
+}
+
+fn hydrate_export_snapshot_if_needed(
+    vault_path: &str,
+    connection: &rusqlite::Connection,
+    root_node_id: &str,
+    mut snapshot: NotesExportSnapshot,
+) -> Result<NotesExportSnapshot, String> {
+    if !export_snapshot_has_attachments(&snapshot) {
+        return Ok(snapshot);
+    }
+
+    let storage = AttachmentStorageLease::acquire(vault_path)?;
+    snapshot = load_export_snapshot(connection, root_node_id)?;
+    hydrate_export_attachments(&mut snapshot, |attachment| {
+        storage.read_validated_export_attachment_bytes(attachment)
+    })?;
+    Ok(snapshot)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_export_markdown(
     vault_path: String,
@@ -602,19 +629,22 @@ pub(crate) fn notes_export_markdown(
         ensure_export_destination_is_available(&destination_path)?;
     }
 
-    let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let connection = open_notes_export_db(&vault_path)?;
-    let mut snapshot = load_export_snapshot(&connection, &root_node_id)?;
-    hydrate_export_attachments(&mut snapshot, |attachment| {
-        storage.read_validated_export_attachment_bytes(attachment)
-    })?;
+    let snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    let markdown_assets = if export_snapshot_has_attachments(&snapshot) {
+        let destination = markdown_asset_destination(&destination_path)?;
+        preflight_markdown_asset_destination(&destination.0, overwrite)?;
+        Some(destination)
+    } else {
+        None
+    };
+    let snapshot =
+        hydrate_export_snapshot_if_needed(&vault_path, &connection, &root_node_id, snapshot)?;
 
-    fn has_attachments(node: &crate::notes::types::ExportNode) -> bool {
-        !node.attachments.is_empty() || node.children.iter().any(has_attachments)
-    }
-    if has_attachments(&snapshot.root) {
-        let (asset_destination, asset_directory_name) =
-            markdown_asset_destination(&destination_path)?;
+    if export_snapshot_has_attachments(&snapshot) {
+        let (asset_destination, asset_directory_name) = markdown_assets.ok_or_else(|| {
+            "Notes export attachment destinations were not preflighted.".to_string()
+        })?;
         let prepared = prepare_markdown_export(&snapshot, &asset_directory_name)?;
         publish_markdown_export(&destination_path, &asset_destination, &prepared, overwrite)?;
     } else {
@@ -651,7 +681,7 @@ fn export_notes_file(
     destination: String,
     overwrite: bool,
     format: NotesExportFormat,
-    renderer: fn(&NotesExportSnapshot) -> Result<Vec<u8>, String>,
+    renderer: impl FnOnce(&NotesExportSnapshot) -> Result<Vec<u8>, String>,
 ) -> Result<NotesExportResult, String> {
     validate_note_id(&root_node_id)?;
     let destination_path = export_destination_path(&destination)?;
@@ -660,12 +690,10 @@ fn export_notes_file(
         ensure_export_destination_is_available(&destination_path)?;
     }
 
-    let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let connection = open_notes_export_db(&vault_path)?;
-    let mut snapshot = load_export_snapshot(&connection, &root_node_id)?;
-    hydrate_export_attachments(&mut snapshot, |attachment| {
-        storage.read_validated_export_attachment_bytes(attachment)
-    })?;
+    let snapshot = load_export_snapshot(&connection, &root_node_id)?;
+    let snapshot =
+        hydrate_export_snapshot_if_needed(&vault_path, &connection, &root_node_id, snapshot)?;
     let bytes = renderer(&snapshot)?;
     write_atomic_file(&destination_path, &bytes, overwrite)?;
 
@@ -1621,6 +1649,82 @@ mod tests {
     }
 
     #[test]
+    fn notes_export_attachment_free_formats_do_not_create_asset_storage_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let metadata = crate::metadata_dir(&vault_path_string);
+        let asset_lock = metadata.join(".notes-assets.lock");
+        let asset_directory = metadata.join("notes-assets");
+        assert!(!asset_lock.exists());
+        assert!(!asset_directory.exists());
+
+        notes_export_markdown(
+            vault_path_string.clone(),
+            ROOT_ID.to_string(),
+            temp_dir
+                .path()
+                .join("readonly.md")
+                .to_string_lossy()
+                .into_owned(),
+            false,
+        )
+        .expect("attachment-free Markdown export");
+        assert!(!asset_lock.exists());
+        assert!(!asset_directory.exists());
+
+        notes_export_pdf(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            temp_dir
+                .path()
+                .join("readonly.pdf")
+                .to_string_lossy()
+                .into_owned(),
+            false,
+        )
+        .expect("attachment-free PDF export");
+        assert!(!asset_lock.exists());
+        assert!(!asset_directory.exists());
+    }
+
+    #[test]
+    fn notes_export_attachment_free_formats_ignore_uninitializable_asset_storage() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let metadata = crate::metadata_dir(&vault_path_string);
+        fs::write(metadata.join("notes-assets"), b"not a directory")
+            .expect("block attachment storage initialization");
+
+        notes_export_markdown(
+            vault_path_string.clone(),
+            ROOT_ID.to_string(),
+            temp_dir
+                .path()
+                .join("blocked.md")
+                .to_string_lossy()
+                .into_owned(),
+            false,
+        )
+        .expect("Markdown export without attachment storage");
+        notes_export_pdf(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            temp_dir
+                .path()
+                .join("blocked.pdf")
+                .to_string_lossy()
+                .into_owned(),
+            false,
+        )
+        .expect("PDF export without attachment storage");
+        assert!(!metadata.join(".notes-assets.lock").exists());
+    }
+
+    #[test]
     fn markdown_export_rejects_an_invalid_descendant_without_writing_output() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().join("vault");
@@ -1685,6 +1789,41 @@ mod tests {
     }
 
     #[test]
+    fn notes_export_markdown_preflights_asset_conflict_before_attachment_reads() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let owned_path = import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "must-not-read.png",
+        );
+        fs::remove_file(owned_path).expect("remove source bytes");
+        let destination = temp_dir.path().join("preflight.md");
+        let assets = temp_dir.path().join("preflight_assets");
+        fs::create_dir(&assets).expect("seed conflicting assets directory");
+        fs::write(assets.join("sentinel.txt"), b"untouched").expect("seed sentinel");
+
+        let error = notes_export_markdown(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("asset destination conflict");
+
+        assert_eq!(error, "Destination already exists.");
+        assert!(!destination.exists());
+        assert_eq!(
+            fs::read(assets.join("sentinel.txt")).expect("preserved sentinel"),
+            b"untouched"
+        );
+        assert_eq!(fs::read_dir(assets).expect("list assets").count(), 1);
+    }
+
+    #[test]
     fn pdf_export_fails_before_publish_when_attachment_bytes_are_missing() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().join("vault");
@@ -1712,6 +1851,47 @@ mod tests {
             "{error}"
         );
         assert!(!destination.exists());
+    }
+
+    #[test]
+    fn notes_export_releases_asset_lease_before_pdf_rendering() {
+        use fs4::FileExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        import_export_attachment(
+            &temp_dir,
+            &vault_path_string,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "lease.png",
+        );
+        let lock_path = crate::metadata_dir(&vault_path_string).join(".notes-assets.lock");
+
+        export_notes_file(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            temp_dir
+                .path()
+                .join("lease.pdf")
+                .to_string_lossy()
+                .into_owned(),
+            false,
+            NotesExportFormat::Pdf,
+            |snapshot| {
+                let lock = fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&lock_path)
+                    .map_err(|error| error.to_string())?;
+                FileExt::try_lock(&lock).map_err(|error| {
+                    format!("Notes export asset lease remained held during rendering: {error}")
+                })?;
+                render_pdf(snapshot)
+            },
+        )
+        .expect("render after releasing asset lease");
     }
 
     #[test]

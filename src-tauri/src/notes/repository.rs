@@ -9,7 +9,7 @@ use crate::notes::types::{
     NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
     NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
     NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput,
+    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -1041,6 +1041,33 @@ fn load_export_snapshot_inner(
                 .cmp(&right_node.sort_key)
                 .then_with(|| left.cmp(right))
         });
+    }
+
+    let attachment_count: i64 = connection
+        .query_row(
+            "WITH RECURSIVE subtree(id, path, cycle) AS (\
+               SELECT id, '|' || id || '|', 0 FROM notes_nodes \
+               WHERE id = ?1 AND deleted_at IS NULL \
+               UNION ALL \
+               SELECT child.id, subtree.path || child.id || '|', \
+                      instr(subtree.path, '|' || child.id || '|') > 0 \
+               FROM notes_nodes child \
+               JOIN subtree ON child.parent_id = subtree.id \
+               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+             ) \
+             SELECT COUNT(*) FROM notes_attachments attachment \
+             JOIN subtree ON subtree.id = attachment.node_id \
+             WHERE subtree.cycle = 0",
+            [root_node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not count Notes export attachments: {error}"))?;
+    let attachment_count = usize::try_from(attachment_count)
+        .map_err(|_| "The Notes export attachment count is invalid.".to_string())?;
+    if attachment_count > MAX_NOTES_EXPORT_ATTACHMENTS {
+        return Err(format!(
+            "Notes export must contain at most {MAX_NOTES_EXPORT_ATTACHMENTS} image attachments."
+        ));
     }
 
     let mut attachments_by_node_id: HashMap<String, Vec<ExportAttachment>> = HashMap::new();

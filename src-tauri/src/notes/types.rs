@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub type NoteId = String;
+pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,7 +73,7 @@ pub struct ExportAttachment {
     pub intrinsic_width: i64,
     pub intrinsic_height: i64,
     pub display_width: i64,
-    pub bytes: Option<Vec<u8>>,
+    pub bytes: Option<Arc<[u8]>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

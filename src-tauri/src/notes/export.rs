@@ -1,4 +1,6 @@
-use super::types::{validate_note_id, ExportDateSpan, ExportNode, NotesExportSnapshot};
+use super::types::{
+    validate_note_id, ExportDateSpan, ExportNode, NotesExportSnapshot, MAX_NOTES_EXPORT_ATTACHMENTS,
+};
 use crate::notes::date_index::LocalDate;
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
@@ -6,11 +8,13 @@ use printpdf::{
     TextItem, XObjectTransform,
 };
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 use std::path::{Component, Path};
+use std::sync::Arc;
 
 const PDF_FONT_BYTES: &[u8] = include_bytes!("../../resources/NanumGothic-Regular.ttf");
 const PDF_PAGE_WIDTH_MM: f32 = 210.0;
@@ -35,6 +39,8 @@ const PDF_IMAGE_CAPTION_SIZE: f32 = 8.5;
 const PDF_IMAGE_CAPTION_LINE_HEIGHT: f32 = 11.0;
 const PDF_IMAGE_CAPTION_GAP: f32 = 5.0;
 const PDF_CSS_PIXEL_POINTS: f32 = 72.0 / 96.0;
+const MAX_EXPORT_ENCODED_BYTES: u64 = 40 * 1024 * 1024;
+const MAX_EXPORT_DECODED_PIXELS: u64 = 40_000_000;
 
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
@@ -99,28 +105,142 @@ fn validate_export_node_ids(node: &ExportNode) -> Result<(), String> {
 
 pub(crate) fn hydrate_export_attachments(
     snapshot: &mut NotesExportSnapshot,
+    read: impl FnMut(&super::types::ExportAttachment) -> Result<Vec<u8>, String>,
+) -> Result<(), String> {
+    hydrate_export_attachments_with_budget(
+        snapshot,
+        ExportAttachmentBudget {
+            max_attachments: MAX_NOTES_EXPORT_ATTACHMENTS,
+            max_encoded_bytes: MAX_EXPORT_ENCODED_BYTES,
+            max_decoded_pixels: MAX_EXPORT_DECODED_PIXELS,
+        },
+        read,
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExportAttachmentBudget {
+    max_attachments: usize,
+    max_encoded_bytes: u64,
+    max_decoded_pixels: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ExportPayloadKey {
+    relative_path: String,
+    content_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExportPayloadMetadata {
+    mime_type: String,
+    byte_size: u64,
+    intrinsic_width: u64,
+    intrinsic_height: u64,
+}
+
+pub(crate) fn hydrate_export_attachments_with_budget(
+    snapshot: &mut NotesExportSnapshot,
+    budget: ExportAttachmentBudget,
     mut read: impl FnMut(&super::types::ExportAttachment) -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
-    fn collect(
+    fn inspect(
         node: &ExportNode,
-        read: &mut impl FnMut(&super::types::ExportAttachment) -> Result<Vec<u8>, String>,
-        prepared: &mut Vec<Vec<u8>>,
+        budget: ExportAttachmentBudget,
+        attachment_count: &mut usize,
+        encoded_bytes: &mut u64,
+        decoded_pixels: &mut u64,
+        unique: &mut HashMap<ExportPayloadKey, ExportPayloadMetadata>,
+        representatives: &mut Vec<super::types::ExportAttachment>,
     ) -> Result<(), String> {
         for attachment in &node.attachments {
-            prepared.push(read(attachment)?);
+            *attachment_count = attachment_count
+                .checked_add(1)
+                .ok_or_else(|| "The Notes export attachment count is too large.".to_string())?;
+            if *attachment_count > budget.max_attachments {
+                return Err(format!(
+                    "Notes export must contain at most {} image attachments.",
+                    budget.max_attachments
+                ));
+            }
+            let byte_size = u64::try_from(attachment.byte_size)
+                .map_err(|_| "A Notes export attachment has an invalid byte size.".to_string())?;
+            let intrinsic_width = u64::try_from(attachment.intrinsic_width).map_err(|_| {
+                "A Notes export attachment has an invalid intrinsic width.".to_string()
+            })?;
+            let intrinsic_height = u64::try_from(attachment.intrinsic_height).map_err(|_| {
+                "A Notes export attachment has an invalid intrinsic height.".to_string()
+            })?;
+            let pixels = intrinsic_width
+                .checked_mul(intrinsic_height)
+                .ok_or_else(|| "A Notes export attachment pixel count is too large.".to_string())?;
+            if byte_size == 0 || pixels == 0 {
+                return Err("A Notes export attachment must have positive size.".to_string());
+            }
+            let key = ExportPayloadKey {
+                relative_path: attachment.relative_path.clone(),
+                content_hash: attachment.content_hash.clone(),
+            };
+            let metadata = ExportPayloadMetadata {
+                mime_type: attachment.mime_type.clone(),
+                byte_size,
+                intrinsic_width,
+                intrinsic_height,
+            };
+            if let Some(existing) = unique.get(&key) {
+                if existing != &metadata {
+                    return Err(
+                        "Notes export attachments for one owned payload have conflicting metadata."
+                            .to_string(),
+                    );
+                }
+                continue;
+            }
+            *encoded_bytes = encoded_bytes
+                .checked_add(byte_size)
+                .ok_or_else(|| "The Notes export encoded-byte total is too large.".to_string())?;
+            if *encoded_bytes > budget.max_encoded_bytes {
+                return Err(format!(
+                    "Notes export attachments exceed the {} byte aggregate encoded-byte budget.",
+                    budget.max_encoded_bytes
+                ));
+            }
+            *decoded_pixels = decoded_pixels
+                .checked_add(pixels)
+                .ok_or_else(|| "The Notes export decoded-pixel total is too large.".to_string())?;
+            if *decoded_pixels > budget.max_decoded_pixels {
+                return Err(format!(
+                    "Notes export attachments exceed the {} decoded-pixel aggregate budget.",
+                    budget.max_decoded_pixels
+                ));
+            }
+            unique.insert(key, metadata);
+            representatives.push(attachment.clone());
         }
         for child in &node.children {
-            collect(child, read, prepared)?;
+            inspect(
+                child,
+                budget,
+                attachment_count,
+                encoded_bytes,
+                decoded_pixels,
+                unique,
+                representatives,
+            )?;
         }
         Ok(())
     }
 
     fn assign(
         node: &mut ExportNode,
-        prepared: &mut impl Iterator<Item = Vec<u8>>,
+        prepared: &HashMap<ExportPayloadKey, Arc<[u8]>>,
     ) -> Result<(), String> {
         for attachment in &mut node.attachments {
-            attachment.bytes = Some(prepared.next().ok_or_else(|| {
+            let key = ExportPayloadKey {
+                relative_path: attachment.relative_path.clone(),
+                content_hash: attachment.content_hash.clone(),
+            };
+            attachment.bytes = Some(prepared.get(&key).cloned().ok_or_else(|| {
                 "Prepared Notes export attachment bytes are incomplete.".to_string()
             })?);
         }
@@ -130,14 +250,38 @@ pub(crate) fn hydrate_export_attachments(
         Ok(())
     }
 
-    let mut prepared = Vec::new();
-    collect(&snapshot.root, &mut read, &mut prepared)?;
-    let mut prepared = prepared.into_iter();
-    assign(&mut snapshot.root, &mut prepared)?;
-    if prepared.next().is_some() {
-        return Err("Prepared Notes export attachment bytes are inconsistent.".to_string());
+    let mut attachment_count = 0;
+    let mut encoded_bytes = 0;
+    let mut decoded_pixels = 0;
+    let mut unique = HashMap::new();
+    let mut representatives = Vec::new();
+    inspect(
+        &snapshot.root,
+        budget,
+        &mut attachment_count,
+        &mut encoded_bytes,
+        &mut decoded_pixels,
+        &mut unique,
+        &mut representatives,
+    )?;
+
+    let mut prepared = HashMap::with_capacity(representatives.len());
+    for attachment in representatives {
+        let key = ExportPayloadKey {
+            relative_path: attachment.relative_path.clone(),
+            content_hash: attachment.content_hash.clone(),
+        };
+        let expected_size = usize::try_from(attachment.byte_size)
+            .map_err(|_| "A Notes export attachment byte size is too large.".to_string())?;
+        let bytes = read(&attachment)?;
+        if bytes.len() != expected_size {
+            return Err(
+                "A Notes export attachment read returned an unexpected byte size.".to_string(),
+            );
+        }
+        prepared.insert(key, Arc::<[u8]>::from(bytes));
     }
-    Ok(())
+    assign(&mut snapshot.root, &prepared)
 }
 
 fn render_node(markdown: &mut String, node: &super::types::ExportNode, depth: usize) {
@@ -298,7 +442,7 @@ pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>,
 
 pub(crate) struct MarkdownExportAsset {
     file_name: String,
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
 }
 
 pub(crate) struct PreparedMarkdownExport {
@@ -350,6 +494,21 @@ pub(crate) fn markdown_asset_destination(destination: &Path) -> Result<(PathBuf,
     Ok((destination.with_file_name(&name), name))
 }
 
+pub(crate) fn preflight_markdown_asset_destination(
+    asset_destination: &Path,
+    overwrite: bool,
+) -> Result<(), String> {
+    match fs::symlink_metadata(asset_destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err("Notes export asset directory must not be a symlink.".to_string())
+        }
+        Ok(_) if !overwrite => Err("Destination already exists.".to_string()),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 fn remove_path_nofollow(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
@@ -359,6 +518,24 @@ fn remove_path_nofollow(path: &Path) -> Result<(), String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
     }
+}
+
+fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), String> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(unix)]
+fn sync_export_directory(path: &Path) -> Result<(), String> {
+    classify_export_directory_sync(fs::File::open(path).and_then(|directory| directory.sync_all()))
+}
+
+#[cfg(not(unix))]
+fn sync_export_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -388,17 +565,12 @@ pub(crate) fn publish_markdown_export(
     if prepared.assets.is_empty() {
         return crate::file_io::write_atomic_file(destination, &prepared.markdown, overwrite);
     }
-    if matches!(fs::symlink_metadata(asset_destination), Ok(metadata) if metadata.file_type().is_symlink())
-    {
-        return Err("Notes export asset directory must not be a symlink.".to_string());
-    }
+    preflight_markdown_asset_destination(asset_destination, overwrite)?;
     if !overwrite {
-        for path in [destination, asset_destination] {
-            match fs::symlink_metadata(path) {
-                Ok(_) => return Err("Destination already exists.".to_string()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.to_string()),
-            }
+        match fs::symlink_metadata(destination) {
+            Ok(_) => return Err("Destination already exists.".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
         }
     }
 
@@ -430,9 +602,7 @@ pub(crate) fn publish_markdown_export(
         .write_all(&prepared.markdown)
         .map_err(|error| error.to_string())?;
     document.sync_all().map_err(|error| error.to_string())?;
-    fs::File::open(&staged_assets)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
+    sync_export_directory(&staged_assets)?;
 
     let old_document = stage.path().join("old-document");
     let old_assets = stage.path().join("old-assets");
@@ -492,9 +662,7 @@ pub(crate) fn publish_markdown_export(
         };
     }
 
-    fs::File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| error.to_string())?;
+    sync_export_directory(parent)?;
     Ok(())
 }
 
@@ -618,7 +786,8 @@ struct PdfPreparedRow {
 
 struct PdfPreparedImage {
     attachment_id: String,
-    bytes: Vec<u8>,
+    payload_key: ExportPayloadKey,
+    bytes: Arc<[u8]>,
     intrinsic_width: usize,
     intrinsic_height: usize,
     x: f32,
@@ -644,7 +813,8 @@ struct PdfPlacedLine {
 
 struct PdfPlacedImage {
     attachment_id: String,
-    bytes: Vec<u8>,
+    payload_key: ExportPayloadKey,
+    bytes: Arc<[u8]>,
     intrinsic_width: usize,
     intrinsic_height: usize,
     x: f32,
@@ -818,6 +988,10 @@ fn prepare_pdf_image(
 
     Ok(PdfPreparedImage {
         attachment_id: attachment.id.clone(),
+        payload_key: ExportPayloadKey {
+            relative_path: attachment.relative_path.clone(),
+            content_hash: attachment.content_hash.clone(),
+        },
         bytes: attachment
             .bytes
             .clone()
@@ -968,6 +1142,7 @@ fn build_pdf_pages(
                 let page = pages.last_mut().expect("PDF page exists");
                 page.images.push(PdfPlacedImage {
                     attachment_id: image.attachment_id,
+                    payload_key: image.payload_key,
                     bytes: image.bytes,
                     intrinsic_width: image.intrinsic_width,
                     intrinsic_height: image.intrinsic_height,
@@ -1026,28 +1201,36 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
     let expected_page_count = page_drafts.len();
     let mut document = PdfDocument::new(&snapshot.title);
     let font_id = document.add_font(&font);
+    let mut image_ids: HashMap<ExportPayloadKey, printpdf::XObjectId> = HashMap::new();
     let mut pages = Vec::with_capacity(page_drafts.len());
     for page in page_drafts {
         let mut ops = Vec::new();
         for image in page.images {
-            let decoded = image::load_from_memory(&image.bytes)
-                .map_err(|error| format!("Could not decode a PDF attachment image: {error}"))?;
-            let rgba = decoded.to_rgba8();
-            if rgba.width() as usize != image.intrinsic_width
-                || rgba.height() as usize != image.intrinsic_height
-            {
-                return Err(
-                    "A PDF attachment image no longer matches its snapshot dimensions.".to_string(),
-                );
-            }
-            let raw = RawImage {
-                pixels: RawImageData::U8(rgba.into_raw()),
-                width: image.intrinsic_width,
-                height: image.intrinsic_height,
-                data_format: RawImageFormat::RGBA8,
-                tag: image.attachment_id.into_bytes(),
+            let image_id = if let Some(image_id) = image_ids.get(&image.payload_key) {
+                image_id.clone()
+            } else {
+                let decoded = image::load_from_memory(&image.bytes)
+                    .map_err(|error| format!("Could not decode a PDF attachment image: {error}"))?;
+                let rgba = decoded.to_rgba8();
+                if rgba.width() as usize != image.intrinsic_width
+                    || rgba.height() as usize != image.intrinsic_height
+                {
+                    return Err(
+                        "A PDF attachment image no longer matches its snapshot dimensions."
+                            .to_string(),
+                    );
+                }
+                let raw = RawImage {
+                    pixels: RawImageData::U8(rgba.into_raw()),
+                    width: image.intrinsic_width,
+                    height: image.intrinsic_height,
+                    data_format: RawImageFormat::RGBA8,
+                    tag: image.attachment_id.into_bytes(),
+                };
+                let image_id = document.add_image(&raw);
+                image_ids.insert(image.payload_key, image_id.clone());
+                image_id
             };
-            let image_id = document.add_image(&raw);
             ops.push(Op::UseXobject {
                 id: image_id,
                 transform: XObjectTransform {
@@ -1089,15 +1272,18 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pdf_pages, format_date_matches_for_pdf_display,
+        build_pdf_pages, classify_export_directory_sync, format_date_matches_for_pdf_display,
         format_date_matches_for_pdf_display_with_work, hydrate_export_attachments,
-        load_export_snapshot, render_markdown, render_pdf, validate_serialized_pdf, PDF_FONT_BYTES,
-        PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
+        hydrate_export_attachments_with_budget, load_export_snapshot, prepare_markdown_export,
+        render_markdown, render_pdf, sync_export_directory, validate_serialized_pdf,
+        ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM,
+        PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
     use rusqlite::{params, Connection};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
     const FIRST_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -1150,7 +1336,7 @@ mod tests {
             intrinsic_width: 1,
             intrinsic_height: 1,
             display_width: 1,
-            bytes,
+            bytes: bytes.map(Arc::<[u8]>::from),
         }
     }
 
@@ -1517,6 +1703,42 @@ mod tests {
     }
 
     #[test]
+    fn notes_export_snapshot_rejects_attachment_metadata_above_the_count_budget() {
+        let connection = export_connection();
+        insert_node(
+            &connection,
+            SeedNode::active(ROOT_ID, None, 1024, "Many images"),
+        );
+        for index in 0..=512 {
+            connection
+                .execute(
+                    "INSERT INTO notes_attachments (
+                       id, node_id, sort_key, relative_path, content_hash, original_name,
+                       mime_type, byte_size, intrinsic_width, intrinsic_height, display_width,
+                       created_at, updated_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, 'duplicate.png', 'image/png', 3, 1, 1, 1,
+                               '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                    params![
+                        format!("{index:08x}-0000-4000-8000-{index:012x}"),
+                        ROOT_ID,
+                        index,
+                        format!("notes-assets/{}.png", "a".repeat(64)),
+                        "a".repeat(64),
+                    ],
+                )
+                .expect("seed attachment metadata");
+        }
+
+        let error = load_export_snapshot(&connection, ROOT_ID)
+            .expect_err("attachment metadata count budget");
+
+        assert_eq!(
+            error,
+            "Notes export must contain at most 512 image attachments."
+        );
+    }
+
+    #[test]
     fn renderers_reject_attachment_metadata_without_validated_snapshot_bytes() {
         let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
         snapshot
@@ -1537,10 +1759,10 @@ mod tests {
     #[test]
     fn attachment_hydration_is_all_or_nothing_and_preserves_snapshot_bytes() {
         let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
-        snapshot.root.attachments = vec![
-            export_attachment(FIRST_ID, "first.png", None),
-            export_attachment(SECOND_ID, "second.png", None),
-        ];
+        let mut second = export_attachment(SECOND_ID, "second.png", None);
+        second.content_hash = "b".repeat(64);
+        second.relative_path = format!("notes-assets/{}.png", second.content_hash);
+        snapshot.root.attachments = vec![export_attachment(FIRST_ID, "first.png", None), second];
 
         let error = hydrate_export_attachments(&mut snapshot, |attachment| {
             if attachment.id == SECOND_ID {
@@ -1568,6 +1790,262 @@ mod tests {
             .attachments
             .iter()
             .all(|attachment| attachment.bytes.as_deref() == Some(&[7, 8, 9][..])));
+    }
+
+    #[test]
+    fn notes_export_attachment_budget_rejects_unique_encoded_bytes_before_any_read() {
+        let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        snapshot.root.attachments = (0..3)
+            .map(|index| {
+                let mut attachment = export_attachment(
+                    &format!("{index:08x}-0000-4000-8000-{index:012x}"),
+                    "budget.png",
+                    None,
+                );
+                attachment.content_hash = format!("{index:064x}");
+                attachment.relative_path = format!("notes-assets/{}.png", attachment.content_hash);
+                attachment.byte_size = 4;
+                attachment.intrinsic_width = 2;
+                attachment.intrinsic_height = 2;
+                attachment
+            })
+            .collect();
+        let mut reads = 0;
+
+        let error = hydrate_export_attachments_with_budget(
+            &mut snapshot,
+            ExportAttachmentBudget {
+                max_attachments: 3,
+                max_encoded_bytes: 8,
+                max_decoded_pixels: 12,
+            },
+            |_| {
+                reads += 1;
+                Ok(vec![0; 4])
+            },
+        )
+        .expect_err("aggregate encoded-byte budget");
+
+        assert_eq!(
+            error,
+            "Notes export attachments exceed the 8 byte aggregate encoded-byte budget."
+        );
+        assert_eq!(reads, 0);
+        assert!(snapshot
+            .root
+            .attachments
+            .iter()
+            .all(|attachment| attachment.bytes.is_none()));
+    }
+
+    #[test]
+    fn notes_export_duplicate_payloads_share_one_read_and_one_budget_allocation() {
+        let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        snapshot.root.attachments = vec![
+            export_attachment(FIRST_ID, "first.png", None),
+            export_attachment(SECOND_ID, "second.png", None),
+        ];
+        let mut reads = 0;
+
+        hydrate_export_attachments_with_budget(
+            &mut snapshot,
+            ExportAttachmentBudget {
+                max_attachments: 2,
+                max_encoded_bytes: 3,
+                max_decoded_pixels: 1,
+            },
+            |_| {
+                reads += 1;
+                Ok(vec![7, 8, 9])
+            },
+        )
+        .expect("deduplicated hydration");
+
+        assert_eq!(reads, 1);
+        let first = snapshot.root.attachments[0]
+            .bytes
+            .as_ref()
+            .expect("first shared bytes");
+        let second = snapshot.root.attachments[1]
+            .bytes
+            .as_ref()
+            .expect("second shared bytes");
+        assert!(std::sync::Arc::ptr_eq(first, second));
+    }
+
+    #[test]
+    fn notes_export_markdown_preparation_reuses_prevalidated_payload_allocations() {
+        let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        snapshot.root.attachments = vec![
+            export_attachment(FIRST_ID, "first.png", None),
+            export_attachment(SECOND_ID, "second.png", None),
+        ];
+        hydrate_export_attachments_with_budget(
+            &mut snapshot,
+            ExportAttachmentBudget {
+                max_attachments: 2,
+                max_encoded_bytes: 3,
+                max_decoded_pixels: 1,
+            },
+            |_| Ok(vec![7, 8, 9]),
+        )
+        .expect("hydrate shared payload");
+
+        let prepared =
+            prepare_markdown_export(&snapshot, "project_assets").expect("prepare Markdown");
+
+        assert_eq!(prepared.assets.len(), 2);
+        assert!(Arc::ptr_eq(
+            &prepared.assets[0].bytes,
+            snapshot.root.attachments[0]
+                .bytes
+                .as_ref()
+                .expect("snapshot payload"),
+        ));
+        assert!(Arc::ptr_eq(
+            &prepared.assets[0].bytes,
+            &prepared.assets[1].bytes,
+        ));
+    }
+
+    #[test]
+    fn notes_export_attachment_budget_rejects_duplicate_placement_floods() {
+        let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        snapshot.root.attachments = vec![
+            export_attachment(FIRST_ID, "first.png", None),
+            export_attachment(SECOND_ID, "second.png", None),
+            export_attachment(LATER_ID, "third.png", None),
+        ];
+        let mut reads = 0;
+
+        let error = hydrate_export_attachments_with_budget(
+            &mut snapshot,
+            ExportAttachmentBudget {
+                max_attachments: 2,
+                max_encoded_bytes: 3,
+                max_decoded_pixels: 1,
+            },
+            |_| {
+                reads += 1;
+                Ok(vec![7, 8, 9])
+            },
+        )
+        .expect_err("attachment count budget");
+
+        assert_eq!(
+            error,
+            "Notes export must contain at most 2 image attachments."
+        );
+        assert_eq!(reads, 0);
+    }
+
+    #[test]
+    fn notes_export_attachment_budget_enforces_the_decoded_pixel_boundary() {
+        let mut at_limit = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        let mut attachment = export_attachment(FIRST_ID, "six-pixels.png", None);
+        attachment.intrinsic_width = 2;
+        attachment.intrinsic_height = 3;
+        at_limit.root.attachments.push(attachment.clone());
+        hydrate_export_attachments_with_budget(
+            &mut at_limit,
+            ExportAttachmentBudget {
+                max_attachments: 1,
+                max_encoded_bytes: 3,
+                max_decoded_pixels: 6,
+            },
+            |_| Ok(vec![7, 8, 9]),
+        )
+        .expect("decoded pixels exactly at budget");
+
+        let mut over_limit = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        attachment.id = SECOND_ID.to_string();
+        attachment.content_hash = "b".repeat(64);
+        attachment.relative_path = format!("notes-assets/{}.png", attachment.content_hash);
+        over_limit.root.attachments = vec![at_limit.root.attachments[0].clone(), attachment];
+        for attachment in &mut over_limit.root.attachments {
+            attachment.bytes = None;
+        }
+        let mut reads = 0;
+        let error = hydrate_export_attachments_with_budget(
+            &mut over_limit,
+            ExportAttachmentBudget {
+                max_attachments: 2,
+                max_encoded_bytes: 6,
+                max_decoded_pixels: 11,
+            },
+            |_| {
+                reads += 1;
+                Ok(vec![7, 8, 9])
+            },
+        )
+        .expect_err("decoded pixels one over budget");
+
+        assert_eq!(
+            error,
+            "Notes export attachments exceed the 11 decoded-pixel aggregate budget."
+        );
+        assert_eq!(reads, 0);
+    }
+
+    #[test]
+    fn notes_export_rejects_conflicting_metadata_for_one_owned_payload() {
+        let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
+        let first = export_attachment(FIRST_ID, "first.png", None);
+        let mut conflicting = export_attachment(SECOND_ID, "second.png", None);
+        conflicting.intrinsic_width = 2;
+        snapshot.root.attachments = vec![first, conflicting];
+        let mut reads = 0;
+
+        let error = hydrate_export_attachments_with_budget(
+            &mut snapshot,
+            ExportAttachmentBudget {
+                max_attachments: 2,
+                max_encoded_bytes: 6,
+                max_decoded_pixels: 3,
+            },
+            |_| {
+                reads += 1;
+                Ok(vec![7, 8, 9])
+            },
+        )
+        .expect_err("conflicting duplicate metadata");
+
+        assert_eq!(
+            error,
+            "Notes export attachments for one owned payload have conflicting metadata."
+        );
+        assert_eq!(reads, 0);
+    }
+
+    #[test]
+    fn notes_export_directory_sync_ignores_unsupported_platform_errors() {
+        let unsupported = std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "directory handles are unsupported",
+        );
+
+        assert_eq!(classify_export_directory_sync(Err(unsupported)), Ok(()));
+        assert_eq!(
+            classify_export_directory_sync(Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied",
+            ))),
+            Err("denied".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_export_directory_sync_accepts_a_real_directory_on_unix() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        sync_export_directory(temp_dir.path()).expect("sync directory");
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn notes_export_directory_sync_is_a_noop_without_unix_directory_handles() {
+        sync_export_directory(Path::new("directory-that-does-not-exist"))
+            .expect("non-Unix directory sync no-op");
     }
 
     #[test]
@@ -2088,6 +2566,42 @@ mod tests {
         let text = extracted_pdf_pages(&mut parsed).join(" ");
         assert!(text.contains("first diagram.png"), "{text}");
         assert!(text.contains("second diagram.png"), "{text}");
+    }
+
+    #[test]
+    fn notes_export_pdf_reuses_one_image_xobject_for_duplicate_payloads() {
+        let png = encoded_png(40, 20);
+        let mut first = export_attachment(FIRST_ID, "first copy.png", Some(png.clone()));
+        first.byte_size = png.len() as i64;
+        first.intrinsic_width = 40;
+        first.intrinsic_height = 20;
+        first.display_width = 40;
+        let mut second = first.clone();
+        second.id = SECOND_ID.to_string();
+        second.original_name = "second copy.png".to_string();
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments = vec![first, second];
+
+        let bytes = render_pdf(&snapshot(root)).expect("render duplicate-image PDF");
+        let structural = lopdf::Document::load_mem(&bytes).expect("parse PDF structure");
+        let image_xobjects = structural
+            .objects
+            .values()
+            .filter(|object| {
+                object
+                    .as_stream()
+                    .ok()
+                    .and_then(|stream| stream.dict.get(b"Subtype").ok())
+                    .and_then(|subtype| subtype.as_name().ok())
+                    == Some(&b"Image"[..])
+            })
+            .count();
+
+        assert_eq!(image_xobjects, 1);
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+        assert!(text.contains("first copy.png"), "{text}");
+        assert!(text.contains("second copy.png"), "{text}");
     }
 
     #[test]
