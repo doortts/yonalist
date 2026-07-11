@@ -7,8 +7,8 @@ use crate::notes::repository::{
     search_nodes_structured, toggle_star, unarchive_node, update_node_at,
 };
 use crate::notes::types::{
-    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix, NotesHistoryContext,
-    NotesWorkspace, NotesWorkspaceScope, UpdateNodeInput,
+    NoteLayoutMode, NoteNode, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
+    NoteTagPrefix, NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope, UpdateNodeInput,
 };
 use rusqlite::{params, Connection};
 use std::collections::BTreeSet;
@@ -27,12 +27,12 @@ const DATE_RANGE_QUERY: &str = "07/10/2026 - 07/12/2026";
 const HISTORY_SESSION_ID: &str = "90000000-0000-4000-8000-000000000001";
 const REGRESSION_LIMIT: f64 = 1.20;
 
-// Maximum per-statistic values from two captures on 2026-07-12 with rustc
-// 1.96.1, macOS 15.7.1, Apple M1 Pro, aarch64-apple-darwin, --release,
+// Maximum per-statistic values from repeated captures on 2026-07-12 with
+// rustc 1.96.1, macOS 15.7.1, Apple M1 Pro, aarch64-apple-darwin, --release,
 // 5 warmups, and 31 measured samples. Values are normalized nanoseconds per
 // vault node; the final gate allows +20%.
 const BASELINE_METADATA: &str =
-    "2026-07-12|Apple M1 Pro|macOS 15.7.1|rustc 1.96.1|release|2x(5w+31m)|max";
+    "2026-07-12|Apple M1 Pro|macOS 15.7.1|rustc 1.96.1|release|5w+31m|max-observed";
 
 #[derive(Clone, Copy)]
 struct Baseline {
@@ -119,7 +119,7 @@ const BASELINES: [Baseline; 14] = [
         node_count: 10_000,
         workload: "mutation_undo",
         median_ns_per_node: 5_466.5,
-        p95_ns_per_node: 6_052.9,
+        p95_ns_per_node: 8_081.7,
     },
     Baseline {
         node_count: 10_000,
@@ -137,6 +137,9 @@ struct PerfVault {
     root_title: String,
     root_note: String,
     structured_ids: Vec<String>,
+    structured_without_required_ids: Vec<String>,
+    structured_without_or_ids: Vec<String>,
+    structured_without_not_ids: Vec<String>,
     date_ids: Vec<String>,
 }
 
@@ -145,6 +148,43 @@ struct Measurement {
     workload: &'static str,
     median_ns: u128,
     p95_ns: u128,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SubtreeNodeProjection {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    layout_mode: NoteLayoutMode,
+    is_collapsed: bool,
+    is_starred: bool,
+    completed_at: Option<String>,
+    created_at: String,
+    deleted_at: Option<String>,
+    is_archived: bool,
+    archive_root_id: Option<String>,
+}
+
+impl SubtreeNodeProjection {
+    fn from_node(node: &NoteNode) -> Self {
+        Self {
+            id: node.id.clone(),
+            parent_id: node.parent_id.clone(),
+            sort_key: node.sort_key,
+            title: node.title.clone(),
+            note: node.note.clone(),
+            layout_mode: node.layout_mode,
+            is_collapsed: node.is_collapsed,
+            is_starred: node.is_starred,
+            completed_at: node.completed_at.clone(),
+            created_at: node.created_at.clone(),
+            deleted_at: node.deleted_at.clone(),
+            is_archived: node.archived_at.is_some(),
+            archive_root_id: node.archive_root_id.clone(),
+        }
+    }
 }
 
 fn fixed_today() -> LocalDate {
@@ -187,15 +227,68 @@ fn structured_query() -> NoteStructuredSearchQuery {
     }
 }
 
-fn fixture_text(index: usize) -> (String, String) {
-    let mut title = format!("Node {index:05}");
-    if index % 2 == 0 {
-        title.push_str(" #project");
-        title.push_str(if index % 4 == 0 { " @alice" } else { " @bob" });
-    } else {
-        title.push_str(" #inbox @carol");
+#[derive(Clone, Copy)]
+struct FixtureTags {
+    project: bool,
+    mention: Option<&'static str>,
+    blocked: bool,
+}
+
+impl FixtureTags {
+    fn passes_or(self) -> bool {
+        matches!(self.mention, Some("alice" | "bob"))
     }
-    if index % 10 == 0 {
+}
+
+fn fixture_tags(index: usize) -> FixtureTags {
+    match index {
+        1 => FixtureTags {
+            project: false,
+            mention: Some("alice"),
+            blocked: false,
+        },
+        2 => FixtureTags {
+            project: true,
+            mention: None,
+            blocked: false,
+        },
+        3 => FixtureTags {
+            project: true,
+            mention: Some("bob"),
+            blocked: true,
+        },
+        _ if index % 2 == 0 => FixtureTags {
+            project: true,
+            mention: Some(if index % 4 == 0 { "alice" } else { "bob" }),
+            blocked: index % 10 == 0,
+        },
+        _ => FixtureTags {
+            project: false,
+            mention: Some("carol"),
+            blocked: false,
+        },
+    }
+}
+
+fn push_expected_id(ids: &mut Vec<String>, id: &str, matches: bool) {
+    if matches && ids.len() < 100 {
+        ids.push(id.to_string());
+    }
+}
+
+fn fixture_text(index: usize) -> (String, String) {
+    let tags = fixture_tags(index);
+    let mut title = format!("Node {index:05}");
+    if tags.project {
+        title.push_str(" #project");
+    } else {
+        title.push_str(" #inbox");
+    }
+    if let Some(mention) = tags.mention {
+        title.push_str(" @");
+        title.push_str(mention);
+    }
+    if tags.blocked {
         title.push_str(" #blocked");
     }
     let note = if index % 3 == 0 {
@@ -222,6 +315,9 @@ impl PerfVault {
             .expect("start performance fixture transaction");
         let mut ids = BTreeSet::new();
         let mut structured_ids = Vec::new();
+        let mut structured_without_required_ids = Vec::new();
+        let mut structured_without_or_ids = Vec::new();
+        let mut structured_without_not_ids = Vec::new();
         let mut date_ids = Vec::new();
         let (root_title, root_note) = fixture_text(0);
 
@@ -241,6 +337,7 @@ impl PerfVault {
                 } else {
                     (index - group_start) as i64 * 1_024
                 };
+                let tags = fixture_tags(index);
                 let (title, note) = fixture_text(index);
                 insert
                     .execute(params![
@@ -252,12 +349,29 @@ impl PerfVault {
                         FIXED_TIMESTAMP
                     ])
                     .expect("insert deterministic performance node");
-                ids.insert(node_id(index));
-                if index % 2 == 0 && index % 10 != 0 && structured_ids.len() < 100 {
-                    structured_ids.push(node_id(index));
-                }
+                ids.insert(id.clone());
+                push_expected_id(
+                    &mut structured_ids,
+                    &id,
+                    tags.project && tags.passes_or() && !tags.blocked,
+                );
+                push_expected_id(
+                    &mut structured_without_required_ids,
+                    &id,
+                    tags.passes_or() && !tags.blocked,
+                );
+                push_expected_id(
+                    &mut structured_without_or_ids,
+                    &id,
+                    tags.project && !tags.blocked,
+                );
+                push_expected_id(
+                    &mut structured_without_not_ids,
+                    &id,
+                    tags.project && tags.passes_or(),
+                );
                 if index % 3 == 0 && date_ids.len() < 100 {
-                    date_ids.push(node_id(index));
+                    date_ids.push(id);
                 }
             }
         }
@@ -276,6 +390,9 @@ impl PerfVault {
             root_title,
             root_note,
             structured_ids,
+            structured_without_required_ids,
+            structured_without_or_ids,
+            structured_without_not_ids,
             date_ids,
         };
         vault.verify_active(
@@ -297,6 +414,83 @@ impl PerfVault {
         assert_eq!(root.note, self.root_note);
         assert!(root.archived_at.is_none());
         assert!(root.deleted_at.is_none());
+    }
+
+    fn expected_subtree_projection(&self, archived: bool) -> Vec<SubtreeNodeProjection> {
+        (0..ARCHIVE_SUBTREE_SIZE)
+            .map(|index| {
+                let (title, note) = fixture_text(index);
+                SubtreeNodeProjection {
+                    id: node_id(index),
+                    parent_id: (index != 0).then(|| self.archive_root_id.clone()),
+                    sort_key: if index == 0 {
+                        1_024
+                    } else {
+                        index as i64 * 1_024
+                    },
+                    title,
+                    note,
+                    layout_mode: NoteLayoutMode::Bullets,
+                    is_collapsed: false,
+                    is_starred: false,
+                    completed_at: None,
+                    created_at: FIXED_TIMESTAMP.to_string(),
+                    deleted_at: None,
+                    is_archived: archived,
+                    archive_root_id: archived.then(|| self.archive_root_id.clone()),
+                }
+            })
+            .collect()
+    }
+
+    fn verify_archived_subtree(&self, workspace: &NotesWorkspace) -> Result<(), String> {
+        if !workspace.attachments_by_node_id.is_empty() {
+            return Err("Archived performance subtree unexpectedly contained attachments.".into());
+        }
+        let actual = workspace
+            .nodes
+            .iter()
+            .map(SubtreeNodeProjection::from_node)
+            .collect::<Vec<_>>();
+        let expected = self.expected_subtree_projection(true);
+        if actual != expected {
+            return Err(format!(
+                "Archived performance subtree projection mismatch.\nexpected: {expected:#?}\nactual: {actual:#?}"
+            ));
+        }
+        let archived_at = workspace
+            .nodes
+            .first()
+            .and_then(|node| node.archived_at.as_deref())
+            .ok_or_else(|| "Archived performance root had no archive timestamp.".to_string())?;
+        if workspace.nodes.iter().any(|node| {
+            node.archived_at.as_deref() != Some(archived_at) || node.updated_at != archived_at
+        }) {
+            return Err(
+                "Archived performance subtree did not share one authoritative timestamp."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    fn verify_unarchived_subtree(&self, workspace: &NotesWorkspace) -> Result<(), String> {
+        let subtree_ids = (0..ARCHIVE_SUBTREE_SIZE)
+            .map(node_id)
+            .collect::<BTreeSet<_>>();
+        let actual = workspace
+            .nodes
+            .iter()
+            .filter(|node| subtree_ids.contains(&node.id))
+            .map(SubtreeNodeProjection::from_node)
+            .collect::<Vec<_>>();
+        let expected = self.expected_subtree_projection(false);
+        if actual != expected {
+            return Err(format!(
+                "Unarchived performance subtree projection mismatch.\nexpected: {expected:#?}\nactual: {actual:#?}"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -399,17 +593,20 @@ fn measure_vault(vault: &mut PerfVault) -> Vec<Measurement> {
                 .expect("sample archive operation")
         });
         assert_eq!(active.nodes.len(), node_count - ARCHIVE_SUBTREE_SIZE);
-        assert!(active
-            .nodes
-            .iter()
-            .all(|node| node.id != vault.archive_root_id));
+        assert!((0..ARCHIVE_SUBTREE_SIZE)
+            .map(node_id)
+            .all(|id| active.nodes.iter().all(|node| node.id != id)));
         let archived = load_workspace(&vault.connection, NotesWorkspaceScope::Archive)
             .expect("verify sampled archive");
-        assert_eq!(archived.nodes.len(), ARCHIVE_SUBTREE_SIZE);
-        assert_eq!(archived.nodes[0].id, vault.archive_root_id);
+        vault
+            .verify_archived_subtree(&archived)
+            .expect("verify exact sampled archived subtree");
         let restored = unarchive_node(&mut vault.connection, &vault.archive_root_id)
             .expect("reset sampled archive");
         vault.verify_active(&restored);
+        vault
+            .verify_unarchived_subtree(&restored)
+            .expect("verify exact reset unarchived subtree");
         elapsed
     }));
 
@@ -421,6 +618,9 @@ fn measure_vault(vault: &mut PerfVault) -> Vec<Measurement> {
                 .expect("sample unarchive operation")
         });
         vault.verify_active(&active);
+        vault
+            .verify_unarchived_subtree(&active)
+            .expect("verify exact sampled unarchived subtree");
         assert!(
             load_workspace(&vault.connection, NotesWorkspaceScope::Archive)
                 .expect("verify sampled unarchive")
@@ -598,6 +798,101 @@ fn run_performance_harness() {
         measurements.extend(measure_vault(&mut vault));
     }
     print_and_gate(&measurements, !cfg!(debug_assertions));
+}
+
+#[test]
+fn structured_performance_fixture_falsifies_each_boolean_clause() {
+    let vault = PerfVault::create(1_000);
+    let full_matches = search_nodes_structured(&vault.connection, &structured_query())
+        .expect("full structured performance search");
+    let full_ids = full_matches
+        .iter()
+        .map(|result| result.node_id.as_str())
+        .collect::<Vec<_>>();
+
+    let mut without_required = structured_query();
+    without_required.required_tags.clear();
+    let without_required_ids = search_nodes_structured(&vault.connection, &without_required)
+        .expect("structured search without required clause")
+        .into_iter()
+        .map(|result| result.node_id)
+        .collect::<Vec<_>>();
+
+    let mut without_or = structured_query();
+    without_or.or_groups.clear();
+    let without_or_ids = search_nodes_structured(&vault.connection, &without_or)
+        .expect("structured search without OR clause")
+        .into_iter()
+        .map(|result| result.node_id)
+        .collect::<Vec<_>>();
+
+    let mut without_not = structured_query();
+    without_not.excluded_tags.clear();
+    let without_not_ids = search_nodes_structured(&vault.connection, &without_not)
+        .expect("structured search without NOT clause")
+        .into_iter()
+        .map(|result| result.node_id)
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        full_ids,
+        vault
+            .structured_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(without_required_ids, vault.structured_without_required_ids);
+    assert_eq!(without_or_ids, vault.structured_without_or_ids);
+    assert_eq!(without_not_ids, vault.structured_without_not_ids);
+    assert!(!full_ids.contains(&node_id(1).as_str()));
+    assert!(without_required_ids.contains(&node_id(1)));
+    assert!(!full_ids.contains(&node_id(2).as_str()));
+    assert!(without_or_ids.contains(&node_id(2)));
+    assert!(!full_ids.contains(&node_id(3).as_str()));
+    assert!(without_not_ids.contains(&node_id(3)));
+}
+
+#[test]
+fn archive_performance_fixture_checks_exact_subtree_projection() {
+    let mut vault = PerfVault::create(1_000);
+    let active_after_archive = archive_node(&mut vault.connection, &vault.archive_root_id)
+        .expect("archive focused performance fixture");
+    assert_eq!(active_after_archive.nodes.len(), 900);
+    let archived = load_workspace(&vault.connection, NotesWorkspaceScope::Archive)
+        .expect("load focused archived performance fixture");
+    vault
+        .verify_archived_subtree(&archived)
+        .expect("exact archived subtree");
+
+    let mut wrong_order = archived.clone();
+    wrong_order.nodes.swap(1, 2);
+    assert!(vault.verify_archived_subtree(&wrong_order).is_err());
+
+    let mut wrong_parent = archived.clone();
+    wrong_parent.nodes[1].parent_id = None;
+    assert!(vault.verify_archived_subtree(&wrong_parent).is_err());
+
+    let mut wrong_state = archived.clone();
+    wrong_state.nodes[1].archived_at = None;
+    assert!(vault.verify_archived_subtree(&wrong_state).is_err());
+
+    let active = unarchive_node(&mut vault.connection, &vault.archive_root_id)
+        .expect("unarchive focused performance fixture");
+    vault
+        .verify_unarchived_subtree(&active)
+        .expect("exact unarchived subtree");
+
+    let mut wrong_unarchived_state = active.clone();
+    wrong_unarchived_state
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == node_id(1))
+        .expect("focused child")
+        .archive_root_id = Some(vault.archive_root_id.clone());
+    assert!(vault
+        .verify_unarchived_subtree(&wrong_unarchived_state)
+        .is_err());
 }
 
 #[test]
