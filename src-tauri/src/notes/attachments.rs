@@ -243,10 +243,10 @@ fn inspect_gif(bytes: &[u8], limits: ValidationLimits) -> Result<ContainerInspec
                     || height == 0
                     || left
                         .checked_add(width)
-                        .is_none_or(|right| right > canvas_width)
+                        .map_or(true, |right| right > canvas_width)
                     || top
                         .checked_add(height)
-                        .is_none_or(|bottom| bottom > canvas_height)
+                        .map_or(true, |bottom| bottom > canvas_height)
                 {
                     return Err(
                         "Could not decode the Notes attachment GIF frame bounds.".to_string()
@@ -434,10 +434,10 @@ fn inspect_webp(bytes: &[u8], limits: ValidationLimits) -> Result<ContainerInspe
                 let height = webp_u24(&payload[9..12]) + 1;
                 if left
                     .checked_add(width)
-                    .is_none_or(|right| right > canvas_width)
+                    .map_or(true, |right| right > canvas_width)
                     || top
                         .checked_add(height)
-                        .is_none_or(|bottom| bottom > canvas_height)
+                        .map_or(true, |bottom| bottom > canvas_height)
                 {
                     return Err(
                         "Could not decode the Notes attachment WebP frame bounds.".to_string()
