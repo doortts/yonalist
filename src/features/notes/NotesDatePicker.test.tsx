@@ -369,6 +369,96 @@ describe("NotesDatePicker", () => {
     expect(within(picker).getByText("December 9999")).toBeVisible();
   });
 
+  it("disables unavailable upper-bound quick choices and skips keyboard activation", async () => {
+    const onCommit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NotesDatePicker
+        {...pickerProps({
+          today: { year: 9999, month: 12, day: 31 },
+          onCommit
+        })}
+      />
+    );
+    const picker = getPicker();
+    const input = within(picker).getByRole("textbox", { name: "Date" });
+    const todayChoice = within(picker).getByRole("button", { name: "Today" });
+    const tomorrowChoice = within(picker).getByRole("button", {
+      name: "Tomorrow"
+    });
+    const nextWeekChoice = within(picker).getByRole("button", {
+      name: "Next week"
+    });
+
+    expect(todayChoice).toBeEnabled();
+    expect(tomorrowChoice).toBeDisabled();
+    expect(nextWeekChoice).toBeDisabled();
+
+    fireEvent.click(tomorrowChoice);
+    fireEvent.keyDown(tomorrowChoice, { key: "Enter" });
+    fireEvent.click(nextWeekChoice);
+    fireEvent.keyDown(nextWeekChoice, { key: " " });
+    expect(input).toHaveValue("");
+    expect(onCommit).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.tab();
+    expect(todayChoice).toHaveFocus();
+    await user.tab();
+    expect(
+      within(picker).getByRole("button", { name: "Previous month" })
+    ).toHaveFocus();
+    expect(onCommit).not.toHaveBeenCalled();
+  });
+
+  it("keeps valid lower-bound quick choices enabled and commits Today", async () => {
+    const onCommit = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NotesDatePicker
+        {...pickerProps({
+          today: { year: 1, month: 1, day: 1 },
+          onCommit
+        })}
+      />
+    );
+    const picker = getPicker();
+    const input = within(picker).getByRole("textbox", { name: "Date" });
+    const todayChoice = within(picker).getByRole("button", { name: "Today" });
+    const tomorrowChoice = within(picker).getByRole("button", {
+      name: "Tomorrow"
+    });
+    const nextWeekChoice = within(picker).getByRole("button", {
+      name: "Next week"
+    });
+
+    expect(todayChoice).toBeEnabled();
+    expect(tomorrowChoice).toBeEnabled();
+    expect(nextWeekChoice).toBeEnabled();
+
+    await user.click(tomorrowChoice);
+    expect(input).toHaveValue("01/02/0001");
+    await user.click(nextWeekChoice);
+    expect(input).toHaveValue("01/07/0001 - 01/13/0001");
+    await user.click(todayChoice);
+    expect(input).toHaveValue("01/01/0001");
+    await user.keyboard("{Enter}");
+
+    expect(onCommit).toHaveBeenCalledOnce();
+    expect(onCommit).toHaveBeenCalledWith({
+      replacement: {
+        startUtf16: 7,
+        endUtf16: 9,
+        text: "01/01/0001"
+      },
+      value: {
+        start: { year: 1, month: 1, day: 1 },
+        end: null,
+        format: "MM/DD/YYYY"
+      }
+    });
+  });
+
   it("orders range endpoints selected in reverse and commits one replacement", async () => {
     const onCommit = vi.fn();
     const user = userEvent.setup();

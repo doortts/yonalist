@@ -159,6 +159,9 @@ const pickerStyles = `
     font-weight: 600;
     white-space: nowrap;
   }
+  .notes-date-picker-quick button:disabled {
+    opacity: 0.42;
+  }
   .notes-date-picker button:hover {
     background: var(--bg-hover);
     color: var(--text-1);
@@ -391,6 +394,38 @@ function accessibleDateName(date: LocalDate): string {
   } ${date.day}, ${date.year}`;
 }
 
+interface QuickDateValue {
+  readonly start: LocalDate;
+  readonly end: LocalDate | null;
+}
+
+function resolveQuickDateValues(
+  today: LocalDate,
+  weekStartsOn: WeekStartsOn
+): {
+  readonly today: QuickDateValue;
+  readonly tomorrow: QuickDateValue | null;
+  readonly nextWeek: QuickDateValue | null;
+} {
+  const tomorrow = tryAddLocalDateDays(today, 1);
+  const weekdayOffset =
+    weekStartsOn === "sunday"
+      ? weekdayIndex(today)
+      : (weekdayIndex(today) + 6) % 7;
+  const nextWeekStart = tryAddLocalDateDays(today, 7 - weekdayOffset);
+  const nextWeekEnd =
+    nextWeekStart === null ? null : tryAddLocalDateDays(nextWeekStart, 6);
+  return {
+    today: { start: today, end: null },
+    tomorrow:
+      tomorrow === null ? null : { start: tomorrow, end: null },
+    nextWeek:
+      nextWeekStart === null || nextWeekEnd === null
+        ? null
+        : { start: nextWeekStart, end: nextWeekEnd }
+  };
+}
+
 function contextIdentity(
   context: NotesDatePickerContext,
   today: LocalDate,
@@ -500,6 +535,10 @@ function NotesDatePickerSession({
   );
   const previousMonth = tryAddLocalDateMonths(displayMonth, -1);
   const nextMonth = tryAddLocalDateMonths(displayMonth, 1);
+  const quickDateValues = useMemo(
+    () => resolveQuickDateValues(today, weekStartsOn),
+    [today, weekStartsOn]
+  );
   const weekdayHeaders =
     weekStartsOn === "sunday"
       ? sundayFirstWeekdays
@@ -555,12 +594,11 @@ function NotesDatePickerSession({
     updateFromParsedInput(event.currentTarget.value);
   };
 
-  const chooseQuickDate = (phrase: "today" | "tomorrow" | "next week") => {
-    const parsed = parseNoteDateExpression(phrase, { today, weekStartsOn });
-    if (parsed === null) {
+  const chooseQuickDate = (quickDate: QuickDateValue | null) => {
+    if (quickDate === null) {
       return;
     }
-    const next = { start: parsed.start, end: parsed.end, format: value.format };
+    const next = { ...quickDate, format: value.format };
     setValue(next);
     setInputValue(formatValue(next));
     setInputValid(true);
@@ -767,13 +805,24 @@ function NotesDatePickerSession({
         />
 
         <div className="notes-date-picker-quick" aria-label="Quick dates">
-          <button type="button" onClick={() => chooseQuickDate("today")}>
+          <button
+            type="button"
+            onClick={() => chooseQuickDate(quickDateValues.today)}
+          >
             Today
           </button>
-          <button type="button" onClick={() => chooseQuickDate("tomorrow")}>
+          <button
+            type="button"
+            disabled={quickDateValues.tomorrow === null}
+            onClick={() => chooseQuickDate(quickDateValues.tomorrow)}
+          >
             Tomorrow
           </button>
-          <button type="button" onClick={() => chooseQuickDate("next week")}>
+          <button
+            type="button"
+            disabled={quickDateValues.nextWeek === null}
+            onClick={() => chooseQuickDate(quickDateValues.nextWeek)}
+          >
             Next week
           </button>
         </div>
