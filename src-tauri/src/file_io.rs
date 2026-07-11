@@ -37,7 +37,22 @@ fn create_temp_file(parent: &Path) -> Result<NamedTempFile, String> {
     temp_file.map_err(|error| error.to_string())
 }
 
-pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    fs::File::open(parent)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn write_atomic_file_with_parent_sync(
+    path: &Path,
+    bytes: &[u8],
+    overwrite: bool,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     ensure_parent(path)?;
     path.file_name()
         .ok_or_else(|| "File path must name a file.".to_string())?;
@@ -62,12 +77,19 @@ pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> R
     };
 
     match result {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            let _ = sync_parent(parent);
+            Ok(())
+        }
         Err(error) if !overwrite && error.error.kind() == std::io::ErrorKind::AlreadyExists => {
             Err("Destination already exists.".to_string())
         }
         Err(error) => Err(error.error.to_string()),
     }
+}
+
+pub(crate) fn write_atomic_file(path: &Path, bytes: &[u8], overwrite: bool) -> Result<(), String> {
+    write_atomic_file_with_parent_sync(path, bytes, overwrite, sync_parent_directory)
 }
 
 /// Preserves the vault writer's existing overwrite behavior while sharing the
@@ -78,7 +100,10 @@ pub(crate) fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), S
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_destination_is_available, write_atomic_file};
+    use super::{
+        ensure_destination_is_available, write_atomic_file, write_atomic_file_with_parent_sync,
+    };
+    use std::cell::Cell;
     use std::fs;
 
     #[test]
@@ -91,6 +116,45 @@ mod tests {
 
         assert_eq!(fs::read(&destination).expect("read destination"), bytes);
         assert!(!destination.with_file_name("export.bin.tmp").exists());
+    }
+
+    #[test]
+    fn notes_export_atomic_file_syncs_parent_after_successful_persist() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("export.pdf");
+        let sync_calls = Cell::new(0);
+
+        write_atomic_file_with_parent_sync(&destination, b"%PDF-export", false, |parent| {
+            sync_calls.set(sync_calls.get() + 1);
+            assert_eq!(parent, temp_dir.path());
+            assert_eq!(
+                fs::read(&destination).expect("published before sync"),
+                b"%PDF-export"
+            );
+            Ok(())
+        })
+        .expect("write and sync");
+
+        assert_eq!(sync_calls.get(), 1);
+    }
+
+    #[test]
+    fn notes_export_atomic_file_keeps_success_after_hard_parent_sync_failure() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("export.md");
+        let sync_calls = Cell::new(0);
+
+        write_atomic_file_with_parent_sync(&destination, b"markdown", false, |_| {
+            sync_calls.set(sync_calls.get() + 1);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected hard parent sync failure",
+            ))
+        })
+        .expect("committed file remains successful");
+
+        assert_eq!(sync_calls.get(), 1);
+        assert_eq!(fs::read(&destination).expect("committed file"), b"markdown");
     }
 
     #[test]

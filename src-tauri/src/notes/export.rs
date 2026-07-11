@@ -597,6 +597,50 @@ fn remove_path_nofollow(path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    target_os = "redox"
+))]
+fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), String> {
+    match rustix::fs::renameat_with(
+        rustix::fs::CWD,
+        staged,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::RenameFlags::NOREPLACE,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error == rustix::io::Errno::EXIST => {
+            Err("Destination already exists.".to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), String> {
+    match fs::rename(staged, destination) {
+        Ok(()) => Ok(()),
+        Err(error) if fs::symlink_metadata(destination).is_ok() => {
+            Err("Destination already exists.".to_string())
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "linux",
+    target_os = "android",
+    target_os = "redox",
+    windows
+)))]
+fn publish_directory_noreplace(_staged: &Path, _destination: &Path) -> Result<(), String> {
+    Err("Atomic no-replace Notes asset publication is unsupported on this platform.".to_string())
+}
+
 fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), String> {
     match result {
         Ok(()) => Ok(()),
@@ -620,6 +664,8 @@ thread_local! {
     static INJECT_MARKDOWN_PUBLISH_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static INJECT_MARKDOWN_COMMIT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_ASSET_DESTINATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
     static INJECT_EXPORT_PARENT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -638,6 +684,22 @@ fn inject_markdown_commit_race_once(action: impl FnOnce() + 'static) {
 fn maybe_inject_markdown_commit_race() {
     #[cfg(test)]
     INJECT_MARKDOWN_COMMIT_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_asset_destination_swap_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_ASSET_DESTINATION_SWAP.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_asset_destination_swap() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_ASSET_DESTINATION_SWAP.with(|injected| {
         if let Some(action) = injected.borrow_mut().take() {
             action();
         }
@@ -715,22 +777,11 @@ pub(crate) fn publish_markdown_export(
     maybe_inject_markdown_commit_race();
 
     if !overwrite {
-        match fs::create_dir(asset_destination) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err("Destination already exists.".to_string())
-            }
-            Err(error) => return Err(error.to_string()),
-        }
+        maybe_inject_markdown_asset_destination_swap();
+        let mut published_assets = false;
         let publish_result = (|| {
-            for asset in &prepared.assets {
-                fs::rename(
-                    staged_assets.join(&asset.file_name),
-                    asset_destination.join(&asset.file_name),
-                )
-                .map_err(|error| error.to_string())?;
-            }
-            sync_export_directory(asset_destination)?;
+            publish_directory_noreplace(&staged_assets, asset_destination)?;
+            published_assets = true;
             maybe_fail_markdown_publish()?;
             match fs::hard_link(&staged_document, destination) {
                 Ok(()) => Ok(()),
@@ -741,12 +792,15 @@ pub(crate) fn publish_markdown_export(
             }
         })();
         if let Err(error) = publish_result {
-            return match remove_path_nofollow(asset_destination) {
-                Ok(()) => Err(error),
-                Err(rollback_error) => Err(format!(
-                    "{error} Notes export rollback also failed: {rollback_error}"
-                )),
-            };
+            if published_assets {
+                return match remove_path_nofollow(asset_destination) {
+                    Ok(()) => Err(error),
+                    Err(rollback_error) => Err(format!(
+                        "{error} Notes export rollback also failed: {rollback_error}"
+                    )),
+                };
+            }
+            return Err(error);
         }
         let _ = sync_export_parent(parent);
         return Ok(());
@@ -1429,10 +1483,11 @@ mod tests {
         build_pdf_pages, classify_export_directory_sync, format_date_matches_for_pdf_display,
         format_date_matches_for_pdf_display_with_work, hydrate_export_attachments,
         hydrate_export_attachments_with_budget, inject_export_parent_sync_failure_once,
-        inject_markdown_commit_race_once, load_export_snapshot, prepare_markdown_export,
-        publish_markdown_export, render_markdown, render_pdf, sync_export_directory,
-        validate_pdf_attachment_working_budget, validate_serialized_pdf, ExportAttachmentBudget,
-        PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
+        inject_markdown_asset_destination_swap_once, inject_markdown_commit_race_once,
+        load_export_snapshot, prepare_markdown_export, publish_markdown_export, render_markdown,
+        render_pdf, sync_export_directory, validate_pdf_attachment_working_budget,
+        validate_serialized_pdf, ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM,
+        PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
@@ -2351,6 +2406,51 @@ mod tests {
         assert!(
             !destination.exists(),
             "staged document must not be published"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_export_no_overwrite_asset_swap_never_writes_through_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("swap.md");
+        let assets = temp_dir.path().join("swap_assets");
+        let outside = temp_dir.path().join("outside");
+        std::fs::create_dir(&outside).expect("outside directory");
+        std::fs::write(outside.join("sentinel.txt"), b"outside").expect("outside sentinel");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "swap_assets").expect("prepare");
+        let raced_assets = assets.clone();
+        let raced_outside = outside.clone();
+        inject_markdown_asset_destination_swap_once(move || {
+            match std::fs::remove_dir(&raced_assets) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("remove empty reservation: {error}"),
+            }
+            symlink(&raced_outside, &raced_assets).expect("swap reservation for symlink");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("symlink swap must conflict");
+
+        assert_eq!(error, "Destination already exists.");
+        assert!(std::fs::symlink_metadata(&assets)
+            .expect("racer symlink remains")
+            .file_type()
+            .is_symlink());
+        assert!(!destination.exists());
+        assert!(!outside.join("0001.png").exists());
+        assert_eq!(
+            std::fs::read(outside.join("sentinel.txt")).expect("sentinel survives"),
+            b"outside"
         );
     }
 
