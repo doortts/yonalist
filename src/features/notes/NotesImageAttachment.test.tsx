@@ -133,6 +133,27 @@ afterEach(() => {
 });
 
 describe("NotesImageAttachment", () => {
+  it("renders a read-only image without resize or remove controls", async () => {
+    const onDisplayWidthCommit = vi.fn();
+    const onRemove = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({ onDisplayWidthCommit, onRemove })}
+        readOnly
+      />
+    );
+
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toBeVisible();
+    expect(
+      screen.queryByRole("separator", { name: "Resize diagram.png" })
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Remove diagram.png" })
+    ).toBeNull();
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+    expect(onRemove).not.toHaveBeenCalled();
+  });
+
   it("caps the persisted width at content and intrinsic bounds while preserving its exact ratio", async () => {
     const view = render(
       <NotesImageAttachment

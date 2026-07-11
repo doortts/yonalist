@@ -1,10 +1,16 @@
-import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
+import type {
+  NoteAttachmentsByNodeId,
+  NoteId,
+  NoteNode,
+  NotesWorkspace
+} from "../../domain/notes";
 import type { NotesHistoryFocusField } from "./notesHistory";
 
 export interface NormalizedNotesWorkspace {
   nodesById: Record<NoteId, NoteNode>;
   childIdsByParent: Record<string, NoteId[]>;
   rootIds: NoteId[];
+  attachmentsByNodeId: NoteAttachmentsByNodeId;
   selectedId: NoteId | null;
   zoomRootId: NoteId | null;
   editingNoteId: NoteId | null;
@@ -107,6 +113,7 @@ function settledUiState(
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
   const nodesById = Object.create(null) as Record<NoteId, NoteNode>;
   const childIdsByParent = Object.create(null) as Record<string, NoteId[]>;
+  const attachmentsByNodeId = Object.create(null) as NoteAttachmentsByNodeId;
   const rootIds: NoteId[] = [];
 
   for (const node of workspace.nodes) {
@@ -121,10 +128,17 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
     (childIdsByParent[node.parentId] ??= []).push(node.id);
   }
 
+  for (const [nodeId, attachments] of Object.entries(
+    workspace.attachmentsByNodeId ?? {}
+  )) {
+    attachmentsByNodeId[nodeId] = [...attachments];
+  }
+
   return {
     nodesById,
     childIdsByParent,
     rootIds,
+    attachmentsByNodeId,
     selectedId: null,
     zoomRootId: null,
     editingNoteId: null,

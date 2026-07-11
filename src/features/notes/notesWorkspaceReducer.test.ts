@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { NoteNode, NotesWorkspace } from "../../domain/notes";
+import type {
+  NoteAttachment,
+  NoteNode,
+  NotesWorkspace
+} from "../../domain/notes";
 import {
   normalizeWorkspace,
   notesWorkspaceReducer
@@ -28,7 +32,54 @@ function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
 }
 
+function attachment(
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+): NoteAttachment {
+  return {
+    sortKey: 1024,
+    relativePath: `assets/${overrides.id}.png`,
+    contentHash: overrides.id,
+    originalName: `${overrides.id}.png`,
+    mimeType: "image/png",
+    byteSize: 4,
+    intrinsicWidth: 640,
+    intrinsicHeight: 320,
+    displayWidth: 320,
+    createdAt: "2026-07-12T00:00:00Z",
+    updatedAt: "2026-07-12T00:00:00Z",
+    ...overrides
+  };
+}
+
 describe("notesWorkspaceReducer", () => {
+  it("preserves ordered attachment rows and normalizes legacy workspaces to an empty map", () => {
+    const root = node({ id: "root" });
+    const first = attachment({ id: "first", nodeId: root.id, sortKey: 100 });
+    const second = attachment({ id: "second", nodeId: root.id, sortKey: 200 });
+
+    const loaded = normalizeWorkspace({
+      nodes: [root],
+      attachmentsByNodeId: { [root.id]: [first, second] }
+    });
+    expect(loaded.attachmentsByNodeId[root.id]).toEqual([first, second]);
+
+    const legacy = normalizeWorkspace({ nodes: [root] });
+    expect(legacy.attachmentsByNodeId).toEqual({});
+
+    const settled = notesWorkspaceReducer(legacy, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: {
+          nodes: [root],
+          attachmentsByNodeId: { [root.id]: [second, first] }
+        }
+      },
+      hasPendingWork: false
+    });
+    expect(settled.attachmentsByNodeId[root.id]).toEqual([second, first]);
+  });
+
   it("normalizes every record with deterministic root and child ordering", () => {
     const state = normalizeWorkspace(
       workspace([

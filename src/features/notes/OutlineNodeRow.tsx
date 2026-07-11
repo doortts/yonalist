@@ -5,15 +5,23 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
+  type DragEvent,
   type KeyboardEvent,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
-import { createNoteId, type NoteId } from "../../domain/notes";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import {
+  createNoteId,
+  type NoteAttachment,
+  type NoteId
+} from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
+import { NotesImageAttachment } from "./NotesImageAttachment";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
 import { NoteTextField } from "./NoteTextField";
@@ -41,6 +49,40 @@ function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
 }
 
+function OutlineNodeImage({
+  attachment,
+  onRequestRemove,
+  readOnly = false
+}: {
+  attachment: NoteAttachment;
+  onRequestRemove?: () => void;
+  readOnly?: boolean;
+}) {
+  const { actions } = useNotesWorkspaceContext();
+  const loadBytes = useCallback(() => {
+    if (!actions.loadAttachmentBytes) {
+      return Promise.reject(new Error("Image loading is unavailable."));
+    }
+    return actions.loadAttachmentBytes(attachment.id);
+  }, [actions, attachment.id]);
+  const commitWidth = useCallback(
+    (displayWidth: number) => {
+      void actions.resizeImage?.(attachment.id, displayWidth);
+    },
+    [actions, attachment.id]
+  );
+
+  return (
+    <NotesImageAttachment
+      attachment={attachment}
+      loadBytes={loadBytes}
+      onDisplayWidthCommit={commitWidth}
+      onRemove={onRequestRemove}
+      readOnly={readOnly}
+    />
+  );
+}
+
 export function OutlineNodeRow({
   nodeId,
   depth,
@@ -55,6 +97,7 @@ export function OutlineNodeRow({
   const {
     actions,
     activeTagFilters,
+    attachmentUploadErrorsByNodeId,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -83,9 +126,14 @@ export function OutlineNodeRow({
   const [noteOpen, setNoteOpen] = useState(() =>
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
+  const [pendingImageRemoval, setPendingImageRemoval] =
+    useState<NoteAttachment | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  const titleCaretRef = useRef<number | null>(null);
+  const titleSelectionRef = useRef<{
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const structuralCommandInFlightRef = useRef(false);
@@ -95,6 +143,8 @@ export function OutlineNodeRow({
   } | null>(null);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
+  const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
+  const attachmentUploadError = attachmentUploadErrorsByNodeId?.[nodeId];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
@@ -208,6 +258,20 @@ export function OutlineNodeRow({
           </div>
           <span className="notes-node-readonly-title">{label}</span>
         </div>
+        {node.note.trim() && (
+          <p className="notes-node-readonly-note">{node.note}</p>
+        )}
+        {attachments.length > 0 && (
+          <div className="notes-node-attachments notes-node-attachments-readonly">
+            {attachments.map((attachment) => (
+              <OutlineNodeImage
+                attachment={attachment}
+                key={attachment.id}
+                readOnly
+              />
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -394,6 +458,23 @@ export function OutlineNodeRow({
     }
   };
 
+  const handleImageDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleImageDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void actions.importDroppedImages?.(
+      nodeId,
+      Array.from(event.dataTransfer.files)
+    );
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -404,6 +485,8 @@ export function OutlineNodeRow({
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
       style={rowStyle}
+      onDragOver={handleImageDragOver}
+      onDrop={handleImageDrop}
     >
       {guides}
       <div className="notes-node-main">
@@ -424,9 +507,14 @@ export function OutlineNodeRow({
             }
             onOpenNote={openAndFocusNote}
             onAddDate={() => {
-              datePicker.openTitleDate(titleCaretRef.current ?? undefined);
-              titleCaretRef.current = null;
+              datePicker.openTitleDate(titleSelectionRef.current ?? undefined);
+              titleSelectionRef.current = null;
             }}
+            onUploadImage={
+              actions.uploadImage
+                ? () => void actions.uploadImage?.(nodeId)
+                : undefined
+            }
             onRemoveNote={removeNote}
             onDuplicate={() =>
               runStructuralCommand(() => actions.duplicateNode(nodeId))
@@ -492,11 +580,17 @@ export function OutlineNodeRow({
           wrap="soft"
           disabled={disabled}
           today={datePicker.today}
-          onDateClick={(token, anchor) =>
-            datePicker.openExistingDate("title", token, anchor)
+          onDateClick={
+            disabled
+              ? undefined
+              : (token, anchor) =>
+                  datePicker.openExistingDate("title", token, anchor)
           }
-          onDateTrigger={(range, anchor) =>
-            datePicker.openTypedDate("title", range, anchor)
+          onDateTrigger={
+            disabled
+              ? undefined
+              : (range, anchor) =>
+                  datePicker.openTypedDate("title", range, anchor)
           }
           onTagClick={(token) =>
             void actions.toggleTagFilter({
@@ -520,10 +614,16 @@ export function OutlineNodeRow({
           }}
           onKeyDown={handleTitleKeyDown}
           onSelect={(event) => {
-            titleCaretRef.current = event.currentTarget.selectionStart;
+            titleSelectionRef.current = {
+              startUtf16: event.currentTarget.selectionStart,
+              endUtf16: event.currentTarget.selectionEnd
+            };
           }}
           onBlur={(event) => {
-            titleCaretRef.current = event.currentTarget.selectionStart;
+            titleSelectionRef.current = {
+              startUtf16: event.currentTarget.selectionStart,
+              endUtf16: event.currentTarget.selectionEnd
+            };
             if (!datePicker.shouldSuppressBlur()) {
               commitDrafts();
             }
@@ -541,11 +641,17 @@ export function OutlineNodeRow({
           rows={2}
           disabled={disabled}
           today={datePicker.today}
-          onDateClick={(token, anchor) =>
-            datePicker.openExistingDate("note", token, anchor)
+          onDateClick={
+            disabled
+              ? undefined
+              : (token, anchor) =>
+                  datePicker.openExistingDate("note", token, anchor)
           }
-          onDateTrigger={(range, anchor) =>
-            datePicker.openTypedDate("note", range, anchor)
+          onDateTrigger={
+            disabled
+              ? undefined
+              : (range, anchor) =>
+                  datePicker.openTypedDate("note", range, anchor)
           }
           onTagClick={(token) =>
             void actions.toggleTagFilter({
@@ -589,6 +695,53 @@ export function OutlineNodeRow({
           }}
         />
       )}
+      {attachments.length > 0 && (
+        <div className="notes-node-attachments">
+          {attachments.map((attachment) => (
+            <OutlineNodeImage
+              attachment={attachment}
+              key={attachment.id}
+              onRequestRemove={() => setPendingImageRemoval(attachment)}
+            />
+          ))}
+        </div>
+      )}
+      {attachmentUploadError && (
+        <div
+          className="notes-node-attachment-error"
+          role="alert"
+          aria-label="Image upload failed"
+        >
+          <span>{attachmentUploadError}</span>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => void actions.retryImageUpload?.(nodeId)}
+          >
+            Retry image upload
+          </button>
+        </div>
+      )}
+      <ConfirmDialog
+        open={pendingImageRemoval !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingImageRemoval(null);
+        }}
+        title="Remove image?"
+        description={
+          pendingImageRemoval
+            ? `Remove ${pendingImageRemoval.originalName} from this note?`
+            : "Remove this image from the note?"
+        }
+        confirmLabel="Remove image"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => {
+          const attachmentId = pendingImageRemoval?.id;
+          setPendingImageRemoval(null);
+          if (attachmentId) void actions.removeImage?.(attachmentId);
+        }}
+      />
       {datePicker.picker}
     </div>
   );

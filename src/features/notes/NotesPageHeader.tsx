@@ -46,7 +46,10 @@ export function NotesPageHeader({
   const draft = draftsByNodeId[nodeId];
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
-  const titleCaretRef = useRef<number | null>(null);
+  const titleSelectionRef = useRef<{
+    startUtf16: number;
+    endUtf16: number;
+  } | null>(null);
   const focusNoteOnOpenRef = useRef(false);
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
@@ -232,9 +235,14 @@ export function NotesPageHeader({
               }
               onOpenNote={openAndFocusNote}
               onAddDate={() => {
-                datePicker.openTitleDate(titleCaretRef.current ?? undefined);
-                titleCaretRef.current = null;
+                datePicker.openTitleDate(titleSelectionRef.current ?? undefined);
+                titleSelectionRef.current = null;
               }}
+              onUploadImage={
+                actions.uploadImage
+                  ? () => void actions.uploadImage?.(nodeId)
+                  : undefined
+              }
               onRemoveNote={removeNote}
               onDuplicate={() =>
                 runCommand(() => actions.duplicateNode(nodeId))
@@ -296,7 +304,10 @@ export function NotesPageHeader({
               }
               onKeyDown={readOnly ? undefined : handleTitleKeyDown}
               onSelect={(event) => {
-                titleCaretRef.current = event.currentTarget.selectionStart;
+                titleSelectionRef.current = {
+                  startUtf16: event.currentTarget.selectionStart,
+                  endUtf16: event.currentTarget.selectionEnd
+                };
               }}
               onChange={(event) => {
                 resizeTextarea(event.currentTarget);
@@ -306,7 +317,10 @@ export function NotesPageHeader({
                 }, "title");
               }}
               onBlur={(event) => {
-                titleCaretRef.current = event.currentTarget.selectionStart;
+                titleSelectionRef.current = {
+                  startUtf16: event.currentTarget.selectionStart,
+                  endUtf16: event.currentTarget.selectionEnd
+                };
                 if (!datePicker.shouldSuppressBlur()) {
                   void actions.flushNodeDraft(nodeId);
                 }

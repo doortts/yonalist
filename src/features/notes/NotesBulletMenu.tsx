@@ -8,6 +8,7 @@ import {
   Download,
   FileDown,
   FileText,
+  ImageUp,
   MessageSquareOff,
   MessageSquareText,
   MoreHorizontal,
@@ -38,6 +39,7 @@ export interface NotesBulletMenuProps {
   onToggleStar?(): void;
   onOpenNote?(): void;
   onAddDate?(): void;
+  onUploadImage?(): void;
   onRemoveNote?(): void;
   onDuplicate?(): void;
   onExport?(format: NotesExportFormat): void;
@@ -94,6 +96,7 @@ export function NotesBulletMenu({
   onToggleStar,
   onOpenNote,
   onAddDate,
+  onUploadImage,
   onRemoveNote,
   onDuplicate,
   onExport,
@@ -243,6 +246,14 @@ export function NotesBulletMenu({
                 >
                   Add date
                 </CommandItem>
+                {onUploadImage && (
+                  <CommandItem
+                    icon={<ImageUp size={15} aria-hidden="true" />}
+                    onClick={onUploadImage}
+                  >
+                    Upload image
+                  </CommandItem>
+                )}
                 {hasNote && (
                   <CommandItem
                     danger

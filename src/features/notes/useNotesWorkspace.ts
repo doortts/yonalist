@@ -48,6 +48,12 @@ import {
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
 import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
+import {
+  isSupportedImageFile,
+  isSupportedImagePath,
+  nativeNotesAttachmentUi,
+  type NotesAttachmentUiBoundary
+} from "./notesAttachmentController";
 
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
@@ -97,6 +103,12 @@ export interface NotesWorkspaceActions {
   openSearchResult(nodeId: NoteId): Promise<void>;
   deleteAllNotesData(): Promise<void>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
+  uploadImage?(nodeId: NoteId): Promise<void>;
+  importDroppedImages?(nodeId: NoteId, files: readonly File[]): Promise<void>;
+  retryImageUpload?(nodeId: NoteId): Promise<void>;
+  loadAttachmentBytes?(attachmentId: string): Promise<Uint8Array>;
+  resizeImage?(attachmentId: string, displayWidth: number): Promise<void>;
+  removeImage?(attachmentId: string): Promise<void>;
   undo?(): Promise<void>;
   redo?(): Promise<void>;
 }
@@ -118,6 +130,7 @@ export interface NotesWorkspaceCompoundOptions {
 export interface UseNotesWorkspaceOptions {
   vaultRoot: string;
   repository: NotesStore;
+  attachmentUi?: NotesAttachmentUiBoundary;
 }
 
 export interface UseNotesWorkspaceResult {
@@ -130,6 +143,7 @@ export interface UseNotesWorkspaceResult {
   locallyExpandedNodeIds: ReadonlySet<NoteId>;
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
+  attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
   retryFailedDraft(nodeId: NoteId): Promise<void>;
   retryLastFailedWrite(): Promise<void>;
   status: NormalizedNotesWorkspace["status"];
@@ -1131,7 +1145,8 @@ function hasMoveDependencies(
 
 export function useNotesWorkspace({
   vaultRoot,
-  repository
+  repository,
+  attachmentUi = nativeNotesAttachmentUi
 }: UseNotesWorkspaceOptions): UseNotesWorkspaceResult {
   const [state, dispatch] = useReducer(
     notesWorkspaceReducer,
@@ -1159,6 +1174,9 @@ export function useNotesWorkspace({
   >(() => new Set());
   const [currentWriteError, setCurrentWriteError] =
     useState<NotesStoreError | null>(null);
+  const [attachmentUploadErrorsByNodeId, setAttachmentUploadErrorsByNodeId] =
+    useState<Readonly<Record<NoteId, string>>>({});
+  const attachmentRetryPathByNodeIdRef = useRef(new Map<NoteId, string>());
   const [deletingNotesData, setDeletingNotesData] = useState(false);
   const [historyStatus, setHistoryStatus] = useState({
     canUndo: false,
@@ -1357,6 +1375,8 @@ export function useNotesWorkspace({
     dispatch({ type: "startWorkspaceLoad" });
     setDraftsByNodeId({});
     setCurrentWriteError(null);
+    setAttachmentUploadErrorsByNodeId({});
+    attachmentRetryPathByNodeIdRef.current.clear();
     deletingNotesDataRef.current = false;
     deletionTokenRef.current = null;
     setDeletingNotesData(false);
@@ -4140,6 +4160,248 @@ export function useNotesWorkspace({
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
   }, []);
 
+  const setAttachmentUploadError = useCallback(
+    (nodeId: NoteId, error: string | null): void => {
+      setAttachmentUploadErrorsByNodeId((current) => {
+        if (error === null) {
+          if (current[nodeId] === undefined) return current;
+          const next = { ...current };
+          delete next[nodeId];
+          return next;
+        }
+        return current[nodeId] === error
+          ? current
+          : { ...current, [nodeId]: error };
+      });
+    },
+    []
+  );
+
+  const importImagePath = useCallback(
+    async (nodeId: NoteId, sourcePath: string): Promise<void> => {
+      if (!isSupportedImagePath(sourcePath)) {
+        attachmentRetryPathByNodeIdRef.current.delete(nodeId);
+        setAttachmentUploadError(
+          nodeId,
+          "Choose a PNG, JPEG, WebP, or GIF image."
+        );
+        return;
+      }
+      if (!repository.importAttachment) {
+        setAttachmentUploadError(nodeId, "Image upload is unavailable.");
+        return;
+      }
+
+      let attachmentId: string;
+      try {
+        attachmentId = createNoteId();
+      } catch (cause) {
+        setAttachmentUploadError(nodeId, errorMessage(cause));
+        return;
+      }
+
+      attachmentRetryPathByNodeIdRef.current.set(nodeId, sourcePath);
+      setAttachmentUploadError(nodeId, null);
+      return runStructuralCommand(
+        "attachment-import",
+        async (context, historyContext) => {
+          if (!confirmedState(context).nodesById[nodeId]) {
+            attachmentRetryPathByNodeIdRef.current.delete(nodeId);
+            return { kind: "skipped" };
+          }
+          try {
+            const mutation = unwrapNotesMutation(
+              await context.repository.importAttachment!(
+                context.vaultRoot,
+                { id: attachmentId, nodeId, sourcePath },
+                ...historyArguments(historyContext)
+              )
+            );
+            attachmentRetryPathByNodeIdRef.current.delete(nodeId);
+            setAttachmentUploadError(nodeId, null);
+            const projection = await projectNotesMutation(
+              context,
+              mutation,
+              activeScopeRef.current
+            );
+            rememberHistoryAfter(
+              appliedHistoryContext(historyContext, mutation),
+              projection.workspace
+            );
+            return directMutationResult(mutation, projection);
+          } catch (cause) {
+            const message = `Image upload failed: ${errorMessage(cause)}`;
+            setAttachmentUploadError(nodeId, message);
+            return { kind: "failure", error: message };
+          }
+        }
+      );
+    },
+    [
+      rememberHistoryAfter,
+      repository,
+      runStructuralCommand,
+      setAttachmentUploadError
+    ]
+  );
+
+  const uploadImage = useCallback(
+    async (nodeId: NoteId): Promise<void> => {
+      const invocationRecord = sessionRecordRef.current;
+      try {
+        const sourcePath = await attachmentUi.openImageFile();
+        if (
+          !invocationRecord ||
+          invocationRecord.closing ||
+          sessionRecordRef.current !== invocationRecord ||
+          invocationRecord.repository !== repository ||
+          invocationRecord.vaultRoot !== vaultRoot
+        ) {
+          return;
+        }
+        if (sourcePath === null) return;
+        await importImagePath(nodeId, sourcePath);
+      } catch (cause) {
+        if (
+          !invocationRecord ||
+          invocationRecord.closing ||
+          sessionRecordRef.current !== invocationRecord
+        ) {
+          return;
+        }
+        attachmentRetryPathByNodeIdRef.current.delete(nodeId);
+        setAttachmentUploadError(
+          nodeId,
+          `Image picker failed: ${errorMessage(cause)}`
+        );
+      }
+    },
+    [
+      attachmentUi,
+      importImagePath,
+      repository,
+      setAttachmentUploadError,
+      vaultRoot
+    ]
+  );
+
+  const retryImageUpload = useCallback(
+    async (nodeId: NoteId): Promise<void> => {
+      const sourcePath = attachmentRetryPathByNodeIdRef.current.get(nodeId);
+      if (sourcePath) {
+        await importImagePath(nodeId, sourcePath);
+        return;
+      }
+      await uploadImage(nodeId);
+    },
+    [importImagePath, uploadImage]
+  );
+
+  const importDroppedImages = useCallback(
+    async (nodeId: NoteId, files: readonly File[]): Promise<void> => {
+      if (files.length === 0) return;
+      if (files.length !== 1) {
+        setAttachmentUploadError(nodeId, "Drop one image at a time.");
+        return;
+      }
+      const file = files[0];
+      if (!isSupportedImageFile(file)) {
+        setAttachmentUploadError(
+          nodeId,
+          "Choose a PNG, JPEG, WebP, or GIF image."
+        );
+        return;
+      }
+      const sourcePath = attachmentUi.pathForDroppedFile(file);
+      if (!sourcePath) {
+        setAttachmentUploadError(nodeId, "Only local image files can be added.");
+        return;
+      }
+      await importImagePath(nodeId, sourcePath);
+    },
+    [attachmentUi, importImagePath, setAttachmentUploadError]
+  );
+
+  const loadAttachmentBytes = useCallback(
+    async (attachmentId: string): Promise<Uint8Array> => {
+      if (!repository.readAttachmentBytes) {
+        throw new Error("Image loading is unavailable.");
+      }
+      return repository.readAttachmentBytes(vaultRoot, attachmentId);
+    },
+    [repository, vaultRoot]
+  );
+
+  const resizeImage = useCallback(
+    async (attachmentId: string, displayWidth: number): Promise<void> =>
+      runStructuralCommand(
+        "attachment-resize",
+        async (context, historyContext) => {
+          const attachmentExists = Object.values(
+            confirmedState(context).attachmentsByNodeId
+          ).some((attachments) =>
+            attachments.some((attachment) => attachment.id === attachmentId)
+          );
+          if (!attachmentExists || !context.repository.resizeAttachment) {
+            return { kind: "skipped" };
+          }
+          const mutation = unwrapNotesMutation(
+            await context.repository.resizeAttachment(
+              context.vaultRoot,
+              { id: attachmentId, displayWidth },
+              ...historyArguments(historyContext)
+            )
+          );
+          const projection = await projectNotesMutation(
+            context,
+            mutation,
+            activeScopeRef.current
+          );
+          rememberHistoryAfter(
+            appliedHistoryContext(historyContext, mutation),
+            projection.workspace
+          );
+          return directMutationResult(mutation, projection);
+        }
+      ),
+    [rememberHistoryAfter, runStructuralCommand]
+  );
+
+  const removeImage = useCallback(
+    async (attachmentId: string): Promise<void> =>
+      runStructuralCommand(
+        "attachment-remove",
+        async (context, historyContext) => {
+          const attachmentExists = Object.values(
+            confirmedState(context).attachmentsByNodeId
+          ).some((attachments) =>
+            attachments.some((attachment) => attachment.id === attachmentId)
+          );
+          if (!attachmentExists || !context.repository.removeAttachment) {
+            return { kind: "skipped" };
+          }
+          const mutation = unwrapNotesMutation(
+            await context.repository.removeAttachment(
+              context.vaultRoot,
+              attachmentId,
+              ...historyArguments(historyContext)
+            )
+          );
+          const projection = await projectNotesMutation(
+            context,
+            mutation,
+            activeScopeRef.current
+          );
+          rememberHistoryAfter(
+            appliedHistoryContext(historyContext, mutation),
+            projection.workspace
+          );
+          return directMutationResult(mutation, projection);
+        }
+      ),
+    [rememberHistoryAfter, runStructuralCommand]
+  );
+
   const actions = useMemo<NotesWorkspaceActions>(() => {
     const gate = <Args extends unknown[]>(
       action: (...args: Args) => Promise<void>
@@ -4187,6 +4449,12 @@ export function useNotesWorkspace({
       openSearchResult: gate(openSearchResult),
       deleteAllNotesData,
       zoomTo: gate(zoomTo),
+      uploadImage: gate(uploadImage),
+      importDroppedImages: gate(importDroppedImages),
+      retryImageUpload: gate(retryImageUpload),
+      loadAttachmentBytes,
+      resizeImage: gate(resizeImage),
+      removeImage: gate(removeImage),
       undo: gate(undo),
       redo: gate(redo)
     };
@@ -4217,6 +4485,12 @@ export function useNotesWorkspace({
     openSearchResult,
     deleteAllNotesData,
     zoomTo,
+    uploadImage,
+    importDroppedImages,
+    retryImageUpload,
+    loadAttachmentBytes,
+    resizeImage,
+    removeImage,
     undo,
     redo
   ]);
@@ -4231,6 +4505,7 @@ export function useNotesWorkspace({
     locallyExpandedNodeIds,
     draftsByNodeId,
     writeError: currentWriteError,
+    attachmentUploadErrorsByNodeId,
     retryFailedDraft,
     retryLastFailedWrite,
     status: state.status,

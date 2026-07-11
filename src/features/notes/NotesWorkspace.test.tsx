@@ -14,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
   CreateNoteNodeInput,
+  NoteAttachment,
+  NoteAttachmentsByNodeId,
   NoteId,
   NoteNode,
   NotesWorkspace,
@@ -36,10 +38,14 @@ const notesStoreMock = vi.hoisted(() => ({
   restoreNode: vi.fn(),
   archiveNode: vi.fn(),
   unarchiveNode: vi.fn(),
-    emptyTrash: vi.fn(),
-    search: vi.fn(),
-    searchStructured: vi.fn(),
-    listTags: vi.fn(),
+  importAttachment: vi.fn(),
+  readAttachmentBytes: vi.fn(),
+  resizeAttachment: vi.fn(),
+  removeAttachment: vi.fn(),
+  emptyTrash: vi.fn(),
+  search: vi.fn(),
+  searchStructured: vi.fn(),
+  listTags: vi.fn(),
   listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn()
 }));
@@ -115,8 +121,41 @@ function initialNodes(): NoteNode[] {
   ];
 }
 
-function workspace(nodes: NoteNode[]): NotesWorkspace {
-  return { nodes: nodes.map((current) => ({ ...current })) };
+let confirmedAttachmentsByNodeId: NoteAttachmentsByNodeId = {};
+
+function workspace(
+  nodes: NoteNode[],
+  attachmentsByNodeId: NoteAttachmentsByNodeId = confirmedAttachmentsByNodeId
+): NotesWorkspace {
+  return {
+    nodes: nodes.map((current) => ({ ...current })),
+    attachmentsByNodeId: Object.fromEntries(
+      Object.entries(attachmentsByNodeId).map(([nodeId, attachments]) => [
+        nodeId,
+        attachments.map((attachment) => ({ ...attachment }))
+      ])
+    )
+  };
+}
+
+function attachment(
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+): NoteAttachment {
+  const contentHash = overrides.contentHash ?? "a".repeat(64);
+  return {
+    sortKey: 1024,
+    relativePath: `notes-assets/${contentHash}.png`,
+    contentHash,
+    originalName: `${overrides.id}.png`,
+    mimeType: "image/png",
+    byteSize: 4,
+    intrinsicWidth: 640,
+    intrinsicHeight: 320,
+    displayWidth: 320,
+    createdAt: "2026-07-12T00:00:00Z",
+    updatedAt: "2026-07-12T00:00:00Z",
+    ...overrides
+  };
 }
 
 function deferred<T>() {
@@ -131,8 +170,12 @@ function deferred<T>() {
 
 let confirmedNodes: NoteNode[];
 
-function configureRepository(nodes: NoteNode[] = initialNodes()): void {
+function configureRepository(
+  nodes: NoteNode[] = initialNodes(),
+  attachmentsByNodeId: NoteAttachmentsByNodeId = {}
+): void {
   confirmedNodes = nodes;
+  confirmedAttachmentsByNodeId = attachmentsByNodeId;
   for (const method of Object.values(notesStoreMock)) {
     method.mockReset();
   }
@@ -239,6 +282,18 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   notesStoreMock.unarchiveNode.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
+  notesStoreMock.importAttachment.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.readAttachmentBytes.mockRejectedValue(
+    new Error("Attachment bytes are unavailable")
+  );
+  notesStoreMock.resizeAttachment.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.removeAttachment.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
   notesStoreMock.splitNode.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
@@ -255,11 +310,16 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
 }
 
-function renderNotesWorkspace() {
+function renderNotesWorkspace(
+  attachmentUi?: {
+    openImageFile(): Promise<string | null>;
+    pathForDroppedFile(file: File): string | null;
+  }
+) {
   return render(
     <StrictMode>
       <VaultRootContext.Provider value="/vault">
-        <NotesFeatureProvider>
+        <NotesFeatureProvider attachmentUi={attachmentUi}>
           <NotesLibraryPane />
           <NotesOutlinePane />
         </NotesFeatureProvider>
@@ -317,7 +377,7 @@ async function findTextareaByName(name: string): Promise<HTMLTextAreaElement> {
 
 async function openNodeMenu(label: string, user = userEvent.setup()) {
   await user.click(
-    screen.getByRole("button", { name: `More actions for ${label}` })
+    await screen.findByRole("button", { name: `More actions for ${label}` })
   );
   return screen.findByRole("menu");
 }
@@ -372,6 +432,381 @@ describe("Notes workspace", () => {
     });
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
+
+  it("renders ordered node images beneath the supporting note and loads bytes lazily", async () => {
+    const root = node({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      title: "Project",
+      note: "Supporting detail"
+    });
+    const first = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id,
+      sortKey: 100,
+      originalName: "first.png"
+    });
+    const second = attachment({
+      id: "8f257d31-d255-4fc8-89dc-4e3b30f24a6e",
+      nodeId: root.id,
+      sortKey: 200,
+      originalName: "second.png"
+    });
+    configureRepository([root], { [root.id]: [first, second] });
+    notesStoreMock.readAttachmentBytes.mockResolvedValue(
+      new Uint8Array([137, 80, 78, 71])
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn((blob: Blob) => `blob:${blob.type}`)
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+
+    renderNotesWorkspace();
+
+    const groups = await screen.findAllByRole("group", { name: /^Image:/ });
+    expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual([
+      "Image: first.png",
+      "Image: second.png"
+    ]);
+    const supportingNote = await waitFor(() =>
+      getTextareaByName("Supporting note: Project")
+    );
+    expect(
+      supportingNote.compareDocumentPosition(groups[0]) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(4)
+    );
+    expect(
+      notesStoreMock.readAttachmentBytes.mock.calls.map((call) => call[1])
+    ).toEqual([first.id, second.id, first.id, second.id]);
+  });
+
+  it("uploads a menu-selected image through the injected picker and publishes it after import", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      title: "Project"
+    });
+    const imported = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id,
+      originalName: "diagram.png"
+    });
+    configureRepository([root]);
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
+    );
+    const attachmentUi = {
+      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      pathForDroppedFile: vi.fn()
+    };
+    notesStoreMock.importAttachment.mockImplementation(
+      async (_vaultRoot, input) => {
+        expect(input.id).toBe(imported.id);
+        confirmedAttachmentsByNodeId = { [root.id]: [imported] };
+        return workspace(confirmedNodes);
+      }
+    );
+    notesStoreMock.readAttachmentBytes.mockResolvedValue(
+      new Uint8Array([137, 80, 78, 71])
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:diagram")
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+    renderNotesWorkspace(attachmentUi);
+
+    const menu = await openNodeMenu("Project", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Upload image" })
+    );
+
+    await waitFor(() => expect(attachmentUi.openImageFile).toHaveBeenCalledOnce());
+    await waitFor(() => expect(notesStoreMock.importAttachment).toHaveBeenCalledOnce());
+    expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
+      id: imported.id,
+      nodeId: root.id,
+      sourcePath: "/incoming/diagram.png"
+    });
+    expect(
+      await screen.findByRole("group", { name: "Image: diagram.png" })
+    ).toBeVisible();
+  });
+
+  it("treats image picker cancellation as a no-op", async () => {
+    const user = userEvent.setup();
+    configureRepository([node({ id: "project", title: "Project" })]);
+    const attachmentUi = {
+      openImageFile: vi.fn().mockResolvedValue(null),
+      pathForDroppedFile: vi.fn()
+    };
+    renderNotesWorkspace(attachmentUi);
+
+    const menu = await openNodeMenu("Project", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Upload image" })
+    );
+
+    await waitFor(() => expect(attachmentUi.openImageFile).toHaveBeenCalledOnce());
+    expect(notesStoreMock.importAttachment).not.toHaveBeenCalled();
+    expect(screen.queryByText(/image upload failed/i)).toBeNull();
+  });
+
+  it("shows a retryable import error without a phantom image and clears it after retry", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      title: "Project"
+    });
+    const imported = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id,
+      originalName: "diagram.png"
+    });
+    configureRepository([root]);
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
+    );
+    const attachmentUi = {
+      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      pathForDroppedFile: vi.fn()
+    };
+    notesStoreMock.importAttachment
+      .mockRejectedValueOnce(new Error("disk full"))
+      .mockImplementation(async () => {
+        confirmedAttachmentsByNodeId = { [root.id]: [imported] };
+        return workspace(confirmedNodes);
+      });
+    notesStoreMock.readAttachmentBytes.mockResolvedValue(
+      new Uint8Array([137, 80, 78, 71])
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:diagram")
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+    renderNotesWorkspace(attachmentUi);
+
+    const menu = await openNodeMenu("Project", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Upload image" })
+    );
+
+    const alert = await screen.findByRole("alert", {
+      name: "Image upload failed"
+    });
+    expect(alert).toHaveTextContent("disk full");
+    expect(screen.queryByRole("group", { name: "Image: diagram.png" })).toBeNull();
+
+    await user.click(
+      within(alert).getByRole("button", { name: "Retry image upload" })
+    );
+
+    expect(
+      await screen.findByRole("group", { name: "Image: diagram.png" })
+    ).toBeVisible();
+    expect(attachmentUi.openImageFile).toHaveBeenCalledOnce();
+    expect(notesStoreMock.importAttachment).toHaveBeenCalledTimes(2);
+    expect(
+      screen.queryByRole("alert", { name: "Image upload failed" })
+    ).toBeNull();
+  });
+
+  it("imports a single local image dropped onto a writable row", async () => {
+    const root = node({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      title: "Project"
+    });
+    const attachmentId = "1c17ba74-a617-45e7-9e21-74068b63befe";
+    const dropped = new File([new Uint8Array([1])], "diagram.webp", {
+      type: "image/webp"
+    });
+    configureRepository([root]);
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(attachmentId);
+    const attachmentUi = {
+      openImageFile: vi.fn(),
+      pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
+    };
+    renderNotesWorkspace(attachmentUi);
+    await findTitleInput("Project");
+    const row = document.querySelector<HTMLElement>(
+      `[data-outline-id="${root.id}"]`
+    );
+    expect(row).not.toBeNull();
+
+    fireEvent.dragOver(row!, {
+      dataTransfer: { files: [dropped], types: ["Files"] }
+    });
+    fireEvent.drop(row!, {
+      dataTransfer: { files: [dropped], types: ["Files"] }
+    });
+
+    await waitFor(() =>
+      expect(attachmentUi.pathForDroppedFile).toHaveBeenCalledWith(dropped)
+    );
+    expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
+      id: attachmentId,
+      nodeId: root.id,
+      sourcePath: "/incoming/diagram.webp"
+    });
+  });
+
+  it("requires accessible confirmation before removing an image", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      title: "Project"
+    });
+    const image = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id,
+      originalName: "diagram.png"
+    });
+    configureRepository([root], { [root.id]: [image] });
+    notesStoreMock.removeAttachment.mockImplementation(async () => {
+      confirmedAttachmentsByNodeId = { [root.id]: [] };
+      return workspace(confirmedNodes);
+    });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    renderNotesWorkspace();
+
+    const remove = await screen.findByRole("button", {
+      name: "Remove diagram.png"
+    });
+    await user.click(remove);
+    let dialog = await screen.findByRole("alertdialog", {
+      name: "Remove image?"
+    });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("group", { name: "Image: diagram.png" })
+    ).toBeVisible();
+
+    await user.click(remove);
+    dialog = await screen.findByRole("alertdialog", { name: "Remove image?" });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Remove image" })
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.removeAttachment).toHaveBeenCalledWith(
+        "/vault",
+        image.id
+      )
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("group", { name: "Image: diagram.png" })
+      ).toBeNull()
+    );
+  });
+
+  it.each(["Archive", "Trash"])(
+    "renders images read-only in %s without attachment mutation commands",
+    async (view) => {
+      const user = userEvent.setup();
+      const root = node({
+        id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
+        title: "Project",
+        archivedAt:
+          view === "Archive" ? "2026-07-12T00:00:00Z" : null,
+        deletedAt: view === "Trash" ? "2026-07-12T00:00:00Z" : null
+      });
+      const image = attachment({
+        id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+        nodeId: root.id,
+        originalName: "diagram.png"
+      });
+      configureRepository([root], { [root.id]: [image] });
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          observe() {}
+          unobserve() {}
+          disconnect() {}
+        }
+      );
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: vi.fn(() => "blob:diagram")
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: vi.fn()
+      });
+      renderNotesWorkspace();
+
+      await user.click(await screen.findByRole("button", { name: view }));
+
+      expect(
+        await screen.findByRole("group", { name: "Image: diagram.png" })
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("separator", { name: "Resize diagram.png" })
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Remove diagram.png" })
+      ).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Upload image" })).toBeNull();
+
+      const row = document.querySelector<HTMLElement>(
+        `[data-outline-id="${root.id}"]`
+      );
+      fireEvent.drop(row!, {
+        dataTransfer: {
+          files: [new File(["x"], "drop.png", { type: "image/png" })],
+          types: ["Files"]
+        }
+      });
+      expect(notesStoreMock.importAttachment).not.toHaveBeenCalled();
+      expect(notesStoreMock.resizeAttachment).not.toHaveBeenCalled();
+      expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
+    }
+  );
 
   it("keeps native row and page textareas mounted behind interactive resting tags", async () => {
     const user = userEvent.setup();

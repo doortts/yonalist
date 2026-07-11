@@ -17,6 +17,7 @@ function standardProps(
     onToggleStar: vi.fn(),
     onOpenNote: vi.fn(),
     onAddDate: vi.fn(),
+    onUploadImage: vi.fn(),
     onRemoveNote: vi.fn(),
     onDuplicate: vi.fn(),
     onExport: vi.fn(),
@@ -47,6 +48,7 @@ describe("NotesBulletMenu", () => {
       "Star",
       "Add note",
       "Add date",
+      "Upload image",
       "Duplicate",
       "Export subtree",
       "Delete"
@@ -134,7 +136,7 @@ describe("NotesBulletMenu", () => {
       expect(screen.getByRole("menuitem", { name: "Complete" })).toHaveFocus()
     );
     await user.keyboard(
-      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
+      "{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}"
     );
 
     const back = await screen.findByRole("menuitem", { name: "Back" });
@@ -221,6 +223,21 @@ describe("NotesBulletMenu", () => {
     await user.click(item);
 
     await waitFor(() => expect(onAddDate).toHaveBeenCalledOnce());
+  });
+
+  it("uploads an image from the writable menu with an image upload icon", async () => {
+    const onUploadImage = vi.fn();
+    const user = userEvent.setup();
+    render(<NotesBulletMenu {...standardProps({ onUploadImage })} />);
+
+    const { menu } = await openMenu(user);
+    const item = within(menu).getByRole("menuitem", { name: "Upload image" });
+    expect(item.querySelector(".lucide-image-up")).not.toBeNull();
+
+    await user.click(item);
+
+    expect(onUploadImage).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
   });
 
   it("closes on an outside pointer press", async () => {

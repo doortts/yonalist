@@ -6,12 +6,24 @@ import type { FeatureDefinition } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { useNotesWorkspace } from "./useNotesWorkspace";
 import "./notes.css";
 
-export function NotesWorkspaceProvider({ children }: PropsWithChildren) {
+interface NotesWorkspaceProviderProps extends PropsWithChildren {
+  attachmentUi?: NotesAttachmentUiBoundary;
+}
+
+export function NotesWorkspaceProvider({
+  children,
+  attachmentUi
+}: NotesWorkspaceProviderProps) {
   const vaultRoot = useContext(VaultRootContext);
-  const workspace = useNotesWorkspace({ vaultRoot, repository: notesStore });
+  const workspace = useNotesWorkspace({
+    vaultRoot,
+    repository: notesStore,
+    attachmentUi
+  });
 
   return (
     <NotesWorkspaceContext.Provider value={workspace}>
@@ -20,8 +32,15 @@ export function NotesWorkspaceProvider({ children }: PropsWithChildren) {
   );
 }
 
-export function NotesFeatureProvider({ children }: PropsWithChildren) {
-  return <NotesWorkspaceProvider>{children}</NotesWorkspaceProvider>;
+export function NotesFeatureProvider({
+  children,
+  attachmentUi
+}: NotesWorkspaceProviderProps) {
+  return (
+    <NotesWorkspaceProvider attachmentUi={attachmentUi}>
+      {children}
+    </NotesWorkspaceProvider>
+  );
 }
 
 export const notesFeature: FeatureDefinition = {

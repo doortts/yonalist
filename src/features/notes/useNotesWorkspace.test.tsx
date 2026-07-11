@@ -8,6 +8,7 @@ import {
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  NoteAttachment,
   NoteNode,
   NotesMutationResult,
   NotesStore,
@@ -47,6 +48,26 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 
 function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
+}
+
+function attachment(
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+): NoteAttachment {
+  const contentHash = overrides.contentHash ?? "a".repeat(64);
+  return {
+    sortKey: 1024,
+    relativePath: `notes-assets/${contentHash}.png`,
+    contentHash,
+    originalName: `${overrides.id}.png`,
+    mimeType: "image/png",
+    byteSize: 4,
+    intrinsicWidth: 640,
+    intrinsicHeight: 320,
+    displayWidth: 320,
+    createdAt: "2026-07-12T00:00:00Z",
+    updatedAt: "2026-07-12T00:00:00Z",
+    ...overrides
+  };
 }
 
 function deferred<T>() {
@@ -177,6 +198,416 @@ describe("useNotesWorkspace", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("imports a selected image atomically through the injected UI boundary", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const imported = attachment({
+      id: "8f257d31-d255-4fc8-89dc-4e3b30f24a6e",
+      nodeId: root.id
+    });
+    createNoteIdMock.mockReturnValue(imported.id);
+    const attachmentUi = {
+      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      pathForDroppedFile: vi.fn()
+    };
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue({
+        nodes: [root],
+        attachmentsByNodeId: {}
+      }),
+      importAttachment: vi.fn().mockImplementation(
+        async (_vaultRoot, _input, context) => ({
+          workspace: {
+            nodes: [root],
+            attachmentsByNodeId: { [root.id]: [imported] }
+          },
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.actions.uploadImage).toBeTypeOf("function");
+    await act(async () => result.current.actions.uploadImage!(root.id));
+
+    expect(attachmentUi.openImageFile).toHaveBeenCalledOnce();
+    expect(store.importAttachment).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: imported.id,
+        nodeId: root.id,
+        sourcePath: "/incoming/diagram.png"
+      },
+      historyContext("attachment-import")
+    );
+    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([
+      imported
+    ]);
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
+  });
+
+  it("imports one dropped local image through the same validated path", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const imported = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id
+    });
+    createNoteIdMock.mockReturnValue(imported.id);
+    const droppedFile = new File([new Uint8Array([1])], "diagram.webp", {
+      type: "image/webp"
+    });
+    const attachmentUi = {
+      openImageFile: vi.fn(),
+      pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
+    };
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue({
+        nodes: [root],
+        attachmentsByNodeId: {}
+      }),
+      importAttachment: vi.fn().mockImplementation(
+        async (_vaultRoot, _input, context) => ({
+          workspace: {
+            nodes: [root],
+            attachmentsByNodeId: { [root.id]: [imported] }
+          },
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.actions.importDroppedImages).toBeTypeOf("function");
+    await act(async () =>
+      result.current.actions.importDroppedImages!(root.id, [droppedFile])
+    );
+
+    expect(attachmentUi.pathForDroppedFile).toHaveBeenCalledWith(droppedFile);
+    expect(store.importAttachment).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({
+        id: imported.id,
+        nodeId: root.id,
+        sourcePath: "/incoming/diagram.webp"
+      }),
+      historyContext("attachment-import")
+    );
+    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([
+      imported
+    ]);
+  });
+
+  it.each([
+    {
+      name: "multiple files",
+      files: [
+        new File(["a"], "one.png", { type: "image/png" }),
+        new File(["b"], "two.png", { type: "image/png" })
+      ],
+      message: "Drop one image at a time."
+    },
+    {
+      name: "an unsupported file",
+      files: [new File(["x"], "vector.svg", { type: "image/svg+xml" })],
+      message: "Choose a PNG, JPEG, WebP, or GIF image."
+    },
+    {
+      name: "a remote file without a local path",
+      files: [new File(["x"], "remote.png", { type: "image/png" })],
+      message: "Only local image files can be added."
+    }
+  ])("rejects $name before import", async ({ files, message }) => {
+    const pathForDroppedFile = vi.fn().mockReturnValue(null);
+    const store = repository({ importAttachment: vi.fn() });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: {
+          openImageFile: vi.fn(),
+          pathForDroppedFile
+        }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.importDroppedImages!("root", files)
+    );
+
+    expect(result.current.attachmentUploadErrorsByNodeId?.root).toBe(message);
+    expect(store.importAttachment).not.toHaveBeenCalled();
+  });
+
+  it("ignores a non-file drop without creating an error or import", async () => {
+    const store = repository({ importAttachment: vi.fn() });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.importDroppedImages!("root", []));
+
+    expect(result.current.attachmentUploadErrorsByNodeId?.root).toBeUndefined();
+    expect(store.importAttachment).not.toHaveBeenCalled();
+  });
+
+  it("loads attachment bytes on demand without publishing them into workspace state", async () => {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    const readAttachmentBytes = vi.fn().mockResolvedValue(bytes);
+    const store = repository({ readAttachmentBytes });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.actions.loadAttachmentBytes).toBeTypeOf("function");
+    let loaded: Uint8Array | undefined;
+    await act(async () => {
+      loaded = await result.current.actions.loadAttachmentBytes!("attachment-id");
+    });
+
+    expect(loaded).toBe(bytes);
+    expect(readAttachmentBytes).toHaveBeenCalledWith(
+      "/vault",
+      "attachment-id"
+    );
+    expect(result.current.state).not.toHaveProperty("attachmentBytes");
+  });
+
+  it("persists one attachment resize as one atomic history command", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const original = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id
+    });
+    const resized = { ...original, displayWidth: 480 };
+    const resizeAttachment = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => ({
+        workspace: {
+          nodes: [root],
+          attachmentsByNodeId: { [root.id]: [resized] }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue({
+        nodes: [root],
+        attachmentsByNodeId: { [root.id]: [original] }
+      }),
+      resizeAttachment
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.actions.resizeImage).toBeTypeOf("function");
+    await act(async () =>
+      result.current.actions.resizeImage!(original.id, 480)
+    );
+
+    expect(resizeAttachment).toHaveBeenCalledOnce();
+    expect(resizeAttachment).toHaveBeenCalledWith(
+      "/vault",
+      { id: original.id, displayWidth: 480 },
+      historyContext("attachment-resize")
+    );
+    expect(result.current.state.attachmentsByNodeId[root.id][0].displayWidth).toBe(
+      480
+    );
+  });
+
+  it("removes an attachment atomically and restores its metadata through Undo and Redo", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const original = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id
+    });
+    let historyEntryId: string | null = null;
+    const withoutImage: NotesWorkspace = {
+      nodes: [root],
+      attachmentsByNodeId: { [root.id]: [] }
+    };
+    const withImage: NotesWorkspace = {
+      nodes: [root],
+      attachmentsByNodeId: { [root.id]: [original] }
+    };
+    const removeAttachment = vi.fn().mockImplementation(
+      async (_vaultRoot, _attachmentId, context) => {
+        historyEntryId = context?.entryId ?? null;
+        return {
+          workspace: withoutImage,
+          historyEntryId,
+          canUndo: true,
+          canRedo: false
+        };
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(withImage),
+      removeAttachment,
+      undo: vi.fn().mockImplementation(async () => ({
+        workspace: withImage,
+        replayedEntryId: historyEntryId,
+        canUndo: false,
+        canRedo: true
+      })),
+      redo: vi.fn().mockImplementation(async () => ({
+        workspace: withoutImage,
+        replayedEntryId: historyEntryId,
+        canUndo: true,
+        canRedo: false
+      }))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.actions.removeImage).toBeTypeOf("function");
+    await act(async () => result.current.actions.removeImage!(original.id));
+    expect(removeAttachment).toHaveBeenCalledWith(
+      "/vault",
+      original.id,
+      historyContext("attachment-remove")
+    );
+    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([]);
+
+    await act(async () => result.current.actions.undo?.());
+    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([
+      original
+    ]);
+
+    await act(async () => result.current.actions.redo?.());
+    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([]);
+  });
+
+  it("synchronizes the complete attachment map to a sibling workspace hook", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const imported = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id
+    });
+    createNoteIdMock.mockReturnValue(imported.id);
+    const initial: NotesWorkspace = {
+      nodes: [root],
+      attachmentsByNodeId: {}
+    };
+    const updated: NotesWorkspace = {
+      nodes: [root],
+      attachmentsByNodeId: { [root.id]: [imported] }
+    };
+    const attachmentUi = {
+      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      pathForDroppedFile: vi.fn()
+    };
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      importAttachment: vi.fn().mockImplementation(
+        async (_vaultRoot, _input, context) => ({
+          workspace: updated,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      )
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/shared-vault",
+        repository: store,
+        attachmentUi
+      })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/shared-vault",
+        repository: store,
+        attachmentUi
+      })
+    );
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
+
+    await act(async () => first.result.current.actions.uploadImage!(root.id));
+
+    await waitFor(() =>
+      expect(sibling.result.current.state.attachmentsByNodeId[root.id]).toEqual([
+        imported
+      ])
+    );
+    expect(first.result.current.state.attachmentsByNodeId[root.id]).toEqual([
+      imported
+    ]);
+  });
+
+  it("discards a picker result that resolves after switching vaults", async () => {
+    const oldSelection = deferred<string | null>();
+    const openImageFile = vi
+      .fn()
+      .mockReturnValueOnce(oldSelection.promise)
+      .mockResolvedValueOnce("/new/fresh.png");
+    createNoteIdMock.mockReturnValue("1c17ba74-a617-45e7-9e21-74068b63befe");
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
+      importAttachment: vi.fn().mockResolvedValue(workspace([node({ id: "root" })]))
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot }) =>
+        useNotesWorkspace({
+          vaultRoot,
+          repository: store,
+          attachmentUi: {
+            openImageFile,
+            pathForDroppedFile: vi.fn()
+          }
+        }),
+      { initialProps: { vaultRoot: "/old" } }
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const staleUpload = result.current.actions.uploadImage!("root");
+    rerender({ vaultRoot: "/new" });
+    await waitFor(() =>
+      expect(store.loadWorkspace).toHaveBeenCalledWith("/new", { kind: "active" })
+    );
+    await act(async () => {
+      oldSelection.resolve("/old/stale.png");
+      await staleUpload;
+    });
+    expect(store.importAttachment).not.toHaveBeenCalled();
+
+    await act(async () => result.current.actions.retryImageUpload!("root"));
+
+    expect(openImageFile).toHaveBeenCalledTimes(2);
+    expect(store.importAttachment).toHaveBeenCalledWith(
+      "/new",
+      expect.objectContaining({ sourcePath: "/new/fresh.png" }),
+      expect.anything()
+    );
   });
 
   it("exposes loading on the first render before the workspace effect runs", async () => {

@@ -37,6 +37,7 @@ export interface NotesImageAttachmentProps {
   readonly loadBytes?: NotesImageByteLoader;
   readonly onDisplayWidthCommit: (displayWidth: number) => void;
   readonly onRemove?: () => void;
+  readonly readOnly?: boolean;
 }
 
 interface WidthLimits {
@@ -224,7 +225,8 @@ export function NotesImageAttachment({
   bytes,
   loadBytes,
   onDisplayWidthCommit,
-  onRemove
+  onRemove,
+  readOnly = false
 }: NotesImageAttachmentProps) {
   const metadataValid = isValidAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
@@ -505,7 +507,7 @@ export function NotesImageAttachment({
     }
   };
 
-  const removeAction = onRemove ? (
+  const removeAction = onRemove && !readOnly ? (
     <IconTooltip label="Remove image" side="left">
       <button
         type="button"
@@ -576,28 +578,30 @@ export function NotesImageAttachment({
 
         {removeAction}
 
-        <div
-          role="separator"
-          aria-label={`Resize ${attachment.originalName}`}
-          aria-orientation="vertical"
-          aria-valuemin={limits.minimum}
-          aria-valuemax={limits.maximum}
-          aria-valuenow={renderedWidth}
-          aria-valuetext={`${renderedWidth} pixels wide`}
-          aria-disabled={limits.maximum === 0}
-          tabIndex={limits.maximum === 0 ? -1 : 0}
-          style={resizeHandleStyle}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={(event) => finishPointerResize(event, true)}
-          onPointerCancel={(event) => finishPointerResize(event, true)}
-          onLostPointerCapture={(event) => finishPointerResize(event, false)}
-          onKeyDown={handleKeyDown}
-          onKeyUp={finishKeyboardResize}
-          onBlur={finishKeyboardResize}
-        >
-          <span aria-hidden="true" style={resizeHandleLineStyle} />
-        </div>
+        {!readOnly && (
+          <div
+            role="separator"
+            aria-label={`Resize ${attachment.originalName}`}
+            aria-orientation="vertical"
+            aria-valuemin={limits.minimum}
+            aria-valuemax={limits.maximum}
+            aria-valuenow={renderedWidth}
+            aria-valuetext={`${renderedWidth} pixels wide`}
+            aria-disabled={limits.maximum === 0}
+            tabIndex={limits.maximum === 0 ? -1 : 0}
+            style={resizeHandleStyle}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={(event) => finishPointerResize(event, true)}
+            onPointerCancel={(event) => finishPointerResize(event, true)}
+            onLostPointerCapture={(event) => finishPointerResize(event, false)}
+            onKeyDown={handleKeyDown}
+            onKeyUp={finishKeyboardResize}
+            onBlur={finishKeyboardResize}
+          >
+            <span aria-hidden="true" style={resizeHandleLineStyle} />
+          </div>
+        )}
       </div>
     </div>
   );
