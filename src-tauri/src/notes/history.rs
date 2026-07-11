@@ -5,7 +5,7 @@ use crate::notes::types::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 pub(crate) const HISTORY_MAX_ENTRIES: i64 = 100;
 pub(crate) const HISTORY_MAX_BYTES: i64 = 50 * 1024 * 1024;
@@ -242,19 +242,20 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
 
     let existing = transaction
         .query_row(
-            "SELECT session_id, sequence, is_undone FROM notes_history_entries WHERE id = ?1",
+            "SELECT session_id, sequence, is_undone, rowid FROM notes_history_entries WHERE id = ?1",
             [&context.1],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, bool>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         )
         .optional()
         .map_err(|error| format!("Could not inspect Notes history entry: {error}"))?;
-    if let Some((session_id, sequence, is_undone)) = existing {
+    if let Some((session_id, sequence, is_undone, row_id)) = existing {
         let latest_sequence: i64 = transaction
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM notes_history_entries WHERE session_id = ?1",
@@ -262,15 +263,23 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
                 |row| row.get(0),
             )
             .map_err(|error| format!("Could not inspect Notes history order: {error}"))?;
-        if session_id != context.0 || is_undone || sequence != latest_sequence {
-            return Err("A Notes history entry can only coalesce with the latest applied entry in its session.".to_string());
+        let latest_row_id: i64 = transaction
+            .query_row(
+                "SELECT rowid FROM notes_history_entries ORDER BY rowid DESC, id DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect global Notes history order: {error}"))?;
+        if session_id != context.0
+            || is_undone
+            || sequence != latest_sequence
+            || row_id != latest_row_id
+        {
+            return Err("A Notes history entry can only coalesce with the latest applied entry in the database.".to_string());
         }
     } else {
         transaction
-            .execute(
-                "DELETE FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 1",
-                [&context.0],
-            )
+            .execute("DELETE FROM notes_history_entries WHERE is_undone = 1", [])
             .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
         let sequence: i64 = transaction
             .query_row(
@@ -337,15 +346,15 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
             [&context.1],
         )
         .map_err(|error| format!("Could not estimate Notes history payload: {error}"))?;
-    enforce_limits(transaction, &context.0)
+    enforce_limits(transaction)
 }
 
-fn enforce_limits(transaction: &Transaction<'_>, session_id: &str) -> Result<(), String> {
+fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
     loop {
         let (entry_count, estimated_bytes): (i64, i64) = transaction
             .query_row(
-                "SELECT COUNT(*), COALESCE(SUM(estimated_bytes), 0) FROM notes_history_entries WHERE session_id = ?1",
-                [session_id],
+                "SELECT COUNT(*), COALESCE(SUM(estimated_bytes), 0) FROM notes_history_entries",
+                [],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|error| format!("Could not measure Notes history limits: {error}"))?;
@@ -354,10 +363,10 @@ fn enforce_limits(transaction: &Transaction<'_>, session_id: &str) -> Result<(),
         }
         let deleted = transaction
             .execute(
-                "DELETE FROM notes_history_entries WHERE id = (\
-                   SELECT id FROM notes_history_entries WHERE session_id = ?1 ORDER BY sequence LIMIT 1\
+                "DELETE FROM notes_history_entries WHERE rowid = (\
+                   SELECT rowid FROM notes_history_entries ORDER BY rowid, id LIMIT 1\
                  )",
-                [session_id],
+                [],
             )
             .map_err(|error| format!("Could not evict old Notes history: {error}"))?;
         if deleted == 0 {
@@ -457,6 +466,111 @@ struct AttachmentSnapshot {
     updated_at: String,
 }
 
+fn current_row_json(
+    transaction: &Transaction<'_>,
+    table_name: &str,
+    row_id: &str,
+) -> Result<Option<String>, String> {
+    let (table, alias, expression) = match table_name {
+        "notes_nodes" => (
+            "notes_nodes",
+            "node",
+            NODE_JSON_NEW.replace("NEW.", "node."),
+        ),
+        "notes_attachments" => (
+            "notes_attachments",
+            "attachment",
+            ATTACHMENT_JSON_NEW.replace("NEW.", "attachment."),
+        ),
+        _ => return Err(format!("Unsupported Notes history table {table_name}.")),
+    };
+    transaction
+        .query_row(
+            &format!("SELECT {expression} FROM {table} {alias} WHERE {alias}.id = ?1"),
+            [row_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect {table_name} row {row_id}: {error}"))
+}
+
+fn validate_expected_states(
+    transaction: &Transaction<'_>,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    for (table_name, row_id, before_json, after_json) in changes {
+        let expected = if undoing { after_json } else { before_json };
+        let current = current_row_json(transaction, table_name, row_id)?;
+        if current.as_deref() != expected.as_deref() {
+            return Err(format!(
+                "Notes history conflict: {table_name} row {row_id} no longer matches the expected state."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn decode_node_snapshot(row_id: &str, state: &str) -> Result<NodeSnapshot, String> {
+    let node: NodeSnapshot = serde_json::from_str(state)
+        .map_err(|error| format!("Could not decode a Note history row: {error}"))?;
+    if node.id != row_id {
+        return Err("A Notes history row ID does not match its snapshot.".to_string());
+    }
+    Ok(node)
+}
+
+fn node_is_live(node: &NodeSnapshot) -> bool {
+    node.deleted_at.is_none() && node.archived_at.is_none()
+}
+
+fn validate_target_lifecycle(
+    transaction: &Transaction<'_>,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    let mut target_nodes = HashMap::new();
+    for (table_name, row_id, before_json, after_json) in changes {
+        if table_name != "notes_nodes" {
+            continue;
+        }
+        let target = if undoing { before_json } else { after_json };
+        let snapshot = target
+            .as_deref()
+            .map(|state| decode_node_snapshot(row_id, state))
+            .transpose()?;
+        target_nodes.insert(row_id.clone(), snapshot);
+    }
+
+    for (row_id, target) in &target_nodes {
+        let Some(node) = target else {
+            continue;
+        };
+        if !node_is_live(node) {
+            continue;
+        }
+        let Some(parent_id) = node.parent_id.as_deref() else {
+            continue;
+        };
+        let parent_is_live = match target_nodes.get(parent_id) {
+            Some(Some(parent)) => node_is_live(parent),
+            Some(None) => false,
+            None => current_row_json(transaction, "notes_nodes", parent_id)?
+                .as_deref()
+                .map(|state| decode_node_snapshot(parent_id, state))
+                .transpose()?
+                .as_ref()
+                .is_some_and(node_is_live),
+        };
+        if !parent_is_live {
+            return Err(format!(
+                "Notes history conflict: replaying live node {row_id} would place it under inactive parent {parent_id}."
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn apply_node_state(
     transaction: &Transaction<'_>,
     row_id: &str,
@@ -470,11 +584,7 @@ fn apply_node_state(
             })?;
         return Ok(());
     };
-    let node: NodeSnapshot = serde_json::from_str(state)
-        .map_err(|error| format!("Could not decode a Note history row: {error}"))?;
-    if node.id != row_id {
-        return Err("A Notes history row ID does not match its snapshot.".to_string());
-    }
+    let node = decode_node_snapshot(row_id, state)?;
     transaction
         .execute(
             "INSERT INTO notes_nodes(\
@@ -607,6 +717,8 @@ fn replay(
             .map_err(|error| format!("Could not collect Notes history replay: {error}"))?;
         changes
     };
+    validate_expected_states(&transaction, &changes, undoing)?;
+    validate_target_lifecycle(&transaction, &changes, undoing)?;
     let mut affected_nodes = BTreeSet::new();
     for (table_name, row_id, before_json, after_json) in changes {
         let state = if undoing {
@@ -684,10 +796,19 @@ mod tests {
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const SECOND_SESSION_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
     fn history_context(index: usize, command_kind: &str) -> NotesHistoryContext {
+        history_context_for_session(SESSION_ID, index, command_kind)
+    }
+
+    fn history_context_for_session(
+        session_id: &str,
+        index: usize,
+        command_kind: &str,
+    ) -> NotesHistoryContext {
         NotesHistoryContext {
-            session_id: SESSION_ID.to_string(),
+            session_id: session_id.to_string(),
             entry_id: format!("00000000-0000-4000-8000-{index:012x}"),
             command_kind: command_kind.to_string(),
         }
@@ -1150,6 +1271,262 @@ mod tests {
     }
 
     #[test]
+    fn notes_history_rejects_stale_cross_session_title_undo_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let first = history_context(1, "updateText");
+        journal(&mut connection, &first, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session A".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session A update");
+        let second = history_context_for_session(SECOND_SESSION_ID, 2, "updateText");
+        journal(&mut connection, &second, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session B".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session B update");
+        let before_replay = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("stale session A undo must conflict");
+
+        assert!(error.to_lowercase().contains("history conflict"), "{error}");
+        assert_eq!(active(&connection), before_replay);
+        assert!(
+            history_status(&connection, SESSION_ID)
+                .expect("session A status")
+                .can_undo
+        );
+    }
+
+    #[test]
+    fn notes_history_invalidates_cross_session_redo_after_a_forward_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let first = history_context(1, "updateText");
+        journal(&mut connection, &first, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session A".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session A update");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("session A undo");
+        assert!(
+            history_status(&connection, SESSION_ID)
+                .expect("session A redo status")
+                .can_redo
+        );
+
+        let second = history_context_for_session(SECOND_SESSION_ID, 2, "updateText");
+        journal(&mut connection, &second, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session B".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session B update");
+
+        assert!(
+            !history_status(&connection, SESSION_ID)
+                .expect("session A invalidated status")
+                .can_redo
+        );
+        let replay = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("invalidated redo is an empty replay");
+        assert_eq!(replay.replayed_entry_id, None);
+        assert_eq!(replay.workspace.nodes[0].title, "Session B");
+    }
+
+    #[test]
+    fn notes_history_rejects_stale_redo_expected_state_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let context = history_context(1, "updateText");
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Journaled".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("journaled update");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo");
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "Newer unjournaled state".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect("newer unjournaled update");
+        let before_replay = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("stale redo must conflict");
+
+        assert!(error.to_lowercase().contains("history conflict"), "{error}");
+        assert_eq!(active(&connection), before_replay);
+        assert!(
+            history_status(&connection, SESSION_ID)
+                .expect("redo remains available after conflict")
+                .can_redo
+        );
+    }
+
+    #[test]
+    fn notes_history_redo_cannot_create_a_live_child_under_inactive_parent() {
+        for lifecycle in ["archive", "trash"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let mut connection =
+                connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            create_node(&mut connection, create_input(NODE_ID, None, None, "Parent"))
+                .expect("parent");
+            let context = history_context(1, "create");
+            journal(&mut connection, &context, |connection| {
+                create_node(
+                    connection,
+                    create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+                )
+            })
+            .expect("child");
+            undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("remove child");
+            match lifecycle {
+                "archive" => {
+                    archive_node(&mut connection, NODE_ID).expect("archive parent");
+                }
+                _ => {
+                    soft_delete_node(&mut connection, NODE_ID).expect("trash parent");
+                }
+            }
+
+            let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect_err("redo under inactive parent must conflict");
+
+            assert!(
+                error.to_lowercase().contains("history conflict"),
+                "{lifecycle}: {error}"
+            );
+            let child_exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
+                    [CHILD_ID],
+                    |row| row.get(0),
+                )
+                .expect("child existence");
+            assert!(!child_exists, "{lifecycle} replay created a child");
+        }
+    }
+
+    #[test]
+    fn notes_history_global_entry_limit_cannot_be_bypassed_with_many_sessions() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+
+        for index in 1..=101 {
+            let session_id = format!("10000000-0000-4000-8000-{index:012x}");
+            let context = history_context_for_session(&session_id, index, "star");
+            journal(&mut connection, &context, |connection| {
+                toggle_star(connection, NODE_ID)
+            })
+            .expect("cross-session toggle");
+        }
+
+        assert_eq!(entry_count(&connection), HISTORY_MAX_ENTRIES);
+        let oldest_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [
+                    history_context_for_session("10000000-0000-4000-8000-000000000001", 1, "star")
+                        .entry_id,
+                ],
+                |row| row.get(0),
+            )
+            .expect("oldest global entry");
+        assert!(!oldest_exists);
+    }
+
+    #[test]
+    fn notes_history_rejects_coalescing_across_an_intervening_session_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let first = history_context(1, "updateText");
+        journal(&mut connection, &first, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session A".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session A update");
+        let second = history_context_for_session(SECOND_SESSION_ID, 2, "updateText");
+        journal(&mut connection, &second, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session B".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session B update");
+
+        let error = journal(&mut connection, &first, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session A late burst".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect_err("intervening history must close the old coalescing entry");
+
+        assert!(error.contains("latest applied entry"), "{error}");
+        assert_eq!(active(&connection).nodes[0].title, "Session B");
+    }
+
+    #[test]
     fn notes_history_enforces_one_hundred_entry_limit_and_fifty_mib_payload_limit() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
@@ -1176,8 +1553,9 @@ mod tests {
         assert!(!oldest_exists);
 
         clear_history(&mut connection, SESSION_ID).expect("clear entry limit history");
-        let large_before = "a".repeat(26 * 1024 * 1024);
-        let large_after = "b".repeat(26 * 1024 * 1024);
+        let large_before = "a".repeat(13 * 1024 * 1024);
+        let large_middle = "b".repeat(13 * 1024 * 1024);
+        let large_after = "c".repeat(13 * 1024 * 1024);
         update_node(
             &mut connection,
             UpdateNodeInput {
@@ -1193,20 +1571,45 @@ mod tests {
                 connection,
                 UpdateNodeInput {
                     id: NODE_ID.to_string(),
+                    title: large_middle,
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("first large update");
+        let second_context = history_context_for_session(SECOND_SESSION_ID, 201, "updateText");
+        journal(&mut connection, &second_context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
                     title: large_after,
                     note: String::new(),
                 },
             )
         })
-        .expect("oversized update remains a successful mutation");
+        .expect("second large update");
         assert_eq!(
             entry_count(&connection),
-            0,
-            "an entry above the payload ceiling is evicted"
+            1,
+            "combined cross-session payload above the ceiling evicts the oldest entry"
         );
+        let estimated_bytes: i64 = connection
+            .query_row(
+                "SELECT COALESCE(SUM(estimated_bytes), 0) FROM notes_history_entries",
+                [],
+                |row| row.get(0),
+            )
+            .expect("global estimated bytes");
+        assert!(estimated_bytes <= HISTORY_MAX_BYTES);
         assert!(
             !history_status(&connection, SESSION_ID)
-                .expect("status")
+                .expect("evicted first session status")
+                .can_undo
+        );
+        assert!(
+            history_status(&connection, SECOND_SESSION_ID)
+                .expect("retained second session status")
                 .can_undo
         );
     }
