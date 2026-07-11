@@ -427,12 +427,14 @@ export function NotesBulletMenu({
                   Back
                 </CommandItem>
                 <CommandItem
+                  disabled={exportDisabled}
                   icon={<FileText size={15} aria-hidden="true" />}
                   onClick={() => onExport?.("markdown")}
                 >
                   Export subtree as Markdown
                 </CommandItem>
                 <CommandItem
+                  disabled={exportDisabled}
                   icon={<FileDown size={15} aria-hidden="true" />}
                   onClick={() => onExport?.("pdf")}
                 >

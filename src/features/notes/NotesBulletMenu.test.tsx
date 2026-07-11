@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -327,6 +327,30 @@ describe("NotesBulletMenu", () => {
     await user.click(exportItem);
 
     expect(props.onExport).toHaveBeenCalledWith(format);
+  });
+
+  it("disables already-open export leaves when export becomes unavailable", async () => {
+    const props = standardProps();
+    const { rerender } = render(<NotesBulletMenu {...props} />);
+    const { menu, user } = await openMenu();
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree" })
+    );
+
+    rerender(<NotesBulletMenu {...props} exportDisabled />);
+
+    const markdown = screen.getByRole("menuitem", {
+      name: "Export subtree as Markdown"
+    });
+    const pdf = screen.getByRole("menuitem", {
+      name: "Export subtree as PDF"
+    });
+    expect(markdown).toHaveAttribute("aria-disabled", "true");
+    expect(pdf).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(markdown);
+    fireEvent.click(pdf);
+    expect(props.onExport).not.toHaveBeenCalled();
   });
 
   it("moves focus into the export view and back to its parent command", async () => {

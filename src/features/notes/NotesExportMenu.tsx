@@ -91,7 +91,7 @@ function NotesExportMenuContent({
             <Menu.Popup className="notes-export-menu">
               <Menu.Item
                 className="notes-export-menu-item"
-                disabled={controller.busy || selectedNodeId === null}
+                disabled={unavailable || controller.busy || selectedNodeId === null}
                 onClick={() =>
                   selectedNodeId &&
                   controller.startExport(
@@ -105,7 +105,7 @@ function NotesExportMenuContent({
               </Menu.Item>
               <Menu.Item
                 className="notes-export-menu-item"
-                disabled={controller.busy || selectedNodeId === null}
+                disabled={unavailable || controller.busy || selectedNodeId === null}
                 onClick={() =>
                   selectedNodeId &&
                   controller.startExport(selectedNodeId, selectedNodeTitle, "pdf")
@@ -115,7 +115,7 @@ function NotesExportMenuContent({
               </Menu.Item>
               <Menu.Item
                 className="notes-export-menu-item"
-                disabled={controller.busy || zoomRootId === null}
+                disabled={unavailable || controller.busy || zoomRootId === null}
                 onClick={() =>
                   zoomRootId &&
                   controller.startExport(
@@ -129,7 +129,7 @@ function NotesExportMenuContent({
               </Menu.Item>
               <Menu.Item
                 className="notes-export-menu-item"
-                disabled={controller.busy || zoomRootId === null}
+                disabled={unavailable || controller.busy || zoomRootId === null}
                 onClick={() =>
                   zoomRootId &&
                   controller.startExport(zoomRootId, zoomRootTitle, "pdf")

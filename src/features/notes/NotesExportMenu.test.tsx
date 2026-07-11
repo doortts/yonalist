@@ -576,7 +576,7 @@ describe("NotesExportMenu", () => {
     expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
-  it("serializes export behind an autosave that starts from its open submenu", async () => {
+  it("serializes export behind an autosave started by its own draft flush", async () => {
     const user = userEvent.setup();
     const childWrite = deferred<NotesWorkspace>();
     const updatedWorkspace = {
@@ -609,21 +609,12 @@ describe("NotesExportMenu", () => {
 
     const menu = await openExportMenu(user);
 
-    vi.useFakeTimers();
     act(() => {
       currentWorkspace?.actions.updateNodeDraft("selected", {
         title: "Edited child",
         note: ""
       });
     });
-
-    await act(async () => vi.advanceTimersByTimeAsync(300));
-    expect(currentWorkspace?.status).toBe("loading");
-    expect(
-      within(screen.getByRole("menu")).getByRole("menuitem", {
-        name: "Current page as Markdown"
-      })
-    ).toBeInTheDocument();
 
     fireEvent.click(
       within(menu).getByRole("menuitem", {
@@ -632,7 +623,7 @@ describe("NotesExportMenu", () => {
     );
 
     expect(screen.getByText("Exporting...")).toBeInTheDocument();
-
+    await waitFor(() => expect(currentWorkspace?.status).toBe("loading"));
     expect(store.updateNode).toHaveBeenCalledOnce();
     expect(store.updateNode).toHaveBeenCalledWith(
       "/vault",
@@ -645,7 +636,6 @@ describe("NotesExportMenu", () => {
     );
     expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
 
-    vi.useRealTimers();
     await act(async () => childWrite.resolve(updatedWorkspace));
 
     await waitFor(() => expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce());
@@ -654,6 +644,31 @@ describe("NotesExportMenu", () => {
     expect(vi.mocked(store.updateNode).mock.invocationCallOrder[0]).toBeLessThan(
       exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
     );
+  });
+
+  it("rejects already-open toolbar commands when unrelated loading starts", async () => {
+    const user = userEvent.setup();
+    const rendered = renderExportMenu();
+    const menu = await openExportMenu(user);
+
+    rendered.rerenderExportMenu({ loading: true });
+
+    const markdown = within(menu).getByRole("menuitem", {
+      name: "Selected node as Markdown"
+    });
+    const pdf = within(menu).getByRole("menuitem", {
+      name: "Selected node as PDF"
+    });
+    expect(markdown).toHaveAttribute("aria-disabled", "true");
+    expect(pdf).toHaveAttribute("aria-disabled", "true");
+
+    fireEvent.click(markdown);
+    fireEvent.click(pdf);
+
+    expect(rendered.onFlushDrafts).not.toHaveBeenCalled();
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
   it("aborts a parent export when a pending child draft cannot be saved", async () => {

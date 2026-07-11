@@ -215,7 +215,7 @@ export function NotesExportControllerProvider({
       defaultFileName: string | undefined,
       format: NotesExportFormat
     ) => {
-      if (hardUnavailable || busyRef.current) {
+      if (unavailableRef.current || busyRef.current) {
         return;
       }
 
@@ -245,7 +245,7 @@ export function NotesExportControllerProvider({
       };
       void executeAttempt(attempt, true, true);
     },
-    [executeAttempt, hardUnavailable, onFlushDrafts, vaultPath]
+    [executeAttempt, onFlushDrafts, vaultPath]
   );
 
   const retryFailedExport = useCallback(() => {
