@@ -95,6 +95,10 @@ export const NoteTextField = forwardRef<
   useLayoutEffect(() => {
     if (nonEditable) {
       focusAfterRevealRef.current = false;
+      const textarea = textareaRef.current;
+      if (textarea && document.activeElement === textarea) {
+        textarea.blur();
+      }
       if (editing) {
         setEditing(false);
       }
@@ -109,6 +113,7 @@ export const NoteTextField = forwardRef<
 
   const handleFocus = (event: FocusEvent<HTMLTextAreaElement>) => {
     if (nonEditable) {
+      event.currentTarget.blur();
       return;
     }
     setEditing(true);

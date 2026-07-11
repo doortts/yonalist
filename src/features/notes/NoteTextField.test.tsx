@@ -426,37 +426,92 @@ describe("NoteTextField", () => {
     }
   );
 
-  it("hides an active textarea when the field becomes read-only", () => {
+  it.each([
+    ["read-only", { readOnly: true }, "aria-readonly"],
+    ["disabled", { disabled: true }, "aria-disabled"]
+  ] as const)(
+    "moves focus to the body before a focused field becomes %s",
+    (_label, state, stateAttribute) => {
+      const onBlur = vi.fn();
+      const onTagClick = vi.fn();
+      const props = {
+        value: "Project #today",
+        "aria-label": "Title",
+        onChange: vi.fn(),
+        onBlur,
+        onTagClick
+      };
+      const { container, rerender } = render(<NoteTextField {...props} />);
+      const textarea = container.querySelector(
+        "textarea"
+      ) as HTMLTextAreaElement;
+
+      act(() => textarea.focus());
+      expect(screen.getByRole("textbox", { name: "Title" })).toBe(textarea);
+      expect(textarea).toHaveFocus();
+
+      rerender(<NoteTextField {...props} {...state} />);
+
+      expect(document.activeElement).toBe(document.body);
+      expect(textarea).not.toHaveFocus();
+      expect(onBlur).toHaveBeenCalledOnce();
+      expect(
+        screen.queryByRole("textbox", { name: "Title" })
+      ).not.toBeInTheDocument();
+      const presentation = screen.getByRole("group", { name: "Title" });
+      expect(presentation).toHaveAttribute(stateAttribute, "true");
+      expect(presentation).toHaveAttribute("tabindex", "-1");
+      const tag = screen.getByRole("button", {
+        name: "#today tag filter is inactive"
+      });
+      expect(tag).toBeVisible();
+      fireEvent.click(tag);
+      expect(onTagClick).toHaveBeenCalledOnce();
+
+      act(() => textarea.focus());
+      expect(document.activeElement).toBe(document.body);
+      expect(textarea).not.toHaveFocus();
+      expect(
+        screen.queryByRole("textbox", { name: "Title" })
+      ).not.toBeInTheDocument();
+    }
+  );
+
+  it("releases focus safely when an editing field unmounts", () => {
+    const { container, unmount } = render(
+      <NoteTextField
+        value="Project"
+        aria-label="Title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => textarea.focus());
+    expect(textarea).toHaveFocus();
+
+    expect(() => unmount()).not.toThrow();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("keeps focus and editing active across enabled rerenders", () => {
+    const onBlur = vi.fn();
     const props = {
-      value: "Project #today",
       "aria-label": "Title",
+      onBlur,
       onChange: vi.fn(),
       onTagClick: vi.fn()
     };
-    const { container, rerender } = render(<NoteTextField {...props} />);
+    const { container, rerender } = render(
+      <NoteTextField {...props} value="Project" />
+    );
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
-
     act(() => textarea.focus());
+
+    rerender(<NoteTextField {...props} value="Project updated" />);
+
+    expect(textarea).toHaveFocus();
     expect(screen.getByRole("textbox", { name: "Title" })).toBe(textarea);
-
-    rerender(<NoteTextField {...props} readOnly />);
-
-    expect(
-      screen.queryByRole("textbox", { name: "Title" })
-    ).not.toBeInTheDocument();
-    const presentation = screen.getByRole("group", { name: "Title" });
-    expect(presentation).toHaveAttribute("aria-readonly", "true");
-    expect(presentation).toHaveAttribute("tabindex", "-1");
-    const tag = screen.getByRole("button", {
-      name: "#today tag filter is inactive"
-    });
-    expect(tag).toBeVisible();
-    fireEvent.click(tag);
-    expect(props.onTagClick).toHaveBeenCalledOnce();
-
-    act(() => textarea.focus());
-    expect(
-      screen.queryByRole("textbox", { name: "Title" })
-    ).not.toBeInTheDocument();
+    expect(onBlur).not.toHaveBeenCalled();
   });
 });
