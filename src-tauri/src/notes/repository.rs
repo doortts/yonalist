@@ -22,6 +22,12 @@ use std::cell::RefCell;
 use std::sync::mpsc::Sender;
 
 const NOTES_SCHEMA_VERSION: i64 = 3;
+const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
+const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
+const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
+const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
+const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
+const NOTE_SEARCH_MAX_ALTERNATIVES_PER_OR_GROUP: usize = 16;
 const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const SORT_KEY_STEP: i64 = 1024;
 pub(crate) const MIN_ATTACHMENT_DISPLAY_WIDTH: i64 = 160;
@@ -275,10 +281,54 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
              ON notes_nodes(archive_root_id, parent_id, sort_key);",
         )
         .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
+    ensure_tag_tokenizer_version(&transaction)?;
 
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+}
+
+fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), String> {
+    let stored_version = transaction
+        .query_row(
+            "SELECT value_json FROM notes_preferences WHERE key = ?1",
+            [NOTE_TAG_TOKENIZER_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the Notes tag tokenizer version: {error}"))?
+        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
+    if stored_version.is_some_and(|version| version >= NOTE_TAG_TOKENIZER_VERSION) {
+        return Ok(());
+    }
+
+    let nodes = transaction
+        .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
+        .map_err(|error| format!("Could not prepare the Notes tag index rebuild: {error}"))?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not load Notes for the tag index rebuild: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes for the tag index rebuild: {error}"))?;
+    for (node_id, title, note) in nodes {
+        replace_tags(transaction, &node_id, &title, &note)?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![
+                NOTE_TAG_TOKENIZER_VERSION_KEY,
+                NOTE_TAG_TOKENIZER_VERSION.to_string()
+            ],
+        )
+        .map_err(|error| format!("Could not record the Notes tag tokenizer version: {error}"))?;
+    Ok(())
 }
 
 fn enable_wal_with_busy_retry(connection: &Connection) -> Result<(), String> {
@@ -1200,6 +1250,38 @@ fn canonical_search_filters(query: &NoteStructuredSearchQuery) -> CanonicalSearc
     }
 }
 
+fn validate_structured_search_query(
+    query: &NoteStructuredSearchQuery,
+) -> Result<CanonicalSearchFilters, String> {
+    if query.text.len() > NOTE_SEARCH_MAX_TEXT_UTF8_BYTES {
+        return Err("Structured Notes search text exceeds 4096 UTF-8 bytes.".to_string());
+    }
+    if query.or_groups.len() > NOTE_SEARCH_MAX_OR_GROUPS {
+        return Err("Structured Notes search has more than 16 OR groups.".to_string());
+    }
+    if query
+        .or_groups
+        .iter()
+        .any(|group| group.len() > NOTE_SEARCH_MAX_ALTERNATIVES_PER_OR_GROUP)
+    {
+        return Err("Structured Notes search OR group has more than 16 alternatives.".to_string());
+    }
+
+    let filters = canonical_search_filters(query);
+    let unique_tags = filters
+        .required
+        .iter()
+        .chain(filters.excluded.iter())
+        .chain(filters.or_groups.iter().flatten())
+        .collect::<BTreeSet<_>>();
+    if unique_tags.len() > NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES {
+        return Err(
+            "Structured Notes search has more than 64 unique tag alternatives.".to_string(),
+        );
+    }
+    Ok(filters)
+}
+
 fn push_tag_parameters(
     parameters: &mut Vec<String>,
     prefix: NoteTagPrefix,
@@ -1215,12 +1297,12 @@ pub(crate) fn search_nodes_structured(
     connection: &Connection,
     query: &NoteStructuredSearchQuery,
 ) -> Result<Vec<NoteSearchResult>, String> {
-    let match_expression = fts_match_expression(&query.text);
     let CanonicalSearchFilters {
         required,
         excluded,
         or_groups,
-    } = canonical_search_filters(query);
+    } = validate_structured_search_query(query)?;
+    let match_expression = fts_match_expression(&query.text);
     if match_expression.is_none()
         && required.is_empty()
         && excluded.is_empty()
@@ -3037,6 +3119,156 @@ mod tests {
     }
 
     #[test]
+    fn version_three_initialization_rebuilds_old_tag_tokens_once_for_every_node() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "DELETE FROM notes_preferences WHERE key = 'derived.tagTokenizerVersion'",
+                [],
+            )
+            .expect("remove tokenizer version marker");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, sort_key, title, note, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, 1024, 'https://example.test/#fragment #café', '', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                 )",
+                [NODE_ID],
+            )
+            .expect("insert active old-tokenizer node");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, sort_key, title, note, created_at, updated_at, archived_at, archive_root_id\
+                 ) VALUES (\
+                   ?1, 2048, '#Archived', '', '2026-07-10T00:00:00.000Z', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T01:00:00.000Z', ?1\
+                 )",
+                [CHILD_ID],
+            )
+            .expect("insert archived old-tokenizer node");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, sort_key, title, note, created_at, updated_at, deleted_at, deleted_batch_id\
+                 ) VALUES (\
+                   ?1, 3072, 'Trash', '@Trashed', '2026-07-10T00:00:00.000Z', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T02:00:00.000Z', 'legacy-trash'\
+                 )",
+                [THIRD_ID],
+            )
+            .expect("insert trashed old-tokenizer node");
+        connection
+            .execute_batch(&format!(
+                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) VALUES \
+                   ('{NODE_ID}', '#', 'fragment', 'fragment'), \
+                   ('{NODE_ID}', '#', 'cafe', 'cafe'), \
+                   ('{CHILD_ID}', '#', 'Archived', 'archived'), \
+                   ('{THIRD_ID}', '@', 'Trashed', 'trashed'); \
+                 CREATE TABLE tag_rebuild_audit (operation TEXT NOT NULL); \
+                 CREATE TRIGGER audit_tag_rebuild_delete AFTER DELETE ON notes_tags BEGIN \
+                   INSERT INTO tag_rebuild_audit VALUES ('delete'); \
+                 END; \
+                 CREATE TRIGGER audit_tag_rebuild_insert AFTER INSERT ON notes_tags BEGIN \
+                   INSERT INTO tag_rebuild_audit VALUES ('insert'); \
+                 END;"
+            ))
+            .expect("seed stale tags and rewrite audit");
+
+        initialize_notes_db(&mut connection).expect("rebuild old tokenizer tags");
+
+        let tags = connection
+            .prepare(
+                "SELECT node_id, prefix, tag, normalized_tag FROM notes_tags \
+                 ORDER BY node_id, prefix, normalized_tag",
+            )
+            .expect("prepare rebuilt tags")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .expect("query rebuilt tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect rebuilt tags");
+        assert_eq!(
+            tags,
+            vec![
+                (
+                    NODE_ID.to_string(),
+                    "#".to_string(),
+                    "café".to_string(),
+                    "café".to_string(),
+                ),
+                (
+                    CHILD_ID.to_string(),
+                    "#".to_string(),
+                    "Archived".to_string(),
+                    "archived".to_string(),
+                ),
+                (
+                    THIRD_ID.to_string(),
+                    "@".to_string(),
+                    "Trashed".to_string(),
+                    "trashed".to_string(),
+                ),
+            ]
+        );
+        let version: String = connection
+            .query_row(
+                "SELECT value_json FROM notes_preferences \
+                 WHERE key = 'derived.tagTokenizerVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("tag tokenizer version marker");
+        assert_eq!(version, "1");
+        let first_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("first rewrite count");
+        assert!(first_rewrite_count > 0);
+
+        initialize_notes_db(&mut connection).expect("idempotent tokenizer initialization");
+
+        let second_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("second rewrite count");
+        assert_eq!(second_rewrite_count, first_rewrite_count);
+
+        connection
+            .execute(
+                "UPDATE notes_preferences SET value_json = '0' \
+                 WHERE key = 'derived.tagTokenizerVersion'",
+                [],
+            )
+            .expect("downgrade tokenizer marker");
+        initialize_notes_db(&mut connection).expect("rebuild old tokenizer version");
+        let old_version_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("old-version rewrite count");
+        assert!(old_version_rewrite_count > second_rewrite_count);
+
+        initialize_notes_db(&mut connection).expect("idempotent upgraded tokenizer version");
+        let final_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("final rewrite count");
+        assert_eq!(final_rewrite_count, old_version_rewrite_count);
+    }
+
+    #[test]
     fn version_one_deleted_rows_migrate_to_deterministic_legacy_batches() {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         seed_version_one_database(&mut connection);
@@ -4820,6 +5052,114 @@ mod tests {
         )
         .expect("parameterized hostile tag")
         .is_empty());
+    }
+
+    fn indexed_search_tags(count: usize) -> Vec<NoteSearchTag> {
+        (0..count)
+            .map(|index| {
+                search_tag(
+                    if index % 2 == 0 {
+                        NoteTagPrefix::Hash
+                    } else {
+                        NoteTagPrefix::Mention
+                    },
+                    &format!("tag-{index}"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn notes_tag_structured_search_enforces_utf8_text_byte_limit() {
+        let connection = test_connection();
+        let boundary_text = format!("{}a", "가".repeat(1365));
+        assert_eq!(boundary_text.len(), 4096);
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(&boundary_text, vec![], vec![], vec![])
+        )
+        .expect("4096-byte structured search")
+        .is_empty());
+
+        let error = search_nodes_structured(
+            &connection,
+            &structured_query(&format!("{boundary_text}b"), vec![], vec![], vec![]),
+        )
+        .expect_err("4097-byte structured search");
+        assert_eq!(
+            error,
+            "Structured Notes search text exceeds 4096 UTF-8 bytes."
+        );
+    }
+
+    #[test]
+    fn notes_tag_structured_search_enforces_total_unique_tag_limit_before_sql() {
+        let connection = test_connection();
+        let mut boundary_tags = indexed_search_tags(64);
+        boundary_tags[0].normalized_tag = "tag-0') OR 1=1 --".to_string();
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query("", boundary_tags, vec![], vec![])
+        )
+        .expect("64 parameterized tag alternatives")
+        .is_empty());
+
+        connection
+            .execute("DROP TABLE notes_tags", [])
+            .expect("remove tag table before over-limit validation");
+        let error = search_nodes_structured(
+            &connection,
+            &structured_query("", indexed_search_tags(65), vec![], vec![]),
+        )
+        .expect_err("65 unique tag alternatives");
+        assert_eq!(
+            error,
+            "Structured Notes search has more than 64 unique tag alternatives."
+        );
+    }
+
+    #[test]
+    fn notes_tag_structured_search_enforces_raw_or_group_limit() {
+        let connection = test_connection();
+        let duplicate_group = vec![
+            search_tag(NoteTagPrefix::Hash, "one"),
+            search_tag(NoteTagPrefix::Mention, "two"),
+        ];
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query("", vec![], vec![], vec![duplicate_group.clone(); 16],)
+        )
+        .expect("16 OR groups")
+        .is_empty());
+
+        let error = search_nodes_structured(
+            &connection,
+            &structured_query("", vec![], vec![], vec![duplicate_group; 17]),
+        )
+        .expect_err("17 OR groups");
+        assert_eq!(error, "Structured Notes search has more than 16 OR groups.");
+    }
+
+    #[test]
+    fn notes_tag_structured_search_enforces_raw_alternatives_per_group_limit() {
+        let connection = test_connection();
+        let duplicate = search_tag(NoteTagPrefix::Hash, "duplicate");
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query("", vec![], vec![], vec![vec![duplicate.clone(); 16]])
+        )
+        .expect("16 alternatives in one OR group")
+        .is_empty());
+
+        let error = search_nodes_structured(
+            &connection,
+            &structured_query("", vec![], vec![], vec![vec![duplicate; 17]]),
+        )
+        .expect_err("17 alternatives in one OR group");
+        assert_eq!(
+            error,
+            "Structured Notes search OR group has more than 16 alternatives."
+        );
     }
 
     #[test]

@@ -5,6 +5,29 @@ import type {
 } from "../../domain/notes";
 import { tokenizeNoteText } from "./noteTokens";
 
+export const NOTE_SEARCH_QUERY_LIMITS = {
+  maxTextUtf8Bytes: 4096,
+  maxUniqueTagAlternatives: 64,
+  maxOrGroups: 16,
+  maxAlternativesPerOrGroup: 16
+} as const;
+
+export type NoteSearchQueryValidationErrorCode =
+  | "textTooLong"
+  | "tooManyUniqueTags"
+  | "tooManyOrGroups"
+  | "tooManyOrAlternatives";
+
+export type NoteSearchQueryValidationResult =
+  | { ok: true; query: NoteStructuredSearchQuery }
+  | {
+      ok: false;
+      error: {
+        code: NoteSearchQueryValidationErrorCode;
+        message: string;
+      };
+    };
+
 function tagKey(tag: Pick<NoteSearchTag, "prefix" | "normalizedTag">): string {
   return `${tag.prefix}\u0000${tag.normalizedTag}`;
 }
@@ -85,6 +108,59 @@ export function canonicalizeNoteSearchQuery(
   };
 }
 
+function validationError(
+  code: NoteSearchQueryValidationErrorCode,
+  message: string
+): NoteSearchQueryValidationResult {
+  return { ok: false, error: { code, message } };
+}
+
+export function validateAndCanonicalizeNoteSearchQuery(
+  query: NoteStructuredSearchQuery
+): NoteSearchQueryValidationResult {
+  if (
+    new TextEncoder().encode(query.text).length >
+    NOTE_SEARCH_QUERY_LIMITS.maxTextUtf8Bytes
+  ) {
+    return validationError(
+      "textTooLong",
+      "Structured Notes search text exceeds 4096 UTF-8 bytes."
+    );
+  }
+  if (query.orGroups.length > NOTE_SEARCH_QUERY_LIMITS.maxOrGroups) {
+    return validationError(
+      "tooManyOrGroups",
+      "Structured Notes search has more than 16 OR groups."
+    );
+  }
+  if (
+    query.orGroups.some(
+      (group) =>
+        group.length > NOTE_SEARCH_QUERY_LIMITS.maxAlternativesPerOrGroup
+    )
+  ) {
+    return validationError(
+      "tooManyOrAlternatives",
+      "Structured Notes search OR group has more than 16 alternatives."
+    );
+  }
+
+  const canonical = canonicalizeNoteSearchQuery(query);
+  const uniqueTags = new Set([
+    ...canonical.requiredTags.map(tagKey),
+    ...canonical.excludedTags.map(tagKey),
+    ...canonical.orGroups.flatMap((group) => group.map(tagKey))
+  ]);
+  if (uniqueTags.size > NOTE_SEARCH_QUERY_LIMITS.maxUniqueTagAlternatives) {
+    return validationError(
+      "tooManyUniqueTags",
+      "Structured Notes search has more than 64 unique tag alternatives."
+    );
+  }
+
+  return { ok: true, query: canonical };
+}
+
 interface ParsedClause {
   excluded: boolean;
   tag: NoteSearchTag;
@@ -112,7 +188,7 @@ function parseTagClause(term: string): ParsedClause | null {
   };
 }
 
-export function parseNoteSearchQuery(source: string): NoteStructuredSearchQuery {
+function parseRawNoteSearchQuery(source: string): NoteStructuredSearchQuery {
   const terms = source.trim() ? source.trim().split(/\s+/u) : [];
   const consumed = new Set<number>();
   const orGroups: NoteSearchTag[][] = [];
@@ -169,12 +245,22 @@ export function parseNoteSearchQuery(source: string): NoteStructuredSearchQuery 
     }
   });
 
-  return canonicalizeNoteSearchQuery({
+  return {
     text: textTerms.join(" "),
     requiredTags,
     excludedTags,
     orGroups
-  });
+  };
+}
+
+export function parseNoteSearchQuery(source: string): NoteStructuredSearchQuery {
+  return canonicalizeNoteSearchQuery(parseRawNoteSearchQuery(source));
+}
+
+export function parseAndValidateNoteSearchQuery(
+  source: string
+): NoteSearchQueryValidationResult {
+  return validateAndCanonicalizeNoteSearchQuery(parseRawNoteSearchQuery(source));
 }
 
 export function canonicalNoteSearchQueryKey(

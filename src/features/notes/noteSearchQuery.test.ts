@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  NOTE_SEARCH_QUERY_LIMITS,
   canonicalNoteSearchQueryKey,
   canonicalizeNoteSearchQuery,
-  parseNoteSearchQuery
+  parseAndValidateNoteSearchQuery,
+  parseNoteSearchQuery,
+  validateAndCanonicalizeNoteSearchQuery
 } from "./noteSearchQuery";
+import type { NoteSearchTag, NoteStructuredSearchQuery } from "../../domain/notes";
 import { tokenizeNoteText } from "./noteTokens";
 import tokenizerFixtures from "./noteTokenizer.fixtures.json";
 
@@ -133,5 +137,161 @@ describe("canonicalizeNoteSearchQuery", () => {
     expect(canonicalNoteSearchQueryKey(left)).toBe(
       canonicalNoteSearchQueryKey(right)
     );
+  });
+});
+
+function queryTag(index: number): NoteSearchTag {
+  return {
+    prefix: index % 2 === 0 ? "#" : "@",
+    normalizedTag: `tag-${index}`,
+    displayTag: `Tag-${index}`
+  };
+}
+
+function limitedQuery(
+  overrides: Partial<NoteStructuredSearchQuery> = {}
+): NoteStructuredSearchQuery {
+  return {
+    text: "",
+    requiredTags: [],
+    excludedTags: [],
+    orGroups: [],
+    ...overrides
+  };
+}
+
+describe("structured Notes search query limits", () => {
+  it("accepts 4096 UTF-8 text bytes and rejects 4097 with a stable error", () => {
+    const boundaryText = `${"가".repeat(1365)}a`;
+    expect(new TextEncoder().encode(boundaryText)).toHaveLength(
+      NOTE_SEARCH_QUERY_LIMITS.maxTextUtf8Bytes
+    );
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(limitedQuery({ text: boundaryText }))
+    ).toMatchObject({ ok: true });
+
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({ text: `${boundaryText}b` })
+      )
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "textTooLong",
+        message: "Structured Notes search text exceeds 4096 UTF-8 bytes."
+      }
+    });
+  });
+
+  it("accepts 64 unique tags and rejects 65 after normalization and deduplication", () => {
+    const boundaryTags = Array.from(
+      { length: NOTE_SEARCH_QUERY_LIMITS.maxUniqueTagAlternatives },
+      (_, index) => queryTag(index)
+    );
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({
+          requiredTags: [...boundaryTags, { ...boundaryTags[0] }]
+        })
+      )
+    ).toMatchObject({ ok: true });
+
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({ requiredTags: [...boundaryTags, queryTag(64)] })
+      )
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "tooManyUniqueTags",
+        message:
+          "Structured Notes search has more than 64 unique tag alternatives."
+      }
+    });
+  });
+
+  it("accepts 16 OR groups and rejects 17 before canonical group deduplication", () => {
+    const group = [queryTag(0), queryTag(1)];
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({
+          orGroups: Array.from(
+            { length: NOTE_SEARCH_QUERY_LIMITS.maxOrGroups },
+            () => group.map((tag) => ({ ...tag }))
+          )
+        })
+      )
+    ).toMatchObject({ ok: true });
+
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({
+          orGroups: Array.from(
+            { length: NOTE_SEARCH_QUERY_LIMITS.maxOrGroups + 1 },
+            () => group.map((tag) => ({ ...tag }))
+          )
+        })
+      )
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "tooManyOrGroups",
+        message: "Structured Notes search has more than 16 OR groups."
+      }
+    });
+  });
+
+  it("accepts 16 alternatives in one OR group and rejects 17", () => {
+    const alternatives = Array.from(
+      { length: NOTE_SEARCH_QUERY_LIMITS.maxAlternativesPerOrGroup },
+      (_, index) => queryTag(index)
+    );
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({ orGroups: [alternatives] })
+      )
+    ).toMatchObject({ ok: true });
+
+    expect(
+      validateAndCanonicalizeNoteSearchQuery(
+        limitedQuery({ orGroups: [[...alternatives, queryTag(16)]] })
+      )
+    ).toEqual({
+      ok: false,
+      error: {
+        code: "tooManyOrAlternatives",
+        message:
+          "Structured Notes search OR group has more than 16 alternatives."
+      }
+    });
+  });
+
+  it("exposes parser validation without silently truncating the query", () => {
+    const result = parseAndValidateNoteSearchQuery("x".repeat(4097));
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "textTooLong" }
+    });
+  });
+
+  it("validates raw parser OR shape before canonicalization can deduplicate it", () => {
+    const duplicateGroups = Array.from(
+      { length: NOTE_SEARCH_QUERY_LIMITS.maxOrGroups + 1 },
+      () => "#one OR @two"
+    ).join(" ");
+    expect(parseAndValidateNoteSearchQuery(duplicateGroups)).toMatchObject({
+      ok: false,
+      error: { code: "tooManyOrGroups" }
+    });
+
+    const duplicateAlternatives = Array.from(
+      { length: NOTE_SEARCH_QUERY_LIMITS.maxAlternativesPerOrGroup + 1 },
+      () => "#same"
+    ).join(" OR ");
+    expect(parseAndValidateNoteSearchQuery(duplicateAlternatives)).toMatchObject({
+      ok: false,
+      error: { code: "tooManyOrAlternatives" }
+    });
   });
 });
