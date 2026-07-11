@@ -78,7 +78,19 @@ Add this focused helper in `repository.rs` and call it after the version match b
 
 ```rust
 fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), String> {
-    if column_exists(transaction, "notes_history_entries", "command_kind") {
+    let has_column = transaction
+        .prepare("PRAGMA table_info(notes_history_entries)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!(
+            "Could not inspect Notes history command kinds: {error}"
+        ))?
+        .iter()
+        .any(|column| column == "command_kind");
+    if has_column {
         return Ok(());
     }
     transaction
@@ -236,7 +248,11 @@ onRename={async (title) => {
 }}
 ```
 
-Use `draftsByNodeId[nodeId]` when present so a failed save remains visible after rerender. Add a stable single-line input style inside the existing 38px row without changing row or menu column dimensions.
+Build the row's visible node from `draftsByNodeId[nodeId]` when present, using both
+its title and supporting note. This prevents a library rename from overwriting an
+open supporting-note draft and keeps a failed rename visible after rerender. Add a
+stable single-line input style inside the existing 38px row without changing row or
+menu column dimensions.
 
 - [ ] **Step 6: Run focused frontend verification**
 
