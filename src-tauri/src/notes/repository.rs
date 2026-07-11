@@ -150,6 +150,15 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
 }
 
 fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
+    let preflight_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if !(0..=NOTES_SCHEMA_VERSION).contains(&preflight_version) {
+        return Err(format!(
+            "This Notes database uses unsupported schema version {preflight_version}."
+        ));
+    }
+
     connection
         .busy_timeout(NOTES_BUSY_TIMEOUT)
         .map_err(|error| format!("Could not configure the Notes busy timeout: {error}"))?;
@@ -205,6 +214,13 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
             ));
         }
     }
+
+    transaction
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS notes_nodes_archive_root_order \
+             ON notes_nodes(archive_root_id, parent_id, sort_key);",
+        )
+        .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
 
     transaction
         .commit()
@@ -1802,16 +1818,22 @@ pub(crate) fn soft_delete_node(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, node_id)?;
+        let source = require_live_node(transaction, node_id)?;
+        if source.archived_at.is_some()
+            && (source.parent_id.is_some() || source.archive_root_id.as_deref() != Some(node_id))
+        {
+            return Err("Only an archive root can be moved to trash.".to_string());
+        }
         let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
         transaction
             .execute(
                 "WITH RECURSIVE subtree(id) AS (\
-                   SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+                   SELECT id FROM notes_nodes \
+                   WHERE id = ?1 AND deleted_at IS NULL AND archive_root_id IS ?3 \
                    UNION ALL \
                    SELECT child.id FROM notes_nodes child \
                    JOIN subtree parent ON child.parent_id = parent.id \
-                   WHERE child.deleted_at IS NULL\
+                   WHERE child.deleted_at IS NULL AND child.archive_root_id IS ?3\
                  ) \
                  UPDATE notes_nodes SET \
                    deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
@@ -1820,7 +1842,7 @@ pub(crate) fn soft_delete_node(
                    archive_root_id = NULL, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
                  WHERE id IN subtree",
-                params![node_id, deletion_batch_id],
+                params![node_id, deletion_batch_id, source.archive_root_id],
             )
             .map_err(|error| format!("Could not move the Note subtree to trash: {error}"))?;
         Ok(())
@@ -2326,6 +2348,7 @@ mod tests {
         for index in [
             "notes_nodes_active_parent_order",
             "notes_nodes_archive_parent_order",
+            "notes_nodes_archive_root_order",
             "notes_tags_normalized_tag",
             "notes_tags_prefix_normalized_tag",
             "notes_dates_range",
@@ -2404,6 +2427,22 @@ mod tests {
         ));
         assert!(column_exists(&connection, "notes_nodes", "archived_at"));
         assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
+    }
+
+    #[test]
+    fn version_three_initialization_repairs_a_missing_archive_ownership_index() {
+        let mut connection = test_connection();
+        connection
+            .execute_batch("DROP INDEX IF EXISTS notes_nodes_archive_root_order;")
+            .expect("drop archive ownership index");
+
+        initialize_notes_db(&mut connection).expect("reinitialize version three database");
+
+        assert!(object_exists(
+            &connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
     }
 
     #[test]
@@ -2705,10 +2744,21 @@ mod tests {
             .pragma_update(None, "user_version", 4)
             .expect("future user version");
         drop(connection);
+        let bytes_before = std::fs::read(&path).expect("future database bytes before connect");
+        let wal_path = path.with_file_name("notes.sqlite-wal");
+        let shm_path = path.with_file_name("notes.sqlite-shm");
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
 
         let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
             .expect_err("future schema must be rejected");
         assert!(error.contains("unsupported schema version 4"));
+        assert_eq!(
+            std::fs::read(&path).expect("future database bytes after connect"),
+            bytes_before
+        );
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
     }
 
     #[test]
@@ -4214,6 +4264,37 @@ mod tests {
                 && node.archived_at.is_none()
                 && node.archive_root_id.is_none()
         }));
+    }
+
+    #[test]
+    fn archived_descendant_cannot_be_trashed_and_restored_as_an_active_root() {
+        let mut connection = test_connection();
+        insert_tree(&connection);
+        archive_node(&mut connection, NODE_ID).expect("archive root");
+
+        let error = soft_delete_node(&mut connection, CHILD_ID)
+            .expect_err("archived descendant trash must be rejected");
+
+        assert!(error.contains("archive root"));
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Trash)
+            .expect("trash")
+            .nodes
+            .is_empty());
+        assert!(restore_node(&mut connection, CHILD_ID)
+            .expect_err("archived child was never trashed")
+            .contains("not in the trash"));
+        let active = unarchive_node(&mut connection, NODE_ID).expect("unarchive root");
+        assert_eq!(active.nodes.len(), 2);
+        assert_eq!(
+            active
+                .nodes
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("restored child")
+                .parent_id
+                .as_deref(),
+            Some(NODE_ID)
+        );
     }
 
     #[test]

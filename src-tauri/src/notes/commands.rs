@@ -269,7 +269,8 @@ fn export_notes_file(
 mod tests {
     use super::*;
     use crate::notes::types::{
-        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NotesExportFormat,
+        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteTagFilter,
+        NoteTagPrefix, NoteTagSummary, NotesExportFormat,
     };
     use serde_json::json;
 
@@ -628,6 +629,79 @@ mod tests {
 
         notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+    }
+
+    #[test]
+    fn archive_commands_apply_native_scopes_and_counted_tag_visibility() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "#Roadmap @Minji".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect("create tagged root");
+
+        assert!(notes_archive_node(vault_path.clone(), ROOT_ID.to_string())
+            .expect("archive root")
+            .nodes
+            .is_empty());
+        let archived = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Archive)
+            .expect("archive scope");
+        assert_eq!(archived.nodes.len(), 1);
+        assert_eq!(archived.nodes[0].archive_root_id.as_deref(), Some(ROOT_ID));
+        let tag_scope = NotesWorkspaceScope::Tags {
+            tags: vec![
+                NoteTagFilter {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                },
+                NoteTagFilter {
+                    prefix: NoteTagPrefix::Mention,
+                    normalized_tag: "minji".to_string(),
+                },
+            ],
+        };
+        assert!(notes_load_workspace(vault_path.clone(), tag_scope.clone())
+            .expect("archived tag scope")
+            .nodes
+            .is_empty());
+        assert!(notes_list_tags_with_counts(vault_path.clone())
+            .expect("archived tag counts")
+            .is_empty());
+
+        let active =
+            notes_unarchive_node(vault_path.clone(), ROOT_ID.to_string()).expect("unarchive root");
+        assert_eq!(active.nodes.len(), 1);
+        assert_eq!(
+            notes_load_workspace(vault_path.clone(), tag_scope)
+                .expect("active tag scope")
+                .nodes
+                .len(),
+            1
+        );
+        assert_eq!(
+            notes_list_tags_with_counts(vault_path).expect("active tag counts"),
+            vec![
+                NoteTagSummary {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                    display_tag: "Roadmap".to_string(),
+                    count: 1,
+                },
+                NoteTagSummary {
+                    prefix: NoteTagPrefix::Mention,
+                    normalized_tag: "minji".to_string(),
+                    display_tag: "Minji".to_string(),
+                    count: 1,
+                },
+            ]
+        );
     }
 
     #[test]

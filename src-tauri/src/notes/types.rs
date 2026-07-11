@@ -242,7 +242,10 @@ impl SplitNodeInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_note_id, MoveNodeInput, NotesExportFormat, NotesExportResult};
+    use super::{
+        validate_note_id, MoveNodeInput, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+        NotesExportFormat, NotesExportResult, NotesWorkspaceScope,
+    };
     use serde_json::json;
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -320,6 +323,53 @@ mod tests {
             json!({
                 "destination": "/tmp/project.pdf",
                 "format": "pdf"
+            })
+        );
+    }
+
+    #[test]
+    fn archive_and_structured_tag_contracts_use_exact_native_wire_shapes() {
+        let archive: NotesWorkspaceScope =
+            serde_json::from_value(json!({ "kind": "archive" })).expect("archive scope");
+        assert_eq!(archive, NotesWorkspaceScope::Archive);
+
+        let tags: NotesWorkspaceScope = serde_json::from_value(json!({
+            "kind": "tags",
+            "tags": [
+                { "prefix": "#", "normalizedTag": "roadmap" },
+                { "prefix": "@", "normalizedTag": "minji" }
+            ]
+        }))
+        .expect("structured tag scope");
+        assert_eq!(
+            tags,
+            NotesWorkspaceScope::Tags {
+                tags: vec![
+                    NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                    },
+                    NoteTagFilter {
+                        prefix: NoteTagPrefix::Mention,
+                        normalized_tag: "minji".to_string(),
+                    },
+                ]
+            }
+        );
+
+        let summary = NoteTagSummary {
+            prefix: NoteTagPrefix::Mention,
+            normalized_tag: "minji".to_string(),
+            display_tag: "Minji".to_string(),
+            count: 2,
+        };
+        assert_eq!(
+            serde_json::to_value(summary).expect("counted tag summary"),
+            json!({
+                "prefix": "@",
+                "normalizedTag": "minji",
+                "displayTag": "Minji",
+                "count": 2
             })
         );
     }
