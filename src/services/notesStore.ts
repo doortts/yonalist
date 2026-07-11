@@ -1,4 +1,4 @@
-import { isNoteSearchResult } from "../domain/notes";
+import { isNoteSearchResult, isNotesMutationResult } from "../domain/notes";
 import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
@@ -13,6 +13,7 @@ import type {
   NotesHistoryContext,
   NotesHistoryReplayResult,
   NotesHistoryStatus,
+  NotesMutationResult,
   NotesStore,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -59,32 +60,50 @@ export function notesCreateNode(
   vaultPath: string,
   input: CreateNoteNodeInput,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_create_node", { vaultPath, input, historyContext });
+): Promise<NotesMutationResult> {
+  return invokeMutation("notes_create_node", { vaultPath, input, historyContext }, historyContext);
 }
 
 export function notesUpdateNode(
   vaultPath: string,
   input: UpdateNoteNodeInput,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_update_node", { vaultPath, input, historyContext });
+): Promise<NotesMutationResult> {
+  return invokeMutation("notes_update_node", { vaultPath, input, historyContext }, historyContext);
 }
 
 export function notesSplitNode(
   vaultPath: string,
   input: SplitNoteNodeInput,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_split_node", { vaultPath, input, historyContext });
+): Promise<NotesMutationResult> {
+  return invokeMutation("notes_split_node", { vaultPath, input, historyContext }, historyContext);
 }
 
 export function notesMoveNode(
   vaultPath: string,
   input: MoveNoteNodeInput,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_move_node", { vaultPath, input, historyContext });
+): Promise<NotesMutationResult> {
+  return invokeMutation("notes_move_node", { vaultPath, input, historyContext }, historyContext);
+}
+
+async function invokeMutation(
+  command: string,
+  args: Record<string, unknown>,
+  historyContext: NotesHistoryContext | null
+): Promise<NotesMutationResult> {
+  const result = await invokeNotes<unknown>(command, args);
+  if (!isNotesMutationResult(result)) {
+    throw new Error("Notes mutation returned an invalid result.");
+  }
+  if (
+    result.historyEntryId !== null &&
+    result.historyEntryId !== historyContext?.entryId
+  ) {
+    throw new Error("Notes mutation returned an unexpected history entry ID.");
+  }
+  return result;
 }
 
 function invokeNodeMutation(
@@ -92,15 +111,19 @@ function invokeNodeMutation(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>(command, { vaultPath, nodeId, historyContext });
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    command,
+    { vaultPath, nodeId, historyContext },
+    historyContext
+  );
 }
 
 export function notesToggleComplete(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_complete", vaultPath, nodeId, historyContext);
 }
 
@@ -108,7 +131,7 @@ export function notesToggleCollapsed(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId, historyContext);
 }
 
@@ -116,7 +139,7 @@ export function notesToggleStar(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_star", vaultPath, nodeId, historyContext);
 }
 
@@ -124,7 +147,7 @@ export function notesDuplicateNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_duplicate_node", vaultPath, nodeId, historyContext);
 }
 
@@ -132,7 +155,7 @@ export function notesRemoveEmptyNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_remove_empty_node", vaultPath, nodeId, historyContext);
 }
 
@@ -140,7 +163,7 @@ export function notesSoftDeleteNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_soft_delete_node", vaultPath, nodeId, historyContext);
 }
 
@@ -148,7 +171,7 @@ export function notesRestoreNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_restore_node", vaultPath, nodeId, historyContext);
 }
 
@@ -156,7 +179,7 @@ export function notesArchiveNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_archive_node", vaultPath, nodeId, historyContext);
 }
 
@@ -164,7 +187,7 @@ export function notesUnarchiveNode(
   vaultPath: string,
   nodeId: NoteId,
   historyContext: NotesHistoryContext | null = null
-): Promise<NotesWorkspace> {
+): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_unarchive_node", vaultPath, nodeId, historyContext);
 }
 

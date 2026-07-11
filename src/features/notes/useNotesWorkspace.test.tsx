@@ -598,13 +598,21 @@ describe("useNotesWorkspace", () => {
     const saved = workspace([
       node({ id: "root", title: "prefixsuffix", note: "saved note" })
     ]);
+    const updateNode = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: saved,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const historyStatus = vi
+      .fn()
+      .mockResolvedValue({ canUndo: false, canRedo: false });
     const store = repository({
-      updateNode: vi.fn().mockResolvedValue(saved),
+      updateNode,
       splitNode: vi.fn().mockRejectedValue(new Error("split failed")),
-      historyStatus: vi
-        .fn()
-        .mockResolvedValueOnce({ canUndo: false, canRedo: false })
-        .mockResolvedValue({ canUndo: true, canRedo: false })
+      historyStatus
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -622,6 +630,7 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(historyStatus).toHaveBeenCalledOnce();
     expect(store.splitNode).toHaveBeenCalledWith(
       "/vault",
       {
@@ -643,6 +652,40 @@ describe("useNotesWorkspace", () => {
       canUndo: true,
       canRedo: false
     });
+  });
+
+  it("consumes successful atomic mutation status without a redundant status query", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const updated = workspace([node({ id: "root", title: "Updated" })]);
+    const historyStatus = vi
+      .fn()
+      .mockResolvedValue({ canUndo: false, canRedo: false });
+    const updateNode = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: updated,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      historyStatus
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/atomic-result", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(historyStatus).toHaveBeenCalledOnce();
+
+    await act(async () =>
+      result.current.actions.updateNode("root", { title: "Updated", note: "" })
+    );
+
+    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(result.current.state.nodesById.root.title).toBe("Updated");
+    expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
   });
 
   it("keeps the committed text snapshot when a later split step fails", async () => {

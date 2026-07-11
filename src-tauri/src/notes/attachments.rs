@@ -1894,7 +1894,7 @@ mod tests {
             let asset_path = temp_dir
                 .path()
                 .join(".yonalist")
-                .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+                .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
             notes_remove_attachment(vault_path.clone(), ATTACHMENT_ID.to_string(), None)
                 .expect("remove live metadata while history retains bytes");
 
@@ -1944,7 +1944,7 @@ mod tests {
             .unwrap_or_else(|error| {
                 panic!("{point:?} post-commit cleanup masked committed import: {error}")
             });
-            assert_eq!(imported.attachments_by_node_id[NODE_ID].len(), 1);
+            assert_eq!(imported.workspace.attachments_by_node_id[NODE_ID].len(), 1);
             let storage = AttachmentStorageLease::acquire(&import_vault).expect("import marker");
             assert!(
                 storage.reconciliation_needed().expect("marker state"),
@@ -1984,7 +1984,7 @@ mod tests {
         let asset_path = trash_dir
             .path()
             .join(".yonalist")
-            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
         let mut connection = connect_notes_db(&trash_vault).expect("trash connection");
         soft_delete_node(&mut connection, NODE_ID).expect("trash node");
         drop(connection);
@@ -2043,7 +2043,7 @@ mod tests {
             None,
         )
         .expect("deduplicated import");
-        let attachments = &workspace.attachments_by_node_id[NODE_ID];
+        let attachments = &workspace.workspace.attachments_by_node_id[NODE_ID];
         assert_eq!(
             attachments
                 .iter()
@@ -2086,7 +2086,7 @@ mod tests {
         )
         .expect("valid resize");
         assert_eq!(
-            resized.attachments_by_node_id[NODE_ID][0].display_width,
+            resized.workspace.attachments_by_node_id[NODE_ID][0].display_width,
             160
         );
     }
@@ -2130,7 +2130,7 @@ mod tests {
         let shared_path = temp_dir
             .path()
             .join(".yonalist")
-            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
 
         let connection = connect_notes_db(&vault_path).expect("connect trigger");
         connection
@@ -2207,13 +2207,19 @@ mod tests {
         let imported = notes_import_attachment(
             vault_path.clone(),
             import_input(ATTACHMENT_ID, source),
-            Some(import_context),
+            Some(import_context.clone()),
         )
         .expect("journaled import");
+        assert_eq!(
+            imported.history_entry_id.as_deref(),
+            Some(import_context.entry_id.as_str())
+        );
+        assert!(imported.can_undo);
+        assert!(!imported.can_redo);
         let asset_path = temp_dir
             .path()
             .join(".yonalist")
-            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
         let mut connection = connect_notes_db(&vault_path).expect("connect history");
         let undone =
             undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo import");
@@ -2225,15 +2231,21 @@ mod tests {
         drop(connection);
 
         let resize_context = history_context(2, "resizeAttachment");
-        notes_resize_attachment(
+        let resized = notes_resize_attachment(
             vault_path.clone(),
             ResizeAttachmentInput {
                 id: ATTACHMENT_ID.to_string(),
                 display_width: 180,
             },
-            Some(resize_context),
+            Some(resize_context.clone()),
         )
         .expect("journaled resize");
+        assert_eq!(
+            resized.history_entry_id.as_deref(),
+            Some(resize_context.entry_id.as_str())
+        );
+        assert!(resized.can_undo);
+        assert!(!resized.can_redo);
         let mut connection = connect_notes_db(&vault_path).expect("connect resize history");
         assert_eq!(
             undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
@@ -2254,12 +2266,18 @@ mod tests {
         drop(connection);
 
         let remove_context = history_context(3, "removeAttachment");
-        notes_remove_attachment(
+        let removed = notes_remove_attachment(
             vault_path.clone(),
             ATTACHMENT_ID.to_string(),
-            Some(remove_context),
+            Some(remove_context.clone()),
         )
         .expect("journaled remove");
+        assert_eq!(
+            removed.history_entry_id.as_deref(),
+            Some(remove_context.entry_id.as_str())
+        );
+        assert!(removed.can_undo);
+        assert!(!removed.can_redo);
         assert!(asset_path.is_file(), "undo-reachable bytes were removed");
         let restored = notes_restore_attachment(
             vault_path.clone(),
@@ -2268,12 +2286,22 @@ mod tests {
         )
         .expect("explicit history restore");
         assert_eq!(
-            restored.attachments_by_node_id[NODE_ID][0].display_width,
+            restored.history_entry_id.as_deref(),
+            Some("00000000-0000-4000-8000-000000000004")
+        );
+        assert!(restored.can_undo);
+        assert!(!restored.can_redo);
+        assert_eq!(
+            restored.workspace.attachments_by_node_id[NODE_ID][0].display_width,
             180
         );
 
-        notes_remove_attachment(vault_path.clone(), ATTACHMENT_ID.to_string(), None)
-            .expect("permanent metadata removal");
+        let unjournaled =
+            notes_remove_attachment(vault_path.clone(), ATTACHMENT_ID.to_string(), None)
+                .expect("permanent metadata removal");
+        assert_eq!(unjournaled.history_entry_id, None);
+        assert!(!unjournaled.can_undo);
+        assert!(!unjournaled.can_redo);
         notes_clear_history(vault_path, SESSION_ID.to_string()).expect("clear history");
         assert!(
             !asset_path.exists(),
@@ -2344,7 +2372,7 @@ mod tests {
             let asset_path = temp_dir
                 .path()
                 .join(".yonalist")
-                .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+                .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
             notes_undo(
                 vault_path.clone(),
                 SESSION_ID.to_string(),
@@ -2405,7 +2433,7 @@ mod tests {
         let asset_path = temp_dir
             .path()
             .join(".yonalist")
-            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
         let unrelated = asset_root.join("unrelated-sentinel");
         fs::write(&unrelated, b"not a managed attachment").expect("write unrelated sentinel");
         let connection = connect_notes_db(&vault_path).expect("remove live metadata");
@@ -2467,7 +2495,7 @@ mod tests {
         let asset_path = temp_dir
             .path()
             .join(".yonalist")
-            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
 
         let mut connection = connect_notes_db(&vault_path).expect("connect lifecycle");
         soft_delete_node(&mut connection, NODE_ID).expect("trash node");
@@ -2540,7 +2568,7 @@ mod tests {
         let asset_path = temp_dir
             .path()
             .join(".yonalist")
-            .join(&workspace.attachments_by_node_id[NODE_ID][0].relative_path);
+            .join(&workspace.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
         let mut connection = connect_notes_db(&vault_path).expect("connect");
         soft_delete_node(&mut connection, NODE_ID).expect("trash node");
         drop(connection);

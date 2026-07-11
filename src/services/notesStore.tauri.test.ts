@@ -5,6 +5,7 @@ import type {
   NotesHistoryContext,
   NotesHistoryReplayResult,
   NotesHistoryStatus,
+  NotesMutationResult,
   NoteStructuredSearchQuery,
   NotesWorkspace,
   SplitNoteNodeInput,
@@ -72,6 +73,18 @@ const historyContext: NotesHistoryContext = {
   entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   commandKind: "updateText"
 };
+const mutationResult: NotesMutationResult = {
+  workspace,
+  historyEntryId: historyContext.entryId,
+  canUndo: true,
+  canRedo: false
+};
+const unjournaledMutationResult: NotesMutationResult = {
+  workspace,
+  historyEntryId: null,
+  canUndo: false,
+  canRedo: false
+};
 
 describe("notesStore in Tauri", () => {
   beforeEach(() => {
@@ -113,7 +126,7 @@ describe("notesStore in Tauri", () => {
       .mockResolvedValueOnce(workspace)
       .mockResolvedValueOnce(workspace)
       .mockResolvedValueOnce(searchResults)
-      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(unjournaledMutationResult)
       .mockResolvedValueOnce(["offline", "roadmap"])
       .mockResolvedValueOnce([
         {
@@ -141,7 +154,9 @@ describe("notesStore in Tauri", () => {
       notesLoadWorkspace(vaultPath, { kind: "tag", tag: "roadmap" })
     ).resolves.toBe(workspace);
     await expect(notesSearch(vaultPath, "target")).resolves.toBe(searchResults);
-    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toBe(workspace);
+    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toBe(
+      unjournaledMutationResult
+    );
     await expect(notesListTags(vaultPath)).resolves.toEqual(["offline", "roadmap"]);
     await expect(notesListTagsWithCounts(vaultPath)).resolves.toEqual([
       {
@@ -318,12 +333,20 @@ describe("notesStore in Tauri", () => {
       parentId: secondNodeId,
       afterId: null
     };
-    invokeMock.mockResolvedValue(workspace);
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesCreateNode(vaultPath, createInput)).resolves.toBe(workspace);
-    await expect(notesUpdateNode(vaultPath, updateInput)).resolves.toBe(workspace);
-    await expect(notesSplitNode(vaultPath, splitInput)).resolves.toBe(workspace);
-    await expect(notesMoveNode(vaultPath, moveInput)).resolves.toBe(workspace);
+    await expect(notesCreateNode(vaultPath, createInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
+    await expect(notesUpdateNode(vaultPath, updateInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
+    await expect(notesSplitNode(vaultPath, splitInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
+    await expect(notesMoveNode(vaultPath, moveInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_create_node", {
       vaultPath,
@@ -347,6 +370,46 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("returns the atomic mutation result from the native adapter", async () => {
+    invokeMock.mockResolvedValue(mutationResult);
+
+    await expect(
+      notesUpdateNode(
+        vaultPath,
+        { id: nodeId, title: "Journaled", note: "" },
+        historyContext
+      )
+    ).resolves.toBe(mutationResult);
+
+    expect(invokeMock).toHaveBeenCalledWith("notes_update_node", {
+      vaultPath,
+      input: { id: nodeId, title: "Journaled", note: "" },
+      historyContext
+    });
+  });
+
+  it("rejects malformed mutation wrappers and unexpected history entry IDs", async () => {
+    invokeMock
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce({
+        ...mutationResult,
+        historyEntryId: secondNodeId
+      });
+
+    await expect(
+      notesUpdateNode(vaultPath, { id: nodeId, title: "Invalid", note: "" })
+    ).rejects.toEqual(new Error("Notes mutation returned an invalid result."));
+    await expect(
+      notesUpdateNode(
+        vaultPath,
+        { id: nodeId, title: "Mismatched", note: "" },
+        historyContext
+      )
+    ).rejects.toEqual(
+      new Error("Notes mutation returned an unexpected history entry ID.")
+    );
+  });
+
   it("passes beforeId unchanged and keeps legacy afterId-only moves valid", async () => {
     const beforeInput: MoveNoteNodeInput = {
       id: nodeId,
@@ -359,10 +422,14 @@ describe("notesStore in Tauri", () => {
       parentId: null,
       afterId: nodeId
     };
-    invokeMock.mockResolvedValue(workspace);
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toBe(workspace);
-    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toBe(workspace);
+    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
+    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toBe(
+      unjournaledMutationResult
+    );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_move_node", {
       vaultPath,
@@ -384,9 +451,11 @@ describe("notesStore in Tauri", () => {
     ["notes_soft_delete_node", notesSoftDeleteNode],
     ["notes_restore_node", notesRestoreNode]
   ] as const)("maps %s to the exact nodeId payload", async (command, adapter) => {
-    invokeMock.mockResolvedValue(workspace);
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);
+    await expect(adapter(vaultPath, nodeId)).resolves.toBe(
+      unjournaledMutationResult
+    );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
       vaultPath,
@@ -399,9 +468,11 @@ describe("notesStore in Tauri", () => {
     ["notes_archive_node", notesArchiveNode],
     ["notes_unarchive_node", notesUnarchiveNode]
   ] as const)("maps %s to the exact root node payload", async (command, adapter) => {
-    invokeMock.mockResolvedValue(workspace);
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);
+    await expect(adapter(vaultPath, nodeId)).resolves.toBe(
+      unjournaledMutationResult
+    );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
       vaultPath,
@@ -419,7 +490,7 @@ describe("notesStore in Tauri", () => {
     };
     const status: NotesHistoryStatus = { canUndo: true, canRedo: false };
     invokeMock
-      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(mutationResult)
       .mockResolvedValueOnce(replay)
       .mockResolvedValueOnce(replay)
       .mockResolvedValueOnce(status)
@@ -431,7 +502,7 @@ describe("notesStore in Tauri", () => {
         { id: nodeId, title: "Journaled", note: "" },
         historyContext
       )
-    ).resolves.toBe(workspace);
+    ).resolves.toBe(mutationResult);
     await expect(
       notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
     ).resolves.toBe(replay);

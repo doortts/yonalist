@@ -7,12 +7,14 @@ import {
   useRef,
   useState
 } from "react";
-import { createNoteId } from "../../domain/notes";
+import { createNoteId, isNotesMutationResult } from "../../domain/notes";
 import type {
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
   NotesHistoryContext,
+  NotesHistoryStatus,
+  NotesMutationResponse,
   NoteSearchResult,
   NotesStore,
   NotesStoreError,
@@ -156,6 +158,45 @@ function authoritative(
   };
 }
 
+interface UnwrappedNotesMutation {
+  workspace: NotesWorkspace;
+  historyEntryId: string | null | undefined;
+  historyStatus: NotesHistoryStatus | undefined;
+  atomic: boolean;
+}
+
+function unwrapNotesMutation(
+  response: NotesMutationResponse
+): UnwrappedNotesMutation {
+  if (isNotesMutationResult(response)) {
+    return {
+      workspace: response.workspace,
+      historyEntryId: response.historyEntryId,
+      historyStatus: {
+        canUndo: response.canUndo,
+        canRedo: response.canRedo
+      },
+      atomic: true
+    };
+  }
+  return {
+    workspace: response,
+    historyEntryId: undefined,
+    historyStatus: undefined,
+    atomic: false
+  };
+}
+
+function appliedHistoryContext(
+  context: NotesHistoryContext | null | undefined,
+  mutation: UnwrappedNotesMutation
+): NotesHistoryContext | null | undefined {
+  if (!mutation.atomic) {
+    return context;
+  }
+  return context?.entryId === mutation.historyEntryId ? context : null;
+}
+
 function historyArguments(
   context: NotesHistoryContext | null | undefined
 ): [] | [NotesHistoryContext] {
@@ -177,7 +218,7 @@ async function workspaceForScope(
 }
 
 interface NotesWorkspaceQueueStep {
-  run(): Promise<NotesWorkspace>;
+  run(): Promise<NotesMutationResponse>;
   historyEntryId?: string;
 }
 
@@ -715,19 +756,32 @@ async function runCompoundQueueWork(
 ): Promise<NotesWorkspaceQueueResult> {
   let workspace = context.confirmedWorkspace;
   let hasAuthoritativeStep = false;
+  let historyStatus: NotesHistoryStatus | undefined;
   const committedHistoryEntryIds: string[] = [];
 
   try {
     for (const step of steps) {
-      workspace = await step.run();
+      const mutation = unwrapNotesMutation(await step.run());
+      workspace = mutation.workspace;
       hasAuthoritativeStep = true;
-      if (step.historyEntryId) {
-        committedHistoryEntryIds.push(step.historyEntryId);
+      historyStatus = mutation.historyStatus ?? historyStatus;
+      const committedHistoryEntryId = mutation.atomic
+        ? mutation.historyEntryId
+        : step.historyEntryId;
+      if (
+        committedHistoryEntryId &&
+        !committedHistoryEntryIds.includes(committedHistoryEntryId)
+      ) {
+        committedHistoryEntryIds.push(committedHistoryEntryId);
       }
     }
     return authoritative(
       await workspaceForScope(context, workspace, scope),
-      uiUpdate
+      uiUpdate,
+      historyStatus,
+      committedHistoryEntryIds.length > 0
+        ? { committedHistoryEntryIds }
+        : undefined
     );
   } catch (cause) {
     if (hasAuthoritativeStep && scope.kind !== "active") {
@@ -745,6 +799,7 @@ async function runCompoundQueueWork(
       kind: "failure",
       error: errorMessage(cause),
       ...(hasAuthoritativeStep ? { workspace } : {}),
+      ...(historyStatus ? { historyStatus } : {}),
       ...(committedHistoryEntryIds.length > 0
         ? { committedHistoryEntryIds }
         : {})
@@ -1661,28 +1716,36 @@ export function useNotesWorkspace({
           return result;
         }
         try {
-          const mutationWorkspace = await context.repository.updateNode(
-            context.vaultRoot,
-            {
-              id: nodeId,
-              title: draft.title,
-              note: draft.note
-            },
-            ...historyArguments(historyContext)
+          const mutation = unwrapNotesMutation(
+            await context.repository.updateNode(
+              context.vaultRoot,
+              {
+                id: nodeId,
+                title: draft.title,
+                note: draft.note
+              },
+              ...historyArguments(historyContext)
+            )
           );
           const projectedWorkspace = await workspaceForScope(
             context,
-            mutationWorkspace,
+            mutation.workspace,
             activeScopeRef.current
           );
+          const appliedContext = appliedHistoryContext(historyContext, mutation);
+          if (historyContext && mutation.atomic && !appliedContext) {
+            discardHistoryEntry(historyContext);
+          }
           rememberHistoryAfter(
-            historyContext,
+            appliedContext,
             projectedWorkspace,
             undefined,
             attempt.focus
           );
           result = authoritative(
-            projectedWorkspace
+            projectedWorkspace,
+            undefined,
+            mutation.historyStatus
           );
         } catch (cause) {
           result = { kind: "failure", error: errorMessage(cause) };
@@ -1706,6 +1769,7 @@ export function useNotesWorkspace({
     },
     [
       beginStandaloneTextEntry,
+      discardHistoryEntry,
       publishDraftState,
       rememberHistoryAfter,
       settleDraftWrite
@@ -2409,7 +2473,7 @@ export function useNotesWorkspace({
         return { kind: "skipped" };
       }
       const id = createNoteId();
-      const workspace = await context.repository.createNode(
+      const mutation = unwrapNotesMutation(await context.repository.createNode(
         context.vaultRoot,
         {
           id,
@@ -2419,13 +2483,17 @@ export function useNotesWorkspace({
           note: ""
         },
         ...historyArguments(historyContext)
-      );
+      ));
       if (
         ownerRecord.closing ||
         sessionRecordRef.current !== ownerRecord ||
         sessionRef.current !== ownerRecord.session
       ) {
-        return authoritative(workspace);
+        return authoritative(
+          mutation.workspace,
+          undefined,
+          mutation.historyStatus
+        );
       }
       created = true;
       creation.record = ownerRecord;
@@ -2438,15 +2506,16 @@ export function useNotesWorkspace({
         zoomRootId: null
       };
       rememberHistoryAfter(
-        historyContext,
-        workspace,
+        appliedHistoryContext(historyContext, mutation),
+        mutation.workspace,
         uiUpdate,
         undefined,
         transitionToAll ? new Set() : locallyExpandedNodeIdsRef.current
       );
       return authoritative(
-        workspace,
-        uiUpdate
+        mutation.workspace,
+        uiUpdate,
+        mutation.historyStatus
       );
     });
     if (
@@ -2479,7 +2548,7 @@ export function useNotesWorkspace({
           return { kind: "skipped" };
         }
         const id = createNoteId();
-        const workspace = await context.repository.createNode(
+        const mutation = unwrapNotesMutation(await context.repository.createNode(
           context.vaultRoot,
           {
             id,
@@ -2489,10 +2558,10 @@ export function useNotesWorkspace({
             note: ""
           },
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
         const uiUpdate = {
@@ -2501,10 +2570,15 @@ export function useNotesWorkspace({
           pendingFocusId: id,
           pendingFocusField: "title" as const
         };
-        rememberHistoryAfter(historyContext, projectedWorkspace, uiUpdate);
-        return authoritative(
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
           projectedWorkspace,
           uiUpdate
+        );
+        return authoritative(
+          projectedWorkspace,
+          uiUpdate,
+          mutation.historyStatus
         );
       });
     },
@@ -2550,18 +2624,19 @@ export function useNotesWorkspace({
             steps.push({
               historyEntryId: inlineTextContext?.entryId,
               run: async () => {
-                const workspace = await context.repository.updateNode(
+                const response = await context.repository.updateNode(
                   context.vaultRoot,
                   { id: nodeId, ...inlineDraft },
                   ...historyArguments(inlineTextContext)
                 );
+                const mutation = unwrapNotesMutation(response);
                 rememberHistoryAfter(
-                  inlineTextContext,
-                  workspace,
+                  appliedHistoryContext(inlineTextContext, mutation),
+                  mutation.workspace,
                   undefined,
                   { nodeId, field: "title" }
                 );
-                return workspace;
+                return response;
               }
             });
           }
@@ -2591,7 +2666,10 @@ export function useNotesWorkspace({
           settleInlineTextEntry(executionRecord, inlineTextContext, result);
           if (result.kind === "authoritative") {
             rememberHistoryAfter(
-              historyContext,
+              historyContext &&
+                result.committedHistoryEntryIds?.includes(historyContext.entryId)
+                ? historyContext
+                : null,
               result.workspace,
               result.uiUpdate
             );
@@ -2624,22 +2702,27 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.updateNode(
+        const mutation = unwrapNotesMutation(await context.repository.updateNode(
           context.vaultRoot,
           {
             id: nodeId,
             ...patch
           },
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
           projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
         );
       });
     },
@@ -2685,18 +2768,19 @@ export function useNotesWorkspace({
           steps.push({
             historyEntryId: inlineTextContext?.entryId,
             run: async () => {
-              const workspace = await context.repository.updateNode(
+              const response = await context.repository.updateNode(
                 context.vaultRoot,
                 { id: input.id, ...inlineDraft },
                 ...historyArguments(inlineTextContext)
               );
+              const mutation = unwrapNotesMutation(response);
               rememberHistoryAfter(
-                inlineTextContext,
-                workspace,
+                appliedHistoryContext(inlineTextContext, mutation),
+                mutation.workspace,
                 undefined,
                 { nodeId: input.id, field: "title" }
               );
-              return workspace;
+              return response;
             }
           });
         }
@@ -2730,7 +2814,10 @@ export function useNotesWorkspace({
         settleInlineTextEntry(executionRecord, inlineTextContext, result);
         if (result.kind === "authoritative") {
           rememberHistoryAfter(
-            historyContext,
+            historyContext &&
+              result.committedHistoryEntryIds?.includes(historyContext.entryId)
+              ? historyContext
+              : null,
             result.workspace,
             result.uiUpdate
           );
@@ -2766,18 +2853,25 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.toggleComplete(
+        const mutation = unwrapNotesMutation(await context.repository.toggleComplete(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(projectedWorkspace);
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
+          projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
+        );
       });
     },
     [
@@ -2802,18 +2896,25 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.toggleCollapsed(
+        const mutation = unwrapNotesMutation(await context.repository.toggleCollapsed(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(projectedWorkspace);
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
+          projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
+        );
       });
     },
     [
@@ -2833,18 +2934,25 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.toggleStar(
+        const mutation = unwrapNotesMutation(await context.repository.toggleStar(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(projectedWorkspace);
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
+          projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
+        );
       });
     },
     [
@@ -2863,15 +2971,15 @@ export function useNotesWorkspace({
         if (!before.nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.duplicateNode(
+        const mutation = unwrapNotesMutation(await context.repository.duplicateNode(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
-        const duplicateId = duplicateRootId(before, workspace, nodeId);
+        ));
+        const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
         const uiUpdate = duplicateId
@@ -2882,10 +2990,15 @@ export function useNotesWorkspace({
               pendingFocusField: "title" as const
             }
           : undefined;
-        rememberHistoryAfter(historyContext, projectedWorkspace, uiUpdate);
-        return authoritative(
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
           projectedWorkspace,
           uiUpdate
+        );
+        return authoritative(
+          projectedWorkspace,
+          uiUpdate,
+          mutation.historyStatus
         );
       });
     },
@@ -2947,7 +3060,7 @@ export function useNotesWorkspace({
           if (!root || root.parentId !== null) {
             return { kind: "skipped" };
           }
-          const mutationWorkspace = await (mutation === "archive"
+          const mutationResult = unwrapNotesMutation(await (mutation === "archive"
             ? context.repository.archiveNode(
                 context.vaultRoot,
                 nodeId,
@@ -2963,16 +3076,16 @@ export function useNotesWorkspace({
                   context.vaultRoot,
                   nodeId,
                   ...historyArguments(historyContext)
-                ));
+                )));
           if (
             ownerRecord.closing ||
             sessionRecordRef.current !== ownerRecord ||
             sessionRef.current !== ownerRecord.session
           ) {
             return authoritative(
-              mutationWorkspace,
+              mutationResult.workspace,
               undefined,
-              undefined,
+              mutationResult.historyStatus,
               { scopeAgnostic: beforeNavigation.scope.kind !== "active" }
             );
           }
@@ -2981,18 +3094,22 @@ export function useNotesWorkspace({
           try {
             projectedWorkspace = await workspaceForScope(
               context,
-              mutationWorkspace,
+              mutationResult.workspace,
               requestedScope
             );
             if (!isLifecycleOwnerActive()) {
-              return authoritative(projectedWorkspace);
+              return authoritative(
+                projectedWorkspace,
+                undefined,
+                mutationResult.historyStatus
+              );
             }
           } catch {
             if (!isLifecycleOwnerActive()) {
               return authoritative(
-                mutationWorkspace,
+                mutationResult.workspace,
                 undefined,
-                undefined,
+                mutationResult.historyStatus,
                 { scopeAgnostic: beforeNavigation.scope.kind !== "active" }
               );
             }
@@ -3004,10 +3121,14 @@ export function useNotesWorkspace({
                 activeScopeRef.current
               );
               if (!isLifecycleOwnerActive()) {
-                return authoritative(projectedWorkspace);
+                return authoritative(
+                  projectedWorkspace,
+                  undefined,
+                  mutationResult.historyStatus
+                );
               }
             } catch {
-              projectedWorkspace = mutationWorkspace;
+              projectedWorkspace = mutationResult.workspace;
             }
           }
           try {
@@ -3015,13 +3136,21 @@ export function useNotesWorkspace({
               context.vaultRoot
             );
             if (!isLifecycleOwnerActive()) {
-              return authoritative(projectedWorkspace);
+              return authoritative(
+                projectedWorkspace,
+                undefined,
+                mutationResult.historyStatus
+              );
             }
           } catch {
             // The lifecycle result remains authoritative if tag discovery fails.
           }
           if (!isLifecycleOwnerActive()) {
-            return authoritative(projectedWorkspace);
+            return authoritative(
+              projectedWorkspace,
+              undefined,
+              mutationResult.historyStatus
+            );
           }
           const navigationVersion = navigationVersionRef.current;
           const navigation =
@@ -3067,13 +3196,17 @@ export function useNotesWorkspace({
               lifecycleResult.transition.after.pendingFocusField
           };
           rememberHistoryAfter(
-            historyContext,
+            appliedHistoryContext(historyContext, mutationResult),
             projectedWorkspace,
             uiUpdate,
             undefined,
             lifecycleResult.transition.after.locallyExpandedNodeIds
           );
-          return authoritative(projectedWorkspace, uiUpdate);
+          return authoritative(
+            projectedWorkspace,
+            uiUpdate,
+            mutationResult.historyStatus
+          );
         }
       );
 
@@ -3153,18 +3286,19 @@ export function useNotesWorkspace({
           steps.push({
             historyEntryId: inlineTextContext?.entryId,
             run: async () => {
-              const workspace = await context.repository.updateNode(
+              const response = await context.repository.updateNode(
                 context.vaultRoot,
                 { id: nodeId, ...inlineDraft },
                 ...historyArguments(inlineTextContext)
               );
+              const mutation = unwrapNotesMutation(response);
               rememberHistoryAfter(
-                inlineTextContext,
-                workspace,
+                appliedHistoryContext(inlineTextContext, mutation),
+                mutation.workspace,
                 undefined,
                 { nodeId, field: "title" }
               );
-              return workspace;
+              return response;
             }
           });
         }
@@ -3185,7 +3319,10 @@ export function useNotesWorkspace({
         settleInlineTextEntry(executionRecord, inlineTextContext, result);
         if (result.kind === "authoritative") {
           rememberHistoryAfter(
-            historyContext,
+            historyContext &&
+              result.committedHistoryEntryIds?.includes(historyContext.entryId)
+              ? historyContext
+              : null,
             result.workspace,
             result.uiUpdate
           );
@@ -3215,18 +3352,25 @@ export function useNotesWorkspace({
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
-        const workspace = await context.repository.softDeleteNode(
+        const mutation = unwrapNotesMutation(await context.repository.softDeleteNode(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(projectedWorkspace);
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
+          projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
+        );
       });
     },
     [
@@ -3243,18 +3387,25 @@ export function useNotesWorkspace({
     (nodeId: NoteId) => {
       closeTextBurst();
       return runStructuralCommand("restore", async (context, historyContext) => {
-        const workspace = await context.repository.restoreNode(
+        const mutation = unwrapNotesMutation(await context.repository.restoreNode(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
-        );
+        ));
         const projectedWorkspace = await workspaceForScope(
           context,
-          workspace,
+          mutation.workspace,
           activeScopeRef.current
         );
-        rememberHistoryAfter(historyContext, projectedWorkspace);
-        return authoritative(projectedWorkspace);
+        rememberHistoryAfter(
+          appliedHistoryContext(historyContext, mutation),
+          projectedWorkspace
+        );
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutation.historyStatus
+        );
       });
     },
     [

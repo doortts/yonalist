@@ -96,6 +96,15 @@ pub struct NotesWorkspace {
     pub attachments_by_node_id: BTreeMap<NoteId, Vec<NoteAttachment>>,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesMutationResult {
+    pub workspace: NotesWorkspace,
+    pub history_entry_id: Option<String>,
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportAttachmentInput {
@@ -334,8 +343,8 @@ mod tests {
     use super::{
         validate_note_id, MoveNodeInput, NoteAttachment, NoteSearchTag, NoteStructuredSearchQuery,
         NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult,
-        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace,
-        NotesWorkspaceScope,
+        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult,
+        NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -527,6 +536,25 @@ mod tests {
         assert_eq!(
             serde_json::to_value(NotesHistoryStatus::default()).expect("history status"),
             json!({ "canUndo": false, "canRedo": false })
+        );
+
+        let mutation = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: Vec::new(),
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            history_entry_id: Some(SECOND_ID.to_string()),
+            can_undo: true,
+            can_redo: false,
+        };
+        assert_eq!(
+            serde_json::to_value(mutation).expect("mutation result"),
+            json!({
+                "workspace": { "nodes": [], "attachmentsByNodeId": {} },
+                "historyEntryId": SECOND_ID,
+                "canUndo": true,
+                "canRedo": false
+            })
         );
     }
 

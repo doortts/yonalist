@@ -18,7 +18,8 @@ use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, MoveNodeInput, NoteSearchResult,
     NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
     NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
-    NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
+    NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
+    SplitNodeInput, UpdateNodeInput,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -37,7 +38,7 @@ fn run_mutation(
     vault_path: &str,
     history_context: Option<NotesHistoryContext>,
     operation: impl FnOnce(&mut rusqlite::Connection) -> Result<NotesWorkspace, String>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(vault_path)?;
     let mut connection = connect_notes_db(vault_path)?;
     let result =
@@ -47,7 +48,7 @@ fn run_mutation(
         &connection,
         &result.pruned_attachment_paths,
     );
-    Ok(result.workspace)
+    Ok(result.into_mutation_result())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -67,7 +68,7 @@ pub(crate) fn notes_create_node(
     vault_path: String,
     input: CreateNodeInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         create_node(connection, input)
     })
@@ -78,7 +79,7 @@ pub(crate) fn notes_update_node(
     vault_path: String,
     input: UpdateNodeInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         update_node(connection, input)
     })
@@ -89,7 +90,7 @@ pub(crate) fn notes_split_node(
     vault_path: String,
     input: SplitNodeInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         split_node(connection, input)
     })
@@ -100,7 +101,7 @@ pub(crate) fn notes_move_node(
     vault_path: String,
     input: MoveNodeInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         move_node(connection, input)
     })
@@ -111,7 +112,7 @@ pub(crate) fn notes_toggle_complete(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         toggle_complete(connection, &node_id)
     })
@@ -122,7 +123,7 @@ pub(crate) fn notes_toggle_collapsed(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         toggle_collapsed(connection, &node_id)
     })
@@ -133,7 +134,7 @@ pub(crate) fn notes_toggle_star(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         toggle_star(connection, &node_id)
     })
@@ -144,7 +145,7 @@ pub(crate) fn notes_duplicate_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         duplicate_node(connection, &node_id)
     })
@@ -155,7 +156,7 @@ pub(crate) fn notes_remove_empty_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         remove_empty_node(connection, &node_id)
     })
@@ -166,7 +167,7 @@ pub(crate) fn notes_soft_delete_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         soft_delete_node(connection, &node_id)
     })
@@ -177,7 +178,7 @@ pub(crate) fn notes_restore_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         restore_node(connection, &node_id)
     })
@@ -188,7 +189,7 @@ pub(crate) fn notes_archive_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         archive_node(connection, &node_id)
     })
@@ -199,7 +200,7 @@ pub(crate) fn notes_unarchive_node(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         unarchive_node(connection, &node_id)
     })
@@ -318,7 +319,7 @@ pub(crate) fn notes_import_attachment(
     vault_path: String,
     input: ImportAttachmentInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     validate_note_id(&input.id)
         .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
     validate_note_id(&input.node_id)?;
@@ -359,7 +360,7 @@ pub(crate) fn notes_import_attachment(
     ) {
         Ok(result) => {
             reconcile_after_committed_attachment_change(&storage, &connection);
-            Ok(result.workspace)
+            Ok(result.into_mutation_result())
         }
         Err(error) => Err(attachment_metadata_error(&storage, &connection, error)),
     }
@@ -382,7 +383,7 @@ pub(crate) fn notes_resize_attachment(
     vault_path: String,
     input: ResizeAttachmentInput,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let result = with_history_transaction_and_prunes(
@@ -396,7 +397,7 @@ pub(crate) fn notes_resize_attachment(
         &result.pruned_attachment_paths,
     );
     reconcile_after_committed_attachment_change(&storage, &connection);
-    Ok(result.workspace)
+    Ok(result.into_mutation_result())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -404,7 +405,7 @@ pub(crate) fn notes_remove_attachment(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let result = with_history_transaction_and_prunes(
@@ -418,7 +419,7 @@ pub(crate) fn notes_remove_attachment(
         &result.pruned_attachment_paths,
     );
     reconcile_after_committed_attachment_change(&storage, &connection);
-    Ok(result.workspace)
+    Ok(result.into_mutation_result())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -426,7 +427,7 @@ pub(crate) fn notes_restore_attachment(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
-) -> Result<NotesWorkspace, String> {
+) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let attachment = removed_attachment_snapshot(&connection, &attachment_id)?;
@@ -438,7 +439,7 @@ pub(crate) fn notes_restore_attachment(
     ) {
         Ok(result) => {
             reconcile_after_committed_attachment_change(&storage, &connection);
-            Ok(result.workspace)
+            Ok(result.into_mutation_result())
         }
         Err(error) => Err(attachment_metadata_error(&storage, &connection, error)),
     }
@@ -582,6 +583,8 @@ mod tests {
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SPLIT_ID: &str = "22222222-2222-4222-8222-222222222222";
     const EMPTY_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const REPLACEMENT_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const INVALID_DESCENDANT_ID: &str = "bad -->\n# injected";
 
     fn assert_active(workspace: &NotesWorkspace) {
@@ -792,7 +795,7 @@ mod tests {
             None,
         )
         .expect("create");
-        assert_active(&workspace);
+        assert_active(&workspace.workspace);
 
         let workspace = notes_update_node(
             vault_path.clone(),
@@ -804,7 +807,7 @@ mod tests {
             None,
         )
         .expect("update");
-        assert_eq!(workspace.nodes[0].title, "Updated page");
+        assert_eq!(workspace.workspace.nodes[0].title, "Updated page");
 
         let workspace = notes_split_node(
             vault_path.clone(),
@@ -817,7 +820,7 @@ mod tests {
             None,
         )
         .expect("split");
-        assert_active(&workspace);
+        assert_active(&workspace.workspace);
 
         notes_create_node(
             vault_path.clone(),
@@ -843,11 +846,12 @@ mod tests {
             None,
         )
         .expect("move");
-        assert_active(&workspace);
+        assert_active(&workspace.workspace);
 
         let workspace = notes_toggle_complete(vault_path.clone(), ROOT_ID.to_string(), None)
             .expect("toggle complete");
         assert!(workspace
+            .workspace
             .nodes
             .iter()
             .find(|node| node.id == ROOT_ID)
@@ -859,6 +863,7 @@ mod tests {
             .expect("toggle collapsed");
         assert!(
             workspace
+                .workspace
                 .nodes
                 .iter()
                 .find(|node| node.id == ROOT_ID)
@@ -868,18 +873,18 @@ mod tests {
 
         let workspace =
             notes_duplicate_node(vault_path.clone(), ROOT_ID.to_string(), None).expect("duplicate");
-        assert_eq!(workspace.nodes.len(), 6);
-        assert_active(&workspace);
+        assert_eq!(workspace.workspace.nodes.len(), 6);
+        assert_active(&workspace.workspace);
 
         let workspace = notes_remove_empty_node(vault_path.clone(), EMPTY_ID.to_string(), None)
             .expect("remove empty");
-        assert_eq!(workspace.nodes.len(), 5);
-        assert_active(&workspace);
+        assert_eq!(workspace.workspace.nodes.len(), 5);
+        assert_active(&workspace.workspace);
 
         let workspace = notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string(), None)
             .expect("soft delete");
-        assert_eq!(workspace.nodes.len(), 4);
-        assert_active(&workspace);
+        assert_eq!(workspace.workspace.nodes.len(), 4);
+        assert_active(&workspace.workspace);
         assert_eq!(
             notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Trash)
                 .expect("trash workspace")
@@ -890,8 +895,8 @@ mod tests {
 
         let workspace =
             notes_restore_node(vault_path.clone(), SPLIT_ID.to_string(), None).expect("restore");
-        assert_eq!(workspace.nodes.len(), 5);
-        assert_active(&workspace);
+        assert_eq!(workspace.workspace.nodes.len(), 5);
+        assert_active(&workspace.workspace);
 
         notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string(), None)
             .expect("soft delete again");
@@ -902,6 +907,76 @@ mod tests {
             .expect("empty trash workspace")
             .nodes
             .is_empty());
+    }
+
+    #[test]
+    fn mutation_commands_return_the_committed_history_result_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        notes_initialize(vault_path.clone()).expect("initialize");
+        let created = notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Page".to_string(),
+                note: String::new(),
+            },
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: SPLIT_ID.to_string(),
+                command_kind: "create".to_string(),
+            }),
+        )
+        .expect("journaled create");
+        assert_eq!(created.history_entry_id.as_deref(), Some(SPLIT_ID));
+        assert!(created.can_undo);
+        assert!(!created.can_redo);
+        assert_eq!(created.workspace.nodes.len(), 1);
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo create");
+        assert!(undone.workspace.nodes.is_empty());
+        assert!(undone.can_redo);
+
+        let replacement = notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: EMPTY_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Replacement".to_string(),
+                note: String::new(),
+            },
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "create".to_string(),
+            }),
+        )
+        .expect("replacement create");
+        assert_eq!(
+            replacement.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(replacement.can_undo);
+        assert!(
+            !replacement.can_redo,
+            "new mutation invalidates redo atomically"
+        );
+
+        let unjournaled = notes_toggle_star(vault_path, EMPTY_ID.to_string(), None)
+            .expect("unjournaled mutation");
+        assert_eq!(unjournaled.history_entry_id, None);
+        assert!(!unjournaled.can_undo);
+        assert!(!unjournaled.can_redo);
+        assert!(unjournaled.workspace.nodes[0].is_starred);
     }
 
     #[test]
@@ -956,6 +1031,7 @@ mod tests {
         assert!(
             notes_toggle_star(vault_path.clone(), ROOT_ID.to_string(), None)
                 .expect("toggle star")
+                .workspace
                 .nodes[0]
                 .is_starred
         );
@@ -1092,6 +1168,7 @@ mod tests {
         assert!(
             notes_archive_node(vault_path.clone(), ROOT_ID.to_string(), None)
                 .expect("archive root")
+                .workspace
                 .nodes
                 .is_empty()
         );
@@ -1121,7 +1198,7 @@ mod tests {
 
         let active = notes_unarchive_node(vault_path.clone(), ROOT_ID.to_string(), None)
             .expect("unarchive root");
-        assert_eq!(active.nodes.len(), 1);
+        assert_eq!(active.workspace.nodes.len(), 1);
         assert_eq!(
             notes_load_workspace(vault_path.clone(), tag_scope)
                 .expect("active tag scope")

@@ -2,7 +2,7 @@ use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes};
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NotesHistoryContext, NotesHistoryReplayResult,
-    NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
+    NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
@@ -74,6 +74,11 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
         );
         CREATE TEMP TABLE IF NOT EXISTS notes_history_pruned_attachment_paths (
           relative_path TEXT PRIMARY KEY
+        );
+        CREATE TEMP TABLE IF NOT EXISTS notes_history_mutation_result (
+          history_entry_id TEXT,
+          can_undo INTEGER NOT NULL,
+          can_redo INTEGER NOT NULL
         );
 
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_insert
@@ -159,7 +164,8 @@ fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result
     connection
         .execute_batch(
             "DELETE FROM notes_history_audit; \
-             DELETE FROM notes_history_pruned_attachment_paths;",
+             DELETE FROM notes_history_pruned_attachment_paths; \
+             DELETE FROM notes_history_mutation_result;",
         )
         .and_then(|_| {
             connection.execute(
@@ -179,7 +185,21 @@ fn end_audit(connection: &Connection) -> Result<(), String> {
 
 pub(crate) struct HistoryTransactionResult {
     pub(crate) workspace: NotesWorkspace,
+    pub(crate) history_entry_id: Option<String>,
+    pub(crate) can_undo: bool,
+    pub(crate) can_redo: bool,
     pub(crate) pruned_attachment_paths: Vec<String>,
+}
+
+impl HistoryTransactionResult {
+    pub(crate) fn into_mutation_result(self) -> NotesMutationResult {
+        NotesMutationResult {
+            workspace: self.workspace,
+            history_entry_id: self.history_entry_id,
+            can_undo: self.can_undo,
+            can_redo: self.can_redo,
+        }
+    }
 }
 
 pub(crate) fn with_history_transaction_and_prunes(
@@ -190,13 +210,16 @@ pub(crate) fn with_history_transaction_and_prunes(
     let Some(context) = context else {
         return operation(connection).map(|workspace| HistoryTransactionResult {
             workspace,
+            history_entry_id: None,
+            can_undo: false,
+            can_redo: false,
             pruned_attachment_paths: Vec::new(),
         });
     };
     validate_context(context)?;
     begin_audit(connection, context)?;
     let result = operation(connection);
-    let pruned_attachment_paths = if result.is_ok() {
+    let committed_result = if result.is_ok() {
         (|| {
             let mut statement = connection
                 .prepare(
@@ -215,17 +238,41 @@ pub(crate) fn with_history_transaction_and_prunes(
                 .map_err(|error| {
                     format!("Could not collect pruned Notes attachment cleanup: {error}")
                 });
-            paths
+            let paths = paths?;
+            let mutation = connection
+                .query_row(
+                    "SELECT history_entry_id, can_undo, can_redo \
+                     FROM notes_history_mutation_result",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, Option<String>>(0)?,
+                            row.get::<_, bool>(1)?,
+                            row.get::<_, bool>(2)?,
+                        ))
+                    },
+                )
+                .map_err(|error| {
+                    format!("Could not read the committed Notes mutation result: {error}")
+                })?;
+            Ok((paths, mutation))
         })()
     } else {
-        Ok(Vec::new())
+        Ok((Vec::new(), (None, false, false)))
     };
     let cleanup = end_audit(connection);
-    match (result, pruned_attachment_paths, cleanup) {
+    match (result, committed_result, cleanup) {
         (Err(error), _, _) => Err(error),
         (Ok(_), Err(error), _) | (Ok(_), Ok(_), Err(error)) => Err(error),
-        (Ok(workspace), Ok(pruned_attachment_paths), Ok(())) => Ok(HistoryTransactionResult {
+        (
+            Ok(workspace),
+            Ok((pruned_attachment_paths, (history_entry_id, can_undo, can_redo))),
+            Ok(()),
+        ) => Ok(HistoryTransactionResult {
             workspace,
+            history_entry_id,
+            can_undo,
+            can_redo,
             pruned_attachment_paths,
         }),
     }
@@ -313,7 +360,7 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
         changes
     };
     if audit.is_empty() {
-        return Ok(());
+        return record_mutation_result(transaction, &context.0, &context.1);
     }
 
     let existing = transaction
@@ -418,7 +465,7 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
                 [&context.1],
             )
             .map_err(|error| format!("Could not remove empty Notes history entry: {error}"))?;
-        return Ok(());
+        return record_mutation_result(transaction, &context.0, &context.1);
     }
     transaction
         .execute(
@@ -431,7 +478,38 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
             [&context.1],
         )
         .map_err(|error| format!("Could not estimate Notes history payload: {error}"))?;
-    enforce_limits(transaction)
+    enforce_limits(transaction)?;
+    record_mutation_result(transaction, &context.0, &context.1)
+}
+
+fn record_mutation_result(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    entry_id: &str,
+) -> Result<(), String> {
+    let history_entry_id = transaction
+        .query_row(
+            "SELECT id FROM notes_history_entries WHERE id = ?1 AND session_id = ?2",
+            params![entry_id, session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect the applied Notes history entry: {error}"))?;
+    let status = history_status(transaction, session_id)?;
+    transaction
+        .execute("DELETE FROM notes_history_mutation_result", [])
+        .and_then(|_| {
+            transaction.execute(
+                "INSERT INTO notes_history_mutation_result(\
+                   history_entry_id, can_undo, can_redo\
+                 ) VALUES (?1, ?2, ?3)",
+                params![history_entry_id, status.can_undo, status.can_redo],
+            )
+        })
+        .map_err(|error| {
+            format!("Could not capture the committed Notes mutation result: {error}")
+        })?;
+    Ok(())
 }
 
 fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   createNoteId,
   isNoteNode,
+  isNotesMutationResult,
   isNoteSearchResult,
   isNoteStructuredSearchQuery
 } from "./notes";
@@ -9,6 +10,7 @@ import type {
   NoteNode,
   NoteStructuredSearchQuery,
   NoteTagSummary,
+  NotesMutationResult,
   NotesStore,
   NotesWorkspaceScope
 } from "./notes";
@@ -45,6 +47,23 @@ describe("Notes domain contract", () => {
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), layoutMode: "board" })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), updatedAt: null })).toBe(false);
+  });
+
+  it("recognizes only the exact atomic Notes mutation result shape", () => {
+    const result: NotesMutationResult = {
+      workspace: { nodes: [makeNoteNode()] },
+      historyEntryId: UUID,
+      canUndo: true,
+      canRedo: false
+    };
+
+    expect(isNotesMutationResult(result)).toBe(true);
+    expect(isNotesMutationResult({ ...result, historyEntryId: null })).toBe(true);
+    expect(isNotesMutationResult({ ...result, historyEntryId: undefined })).toBe(false);
+    expect(isNotesMutationResult({ ...result, canUndo: 1 })).toBe(false);
+    expect(isNotesMutationResult({ ...result, workspace: { nodes: [{}] } })).toBe(
+      false
+    );
   });
 
   it("rejects incomplete Notes node payloads", () => {
