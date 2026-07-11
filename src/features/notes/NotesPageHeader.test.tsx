@@ -113,6 +113,7 @@ function renderZoomedOutline(workspace = workspaceValue()) {
 describe("NotesPageHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("renders the zoom root as a page header outside the rebased child list", () => {
