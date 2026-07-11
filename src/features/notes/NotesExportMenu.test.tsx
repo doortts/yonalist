@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteId,
@@ -190,6 +190,47 @@ function renderRealWorkspacePane(
   );
 }
 
+function RealWorkspaceExportMenu({
+  store,
+  onWorkspace
+}: {
+  store: NotesStore;
+  onWorkspace(workspace: UseNotesWorkspaceResult): void;
+}) {
+  const workspace = useNotesWorkspace({
+    vaultRoot: "/vault",
+    repository: store
+  });
+  onWorkspace(workspace);
+  return (
+    <NotesExportMenu
+      selectedNodeId="selected"
+      selectedNodeTitle={
+        workspace.draftsByNodeId.selected?.title ??
+        workspace.state.nodesById.selected?.title
+      }
+      zoomRootId="page"
+      zoomRootTitle={
+        workspace.draftsByNodeId.page?.title ??
+        workspace.state.nodesById.page?.title
+      }
+      loading={workspace.loading}
+      onFlushDrafts={workspace.actions.flushAllDrafts}
+    />
+  );
+}
+
+function renderRealWorkspaceExportMenu(
+  store: NotesStore,
+  onWorkspace: (workspace: UseNotesWorkspaceResult) => void
+) {
+  render(
+    <VaultRootContext.Provider value="/vault">
+      <RealWorkspaceExportMenu store={store} onWorkspace={onWorkspace} />
+    </VaultRootContext.Provider>
+  );
+}
+
 interface WorkspaceOptions {
   deletingNotesData?: boolean;
   draftTitle?: string;
@@ -311,6 +352,10 @@ describe("NotesExportMenu", () => {
     exportServiceMock.saveNotesExport.mockReset();
     exportServiceMock.renderMarkdownExport.mockReset();
     exportServiceMock.renderPdfExport.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("uses an accessible Export icon trigger and exposes exactly four commands", async () => {
@@ -531,7 +576,7 @@ describe("NotesExportMenu", () => {
     expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
-  it("flushes a pending child draft before exporting its parent subtree", async () => {
+  it("serializes export behind an autosave that starts from its open submenu", async () => {
     const user = userEvent.setup();
     const childWrite = deferred<NotesWorkspace>();
     const updatedWorkspace = {
@@ -541,42 +586,71 @@ describe("NotesExportMenu", () => {
       ]
     };
     const store = repository({
-      updateNode: vi.fn().mockReturnValue(childWrite.promise)
+      updateNode: vi.fn().mockReturnValue(childWrite.promise),
+      undo: vi.fn().mockResolvedValue({
+        workspace: updatedWorkspace,
+        replayedEntryId: null,
+        canUndo: false,
+        canRedo: true
+      }),
+      redo: vi.fn().mockResolvedValue({
+        workspace: updatedWorkspace,
+        replayedEntryId: null,
+        canUndo: true,
+        canRedo: false
+      })
     });
     exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
     let currentWorkspace: UseNotesWorkspaceResult | undefined;
-    renderRealWorkspacePane(store, (workspace) => {
+    renderRealWorkspaceExportMenu(store, (workspace) => {
       currentWorkspace = workspace;
     });
     await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
 
-    const childTitle = findTitleTextarea("Selected title");
-    expect(childTitle).toBeDefined();
-    fireEvent.change(childTitle!, { target: { value: "Edited child" } });
+    const menu = await openExportMenu(user);
 
-    await user.click(
-      screen.getByRole("button", { name: "More actions for Page title" })
-    );
-    let menu = await screen.findByRole("menu");
-    await user.click(within(menu).getByRole("menuitem", { name: "Export subtree" }));
-    menu = await screen.findByRole("menu");
-    await user.click(
+    vi.useFakeTimers();
+    act(() => {
+      currentWorkspace?.actions.updateNodeDraft("selected", {
+        title: "Edited child",
+        note: ""
+      });
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    expect(currentWorkspace?.status).toBe("loading");
+    expect(
+      within(screen.getByRole("menu")).getByRole("menuitem", {
+        name: "Current page as Markdown"
+      })
+    ).toBeInTheDocument();
+
+    fireEvent.click(
       within(menu).getByRole("menuitem", {
-        name: "Export subtree as Markdown"
+        name: "Current page as Markdown"
       })
     );
 
-    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "selected",
-      title: "Edited child",
-      note: ""
-    });
+    expect(screen.getByText("Exporting...")).toBeInTheDocument();
+
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "selected",
+        title: "Edited child",
+        note: ""
+      },
+      expect.objectContaining({ commandKind: "text" })
+    );
     expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
 
+    vi.useRealTimers();
     await act(async () => childWrite.resolve(updatedWorkspace));
 
     await waitFor(() => expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce());
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(currentWorkspace?.state.nodesById.selected?.title).toBe("Edited child");
     expect(vi.mocked(store.updateNode).mock.invocationCallOrder[0]).toBeLessThan(
       exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
     );
@@ -672,6 +746,31 @@ describe("NotesExportMenu", () => {
     expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
+  it("does not start a native export after the vault changes during draft flushing", async () => {
+    const user = userEvent.setup();
+    const flush = deferred<boolean>();
+    const rendered = renderExportMenu({
+      onFlushDrafts: vi.fn().mockReturnValue(flush.promise)
+    });
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    expect(await screen.findByText("Exporting...")).toBeInTheDocument();
+
+    rendered.rerenderExportMenu({}, "/other-vault");
+    await act(async () => flush.resolve(true));
+
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("suppresses a late native success after export becomes unavailable", async () => {
     const user = userEvent.setup();
     const pending = deferred<NotesExportResult | null>();
@@ -689,6 +788,35 @@ describe("NotesExportMenu", () => {
     );
 
     rendered.rerenderExportMenu({ disabled: true });
+    expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
+    await waitFor(() =>
+      expect(screen.queryByText("Exporting...")).not.toBeInTheDocument()
+    );
+
+    await act(async () => pending.resolve(exportResult("markdown")));
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("cancels a native export when a scope transition starts loading", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<NotesExportResult | null>();
+    exportServiceMock.saveNotesExport.mockReturnValue(pending.promise);
+    const rendered = renderExportMenu();
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce()
+    );
+
+    rendered.rerenderExportMenu({ loading: true });
     expect(screen.getByRole("button", { name: "Export" })).toBeDisabled();
     await waitFor(() =>
       expect(screen.queryByText("Exporting...")).not.toBeInTheDocument()

@@ -32,13 +32,14 @@ function NotesExportMenuContent({
   const controller = useNotesExportController();
   const [menuOpen, setMenuOpen] = useState(false);
   const noToolbarTarget = selectedNodeId === null && zoomRootId === null;
+  const hardUnavailable = controller.hardUnavailable || noToolbarTarget;
   const unavailable = controller.unavailable || noToolbarTarget;
 
   useEffect(() => {
-    if (unavailable) {
+    if (hardUnavailable) {
       setMenuOpen(false);
     }
-  }, [unavailable]);
+  }, [hardUnavailable]);
 
   return (
     <div className="notes-export-control" aria-busy={controller.busy}>

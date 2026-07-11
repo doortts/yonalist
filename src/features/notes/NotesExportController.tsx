@@ -44,6 +44,7 @@ export type NotesExportFeedback =
 interface NotesExportControllerValue {
   busy: boolean;
   feedback: NotesExportFeedback | null;
+  hardUnavailable: boolean;
   pendingOverwrite: PendingNotesExportOverwrite | null;
   unavailable: boolean;
   clearPendingOverwrite(): void;
@@ -99,6 +100,11 @@ export function NotesExportControllerProvider({
   const awaitingDraftFlushRef = useRef(false);
   const retryRef = useRef<RetryableAttempt | null>(null);
   const hardUnavailable = disabled || !available || !vaultPath.trim();
+  const hardUnavailableRef = useRef(hardUnavailable);
+  const vaultPathRef = useRef(vaultPath);
+  const activeVaultPathRef = useRef(vaultPath);
+  hardUnavailableRef.current = hardUnavailable;
+  vaultPathRef.current = vaultPath;
   const unavailable =
     hardUnavailable || (loading && !awaitingDraftFlushRef.current);
   const unavailableRef = useRef(unavailable);
@@ -116,7 +122,10 @@ export function NotesExportControllerProvider({
   }, []);
 
   useEffect(() => {
-    if (!unavailable) {
+    if (
+      !unavailable ||
+      (!hardUnavailable && loading && awaitingDraftFlushRef.current)
+    ) {
       return;
     }
     operationGenerationRef.current += 1;
@@ -125,22 +134,43 @@ export function NotesExportControllerProvider({
     setBusy(false);
     setFeedback(null);
     setPendingOverwrite(null);
-  }, [unavailable]);
+  }, [hardUnavailable, loading, unavailable]);
+
+  useEffect(() => {
+    if (activeVaultPathRef.current === vaultPath) {
+      return;
+    }
+    activeVaultPathRef.current = vaultPath;
+    operationGenerationRef.current += 1;
+    awaitingDraftFlushRef.current = false;
+    busyRef.current = false;
+    retryRef.current = null;
+    setBusy(false);
+    setFeedback(null);
+    setPendingOverwrite(null);
+  }, [vaultPath]);
 
   const executeAttempt = useCallback(
-    async (attempt: ExportAttempt, allowConflict: boolean) => {
+    async (
+      attempt: ExportAttempt,
+      allowConflict: boolean,
+      allowTransientLoading = false
+    ) => {
       if (
         busyRef.current ||
-        unavailableRef.current ||
+        hardUnavailableRef.current ||
+        (!allowTransientLoading && unavailableRef.current) ||
         !mountedRef.current
       ) {
         return;
       }
 
       const operationGeneration = ++operationGenerationRef.current;
+      const operationVaultPath = vaultPathRef.current;
       const isCurrent = () =>
         mountedRef.current &&
-        !unavailableRef.current &&
+        !hardUnavailableRef.current &&
+        vaultPathRef.current === operationVaultPath &&
         operationGenerationRef.current === operationGeneration;
       busyRef.current = true;
       setBusy(true);
@@ -185,7 +215,7 @@ export function NotesExportControllerProvider({
       defaultFileName: string | undefined,
       format: NotesExportFormat
     ) => {
-      if (unavailable || busyRef.current) {
+      if (hardUnavailable || busyRef.current) {
         return;
       }
 
@@ -213,9 +243,9 @@ export function NotesExportControllerProvider({
           });
         }
       };
-      void executeAttempt(attempt, true);
+      void executeAttempt(attempt, true, true);
     },
-    [executeAttempt, onFlushDrafts, unavailable, vaultPath]
+    [executeAttempt, hardUnavailable, onFlushDrafts, vaultPath]
   );
 
   const retryFailedExport = useCallback(() => {
@@ -260,6 +290,7 @@ export function NotesExportControllerProvider({
     () => ({
       busy,
       feedback,
+      hardUnavailable,
       pendingOverwrite,
       unavailable,
       clearPendingOverwrite: () => setPendingOverwrite(null),
@@ -270,6 +301,7 @@ export function NotesExportControllerProvider({
     [
       busy,
       feedback,
+      hardUnavailable,
       pendingOverwrite,
       replaceExistingExport,
       retryFailedExport,
