@@ -8,11 +8,13 @@ import type {
 } from "../domain/notes";
 import {
   notesCreateNode,
+  notesArchiveNode,
   notesDeleteDatabase,
   notesDuplicateNode,
   notesEmptyTrash,
   notesInitialize,
   notesListTags,
+  notesListTagsWithCounts,
   notesLoadWorkspace,
   notesMoveNode,
   notesRemoveEmptyNode,
@@ -23,6 +25,7 @@ import {
   notesToggleCollapsed,
   notesToggleComplete,
   notesToggleStar,
+  notesUnarchiveNode,
   notesUpdateNode
 } from "./notesStore";
 
@@ -49,7 +52,9 @@ const workspace: NotesWorkspace = {
       completedAt: null,
       createdAt: "2026-07-10T00:00:00.000Z",
       updatedAt: "2026-07-10T00:00:00.000Z",
-      deletedAt: null
+      deletedAt: null,
+      archivedAt: null,
+      archiveRootId: null
     }
   ]
 };
@@ -96,6 +101,20 @@ describe("notesStore in Tauri", () => {
       .mockResolvedValueOnce(searchResults)
       .mockResolvedValueOnce(workspace)
       .mockResolvedValueOnce(["offline", "roadmap"])
+      .mockResolvedValueOnce([
+        {
+          prefix: "#",
+          normalizedTag: "roadmap",
+          displayTag: "Roadmap",
+          count: 2
+        },
+        {
+          prefix: "@",
+          normalizedTag: "minji",
+          displayTag: "Minji",
+          count: 1
+        }
+      ])
       .mockResolvedValueOnce(undefined);
 
     await expect(
@@ -110,6 +129,20 @@ describe("notesStore in Tauri", () => {
     await expect(notesSearch(vaultPath, "target")).resolves.toBe(searchResults);
     await expect(notesToggleStar(vaultPath, nodeId)).resolves.toBe(workspace);
     await expect(notesListTags(vaultPath)).resolves.toEqual(["offline", "roadmap"]);
+    await expect(notesListTagsWithCounts(vaultPath)).resolves.toEqual([
+      {
+        prefix: "#",
+        normalizedTag: "roadmap",
+        displayTag: "Roadmap",
+        count: 2
+      },
+      {
+        prefix: "@",
+        normalizedTag: "minji",
+        displayTag: "Minji",
+        count: 1
+      }
+    ]);
     await expect(notesDeleteDatabase(vaultPath)).resolves.toBeUndefined();
 
     expect(invokeMock.mock.calls).toEqual([
@@ -122,6 +155,7 @@ describe("notesStore in Tauri", () => {
       ["notes_search", { vaultPath, query: "target" }],
       ["notes_toggle_star", { vaultPath, nodeId }],
       ["notes_list_tags", { vaultPath }],
+      ["notes_list_tags_with_counts", { vaultPath }],
       ["notes_delete_database", { vaultPath }]
     ]);
   });
@@ -225,6 +259,17 @@ describe("notesStore in Tauri", () => {
     ["notes_soft_delete_node", notesSoftDeleteNode],
     ["notes_restore_node", notesRestoreNode]
   ] as const)("maps %s to the exact nodeId payload", async (command, adapter) => {
+    invokeMock.mockResolvedValue(workspace);
+
+    await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);
+
+    expect(invokeMock).toHaveBeenCalledWith(command, { vaultPath, nodeId });
+  });
+
+  it.each([
+    ["notes_archive_node", notesArchiveNode],
+    ["notes_unarchive_node", notesUnarchiveNode]
+  ] as const)("maps %s to the exact root node payload", async (command, adapter) => {
     invokeMock.mockResolvedValue(workspace);
 
     await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);

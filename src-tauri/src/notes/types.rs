@@ -17,6 +17,8 @@ pub struct NoteNode {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    pub archived_at: Option<String>,
+    pub archive_root_id: Option<NoteId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +64,39 @@ pub struct NotesWorkspace {
     pub nodes: Vec<NoteNode>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum NoteTagPrefix {
+    #[serde(rename = "#")]
+    Hash,
+    #[serde(rename = "@")]
+    Mention,
+}
+
+impl NoteTagPrefix {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Hash => "#",
+            Self::Mention => "@",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTagFilter {
+    pub prefix: NoteTagPrefix,
+    pub normalized_tag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTagSummary {
+    pub prefix: NoteTagPrefix,
+    pub normalized_tag: String,
+    pub display_tag: String,
+    pub count: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum NotesWorkspaceScope {
@@ -69,6 +104,8 @@ pub enum NotesWorkspaceScope {
     Starred,
     Recent,
     Tag { tag: String },
+    Tags { tags: Vec<NoteTagFilter> },
+    Archive,
     Trash,
 }
 

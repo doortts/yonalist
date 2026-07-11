@@ -14,11 +14,12 @@ mod notes;
 
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
-    notes_create_node, notes_delete_database, notes_duplicate_node, notes_empty_trash,
-    notes_export_markdown, notes_export_pdf, notes_initialize, notes_list_tags,
-    notes_load_workspace, notes_move_node, notes_remove_empty_node, notes_restore_node,
-    notes_search, notes_soft_delete_node, notes_split_node, notes_toggle_collapsed,
-    notes_toggle_complete, notes_toggle_star, notes_update_node,
+    notes_archive_node, notes_create_node, notes_delete_database, notes_duplicate_node,
+    notes_empty_trash, notes_export_markdown, notes_export_pdf, notes_initialize, notes_list_tags,
+    notes_list_tags_with_counts, notes_load_workspace, notes_move_node, notes_remove_empty_node,
+    notes_restore_node, notes_search, notes_soft_delete_node, notes_split_node,
+    notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star, notes_unarchive_node,
+    notes_update_node,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1542,9 +1543,12 @@ pub fn run() {
             notes_remove_empty_node,
             notes_soft_delete_node,
             notes_restore_node,
+            notes_archive_node,
+            notes_unarchive_node,
             notes_empty_trash,
             notes_search,
             notes_list_tags,
+            notes_list_tags_with_counts,
             notes_delete_database,
             notes_export_markdown,
             notes_export_pdf

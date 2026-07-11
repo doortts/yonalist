@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { createNoteId, isNoteNode, isNoteSearchResult } from "./notes";
-import type { NoteNode, NotesStore, NotesWorkspaceScope } from "./notes";
+import type {
+  NoteNode,
+  NoteTagSummary,
+  NotesStore,
+  NotesWorkspaceScope
+} from "./notes";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -18,6 +23,8 @@ function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }
@@ -36,8 +43,12 @@ describe("Notes domain contract", () => {
 
   it("rejects incomplete Notes node payloads", () => {
     const { note: _note, ...missingNote } = makeNoteNode();
+    const { archivedAt: _archivedAt, ...missingArchivedAt } = makeNoteNode();
+    const { archiveRootId: _archiveRootId, ...missingArchiveRootId } = makeNoteNode();
 
     expect(isNoteNode(missingNote)).toBe(false);
+    expect(isNoteNode(missingArchivedAt)).toBe(false);
+    expect(isNoteNode(missingArchiveRootId)).toBe(false);
     expect(isNoteNode(null)).toBe(false);
   });
 
@@ -54,12 +65,20 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
   });
 
-  it("supports active, starred, recent, tag, and trash workspace scopes", () => {
+  it("supports active, discovery, structured tag, archive, and trash scopes", () => {
     const scopes: NotesWorkspaceScope[] = [
       { kind: "active" },
       { kind: "starred" },
       { kind: "recent" },
       { kind: "tag", tag: "roadmap" },
+      {
+        kind: "tags",
+        tags: [
+          { prefix: "#", normalizedTag: "roadmap" },
+          { prefix: "@", normalizedTag: "minji" }
+        ]
+      },
+      { kind: "archive" },
       { kind: "trash" }
     ];
 
@@ -68,15 +87,32 @@ describe("Notes domain contract", () => {
       "starred",
       "recent",
       "tag",
+      "tags",
+      "archive",
       "trash"
+    ]);
+  });
+
+  it("describes counted hashtag and mention summaries", () => {
+    const summaries: NoteTagSummary[] = [
+      { prefix: "#", normalizedTag: "roadmap", displayTag: "Roadmap", count: 2 },
+      { prefix: "@", normalizedTag: "minji", displayTag: "Minji", count: 1 }
+    ];
+
+    expect(summaries.map(({ prefix, count }) => [prefix, count])).toEqual([
+      ["#", 2],
+      ["@", 1]
     ]);
   });
 
   it("requires every NotesStore to provide discovery capabilities", () => {
     expectTypeOf<NotesStore>().toMatchTypeOf<{
       toggleStar: NonNullable<NotesStore["toggleStar"]>;
+      archiveNode: NonNullable<NotesStore["archiveNode"]>;
+      unarchiveNode: NonNullable<NotesStore["unarchiveNode"]>;
       search: NonNullable<NotesStore["search"]>;
       listTags: NonNullable<NotesStore["listTags"]>;
+      listTagsWithCounts: NonNullable<NotesStore["listTagsWithCounts"]>;
       deleteDatabase: NonNullable<NotesStore["deleteDatabase"]>;
     }>();
   });

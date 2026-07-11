@@ -1,13 +1,13 @@
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteLayoutMode, NoteNode,
-    NoteSearchMatchedField, NoteSearchResult, NotesExportSnapshot, NotesWorkspace,
-    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    NoteSearchMatchedField, NoteSearchResult, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
-    params, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params, Row, Transaction,
-    TransactionBehavior,
+    params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
+    Row, Transaction, TransactionBehavior,
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -18,7 +18,7 @@ use std::cell::RefCell;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-const NOTES_SCHEMA_VERSION: i64 = 2;
+const NOTES_SCHEMA_VERSION: i64 = 3;
 const SORT_KEY_STEP: i64 = 1024;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -175,11 +175,25 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
             migrate_version_one_to_two(&transaction)?;
             transaction
+                .pragma_update(None, "user_version", 2)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_two_to_three(&transaction)?;
+            transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
         }
         1 => {
             migrate_version_one_to_two(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", 2)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_two_to_three(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+        }
+        2 => {
+            migrate_version_two_to_three(&transaction)?;
             transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
@@ -308,6 +322,120 @@ fn migrate_version_one_to_two(transaction: &Transaction<'_>) -> Result<(), Strin
         .map_err(|error| format!("Could not migrate Notes storage to version two: {error}"))
 }
 
+fn migrate_version_two_to_three(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            r#"
+            ALTER TABLE notes_nodes ADD COLUMN archived_at TEXT;
+            ALTER TABLE notes_nodes ADD COLUMN archive_root_id TEXT REFERENCES notes_nodes(id);
+
+            CREATE INDEX notes_nodes_archive_parent_order
+              ON notes_nodes(archived_at, parent_id, sort_key);
+
+            DROP TRIGGER notes_nodes_search_insert;
+            DROP TRIGGER notes_nodes_search_update;
+            DROP TRIGGER notes_nodes_search_delete;
+
+            DROP INDEX notes_tags_normalized_tag;
+            ALTER TABLE notes_tags RENAME TO notes_tags_v2;
+            CREATE TABLE notes_tags (
+              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
+              prefix TEXT NOT NULL CHECK (prefix IN ('#', '@')),
+              tag TEXT NOT NULL,
+              normalized_tag TEXT NOT NULL,
+              PRIMARY KEY (node_id, prefix, normalized_tag)
+            );
+            INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag)
+              SELECT node_id, '#', tag, normalized_tag FROM notes_tags_v2;
+            DROP TABLE notes_tags_v2;
+
+            CREATE INDEX notes_tags_normalized_tag ON notes_tags(normalized_tag);
+            CREATE INDEX notes_tags_prefix_normalized_tag
+              ON notes_tags(prefix, normalized_tag, node_id);
+
+            CREATE TABLE notes_dates (
+              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
+              field TEXT NOT NULL CHECK (field IN ('title', 'note')),
+              start_utf16 INTEGER NOT NULL,
+              end_utf16 INTEGER NOT NULL,
+              normalized_start TEXT NOT NULL,
+              normalized_end TEXT NOT NULL,
+              token_text TEXT NOT NULL,
+              PRIMARY KEY (node_id, field, start_utf16, end_utf16)
+            );
+            CREATE INDEX notes_dates_range
+              ON notes_dates(normalized_start, normalized_end, node_id);
+
+            CREATE TABLE notes_attachments (
+              id TEXT PRIMARY KEY,
+              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
+              sort_key INTEGER NOT NULL,
+              relative_path TEXT NOT NULL,
+              content_hash TEXT NOT NULL,
+              original_name TEXT NOT NULL,
+              mime_type TEXT NOT NULL,
+              byte_size INTEGER NOT NULL,
+              intrinsic_width INTEGER NOT NULL,
+              intrinsic_height INTEGER NOT NULL,
+              display_width INTEGER NOT NULL,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            CREATE INDEX notes_attachments_node_order
+              ON notes_attachments(node_id, sort_key, id);
+
+            CREATE TABLE notes_history_entries (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              is_undone INTEGER NOT NULL DEFAULT 0,
+              estimated_bytes INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE UNIQUE INDEX notes_history_session_sequence
+              ON notes_history_entries(session_id, sequence);
+
+            CREATE TABLE notes_history_changes (
+              entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
+              table_name TEXT NOT NULL,
+              row_id TEXT NOT NULL,
+              ordinal INTEGER NOT NULL,
+              before_json TEXT,
+              after_json TEXT,
+              PRIMARY KEY (entry_id, table_name, row_id)
+            );
+
+            DELETE FROM notes_search;
+            INSERT INTO notes_search (node_id, title, note)
+              SELECT id, title, note FROM notes_nodes
+              WHERE deleted_at IS NULL AND archived_at IS NULL;
+
+            CREATE TRIGGER notes_nodes_search_insert
+            AFTER INSERT ON notes_nodes
+            WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL
+            BEGIN
+              INSERT INTO notes_search (node_id, title, note)
+              VALUES (NEW.id, NEW.title, NEW.note);
+            END;
+
+            CREATE TRIGGER notes_nodes_search_update
+            AFTER UPDATE OF title, note, deleted_at, archived_at ON notes_nodes
+            BEGIN
+              DELETE FROM notes_search WHERE node_id = OLD.id;
+              INSERT INTO notes_search (node_id, title, note)
+              SELECT NEW.id, NEW.title, NEW.note
+              WHERE NEW.deleted_at IS NULL AND NEW.archived_at IS NULL;
+            END;
+
+            CREATE TRIGGER notes_nodes_search_delete
+            AFTER DELETE ON notes_nodes
+            BEGIN
+              DELETE FROM notes_search WHERE node_id = OLD.id;
+            END;
+            "#,
+        )
+        .map_err(|error| format!("Could not migrate Notes storage to version three: {error}"))
+}
+
 #[derive(Clone)]
 struct StoredNode {
     id: String,
@@ -321,6 +449,8 @@ struct StoredNode {
     completed_at: Option<String>,
     deleted_at: Option<String>,
     deleted_batch_id: Option<String>,
+    archived_at: Option<String>,
+    archive_root_id: Option<String>,
 }
 
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
@@ -336,6 +466,8 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         completed_at: row.get(8)?,
         deleted_at: row.get(9)?,
         deleted_batch_id: row.get(10)?,
+        archived_at: row.get(11)?,
+        archive_root_id: row.get(12)?,
     })
 }
 
@@ -368,6 +500,8 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
         deleted_at: row.get(11)?,
+        archived_at: row.get(12)?,
+        archive_root_id: row.get(13)?,
     })
 }
 
@@ -533,27 +667,28 @@ pub(crate) fn load_workspace(
 ) -> Result<NotesWorkspace, String> {
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                is_starred, completed_at, created_at, updated_at, deleted_at \
-         FROM notes_nodes WHERE deleted_at IS NULL \
+                is_starred, completed_at, created_at, updated_at, deleted_at, \
+                archived_at, archive_root_id \
+         FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
     const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
            SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL AND is_starred = 1 \
+           WHERE deleted_at IS NULL AND archived_at IS NULL AND is_starred = 1 \
            UNION \
            SELECT parent.id, parent.parent_id FROM notes_nodes parent \
            JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL\
+           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
     const RECENT_SQL: &str = "WITH RECURSIVE \
          matched(id, parent_id) AS (\
            SELECT id, parent_id FROM notes_nodes \
-           WHERE deleted_at IS NULL \
+           WHERE deleted_at IS NULL AND archived_at IS NULL \
            ORDER BY updated_at DESC, id LIMIT 100\
          ), \
          included(id, parent_id) AS (\
@@ -561,26 +696,27 @@ pub(crate) fn load_workspace(
            UNION \
            SELECT parent.id, parent.parent_id FROM notes_nodes parent \
            JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL\
+           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
     const TAG_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
            SELECT node.id, node.parent_id FROM notes_nodes node \
            JOIN notes_tags tag ON tag.node_id = node.id \
-           WHERE node.deleted_at IS NULL AND tag.normalized_tag = ?1 \
+           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+             AND tag.prefix = '#' AND tag.normalized_tag = ?1 \
            UNION \
            SELECT parent.id, parent.parent_id FROM notes_nodes parent \
            JOIN included child ON child.parent_id = parent.id \
-           WHERE parent.deleted_at IS NULL\
+           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -591,12 +727,21 @@ pub(crate) fn load_workspace(
                 ) THEN node.parent_id ELSE NULL END, \
                 node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
                 node.is_starred, node.completed_at, node.created_at, node.updated_at, \
-                node.deleted_at \
+                node.deleted_at, node.archived_at, node.archive_root_id \
          FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM notes_nodes parent \
                     WHERE parent.id = node.parent_id AND parent.deleted_at IS NOT NULL\
                   ) THEN 0 ELSE 1 END, node.parent_id, node.sort_key, node.id";
+    const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
+                node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
+                node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
+                node.archived_at, node.archive_root_id \
+         FROM notes_nodes node \
+         WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
+           AND node.archive_root_id IS NOT NULL \
+         ORDER BY CASE WHEN node.id = node.archive_root_id THEN 0 ELSE 1 END, \
+                  node.archive_root_id, node.parent_id, node.sort_key, node.id";
 
     match scope {
         NotesWorkspaceScope::Active => query_workspace(connection, ACTIVE_SQL, []),
@@ -609,8 +754,65 @@ pub(crate) fn load_workspace(
             }
             query_workspace(connection, TAG_SQL, [normalized_tag])
         }
+        NotesWorkspaceScope::Tags { tags } => load_tag_workspace(connection, tags),
+        NotesWorkspaceScope::Archive => query_workspace(connection, ARCHIVE_SQL, []),
         NotesWorkspaceScope::Trash => query_workspace(connection, TRASH_SQL, []),
     }
+}
+
+fn load_tag_workspace(
+    connection: &Connection,
+    tags: Vec<NoteTagFilter>,
+) -> Result<NotesWorkspace, String> {
+    let tags = tags
+        .into_iter()
+        .filter_map(|tag| {
+            let normalized = tag
+                .normalized_tag
+                .trim()
+                .trim_start_matches(['#', '@'])
+                .to_lowercase();
+            (!normalized.is_empty()).then_some((tag.prefix, normalized))
+        })
+        .collect::<BTreeSet<_>>();
+    if tags.is_empty() {
+        return Ok(NotesWorkspace { nodes: Vec::new() });
+    }
+
+    let mut parameters = Vec::with_capacity(tags.len() * 2);
+    let mut required = Vec::with_capacity(tags.len());
+    for (index, (prefix, normalized_tag)) in tags.into_iter().enumerate() {
+        let prefix_parameter = index * 2 + 1;
+        let tag_parameter = prefix_parameter + 1;
+        required.push(format!(
+            "EXISTS (SELECT 1 FROM notes_tags tag \
+             WHERE tag.node_id = node.id AND tag.prefix = ?{prefix_parameter} \
+               AND tag.normalized_tag = ?{tag_parameter})"
+        ));
+        parameters.push(prefix.as_str().to_string());
+        parameters.push(normalized_tag);
+    }
+    let sql = format!(
+        "WITH RECURSIVE matched(id, parent_id) AS (\
+           SELECT node.id, node.parent_id FROM notes_nodes node \
+           WHERE node.deleted_at IS NULL AND node.archived_at IS NULL AND {}\
+         ), included(id, parent_id) AS (\
+           SELECT id, parent_id FROM matched \
+           UNION \
+           SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+           JOIN included child ON child.parent_id = parent.id \
+           WHERE parent.deleted_at IS NULL AND parent.archived_at IS NULL\
+         ) \
+         SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
+                node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
+                node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
+                node.archive_root_id \
+         FROM notes_nodes node JOIN included ON included.id = node.id \
+         ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
+                  node.parent_id, node.sort_key, node.id",
+        required.join(" AND ")
+    );
+    query_workspace(connection, &sql, params_from_iter(parameters.iter()))
 }
 
 pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> {
@@ -618,7 +820,8 @@ pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> 
         .prepare(
             "SELECT DISTINCT tag.normalized_tag FROM notes_tags tag \
              JOIN notes_nodes node ON node.id = tag.node_id \
-             WHERE node.deleted_at IS NULL \
+             WHERE node.deleted_at IS NULL AND node.archived_at IS NULL \
+               AND tag.prefix = '#' \
              ORDER BY tag.normalized_tag",
         )
         .map_err(|error| format!("Could not prepare the Notes tag list: {error}"))?;
@@ -628,6 +831,58 @@ pub(crate) fn list_tags(connection: &Connection) -> Result<Vec<String>, String> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes tag list: {error}"))?;
     Ok(tags)
+}
+
+pub(crate) fn list_tags_with_counts(
+    connection: &Connection,
+) -> Result<Vec<NoteTagSummary>, String> {
+    let mut statement = connection
+        .prepare(
+            "WITH live_tags AS (\
+               SELECT tag.prefix, tag.normalized_tag, tag.tag, \
+                      row_number() OVER (\
+                        PARTITION BY tag.prefix, tag.normalized_tag \
+                        ORDER BY node.created_at, node.id\
+                      ) AS display_rank \
+               FROM notes_tags tag \
+               JOIN notes_nodes node ON node.id = tag.node_id \
+               WHERE node.deleted_at IS NULL AND node.archived_at IS NULL\
+             ) \
+             SELECT prefix, normalized_tag, \
+                    max(CASE WHEN display_rank = 1 THEN tag END), count(*) \
+             FROM live_tags \
+             GROUP BY prefix, normalized_tag \
+             ORDER BY prefix, normalized_tag",
+        )
+        .map_err(|error| format!("Could not prepare the counted Notes tag list: {error}"))?;
+    let summaries = statement
+        .query_map([], |row| {
+            let prefix: String = row.get(0)?;
+            let prefix = match prefix.as_str() {
+                "#" => NoteTagPrefix::Hash,
+                "@" => NoteTagPrefix::Mention,
+                value => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("Unsupported Notes tag prefix: {value}"),
+                        )),
+                    ))
+                }
+            };
+            Ok(NoteTagSummary {
+                prefix,
+                normalized_tag: row.get(1)?,
+                display_tag: row.get(2)?,
+                count: row.get(3)?,
+            })
+        })
+        .map_err(|error| format!("Could not load the counted Notes tag list: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the counted Notes tag list: {error}"))?;
+    Ok(summaries)
 }
 
 fn fts_match_expression(query: &str) -> Option<String> {
@@ -660,7 +915,10 @@ fn live_parent_map(
     connection: &Connection,
 ) -> Result<HashMap<String, (Option<String>, String)>, String> {
     let mut statement = connection
-        .prepare("SELECT id, parent_id, title FROM notes_nodes WHERE deleted_at IS NULL")
+        .prepare(
+            "SELECT id, parent_id, title FROM notes_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL",
+        )
         .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -722,6 +980,7 @@ pub(crate) fn search_nodes(
              FROM notes_search \
              JOIN notes_nodes node ON node.id = notes_search.node_id \
              WHERE notes_search MATCH ?1 AND node.deleted_at IS NULL \
+               AND node.archived_at IS NULL \
              ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
              LIMIT 100",
         )
@@ -775,7 +1034,8 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
     transaction
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at, deleted_batch_id \
+                    is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+                    archive_root_id \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -789,6 +1049,13 @@ fn require_live_node(transaction: &Transaction<'_>, node_id: &str) -> Result<Sto
         Some(node) if node.deleted_at.is_none() => Ok(node),
         Some(_) => Err(format!("Note node {node_id} is in the trash.")),
         None => Err(format!("Note node {node_id} does not exist.")),
+    }
+}
+
+fn require_active_node(transaction: &Transaction<'_>, node_id: &str) -> Result<StoredNode, String> {
+    match require_live_node(transaction, node_id)? {
+        node if node.archived_at.is_none() => Ok(node),
+        _ => Err(format!("Note node {node_id} is archived.")),
     }
 }
 
@@ -823,7 +1090,7 @@ fn ensure_live_parent(
     parent_id: Option<&str>,
 ) -> Result<(), String> {
     if let Some(parent_id) = parent_id {
-        require_live_node(transaction, parent_id)?;
+        require_active_node(transaction, parent_id)?;
     }
     Ok(())
 }
@@ -836,7 +1103,7 @@ fn sibling_keys(
     let mut statement = transaction
         .prepare(
             "SELECT id, sort_key FROM notes_nodes \
-             WHERE parent_id IS ?1 AND deleted_at IS NULL \
+             WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                AND (?2 IS NULL OR id <> ?2) \
              ORDER BY sort_key, id",
         )
@@ -953,13 +1220,27 @@ fn next_sort_key_excluding(
     })
 }
 
-fn extract_tags(title: &str, note: &str) -> BTreeMap<String, String> {
+fn extract_tags(title: &str, note: &str) -> BTreeMap<(NoteTagPrefix, String), String> {
     let mut tags = BTreeMap::new();
     for text in [title, note] {
         let characters: Vec<char> = text.chars().collect();
         let mut index = 0;
         while index < characters.len() {
-            if characters[index] != '#' {
+            let prefix = match characters[index] {
+                '#' => NoteTagPrefix::Hash,
+                '@' => NoteTagPrefix::Mention,
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let has_valid_boundary = index == 0
+                || !matches!(
+                    characters[index - 1],
+                    character if character.is_alphanumeric()
+                        || matches!(character, '_' | '-' | '#' | '@' | '/')
+                );
+            if !has_valid_boundary {
                 index += 1;
                 continue;
             }
@@ -974,7 +1255,7 @@ fn extract_tags(title: &str, note: &str) -> BTreeMap<String, String> {
             }
             if end > start {
                 let tag: String = characters[start..end].iter().collect();
-                tags.entry(tag.to_lowercase()).or_insert(tag);
+                tags.entry((prefix, tag.to_lowercase())).or_insert(tag);
             }
             index = end.max(index + 1);
         }
@@ -991,11 +1272,12 @@ fn replace_tags(
     transaction
         .execute("DELETE FROM notes_tags WHERE node_id = ?1", [node_id])
         .map_err(|error| format!("Could not clear Note tags: {error}"))?;
-    for (normalized_tag, tag) in extract_tags(title, note) {
+    for ((prefix, normalized_tag), tag) in extract_tags(title, note) {
         transaction
             .execute(
-                "INSERT INTO notes_tags (node_id, tag, normalized_tag) VALUES (?1, ?2, ?3)",
-                params![node_id, tag, normalized_tag],
+                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![node_id, prefix.as_str(), tag, normalized_tag],
             )
             .map_err(|error| format!("Could not store Note tags: {error}"))?;
     }
@@ -1037,12 +1319,12 @@ pub(crate) fn update_node(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, &input.id)?;
+        require_active_node(transaction, &input.id)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET title = ?1, note = ?2, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?3 AND deleted_at IS NULL",
+                 WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
                 params![input.title, input.note, input.id],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
@@ -1056,7 +1338,7 @@ pub(crate) fn split_node(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        let source = require_live_node(transaction, &input.id)?;
+        let source = require_active_node(transaction, &input.id)?;
         ensure_fresh_id(transaction, &input.new_node_id)?;
         let sort_key = next_sort_key(
             transaction,
@@ -1067,7 +1349,7 @@ pub(crate) fn split_node(
             .execute(
                 "UPDATE notes_nodes SET title = ?1, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?2 AND deleted_at IS NULL",
+                 WHERE id = ?2 AND deleted_at IS NULL AND archived_at IS NULL",
                 params![input.prefix, source.id],
             )
             .map_err(|error| format!("Could not update the split Note node: {error}"))?;
@@ -1098,10 +1380,11 @@ fn live_descendant_exists(
         .query_row(
             "WITH RECURSIVE descendants(id) AS (\
                SELECT id FROM notes_nodes WHERE parent_id = ?1 AND deleted_at IS NULL \
+                 AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id FROM notes_nodes child \
                JOIN descendants parent ON child.parent_id = parent.id \
-               WHERE child.deleted_at IS NULL\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
              ) \
              SELECT EXISTS(SELECT 1 FROM descendants WHERE id = ?2)",
             params![node_id, candidate_id],
@@ -1116,7 +1399,7 @@ pub(crate) fn move_node(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, &input.id)?;
+        require_active_node(transaction, &input.id)?;
         ensure_live_parent(transaction, input.parent_id.as_deref())?;
         if let Some(parent_id) = input.parent_id.as_deref() {
             if live_descendant_exists(transaction, &input.id, parent_id)? {
@@ -1134,7 +1417,7 @@ pub(crate) fn move_node(
             .execute(
                 "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?3 AND deleted_at IS NULL",
+                 WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
                 params![input.parent_id, sort_key, input.id],
             )
             .map_err(|error| format!("Could not move the Note node: {error}"))?;
@@ -1148,14 +1431,14 @@ pub(crate) fn toggle_complete(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, node_id)?;
+        require_active_node(transaction, node_id)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET \
                    completed_at = CASE WHEN completed_at IS NULL \
                      THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE NULL END, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1 AND deleted_at IS NULL",
+                 WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
                 [node_id],
             )
             .map_err(|error| format!("Could not toggle Note completion: {error}"))?;
@@ -1169,12 +1452,12 @@ pub(crate) fn toggle_collapsed(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, node_id)?;
+        require_active_node(transaction, node_id)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET is_collapsed = CASE is_collapsed WHEN 0 THEN 1 ELSE 0 END, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1 AND deleted_at IS NULL",
+                 WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
                 [node_id],
             )
             .map_err(|error| format!("Could not toggle Note collapse: {error}"))?;
@@ -1188,12 +1471,12 @@ pub(crate) fn toggle_star(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        require_live_node(transaction, node_id)?;
+        require_active_node(transaction, node_id)?;
         transaction
             .execute(
                 "UPDATE notes_nodes SET is_starred = CASE is_starred WHEN 0 THEN 1 ELSE 0 END, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1 AND deleted_at IS NULL",
+                 WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
                 [node_id],
             )
             .map_err(|error| format!("Could not toggle Note star: {error}"))?;
@@ -1206,13 +1489,15 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
         .prepare(
             "WITH RECURSIVE subtree(id) AS (\
                SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+                 AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id FROM notes_nodes child \
                JOIN subtree parent ON child.parent_id = parent.id \
-               WHERE child.deleted_at IS NULL\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                    is_starred, completed_at, deleted_at, deleted_batch_id \
+                    is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
+                    archive_root_id \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -1312,7 +1597,7 @@ pub(crate) fn duplicate_node(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        let source = require_live_node(transaction, node_id)?;
+        let source = require_active_node(transaction, node_id)?;
         let subtree = active_subtree(transaction, node_id)?;
         let root_sort_key = next_sort_key(
             transaction,
@@ -1386,7 +1671,7 @@ pub(crate) fn remove_empty_node(
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
-        let source = require_live_node(transaction, node_id)?;
+        let source = require_active_node(transaction, node_id)?;
         if !source.title.trim().is_empty() || !source.note.trim().is_empty() {
             return Err("Only an empty Note node can be removed.".to_string());
         }
@@ -1412,7 +1697,7 @@ pub(crate) fn remove_empty_node(
                     .execute(
                         "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
                             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                         WHERE id = ?3 AND deleted_at IS NULL",
+                         WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
                         params![source.parent_id, sort_key, sibling_id],
                     )
                     .map_err(|error| {
@@ -1427,7 +1712,7 @@ pub(crate) fn remove_empty_node(
                    deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    deleted_batch_id = ?2, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?1 AND deleted_at IS NULL",
+                 WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL",
                 params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not remove the empty Note node: {error}"))?;
@@ -1439,6 +1724,76 @@ fn fresh_deletion_batch_id(transaction: &Transaction<'_>) -> Result<String, Stri
     transaction
         .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
         .map_err(|error| format!("Could not create a Notes deletion batch: {error}"))
+}
+
+pub(crate) fn archive_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        let source = require_active_node(transaction, node_id)?;
+        if source.parent_id.is_some() {
+            return Err("Only a root Note node can be archived.".to_string());
+        }
+        transaction
+            .execute(
+                "WITH RECURSIVE \
+                 archive_context(archived_at) AS (\
+                   SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                 ), \
+                 subtree(id) AS (\
+                   SELECT id FROM notes_nodes \
+                   WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+                   UNION ALL \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+                 ) \
+                 UPDATE notes_nodes SET \
+                   archived_at = (SELECT archived_at FROM archive_context), \
+                   archive_root_id = ?1, \
+                   updated_at = (SELECT archived_at FROM archive_context) \
+                 WHERE id IN subtree",
+                [node_id],
+            )
+            .map_err(|error| format!("Could not archive the Note subtree: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn unarchive_node(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        let source = node_by_id(transaction, node_id)?
+            .ok_or_else(|| format!("Note node {node_id} does not exist."))?;
+        if source.deleted_at.is_some() {
+            return Err(format!("Note node {node_id} is in the trash."));
+        }
+        if source.archived_at.is_none() {
+            return Err(format!("Note node {node_id} is not archived."));
+        }
+        if source.parent_id.is_some() || source.archive_root_id.as_deref() != Some(node_id) {
+            return Err("Only an archive root can be unarchived.".to_string());
+        }
+
+        resolve_restore_sort_collision(transaction, &source)?;
+        let changed = transaction
+            .execute(
+                "UPDATE notes_nodes SET archived_at = NULL, archive_root_id = NULL, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE archive_root_id = ?1 AND deleted_at IS NULL",
+                [node_id],
+            )
+            .map_err(|error| format!("Could not unarchive the Note subtree: {error}"))?;
+        if changed == 0 {
+            return Err(format!("Archive root {node_id} owns no live Note nodes."));
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn soft_delete_node(
@@ -1461,6 +1816,8 @@ pub(crate) fn soft_delete_node(
                  UPDATE notes_nodes SET \
                    deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    deleted_batch_id = ?2, \
+                   archived_at = NULL, \
+                   archive_root_id = NULL, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
                  WHERE id IN subtree",
                 params![node_id, deletion_batch_id],
@@ -1521,7 +1878,7 @@ pub(crate) fn restore_node(
             .ok_or_else(|| format!("Deleted Note node {node_id} has no deletion batch."))?;
         let parent_is_live = match source.parent_id.as_deref() {
             Some(parent_id) => node_by_id(transaction, parent_id)?
-                .is_some_and(|parent| parent.deleted_at.is_none()),
+                .is_some_and(|parent| parent.deleted_at.is_none() && parent.archived_at.is_none()),
             None => true,
         };
         if !parent_is_live {
@@ -1548,6 +1905,7 @@ pub(crate) fn restore_node(
                    WHERE child.deleted_batch_id = ?2\
                  ) \
                  UPDATE notes_nodes SET deleted_at = NULL, deleted_batch_id = NULL, \
+                   archived_at = NULL, archive_root_id = NULL, \
                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
                  WHERE id IN subtree AND deleted_batch_id = ?2",
                 params![node_id, deletion_batch_id],
@@ -1569,15 +1927,16 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_notes_db, create_node, create_version_one_schema, delete_database, duplicate_node,
-        empty_trash, initialize_notes_db, list_tags, load_workspace, move_node, notes_db_path,
+        archive_node, connect_notes_db, create_node, create_version_one_schema, delete_database,
+        duplicate_node, empty_trash, initialize_notes_db, list_tags, list_tags_with_counts,
+        load_workspace, migrate_version_one_to_two, move_node, notes_db_path,
         observe_next_migration_busy, open_notes_export_db, remove_empty_node, restore_node,
         search_nodes, soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
-        update_node,
+        unarchive_node, update_node,
     };
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField,
-        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteTagFilter,
+        NoteTagPrefix, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
     use std::sync::mpsc;
@@ -1616,6 +1975,16 @@ mod tests {
         transaction.commit().expect("commit version one schema");
     }
 
+    fn seed_version_two_database(connection: &mut Connection) {
+        seed_version_one_database(connection);
+        let transaction = connection.transaction().expect("version two transaction");
+        migrate_version_one_to_two(&transaction).expect("migrate to version two");
+        transaction
+            .pragma_update(None, "user_version", 2)
+            .expect("record version two");
+        transaction.commit().expect("commit version two schema");
+    }
+
     #[test]
     fn export_open_rejects_a_missing_database_without_creating_notes_storage() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -1638,7 +2007,7 @@ mod tests {
             .expect("create metadata fixture");
         let connection = Connection::open(&database_path).expect("create database fixture");
         connection
-            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 3;")
+            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 4;")
             .expect("seed future schema");
         drop(connection);
         let bytes_before = std::fs::read(&database_path).expect("read database before export open");
@@ -1648,7 +2017,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "This Notes database uses unsupported schema version 3."
+            "This Notes database uses unsupported schema version 4."
         );
         assert_eq!(
             std::fs::read(&database_path).expect("read database after export open"),
@@ -1668,6 +2037,33 @@ mod tests {
             .expect("collect table columns")
             .iter()
             .any(|name| name == column)
+    }
+
+    fn primary_key_columns(connection: &Connection, table: &str) -> Vec<String> {
+        let mut columns = connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table primary key")
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(5)?, row.get::<_, String>(1)?))
+            })
+            .expect("query table primary key")
+            .filter_map(|row| {
+                let (position, name) = row.expect("read table primary key");
+                (position > 0).then_some((position, name))
+            })
+            .collect::<Vec<_>>();
+        columns.sort_by_key(|(position, _)| *position);
+        columns.into_iter().map(|(_, name)| name).collect()
+    }
+
+    fn table_columns(connection: &Connection, table: &str) -> Vec<String> {
+        connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table columns")
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query table columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table columns")
     }
 
     fn insert_node(
@@ -1896,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_database_uses_its_own_schema_and_fts_table() {
+    fn fresh_database_creates_the_complete_version_three_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
         let connection = connect_notes_db(vault_path).expect("connect notes");
@@ -1917,6 +2313,10 @@ mod tests {
             "notes_tags",
             "notes_preferences",
             "notes_search",
+            "notes_dates",
+            "notes_attachments",
+            "notes_history_entries",
+            "notes_history_changes",
         ] {
             assert!(
                 object_exists(&connection, "table", table),
@@ -1925,17 +2325,57 @@ mod tests {
         }
         for index in [
             "notes_nodes_active_parent_order",
+            "notes_nodes_archive_parent_order",
             "notes_tags_normalized_tag",
+            "notes_tags_prefix_normalized_tag",
+            "notes_dates_range",
+            "notes_attachments_node_order",
+            "notes_history_session_sequence",
         ] {
             assert!(
                 object_exists(&connection, "index", index),
                 "missing index {index}"
             );
         }
+        assert!(column_exists(&connection, "notes_nodes", "archived_at"));
+        assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
+        assert!(column_exists(&connection, "notes_tags", "prefix"));
+        assert!(column_exists(&connection, "notes_dates", "start_utf16"));
+        assert!(column_exists(&connection, "notes_dates", "end_utf16"));
+        assert!(column_exists(
+            &connection,
+            "notes_history_changes",
+            "ordinal"
+        ));
+        assert_eq!(
+            primary_key_columns(&connection, "notes_history_changes"),
+            vec!["entry_id", "table_name", "row_id"]
+        );
+        assert_eq!(
+            table_columns(&connection, "notes_history_entries"),
+            vec![
+                "id",
+                "session_id",
+                "sequence",
+                "is_undone",
+                "estimated_bytes"
+            ]
+        );
+        assert_eq!(
+            table_columns(&connection, "notes_history_changes"),
+            vec![
+                "entry_id",
+                "table_name",
+                "row_id",
+                "ordinal",
+                "before_json",
+                "after_json"
+            ]
+        );
     }
 
     #[test]
-    fn notes_connection_is_configured_and_migrated_to_version_two() {
+    fn notes_connection_is_configured_and_migrated_to_version_three() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect notes");
@@ -1956,12 +2396,14 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy_timeout, 5_000);
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
         assert!(column_exists(
             &connection,
             "notes_nodes",
             "deleted_batch_id"
         ));
+        assert!(column_exists(&connection, "notes_nodes", "archived_at"));
+        assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
     }
 
     #[test]
@@ -1994,7 +2436,7 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("migrated user version");
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
         let live_batch: Option<String> = connection
             .query_row(
                 "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
@@ -2038,6 +2480,68 @@ mod tests {
                     "legacy:2026-07-10T05:06:07.008Z".to_string(),
                 ),
             ]
+        );
+        let archive_values: (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT archived_at, archive_root_id FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("version one archive defaults");
+        assert_eq!(archive_values, (None, None));
+    }
+
+    #[test]
+    fn version_two_rows_and_hashtags_migrate_to_version_three() {
+        let mut connection = Connection::open_in_memory().expect("in-memory database");
+        seed_version_two_database(&mut connection);
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
+                 VALUES (?1, 1024, '#Roadmap', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                [NODE_ID],
+            )
+            .expect("insert version two node");
+        connection
+            .execute(
+                "INSERT INTO notes_tags (node_id, tag, normalized_tag) VALUES (?1, 'Roadmap', 'roadmap')",
+                [NODE_ID],
+            )
+            .expect("insert version two tag");
+
+        initialize_notes_db(&mut connection).expect("migrate version two database");
+
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("migrated user version");
+        assert_eq!(user_version, 3);
+        let migrated: (String, String, String, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT prefix, tag, normalized_tag, node.archived_at, node.archive_root_id \
+                 FROM notes_tags tag JOIN notes_nodes node ON node.id = tag.node_id \
+                 WHERE tag.node_id = ?1",
+                [NODE_ID],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("migrated version two row");
+        assert_eq!(
+            migrated,
+            (
+                "#".to_string(),
+                "Roadmap".to_string(),
+                "roadmap".to_string(),
+                None,
+                None
+            )
         );
     }
 
@@ -2133,7 +2637,7 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user version");
-        assert_eq!(user_version, 2);
+        assert_eq!(user_version, 3);
         assert!(column_exists(
             &connection,
             "notes_nodes",
@@ -2198,13 +2702,13 @@ mod tests {
         std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
         let connection = Connection::open(&path).expect("open future database");
         connection
-            .pragma_update(None, "user_version", 3)
+            .pragma_update(None, "user_version", 4)
             .expect("future user version");
         drop(connection);
 
         let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
             .expect_err("future schema must be rejected");
-        assert!(error.contains("unsupported schema version 3"));
+        assert!(error.contains("unsupported schema version 4"));
     }
 
     #[test]
@@ -3337,6 +3841,40 @@ mod tests {
     }
 
     #[test]
+    fn tag_index_distinguishes_prefixes_and_rejects_embedded_or_url_markers() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "#Same @Same foo#embedded ##double",
+            "https://example.test/#fragment valid @Owner",
+        );
+
+        let tags = connection
+            .prepare(
+                "SELECT prefix, normalized_tag FROM notes_tags WHERE node_id = ?1 \
+                 ORDER BY prefix, normalized_tag",
+            )
+            .expect("prepare prefixed tags")
+            .query_map([NODE_ID], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query prefixed tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect prefixed tags");
+        assert_eq!(
+            tags,
+            vec![
+                ("#".to_string(), "same".to_string()),
+                ("@".to_string(), "owner".to_string()),
+                ("@".to_string(), "same".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn starred_recent_tag_and_trash_scopes_are_disjoint() {
         let mut connection = test_connection();
         create_test_node(&mut connection, NODE_ID, None, None, "All", "");
@@ -3433,6 +3971,249 @@ mod tests {
         );
         assert_eq!(trash.nodes[0].parent_id, None);
         assert_eq!(list_tags(&connection).expect("live tags"), vec!["élan"]);
+    }
+
+    #[test]
+    fn archive_marks_one_live_root_subtree_and_excludes_it_from_active_discovery() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "Archived target #Roadmap @Minji",
+            "searchable archive detail",
+        );
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "Starred child #Roadmap @Minji",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            None,
+            "Grandchild",
+            "",
+        );
+        create_test_node(
+            &mut connection,
+            FOURTH_ID,
+            None,
+            Some(NODE_ID),
+            "Active #Roadmap @Minji",
+            "",
+        );
+        toggle_star(&mut connection, CHILD_ID).expect("star child");
+
+        let active = archive_node(&mut connection, NODE_ID).expect("archive root");
+
+        assert_eq!(
+            active
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+        let archived =
+            load_workspace(&connection, NotesWorkspaceScope::Archive).expect("archive workspace");
+        assert_eq!(
+            archived
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID, CHILD_ID, THIRD_ID]
+        );
+        let archived_at = archived.nodes[0]
+            .archived_at
+            .clone()
+            .expect("archive timestamp");
+        assert!(archived.nodes.iter().all(|node| {
+            node.archived_at.as_deref() == Some(archived_at.as_str())
+                && node.archive_root_id.as_deref() == Some(NODE_ID)
+                && node.deleted_at.is_none()
+        }));
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Starred)
+            .expect("starred")
+            .nodes
+            .is_empty());
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Recent)
+                .expect("recent")
+                .nodes
+                .iter()
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+        assert_eq!(
+            load_workspace(
+                &connection,
+                NotesWorkspaceScope::Tag {
+                    tag: "#roadmap".to_string()
+                }
+            )
+            .expect("legacy tag")
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+        assert_eq!(
+            load_workspace(
+                &connection,
+                NotesWorkspaceScope::Tags {
+                    tags: vec![
+                        NoteTagFilter {
+                            prefix: NoteTagPrefix::Hash,
+                            normalized_tag: "roadmap".to_string(),
+                        },
+                        NoteTagFilter {
+                            prefix: NoteTagPrefix::Mention,
+                            normalized_tag: "minji".to_string(),
+                        },
+                    ]
+                }
+            )
+            .expect("structured tags")
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+            vec![FOURTH_ID]
+        );
+        assert!(search_nodes(&connection, "searchable")
+            .expect("search")
+            .is_empty());
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Trash)
+            .expect("trash")
+            .nodes
+            .is_empty());
+        assert_eq!(
+            list_tags_with_counts(&connection).expect("tag summaries"),
+            vec![
+                crate::notes::types::NoteTagSummary {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                    display_tag: "Roadmap".to_string(),
+                    count: 1,
+                },
+                crate::notes::types::NoteTagSummary {
+                    prefix: NoteTagPrefix::Mention,
+                    normalized_tag: "minji".to_string(),
+                    display_tag: "Minji".to_string(),
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn archive_rejects_non_roots_and_rolls_back_a_failed_subtree_update() {
+        let mut connection = test_connection();
+        insert_tree(&connection);
+        let error = archive_node(&mut connection, CHILD_ID).expect_err("child archive");
+        assert!(error.contains("root"));
+
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_archive_child \
+                 BEFORE UPDATE OF archived_at ON notes_nodes \
+                 WHEN OLD.id = '{CHILD_ID}' AND NEW.archived_at IS NOT NULL \
+                 BEGIN SELECT RAISE(ABORT, 'archive child rejected'); END;"
+            ))
+            .expect("install archive failure");
+        let error = archive_node(&mut connection, NODE_ID).expect_err("archive rollback");
+        assert!(error.contains("archive child rejected"));
+        let archived_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE archived_at IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .expect("archived rows after rollback");
+        assert_eq!(archived_count, 0);
+    }
+
+    #[test]
+    fn unarchive_restores_the_original_root_position_and_archive_ownership_only() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "Archived root", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "Archived child",
+            "",
+        );
+        archive_node(&mut connection, NODE_ID).expect("archive root");
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            None,
+            None,
+            "Replacement root",
+            "",
+        );
+
+        let error = unarchive_node(&mut connection, CHILD_ID).expect_err("child unarchive");
+        assert!(error.contains("archive root"));
+        let active = unarchive_node(&mut connection, NODE_ID).expect("unarchive root");
+
+        assert_eq!(
+            active
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id.is_none())
+                .map(|node| (node.id.as_str(), node.sort_key))
+                .collect::<Vec<_>>(),
+            vec![(NODE_ID, 1024), (THIRD_ID, 2048)]
+        );
+        assert!(active
+            .nodes
+            .iter()
+            .filter(|node| { node.id == NODE_ID || node.id == CHILD_ID })
+            .all(|node| node.archived_at.is_none() && node.archive_root_id.is_none()));
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Archive)
+            .expect("archive")
+            .nodes
+            .is_empty());
+    }
+
+    #[test]
+    fn moving_an_archived_root_to_trash_keeps_archive_and_trash_disjoint() {
+        let mut connection = test_connection();
+        insert_tree(&connection);
+        archive_node(&mut connection, NODE_ID).expect("archive root");
+
+        soft_delete_node(&mut connection, NODE_ID).expect("trash archived root");
+
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Archive)
+            .expect("archive")
+            .nodes
+            .is_empty());
+        let trash = load_workspace(&connection, NotesWorkspaceScope::Trash).expect("trash");
+        assert_eq!(trash.nodes.len(), 2);
+        assert!(trash.nodes.iter().all(|node| {
+            node.deleted_at.is_some()
+                && node.archived_at.is_none()
+                && node.archive_root_id.is_none()
+        }));
+        let restored = restore_node(&mut connection, NODE_ID).expect("restore from trash");
+        assert_eq!(restored.nodes.len(), 2);
+        assert!(restored.nodes.iter().all(|node| {
+            node.deleted_at.is_none()
+                && node.archived_at.is_none()
+                && node.archive_root_id.is_none()
+        }));
     }
 
     #[test]

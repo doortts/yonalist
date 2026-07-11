@@ -4,6 +4,7 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
+  NoteTagSummary,
   NotesStore,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -121,6 +122,20 @@ export function notesRestoreNode(
   return invokeNodeMutation("notes_restore_node", vaultPath, nodeId);
 }
 
+export function notesArchiveNode(
+  vaultPath: string,
+  nodeId: NoteId
+): Promise<NotesWorkspace> {
+  return invokeNodeMutation("notes_archive_node", vaultPath, nodeId);
+}
+
+export function notesUnarchiveNode(
+  vaultPath: string,
+  nodeId: NoteId
+): Promise<NotesWorkspace> {
+  return invokeNodeMutation("notes_unarchive_node", vaultPath, nodeId);
+}
+
 export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
   return invokeNotes<NotesWorkspace>("notes_empty_trash", { vaultPath });
 }
@@ -138,6 +153,12 @@ export async function notesSearch(
 
 export function notesListTags(vaultPath: string): Promise<string[]> {
   return invokeNotes<string[]>("notes_list_tags", { vaultPath });
+}
+
+export function notesListTagsWithCounts(
+  vaultPath: string
+): Promise<NoteTagSummary[]> {
+  return invokeNotes<NoteTagSummary[]>("notes_list_tags_with_counts", { vaultPath });
 }
 
 export function notesDeleteDatabase(vaultPath: string): Promise<void> {
@@ -158,8 +179,11 @@ export const notesStore: NotesStore = {
   removeEmptyNode: notesRemoveEmptyNode,
   softDeleteNode: notesSoftDeleteNode,
   restoreNode: notesRestoreNode,
+  archiveNode: notesArchiveNode,
+  unarchiveNode: notesUnarchiveNode,
   emptyTrash: notesEmptyTrash,
   search: notesSearch,
   listTags: notesListTags,
+  listTagsWithCounts: notesListTagsWithCounts,
   deleteDatabase: notesDeleteDatabase
 };

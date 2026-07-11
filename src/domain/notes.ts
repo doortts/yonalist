@@ -14,10 +14,24 @@ export interface NoteNode {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  archivedAt: string | null;
+  archiveRootId: NoteId | null;
 }
 
 export interface NotesWorkspace {
   nodes: NoteNode[];
+}
+
+export type NoteTagPrefix = "#" | "@";
+
+export interface NoteTagFilter {
+  prefix: NoteTagPrefix;
+  normalizedTag: string;
+}
+
+export interface NoteTagSummary extends NoteTagFilter {
+  displayTag: string;
+  count: number;
 }
 
 export type NotesWorkspaceScope =
@@ -25,6 +39,8 @@ export type NotesWorkspaceScope =
   | { kind: "starred" }
   | { kind: "recent" }
   | { kind: "tag"; tag: string }
+  | { kind: "tags"; tags: NoteTagFilter[] }
+  | { kind: "archive" }
   | { kind: "trash" };
 
 export interface NoteSearchResult {
@@ -81,9 +97,12 @@ export interface NotesStore {
   removeEmptyNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   softDeleteNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   restoreNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
+  archiveNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
+  unarchiveNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
   search(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
+  listTagsWithCounts(vaultPath: string): Promise<NoteTagSummary[]>;
   deleteDatabase(vaultPath: string): Promise<void>;
 }
 
@@ -109,7 +128,9 @@ export function isNoteNode(value: unknown): value is NoteNode {
     isNullableString(value.completedAt) &&
     typeof value.createdAt === "string" &&
     typeof value.updatedAt === "string" &&
-    isNullableString(value.deletedAt)
+    isNullableString(value.deletedAt) &&
+    isNullableString(value.archivedAt) &&
+    isNullableString(value.archiveRootId)
   );
 }
 

@@ -1,14 +1,15 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
 use crate::notes::repository::{
-    connect_notes_db, create_node, delete_database, duplicate_node, empty_trash, list_tags,
-    load_workspace, move_node, open_notes_export_db, remove_empty_node, restore_node, search_nodes,
-    soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star, update_node,
+    archive_node, connect_notes_db, create_node, delete_database, duplicate_node, empty_trash,
+    list_tags, list_tags_with_counts, load_workspace, move_node, open_notes_export_db,
+    remove_empty_node, restore_node, search_nodes, soft_delete_node, split_node, toggle_collapsed,
+    toggle_complete, toggle_star, unarchive_node, update_node,
 };
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchResult, NotesExportFormat,
-    NotesExportResult, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput,
+    validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchResult, NoteTagSummary,
+    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope,
+    SplitNodeInput, UpdateNodeInput,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -128,6 +129,24 @@ pub(crate) fn notes_restore_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_archive_node(
+    vault_path: String,
+    node_id: String,
+) -> Result<NotesWorkspace, String> {
+    let mut connection = connect_notes_db(&vault_path)?;
+    archive_node(&mut connection, &node_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_unarchive_node(
+    vault_path: String,
+    node_id: String,
+) -> Result<NotesWorkspace, String> {
+    let mut connection = connect_notes_db(&vault_path)?;
+    unarchive_node(&mut connection, &node_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
     let mut connection = connect_notes_db(&vault_path)?;
     empty_trash(&mut connection)
@@ -146,6 +165,14 @@ pub(crate) fn notes_search(
 pub(crate) fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
     let connection = connect_notes_db(&vault_path)?;
     list_tags(&connection)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_list_tags_with_counts(
+    vault_path: String,
+) -> Result<Vec<NoteTagSummary>, String> {
+    let connection = connect_notes_db(&vault_path)?;
+    list_tags_with_counts(&connection)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -405,6 +432,8 @@ mod tests {
                 created_at: "2026-07-10T00:00:00.000Z".to_string(),
                 updated_at: "2026-07-10T00:00:00.000Z".to_string(),
                 deleted_at: None,
+                archived_at: None,
+                archive_root_id: None,
             }],
         };
         assert_eq!(
@@ -422,7 +451,9 @@ mod tests {
                     "completedAt": null,
                     "createdAt": "2026-07-10T00:00:00.000Z",
                     "updatedAt": "2026-07-10T00:00:00.000Z",
-                    "deletedAt": null
+                    "deletedAt": null,
+                    "archivedAt": null,
+                    "archiveRootId": null
                 }]
             })
         );
