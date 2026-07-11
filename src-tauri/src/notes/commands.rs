@@ -11,12 +11,13 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, connect_notes_db, create_attachment_coordinated,
-    create_node_at, delete_database, duplicate_node_at, empty_trash, list_tags,
-    list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
-    remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
-    restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node, split_node_at,
-    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    archive_node, attachment_by_id, collapse_all, connect_notes_db,
+    create_attachment_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
+    empty_trash, expand_all, list_tags, list_tags_with_counts, load_workspace, move_node,
+    open_notes_export_db, remove_attachment, remove_empty_node, removed_attachment_snapshot,
+    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
+    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
+    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
     validate_note_tag_filters, validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
@@ -165,6 +166,50 @@ pub(crate) fn notes_toggle_collapsed(
 ) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         toggle_collapsed(connection, &node_id)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_collapse_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        collapse_all(connection, &node_id)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_expand_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        expand_all(connection, &node_id)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_sort_subtree_ascending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        sort_subtree_ascending(connection, &node_id)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_sort_subtree_descending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        sort_subtree_descending(connection, &node_id)
     })
 }
 
@@ -403,8 +448,10 @@ pub(crate) fn notes_import_attachment(
         &mut connection,
         history_context.as_ref(),
         |connection| {
-            create_attachment_coordinated(
+            let target_node_id = input.node_id.clone();
+            create_attachment_coordinated_for_node(
                 connection,
+                &target_node_id,
                 || {
                     let relative_path =
                         storage.publish_attachment_bytes_for_import(&prepared, &identity)?;
@@ -710,8 +757,9 @@ mod tests {
     use crate::notes::types::{
         ImportAttachmentInput, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat,
+        NotesExportFormat, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
+    use rusqlite::params;
     use serde_json::json;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -719,6 +767,7 @@ mod tests {
     const EMPTY_ID: &str = "33333333-3333-4333-8333-333333333333";
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const REPLACEMENT_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const NOOP_ENTRY_ID: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
     const INVALID_DESCENDANT_ID: &str = "bad -->\n# injected";
 
     struct FixedLocalToday;
@@ -731,6 +780,53 @@ mod tests {
 
     fn assert_active(workspace: &NotesWorkspace) {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
+    }
+
+    fn insert_limit_attachment_metadata(
+        connection: &rusqlite::Connection,
+        index: i64,
+        node_id: &str,
+    ) -> String {
+        let id = format!("{index:08x}-dddd-4ddd-8ddd-{index:012x}");
+        let content_hash = format!("{index:064x}");
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, ?5, 'seed.png', 'image/png', 1, 1, 1, 1, \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                 )",
+                params![
+                    id,
+                    node_id,
+                    (index + 1) * 1024,
+                    format!("notes-assets/{content_hash}.png"),
+                    content_hash
+                ],
+            )
+            .expect("insert attachment limit metadata");
+        id
+    }
+
+    fn asset_directory_entries(vault_path: &str) -> Vec<String> {
+        let directory = crate::metadata_dir(vault_path).join("notes-assets");
+        if !directory.exists() {
+            return Vec::new();
+        }
+        let mut entries = fs::read_dir(directory)
+            .expect("read Notes asset directory")
+            .map(|entry| {
+                entry
+                    .expect("read Notes asset entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
     }
 
     fn seed_export_vault(vault_path: &str) {
@@ -1163,6 +1259,636 @@ mod tests {
         assert!(!unjournaled.can_undo);
         assert!(!unjournaled.can_redo);
         assert!(unjournaled.workspace.nodes[0].is_starred);
+    }
+
+    #[test]
+    fn collapse_all_is_one_atomic_history_entry_with_undo_and_redo() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id) in [
+            (ROOT_ID, None),
+            (SPLIT_ID, Some(ROOT_ID)),
+            (EMPTY_ID, Some(SPLIT_ID)),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: id.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed subtree node");
+        }
+
+        let mutation = notes_collapse_all(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "collapseAll".to_string(),
+            }),
+        )
+        .expect("collapse subtree");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(mutation.can_undo);
+        assert!(!mutation.can_redo);
+        assert_eq!(
+            mutation
+                .workspace
+                .nodes
+                .iter()
+                .filter(|node| node.is_collapsed)
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ROOT_ID, SPLIT_ID]
+        );
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo collapse subtree");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(undone.workspace.nodes.iter().all(|node| !node.is_collapsed));
+
+        let redone = notes_redo(
+            vault_path,
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo collapse subtree");
+        assert_eq!(
+            redone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            redone
+                .workspace
+                .nodes
+                .iter()
+                .filter(|node| node.is_collapsed)
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![ROOT_ID, SPLIT_ID]
+        );
+    }
+
+    #[test]
+    fn expand_all_returns_one_atomic_subtree_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id) in [
+            (ROOT_ID, None),
+            (SPLIT_ID, Some(ROOT_ID)),
+            (EMPTY_ID, Some(SPLIT_ID)),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: id.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed subtree node");
+        }
+        notes_collapse_all(vault_path.clone(), ROOT_ID.to_string(), None)
+            .expect("seed collapsed subtree");
+
+        let mutation = notes_expand_all(
+            vault_path,
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "expandAll".to_string(),
+            }),
+        )
+        .expect("expand subtree");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(mutation
+            .workspace
+            .nodes
+            .iter()
+            .all(|node| !node.is_collapsed));
+    }
+
+    #[test]
+    fn sort_subtree_ascending_is_atomic_undoable_and_preserves_node_metadata() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id, title, note) in [
+            (ROOT_ID, None, "root", ""),
+            (
+                SPLIT_ID,
+                Some(ROOT_ID),
+                "beta",
+                "details #Roadmap 2026-07-14",
+            ),
+            (EMPTY_ID, Some(ROOT_ID), "Alpha", "untouched"),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: title.to_string(),
+                    note: note.to_string(),
+                },
+                None,
+            )
+            .expect("seed sortable node");
+        }
+        notes_toggle_complete(vault_path.clone(), SPLIT_ID.to_string(), None)
+            .expect("complete sortable child");
+        let connection = connect_notes_db(&vault_path).expect("open seeded vault");
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, 1024, 'notes-assets/a.png', ?3, 'a.png', 'image/png', \
+                   1, 1, 1, 160, '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                 )",
+                params![EMPTY_ID, SPLIT_ID, "a".repeat(64)],
+            )
+            .expect("seed attachment metadata");
+        let indexed_before: (i64, i64) = connection
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM notes_tags WHERE node_id = ?1), \
+                   (SELECT COUNT(*) FROM notes_dates WHERE node_id = ?1)",
+                [SPLIT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read derived rows before sort");
+        drop(connection);
+
+        let mutation = notes_sort_subtree_ascending(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "sortSubtreeAscending".to_string(),
+            }),
+        )
+        .expect("sort subtree ascending");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            mutation
+                .workspace
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id.as_deref() == Some(ROOT_ID))
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![EMPTY_ID, SPLIT_ID]
+        );
+        let completed = mutation
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == SPLIT_ID)
+            .expect("completed child after sort");
+        assert_eq!(completed.note, "details #Roadmap 2026-07-14");
+        assert!(completed.completed_at.is_some());
+        assert_eq!(
+            mutation
+                .workspace
+                .attachments_by_node_id
+                .get(SPLIT_ID)
+                .map(Vec::len),
+            Some(1)
+        );
+
+        let connection = connect_notes_db(&vault_path).expect("reopen sorted vault");
+        let indexed_after: (i64, i64) = connection
+            .query_row(
+                "SELECT \
+                   (SELECT COUNT(*) FROM notes_tags WHERE node_id = ?1), \
+                   (SELECT COUNT(*) FROM notes_dates WHERE node_id = ?1)",
+                [SPLIT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read derived rows after sort");
+        assert_eq!(indexed_after, indexed_before);
+        drop(connection);
+
+        let undone = notes_undo(
+            vault_path,
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo subtree sort");
+        assert_eq!(
+            undone
+                .workspace
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id.as_deref() == Some(ROOT_ID))
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![SPLIT_ID, EMPTY_ID]
+        );
+        assert_eq!(
+            undone
+                .workspace
+                .attachments_by_node_id
+                .get(SPLIT_ID)
+                .map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn sort_subtree_descending_returns_one_atomic_subtree_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id, title) in [
+            (ROOT_ID, None, "root"),
+            (SPLIT_ID, Some(ROOT_ID), "Alpha"),
+            (EMPTY_ID, Some(ROOT_ID), "beta"),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: title.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed sortable node");
+        }
+
+        let mutation = notes_sort_subtree_descending(
+            vault_path,
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "sortSubtreeDescending".to_string(),
+            }),
+        )
+        .expect("sort subtree descending");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            mutation
+                .workspace
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id.as_deref() == Some(ROOT_ID))
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![EMPTY_ID, SPLIT_ID]
+        );
+    }
+
+    #[test]
+    fn no_op_subtree_commands_return_atomic_results_without_polluting_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id, title) in [
+            (ROOT_ID, None, "root"),
+            (SPLIT_ID, Some(ROOT_ID), "Alpha"),
+            (EMPTY_ID, Some(ROOT_ID), "beta"),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: title.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed no-op subtree");
+        }
+        let first = notes_collapse_all(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "collapseAll".to_string(),
+            }),
+        )
+        .expect("initial collapse");
+        assert_eq!(
+            first.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+
+        let collapse_noop = notes_collapse_all(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: NOOP_ENTRY_ID.to_string(),
+                command_kind: "collapseAll".to_string(),
+            }),
+        )
+        .expect("no-op collapse");
+        assert_eq!(collapse_noop.history_entry_id, None);
+        assert!(collapse_noop.can_undo);
+
+        let sorted_noop = notes_sort_subtree_ascending(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: NOOP_ENTRY_ID.to_string(),
+                command_kind: "sortSubtreeAscending".to_string(),
+            }),
+        )
+        .expect("already sorted subtree");
+        assert_eq!(sorted_noop.history_entry_id, None);
+        assert!(sorted_noop.can_undo);
+
+        let undone = notes_undo(
+            vault_path,
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo latest real mutation");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(undone.workspace.nodes.iter().all(|node| !node.is_collapsed));
+    }
+
+    #[test]
+    fn subtree_commands_reject_archived_trashed_and_cross_vault_ids() {
+        type Command =
+            fn(String, String, Option<NotesHistoryContext>) -> Result<NotesMutationResult, String>;
+        let commands: [(&str, Command); 4] = [
+            ("expand", notes_expand_all),
+            ("collapse", notes_collapse_all),
+            ("sort ascending", notes_sort_subtree_ascending),
+            ("sort descending", notes_sort_subtree_descending),
+        ];
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("seed lifecycle root");
+        notes_archive_node(vault_path.clone(), ROOT_ID.to_string(), None).expect("archive root");
+        for (label, command) in commands {
+            let error = command(vault_path.clone(), ROOT_ID.to_string(), None).expect_err(label);
+            assert!(error.contains("archived"), "{label}: {error}");
+        }
+
+        notes_unarchive_node(vault_path.clone(), ROOT_ID.to_string(), None)
+            .expect("unarchive root");
+        notes_soft_delete_node(vault_path.clone(), ROOT_ID.to_string(), None).expect("trash root");
+        for (label, command) in commands {
+            let error = command(vault_path.clone(), ROOT_ID.to_string(), None).expect_err(label);
+            assert!(error.contains("trash"), "{label}: {error}");
+        }
+
+        let other_temp_dir = tempfile::tempdir().expect("other temp dir");
+        let other_vault_path = other_temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(other_vault_path.clone()).expect("initialize other vault");
+        for (label, command) in commands {
+            let error =
+                command(other_vault_path.clone(), ROOT_ID.to_string(), None).expect_err(label);
+            assert!(error.contains("does not exist"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn attachment_import_limits_reject_before_metadata_history_or_file_publication() {
+        for (label, existing_count, target_node_id, expected_error) in [
+            (
+                "per-node",
+                MAX_NOTE_ATTACHMENTS_PER_NODE,
+                ROOT_ID,
+                "A Note node can contain at most 128 attachments.",
+            ),
+            (
+                "vault",
+                MAX_NOTE_ATTACHMENTS_PER_VAULT,
+                "55555555-5555-4555-8555-555555555555",
+                "A Notes vault can contain at most 512 attachments.",
+            ),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = temp_dir.path().to_string_lossy().into_owned();
+            notes_initialize(vault_path.clone()).expect("initialize");
+            let node_ids = [
+                ROOT_ID,
+                SPLIT_ID,
+                EMPTY_ID,
+                "44444444-4444-4444-8444-444444444444",
+                "55555555-5555-4555-8555-555555555555",
+            ];
+            for (index, node_id) in node_ids.iter().enumerate() {
+                notes_create_node(
+                    vault_path.clone(),
+                    CreateNodeInput {
+                        id: (*node_id).to_string(),
+                        parent_id: None,
+                        after_id: (index > 0).then(|| node_ids[index - 1].to_string()),
+                        title: (*node_id).to_string(),
+                        note: String::new(),
+                    },
+                    None,
+                )
+                .expect("seed import limit node");
+            }
+            let connection = connect_notes_db(&vault_path).expect("open limit vault");
+            for index in 0..existing_count {
+                let node_id = if label == "per-node" {
+                    ROOT_ID
+                } else {
+                    node_ids[usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                        .expect("limit node index")]
+                };
+                insert_limit_attachment_metadata(&connection, index, node_id);
+            }
+            drop(connection);
+            let source = temp_dir.path().join(format!("{label}.png"));
+            fs::write(&source, encoded_png(2, 2)).expect("write import limit source");
+            let before_entries = asset_directory_entries(&vault_path);
+
+            let error = notes_import_attachment(
+                vault_path.clone(),
+                ImportAttachmentInput {
+                    id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
+                    node_id: target_node_id.to_string(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    display_width: Some(2),
+                },
+                Some(NotesHistoryContext {
+                    session_id: SESSION_ID.to_string(),
+                    entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                    command_kind: "importAttachment".to_string(),
+                }),
+            )
+            .expect_err(label);
+
+            assert_eq!(error, expected_error, "{label}");
+            let connection = connect_notes_db(&vault_path).expect("reopen limit vault");
+            let count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                    row.get(0)
+                })
+                .expect("count rejected import metadata");
+            assert_eq!(count, existing_count, "{label}");
+            let rejected_exists: bool = connection
+                .query_row(
+                    "SELECT EXISTS(\
+                       SELECT 1 FROM notes_attachments \
+                       WHERE id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'\
+                     )",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("check rejected attachment ID");
+            assert!(!rejected_exists, "{label}");
+            drop(connection);
+            assert_eq!(
+                asset_directory_entries(&vault_path),
+                before_entries,
+                "{label}"
+            );
+            assert!(source.exists(), "{label} source remains untouched");
+            assert_eq!(
+                notes_history_status(vault_path, SESSION_ID.to_string())
+                    .expect("history status after rejected import"),
+                NotesHistoryStatus::default(),
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn removed_attachment_history_does_not_consume_live_import_capacity() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("seed capacity root");
+        let connection = connect_notes_db(&vault_path).expect("open capacity vault");
+        let mut first_attachment_id = String::new();
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_NODE {
+            let id = insert_limit_attachment_metadata(&connection, index, ROOT_ID);
+            if index == 0 {
+                first_attachment_id = id;
+            }
+        }
+        drop(connection);
+        notes_remove_attachment(
+            vault_path.clone(),
+            first_attachment_id.clone(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "removeAttachment".to_string(),
+            }),
+        )
+        .expect("remove one attachment at capacity");
+        let source = temp_dir.path().join("replacement.png");
+        fs::write(&source, encoded_png(2, 2)).expect("write replacement source");
+
+        let imported = notes_import_attachment(
+            vault_path.clone(),
+            ImportAttachmentInput {
+                id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: source.to_string_lossy().into_owned(),
+                display_width: Some(2),
+            },
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: NOOP_ENTRY_ID.to_string(),
+                command_kind: "importAttachment".to_string(),
+            }),
+        )
+        .expect("replace removed attachment");
+
+        assert_eq!(imported.history_entry_id.as_deref(), Some(NOOP_ENTRY_ID));
+        assert_eq!(
+            imported
+                .workspace
+                .attachments_by_node_id
+                .get(ROOT_ID)
+                .map(Vec::len),
+            Some(usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE).expect("node capacity"))
+        );
+        let connection = connect_notes_db(&vault_path).expect("reopen capacity vault");
+        let retained_history: bool = connection
+            .query_row(
+                "SELECT EXISTS(\
+                   SELECT 1 FROM notes_history_changes \
+                   WHERE row_id = ?1 AND table_name = 'notes_attachments'\
+                 )",
+                [first_attachment_id],
+                |row| row.get(0),
+            )
+            .expect("inspect retained attachment history");
+        assert!(retained_history);
     }
 
     #[test]

@@ -268,6 +268,48 @@ export function notesToggleCollapsed(
   return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId, historyContext);
 }
 
+export function notesExpandAll(
+  vaultPath: string,
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeNodeMutation("notes_expand_all", vaultPath, nodeId, historyContext);
+}
+
+export function notesCollapseAll(
+  vaultPath: string,
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeNodeMutation("notes_collapse_all", vaultPath, nodeId, historyContext);
+}
+
+export function notesSortSubtreeAscending(
+  vaultPath: string,
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeNodeMutation(
+    "notes_sort_subtree_ascending",
+    vaultPath,
+    nodeId,
+    historyContext
+  );
+}
+
+export function notesSortSubtreeDescending(
+  vaultPath: string,
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeNodeMutation(
+    "notes_sort_subtree_descending",
+    vaultPath,
+    nodeId,
+    historyContext
+  );
+}
+
 export function notesToggleStar(
   vaultPath: string,
   nodeId: NoteId,
@@ -572,6 +614,10 @@ export const notesStore: NotesStore = {
   moveNode: notesMoveNode,
   toggleComplete: notesToggleComplete,
   toggleCollapsed: notesToggleCollapsed,
+  expandAll: notesExpandAll,
+  collapseAll: notesCollapseAll,
+  sortSubtreeAscending: notesSortSubtreeAscending,
+  sortSubtreeDescending: notesSortSubtreeDescending,
   toggleStar: notesToggleStar,
   duplicateNode: notesDuplicateNode,
   removeEmptyNode: notesRemoveEmptyNode,

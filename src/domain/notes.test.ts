@@ -550,6 +550,19 @@ describe("Notes domain contract", () => {
     >();
   });
 
+  it("requires typed atomic subtree menu mutation methods", () => {
+    type SubtreeMutation = (
+      vaultPath: string,
+      nodeId: import("./notes").NoteId,
+      historyContext?: import("./notes").NotesHistoryContext | null
+    ) => Promise<NotesMutationResult>;
+
+    expectTypeOf<NonNullable<NotesStore["expandAll"]>>().toEqualTypeOf<SubtreeMutation>();
+    expectTypeOf<NonNullable<NotesStore["collapseAll"]>>().toEqualTypeOf<SubtreeMutation>();
+    expectTypeOf<NonNullable<NotesStore["sortSubtreeAscending"]>>().toEqualTypeOf<SubtreeMutation>();
+    expectTypeOf<NonNullable<NotesStore["sortSubtreeDescending"]>>().toEqualTypeOf<SubtreeMutation>();
+  });
+
   it("creates a canonical UUID for a new node", () => {
     const randomUUID = vi.fn(() => UUID);
     vi.stubGlobal("crypto", { randomUUID });

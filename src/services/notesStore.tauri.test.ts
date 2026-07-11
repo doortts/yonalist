@@ -17,8 +17,10 @@ import type {
 import {
   notesCreateNode,
   notesArchiveNode,
+  notesCollapseAll,
   notesDeleteDatabase,
   notesDuplicateNode,
+  notesExpandAll,
   notesEmptyTrash,
   notesClearHistory,
   notesHistoryStatus,
@@ -37,6 +39,8 @@ import {
   notesSearch,
   notesSearchStructured,
   notesSoftDeleteNode,
+  notesSortSubtreeAscending,
+  notesSortSubtreeDescending,
   notesSplitNode,
   notesToggleCollapsed,
   notesToggleComplete,
@@ -870,6 +874,28 @@ describe("notesStore in Tauri", () => {
       historyContext: null
     });
   });
+
+  it.each([
+    ["notes_expand_all", notesExpandAll],
+    ["notes_collapse_all", notesCollapseAll],
+    ["notes_sort_subtree_ascending", notesSortSubtreeAscending],
+    ["notes_sort_subtree_descending", notesSortSubtreeDescending]
+  ] as const)(
+    "maps atomic subtree command %s to the exact nodeId payload",
+    async (command, adapter) => {
+      invokeMock.mockResolvedValue(mutationResult);
+
+      await expect(adapter(vaultPath, nodeId, historyContext)).resolves.toEqual(
+        normalizedMutationResult
+      );
+
+      expect(invokeMock).toHaveBeenCalledWith(command, {
+        vaultPath,
+        nodeId,
+        historyContext
+      });
+    }
+  );
 
   it.each([
     ["notes_archive_node", notesArchiveNode],

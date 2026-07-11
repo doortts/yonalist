@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub type NoteId = String;
+pub(crate) const MAX_NOTE_ATTACHMENTS_PER_NODE: i64 = 128;
+pub(crate) const MAX_NOTE_ATTACHMENTS_PER_VAULT: i64 = 512;
 pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

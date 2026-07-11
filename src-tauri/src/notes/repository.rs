@@ -9,7 +9,8 @@ use crate::notes::types::{
     NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
     NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
     NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS,
+    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -2427,6 +2428,204 @@ pub(crate) fn toggle_collapsed(
     })
 }
 
+fn set_subtree_collapsed(
+    connection: &mut Connection,
+    node_id: &str,
+    is_collapsed: bool,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        require_active_node(transaction, node_id)?;
+        transaction
+            .execute(
+                "WITH RECURSIVE subtree(id) AS (\
+                   SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
+                     AND archived_at IS NULL \
+                   UNION \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+                 ) \
+                 UPDATE notes_nodes SET is_collapsed = ?2, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id IN subtree AND is_collapsed <> ?2 \
+                   AND EXISTS (\
+                     SELECT 1 FROM notes_nodes child \
+                     WHERE child.parent_id = notes_nodes.id \
+                       AND child.deleted_at IS NULL AND child.archived_at IS NULL\
+                   )",
+                params![node_id, is_collapsed],
+            )
+            .map_err(|error| {
+                format!("Could not update the Note subtree collapse state: {error}")
+            })?;
+        Ok(())
+    })
+}
+
+pub(crate) fn expand_all(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    set_subtree_collapsed(connection, node_id, false)
+}
+
+pub(crate) fn collapse_all(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    set_subtree_collapsed(connection, node_id, true)
+}
+
+fn normalized_display_title(title: &str) -> String {
+    let title = title.trim();
+    let display_title = if title.is_empty() { "Untitled" } else { title };
+    display_title.chars().flat_map(char::to_lowercase).collect()
+}
+
+#[derive(Clone, Copy)]
+enum SubtreeSortDirection {
+    Ascending,
+    Descending,
+}
+
+fn sort_subtree(
+    connection: &mut Connection,
+    node_id: &str,
+    direction: SubtreeSortDirection,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(node_id)?;
+    with_workspace_transaction(connection, |transaction| {
+        require_active_node(transaction, node_id)?;
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, parent_id, sort_key, title FROM notes_nodes \
+                 WHERE deleted_at IS NULL AND archived_at IS NULL \
+                 ORDER BY parent_id, sort_key, id",
+            )
+            .map_err(|error| format!("Could not prepare the Note subtree sort: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Could not read the Note subtree sort: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect the Note subtree sort: {error}"))?;
+        drop(statement);
+
+        let mut children: HashMap<String, Vec<(String, i64, String)>> = HashMap::new();
+        for (id, parent_id, sort_key, title) in rows {
+            if let Some(parent_id) = parent_id {
+                children.entry(parent_id).or_default().push((
+                    id,
+                    sort_key,
+                    normalized_display_title(&title),
+                ));
+            }
+        }
+        let mut groups = Vec::new();
+        let mut pending = vec![node_id.to_string()];
+        let mut visited = HashSet::new();
+        while let Some(parent_id) = pending.pop() {
+            if !visited.insert(parent_id.clone()) {
+                return Err("The Notes tree contains a cycle and cannot be sorted.".to_string());
+            }
+            if let Some(siblings) = children.remove(&parent_id) {
+                pending.extend(siblings.iter().map(|(id, _, _)| id.clone()));
+                groups.push(siblings);
+            }
+        }
+        let mut desired_order = Vec::new();
+        for siblings in &mut groups {
+            let original_ids = siblings
+                .iter()
+                .map(|(id, _, _)| id.clone())
+                .collect::<Vec<_>>();
+            siblings.sort_by(|left, right| match direction {
+                SubtreeSortDirection::Ascending => left.2.cmp(&right.2),
+                SubtreeSortDirection::Descending => right.2.cmp(&left.2),
+            });
+            if siblings.iter().map(|(id, _, _)| id).eq(original_ids.iter()) {
+                continue;
+            }
+            for (index, (id, current_sort_key, _)) in siblings.iter().enumerate() {
+                let sort_key = i64::try_from(index + 1)
+                    .ok()
+                    .and_then(|position| position.checked_mul(SORT_KEY_STEP))
+                    .ok_or_else(|| {
+                        "The Notes sibling ordering is too large to sort.".to_string()
+                    })?;
+                if *current_sort_key == sort_key {
+                    continue;
+                }
+                desired_order.push((id, sort_key));
+            }
+        }
+        if !desired_order.is_empty() {
+            let desired_order = serde_json::to_string(&desired_order)
+                .map_err(|error| format!("Could not encode the Note subtree sort: {error}"))?;
+            transaction
+                .execute_batch(
+                    "CREATE TEMP TABLE IF NOT EXISTS notes_subtree_desired_order (\
+                       id TEXT PRIMARY KEY, sort_key INTEGER NOT NULL\
+                     ) WITHOUT ROWID; \
+                     DELETE FROM notes_subtree_desired_order;",
+                )
+                .map_err(|error| format!("Could not prepare the Note subtree order: {error}"))?;
+            transaction
+                .execute(
+                    "INSERT INTO notes_subtree_desired_order(id, sort_key) \
+                     SELECT \
+                       json_extract(value, '$[0]'), \
+                       CAST(json_extract(value, '$[1]') AS INTEGER) \
+                     FROM json_each(?1)",
+                    [desired_order],
+                )
+                .map_err(|error| format!("Could not stage the Note subtree order: {error}"))?;
+            transaction
+                .execute(
+                    "UPDATE notes_nodes AS node SET \
+                       sort_key = (\
+                         SELECT desired.sort_key FROM notes_subtree_desired_order desired \
+                         WHERE desired.id = node.id\
+                       ), \
+                       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                     WHERE node.id IN (SELECT id FROM notes_subtree_desired_order) \
+                       AND node.deleted_at IS NULL AND node.archived_at IS NULL \
+                       AND node.sort_key <> (\
+                         SELECT desired.sort_key FROM notes_subtree_desired_order desired \
+                         WHERE desired.id = node.id\
+                       )",
+                    [],
+                )
+                .map_err(|error| format!("Could not sort Note siblings: {error}"))?;
+            transaction
+                .execute("DELETE FROM notes_subtree_desired_order", [])
+                .map_err(|error| format!("Could not clear the Note subtree order: {error}"))?;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn sort_subtree_ascending(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    sort_subtree(connection, node_id, SubtreeSortDirection::Ascending)
+}
+
+pub(crate) fn sort_subtree_descending(
+    connection: &mut Connection,
+    node_id: &str,
+) -> Result<NotesWorkspace, String> {
+    sort_subtree(connection, node_id, SubtreeSortDirection::Descending)
+}
+
 pub(crate) fn toggle_star(
     connection: &mut Connection,
     node_id: &str,
@@ -2983,11 +3182,38 @@ fn validate_new_attachment(attachment: &NewAttachment) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_attachment_capacity(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+) -> Result<(), String> {
+    require_active_node(transaction, node_id)?;
+    let (node_count, vault_count): (i64, i64) = transaction
+        .query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1), \
+               (SELECT COUNT(*) FROM notes_attachments)",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| format!("Could not inspect Notes attachment capacity: {error}"))?;
+    if node_count >= MAX_NOTE_ATTACHMENTS_PER_NODE {
+        return Err(format!(
+            "A Note node can contain at most {MAX_NOTE_ATTACHMENTS_PER_NODE} attachments."
+        ));
+    }
+    if vault_count >= MAX_NOTE_ATTACHMENTS_PER_VAULT {
+        return Err(format!(
+            "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+    Ok(())
+}
+
 fn insert_new_attachment(
     transaction: &Transaction<'_>,
     attachment: NewAttachment,
 ) -> Result<(), String> {
-    require_active_node(transaction, &attachment.node_id)?;
+    validate_attachment_capacity(transaction, &attachment.node_id)?;
     let id_exists: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
@@ -3046,8 +3272,9 @@ pub(crate) fn create_attachment(
     })
 }
 
-pub(crate) fn create_attachment_coordinated(
+fn create_attachment_coordinated_inner(
     connection: &mut Connection,
+    node_id: Option<&str>,
     prepare: impl FnOnce() -> Result<NewAttachment, String>,
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
@@ -3055,8 +3282,14 @@ pub(crate) fn create_attachment_coordinated(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes attachment transaction: {error}"))?;
+    if let Some(node_id) = node_id {
+        validate_attachment_capacity(&transaction, node_id)?;
+    }
     let attachment = prepare()?;
     validate_new_attachment(&attachment)?;
+    if node_id.is_some_and(|node_id| attachment.node_id != node_id) {
+        return Err("Prepared Notes attachment targets an unexpected node.".to_string());
+    }
     insert_new_attachment(&transaction, attachment)?;
     let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
     if journaled {
@@ -3067,6 +3300,24 @@ pub(crate) fn create_attachment_coordinated(
         .commit()
         .map_err(|error| format!("Could not commit the Notes attachment transaction: {error}"))?;
     Ok(workspace)
+}
+
+pub(crate) fn create_attachment_coordinated_for_node(
+    connection: &mut Connection,
+    node_id: &str,
+    prepare: impl FnOnce() -> Result<NewAttachment, String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    create_attachment_coordinated_inner(connection, Some(node_id), prepare, before_commit)
+}
+
+#[cfg(test)]
+pub(crate) fn create_attachment_coordinated(
+    connection: &mut Connection,
+    prepare: impl FnOnce() -> Result<NewAttachment, String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    create_attachment_coordinated_inner(connection, None, prepare, before_commit)
 }
 
 pub(crate) fn resize_attachment(
@@ -3164,6 +3415,7 @@ pub(crate) fn restore_attachment(
                 attachment.id
             ));
         }
+        validate_attachment_capacity(transaction, &attachment.node_id)?;
         transaction
             .execute(
                 "INSERT INTO notes_attachments(\
@@ -3204,25 +3456,30 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_node, connect_notes_db, create_node, create_node_at, create_version_one_schema,
-        delete_database, duplicate_node, duplicate_node_at, empty_trash, initialize_notes_db,
-        list_tags, list_tags_with_counts, load_workspace, migrate_version_one_to_two, move_node,
-        notes_db_path, observe_next_migration_busy, open_notes_export_db,
-        preflight_existing_notes_schema, remove_empty_node, restore_node, restore_node_at,
-        search_nodes, search_nodes_at, search_nodes_structured, soft_delete_node, split_node,
-        split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node, update_node_at,
+        archive_node, collapse_all, connect_notes_db, create_attachment,
+        create_attachment_coordinated_for_node, create_node, create_node_at,
+        create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
+        expand_all, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
+        migrate_version_one_to_two, move_node, notes_db_path, observe_next_migration_busy,
+        open_notes_export_db, preflight_existing_notes_schema, remove_empty_node,
+        restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
+        search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
+        split_node, split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete,
+        toggle_star, unarchive_node, update_node, update_node_at, NewAttachment, NoteAttachment,
+        SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
+    use std::collections::HashMap;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
@@ -3230,6 +3487,8 @@ mod tests {
     const FOURTH_ID: &str = "44444444-4444-4444-8444-444444444444";
     const FIFTH_ID: &str = "55555555-5555-4555-8555-555555555555";
     const SIXTH_ID: &str = "66666666-6666-4666-8666-666666666666";
+    const SEVENTH_ID: &str = "77777777-7777-4777-8777-777777777777";
+    const EIGHTH_ID: &str = "88888888-8888-4888-8888-888888888888";
 
     fn fixed_today() -> LocalDate {
         LocalDate::new(2026, 7, 11).expect("fixed date")
@@ -3433,6 +3692,522 @@ mod tests {
             .expect("query active children")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect active children")
+    }
+
+    fn insert_test_attachment(connection: &Connection, index: usize, node_id: &str) -> String {
+        let id = format!("{index:08x}-aaaa-4aaa-8aaa-{index:012x}");
+        let content_hash = format!("{index:064x}");
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, ?5, 'image.png', 'image/png', 1, 160, 160, 160, \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                 )",
+                params![
+                    id,
+                    node_id,
+                    i64::try_from(index + 1).expect("attachment sort key") * SORT_KEY_STEP,
+                    format!("notes-assets/{content_hash}.png"),
+                    content_hash
+                ],
+            )
+            .expect("insert test attachment");
+        id
+    }
+
+    fn test_new_attachment(index: usize, node_id: &str) -> NewAttachment {
+        let content_hash = format!("{index:064x}");
+        NewAttachment {
+            id: format!("{index:08x}-bbbb-4bbb-8bbb-{index:012x}"),
+            node_id: node_id.to_string(),
+            relative_path: format!("notes-assets/{content_hash}.png"),
+            content_hash,
+            original_name: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 1,
+            intrinsic_width: 160,
+            intrinsic_height: 160,
+            display_width: 160,
+        }
+    }
+
+    #[test]
+    fn attachment_insert_rejects_the_129th_row_for_one_node_transactionally() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_NODE {
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                NODE_ID,
+            );
+        }
+
+        let error = create_attachment(&mut connection, test_new_attachment(10_000, NODE_ID))
+            .expect_err("129th node attachment");
+
+        assert_eq!(error, "A Note node can contain at most 128 attachments.");
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("count node attachments");
+        assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_NODE);
+    }
+
+    #[test]
+    fn coordinated_attachment_limit_rejection_happens_before_prepare_or_publication() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_NODE {
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                NODE_ID,
+            );
+        }
+        let prepare_called = std::cell::Cell::new(false);
+
+        let error = create_attachment_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            || {
+                prepare_called.set(true);
+                Ok(test_new_attachment(30_000, NODE_ID))
+            },
+            || Ok(()),
+        )
+        .expect_err("capacity preflight");
+
+        assert_eq!(error, "A Note node can contain at most 128 attachments.");
+        assert!(
+            !prepare_called.get(),
+            "prepare must not publish attachment bytes"
+        );
+    }
+
+    #[test]
+    fn attachment_insert_rejects_the_513th_persisted_row_across_the_vault() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        let populated_nodes = [NODE_ID, CHILD_ID, THIRD_ID, FOURTH_ID];
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_VAULT {
+            let node_index = usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                .expect("attachment node index");
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                populated_nodes[node_index],
+            );
+        }
+
+        let error = create_attachment(&mut connection, test_new_attachment(20_000, FIFTH_ID))
+            .expect_err("513th vault attachment");
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count vault attachments");
+        assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_VAULT);
+    }
+
+    #[test]
+    fn attachment_restore_cannot_bypass_the_persisted_vault_limit() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        let populated_nodes = [NODE_ID, CHILD_ID, THIRD_ID, FOURTH_ID];
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_VAULT {
+            let node_index = usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                .expect("attachment node index");
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                populated_nodes[node_index],
+            );
+        }
+        let attachment = NoteAttachment {
+            id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd".to_string(),
+            node_id: FIFTH_ID.to_string(),
+            sort_key: 1024,
+            relative_path: "notes-assets/restored.png".to_string(),
+            content_hash: "d".repeat(64),
+            original_name: "restored.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 1,
+            intrinsic_width: 160,
+            intrinsic_height: 160,
+            display_width: 160,
+            created_at: "2026-07-10T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-10T00:00:00.000Z".to_string(),
+        };
+
+        let error = restore_attachment(&mut connection, attachment)
+            .expect_err("restore beyond vault limit");
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments after rejected restore");
+        assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_VAULT);
+    }
+
+    #[test]
+    fn trashed_attachment_rows_count_until_empty_trash_releases_capacity() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        let populated_nodes = [NODE_ID, CHILD_ID, THIRD_ID, FOURTH_ID];
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_VAULT {
+            let node_index = usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                .expect("attachment node index");
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                populated_nodes[node_index],
+            );
+        }
+        soft_delete_node(&mut connection, NODE_ID).expect("trash populated root");
+
+        let error = create_attachment(&mut connection, test_new_attachment(40_000, FIFTH_ID))
+            .expect_err("trashed metadata still counts");
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+
+        empty_trash(&mut connection).expect("empty populated trash");
+        create_attachment(&mut connection, test_new_attachment(40_001, FIFTH_ID))
+            .expect("capacity released after empty trash");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments after empty trash");
+        assert_eq!(
+            count,
+            MAX_NOTE_ATTACHMENTS_PER_VAULT - MAX_NOTE_ATTACHMENTS_PER_NODE + 1
+        );
+    }
+
+    #[test]
+    fn collapse_all_updates_only_expandable_nodes_in_the_selected_active_subtree() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "branch");
+        insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "leaf");
+        insert_node(&connection, FOURTH_ID, None, 2048, "unrelated root");
+        insert_node(
+            &connection,
+            FIFTH_ID,
+            Some(FOURTH_ID),
+            1024,
+            "unrelated child",
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = '2026-07-10T00:00:00.000Z'",
+                [],
+            )
+            .expect("reset timestamps");
+
+        let workspace = collapse_all(&mut connection, NODE_ID).expect("collapse subtree");
+
+        let state = workspace
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node.is_collapsed))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(state.get(NODE_ID), Some(&true));
+        assert_eq!(state.get(CHILD_ID), Some(&true));
+        assert_eq!(state.get(THIRD_ID), Some(&false));
+        assert_eq!(state.get(FOURTH_ID), Some(&false));
+        let untouched: Vec<String> = connection
+            .prepare(
+                "SELECT id FROM notes_nodes \
+                 WHERE updated_at = '2026-07-10T00:00:00.000Z' ORDER BY id",
+            )
+            .expect("prepare untouched nodes")
+            .query_map([], |row| row.get(0))
+            .expect("query untouched nodes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect untouched nodes");
+        assert_eq!(
+            untouched,
+            vec![
+                THIRD_ID.to_string(),
+                FOURTH_ID.to_string(),
+                FIFTH_ID.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn expand_all_updates_only_collapsed_branches_in_the_selected_active_subtree() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "branch");
+        insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "leaf");
+        insert_node(&connection, FOURTH_ID, None, 2048, "unrelated root");
+        insert_node(
+            &connection,
+            FIFTH_ID,
+            Some(FOURTH_ID),
+            1024,
+            "unrelated child",
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_collapsed = 1, \
+                   updated_at = '2026-07-10T00:00:00.000Z'",
+                [],
+            )
+            .expect("collapse seeded nodes");
+
+        let workspace = expand_all(&mut connection, NODE_ID).expect("expand subtree");
+
+        let state = workspace
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node.is_collapsed))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(state.get(NODE_ID), Some(&false));
+        assert_eq!(state.get(CHILD_ID), Some(&false));
+        assert_eq!(state.get(THIRD_ID), Some(&true));
+        assert_eq!(state.get(FOURTH_ID), Some(&true));
+        let untouched: Vec<String> = connection
+            .prepare(
+                "SELECT id FROM notes_nodes \
+                 WHERE updated_at = '2026-07-10T00:00:00.000Z' ORDER BY id",
+            )
+            .expect("prepare untouched nodes")
+            .query_map([], |row| row.get(0))
+            .expect("query untouched nodes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect untouched nodes");
+        assert_eq!(
+            untouched,
+            vec![
+                THIRD_ID.to_string(),
+                FOURTH_ID.to_string(),
+                FIFTH_ID.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_subtree_ascending_is_unicode_case_insensitive_stable_and_parent_scoped() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 17, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 71, "beta");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 72, "Alpha");
+        insert_node(&connection, FOURTH_ID, Some(NODE_ID), 73, "ALPHA");
+        insert_node(&connection, FIFTH_ID, Some(NODE_ID), 74, "한글");
+        insert_node(&connection, SIXTH_ID, Some(NODE_ID), 75, "");
+        insert_node(&connection, SEVENTH_ID, Some(NODE_ID), 76, "  Untitled  ");
+        insert_node(&connection, EIGHTH_ID, None, 16, "unrelated root");
+        let nested_later = "99999999-9999-4999-8999-999999999999";
+        let nested_first = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        insert_node(&connection, nested_later, Some(CHILD_ID), 3, "Zulu");
+        insert_node(&connection, nested_first, Some(CHILD_ID), 4, "Able");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET completed_at = '2026-07-10T00:00:00.000Z' \
+                 WHERE id = ?1",
+                [FOURTH_ID],
+            )
+            .expect("complete equal-title node");
+
+        let workspace = sort_subtree_ascending(&mut connection, NODE_ID)
+            .expect("sort selected subtree ascending");
+
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID)),
+            vec![
+                (THIRD_ID.to_string(), 1024),
+                (FOURTH_ID.to_string(), 2048),
+                (CHILD_ID.to_string(), 3072),
+                (SIXTH_ID.to_string(), 4096),
+                (SEVENTH_ID.to_string(), 5120),
+                (FIFTH_ID.to_string(), 6144),
+            ]
+        );
+        assert_eq!(
+            active_children(&connection, Some(CHILD_ID)),
+            vec![
+                (nested_first.to_string(), 1024),
+                (nested_later.to_string(), 2048)
+            ]
+        );
+        assert_eq!(
+            active_children(&connection, None),
+            vec![(EIGHTH_ID.to_string(), 16), (NODE_ID.to_string(), 17)]
+        );
+        assert!(workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == FOURTH_ID)
+            .expect("completed node")
+            .completed_at
+            .is_some());
+    }
+
+    #[test]
+    fn sort_subtree_descending_reverses_titles_without_reversing_equal_groups() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 17, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 71, "beta");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 72, "Alpha");
+        insert_node(&connection, FOURTH_ID, Some(NODE_ID), 73, "ALPHA");
+        insert_node(&connection, FIFTH_ID, Some(NODE_ID), 74, "한글");
+        insert_node(&connection, SIXTH_ID, Some(NODE_ID), 75, "");
+        insert_node(&connection, SEVENTH_ID, Some(NODE_ID), 76, "untitled");
+
+        sort_subtree_descending(&mut connection, NODE_ID)
+            .expect("sort selected subtree descending");
+
+        assert_eq!(
+            active_children(&connection, Some(NODE_ID)),
+            vec![
+                (FIFTH_ID.to_string(), 1024),
+                (SIXTH_ID.to_string(), 2048),
+                (SEVENTH_ID.to_string(), 3072),
+                (CHILD_ID.to_string(), 4096),
+                (THIRD_ID.to_string(), 5120),
+                (FOURTH_ID.to_string(), 6144),
+            ]
+        );
+    }
+
+    #[test]
+    fn collapse_all_handles_a_two_thousand_level_tree_without_rust_recursion() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let transaction = connection.transaction().expect("deep tree transaction");
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO notes_nodes (\
+                       id, parent_id, sort_key, title, created_at, updated_at\
+                     ) VALUES (\
+                       ?1, ?2, 1024, ?3, \
+                       '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                     )",
+                )
+                .expect("prepare deep tree insert");
+            let mut parent_id = NODE_ID.to_string();
+            for index in 1..=2_000 {
+                let id = format!("{index:08x}-0000-4000-8000-{index:012x}");
+                statement
+                    .execute(params![id, parent_id, format!("level {index}")])
+                    .expect("insert deep tree node");
+                parent_id = id;
+            }
+        }
+        transaction.commit().expect("commit deep tree");
+
+        let workspace = collapse_all(&mut connection, NODE_ID).expect("collapse deep tree");
+
+        assert_eq!(workspace.nodes.len(), 2_001);
+        assert_eq!(
+            workspace
+                .nodes
+                .iter()
+                .filter(|node| node.is_collapsed)
+                .count(),
+            2_000
+        );
+        assert!(
+            !workspace
+                .nodes
+                .iter()
+                .find(|node| node.title == "level 2000")
+                .expect("deep leaf")
+                .is_collapsed
+        );
+    }
+
+    #[test]
+    fn sorting_ten_thousand_siblings_completes_with_sparse_deterministic_keys() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let transaction = connection.transaction().expect("large sibling transaction");
+        {
+            let mut statement = transaction
+                .prepare(
+                    "INSERT INTO notes_nodes (\
+                       id, parent_id, sort_key, title, created_at, updated_at\
+                     ) VALUES (\
+                       ?1, ?2, ?3, ?4, \
+                       '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                     )",
+                )
+                .expect("prepare large sibling insert");
+            for index in 0..10_000_i64 {
+                let id = format!("{index:08x}-0000-4000-8000-{index:012x}");
+                statement
+                    .execute(params![
+                        id,
+                        NODE_ID,
+                        index + 1,
+                        format!("node {:05}", 9_999 - index)
+                    ])
+                    .expect("insert sortable sibling");
+            }
+        }
+        transaction.commit().expect("commit large siblings");
+
+        let started = Instant::now();
+        let workspace =
+            sort_subtree_ascending(&mut connection, NODE_ID).expect("sort large sibling group");
+        let elapsed = started.elapsed();
+
+        let children = active_children(&connection, Some(NODE_ID));
+        assert_eq!(workspace.nodes.len(), 10_001);
+        assert_eq!(children.len(), 10_000);
+        assert_eq!(
+            children.first(),
+            Some(&("0000270f-0000-4000-8000-00000000270f".to_string(), 1024))
+        );
+        assert_eq!(
+            children.last(),
+            Some(&(
+                "00000000-0000-4000-8000-000000000000".to_string(),
+                10_240_000
+            ))
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "10k sibling sort took {elapsed:?}"
+        );
     }
 
     #[derive(Debug, PartialEq)]
