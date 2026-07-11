@@ -8,6 +8,8 @@ Implementation commit: `16776c87fde96e204333ef637be58553165663ef`
 
 Review-fix implementation commit: `03608fe9b34e5076bbead0eb8fd30c234b799ab6`
 
+Remaining-findings implementation commit: `0057403365cf91e084c03fb08bd7186563ec40f3`
+
 ## Owned Files
 
 - `src/features/notes/NotesImageAttachment.tsx`
@@ -224,3 +226,91 @@ transformed.
 The full frontend suite was not run for this pure-component review fix. Focused
 behavior, complete TypeScript compilation, and the production bundle were
 verified.
+
+## Remaining Interaction Findings
+
+### Exact Callback Ownership
+
+The immutable interaction identity now includes attachment ID, direct bytes or
+loader, MIME source, intrinsic width/height, the exact commit callback, and the
+starting persisted width. Pointer and keyboard completion invoke only the captured
+callback after confirming every identity field still matches. Callback identity
+changes synchronously cancel the interaction, reset its proposal, and release any
+pointer capture, so the replacement owner receives no stale commit.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "callback owner changes" --reporter=verbose
+```
+
+Observed: exit 1 with 2 failed tests. A replacement pointer callback incorrectly
+received width `380`, and a replacement keyboard callback incorrectly received
+width `336`.
+
+### Proposed Width Versus Rendered Clamp
+
+Each interaction now owns a user-authored proposal initialized from its rendered
+starting width. Pointer deltas and keyboard steps update that proposal against
+intrinsic bounds only. Current container width independently clamps rendering,
+without rewriting the proposal or marking a user change.
+
+Completion requires all of the following: unchanged interaction identity, a
+proposal different from the interaction start, a positive rendered width, and a
+final rendered width different from the starting rendered width. Therefore a
+container-only collapse is a no-op, a proposal made while collapsed reappears when
+space returns, and no path persists width zero. Intrinsic geometry changes or
+invalidity cancel the interaction and release pointer capture before completion.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "pointer-only container collapse|pointer proposal made|responsive collapse follows|intrinsic geometry (changes|becomes invalid)" \
+  --reporter=verbose
+```
+
+Observed: exit 1 with 5 failed tests. Untouched pointer collapse and keyboard
+collapse incorrectly persisted `0`; a pointer proposal made while collapsed was
+lost and rendered as `160px` after expansion; valid and invalid intrinsic geometry
+changes did not release active pointer capture.
+
+### Remaining-Findings GREEN And Verification
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx --reporter=verbose
+```
+
+Exit 0: 1 test file passed, 22 tests passed, 0 failures, and no warnings. Blob URL
+replacement, failure, and unmount behavior remains covered and green.
+
+```bash
+npx tsc --noEmit --pretty false
+```
+
+Exit 0 with no TypeScript errors.
+
+```bash
+npm run build
+```
+
+Exit 0. TypeScript and Vite completed successfully; 2,286 modules were
+transformed.
+
+The full frontend suite was not run. The focused component suite, standalone
+TypeScript compilation, and production build were run while concurrent Notes
+history/coordinator changes remained unstaged and untouched by this slice.
+
+### Post-Commit Concurrent Verification Note
+
+A fresh post-commit focused run again passed all 22 image component tests with no
+warnings. A standalone TypeScript check also passed immediately before the final
+build attempt. While those commands were running, concurrent unowned changes
+introduced errors at `src/features/notes/useNotesWorkspace.ts:2094` and `:2096`
+(`closing` and `session` on type `never`). The final build attempt and a subsequent
+standalone TypeScript retry therefore exit 2 on only those two concurrent errors.
+
+The successful production build above was completed after the owned component
+changes and before those concurrent workspace edits appeared. No unowned file was
+modified, staged, reverted, or committed by this image component slice.
