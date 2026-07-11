@@ -29,7 +29,7 @@ use std::sync::mpsc::Sender;
 const NOTES_SCHEMA_VERSION: i64 = 3;
 const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
 const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
-const NOTE_DATE_PARSER_VERSION: i64 = 2;
+const NOTE_DATE_PARSER_VERSION: i64 = 3;
 const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
 const NOTE_LIFECYCLE_SEARCH_VERSION: i64 = 1;
 const NOTE_LIFECYCLE_SEARCH_VERSION_KEY: &str = "derived.lifecycleSearchVersion";
@@ -3928,7 +3928,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("current date parser version marker");
-        assert_eq!(version, "2");
+        assert_eq!(version, "3");
     }
 
     #[test]
@@ -4006,7 +4006,7 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("upgraded date parser marker");
-        assert_eq!(version, "2");
+        assert_eq!(version, "3");
         let first_rewrite_count: i64 = connection
             .query_row("SELECT count(*) FROM v1_date_rebuild_audit", [], |row| {
                 row.get(0)
@@ -4020,6 +4020,105 @@ mod tests {
                 row.get(0)
             })
             .expect("idempotent stored-v1 rebuild count");
+        assert_eq!(second_rewrite_count, first_rewrite_count);
+    }
+
+    #[test]
+    fn version_three_initialization_upgrades_stored_v2_unicode_range_rows() {
+        let mut connection = test_connection();
+        let title = "😀07/11\u{00A0}-\u{00A0}07/14 then 07/15";
+        let note = "😀07/11\u{202F}-\u{202F}7/14 then 07/15/2026";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
+                 VALUES (?1, 1024, ?2, ?3, '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, title, note],
+            )
+            .expect("insert stored-v2 Unicode range node");
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
+                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                   normalized_start, normalized_end, token_text) VALUES \
+                   ('{NODE_ID}', 'title', 2, 7, '2026-07-11', '2026-07-11', '07/11'), \
+                   ('{NODE_ID}', 'title', 10, 15, '2026-07-14', '2026-07-14', '07/14'), \
+                   ('{NODE_ID}', 'title', 21, 26, '2026-07-15', '2026-07-15', '07/15'), \
+                   ('{NODE_ID}', 'note', 2, 7, '2026-07-11', '2026-07-11', '07/11'), \
+                   ('{NODE_ID}', 'note', 20, 30, '2026-07-15', '2026-07-15', '07/15/2026'); \
+                 UPDATE notes_preferences SET value_json = '2' \
+                 WHERE key = 'derived.dateParserVersion'; \
+                 CREATE TABLE v2_date_rebuild_audit (operation TEXT NOT NULL); \
+                 CREATE TRIGGER audit_v2_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
+                   INSERT INTO v2_date_rebuild_audit VALUES ('delete'); \
+                 END; \
+                 CREATE TRIGGER audit_v2_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
+                   INSERT INTO v2_date_rebuild_audit VALUES ('insert'); \
+                 END;"
+            ))
+            .expect("seed stored-v2 Unicode range rows");
+
+        initialize_notes_db(&mut connection).expect("upgrade stored-v2 Unicode range rows");
+
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![
+                (
+                    "title".to_string(),
+                    2,
+                    15,
+                    "2026-07-11".to_string(),
+                    "2026-07-14".to_string(),
+                    "07/11\u{00A0}-\u{00A0}07/14".to_string(),
+                ),
+                (
+                    "title".to_string(),
+                    21,
+                    26,
+                    "2026-07-15".to_string(),
+                    "2026-07-15".to_string(),
+                    "07/15".to_string(),
+                ),
+                (
+                    "note".to_string(),
+                    20,
+                    30,
+                    "2026-07-15".to_string(),
+                    "2026-07-15".to_string(),
+                    "07/15/2026".to_string(),
+                ),
+            ]
+        );
+        let stored_source: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("unchanged stored-v2 source");
+        assert_eq!(stored_source, (title.to_string(), note.to_string()));
+        let version: String = connection
+            .query_row(
+                "SELECT value_json FROM notes_preferences \
+                 WHERE key = 'derived.dateParserVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("upgraded stored-v2 date parser marker");
+        assert_eq!(version, "3");
+        let first_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM v2_date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("stored-v2 rebuild count");
+        assert_eq!(first_rewrite_count, 8);
+
+        initialize_notes_db(&mut connection).expect("idempotent stored-v2 date upgrade");
+        let second_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM v2_date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("idempotent stored-v2 rebuild count");
         assert_eq!(second_rewrite_count, first_rewrite_count);
     }
 

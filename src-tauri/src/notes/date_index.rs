@@ -338,10 +338,38 @@ fn resolve_numeric_range(
     (start <= end).then_some((start, end))
 }
 
+fn is_range_whitespace(character: char) -> bool {
+    matches!(
+        character,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+fn skip_range_whitespace(source: &str, start_byte: usize) -> usize {
+    let mut end_byte = start_byte;
+    for character in source[start_byte..].chars() {
+        if !is_range_whitespace(character) {
+            break;
+        }
+        end_byte += character.len_utf8();
+    }
+    end_byte
+}
+
 fn malformed_range_end(source: &str, start_byte: usize) -> usize {
     let mut end_byte = start_byte;
     for (relative_byte, character) in source[start_byte..].char_indices() {
-        if character.is_whitespace() {
+        if is_range_whitespace(character) {
             break;
         }
         end_byte = start_byte + relative_byte + character.len_utf8();
@@ -355,24 +383,12 @@ fn try_numeric_range(
     today_year: i32,
 ) -> Option<Attempt> {
     let bytes = source.as_bytes();
-    let mut separator = start_candidate.end_byte;
-    while bytes
-        .get(separator)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        separator += 1;
-    }
+    let separator = skip_range_whitespace(source, start_candidate.end_byte);
     if bytes.get(separator) != Some(&b'-') {
         return None;
     }
     let has_before_space = separator > start_candidate.end_byte;
-    let mut end_start = separator + 1;
-    while bytes
-        .get(end_start)
-        .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-    {
-        end_start += 1;
-    }
+    let end_start = skip_range_whitespace(source, separator + 1);
     let has_after_space = end_start > separator + 1;
     let malformed_end = malformed_range_end(source, end_start);
     if let Some(end_candidate) = read_numeric_candidate(source, end_start) {

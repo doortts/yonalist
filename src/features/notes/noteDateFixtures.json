@@ -226,6 +226,63 @@
     ]
   },
   {
+    "name": "non-breaking spaces form one range with stable emoji offsets",
+    "source": "😀07/11\u00a0-\u00a007/14 then 07/15",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/11\u00a0-\u00a007/14", "startUtf16": 2, "endUtf16": 15, "normalizedStart": "2026-07-11", "normalizedEnd": "2026-07-14" },
+      { "raw": "07/15", "startUtf16": 21, "endUtf16": 26, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
+    "name": "narrow non-breaking spaces form one range with stable emoji offsets",
+    "source": "😀07/11\u202f-\u202f07/14 then 07/15",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/11\u202f-\u202f07/14", "startUtf16": 2, "endUtf16": 15, "normalizedStart": "2026-07-11", "normalizedEnd": "2026-07-14" },
+      { "raw": "07/15", "startUtf16": 21, "endUtf16": 26, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
+    "name": "thin spaces form one range with stable emoji offsets",
+    "source": "😀07/11\u2009-\u200907/14 then 07/15",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/11\u2009-\u200907/14", "startUtf16": 2, "endUtf16": 15, "normalizedStart": "2026-07-11", "normalizedEnd": "2026-07-14" },
+      { "raw": "07/15", "startUtf16": 21, "endUtf16": 26, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
+    "name": "non-breaking spaces reject a malformed range atomically",
+    "source": "😀07/11\u00a0-\u00a07/14 then 07/15/2026",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/15/2026", "startUtf16": 20, "endUtf16": 30, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
+    "name": "narrow non-breaking spaces reject a malformed range atomically",
+    "source": "😀07/11\u202f-\u202f7/14 then 07/15/2026",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/15/2026", "startUtf16": 20, "endUtf16": 30, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
+    "name": "thin spaces reject a malformed range atomically",
+    "source": "😀07/11\u2009-\u20097/14 then 07/15/2026",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "07/15/2026", "startUtf16": 20, "endUtf16": 30, "normalizedStart": "2026-07-15", "normalizedEnd": "2026-07-15" }
+    ]
+  },
+  {
     "name": "invalid and embedded candidates are skipped",
     "source": "todayish x07/11/2026 0007/11/2026 02/29/2023 then yesterday",
     "today": "2026-07-11",
