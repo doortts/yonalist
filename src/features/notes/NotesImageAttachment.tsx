@@ -44,11 +44,21 @@ interface WidthLimits {
   readonly maximum: number;
 }
 
-interface PointerResize {
+interface InteractionIdentity {
+  readonly attachmentId: string;
+  readonly bytes: Uint8Array | undefined;
+  readonly loadBytes: NotesImageByteLoader | undefined;
+}
+
+interface PointerResize extends InteractionIdentity {
   readonly pointerId: number;
   readonly startX: number;
   readonly startWidth: number;
-  changed: boolean;
+  readonly element: HTMLDivElement;
+}
+
+interface KeyboardResize extends InteractionIdentity {
+  readonly startWidth: number;
 }
 
 type ImageSourceState =
@@ -69,6 +79,12 @@ const frameBaseStyle: CSSProperties = {
   borderRadius: 6,
   background: "var(--bg-hover)",
   boxShadow: "inset 0 0 0 1px var(--border)"
+};
+
+const invalidFrameStyle: CSSProperties = {
+  ...frameBaseStyle,
+  width: "100%",
+  minHeight: 96
 };
 
 const imageStyle: CSSProperties = {
@@ -137,7 +153,7 @@ function widthLimits(
 ): WidthLimits {
   const availableWidth = contentWidth ?? intrinsicWidth;
   const maximum = Math.max(
-    1,
+    0,
     Math.floor(Math.min(intrinsicWidth, availableWidth))
   );
 
@@ -166,6 +182,30 @@ function isValidAttachmentMetadata(
   );
 }
 
+function interactionMatches(
+  interaction: InteractionIdentity,
+  attachmentId: string,
+  bytes: Uint8Array | undefined,
+  loadBytes: NotesImageByteLoader | undefined
+): boolean {
+  return (
+    interaction.attachmentId === attachmentId &&
+    interaction.bytes === bytes &&
+    interaction.loadBytes === loadBytes
+  );
+}
+
+function releaseCapturedPointer(resize: PointerResize) {
+  try {
+    const hasCapture =
+      typeof resize.element.hasPointerCapture !== "function" ||
+      resize.element.hasPointerCapture(resize.pointerId);
+    if (hasCapture) resize.element.releasePointerCapture(resize.pointerId);
+  } catch {
+    // Pointer capture may already have been released by the browser.
+  }
+}
+
 export function NotesImageAttachment({
   attachment,
   bytes,
@@ -173,31 +213,41 @@ export function NotesImageAttachment({
   onDisplayWidthCommit,
   onRemove
 }: NotesImageAttachmentProps) {
+  const metadataValid = isValidAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
-  const keyboardCommitPendingRef = useRef(false);
+  const keyboardResizeRef = useRef<KeyboardResize | null>(null);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [targetWidth, setTargetWidth] = useState(attachment.displayWidth);
   const [source, setSource] = useState<ImageSourceState>({ status: "loading" });
   const limits = useMemo(
-    () => widthLimits(attachment.intrinsicWidth, contentWidth),
-    [attachment.intrinsicWidth, contentWidth]
+    () =>
+      metadataValid
+        ? widthLimits(attachment.intrinsicWidth, contentWidth)
+        : null,
+    [attachment.intrinsicWidth, contentWidth, metadataValid]
   );
-  const renderedWidth = clampWidth(targetWidth, limits);
+  const renderedWidth = limits ? clampWidth(targetWidth, limits) : 0;
   const renderedWidthRef = useRef(renderedWidth);
   renderedWidthRef.current = renderedWidth;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     setTargetWidth(attachment.displayWidth);
-  }, [attachment.displayWidth, attachment.id]);
+    return () => {
+      const pointerResize = pointerResizeRef.current;
+      pointerResizeRef.current = null;
+      keyboardResizeRef.current = null;
+      if (pointerResize) releaseCapturedPointer(pointerResize);
+    };
+  }, [attachment.displayWidth, attachment.id, bytes, loadBytes]);
 
   useLayoutEffect(() => {
     const group = groupRef.current;
     if (!group) return;
 
     const measure = (width: number) => {
-      if (Number.isFinite(width) && width > 0) {
-        setContentWidth(width);
+      if (Number.isFinite(width)) {
+        setContentWidth(Math.max(0, width));
       }
     };
     measure(group.getBoundingClientRect().width);
@@ -215,14 +265,13 @@ export function NotesImageAttachment({
   }, []);
 
   useEffect(() => {
+    if (!metadataValid) return;
+
     let disposed = false;
     let objectUrl: string | null = null;
     setSource({ status: "loading" });
 
     const load = async () => {
-      if (!isValidAttachmentMetadata(attachment)) {
-        throw new Error("Invalid image metadata");
-      }
       const loadedBytes = bytes ?? (await loadBytes?.());
       if (!loadedBytes || loadedBytes.byteLength === 0) {
         throw new Error("Image bytes are unavailable");
@@ -248,9 +297,18 @@ export function NotesImageAttachment({
       disposed = true;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attachment.id, attachment.mimeType, bytes, loadBytes]);
+  }, [
+    attachment.id,
+    attachment.intrinsicHeight,
+    attachment.intrinsicWidth,
+    attachment.mimeType,
+    bytes,
+    loadBytes,
+    metadataValid
+  ]);
 
   const updateTargetWidth = (width: number) => {
+    if (!limits) return 0;
     const nextWidth = clampWidth(width, limits);
     renderedWidthRef.current = nextWidth;
     setTargetWidth(nextWidth);
@@ -258,26 +316,34 @@ export function NotesImageAttachment({
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !limits || limits.maximum === 0) return;
     event.preventDefault();
     event.stopPropagation();
     pointerResizeRef.current = {
+      attachmentId: attachment.id,
+      bytes,
+      loadBytes,
       pointerId: event.pointerId,
       startX: event.clientX,
       startWidth: renderedWidthRef.current,
-      changed: false
+      element: event.currentTarget
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
 
   const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const resize = pointerResizeRef.current;
-    if (!resize || resize.pointerId !== event.pointerId) return;
+    if (
+      !resize ||
+      resize.pointerId !== event.pointerId ||
+      !interactionMatches(resize, attachment.id, bytes, loadBytes)
+    ) {
+      return;
+    }
     event.preventDefault();
-    const nextWidth = updateTargetWidth(
+    updateTargetWidth(
       resize.startWidth + event.clientX - resize.startX
     );
-    if (nextWidth !== resize.startWidth) resize.changed = true;
   };
 
   const finishPointerResize = (
@@ -287,13 +353,17 @@ export function NotesImageAttachment({
     const resize = pointerResizeRef.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     pointerResizeRef.current = null;
-    if (releaseCapture) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (releaseCapture) releaseCapturedPointer(resize);
+    if (
+      interactionMatches(resize, attachment.id, bytes, loadBytes) &&
+      renderedWidthRef.current !== resize.startWidth
+    ) {
+      onDisplayWidthCommit(renderedWidthRef.current);
     }
-    if (resize.changed) onDisplayWidthCommit(renderedWidthRef.current);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!limits || limits.maximum === 0) return;
     let nextWidth: number | null = null;
     const step = event.shiftKey ? keyboardResizeStep * 2 : keyboardResizeStep;
 
@@ -318,16 +388,66 @@ export function NotesImageAttachment({
 
     event.preventDefault();
     event.stopPropagation();
-    const previousWidth = renderedWidthRef.current;
-    const updatedWidth = updateTargetWidth(nextWidth);
-    if (updatedWidth !== previousWidth) keyboardCommitPendingRef.current = true;
+    const activeResize = keyboardResizeRef.current;
+    if (
+      !activeResize ||
+      !interactionMatches(activeResize, attachment.id, bytes, loadBytes)
+    ) {
+      keyboardResizeRef.current = {
+        attachmentId: attachment.id,
+        bytes,
+        loadBytes,
+        startWidth: renderedWidthRef.current
+      };
+    }
+    updateTargetWidth(nextWidth);
   };
 
   const finishKeyboardResize = () => {
-    if (!keyboardCommitPendingRef.current) return;
-    keyboardCommitPendingRef.current = false;
-    onDisplayWidthCommit(renderedWidthRef.current);
+    const resize = keyboardResizeRef.current;
+    if (!resize) return;
+    keyboardResizeRef.current = null;
+    if (
+      interactionMatches(resize, attachment.id, bytes, loadBytes) &&
+      renderedWidthRef.current !== resize.startWidth
+    ) {
+      onDisplayWidthCommit(renderedWidthRef.current);
+    }
   };
+
+  const removeAction = onRemove ? (
+    <IconTooltip label="Remove image" side="left">
+      <button
+        type="button"
+        aria-label={`Remove ${attachment.originalName}`}
+        title="Remove image"
+        style={removeButtonStyle}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={onRemove}
+      >
+        <Trash2 aria-hidden="true" size={15} />
+      </button>
+    </IconTooltip>
+  ) : null;
+
+  if (!metadataValid || !limits) {
+    return (
+      <div
+        ref={groupRef}
+        role="group"
+        aria-label={`Image: ${attachment.originalName}`}
+        aria-busy="false"
+        style={groupStyle}
+      >
+        <div className="notes-image-attachment-frame" style={invalidFrameStyle}>
+          <div role="alert" style={fallbackStyle}>
+            Image unavailable
+          </div>
+          {removeAction}
+        </div>
+      </div>
+    );
+  }
 
   const frameStyle: CSSProperties = {
     ...frameBaseStyle,
@@ -364,20 +484,7 @@ export function NotesImageAttachment({
           </div>
         )}
 
-        {onRemove ? (
-          <IconTooltip label="Remove image" side="left">
-            <button
-              type="button"
-              aria-label={`Remove ${attachment.originalName}`}
-              title="Remove image"
-              style={removeButtonStyle}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={onRemove}
-            >
-              <Trash2 aria-hidden="true" size={15} />
-            </button>
-          </IconTooltip>
-        ) : null}
+        {removeAction}
 
         <div
           role="separator"
@@ -387,7 +494,8 @@ export function NotesImageAttachment({
           aria-valuemax={limits.maximum}
           aria-valuenow={renderedWidth}
           aria-valuetext={`${renderedWidth} pixels wide`}
-          tabIndex={0}
+          aria-disabled={limits.maximum === 0}
+          tabIndex={limits.maximum === 0 ? -1 : 0}
           style={resizeHandleStyle}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}

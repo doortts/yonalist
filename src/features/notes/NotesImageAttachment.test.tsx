@@ -46,18 +46,18 @@ function standardProps(
   };
 }
 
-function getAttachmentGroup() {
-  return screen.getByRole("group", { name: "Image: diagram.png" });
+function getAttachmentGroup(originalName = "diagram.png") {
+  return screen.getByRole("group", { name: `Image: ${originalName}` });
 }
 
-function getFrame() {
-  return getAttachmentGroup().querySelector<HTMLElement>(
+function getFrame(originalName = "diagram.png") {
+  return getAttachmentGroup(originalName).querySelector<HTMLElement>(
     ".notes-image-attachment-frame"
   )!;
 }
 
-function resizeContent(width: number) {
-  const group = getAttachmentGroup();
+function resizeContent(width: number, originalName = "diagram.png") {
+  const group = getAttachmentGroup(originalName);
   const callback = resizeCallbacks.get(group);
 
   expect(callback).toBeDefined();
@@ -223,6 +223,96 @@ describe("NotesImageAttachment", () => {
     expect(onDisplayWidthCommit).toHaveBeenCalledWith(500);
   });
 
+  it("cancels pointer and keyboard interactions across attachment, loader, and unmount boundaries", async () => {
+    const firstCommit = vi.fn();
+    const secondCommit = vi.fn();
+    const thirdCommit = vi.fn();
+    const firstLoader = vi.fn(async () => imageBytes);
+    const secondLoader = vi.fn(async () => imageBytes);
+    const thirdLoader = vi.fn(async () => imageBytes);
+    const view = render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          bytes: undefined,
+          loadBytes: firstLoader,
+          onDisplayWidthCommit: firstCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const retainedHandle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    const setPointerCapture = vi.fn();
+    const releasePointerCapture = vi.fn();
+    retainedHandle.setPointerCapture = setPointerCapture;
+    retainedHandle.releasePointerCapture = releasePointerCapture;
+
+    fireEvent.pointerDown(retainedHandle, {
+      button: 0,
+      clientX: 320,
+      pointerId: 11
+    });
+    fireEvent.pointerMove(retainedHandle, { clientX: 380, pointerId: 11 });
+    view.rerender(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: {
+            ...attachment,
+            id: "attachment-2",
+            originalName: "replacement.png",
+            displayWidth: 280
+          },
+          bytes: undefined,
+          loadBytes: secondLoader,
+          onDisplayWidthCommit: secondCommit
+        })}
+      />
+    );
+    fireEvent.pointerUp(retainedHandle, { clientX: 380, pointerId: 11 });
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(11);
+    expect(firstCommit).not.toHaveBeenCalled();
+    expect(secondCommit).not.toHaveBeenCalled();
+    expect(getFrame("replacement.png")).toHaveStyle({ width: "280px" });
+
+    const replacementHandle = screen.getByRole("separator", {
+      name: "Resize replacement.png"
+    });
+    fireEvent.keyDown(replacementHandle, { key: "ArrowRight" });
+    view.rerender(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: {
+            ...attachment,
+            id: "attachment-2",
+            originalName: "replacement.png",
+            displayWidth: 280
+          },
+          bytes: undefined,
+          loadBytes: thirdLoader,
+          onDisplayWidthCommit: thirdCommit
+        })}
+      />
+    );
+    fireEvent.keyUp(replacementHandle, { key: "ArrowRight" });
+
+    expect(secondCommit).not.toHaveBeenCalled();
+    expect(thirdCommit).not.toHaveBeenCalled();
+    expect(getFrame("replacement.png")).toHaveStyle({ width: "280px" });
+
+    fireEvent.pointerDown(replacementHandle, {
+      button: 0,
+      clientX: 280,
+      pointerId: 12
+    });
+    view.unmount();
+    fireEvent.pointerUp(retainedHandle, { clientX: 340, pointerId: 12 });
+    expect(releasePointerCapture).toHaveBeenCalledWith(12);
+    expect(thirdCommit).not.toHaveBeenCalled();
+  });
+
   it("resizes from the accessible handle keyboard contract and commits on key release", async () => {
     const onDisplayWidthCommit = vi.fn();
     render(
@@ -275,6 +365,101 @@ describe("NotesImageAttachment", () => {
     expect(getFrame()).toHaveStyle({ width: "300px" });
     resizeContent(600);
     expect(getFrame()).toHaveStyle({ width: "480px" });
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it("collapses deterministically at zero content width and clamps at a tiny positive width", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    const setPointerCapture = vi.fn();
+    handle.setPointerCapture = setPointerCapture;
+    handle.releasePointerCapture = vi.fn();
+
+    resizeContent(0);
+    expect(getFrame()).toHaveStyle({
+      width: "0px",
+      aspectRatio: "640 / 320"
+    });
+    expect(handle).toHaveAttribute("aria-valuemin", "0");
+    expect(handle).toHaveAttribute("aria-valuemax", "0");
+    expect(handle).toHaveAttribute("aria-valuenow", "0");
+    expect(handle).toHaveAttribute("aria-disabled", "true");
+    expect(handle).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 0, pointerId: 21 });
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    fireEvent.keyUp(handle, { key: "ArrowRight" });
+    expect(setPointerCapture).not.toHaveBeenCalled();
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+
+    resizeContent(48.8);
+    expect(getFrame()).toHaveStyle({
+      width: "48px",
+      aspectRatio: "640 / 320"
+    });
+    expect(handle).toHaveAttribute("aria-valuemin", "48");
+    expect(handle).toHaveAttribute("aria-valuemax", "48");
+    expect(handle).toHaveAttribute("aria-valuenow", "48");
+    expect(handle).toHaveAttribute("aria-disabled", "false");
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it("does not commit a pointer resize that returns to its clamped starting width", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 31 });
+    fireEvent.pointerMove(handle, { clientX: 400, pointerId: 31 });
+    fireEvent.pointerMove(handle, { clientX: 320, pointerId: 31 });
+    fireEvent.pointerUp(handle, { clientX: 320, pointerId: 31 });
+
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it("does not commit a keyboard resize that returns to its clamped starting width", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    fireEvent.keyUp(handle, { key: "ArrowLeft" });
+
+    expect(getFrame()).toHaveStyle({ width: "320px" });
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
 
@@ -343,6 +528,46 @@ describe("NotesImageAttachment", () => {
     await act(async () => failed.reject(new Error("read failed")));
     expect(screen.getByRole("alert")).toHaveTextContent("Image unavailable");
   });
+
+  it.each([
+    ["zero width", 0, 320],
+    ["nonfinite width", Number.POSITIVE_INFINITY, 320],
+    ["zero height", 640, 0],
+    ["nonfinite height", 640, Number.NaN]
+  ])(
+    "renders %s metadata as an immediate stable error without image geometry",
+    async (_caseName, intrinsicWidth, intrinsicHeight) => {
+      const view = render(
+        <NotesImageAttachment
+          {...standardProps({
+            attachment: {
+              ...attachment,
+              intrinsicWidth,
+              intrinsicHeight
+            }
+          })}
+        />
+      );
+
+      expect(screen.getByRole("alert")).toHaveTextContent("Image unavailable");
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(screen.queryByRole("img")).not.toBeInTheDocument();
+      expect(screen.queryByRole("separator")).not.toBeInTheDocument();
+      expect(getFrame()).toHaveStyle({ width: "100%", minHeight: "96px" });
+      expect(getFrame().style.aspectRatio).toBe("");
+      expect(createObjectURL).not.toHaveBeenCalled();
+
+      view.rerender(
+        <NotesImageAttachment
+          {...standardProps({ attachment: { ...attachment } })}
+        />
+      );
+      expect(await screen.findByRole("img", { name: "diagram.png" })).toHaveAttribute(
+        "width",
+        "640"
+      );
+    }
+  );
 
   it("offers an accessible icon removal action only when a callback is supplied", async () => {
     const onRemove = vi.fn();
