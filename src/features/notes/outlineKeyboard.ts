@@ -4,10 +4,44 @@ import { visibleNodeIds } from "./outlineTree";
 
 export type OutlineShortcutPlatform = "mac" | "other";
 
+export interface ResolveNotesHistoryShortcutInput {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+  platform: OutlineShortcutPlatform;
+}
+
+export type NotesHistoryShortcut = "undo" | "redo";
+
 export function detectOutlineShortcutPlatform(
   platform = typeof navigator === "undefined" ? "" : navigator.platform
 ): OutlineShortcutPlatform {
   return /Mac|iPhone|iPad|iPod/i.test(platform) ? "mac" : "other";
+}
+
+export function resolveNotesHistoryShortcut(
+  input: ResolveNotesHistoryShortcutInput
+): NotesHistoryShortcut | null {
+  if (input.isComposing || input.key === "Process" || input.altKey) {
+    return null;
+  }
+  const primaryModifierPressed =
+    input.platform === "mac"
+      ? input.metaKey && !input.ctrlKey
+      : input.ctrlKey && !input.metaKey;
+  if (!primaryModifierPressed) {
+    return null;
+  }
+  const key = input.key.toLowerCase();
+  if (key === "z") {
+    return input.shiftKey ? "redo" : "undo";
+  }
+  return input.platform === "other" && key === "y" && !input.shiftKey
+    ? "redo"
+    : null;
 }
 
 export interface ResolveOutlineKeyInput {

@@ -3,7 +3,9 @@ import type { NoteNode, NotesWorkspace } from "../../domain/notes";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import {
   detectOutlineShortcutPlatform,
+  resolveNotesHistoryShortcut,
   resolveOutlineKey,
+  type ResolveNotesHistoryShortcutInput,
   type ResolveOutlineKeyInput
 } from "./outlineKeyboard";
 
@@ -61,6 +63,21 @@ function input(
     nodeId: "root-a",
     platform: "other",
     workspace: tree,
+    ...overrides
+  };
+}
+
+function historyShortcutInput(
+  overrides: Partial<ResolveNotesHistoryShortcutInput> = {}
+): ResolveNotesHistoryShortcutInput {
+  return {
+    key: "z",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    isComposing: false,
+    platform: "other",
     ...overrides
   };
 }
@@ -552,6 +569,45 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
     expect(
       resolveOutlineKey(input({ selectionStart: 0, selectionEnd: 99 }))
+    ).toBeNull();
+  });
+});
+
+describe("resolveNotesHistoryShortcut", () => {
+  it.each([
+    ["Cmd+Z", { key: "z", metaKey: true, platform: "mac" }, "undo"],
+    ["Ctrl+Z", { key: "Z", ctrlKey: true, platform: "other" }, "undo"],
+    [
+      "Cmd+Shift+Z",
+      { key: "z", metaKey: true, shiftKey: true, platform: "mac" },
+      "redo"
+    ],
+    [
+      "Ctrl+Shift+Z",
+      { key: "Z", ctrlKey: true, shiftKey: true, platform: "other" },
+      "redo"
+    ],
+    ["Ctrl+Y", { key: "y", ctrlKey: true, platform: "other" }, "redo"]
+  ] as const)("resolves %s", (_label, overrides, expected) => {
+    expect(
+      resolveNotesHistoryShortcut(historyShortcutInput(overrides))
+    ).toBe(expected);
+  });
+
+  it.each([
+    { key: "Process", ctrlKey: true },
+    { key: "z", ctrlKey: true, isComposing: true },
+    { key: "y", metaKey: true, platform: "mac" },
+    { key: "y", ctrlKey: true, platform: "mac" },
+    { key: "z", ctrlKey: true, metaKey: true },
+    { key: "z", ctrlKey: true, altKey: true }
+  ])("ignores unsupported or composing input %#", (overrides) => {
+    expect(
+      resolveNotesHistoryShortcut(
+        historyShortcutInput(
+          overrides as Partial<ResolveNotesHistoryShortcutInput>
+        )
+      )
     ).toBeNull();
   });
 });

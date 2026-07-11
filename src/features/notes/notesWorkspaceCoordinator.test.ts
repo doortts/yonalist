@@ -53,6 +53,18 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     restoreNode: empty,
     archiveNode: empty,
     unarchiveNode: empty,
+    undo: vi.fn().mockResolvedValue({
+      workspace: workspace([]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: false
+    }),
+    redo: vi.fn().mockResolvedValue({
+      workspace: workspace([]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: false
+    }),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
@@ -63,6 +75,59 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("shares one history session per repository and vault coordinator entry", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const first = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault-a",
+      onEvent: vi.fn()
+    });
+    const second = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault-a",
+      onEvent: vi.fn()
+    });
+    const otherVault = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault-b",
+      onEvent: vi.fn()
+    });
+
+    await Promise.all([first.activation, second.activation, otherVault.activation]);
+
+    expect(first.history).toBe(second.history);
+    expect(first.history.sessionId).toBe(second.history.sessionId);
+    expect(otherVault.history.sessionId).not.toBe(first.history.sessionId);
+    first.close();
+    second.close();
+    otherVault.close();
+  });
+
+  it("creates a fresh history session when an idle coordinator is remounted", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const first = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: vi.fn()
+    });
+    await first.activation;
+    const firstSessionId = first.history.sessionId;
+    first.close();
+
+    const remounted = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: vi.fn()
+    });
+    await remounted.activation;
+
+    expect(remounted.history.sessionId).not.toBe(firstSessionId);
+    expect(store.initialize).toHaveBeenCalledTimes(2);
+    remounted.close();
+  });
+
   it("advances confirmed workspace when failed work carries partial authority", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -161,7 +226,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     await runningCompletion;
     await secondSession.activation;
 
-    expect(store.initialize).toHaveBeenCalledTimes(2);
+    expect(store.initialize).toHaveBeenCalledOnce();
     expect(store.loadWorkspace).toHaveBeenCalledTimes(2);
     secondSession.close();
     expect(registry.hasCoordinator(store, "/vault")).toBe(false);

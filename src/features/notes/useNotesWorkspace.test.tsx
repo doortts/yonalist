@@ -80,6 +80,18 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     restoreNode: empty,
     archiveNode: empty,
     unarchiveNode: empty,
+    undo: vi.fn().mockResolvedValue({
+      workspace: workspace([]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: false
+    }),
+    redo: vi.fn().mockResolvedValue({
+      workspace: workspace([]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: false
+    }),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
@@ -87,6 +99,14 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     deleteDatabase: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };
+}
+
+function historyContext(commandKind: string) {
+  return expect.objectContaining({
+    sessionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    entryId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    commandKind
+  });
 }
 
 interface StartupCommandProps {
@@ -207,13 +227,17 @@ describe("useNotesWorkspace", () => {
       await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
       await act(async () => Promise.all(completions));
 
-      expect(store.createNode).toHaveBeenCalledWith("/vault", {
-        id: "pre-session-root",
-        parentId: null,
-        afterId: null,
-        title: "",
-        note: ""
-      });
+      expect(store.createNode).toHaveBeenCalledWith(
+        "/vault",
+        {
+          id: "pre-session-root",
+          parentId: null,
+          afterId: null,
+          title: "",
+          note: ""
+        },
+        historyContext("create")
+      );
       expect(
         latestWorkspace?.state.nodesById["pre-session-root"]
       ).toBeDefined();
@@ -290,7 +314,8 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
     expect(store.createNode).toHaveBeenCalledWith(
       "/new",
-      expect.objectContaining({ id: "new-vault-root" })
+      expect.objectContaining({ id: "new-vault-root" }),
+      historyContext("create")
     );
 
     await act(async () => oldInitialization.resolve());
@@ -552,11 +577,15 @@ describe("useNotesWorkspace", () => {
       await expect(completion).resolves.toBeUndefined();
     });
 
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "root",
-      title: "prefixsuffix",
-      note: "saved note"
-    });
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "root",
+        title: "prefixsuffix",
+        note: "saved note"
+      },
+      historyContext("text")
+    );
     expect(store.splitNode).not.toHaveBeenCalled();
     expect(result.current.state.nodesById.root.title).toBe("root");
     expect(result.current).toMatchObject({
@@ -589,12 +618,16 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(store.updateNode).toHaveBeenCalledOnce();
-    expect(store.splitNode).toHaveBeenCalledWith("/vault", {
-      id: "root",
-      newNodeId: "split-child",
-      prefix: "prefix",
-      suffix: "suffix"
-    });
+    expect(store.splitNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "root",
+        newNodeId: "split-child",
+        prefix: "prefix",
+        suffix: "suffix"
+      },
+      historyContext("split")
+    );
     expect(result.current.state.nodesById.root).toMatchObject({
       title: "prefixsuffix",
       note: "saved note"
@@ -744,13 +777,18 @@ describe("useNotesWorkspace", () => {
 
     await waitFor(() => expect(result.current.state.status).toBe("ready"));
     await act(async () => result.current.actions.createRoot());
-    expect(store.createNode).toHaveBeenNthCalledWith(1, "/vault", {
-      id: "new-root",
-      parentId: null,
-      afterId: "parent",
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenNthCalledWith(
+      1,
+      "/vault",
+      {
+        id: "new-root",
+        parentId: null,
+        afterId: "parent",
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
     expect(result.current.state.nodesById["new-root"]).toBeDefined();
     expect(result.current.state).toMatchObject({
       selectedId: "new-root",
@@ -759,13 +797,18 @@ describe("useNotesWorkspace", () => {
     });
 
     await act(async () => result.current.actions.createChild("parent"));
-    expect(store.createNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "new-child",
-      parentId: "parent",
-      afterId: "existing-child",
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "new-child",
+        parentId: "parent",
+        afterId: "existing-child",
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
     expect(result.current.state.childIdsByParent.parent).toEqual(["new-child"]);
     expect(result.current.state).toMatchObject({
       selectedId: "new-child",
@@ -1066,13 +1109,18 @@ describe("useNotesWorkspace", () => {
 
     expect(createNoteIdMock).toHaveBeenCalledOnce();
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
-    expect(store.createNode).toHaveBeenNthCalledWith(1, "/vault", {
-      id: "new-root-1",
-      parentId: null,
-      afterId: "initial",
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenNthCalledWith(
+      1,
+      "/vault",
+      {
+        id: "new-root-1",
+        parentId: null,
+        afterId: "initial",
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
 
     await act(async () =>
       first.resolve(workspace([
@@ -1082,13 +1130,18 @@ describe("useNotesWorkspace", () => {
     );
     expect(createNoteIdMock).toHaveBeenCalledTimes(2);
     expect(store.createNode).toHaveBeenCalledTimes(2);
-    expect(store.createNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "new-root-2",
-      parentId: null,
-      afterId: "new-root-1",
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "new-root-2",
+        parentId: null,
+        afterId: "new-root-1",
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
 
     await act(async () => {
       second.resolve(workspace([
@@ -1129,13 +1182,18 @@ describe("useNotesWorkspace", () => {
     await act(async () =>
       parentCreation.resolve(workspace([node({ id: "new-parent" })]))
     );
-    expect(store.createNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "new-child",
-      parentId: "new-parent",
-      afterId: null,
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "new-child",
+        parentId: "new-parent",
+        afterId: null,
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
 
     await act(async () => {
       childCreation.resolve(workspace([
@@ -1176,7 +1234,11 @@ describe("useNotesWorkspace", () => {
         node({ id: "new-root", sortKey: 2 })
       ]))
     );
-    expect(store.duplicateNode).toHaveBeenCalledWith("/vault", "source");
+    expect(store.duplicateNode).toHaveBeenCalledWith(
+      "/vault",
+      "source",
+      historyContext("duplicate")
+    );
 
     await act(async () => {
       duplicate.resolve(workspace([
@@ -1263,13 +1325,17 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.rootIds).toEqual([]);
 
     await act(async () => result.current.actions.createRoot());
-    expect(newStore.createNode).toHaveBeenCalledWith("/new", {
-      id: "new-vault-root",
-      parentId: null,
-      afterId: null,
-      title: "",
-      note: ""
-    });
+    expect(newStore.createNode).toHaveBeenCalledWith(
+      "/new",
+      {
+        id: "new-vault-root",
+        parentId: null,
+        afterId: null,
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
   });
 
   it("delegates every remaining action to NotesStore and preserves confirmed nodes on errors", async () => {
@@ -1300,15 +1366,15 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.deleteNode("root"));
     await act(async () => result.current.actions.restoreNode("root"));
 
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", { id: "root", title: "Title", note: "Note" });
-    expect(store.splitNode).toHaveBeenCalledWith("/vault", { id: "root", newNodeId: "split", prefix: "pre", suffix: "post" });
-    expect(store.moveNode).toHaveBeenCalledWith("/vault", { id: "child", parentId: null, afterId: "root" });
-    expect(store.toggleComplete).toHaveBeenCalledWith("/vault", "root");
-    expect(store.toggleCollapsed).toHaveBeenCalledWith("/vault", "root");
-    expect(store.duplicateNode).toHaveBeenCalledWith("/vault", "root");
-    expect(store.removeEmptyNode).toHaveBeenCalledWith("/vault", "child");
-    expect(store.softDeleteNode).toHaveBeenCalledWith("/vault", "root");
-    expect(store.restoreNode).toHaveBeenCalledWith("/vault", "root");
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", { id: "root", title: "Title", note: "Note" }, historyContext("update"));
+    expect(store.splitNode).toHaveBeenCalledWith("/vault", { id: "root", newNodeId: "split", prefix: "pre", suffix: "post" }, historyContext("split"));
+    expect(store.moveNode).toHaveBeenCalledWith("/vault", { id: "child", parentId: null, afterId: "root" }, historyContext("move"));
+    expect(store.toggleComplete).toHaveBeenCalledWith("/vault", "root", historyContext("complete"));
+    expect(store.toggleCollapsed).toHaveBeenCalledWith("/vault", "root", historyContext("collapse"));
+    expect(store.duplicateNode).toHaveBeenCalledWith("/vault", "root", historyContext("duplicate"));
+    expect(store.removeEmptyNode).toHaveBeenCalledWith("/vault", "child", historyContext("remove"));
+    expect(store.softDeleteNode).toHaveBeenCalledWith("/vault", "root", historyContext("trash"));
+    expect(store.restoreNode).toHaveBeenCalledWith("/vault", "root", historyContext("restore"));
 
     updateNodeMock.mockRejectedValueOnce(new Error("write failed"));
     await act(async () => result.current.actions.updateNode("root", { title: "Again", note: "" }));
@@ -1482,11 +1548,15 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(store.updateNode).toHaveBeenCalledOnce();
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "root",
-      title: "latest draft",
-      note: "latest note"
-    });
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "root",
+        title: "latest draft",
+        note: "latest note"
+      },
+      historyContext("text")
+    );
   });
 
   it("keeps a pending draft and split in one coordinator command", async () => {
@@ -1547,6 +1617,193 @@ describe("useNotesWorkspace", () => {
     await act(async () => Promise.all([splitCompletion, otherCompletion]));
 
     expect(invocations).toEqual(["update:source", "split", "update:other"]);
+  });
+
+  it("orders a pending text burst before split with stable distinct history IDs", async () => {
+    const initial = workspace([node({ id: "source", title: "source" })]);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode: vi.fn().mockResolvedValue(
+        workspace([node({ id: "source", title: "source edited" })])
+      ),
+      splitNode: vi.fn().mockResolvedValue(
+        workspace([
+          node({ id: "source", title: "source" }),
+          node({ id: "split", sortKey: 2048, title: "edited" })
+        ])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "source",
+        { title: "source e", note: "" },
+        "title"
+      );
+      result.current.actions.updateNodeDraft(
+        "source",
+        { title: "source edited", note: "" },
+        "title"
+      );
+    });
+    await act(async () =>
+      result.current.actions.splitNode("source", "split", "source", " edited")
+    );
+
+    const textContext = vi.mocked(store.updateNode).mock.calls[0]?.[2];
+    const splitContext = vi.mocked(store.splitNode).mock.calls[0]?.[2];
+    expect(textContext).toMatchObject({ commandKind: "text" });
+    expect(splitContext).toMatchObject({ commandKind: "split" });
+    expect(textContext?.sessionId).toBe(splitContext?.sessionId);
+    expect(textContext?.entryId).not.toBe(splitContext?.entryId);
+    expect(textContext?.entryId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    );
+    expect(textContext?.entryId).not.toBe("source");
+  });
+
+  it("flushes a visible note draft before undo and restores field-aware UI", async () => {
+    const initial = workspace([
+      node({ id: "root", title: "before" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const updateNode = vi.fn().mockResolvedValue(
+      workspace([
+        node({ id: "root", title: "before", note: "supporting" }),
+        node({ id: "other", sortKey: 2048 })
+      ])
+    );
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: updateNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.focusNode("root");
+      await result.current.actions.zoomTo("root");
+    });
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "root",
+        { title: "before", note: "supporting" },
+        "note"
+      );
+    });
+    let replay!: Promise<void>;
+    act(() => {
+      replay = result.current.actions.undo!();
+    });
+    await act(async () => replay);
+
+    expect(updateNode.mock.invocationCallOrder[0]).toBeLessThan(
+      undo.mock.invocationCallOrder[0]!
+    );
+    expect(undo).toHaveBeenCalledWith(
+      "/vault",
+      updateNode.mock.calls[0]?.[2]?.sessionId,
+      { kind: "active" }
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: "root",
+      zoomRootId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "note"
+    });
+  });
+
+  it("applies replayed backend data and normalizes live UI without a snapshot", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const undo = vi.fn().mockResolvedValue({
+      workspace: workspace([node({ id: "other" })]),
+      replayedEntryId: "90000000-0000-4000-8000-000000000009",
+      canUndo: false,
+      canRedo: true
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => {
+      await result.current.actions.focusNode("root");
+      await result.current.actions.zoomTo("root");
+      await result.current.actions.undo!();
+    });
+
+    expect(result.current.state.nodesById.other).toBeDefined();
+    expect(result.current.state).toMatchObject({
+      selectedId: null,
+      zoomRootId: null,
+      editingNoteId: null,
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+  });
+
+  it("lets the backend invalidate redo after a new structural mutation", async () => {
+    const initial = workspace([node({ id: "root" })]);
+    const starred = workspace([node({ id: "root", isStarred: true })]);
+    const completed = workspace([
+      node({ id: "root", isStarred: false, completedAt: "2026-07-11T00:00:00Z" })
+    ]);
+    const toggleStar = vi.fn().mockResolvedValue(starred);
+    const toggleComplete = vi.fn().mockResolvedValue(completed);
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const redo = vi.fn().mockResolvedValue({
+      workspace: completed,
+      replayedEntryId: null,
+      canUndo: true,
+      canRedo: false
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      toggleStar,
+      toggleComplete,
+      undo,
+      redo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleStar("root"));
+    await act(async () => result.current.actions.undo!());
+    await act(async () => result.current.actions.toggleComplete("root"));
+    await act(async () => result.current.actions.redo!());
+
+    expect(toggleComplete.mock.calls[0]?.[2]?.entryId).not.toBe(
+      toggleStar.mock.calls[0]?.[2]?.entryId
+    );
+    expect(redo).toHaveBeenCalledWith(
+      "/vault",
+      toggleStar.mock.calls[0]?.[2]?.sessionId,
+      { kind: "active" }
+    );
+    expect(result.current.state.nodesById.root.completedAt).not.toBeNull();
   });
 
   it("flushes pending drafts before creating a new root", async () => {
@@ -1610,11 +1867,15 @@ describe("useNotesWorkspace", () => {
     });
     rerender({ vaultRoot: "/new" });
 
-    expect(store.updateNode).toHaveBeenCalledWith("/old", {
-      id: "old-root",
-      title: "old draft",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/old",
+      {
+        id: "old-root",
+        title: "old draft",
+        note: ""
+      },
+      historyContext("text")
+    );
     await waitFor(() =>
       expect(result.current.state.nodesById["new-root"]).toBeDefined()
     );
@@ -1625,6 +1886,67 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById["new-root"]).toBeDefined();
     expect(result.current.state.nodesById["old-saved"]).toBeUndefined();
     expect(result.current.draftsByNodeId).toEqual({});
+  });
+
+  it("does not let a late old-vault draft poison the next history UI snapshot", async () => {
+    const oldWrite = deferred<NotesWorkspace>();
+    const newWorkspace = workspace([node({ id: "new-root" })]);
+    const toggleStar = vi.fn().mockResolvedValue(
+      workspace([node({ id: "new-root", isStarred: true })])
+    );
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: newWorkspace,
+      replayedEntryId: toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn((vaultRoot) =>
+        Promise.resolve(
+          vaultRoot === "/old"
+            ? workspace([node({ id: "old-root" })])
+            : newWorkspace
+        )
+      ),
+      updateNode: vi.fn().mockReturnValue(oldWrite.promise),
+      toggleStar,
+      undo
+    });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/old" } }
+    );
+    await waitFor(() =>
+      expect(result.current.state.nodesById["old-root"]).toBeDefined()
+    );
+
+    act(() => {
+      result.current.actions.updateNodeDraft("old-root", {
+        title: "late old draft",
+        note: ""
+      });
+    });
+    rerender({ vaultRoot: "/new" });
+    await waitFor(() =>
+      expect(result.current.state.nodesById["new-root"]).toBeDefined()
+    );
+    await act(async () => {
+      await result.current.actions.focusNode("new-root");
+      await result.current.actions.zoomTo("new-root");
+    });
+    await act(async () => {
+      oldWrite.resolve(workspace([node({ id: "old-root", title: "late" })]));
+    });
+
+    await act(async () => result.current.actions.toggleStar("new-root"));
+    await act(async () => result.current.actions.undo!());
+
+    expect(result.current.state).toMatchObject({
+      selectedId: "new-root",
+      zoomRootId: "new-root",
+      pendingFocusId: "new-root",
+      pendingFocusField: "title"
+    });
   });
 
   it("recovers a failed shutdown draft only when its vault becomes active again", async () => {
@@ -1682,11 +2004,16 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.retryFailedDraft("old-root"));
 
-    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/old", {
-      id: "old-root",
-      title: "Recovered old draft",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/old",
+      {
+        id: "old-root",
+        title: "Recovered old draft",
+        note: ""
+      },
+      historyContext("text")
+    );
     await waitFor(() =>
       expect(result.current.draftsByNodeId["old-root"]).toBeUndefined()
     );
@@ -1933,11 +2260,16 @@ describe("useNotesWorkspace", () => {
     mounted.unmount();
 
     expect(store.updateNode).toHaveBeenCalledTimes(2);
-    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
-      id: "root",
-      title: "saved on unmount",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        id: "root",
+        title: "saved on unmount",
+        note: ""
+      },
+      historyContext("text")
+    );
   });
 
   it("does not launch or publish old-identity queued work after a vault change", async () => {
@@ -2118,21 +2450,22 @@ describe("useNotesWorkspace", () => {
       await oldQueuedCompletion;
     });
 
-    expect(store.updateNode).toHaveBeenNthCalledWith(1, "/vault-a", {
-      id: "before-a1",
-      title: "A1",
-      note: ""
-    });
-    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/vault-a", {
-      id: "after-a1",
-      title: "A3",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      1,
+      "/vault-a",
+      { id: "before-a1", title: "A1", note: "" },
+      historyContext("update")
+    );
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault-a",
+      { id: "after-a1", title: "A3", note: "" },
+      historyContext("update")
+    );
     expect(invocations).toEqual([
       "initialize",
       "load:1",
       "update:A1",
-      "initialize",
       "load:2",
       "update:A3"
     ]);
@@ -2191,11 +2524,12 @@ describe("useNotesWorkspace", () => {
     await act(async () =>
       result.current.actions.updateNode("b-root", { title: "B1", note: "" })
     );
-    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/vault-b", {
-      id: "b-root",
-      title: "B1",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault-b",
+      { id: "b-root", title: "B1", note: "" },
+      historyContext("update")
+    );
 
     rerender({ vaultRoot: "/vault-a" });
     let a3Completion!: Promise<void>;
@@ -2224,11 +2558,12 @@ describe("useNotesWorkspace", () => {
     );
     await act(async () => a3Completion);
 
-    expect(store.updateNode).toHaveBeenNthCalledWith(3, "/vault-a", {
-      id: "after-a1",
-      title: "A3",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      3,
+      "/vault-a",
+      { id: "after-a1", title: "A3", note: "" },
+      historyContext("update")
+    );
     expect(result.current.state.nodesById["a3-updated"]).toBeDefined();
     expect(result.current.state.nodesById["a-before"]).toBeUndefined();
   });
@@ -2283,11 +2618,12 @@ describe("useNotesWorkspace", () => {
     });
 
     expect(store.updateNode).toHaveBeenCalledTimes(2);
-    expect(store.updateNode).toHaveBeenNthCalledWith(2, "/vault-a", {
-      id: "root",
-      title: "committed-A2",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenNthCalledWith(
+      2,
+      "/vault-a",
+      { id: "root", title: "committed-A2", note: "" },
+      historyContext("update")
+    );
   });
 
   it("retains a root creation failure when its queued child dependency is missing", async () => {
@@ -2379,13 +2715,17 @@ describe("useNotesWorkspace", () => {
     });
 
     await act(async () => result.current.actions.createRoot());
-    expect(store.createNode).toHaveBeenCalledWith("/vault", {
-      id: "created-after-failure",
-      parentId: null,
-      afterId: "root",
-      title: "",
-      note: ""
-    });
+    expect(store.createNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "created-after-failure",
+        parentId: null,
+        afterId: "root",
+        title: "",
+        note: ""
+      },
+      historyContext("create")
+    );
     expect(result.current.state.nodesById["created-after-failure"]).toBeDefined();
     expect(result.current).toMatchObject({ status: "ready", error: null });
   });
@@ -2451,7 +2791,11 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.actions.restoreNode("restored"));
 
-    expect(store.restoreNode).toHaveBeenCalledWith("/vault", "restored");
+    expect(store.restoreNode).toHaveBeenCalledWith(
+      "/vault",
+      "restored",
+      historyContext("restore")
+    );
     expect(result.current.state.nodesById.restored).toBeDefined();
   });
 
@@ -2490,12 +2834,20 @@ describe("useNotesWorkspace", () => {
     });
     await act(async () => result.current.actions.archiveNode("second"));
 
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "second-child",
-      title: "Saved before archive",
-      note: ""
-    });
-    expect(store.archiveNode).toHaveBeenCalledWith("/vault", "second");
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "second-child",
+        title: "Saved before archive",
+        note: ""
+      },
+      historyContext("text")
+    );
+    expect(store.archiveNode).toHaveBeenCalledWith(
+      "/vault",
+      "second",
+      historyContext("archive")
+    );
     expect(
       vi.mocked(store.updateNode).mock.invocationCallOrder[0]
     ).toBeLessThan(vi.mocked(store.archiveNode).mock.invocationCallOrder[0]);
@@ -2540,7 +2892,11 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.actions.archiveNode("target"));
 
-    expect(store.archiveNode).toHaveBeenCalledWith("/vault", "target");
+    expect(store.archiveNode).toHaveBeenCalledWith(
+      "/vault",
+      "target",
+      historyContext("archive")
+    );
     expect(result.current.error).toBeNull();
     expect(result.current.libraryView).toBe("all");
     expect(result.current.state).toMatchObject({
@@ -2725,7 +3081,11 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.zoomTo("archived-first"));
     await act(async () => result.current.actions.unarchiveNode("archived-first"));
 
-    expect(store.unarchiveNode).toHaveBeenCalledWith("/vault", "archived-first");
+    expect(store.unarchiveNode).toHaveBeenCalledWith(
+      "/vault",
+      "archived-first",
+      historyContext("unarchive")
+    );
     expect(store.loadWorkspace).toHaveBeenLastCalledWith("/vault", {
       kind: "archive"
     });

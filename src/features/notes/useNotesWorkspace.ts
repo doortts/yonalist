@@ -12,6 +12,7 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
+  NotesHistoryContext,
   NoteSearchResult,
   NotesStore,
   NotesStoreError,
@@ -30,6 +31,11 @@ import {
   type NotesWorkspaceQueueWork,
   type NotesWorkspaceUiUpdate
 } from "./notesWorkspaceCoordinator";
+import type {
+  NotesHistoryFocus,
+  NotesHistoryFocusField,
+  NotesHistorySnapshot
+} from "./notesHistory";
 import {
   normalizeWorkspace,
   notesWorkspaceReducer,
@@ -54,7 +60,8 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   updateNodeDraft(
     nodeId: NoteId,
-    patch: Pick<NoteNode, "title" | "note">
+    patch: Pick<NoteNode, "title" | "note">,
+    field?: NotesHistoryFocusField
   ): void;
   flushNodeDraft(nodeId: NoteId): Promise<boolean>;
   flushAllDrafts(): Promise<boolean>;
@@ -83,6 +90,8 @@ export interface NotesWorkspaceActions {
   openSearchResult(nodeId: NoteId): Promise<void>;
   deleteAllNotesData(): Promise<void>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
+  undo?(): Promise<void>;
+  redo?(): Promise<void>;
 }
 
 export type NotesLibraryView =
@@ -133,6 +142,16 @@ function authoritative(
   return { kind: "authoritative", workspace, uiUpdate };
 }
 
+function historyArguments(
+  context: NotesHistoryContext | null | undefined
+): [] | [NotesHistoryContext] {
+  return context ? [context] : [];
+}
+
+function supportsHistory(repository: NotesStore): boolean {
+  return repository.undo !== undefined && repository.redo !== undefined;
+}
+
 async function workspaceForScope(
   context: NotesWorkspaceQueueContext,
   mutationWorkspace: NotesWorkspace,
@@ -176,6 +195,8 @@ interface NotesWorkspaceSessionRecord {
   pendingDebounceByNodeId: Map<NoteId, number>;
   inFlightDraftByNodeId: Map<NoteId, number>;
   retryWriteByNodeId: Map<NoteId, () => Promise<boolean>>;
+  draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
+  draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
   nextDraftRevision: number;
   failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
   writeError: NotesStoreError | null;
@@ -187,6 +208,60 @@ interface NotesWorkspaceSessionRecord {
 interface SearchNavigation {
   rootId: NoteId;
   expandedNodeIds: Set<NoteId>;
+}
+
+interface LiveNotesNavigation {
+  selectedId: NoteId | null;
+  zoomRootId: NoteId | null;
+  editingNoteId: NoteId | null;
+  pendingFocusId: NoteId | null;
+  pendingFocusField: NotesHistoryFocusField | null;
+}
+
+const emptyLiveNavigation = (): LiveNotesNavigation => ({
+  selectedId: null,
+  zoomRootId: null,
+  editingNoteId: null,
+  pendingFocusId: null,
+  pendingFocusField: null
+});
+
+function reconcileLiveNavigation(
+  current: LiveNotesNavigation,
+  workspace: NotesWorkspace,
+  update?: NotesWorkspaceUiUpdate
+): LiveNotesNavigation {
+  const existingIds = new Set(workspace.nodes.map((item) => item.id));
+  const existing = (nodeId: NoteId | null): NoteId | null =>
+    nodeId !== null && existingIds.has(nodeId) ? nodeId : null;
+  const selectedId = existing(
+    update?.selectedId === undefined ? current.selectedId : update.selectedId
+  );
+  const zoomRootId = existing(
+    update?.zoomRootId === undefined ? current.zoomRootId : update.zoomRootId
+  );
+  const editingNoteId = existing(
+    update?.editingNoteId === undefined
+      ? current.editingNoteId
+      : update.editingNoteId
+  );
+  const pendingFocusId = existing(
+    update?.pendingFocusId === undefined
+      ? current.pendingFocusId
+      : update.pendingFocusId
+  );
+  return {
+    selectedId,
+    zoomRootId,
+    editingNoteId,
+    pendingFocusId,
+    pendingFocusField:
+      pendingFocusId === null
+        ? null
+        : update?.pendingFocusField === undefined
+          ? (current.pendingFocusField ?? "title")
+          : update.pendingFocusField
+  };
 }
 
 const notesWorkspaceRecoveryRegistry = new WeakMap<
@@ -234,6 +309,35 @@ function scopeForLibraryView(
       return { kind: "archive" };
     case "trash":
       return { kind: "trash" };
+  }
+}
+
+function sameScope(
+  left: NotesWorkspaceScope,
+  right: NotesWorkspaceScope
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function libraryStateForScope(scope: NotesWorkspaceScope): {
+  view: Exclude<NotesLibraryView, "tags"> | "tags";
+  tag: string | null;
+} {
+  switch (scope.kind) {
+    case "active":
+      return { view: "all", tag: null };
+    case "starred":
+      return { view: "starred", tag: null };
+    case "recent":
+      return { view: "recent", tag: null };
+    case "archive":
+      return { view: "archive", tag: null };
+    case "trash":
+      return { view: "trash", tag: null };
+    case "tag":
+      return { view: "tags", tag: scope.tag };
+    case "tags":
+      return { view: "tags", tag: null };
   }
 }
 
@@ -696,12 +800,14 @@ export function useNotesWorkspace({
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   const stateRef = useRef(state);
   stateRef.current = state;
+  const liveNavigationRef = useRef<LiveNotesNavigation>(emptyLiveNavigation());
   const navigationVersionRef = useRef(0);
-  const lifecycleNavigationTransitionRef =
-    useRef<NotesLifecycleNavigationTransition | null>(null);
   const deletingNotesDataRef = useRef(false);
   const deletionTokenRef = useRef<object | null>(null);
   const sessionRef = useRef<NotesWorkspaceCoordinatorSession | null>(null);
+  const historyOwnerByEntryIdRef = useRef(
+    new Map<string, NotesWorkspaceCoordinatorSession>()
+  );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
   const persistDraftRef = useRef<
     | ((
@@ -777,6 +883,7 @@ export function useNotesWorkspace({
     setDeletingNotesData(false);
     activeScopeRef.current = { kind: "active" };
     locallyExpandedNodeIdsRef.current = new Set();
+    liveNavigationRef.current = emptyLiveNavigation();
     setLibraryView("all");
     setActiveTag(null);
     setTags([]);
@@ -792,6 +899,21 @@ export function useNotesWorkspace({
         if (event.type === "pending") {
           dispatch({ type: "setLoading" });
           return;
+        }
+        const authoritativeWorkspace =
+          event.result.kind === "authoritative"
+            ? event.result.workspace
+            : event.result.kind === "failure"
+              ? event.result.workspace
+              : undefined;
+        if (authoritativeWorkspace) {
+          liveNavigationRef.current = reconcileLiveNavigation(
+            liveNavigationRef.current,
+            authoritativeWorkspace,
+            event.result.kind === "authoritative"
+              ? event.result.uiUpdate
+              : undefined
+          );
         }
         dispatch({
           type: "settleQueueWork",
@@ -809,6 +931,8 @@ export function useNotesWorkspace({
       pendingDebounceByNodeId: new Map(),
       inFlightDraftByNodeId: new Map(),
       retryWriteByNodeId: new Map(),
+      draftHistoryContextByNodeId: new Map(),
+      draftHistoryFocusByNodeId: new Map(),
       nextDraftRevision: 1,
       failedWritesByNodeId: new Map(),
       writeError: null,
@@ -920,6 +1044,126 @@ export function useNotesWorkspace({
     []
   );
 
+  const captureHistorySnapshot = useCallback(
+    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot => {
+      const navigation = liveNavigationRef.current;
+      const resolvedFocus =
+        focus === undefined
+          ? navigation.editingNoteId
+            ? {
+                nodeId: navigation.editingNoteId,
+                field: navigation.pendingFocusField ?? "title"
+              }
+            : null
+          : focus;
+      return {
+        scope: activeScopeRef.current,
+        selectedId: navigation.selectedId,
+        zoomRootId: navigation.zoomRootId,
+        locallyExpandedNodeIds: [...locallyExpandedNodeIdsRef.current],
+        focus: resolvedFocus
+      };
+    },
+    []
+  );
+
+  const registerHistoryOwner = useCallback(
+    (
+      context: NotesHistoryContext,
+      owner: NotesWorkspaceCoordinatorSession
+    ): NotesHistoryContext => {
+      const owners = historyOwnerByEntryIdRef.current;
+      owners.set(context.entryId, owner);
+      while (owners.size > 200) {
+        const oldestEntryId = owners.keys().next().value;
+        if (oldestEntryId === undefined) {
+          break;
+        }
+        owners.delete(oldestEntryId);
+      }
+      return context;
+    },
+    []
+  );
+
+  const beginTextEntry = useCallback(
+    (
+      record: NotesWorkspaceSessionRecord,
+      nodeId: NoteId,
+      focus: NotesHistoryFocus
+    ): NotesHistoryContext | null =>
+      supportsHistory(record.repository)
+        ? registerHistoryOwner(
+            record.session.history.beginTextBurst(
+              nodeId,
+              captureHistorySnapshot(focus)
+            ),
+            record.session
+          )
+        : null,
+    [captureHistorySnapshot, registerHistoryOwner]
+  );
+
+  const closeTextBurst = useCallback((): void => {
+    sessionRef.current?.history.closeTextBurst();
+  }, []);
+
+  const beginStructuralEntry = useCallback(
+    (commandKind: string): NotesHistoryContext | null => {
+      const session = sessionRef.current;
+      const record = sessionRecordRef.current;
+      return session && record && supportsHistory(record.repository)
+        ? registerHistoryOwner(
+            session.history.beginStructuralEntry(
+              commandKind,
+              captureHistorySnapshot()
+            ),
+            session
+          )
+        : null;
+    },
+    [captureHistorySnapshot, registerHistoryOwner]
+  );
+
+  const rememberHistoryAfter = useCallback(
+    (
+      context: NotesHistoryContext | null | undefined,
+      workspace: NotesWorkspace,
+      uiUpdate?: NotesWorkspaceUiUpdate,
+      focus?: NotesHistoryFocus | null,
+      expandedNodeIds?: ReadonlySet<NoteId>
+    ): void => {
+      if (!context) {
+        return;
+      }
+      const owner = historyOwnerByEntryIdRef.current.get(context.entryId);
+      if (
+        (owner && sessionRef.current !== owner) ||
+        (!owner && sessionRef.current?.history.sessionId !== context.sessionId)
+      ) {
+        historyOwnerByEntryIdRef.current.delete(context.entryId);
+        return;
+      }
+      liveNavigationRef.current = reconcileLiveNavigation(
+        liveNavigationRef.current,
+        workspace,
+        uiUpdate
+      );
+      const after = captureHistorySnapshot(focus);
+      (owner ?? sessionRef.current)?.history.rememberAfter(context.entryId, {
+        ...after,
+        locallyExpandedNodeIds:
+          expandedNodeIds === undefined
+            ? after.locallyExpandedNodeIds
+            : [...expandedNodeIds]
+      });
+      if (context.commandKind !== "text") {
+        historyOwnerByEntryIdRef.current.delete(context.entryId);
+      }
+    },
+    [captureHistorySnapshot]
+  );
+
   const settleDraftWrite = useCallback(
     (
       record: NotesWorkspaceSessionRecord,
@@ -962,6 +1206,13 @@ export function useNotesWorkspace({
       record.writeError = latestWriteError(record.failedWritesByNodeId);
       if (!record.drafts.has(nodeId)) {
         record.retryWriteByNodeId.delete(nodeId);
+        const historyContext = record.draftHistoryContextByNodeId.get(nodeId);
+        record.draftHistoryContextByNodeId.delete(nodeId);
+        record.draftHistoryFocusByNodeId.delete(nodeId);
+        record.session.history.closeTextBurst(historyContext?.entryId);
+        if (historyContext) {
+          historyOwnerByEntryIdRef.current.delete(historyContext.entryId);
+        }
       }
       syncRecoveredDraft(record, nodeId);
       publishDraftState(record);
@@ -982,6 +1233,19 @@ export function useNotesWorkspace({
         publishDraftState(record);
       }
       record.inFlightDraftByNodeId.set(nodeId, draft.revision);
+      let historyContext: NotesHistoryContext | null | undefined =
+        record.draftHistoryContextByNodeId.get(nodeId);
+      if (!historyContext) {
+        const focus = record.draftHistoryFocusByNodeId.get(nodeId) ?? {
+          nodeId,
+          field: "title"
+        };
+        historyContext = beginTextEntry(record, nodeId, focus);
+        if (historyContext) {
+          record.draftHistoryContextByNodeId.set(nodeId, historyContext);
+        }
+        record.draftHistoryFocusByNodeId.set(nodeId, focus);
+      }
 
       let result: NotesWorkspaceQueueResult | undefined;
       await record.session.enqueue(async (context) => {
@@ -996,14 +1260,22 @@ export function useNotesWorkspace({
               id: nodeId,
               title: draft.title,
               note: draft.note
-            }
+            },
+            ...historyArguments(historyContext)
+          );
+          const projectedWorkspace = await workspaceForScope(
+            context,
+            mutationWorkspace,
+            activeScopeRef.current
+          );
+          rememberHistoryAfter(
+            historyContext,
+            projectedWorkspace,
+            undefined,
+            record.draftHistoryFocusByNodeId.get(nodeId) ?? null
           );
           result = authoritative(
-            await workspaceForScope(
-              context,
-              mutationWorkspace,
-              activeScopeRef.current
-            )
+            projectedWorkspace
           );
         } catch (cause) {
           result = { kind: "failure", error: errorMessage(cause) };
@@ -1026,7 +1298,7 @@ export function useNotesWorkspace({
         result.kind === "authoritative"
       );
     },
-    [publishDraftState, settleDraftWrite]
+    [beginTextEntry, publishDraftState, rememberHistoryAfter, settleDraftWrite]
   );
   persistDraftRef.current = persistDraft;
 
@@ -1044,6 +1316,7 @@ export function useNotesWorkspace({
       let result: NotesWorkspaceQueueResult | undefined;
       let writeSucceeded = false;
       await record.session.enqueue(async (context) => {
+        const historyContext = record.draftHistoryContextByNodeId.get(nodeId);
         const draftStep = async (): Promise<NotesWorkspace> => {
           const workspace = await context.repository.updateNode(
             context.vaultRoot,
@@ -1051,9 +1324,16 @@ export function useNotesWorkspace({
               id: nodeId,
               title: draft.title,
               note: draft.note
-            }
+            },
+            ...historyArguments(historyContext)
           );
           writeSucceeded = true;
+          rememberHistoryAfter(
+            historyContext ?? null,
+            workspace,
+            undefined,
+            record.draftHistoryFocusByNodeId.get(nodeId) ?? null
+          );
           return workspace;
         };
         result = await work(context, draftStep);
@@ -1067,7 +1347,7 @@ export function useNotesWorkspace({
       }
       return result;
     },
-    [settleDraftWrite]
+    [rememberHistoryAfter, settleDraftWrite]
   );
 
   const flushPendingDraftCompound = useCallback(
@@ -1112,12 +1392,30 @@ export function useNotesWorkspace({
   );
 
   const updateNodeDraft = useCallback(
-    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">): void => {
+    (
+      nodeId: NoteId,
+      patch: Pick<NoteNode, "title" | "note">,
+      field: NotesHistoryFocusField = "title"
+    ): void => {
       const record = sessionRecordRef.current;
       if (!record || record.closing || sessionRef.current !== record.session) {
         return;
       }
       const previous = record.drafts.get(nodeId);
+      const focus = { nodeId, field } satisfies NotesHistoryFocus;
+      liveNavigationRef.current = {
+        ...liveNavigationRef.current,
+        selectedId: nodeId,
+        editingNoteId: nodeId,
+        pendingFocusField: field
+      };
+      if (!previous || !record.draftHistoryContextByNodeId.has(nodeId)) {
+        const historyContext = beginTextEntry(record, nodeId, focus);
+        if (historyContext) {
+          record.draftHistoryContextByNodeId.set(nodeId, historyContext);
+        }
+      }
+      record.draftHistoryFocusByNodeId.set(nodeId, focus);
       const draft: NotesNodeDraft = {
         ...patch,
         revision: record.nextDraftRevision++,
@@ -1139,7 +1437,7 @@ export function useNotesWorkspace({
         )
         .catch(() => undefined);
     },
-    [persistDraft, publishDraftState, writeScheduledDraft]
+    [beginTextEntry, persistDraft, publishDraftState, writeScheduledDraft]
   );
 
   const flushNodeDraft = useCallback(
@@ -1220,10 +1518,17 @@ export function useNotesWorkspace({
     }
   }, [retryFailedDraft]);
 
-  const flushDraftBeforeStructural = flushNodeDraft;
+  const flushDraftBeforeStructural = useCallback(
+    (nodeId: NoteId): Promise<boolean> => {
+      closeTextBurst();
+      return flushNodeDraft(nodeId);
+    },
+    [closeTextBurst, flushNodeDraft]
+  );
 
   const flushAllDraftsBeforeStructural = useCallback(
     async (): Promise<boolean> => {
+      closeTextBurst();
       const record = sessionRecordRef.current;
       if (!record || record.closing || sessionRef.current !== record.session) {
         return false;
@@ -1248,8 +1553,89 @@ export function useNotesWorkspace({
         record.drafts.size === 0
       );
     },
-    []
+    [closeTextBurst]
   );
+
+  const replayHistory = useCallback(
+    async (direction: "undo" | "redo"): Promise<void> => {
+      closeTextBurst();
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        return;
+      }
+      const session = sessionRef.current;
+      if (!session) {
+        return;
+      }
+      let replayedSnapshot: NotesHistorySnapshot | null = null;
+      let replayedExpansionIds: ReadonlySet<NoteId> | null = null;
+      let replayedScope: NotesWorkspaceScope | null = null;
+      await runCommand(async (context) => {
+        const replay =
+          direction === "undo" ? context.repository.undo : context.repository.redo;
+        if (!replay) {
+          return { kind: "skipped" };
+        }
+        const currentScope = activeScopeRef.current;
+        const result = await replay(
+          context.vaultRoot,
+          session.history.sessionId,
+          currentScope
+        );
+        replayedSnapshot = session.history.snapshotForReplay(
+          result.replayedEntryId,
+          direction
+        );
+        replayedScope = replayedSnapshot?.scope ?? currentScope;
+        let replayedWorkspace = result.workspace;
+        if (!sameScope(replayedScope, currentScope)) {
+          replayedWorkspace = await context.repository.loadWorkspace(
+            context.vaultRoot,
+            replayedScope
+          );
+        }
+        activeScopeRef.current = replayedScope;
+        const existingIds = new Set(replayedWorkspace.nodes.map((item) => item.id));
+        replayedExpansionIds = new Set(
+          (replayedSnapshot?.locallyExpandedNodeIds ?? [
+            ...locallyExpandedNodeIdsRef.current
+          ]).filter((nodeId) => existingIds.has(nodeId))
+        );
+        const focus = replayedSnapshot?.focus ?? null;
+        return authoritative(
+          replayedWorkspace,
+          replayedSnapshot
+            ? {
+                selectedId: replayedSnapshot.selectedId,
+                zoomRootId: replayedSnapshot.zoomRootId,
+                editingNoteId: focus?.nodeId ?? null,
+                pendingFocusId: focus?.nodeId ?? null,
+                pendingFocusField: focus?.field ?? null
+              }
+            : undefined
+        );
+      });
+      if (replayedExpansionIds) {
+        replaceLocalExpansions(replayedExpansionIds);
+      }
+      if (replayedScope) {
+        const library = libraryStateForScope(replayedScope);
+        setLibraryView(library.view);
+        setActiveTag(library.tag);
+      }
+    },
+    [
+      closeTextBurst,
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      runCommand
+    ]
+  );
+
+  const undo = useCallback(() => replayHistory("undo"), [replayHistory]);
+  const redo = useCallback(() => replayHistory("redo"), [replayHistory]);
 
   const loadLibraryScope = useCallback(
     async (
@@ -1389,12 +1775,26 @@ export function useNotesWorkspace({
   );
 
   const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
+    if (liveNavigationRef.current.pendingFocusId === nodeId) {
+      liveNavigationRef.current = {
+        ...liveNavigationRef.current,
+        pendingFocusId: null,
+        pendingFocusField: null
+      };
+    }
     dispatch({ type: "acknowledgePendingFocus", nodeId });
   }, []);
 
   const focusNode = useCallback(async (nodeId: NoteId) => {
     void flushNodeDraft(nodeId);
     navigationVersionRef.current += 1;
+    liveNavigationRef.current = {
+      ...liveNavigationRef.current,
+      selectedId: nodeId,
+      editingNoteId: nodeId,
+      pendingFocusId: nodeId,
+      pendingFocusField: "title"
+    };
     dispatch({ type: "focusNode", nodeId });
   }, [flushNodeDraft]);
 
@@ -1405,9 +1805,12 @@ export function useNotesWorkspace({
     ) {
       return;
     }
+    const historyContext = beginStructuralEntry("create");
     const transitionToAll = libraryView !== "all";
     let created = false;
     await runCommand(async (context) => {
+      const effectiveHistoryContext =
+        historyContext ?? beginStructuralEntry("create");
       const before = normalizeWorkspace(
         transitionToAll
           ? await context.repository.loadWorkspace(context.vaultRoot, {
@@ -1416,23 +1819,36 @@ export function useNotesWorkspace({
           : context.confirmedWorkspace
       );
       const id = createNoteId();
-      const workspace = await context.repository.createNode(context.vaultRoot, {
-        id,
-        parentId: null,
-        afterId: before.rootIds.at(-1) ?? null,
-        title: "",
-        note: ""
-      });
+      const workspace = await context.repository.createNode(
+        context.vaultRoot,
+        {
+          id,
+          parentId: null,
+          afterId: before.rootIds.at(-1) ?? null,
+          title: "",
+          note: ""
+        },
+        ...historyArguments(effectiveHistoryContext)
+      );
       created = true;
       activeScopeRef.current = { kind: "active" };
+      const uiUpdate = {
+        selectedId: id,
+        editingNoteId: id,
+        pendingFocusId: id,
+        pendingFocusField: "title" as const,
+        zoomRootId: null
+      };
+      rememberHistoryAfter(
+        effectiveHistoryContext,
+        workspace,
+        uiUpdate,
+        undefined,
+        transitionToAll ? new Set() : locallyExpandedNodeIdsRef.current
+      );
       return authoritative(
         workspace,
-        {
-          selectedId: id,
-          editingNoteId: id,
-          pendingFocusId: id,
-          zoomRootId: null
-        }
+        uiUpdate
       );
     });
     if (created && transitionToAll) {
@@ -1442,7 +1858,9 @@ export function useNotesWorkspace({
     }
   }, [
     flushAllDraftsBeforeStructural,
+    beginStructuralEntry,
     libraryView,
+    rememberHistoryAfter,
     replaceLocalExpansions,
     runCommand
   ]);
@@ -1452,6 +1870,7 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("create");
       return runCommand(async (context) => {
         const before = confirmedState(context);
         if (!before.nodesById[nodeId]) {
@@ -1466,19 +1885,33 @@ export function useNotesWorkspace({
             afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
             title: "",
             note: ""
-          }
+          },
+          ...historyArguments(historyContext)
         );
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
+        );
+        const uiUpdate = {
+          selectedId: id,
+          editingNoteId: id,
+          pendingFocusId: id,
+          pendingFocusField: "title" as const
+        };
+        rememberHistoryAfter(historyContext, projectedWorkspace, uiUpdate);
         return authoritative(
-          await workspaceForScope(context, workspace, activeScopeRef.current),
-          {
-            selectedId: id,
-            editingNoteId: id,
-            pendingFocusId: id
-          }
+          projectedWorkspace,
+          uiUpdate
         );
       });
     },
-    [flushDraftBeforeStructural, runCommand]
+    [
+      beginStructuralEntry,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const splitNode = useCallback(
@@ -1496,6 +1929,7 @@ export function useNotesWorkspace({
         centralDraft &&
         canRunDraftCompound(record, nodeId, centralDraft)
       ) {
+        const historyContext = beginStructuralEntry("split");
         const result = await flushPendingDraftCompound(
           record,
           nodeId,
@@ -1509,12 +1943,16 @@ export function useNotesWorkspace({
               [
                 draftStep,
                 () =>
-                  context.repository.splitNode(context.vaultRoot, {
-                    id: nodeId,
-                    newNodeId,
-                    prefix,
-                    suffix
-                  })
+                  context.repository.splitNode(
+                    context.vaultRoot,
+                    {
+                      id: nodeId,
+                      newNodeId,
+                      prefix,
+                      suffix
+                    },
+                    ...historyArguments(historyContext)
+                  )
               ],
               {
                 selectedId: newNodeId,
@@ -1526,6 +1964,11 @@ export function useNotesWorkspace({
           }
         );
         if (result?.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
           notifySuccess(options?.onSuccess);
         }
         return;
@@ -1537,28 +1980,45 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineTextContext =
+        inlineDraft && record
+          ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
+          : null;
+      const historyContext = beginStructuralEntry("split");
       let succeeded = false;
       const completion = runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = hasCentralDraft ? undefined : options?.draft;
-        if (draft) {
-          steps.push(() =>
-            context.repository.updateNode(context.vaultRoot, {
-              id: nodeId,
-              ...draft
-            })
-          );
+        if (inlineDraft) {
+          steps.push(async () => {
+            const workspace = await context.repository.updateNode(
+              context.vaultRoot,
+              { id: nodeId, ...inlineDraft },
+              ...historyArguments(inlineTextContext)
+            );
+            rememberHistoryAfter(
+              inlineTextContext,
+              workspace,
+              undefined,
+              { nodeId, field: "title" }
+            );
+            return workspace;
+          });
         }
         steps.push(() =>
-          context.repository.splitNode(context.vaultRoot, {
-            id: nodeId,
-            newNodeId,
-            prefix,
-            suffix
-          })
+          context.repository.splitNode(
+            context.vaultRoot,
+            {
+              id: nodeId,
+              newNodeId,
+              prefix,
+              suffix
+            },
+            ...historyArguments(historyContext)
+          )
         );
         const result = await runCompoundQueueWork(
           context,
@@ -1570,6 +2030,13 @@ export function useNotesWorkspace({
           },
           activeScopeRef.current
         );
+        if (result.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
+        }
         succeeded = result.kind === "authoritative";
         return result;
       });
@@ -1579,11 +2046,19 @@ export function useNotesWorkspace({
         }
       });
     },
-    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
+    [
+      beginStructuralEntry,
+      beginTextEntry,
+      flushDraftBeforeStructural,
+      flushPendingDraftCompound,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const updateNode = useCallback(
     (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
+      const historyContext = beginStructuralEntry("update");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
@@ -1593,18 +2068,21 @@ export function useNotesWorkspace({
           {
             id: nodeId,
             ...patch
-          }
+          },
+          ...historyArguments(historyContext)
         );
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
+        );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
         return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+          projectedWorkspace
         );
       });
     },
-    [runCommand]
+    [beginStructuralEntry, rememberHistoryAfter, runCommand]
   );
 
   const moveNode = useCallback(
@@ -1620,7 +2098,8 @@ export function useNotesWorkspace({
         centralDraft &&
         canRunDraftCompound(record, input.id, centralDraft)
       ) {
-        await flushPendingDraftCompound(
+        const historyContext = beginStructuralEntry("move");
+        const result = await flushPendingDraftCompound(
           record,
           input.id,
           centralDraft,
@@ -1641,12 +2120,17 @@ export function useNotesWorkspace({
               steps.push(() =>
                 context.repository.toggleCollapsed(
                   context.vaultRoot,
-                  expandNodeId
+                  expandNodeId,
+                  ...historyArguments(historyContext)
                 )
               );
             }
             steps.push(() =>
-              context.repository.moveNode(context.vaultRoot, input)
+              context.repository.moveNode(
+                context.vaultRoot,
+                input,
+                ...historyArguments(historyContext)
+              )
             );
             return runCompoundQueueWork(
               context,
@@ -1656,6 +2140,13 @@ export function useNotesWorkspace({
             );
           }
         );
+        if (result?.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
+        }
         return;
       }
       const hasCentralDraft = centralDraft !== undefined;
@@ -1665,6 +2156,15 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineTextContext =
+        inlineDraft && record
+          ? beginTextEntry(record, input.id, {
+              nodeId: input.id,
+              field: "title"
+            })
+          : null;
+      const historyContext = beginStructuralEntry("move");
       return runCommand(async (context) => {
         const before = confirmedState(context);
         const expandNodeId = options?.expandNodeId;
@@ -1675,36 +2175,65 @@ export function useNotesWorkspace({
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = hasCentralDraft ? undefined : options?.draft;
-        if (draft) {
-          steps.push(() =>
-            context.repository.updateNode(context.vaultRoot, {
-              id: input.id,
-              ...draft
-            })
-          );
+        if (inlineDraft) {
+          steps.push(async () => {
+            const workspace = await context.repository.updateNode(
+              context.vaultRoot,
+              { id: input.id, ...inlineDraft },
+              ...historyArguments(inlineTextContext)
+            );
+            rememberHistoryAfter(
+              inlineTextContext,
+              workspace,
+              undefined,
+              { nodeId: input.id, field: "title" }
+            );
+            return workspace;
+          });
         }
         if (
           expandNodeId !== undefined &&
           before.nodesById[expandNodeId].isCollapsed
         ) {
           steps.push(() =>
-            context.repository.toggleCollapsed(
-              context.vaultRoot,
-              expandNodeId
-            )
+              context.repository.toggleCollapsed(
+                context.vaultRoot,
+                expandNodeId,
+                ...historyArguments(historyContext)
+              )
           );
         }
-        steps.push(() => context.repository.moveNode(context.vaultRoot, input));
-        return runCompoundQueueWork(
+        steps.push(() =>
+          context.repository.moveNode(
+            context.vaultRoot,
+            input,
+            ...historyArguments(historyContext)
+          )
+        );
+        const result = await runCompoundQueueWork(
           context,
           steps,
           focusedUiUpdate(focusNodeId),
           activeScopeRef.current
         );
+        if (result.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
+        }
+        return result;
       });
     },
-    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
+    [
+      beginStructuralEntry,
+      beginTextEntry,
+      flushDraftBeforeStructural,
+      flushPendingDraftCompound,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const toggleComplete = useCallback(
@@ -1712,28 +2241,36 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("complete");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const workspace = await context.repository.toggleComplete(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
-        return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
         );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
+        return authoritative(projectedWorkspace);
       });
     },
-    [flushDraftBeforeStructural, runCommand]
+    [
+      beginStructuralEntry,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const toggleCollapsed = useCallback(
     async (nodeId: NoteId) => {
+      closeTextBurst();
       if (locallyExpandedNodeIdsRef.current.has(nodeId)) {
         const next = new Set(locallyExpandedNodeIdsRef.current);
         next.delete(nodeId);
@@ -1743,24 +2280,33 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("collapse");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const workspace = await context.repository.toggleCollapsed(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
-        return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
         );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
+        return authoritative(projectedWorkspace);
       });
     },
-    [flushDraftBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      beginStructuralEntry,
+      closeTextBurst,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      replaceLocalExpansions,
+      runCommand
+    ]
   );
 
   const toggleStar = useCallback(
@@ -1768,24 +2314,31 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("star");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const workspace = await context.repository.toggleStar(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
-        return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
         );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
+        return authoritative(projectedWorkspace);
       });
     },
-    [flushDraftBeforeStructural, runCommand]
+    [
+      beginStructuralEntry,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const duplicateNode = useCallback(
@@ -1793,6 +2346,7 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("duplicate");
       return runCommand(async (context) => {
         const before = confirmedState(context);
         if (!before.nodesById[nodeId]) {
@@ -1800,26 +2354,36 @@ export function useNotesWorkspace({
         }
         const workspace = await context.repository.duplicateNode(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
         const duplicateId = duplicateRootId(before, workspace, nodeId);
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
+        );
+        const uiUpdate = duplicateId
+          ? {
+              selectedId: duplicateId,
+              editingNoteId: duplicateId,
+              pendingFocusId: duplicateId,
+              pendingFocusField: "title" as const
+            }
+          : undefined;
+        rememberHistoryAfter(historyContext, projectedWorkspace, uiUpdate);
         return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          ),
-          duplicateId
-            ? {
-                selectedId: duplicateId,
-                editingNoteId: duplicateId,
-                pendingFocusId: duplicateId
-              }
-            : undefined
+          projectedWorkspace,
+          uiUpdate
         );
       });
     },
-    [flushDraftBeforeStructural, runCommand]
+    [
+      beginStructuralEntry,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const runRootLifecycle = useCallback(
@@ -1838,11 +2402,13 @@ export function useNotesWorkspace({
         return;
       }
 
+      const historyContext = beginStructuralEntry(mutation);
+      const liveNavigation = liveNavigationRef.current;
       const beforeNavigation: NotesLifecycleNavigationSnapshot = {
-        selectedId: stateRef.current.selectedId,
-        zoomRootId: stateRef.current.zoomRootId,
-        editingNoteId: stateRef.current.editingNoteId,
-        pendingFocusId: stateRef.current.pendingFocusId,
+        selectedId: liveNavigation.selectedId,
+        zoomRootId: liveNavigation.zoomRootId,
+        editingNoteId: liveNavigation.editingNoteId,
+        pendingFocusId: liveNavigation.pendingFocusId,
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current),
         scope: activeScopeRef.current
       };
@@ -1866,10 +2432,22 @@ export function useNotesWorkspace({
           return { kind: "skipped" };
         }
         const mutationWorkspace = await (mutation === "archive"
-          ? context.repository.archiveNode(context.vaultRoot, nodeId)
+          ? context.repository.archiveNode(
+              context.vaultRoot,
+              nodeId,
+              ...historyArguments(historyContext)
+            )
           : mutation === "unarchive"
-            ? context.repository.unarchiveNode(context.vaultRoot, nodeId)
-            : context.repository.softDeleteNode(context.vaultRoot, nodeId));
+            ? context.repository.unarchiveNode(
+                context.vaultRoot,
+                nodeId,
+                ...historyArguments(historyContext)
+              )
+            : context.repository.softDeleteNode(
+                context.vaultRoot,
+                nodeId,
+                ...historyArguments(historyContext)
+              ));
         const requestedScope = activeScopeRef.current;
         let projectedWorkspace: NotesWorkspace;
         try {
@@ -1902,10 +2480,10 @@ export function useNotesWorkspace({
           navigationVersion === beforeNavigationVersion
             ? beforeNavigation
             : {
-                selectedId: stateRef.current.selectedId,
-                zoomRootId: stateRef.current.zoomRootId,
-                editingNoteId: stateRef.current.editingNoteId,
-                pendingFocusId: stateRef.current.pendingFocusId,
+                selectedId: liveNavigationRef.current.selectedId,
+                zoomRootId: liveNavigationRef.current.zoomRootId,
+                editingNoteId: liveNavigationRef.current.editingNoteId,
+                pendingFocusId: liveNavigationRef.current.pendingFocusId,
                 locallyExpandedNodeIds: new Set(
                   locallyExpandedNodeIdsRef.current
                 ),
@@ -1930,17 +2508,27 @@ export function useNotesWorkspace({
               after: transition.after
             };
         lifecycleResult.resolvedNavigationVersion = navigationVersion;
-        return authoritative(projectedWorkspace, {
+        const uiUpdate = {
           selectedId: lifecycleResult.transition.after.selectedId,
           zoomRootId: lifecycleResult.transition.after.zoomRootId,
           editingNoteId: lifecycleResult.transition.after.editingNoteId,
-          pendingFocusId: lifecycleResult.transition.after.pendingFocusId
-        });
+          pendingFocusId: lifecycleResult.transition.after.pendingFocusId,
+          pendingFocusField:
+            lifecycleResult.transition.after.pendingFocusId === null
+              ? null
+              : "title" as const
+        };
+        rememberHistoryAfter(
+          historyContext,
+          projectedWorkspace,
+          uiUpdate,
+          undefined,
+          lifecycleResult.transition.after.locallyExpandedNodeIds
+        );
+        return authoritative(projectedWorkspace, uiUpdate);
       });
 
       if (lifecycleResult.transition) {
-        // Task 2B can attach this single transition to backend history metadata.
-        lifecycleNavigationTransitionRef.current = lifecycleResult.transition;
         if (
           lifecycleResult.resolvedNavigationVersion ===
           navigationVersionRef.current
@@ -1958,7 +2546,13 @@ export function useNotesWorkspace({
         setTags(lifecycleResult.refreshedTags);
       }
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      beginStructuralEntry,
+      flushAllDraftsBeforeStructural,
+      rememberHistoryAfter,
+      replaceLocalExpansions,
+      runCommand
+    ]
   );
 
   const archiveNode = useCallback(
@@ -1984,7 +2578,8 @@ export function useNotesWorkspace({
         centralDraft &&
         canRunDraftCompound(record, nodeId, centralDraft)
       ) {
-        await flushPendingDraftCompound(
+        const historyContext = beginStructuralEntry("remove");
+        const result = await flushPendingDraftCompound(
           record,
           nodeId,
           centralDraft,
@@ -1999,7 +2594,8 @@ export function useNotesWorkspace({
                 () =>
                   context.repository.removeEmptyNode(
                     context.vaultRoot,
-                    nodeId
+                    nodeId,
+                    ...historyArguments(historyContext)
                   )
               ],
               focusedUiUpdate(focusNodeId),
@@ -2007,6 +2603,13 @@ export function useNotesWorkspace({
             );
           }
         );
+        if (result?.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
+        }
         return;
       }
       const hasCentralDraft = centralDraft !== undefined;
@@ -2016,32 +2619,64 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      const inlineDraft = hasCentralDraft ? undefined : options?.draft;
+      const inlineTextContext =
+        inlineDraft && record
+          ? beginTextEntry(record, nodeId, { nodeId, field: "title" })
+          : null;
+      const historyContext = beginStructuralEntry("remove");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const steps: NotesWorkspaceQueueStep[] = [];
-        const draft = hasCentralDraft ? undefined : options?.draft;
-        if (draft) {
-          steps.push(() =>
-            context.repository.updateNode(context.vaultRoot, {
-              id: nodeId,
-              ...draft
-            })
-          );
+        if (inlineDraft) {
+          steps.push(async () => {
+            const workspace = await context.repository.updateNode(
+              context.vaultRoot,
+              { id: nodeId, ...inlineDraft },
+              ...historyArguments(inlineTextContext)
+            );
+            rememberHistoryAfter(
+              inlineTextContext,
+              workspace,
+              undefined,
+              { nodeId, field: "title" }
+            );
+            return workspace;
+          });
         }
         steps.push(() =>
-          context.repository.removeEmptyNode(context.vaultRoot, nodeId)
+          context.repository.removeEmptyNode(
+            context.vaultRoot,
+            nodeId,
+            ...historyArguments(historyContext)
+          )
         );
-        return runCompoundQueueWork(
+        const result = await runCompoundQueueWork(
           context,
           steps,
           focusedUiUpdate(focusNodeId),
           activeScopeRef.current
         );
+        if (result.kind === "authoritative") {
+          rememberHistoryAfter(
+            historyContext,
+            result.workspace,
+            result.uiUpdate
+          );
+        }
+        return result;
       });
     },
-    [flushDraftBeforeStructural, flushPendingDraftCompound, runCommand]
+    [
+      beginStructuralEntry,
+      beginTextEntry,
+      flushDraftBeforeStructural,
+      flushPendingDraftCompound,
+      rememberHistoryAfter,
+      runCommand
+    ]
   );
 
   const deleteNode = useCallback(
@@ -2052,48 +2687,61 @@ export function useNotesWorkspace({
       if (!(await flushDraftBeforeStructural(nodeId))) {
         return;
       }
+      const historyContext = beginStructuralEntry("trash");
       return runCommand(async (context) => {
         if (!confirmedState(context).nodesById[nodeId]) {
           return { kind: "skipped" };
         }
         const workspace = await context.repository.softDeleteNode(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
-        return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
         );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
+        return authoritative(projectedWorkspace);
       });
     },
-    [flushDraftBeforeStructural, runCommand, runRootLifecycle]
+    [
+      beginStructuralEntry,
+      flushDraftBeforeStructural,
+      rememberHistoryAfter,
+      runCommand,
+      runRootLifecycle
+    ]
   );
 
   const restoreNode = useCallback(
     (nodeId: NoteId) => {
+      closeTextBurst();
+      const historyContext = beginStructuralEntry("restore");
       return runCommand(async (context) => {
         const workspace = await context.repository.restoreNode(
           context.vaultRoot,
-          nodeId
+          nodeId,
+          ...historyArguments(historyContext)
         );
-        return authoritative(
-          await workspaceForScope(
-            context,
-            workspace,
-            activeScopeRef.current
-          )
+        const projectedWorkspace = await workspaceForScope(
+          context,
+          workspace,
+          activeScopeRef.current
         );
+        rememberHistoryAfter(historyContext, projectedWorkspace);
+        return authoritative(projectedWorkspace);
       });
     },
-    [runCommand]
+    [beginStructuralEntry, closeTextBurst, rememberHistoryAfter, runCommand]
   );
 
   const emptyTrash = useCallback(() => {
+    closeTextBurst();
     return runCommand(async (context) => {
       const workspace = await context.repository.emptyTrash(context.vaultRoot);
+      sessionRef.current?.history.clearSnapshots();
       return authoritative(
         await workspaceForScope(
           context,
@@ -2104,11 +2752,12 @@ export function useNotesWorkspace({
           selectedId: null,
           zoomRootId: null,
           editingNoteId: null,
-          pendingFocusId: null
+          pendingFocusId: null,
+          pendingFocusField: null
         }
       );
     });
-  }, [runCommand]);
+  }, [closeTextBurst, runCommand]);
 
   const deleteAllNotesData = useCallback(async (): Promise<void> => {
     const record = sessionRecordRef.current;
@@ -2166,9 +2815,12 @@ export function useNotesWorkspace({
       record.pendingDebounceByNodeId.clear();
       record.inFlightDraftByNodeId.clear();
       record.retryWriteByNodeId.clear();
+      record.draftHistoryContextByNodeId.clear();
+      record.draftHistoryFocusByNodeId.clear();
       record.failedWritesByNodeId.clear();
       record.writeError = null;
       record.recoveryEntry = null;
+      record.session.history.clearSnapshots();
       clearRecoveryEntry(repository, vaultRoot);
       publishDraftState(record);
       if (
@@ -2198,6 +2850,10 @@ export function useNotesWorkspace({
 
   const zoomTo = useCallback(async (nodeId: NoteId | null) => {
     navigationVersionRef.current += 1;
+    liveNavigationRef.current = {
+      ...liveNavigationRef.current,
+      zoomRootId: nodeId
+    };
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
   }, []);
 
@@ -2215,9 +2871,9 @@ export function useNotesWorkspace({
       splitNode: gate(splitNode),
       createChild: gate(createChild),
       updateNode: gate(updateNode),
-      updateNodeDraft: (nodeId, patch) => {
+      updateNodeDraft: (nodeId, patch, field) => {
         if (!deletingNotesDataRef.current) {
-          updateNodeDraft(nodeId, patch);
+          updateNodeDraft(nodeId, patch, field);
         }
       },
       flushNodeDraft: (nodeId) =>
@@ -2247,7 +2903,9 @@ export function useNotesWorkspace({
           : searchNotes(query),
       openSearchResult: gate(openSearchResult),
       deleteAllNotesData,
-      zoomTo: gate(zoomTo)
+      zoomTo: gate(zoomTo),
+      undo: gate(undo),
+      redo: gate(redo)
     };
   }, [
     acknowledgeFocus,
@@ -2275,7 +2933,9 @@ export function useNotesWorkspace({
     searchNotes,
     openSearchResult,
     deleteAllNotesData,
-    zoomTo
+    zoomTo,
+    undo,
+    redo
   ]);
 
   return {

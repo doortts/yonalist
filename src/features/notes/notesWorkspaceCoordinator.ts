@@ -3,12 +3,18 @@ import type {
   NotesStore,
   NotesWorkspace
 } from "../../domain/notes";
+import {
+  createNotesHistorySession,
+  type NotesHistoryFocusField,
+  type NotesHistorySession
+} from "./notesHistory";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
   zoomRootId: NoteId | null;
   editingNoteId: NoteId | null;
   pendingFocusId: NoteId | null;
+  pendingFocusField: NotesHistoryFocusField | null;
 }>;
 
 export type NotesWorkspaceQueueResult =
@@ -48,6 +54,7 @@ export interface OpenNotesWorkspaceSessionOptions {
 
 export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
+  readonly history: NotesHistorySession;
   enqueue(work: NotesWorkspaceQueueWork): Promise<void>;
   close(): void;
 }
@@ -63,6 +70,8 @@ interface CoordinatorEntry {
   repository: NotesStore;
   vaultRoot: string;
   confirmedWorkspace: NotesWorkspace;
+  history: NotesHistorySession;
+  initialized: boolean;
   sessions: Set<SessionState>;
   queue: QueueItem[];
   running: QueueItem | null;
@@ -83,6 +92,8 @@ interface QueueItemBase {
   resolveCompletion: (() => void) | null;
   canceled: boolean;
 }
+
+const LEGACY_HISTORY_SESSION_ID = "00000000-0000-4000-8000-000000000000";
 
 interface ActivationItem extends QueueItemBase {
   kind: "activation";
@@ -243,14 +254,17 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     let result: NotesWorkspaceQueueSettlement;
     try {
       if (item.kind === "activation") {
-        let initialization: Promise<void>;
-        try {
-          initialization = item.entry.repository.initialize(item.entry.vaultRoot);
-        } catch (cause) {
-          await Promise.resolve();
-          throw cause;
+        if (!item.entry.initialized) {
+          let initialization: Promise<void>;
+          try {
+            initialization = item.entry.repository.initialize(item.entry.vaultRoot);
+          } catch (cause) {
+            await Promise.resolve();
+            throw cause;
+          }
+          await initialization;
+          item.entry.initialized = true;
         }
-        await initialization;
         if (!hasLiveActivationSession(item)) {
           result = { kind: "skipped" };
         } else {
@@ -320,6 +334,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         repository,
         vaultRoot,
         confirmedWorkspace: { nodes: [] },
+        history: createNotesHistorySession(
+          repository.undo && repository.redo
+            ? undefined
+            : { createId: () => LEGACY_HISTORY_SESSION_ID }
+        ),
+        initialized: false,
         sessions: new Set(),
         queue: [],
         running: null,
@@ -401,6 +421,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const activationCompletion = activation.completion;
       return {
         activation: activationCompletion,
+        history: entry.history,
         enqueue(work: NotesWorkspaceQueueWork): Promise<void> {
           if (!session.active) {
             return Promise.resolve();

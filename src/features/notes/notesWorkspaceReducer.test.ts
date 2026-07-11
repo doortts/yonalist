@@ -155,6 +155,53 @@ describe("notesWorkspaceReducer", () => {
     expect(acknowledged.pendingFocusId).toBeNull();
   });
 
+  it("normalizes field-aware history focus with the focused node", () => {
+    const initial = normalizeWorkspace(
+      workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })])
+    );
+
+    const noteFocus = notesWorkspaceReducer(initial, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: workspace([
+          node({ id: "root" }),
+          node({ id: "child", parentId: "root" })
+        ]),
+        uiUpdate: {
+          selectedId: "child",
+          editingNoteId: "child",
+          pendingFocusId: "child",
+          pendingFocusField: "note"
+        }
+      },
+      hasPendingWork: false
+    });
+    expect(noteFocus).toMatchObject({
+      pendingFocusId: "child",
+      pendingFocusField: "note"
+    });
+
+    const removed = notesWorkspaceReducer(noteFocus, {
+      type: "settleQueueWork",
+      result: {
+        kind: "authoritative",
+        workspace: workspace([node({ id: "root" })])
+      },
+      hasPendingWork: false
+    });
+    expect(removed).toMatchObject({
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+
+    const legacyTitleFocus = notesWorkspaceReducer(initial, {
+      type: "setUiState",
+      pendingFocusId: "child"
+    });
+    expect(legacyTitleFocus.pendingFocusField).toBe("title");
+  });
+
   it("publishes command-neutral focus only for an existing node", () => {
     const initial = normalizeWorkspace(
       workspace([node({ id: "root" }), node({ id: "child", parentId: "root" })])

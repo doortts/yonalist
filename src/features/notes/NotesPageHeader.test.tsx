@@ -38,6 +38,7 @@ function workspaceValue(options: {
   title?: string;
   note?: string;
   draft?: NotesNodeDraft;
+  pendingFocus?: { nodeId: string; field: "title" | "note" };
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
@@ -51,6 +52,8 @@ function workspaceValue(options: {
     ]
   });
   state.zoomRootId = "project";
+  state.pendingFocusId = options.pendingFocus?.nodeId ?? null;
+  state.pendingFocusField = options.pendingFocus?.field ?? null;
 
   const resolved = () => vi.fn().mockResolvedValue(undefined);
   const actions = {
@@ -79,7 +82,9 @@ function workspaceValue(options: {
     searchNotes: vi.fn().mockResolvedValue([]),
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
-    zoomTo: resolved()
+    zoomTo: resolved(),
+    undo: resolved(),
+    redo: resolved()
   } as UseNotesWorkspaceResult["actions"];
 
   return {
@@ -151,6 +156,65 @@ describe("NotesPageHeader", () => {
     ).toEqual(["1", "2"]);
   });
 
+  it("routes unified history shortcuts from page and outline text fields", () => {
+    const workspace = renderZoomedOutline();
+    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+    const childTitle = screen.getAllByRole("textbox", {
+      name: "Edit node title"
+    })[0]!;
+
+    expect(fireEvent.keyDown(title, { key: "z", ctrlKey: true })).toBe(false);
+    expect(
+      fireEvent.keyDown(note, {
+        key: "z",
+        ctrlKey: true,
+        shiftKey: true
+      })
+    ).toBe(false);
+    expect(fireEvent.keyDown(childTitle, { key: "y", ctrlKey: true })).toBe(
+      false
+    );
+
+    expect(workspace.actions.undo).toHaveBeenCalledOnce();
+    expect(workspace.actions.redo).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps native composition history and suppresses Process shortcuts", () => {
+    const workspace = renderZoomedOutline();
+    const title = screen.getByRole("textbox", { name: "Edit page title" });
+
+    expect(
+      fireEvent.keyDown(title, {
+        key: "z",
+        ctrlKey: true,
+        isComposing: true
+      })
+    ).toBe(true);
+    expect(
+      fireEvent.keyDown(title, {
+        key: "Process",
+        ctrlKey: true
+      })
+    ).toBe(true);
+    expect(workspace.actions.undo).not.toHaveBeenCalled();
+    expect(workspace.actions.redo).not.toHaveBeenCalled();
+  });
+
+  it("restores pending history focus to the supporting-note field", async () => {
+    const workspace = renderZoomedOutline(
+      workspaceValue({ pendingFocus: { nodeId: "project", field: "note" } })
+    );
+    const note = screen.getByRole("textbox", {
+      name: "Supporting note: Project"
+    });
+
+    await waitFor(() => expect(note).toHaveFocus());
+    expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("project");
+  });
+
   it("auto-grows a long Korean page title beside a stable left menu rail", () => {
     const longTitle =
       "길고 자세한 한국어 페이지 제목도 메뉴 버튼 아래로 숨지 않고 필요한 만큼 여러 줄로 줄바꿈됩니다";
@@ -190,10 +254,11 @@ describe("NotesPageHeader", () => {
       screen.queryByRole("textbox", { name: "Supporting note: Project" })
     ).not.toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Renamed project" } });
-    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith("project", {
-      title: "Renamed project",
-      note: ""
-    });
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Renamed project", note: "" },
+      "title"
+    );
     fireEvent.blur(title);
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
   });
@@ -249,10 +314,11 @@ describe("NotesPageHeader", () => {
       })
     );
 
-    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith("project", {
-      title: "Project",
-      note: ""
-    });
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "Project", note: "" },
+      "note"
+    );
     expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     expect(trigger).toHaveFocus();

@@ -1,0 +1,116 @@
+import { describe, expect, it } from "vitest";
+import type { NotesWorkspaceScope } from "../../domain/notes";
+import {
+  createNotesHistorySession,
+  type NotesHistorySnapshot
+} from "./notesHistory";
+
+const ids = [
+  "10000000-0000-4000-8000-000000000001",
+  "10000000-0000-4000-8000-000000000002",
+  "10000000-0000-4000-8000-000000000003",
+  "10000000-0000-4000-8000-000000000004",
+  "10000000-0000-4000-8000-000000000005",
+  "10000000-0000-4000-8000-000000000006"
+];
+
+function idFactory(): () => string {
+  let index = 0;
+  return () => ids[index++]!;
+}
+
+function snapshot(
+  selectedId: string | null,
+  field: "title" | "note" = "title",
+  scope: NotesWorkspaceScope = { kind: "active" }
+): NotesHistorySnapshot {
+  return {
+    scope,
+    selectedId,
+    zoomRootId: selectedId,
+    locallyExpandedNodeIds: selectedId ? [selectedId] : [],
+    focus: selectedId ? { nodeId: selectedId, field } : null
+  };
+}
+
+describe("notes history session", () => {
+  it("allocates a stable text entry when a draft begins and replaces it after closure", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+
+    const first = history.beginTextBurst("node-a", snapshot("node-a"));
+    const continued = history.beginTextBurst("node-a", snapshot("node-a"));
+    history.closeTextBurst();
+    const next = history.beginTextBurst("node-a", snapshot("node-a"));
+
+    expect(history.sessionId).toBe(ids[0]);
+    expect(continued).toEqual(first);
+    expect(first).toMatchObject({
+      sessionId: ids[0],
+      entryId: ids[1],
+      commandKind: "text"
+    });
+    expect(next.entryId).toBe(ids[2]);
+  });
+
+  it("closes text before allocating a distinct structural entry", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+    const text = history.beginTextBurst("node-a", snapshot("node-a"));
+
+    const structural = history.beginStructuralEntry(
+      "split",
+      snapshot("node-a")
+    );
+    const nextText = history.beginTextBurst("node-a", snapshot("node-a"));
+
+    expect(structural).toMatchObject({
+      sessionId: history.sessionId,
+      entryId: ids[2],
+      commandKind: "split"
+    });
+    expect(structural.entryId).not.toBe(text.entryId);
+    expect(nextText.entryId).toBe(ids[3]);
+  });
+
+  it("merges before and latest after snapshots for a backend entry", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+    const context = history.beginTextBurst("node-a", snapshot("node-a"));
+
+    history.rememberAfter(context.entryId, snapshot("node-a", "note"));
+    history.rememberAfter(
+      context.entryId,
+      snapshot("node-b", "title", { kind: "starred" })
+    );
+
+    expect(history.snapshotForReplay(context.entryId, "undo")).toEqual(
+      snapshot("node-a")
+    );
+    expect(history.snapshotForReplay(context.entryId, "redo")).toEqual(
+      snapshot("node-b", "title", { kind: "starred" })
+    );
+  });
+
+  it("returns null for missing or evicted snapshots", () => {
+    const history = createNotesHistorySession({
+      createId: idFactory(),
+      maxSnapshots: 2
+    });
+    const first = history.beginStructuralEntry("create", snapshot("node-a"));
+    const second = history.beginStructuralEntry("move", snapshot("node-b"));
+    history.beginStructuralEntry("star", snapshot("node-c"));
+
+    expect(history.snapshotForReplay(first.entryId, "undo")).toBeNull();
+    expect(history.snapshotForReplay(second.entryId, "undo")).toEqual(
+      snapshot("node-b")
+    );
+    expect(history.snapshotForReplay(ids[5], "redo")).toBeNull();
+  });
+
+  it("creates independent session IDs for separate vault coordinator entries", () => {
+    const createId = idFactory();
+    const first = createNotesHistorySession({ createId });
+    const second = createNotesHistorySession({ createId });
+
+    expect(first.sessionId).toBe(ids[0]);
+    expect(second.sessionId).toBe(ids[1]);
+  });
+});

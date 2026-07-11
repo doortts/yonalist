@@ -1,4 +1,5 @@
 import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
+import type { NotesHistoryFocusField } from "./notesHistory";
 
 export interface NormalizedNotesWorkspace {
   nodesById: Record<NoteId, NoteNode>;
@@ -8,13 +9,18 @@ export interface NormalizedNotesWorkspace {
   zoomRootId: NoteId | null;
   editingNoteId: NoteId | null;
   pendingFocusId: NoteId | null;
+  pendingFocusField: NotesHistoryFocusField | null;
   status: "loading" | "ready" | "error";
   error: string | null;
 }
 
 type UiState = Pick<
   NormalizedNotesWorkspace,
-  "selectedId" | "zoomRootId" | "editingNoteId" | "pendingFocusId"
+  | "selectedId"
+  | "zoomRootId"
+  | "editingNoteId"
+  | "pendingFocusId"
+  | "pendingFocusField"
 >;
 
 export type NotesWorkspaceReducerAction =
@@ -52,11 +58,14 @@ function normalizedUiState(
   workspace: NormalizedNotesWorkspace,
   ui: UiState
 ): UiState {
+  const pendingFocusId = existingId(workspace, ui.pendingFocusId);
   return {
     selectedId: existingId(workspace, ui.selectedId),
     zoomRootId: existingId(workspace, ui.zoomRootId),
     editingNoteId: existingId(workspace, ui.editingNoteId),
-    pendingFocusId: existingId(workspace, ui.pendingFocusId)
+    pendingFocusId,
+    pendingFocusField:
+      pendingFocusId === null ? null : (ui.pendingFocusField ?? "title")
   };
 }
 
@@ -85,6 +94,7 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
     zoomRootId: null,
     editingNoteId: null,
     pendingFocusId: null,
+    pendingFocusField: null,
     status: "ready",
     error: null
   };
@@ -145,7 +155,11 @@ export function notesWorkspaceReducer(
           pendingFocusId:
             uiUpdate?.pendingFocusId === undefined
               ? retainedUi.pendingFocusId
-              : uiUpdate.pendingFocusId
+              : uiUpdate.pendingFocusId,
+          pendingFocusField:
+            uiUpdate?.pendingFocusField === undefined
+              ? retainedUi.pendingFocusField
+              : uiUpdate.pendingFocusField
         }),
         status: action.hasPendingWork ? "loading" : "ready"
       };
@@ -169,11 +183,12 @@ export function notesWorkspaceReducer(
             ...state,
             selectedId: action.nodeId,
             editingNoteId: action.nodeId,
-            pendingFocusId: action.nodeId
+            pendingFocusId: action.nodeId,
+            pendingFocusField: "title"
           };
     case "acknowledgePendingFocus":
       return state.pendingFocusId === action.nodeId
-        ? { ...state, pendingFocusId: null }
+        ? { ...state, pendingFocusId: null, pendingFocusField: null }
         : state;
     case "setUiState": {
       const ui: UiState = {
@@ -188,7 +203,11 @@ export function notesWorkspaceReducer(
         pendingFocusId:
           action.pendingFocusId === undefined
             ? state.pendingFocusId
-            : action.pendingFocusId
+            : action.pendingFocusId,
+        pendingFocusField:
+          action.pendingFocusField === undefined
+            ? state.pendingFocusField
+            : action.pendingFocusField
       };
       return { ...state, ...normalizedUiState(state, ui) };
     }

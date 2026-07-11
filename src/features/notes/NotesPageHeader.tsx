@@ -13,6 +13,7 @@ import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
+  resolveNotesHistoryShortcut,
   resolveOutlineKey
 } from "./outlineKeyboard";
 
@@ -65,14 +66,20 @@ export function NotesPageHeader({
   }, [noteVisible]);
 
   useEffect(() => {
-    if (state.pendingFocusId !== nodeId || !titleRef.current) {
+    if (state.pendingFocusId !== nodeId) {
       return;
     }
-    titleRef.current.focus();
-    if (document.activeElement === titleRef.current) {
+    if (state.pendingFocusField === "note" && !noteVisible) {
+      setRevealedNoteNodeId(nodeId);
+      return;
+    }
+    const target =
+      state.pendingFocusField === "note" ? noteRef.current : titleRef.current;
+    target?.focus();
+    if (target && document.activeElement === target) {
       void actions.acknowledgeFocus(nodeId);
     }
-  }, [actions, nodeId, state.pendingFocusId]);
+  }, [actions, nodeId, noteVisible, state.pendingFocusField, state.pendingFocusId]);
 
   if (!node) {
     return null;
@@ -107,11 +114,25 @@ export function NotesPageHeader({
 
   const removeNote = () => {
     setRevealedNoteNodeId(null);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" });
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
     void actions.flushNodeDraft(nodeId);
   };
 
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const historyShortcut = resolveNotesHistoryShortcut({
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      platform: detectOutlineShortcutPlatform()
+    });
+    if (historyShortcut) {
+      event.preventDefault();
+      void actions[historyShortcut]?.();
+      return;
+    }
     const resolution = resolveOutlineKey({
       target: "title",
       key: event.key,
@@ -229,7 +250,7 @@ export function NotesPageHeader({
                 actions.updateNodeDraft(nodeId, {
                   title: event.target.value,
                   note: noteValue
-                });
+                }, "title");
               }}
               onBlur={() => void actions.flushNodeDraft(nodeId)}
             />
@@ -244,6 +265,21 @@ export function NotesPageHeader({
             placeholder="Add a supporting note"
             rows={1}
             disabled={disabled || readOnly}
+            onKeyDown={(event) => {
+              const historyShortcut = resolveNotesHistoryShortcut({
+                key: event.key,
+                altKey: event.altKey,
+                ctrlKey: event.ctrlKey,
+                metaKey: event.metaKey,
+                shiftKey: event.shiftKey,
+                isComposing: event.nativeEvent.isComposing,
+                platform: detectOutlineShortcutPlatform()
+              });
+              if (historyShortcut) {
+                event.preventDefault();
+                void actions[historyShortcut]?.();
+              }
+            }}
             onFocus={() => setRevealedNoteNodeId(nodeId)}
             onChange={(event) => {
               setRevealedNoteNodeId(nodeId);
@@ -251,7 +287,7 @@ export function NotesPageHeader({
               actions.updateNodeDraft(nodeId, {
                 title: titleValue,
                 note: event.target.value
-              });
+              }, "note");
             }}
             onBlur={() => void actions.flushNodeDraft(nodeId)}
           />

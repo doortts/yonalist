@@ -19,6 +19,7 @@ import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
+  resolveNotesHistoryShortcut,
   resolveOutlineKey
 } from "./outlineKeyboard";
 
@@ -102,17 +103,22 @@ export function OutlineNodeRow({
     if (focusedPendingIdRef.current === nodeId) {
       return;
     }
-    const titleInput = titleRef.current;
-    if (!titleInput) {
+    if (state.pendingFocusField === "note" && !noteOpen) {
+      setNoteOpen(true);
       return;
     }
-    titleInput.focus();
-    if (document.activeElement !== titleInput) {
+    const target =
+      state.pendingFocusField === "note" ? noteRef.current : titleRef.current;
+    if (!target) {
+      return;
+    }
+    target.focus();
+    if (document.activeElement !== target) {
       return;
     }
     focusedPendingIdRef.current = nodeId;
     void actions.acknowledgeFocus(nodeId);
-  }, [actions, nodeId, state.pendingFocusId]);
+  }, [actions, nodeId, noteOpen, state.pendingFocusField, state.pendingFocusId]);
 
   useLayoutEffect(() => {
     if (!noteOpen || !noteRef.current) {
@@ -253,11 +259,25 @@ export function OutlineNodeRow({
 
   const removeNote = () => {
     setNoteOpen(false);
-    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" });
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
     void actions.flushNodeDraft(nodeId);
   };
 
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const historyShortcut = resolveNotesHistoryShortcut({
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      platform: detectOutlineShortcutPlatform()
+    });
+    if (historyShortcut) {
+      event.preventDefault();
+      void actions[historyShortcut]?.();
+      return;
+    }
     const resolution = resolveOutlineKey({
       target: "title",
       key: event.key,
@@ -453,7 +473,7 @@ export function OutlineNodeRow({
             actions.updateNodeDraft(nodeId, {
               title: event.target.value,
               note: noteValue
-            })
+            }, "title")
           }}
           onKeyDown={handleTitleKeyDown}
           onBlur={commitDrafts}
@@ -468,12 +488,27 @@ export function OutlineNodeRow({
           aria-label={`Supporting note: ${label}`}
           rows={2}
           disabled={disabled}
+          onKeyDown={(event) => {
+            const historyShortcut = resolveNotesHistoryShortcut({
+              key: event.key,
+              altKey: event.altKey,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              shiftKey: event.shiftKey,
+              isComposing: event.nativeEvent.isComposing,
+              platform: detectOutlineShortcutPlatform()
+            });
+            if (historyShortcut) {
+              event.preventDefault();
+              void actions[historyShortcut]?.();
+            }
+          }}
           onChange={(event) => {
             resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
               title: titleValue,
               note: event.target.value
-            });
+            }, "note");
           }}
           onBlur={commitDrafts}
         />
