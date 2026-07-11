@@ -121,12 +121,40 @@ describe("tokenizeNoteText", () => {
   });
 
   it.each([
-    "https://example.test/search?q=#todo",
-    "https://example.test/?user=@alice",
-    "?user=@alice"
+    ["and/or,#tag", "#tag"],
+    ["what?yes=#tag", "#tag"],
+    ["?user=@alice", "@alice"]
+  ])(
+    "does not infer a URL from punctuation alone in %j",
+    (source, expectedTag) => {
+      expect(
+        tokenizeNoteText(source)
+          .filter((token) => token.kind === "tag")
+          .map((token) => token.raw)
+      ).toEqual([expectedTag]);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it.each([
+    "https://x/?q=#tag",
+    "www.x.com/?u=@alice",
+    "example.com/?q=#tag",
+    "/path/?q=#tag"
   ])("rejects markers inside the URL-like segment %j", (source) => {
     expect(tokenizeNoteText(source).filter((token) => token.kind === "tag"))
       .toHaveLength(0);
+    expectLosslessCoverage(source);
+  });
+
+  it("suppresses only markers after URL evidence in the same segment", () => {
+    const source = "#first,https://x/?q=#second";
+
+    expect(
+      tokenizeNoteText(source)
+        .filter((token) => token.kind === "tag")
+        .map((token) => token.raw)
+    ).toEqual(["#first"]);
     expectLosslessCoverage(source);
   });
 
