@@ -57,6 +57,7 @@ export interface NotesWorkspaceActions {
     patch: Pick<NoteNode, "title" | "note">
   ): void;
   flushNodeDraft(nodeId: NoteId): Promise<boolean>;
+  flushAllDrafts(): Promise<boolean>;
   moveNode(
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
@@ -1281,8 +1282,16 @@ export function useNotesWorkspace({
     ) {
       return;
     }
-    return runCommand(async (context) => {
-      const before = confirmedState(context);
+    const transitionToAll = libraryView !== "all";
+    let created = false;
+    await runCommand(async (context) => {
+      const before = normalizeWorkspace(
+        transitionToAll
+          ? await context.repository.loadWorkspace(context.vaultRoot, {
+              kind: "active"
+            })
+          : context.confirmedWorkspace
+      );
       const id = createNoteId();
       const workspace = await context.repository.createNode(context.vaultRoot, {
         id,
@@ -1291,8 +1300,10 @@ export function useNotesWorkspace({
         title: "",
         note: ""
       });
+      created = true;
+      activeScopeRef.current = { kind: "active" };
       return authoritative(
-        await workspaceForScope(context, workspace, activeScopeRef.current),
+        workspace,
         {
           selectedId: id,
           editingNoteId: id,
@@ -1300,7 +1311,17 @@ export function useNotesWorkspace({
         }
       );
     });
-  }, [flushAllDraftsBeforeStructural, runCommand]);
+    if (created && transitionToAll) {
+      setLibraryView("all");
+      setActiveTag(null);
+      replaceLocalExpansions(new Set());
+    }
+  }, [
+    flushAllDraftsBeforeStructural,
+    libraryView,
+    replaceLocalExpansions,
+    runCommand
+  ]);
 
   const createChild = useCallback(
     async (nodeId: NoteId) => {
@@ -1926,6 +1947,10 @@ export function useNotesWorkspace({
         deletingNotesDataRef.current
           ? Promise.resolve(false)
           : flushNodeDraft(nodeId),
+      flushAllDrafts: () =>
+        deletingNotesDataRef.current
+          ? Promise.resolve(false)
+          : flushAllDraftsBeforeStructural(),
       moveNode: gate(moveNode),
       toggleComplete: gate(toggleComplete),
       toggleCollapsed: gate(toggleCollapsed),
@@ -1954,6 +1979,7 @@ export function useNotesWorkspace({
     updateNode,
     updateNodeDraft,
     flushNodeDraft,
+    flushAllDraftsBeforeStructural,
     moveNode,
     toggleComplete,
     toggleCollapsed,

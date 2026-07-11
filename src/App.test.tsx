@@ -363,6 +363,76 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("keeps Inbox background work paused while restored Notes is active", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.github.sessionTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "gho_persisted" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    vi.mocked(window.localStorage.getItem).mockClear();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "https://oss.navercorp.com/api/v3/user",
+          expect.anything()
+        )
+      );
+      await act(async () => Promise.resolve());
+
+      const backgroundTargets = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(backgroundTargets.some((url) => url.includes("/search/issues"))).toBe(
+        false
+      );
+      expect(backgroundTargets.some((url) => url.includes("/notifications"))).toBe(
+        false
+      );
+      expect(backgroundTargets.some((url) => url.includes("/user/repos"))).toBe(false);
+      expect(window.localStorage.getItem).not.toHaveBeenCalledWith(
+        "yonalist.vaultDocuments.v1"
+      );
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      await waitFor(() => {
+        const resumedTargets = fetchMock.mock.calls.map(([url]) => String(url));
+        expect(resumedTargets.some((url) => url.includes("/search/issues"))).toBe(true);
+        expect(resumedTargets.some((url) => url.includes("/notifications"))).toBe(true);
+        expect(resumedTargets.some((url) => url.includes("/user/repos"))).toBe(true);
+        expect(window.localStorage.getItem).toHaveBeenCalledWith(
+          "yonalist.vaultDocuments.v1"
+        );
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the login page when the stored credentials fail verification", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(

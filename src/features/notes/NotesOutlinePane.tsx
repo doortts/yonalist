@@ -355,7 +355,7 @@ export function NotesOutlinePane() {
       available={state.zoomRootId !== null || bodyRows.length > 0}
       disabled={deletingNotesData || trashView}
       loading={state.status === "loading"}
-      onFlushNodeDraft={actions.flushNodeDraft}
+      onFlushDrafts={actions.flushAllDrafts}
     >
       <section
         className="notes-outline"
@@ -404,7 +404,7 @@ export function NotesOutlinePane() {
                 : (draftsByNodeId[state.zoomRootId]?.title ??
                   state.nodesById[state.zoomRootId]?.title)
             }
-            onFlushNodeDraft={actions.flushNodeDraft}
+            onFlushDrafts={actions.flushAllDrafts}
             disabled={deletingNotesData || trashView}
             loading={state.status === "loading"}
           />

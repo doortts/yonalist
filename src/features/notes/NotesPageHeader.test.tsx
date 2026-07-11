@@ -60,6 +60,7 @@ function workspaceValue(options: {
     updateNode: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
+    flushAllDrafts: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
@@ -212,6 +213,7 @@ describe("NotesPageHeader", () => {
       "Complete",
       "Star",
       "Edit note",
+      "Remove note",
       "Duplicate",
       "Export subtree",
       "Delete"
@@ -219,6 +221,49 @@ describe("NotesPageHeader", () => {
 
     await user.click(within(menu).getByRole("menuitem", { name: "Complete" }));
     expect(workspace.actions.toggleComplete).toHaveBeenCalledWith("project");
+  });
+
+  it("removes and flushes the page note, hides its editor, and restores menu focus", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue();
+    const rendered = render(zoomedOutline(workspace));
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+
+    await user.click(trigger);
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Remove note"
+      })
+    );
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith("project", {
+      title: "Project",
+      note: ""
+    });
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(trigger).toHaveFocus();
+
+    rendered.rerender(
+      zoomedOutline(
+        workspaceValue({
+          draft: {
+            title: "Project",
+            note: "",
+            revision: 1,
+            status: "pending"
+          }
+        })
+      )
+    );
+    expect(
+      screen.queryByRole("textbox", { name: "Supporting note: Project" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Edit page title" })).toHaveValue(
+      "Project"
+    );
   });
 
   it("closes the page menu before focusing a newly revealed note", async () => {

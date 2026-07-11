@@ -247,6 +247,12 @@ export function OutlineNodeRow({
     }
   };
 
+  const removeNote = () => {
+    setNoteOpen(false);
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" });
+    void actions.flushNodeDraft(nodeId);
+  };
+
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
@@ -412,6 +418,7 @@ export function OutlineNodeRow({
               runStructuralCommand(() => actions.toggleStar(nodeId))
             }
             onOpenNote={openAndFocusNote}
+            onRemoveNote={removeNote}
             onDuplicate={() =>
               runStructuralCommand(() => actions.duplicateNode(nodeId))
             }

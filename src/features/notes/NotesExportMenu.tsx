@@ -15,7 +15,7 @@ export interface NotesExportMenuProps {
   selectedNodeTitle?: string;
   zoomRootId: NoteId | null;
   zoomRootTitle?: string;
-  onFlushNodeDraft(nodeId: NoteId): Promise<boolean>;
+  onFlushDrafts(): Promise<boolean>;
   disabled?: boolean;
   loading?: boolean;
 }
@@ -27,7 +27,7 @@ function NotesExportMenuContent({
   zoomRootTitle
 }: Omit<
   NotesExportMenuProps,
-  "onFlushNodeDraft" | "disabled" | "loading"
+  "onFlushDrafts" | "disabled" | "loading"
 >) {
   const controller = useNotesExportController();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -187,7 +187,7 @@ export function NotesExportMenu(props: NotesExportMenuProps) {
       available={props.selectedNodeId !== null || props.zoomRootId !== null}
       disabled={props.disabled}
       loading={props.loading}
-      onFlushNodeDraft={props.onFlushNodeDraft}
+      onFlushDrafts={props.onFlushDrafts}
     >
       {content}
     </NotesExportControllerProvider>

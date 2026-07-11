@@ -363,6 +363,7 @@ export default function App({ initialOnline }: AppProps) {
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
   const activeFeature = getFeatureDefinition(activeFeatureId);
+  const inboxActive = activeFeatureId === "inbox";
   const showSettings = activeFeatureId === "settings";
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   // Notifications are the landing view once authentication passes.
@@ -441,6 +442,9 @@ export default function App({ initialOnline }: AppProps) {
   // Local vault data loads immediately, in parallel with the background auth
   // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
+    if (!inboxActive) {
+      return;
+    }
     let cancelled = false;
     const startedAt = performance.now();
     tracePerf("vault_load_start", { vaultRoot });
@@ -467,7 +471,7 @@ export default function App({ initialOnline }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [vaultRoot]);
+  }, [inboxActive, vaultRoot]);
 
   // Warm the markdown renderer chunk while the app is idle so the first
   // opened detail does not pay the dynamic-import cost on click.
@@ -475,7 +479,11 @@ export default function App({ initialOnline }: AppProps) {
 
   const rebuiltVaultRoot = useRef<string | null>(null);
   useEffect(() => {
-    if (authGate.state !== "passed" || rebuiltVaultRoot.current === vaultRoot) {
+    if (
+      !inboxActive ||
+      authGate.state !== "passed" ||
+      rebuiltVaultRoot.current === vaultRoot
+    ) {
       return;
     }
     rebuiltVaultRoot.current = vaultRoot;
@@ -507,7 +515,7 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
       cancelIdle();
     };
-  }, [authGate.state, vaultRoot]);
+  }, [authGate.state, inboxActive, vaultRoot]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
@@ -534,7 +542,7 @@ export default function App({ initialOnline }: AppProps) {
     online,
     { type: "inbox" },
     vaultRoot,
-    true,
+    inboxActive,
     itemSort
   );
   const projectWorkItems = useWorkItems(
@@ -542,7 +550,7 @@ export default function App({ initialOnline }: AppProps) {
     online,
     repositoryScope,
     vaultRoot,
-    Boolean(repositoryFilter),
+    inboxActive && Boolean(repositoryFilter),
     itemSort
   );
   const workItems = repositoryFilter ? projectWorkItems : inboxWorkItems;
@@ -568,11 +576,11 @@ export default function App({ initialOnline }: AppProps) {
   const unfilteredNotifications = useNotifications(
     auth.connection,
     online,
-    authGate.state === "passed"
+    inboxActive && authGate.state === "passed"
   );
   const repositoryGroups = useRepositories(
     auth.connection,
-    online,
+    online && inboxActive,
     inboxItems,
     unfilteredNotifications.notifications
   );
@@ -601,6 +609,7 @@ export default function App({ initialOnline }: AppProps) {
   useEffect(() => {
     if (
       authGate.state !== "passed" ||
+      !inboxActive ||
       !online ||
       workItems.demoMode ||
       workItems.items.length === 0
@@ -614,7 +623,7 @@ export default function App({ initialOnline }: AppProps) {
         workItems.items.map((item) => withVaultItemPath(vaultRoot, item))
       );
     });
-  }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
+  }, [authGate.state, inboxActive, online, workItems.demoMode, workItems.items, vaultRoot]);
   const notificationRepoNames = useMemo(
     () =>
       new Set(
@@ -688,7 +697,10 @@ export default function App({ initialOnline }: AppProps) {
     connection: auth.connection,
     viewedAt: notifications.viewedAt,
     online,
-    enabled: settings.desktopNotifications && authGate.state === "passed",
+    enabled:
+      inboxActive &&
+      settings.desktopNotifications &&
+      authGate.state === "passed",
     demoMode: notifications.demoMode,
     isRepoVisible: notificationRepoFilter
   });
@@ -870,6 +882,7 @@ export default function App({ initialOnline }: AppProps) {
 
   useEffect(() => {
     if (
+      !inboxActive ||
       !selectedItem ||
       selectedItem.body ||
       loadedItemBodies[selectedItem.path] !== undefined
@@ -897,7 +910,7 @@ export default function App({ initialOnline }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedItem, loadedItemBodies, vaultRoot]);
+  }, [inboxActive, selectedItem, loadedItemBodies, vaultRoot]);
 
   const detailVisible =
     authGate.state === "passed" &&

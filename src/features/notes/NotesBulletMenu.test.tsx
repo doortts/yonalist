@@ -16,6 +16,7 @@ function standardProps(
     onToggleComplete: vi.fn(),
     onToggleStar: vi.fn(),
     onOpenNote: vi.fn(),
+    onRemoveNote: vi.fn(),
     onDuplicate: vi.fn(),
     onExport: vi.fn(),
     onDelete: vi.fn(),
@@ -75,6 +76,19 @@ describe("NotesBulletMenu", () => {
       within(reopened.menu).getByRole("menuitem", { name: "Edit note" })
     );
     expect(props.onOpenNote).toHaveBeenCalledOnce();
+  });
+
+  it("removes an existing note and returns focus to the menu trigger", async () => {
+    const props = standardProps({ hasNote: true });
+    render(<NotesBulletMenu {...props} />);
+    const { menu, trigger, user } = await openMenu();
+
+    expect(within(menu).getByRole("menuitem", { name: "Edit note" })).toBeVisible();
+    await user.click(within(menu).getByRole("menuitem", { name: "Remove note" }));
+
+    expect(props.onRemoveNote).toHaveBeenCalledOnce();
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(trigger).toHaveFocus();
   });
 
   it.each([

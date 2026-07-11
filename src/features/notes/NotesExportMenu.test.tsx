@@ -1,5 +1,6 @@
 import {
   act,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -12,7 +13,8 @@ import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteId,
   NoteNode,
-  NotesStore
+  NotesStore,
+  NotesWorkspace
 } from "../../domain/notes";
 import {
   NotesExportConflictError,
@@ -61,13 +63,13 @@ function renderExportMenu(
   overrides: Partial<ComponentProps<typeof NotesExportMenu>> = {},
   vaultPath = "/vault"
 ) {
-  const onFlushNodeDraft = vi.fn().mockResolvedValue(true);
+  const onFlushDrafts = vi.fn().mockResolvedValue(true);
   const props: ComponentProps<typeof NotesExportMenu> = {
     selectedNodeId: "selected",
     selectedNodeTitle: "Selected title",
     zoomRootId: "page",
     zoomRootTitle: "Page title",
-    onFlushNodeDraft,
+    onFlushDrafts,
     ...overrides
   };
 
@@ -78,7 +80,7 @@ function renderExportMenu(
   );
 
   return {
-    onFlushNodeDraft,
+    onFlushDrafts,
     props,
     unmount: rendered.unmount,
     rerenderExportMenu(
@@ -208,6 +210,7 @@ function workspaceValue(
     updateNode: resolved(),
     updateNodeDraft: vi.fn(),
     flushNodeDraft: vi.fn().mockResolvedValue(true),
+    flushAllDrafts: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
@@ -342,7 +345,7 @@ describe("NotesExportMenu", () => {
     async ({ command, format, nodeId, title }) => {
       const user = userEvent.setup();
       exportServiceMock.saveNotesExport.mockResolvedValue(exportResult(format));
-      const { onFlushNodeDraft } = renderExportMenu();
+      const { onFlushDrafts } = renderExportMenu();
 
       const menu = await openExportMenu(user);
       await user.click(within(menu).getByRole("menuitem", { name: command }));
@@ -355,8 +358,8 @@ describe("NotesExportMenu", () => {
           defaultFileName: title
         });
       });
-      expect(onFlushNodeDraft).toHaveBeenCalledWith(nodeId);
-      expect(onFlushNodeDraft.mock.invocationCallOrder[0]).toBeLessThan(
+      expect(onFlushDrafts).toHaveBeenCalledWith();
+      expect(onFlushDrafts.mock.invocationCallOrder[0]).toBeLessThan(
         exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
       );
     }
@@ -432,14 +435,14 @@ describe("NotesExportMenu", () => {
 
   it("blocks save and retains retry when the draft flush returns false", async () => {
     const user = userEvent.setup();
-    const onFlushNodeDraft = vi
+    const onFlushDrafts = vi
       .fn()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
     exportServiceMock.saveNotesExport.mockResolvedValue(
       exportResult("markdown")
     );
-    renderExportMenu({ onFlushNodeDraft });
+    renderExportMenu({ onFlushDrafts });
 
     const menu = await openExportMenu(user);
     await user.click(
@@ -457,7 +460,7 @@ describe("NotesExportMenu", () => {
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
 
     await waitFor(() => {
-      expect(onFlushNodeDraft).toHaveBeenCalledTimes(2);
+      expect(onFlushDrafts).toHaveBeenCalledTimes(2);
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce();
     });
     expect(await screen.findByRole("status")).toHaveTextContent(
@@ -509,6 +512,102 @@ describe("NotesExportMenu", () => {
     expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });
 
+  it("flushes a pending child draft before exporting its parent subtree", async () => {
+    const user = userEvent.setup();
+    const childWrite = deferred<NotesWorkspace>();
+    const updatedWorkspace = {
+      nodes: [
+        note("page", "Page title", null),
+        { ...note("selected", "Edited child", "page"), note: "Latest note" }
+      ]
+    };
+    const store = repository({
+      updateNode: vi.fn().mockReturnValue(childWrite.promise)
+    });
+    exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
+    let currentWorkspace: UseNotesWorkspaceResult | undefined;
+    renderRealWorkspacePane(store, (workspace) => {
+      currentWorkspace = workspace;
+    });
+    await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
+
+    const childTitle = screen
+      .getAllByRole<HTMLTextAreaElement>("textbox", { name: "Edit node title" })
+      .find((input) => input.value === "Selected title");
+    expect(childTitle).toBeDefined();
+    fireEvent.change(childTitle!, { target: { value: "Edited child" } });
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Page title" })
+    );
+    let menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Export subtree" }));
+    menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Export subtree as Markdown"
+      })
+    );
+
+    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "selected",
+      title: "Edited child",
+      note: ""
+    });
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+
+    await act(async () => childWrite.resolve(updatedWorkspace));
+
+    await waitFor(() => expect(exportServiceMock.saveNotesExport).toHaveBeenCalledOnce());
+    expect(vi.mocked(store.updateNode).mock.invocationCallOrder[0]).toBeLessThan(
+      exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("aborts a parent export when a pending child draft cannot be saved", async () => {
+    const user = userEvent.setup();
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("disk full"))
+    });
+    let currentWorkspace: UseNotesWorkspaceResult | undefined;
+    renderRealWorkspacePane(store, (workspace) => {
+      currentWorkspace = workspace;
+    });
+    await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
+
+    const childTitle = screen
+      .getAllByRole<HTMLTextAreaElement>("textbox", { name: "Edit node title" })
+      .find((input) => input.value === "Selected title");
+    expect(childTitle).toBeDefined();
+    fireEvent.change(childTitle!, { target: { value: "Unsaved child" } });
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Page title" })
+    );
+    let menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Export subtree" }));
+    menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree as PDF" })
+    );
+
+    const exportControl = screen
+      .getByRole("button", { name: "Export" })
+      .closest<HTMLElement>(".notes-export-control");
+    expect(exportControl).not.toBeNull();
+    expect(await within(exportControl!).findByRole("alert")).toHaveTextContent(
+      "Save this note before exporting."
+    );
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "selected",
+      title: "Unsaved child",
+      note: ""
+    });
+    expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
+  });
+
   it("exposes a busy state and prevents duplicate export commands", async () => {
     const user = userEvent.setup();
     const pending = deferred<NotesExportResult | null>();
@@ -539,7 +638,7 @@ describe("NotesExportMenu", () => {
     const user = userEvent.setup();
     const flush = deferred<boolean>();
     const rendered = renderExportMenu({
-      onFlushNodeDraft: vi.fn().mockReturnValue(flush.promise)
+      onFlushDrafts: vi.fn().mockReturnValue(flush.promise)
     });
 
     const menu = await openExportMenu(user);
@@ -804,7 +903,7 @@ describe("NotesExportMenu", () => {
     const user = userEvent.setup();
     exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
     const workspace = renderNotesPanes();
-    const flushNodeDraft = vi.mocked(workspace.actions.flushNodeDraft);
+    const flushAllDrafts = vi.mocked(workspace.actions.flushAllDrafts);
     const detailPane = screen.getByTestId("notes-detail-pane");
     const middlePane = screen.getByTestId("notes-middle-pane");
     const trigger = within(detailPane).getByRole("button", { name: "Export" });
@@ -821,7 +920,7 @@ describe("NotesExportMenu", () => {
     );
 
     await waitFor(() => {
-      expect(flushNodeDraft).toHaveBeenCalledWith("selected");
+      expect(flushAllDrafts).toHaveBeenCalledWith();
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
         expect.objectContaining({ rootNodeId: "selected" })
       );
@@ -832,7 +931,7 @@ describe("NotesExportMenu", () => {
     const user = userEvent.setup();
     exportServiceMock.saveNotesExport.mockResolvedValue(exportResult("markdown"));
     const workspace = renderNotesPanes();
-    const flushNodeDraft = vi.mocked(workspace.actions.flushNodeDraft);
+    const flushAllDrafts = vi.mocked(workspace.actions.flushAllDrafts);
 
     await user.click(
       screen.getByRole("button", {
@@ -850,7 +949,7 @@ describe("NotesExportMenu", () => {
     );
 
     await waitFor(() => {
-      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("selected");
+      expect(workspace.actions.flushAllDrafts).toHaveBeenCalledWith();
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith({
         vaultPath: "/vault",
         rootNodeId: "selected",
@@ -858,7 +957,7 @@ describe("NotesExportMenu", () => {
         defaultFileName: "Selected title"
       });
     });
-    expect(flushNodeDraft.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(flushAllDrafts.mock.invocationCallOrder[0]).toBeLessThan(
       exportServiceMock.saveNotesExport.mock.invocationCallOrder[0]
     );
   });
@@ -866,7 +965,7 @@ describe("NotesExportMenu", () => {
   it("blocks a row subtree export when its draft save barrier fails", async () => {
     const user = userEvent.setup();
     const workspace = renderNotesPanes();
-    vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(false);
+    vi.mocked(workspace.actions.flushAllDrafts).mockResolvedValue(false);
 
     await user.click(
       screen.getByRole("button", {
@@ -902,7 +1001,7 @@ describe("NotesExportMenu", () => {
     );
 
     await waitFor(() => {
-      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("selected");
+      expect(workspace.actions.flushAllDrafts).toHaveBeenCalledWith();
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
         expect.objectContaining({ defaultFileName: "Renamed draft" })
       );
@@ -925,7 +1024,7 @@ describe("NotesExportMenu", () => {
     );
 
     await waitFor(() => {
-      expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("page");
+      expect(workspace.actions.flushAllDrafts).toHaveBeenCalledWith();
       expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
         expect.objectContaining({
           rootNodeId: "page",

@@ -100,6 +100,12 @@ export function NotesPageHeader({
     }
   };
 
+  const removeNote = () => {
+    setRevealedNoteNodeId(null);
+    actions.updateNodeDraft(nodeId, { title: titleValue, note: "" });
+    void actions.flushNodeDraft(nodeId);
+  };
+
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const resolution = resolveOutlineKey({
       target: "title",
@@ -192,6 +198,7 @@ export function NotesPageHeader({
           onToggleComplete={() => runCommand(() => actions.toggleComplete(nodeId))}
           onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
           onOpenNote={openAndFocusNote}
+          onRemoveNote={removeNote}
           onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
           onExport={(format) =>
             exportController.startExport(nodeId, titleValue, format)

@@ -759,6 +759,36 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });
 
+  it("returns to All so a page created from Starred stays visible and focused", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "starred", title: "Starred page", isStarred: true }),
+      node({ id: "outside", title: "Outside page" })
+    ]);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(
+          scope.kind === "starred"
+            ? confirmedNodes.filter((current) => current.isStarred)
+            : confirmedNodes
+        )
+    );
+    renderNotesWorkspace();
+    await findTitleInput("Starred page");
+
+    await user.click(screen.getByRole("button", { name: "Starred" }));
+    await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
+    await user.click(screen.getByRole("button", { name: "New page" }));
+
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(await findTitleInput("")).toHaveFocus();
+    expect(queryTitleInput("Outside page")).toBeInTheDocument();
+    expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
+  });
+
   it("marks the active library root as the current page", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
@@ -1242,6 +1272,37 @@ describe("Notes workspace", () => {
         note: "Updated context"
       })
     );
+  });
+
+  it("removes a row supporting note through the draft queue without deleting its node", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+
+    const menu = await openNodeMenu("Project", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Remove note" })
+    );
+
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("textbox", { name: "Supporting note: Project" })
+      ).not.toBeInTheDocument()
+    );
+    expect(trigger).toHaveFocus();
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "project",
+        title: "Project",
+        note: ""
+      })
+    );
+    expect(getTitleInput("Project")).toBeInTheDocument();
+    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
   });
 
   it("keeps an empty supporting note hidden until the bullet menu opens it", async () => {

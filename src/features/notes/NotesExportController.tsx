@@ -61,7 +61,7 @@ interface NotesExportControllerProviderProps {
   children: ReactNode;
   disabled?: boolean;
   loading?: boolean;
-  onFlushNodeDraft(nodeId: NoteId): Promise<boolean>;
+  onFlushDrafts(): Promise<boolean>;
 }
 
 const NotesExportControllerContext =
@@ -86,7 +86,7 @@ export function NotesExportControllerProvider({
   children,
   disabled = false,
   loading = false,
-  onFlushNodeDraft
+  onFlushDrafts
 }: NotesExportControllerProviderProps) {
   const vaultPath = useContext(VaultRootContext);
   const [busy, setBusy] = useState(false);
@@ -195,7 +195,7 @@ export function NotesExportControllerProvider({
           awaitingDraftFlushRef.current = true;
           let saved: boolean;
           try {
-            saved = await onFlushNodeDraft(rootNodeId);
+            saved = await onFlushDrafts();
           } finally {
             awaitingDraftFlushRef.current = false;
           }
@@ -215,7 +215,7 @@ export function NotesExportControllerProvider({
       };
       void executeAttempt(attempt, true);
     },
-    [executeAttempt, onFlushNodeDraft, unavailable, vaultPath]
+    [executeAttempt, onFlushDrafts, unavailable, vaultPath]
   );
 
   const retryFailedExport = useCallback(() => {

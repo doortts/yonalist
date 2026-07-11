@@ -7,6 +7,7 @@ import {
   Download,
   FileDown,
   FileText,
+  MessageSquareOff,
   MessageSquareText,
   MoreHorizontal,
   RotateCcw,
@@ -35,6 +36,7 @@ export interface NotesBulletMenuProps {
   onToggleComplete?(): void;
   onToggleStar?(): void;
   onOpenNote?(): void;
+  onRemoveNote?(): void;
   onDuplicate?(): void;
   onExport?(format: NotesExportFormat): void;
   onDelete?(): void;
@@ -88,6 +90,7 @@ export function NotesBulletMenu({
   onToggleComplete,
   onToggleStar,
   onOpenNote,
+  onRemoveNote,
   onDuplicate,
   onExport,
   onDelete,
@@ -206,6 +209,15 @@ export function NotesBulletMenu({
                 >
                   {hasNote ? "Edit note" : "Add note"}
                 </CommandItem>
+                {hasNote && (
+                  <CommandItem
+                    danger
+                    icon={<MessageSquareOff size={15} aria-hidden="true" />}
+                    onClick={onRemoveNote}
+                  >
+                    Remove note
+                  </CommandItem>
+                )}
                 <CommandItem
                   icon={<Copy size={15} aria-hidden="true" />}
                   onClick={onDuplicate}
