@@ -2534,6 +2534,46 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("shows a zero-count active chip and removes the local result when its sole tag is saved away", async () => {
+    const user = userEvent.setup();
+    configureRepository([node({ id: "tagged", title: "#Work" })]);
+    notesStoreMock.loadWorkspace.mockImplementation(
+      async (_vaultRoot: string, scope: { kind: string }) =>
+        workspace(
+          scope.kind === "tags"
+            ? confirmedNodes.filter((current) => current.title.includes("#Work"))
+            : confirmedNodes
+        )
+    );
+    notesStoreMock.listTagsWithCounts.mockImplementation(async () =>
+      confirmedNodes.some((current) => current.title.includes("#Work"))
+        ? [
+            {
+              prefix: "#",
+              normalizedTag: "work",
+              displayTag: "Work",
+              count: 1
+            }
+          ]
+        : []
+    );
+    renderNotesWorkspace();
+
+    await user.click(await screen.findByRole("button", { name: "Tags" }));
+    await user.click(
+      await screen.findByRole("button", { name: "#Work, 1 note" })
+    );
+    const title = await findTitleInput("#Work");
+    fireEvent.change(title, { target: { value: "No tag" } });
+    fireEvent.blur(title);
+
+    await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalled());
+    const chips = screen.getByRole("list", { name: "Active tag filters" });
+    await waitFor(() => expect(chips).toHaveTextContent("#work0"));
+    expect(queryTitleInput("No tag")).toBeNull();
+    expect(screen.getByText("No pages yet.")).toBeVisible();
+  });
+
   it("keeps only the newest asynchronous search results", async () => {
     const first = deferred<
       Array<{
@@ -3012,6 +3052,13 @@ describe("Notes workspace", () => {
         "project"
       )
     );
+    const restoredTitle = await findTextareaByName("Edit page title");
+    expect(restoredTitle).toHaveValue("Project");
+    expect(restoredTitle).not.toHaveAttribute("readonly");
+    await waitFor(() => expect(restoredTitle).toHaveFocus());
+    expect(
+      within(library).getByRole("button", { name: "All" })
+    ).toHaveAttribute("aria-pressed", "true");
   });
 
   it("focuses the next archived page title after Unarchive closes its menu", async () => {

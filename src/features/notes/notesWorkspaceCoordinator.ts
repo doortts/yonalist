@@ -29,6 +29,7 @@ export type NotesWorkspaceQueueResult =
       suppressSynchronization?: boolean;
       scopeAgnostic?: boolean;
       committedHistoryEntryIds?: readonly string[];
+      invalidatesTagSummaries?: boolean;
     }
   | { kind: "skipped" }
   | {
@@ -39,6 +40,7 @@ export type NotesWorkspaceQueueResult =
       historyVersion?: number;
       scopeAgnostic?: boolean;
       committedHistoryEntryIds?: readonly string[];
+      invalidatesTagSummaries?: boolean;
     };
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
@@ -312,6 +314,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                       committedHistoryEntryIds:
                         result.committedHistoryEntryIds
                     }
+                  : {}),
+                ...(result.invalidatesTagSummaries
+                  ? { invalidatesTagSummaries: true }
                   : {})
               }
             : result;

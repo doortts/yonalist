@@ -2147,6 +2147,219 @@ describe("useNotesWorkspace", () => {
     });
   });
 
+  it("keeps a tag filter inactive when its counted summary refresh fails", async () => {
+    const store = repository({
+      listTagsWithCounts: vi.fn().mockRejectedValue(new Error("count failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+
+    expect(result.current.activeTagFilters).toEqual([]);
+    expect(result.current.libraryView).toBe("all");
+  });
+
+  it("refreshes tag counts and the filtered result after a local title save removes the sole tag", async () => {
+    let current = node({ id: "root", title: "#Work" });
+    const countedTags = () =>
+      current.title.includes("#Work")
+        ? [
+            {
+              prefix: "#" as const,
+              normalizedTag: "work",
+              displayTag: "Work",
+              count: 1
+            }
+          ]
+        : [];
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" && !current.title.includes("#Work")
+          ? workspace([])
+          : workspace([current])
+      ),
+      updateNode: vi.fn(async (_vaultRoot, input) => {
+        current = { ...current, title: input.title, note: input.note };
+        return workspace([current]);
+      }),
+      listTagsWithCounts: vi.fn(async () => countedTags())
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("tags"));
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(result.current.tagSummaries).toEqual(countedTags());
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "No tag",
+        note: ""
+      });
+    });
+    await act(async () => result.current.actions.flushNodeDraft("root"));
+
+    await waitFor(() => expect(result.current.state.rootIds).toEqual([]));
+    expect(result.current.tagSummaries).toEqual([]);
+  });
+
+  it("refreshes a filtered sibling's tag count and result after the editor removes the sole tag", async () => {
+    let current = node({ id: "root", title: "#Work" });
+    const countedTags = () =>
+      current.title.includes("#Work")
+        ? [
+            {
+              prefix: "#" as const,
+              normalizedTag: "work",
+              displayTag: "Work",
+              count: 1
+            }
+          ]
+        : [];
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" && !current.title.includes("#Work")
+          ? workspace([])
+          : workspace([current])
+      ),
+      updateNode: vi.fn(async (_vaultRoot, input) => {
+        current = { ...current, title: input.title, note: input.note };
+        return workspace([current]);
+      }),
+      listTagsWithCounts: vi.fn(async () => countedTags())
+    });
+    const viewer = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-tags", repository: store })
+    );
+    const editor = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-tags", repository: store })
+    );
+    await waitFor(() => {
+      expect(viewer.result.current.status).toBe("ready");
+      expect(editor.result.current.status).toBe("ready");
+    });
+    await act(async () =>
+      viewer.result.current.actions.selectLibraryView("tags")
+    );
+    await act(async () =>
+      viewer.result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+
+    act(() => {
+      editor.result.current.actions.updateNodeDraft("root", {
+        title: "No tag",
+        note: ""
+      });
+    });
+    await act(async () => editor.result.current.actions.flushNodeDraft("root"));
+
+    await waitFor(() => expect(viewer.result.current.state.rootIds).toEqual([]));
+    expect(viewer.result.current.tagSummaries).toEqual([]);
+  });
+
+  it("coalesces tag count invalidations and ignores a stale response", async () => {
+    let current = node({ id: "root", title: "#Work" });
+    const staleCounts = deferred<
+      Array<{
+        prefix: "#";
+        normalizedTag: string;
+        displayTag: string;
+        count: number;
+      }>
+    >();
+    const latestCounts = deferred<[]>();
+    const listTagsWithCounts = vi.fn().mockResolvedValue([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 1
+      }
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" && !current.title.includes("#Work")
+          ? workspace([])
+          : workspace([current])
+      ),
+      updateNode: vi.fn(async (_vaultRoot, input) => {
+        current = { ...current, title: input.title, note: input.note };
+        return workspace([current]);
+      }),
+      listTagsWithCounts
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("tags"));
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    listTagsWithCounts.mockReset();
+    listTagsWithCounts
+      .mockReturnValueOnce(staleCounts.promise)
+      .mockReturnValueOnce(latestCounts.promise);
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Still #Work",
+        note: ""
+      });
+    });
+    await act(async () => result.current.actions.flushNodeDraft("root"));
+    await waitFor(() => expect(listTagsWithCounts).toHaveBeenCalledOnce());
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "No tag",
+        note: ""
+      });
+    });
+    await act(async () => result.current.actions.flushNodeDraft("root"));
+    await act(async () => staleCounts.resolve([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work stale",
+        count: 99
+      }
+    ]));
+
+    await waitFor(() => expect(listTagsWithCounts).toHaveBeenCalledTimes(2));
+    expect(result.current.tagSummaries).toEqual([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 1
+      }
+    ]);
+
+    await act(async () => latestCounts.resolve([]));
+    await waitFor(() => expect(result.current.tagSummaries).toEqual([]));
+  });
+
   it("restores tag filters and their prior live location through Undo snapshots", async () => {
     const active = workspace([
       node({ id: "root", title: "Root", isCollapsed: true }),
@@ -4705,6 +4918,60 @@ describe("useNotesWorkspace", () => {
       historyContext("restore")
     );
     expect(result.current.state.nodesById.restored).toBeDefined();
+  });
+
+  it("follows the currently viewed restored Trash root into Active with title focus", async () => {
+    const activeBefore = workspace([node({ id: "active", sortKey: 1 })]);
+    const deleted = node({
+      id: "deleted",
+      sortKey: 2,
+      title: "Deleted",
+      deletedAt: "2026-07-10T01:00:00Z"
+    });
+    const activeAfter = workspace([
+      node({ id: "active", sortKey: 1 }),
+      { ...deleted, deletedAt: null }
+    ]);
+    let restored = false;
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "trash"
+          ? workspace(restored ? [] : [deleted])
+          : restored
+            ? activeAfter
+            : activeBefore
+      ),
+      restoreNode: vi.fn(async () => {
+        restored = true;
+        return activeAfter;
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("trash"));
+    await act(async () => {
+      await result.current.actions.zoomTo("deleted");
+      await result.current.actions.focusNode("deleted");
+    });
+
+    await act(async () => result.current.actions.restoreNode("deleted"));
+
+    expect(store.restoreNode).toHaveBeenCalledWith(
+      "/vault",
+      "deleted",
+      historyContext("restore")
+    );
+    expect(result.current.libraryView).toBe("all");
+    expect(result.current.state).toMatchObject({
+      rootIds: ["active", "deleted"],
+      selectedId: "deleted",
+      zoomRootId: "deleted",
+      editingNoteId: "deleted",
+      pendingFocusId: "deleted",
+      pendingFocusField: "title"
+    });
   });
 
   it("flushes every draft before archiving a root and selects the next visible root", async () => {

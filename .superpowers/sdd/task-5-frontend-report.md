@@ -11,6 +11,7 @@ The implementation commit hash is reported in the final task handoff.
 - `src/features/notes/OutlineNodeRow.tsx`
 - `src/features/notes/NotesPageHeader.tsx`
 - `src/features/notes/NotesLibraryPane.tsx`
+- `src/features/notes/notesWorkspaceCoordinator.ts`
 - `src/features/notes/useNotesWorkspace.ts`
 - `src/features/notes/useNotesWorkspace.test.tsx`
 - `src/features/notes/notesHistory.ts`
@@ -109,3 +110,96 @@ Exit 0 with no whitespace errors before staging.
   attached in-app browser target. Component and workspace suites cover the stable
   layout, permanent textarea, interaction, and accessibility contracts, but this
   report does not claim a browser screenshot pass.
+
+## Review Remediation
+
+### Count Invalidation
+
+- Added `invalidatesTagSummaries` to authoritative coordinator settlements and
+  synchronized sibling events. Direct, compound, lifecycle, restore, Empty Trash,
+  and Undo/Redo mutations set the flag without changing history IDs, ownership, or
+  atomic failure payloads.
+- Routed every counted-tag read through one hook-local single-flight pump. Requests
+  receive monotonic versions, invalidations that arrive during a read coalesce into
+  one follow-up read, and only the latest response can publish.
+- Local title/note saves and sibling-hook saves now update counts and filtered
+  results. A filter whose tag disappears remains removable and visibly shows count
+  zero.
+- Failed count reads do not activate a requested filter or replace the last known
+  summaries.
+
+### Viewed Trash Restore
+
+- Chose the explicit follow flow for the root currently open in Trash: after a
+  successful restore, the workspace switches to Active, zooms/selects the restored
+  root, enters title editing, and publishes field-aware title focus.
+- The transition remains inside the existing structural command and atomic history
+  path. A navigation change made while restore is pending prevents the follow
+  transition, preserving the final live coordinator navigation.
+
+### Review RED
+
+- Local count test exited 1: the filtered result became empty but `tagSummaries`
+  still contained `#Work` with count 1.
+- Sibling count test exited 1 with the same stale count after the sibling editor
+  removed the sole tag.
+- Coalescing test exited 1 because no post-save `listTagsWithCounts` call occurred.
+- Workspace chip test exited 1 because the active chip rendered `#work` instead of
+  `#work0` after the tag disappeared.
+- Count failure test exited 1 because a rejected counted-summary read still
+  activated the `#work` filter.
+- Viewed Trash hook test exited 1 because `libraryView` remained `trash` instead of
+  `all`.
+- Viewed Trash UI test exited 1 because no page-title textarea remained after
+  restore.
+
+Each focused RED command was rerun after its corresponding implementation and
+exited 0.
+
+### Review Verification
+
+Baseline on current HEAD before remediation:
+
+```bash
+npm test -- src/features/notes
+```
+
+Exit 0: 22 files and 605 tests passed.
+
+Focused atomic/coordinator regression:
+
+```bash
+npm test -- src/features/notes/useNotesWorkspace.test.tsx \
+  src/features/notes/notesWorkspaceCoordinator.test.ts
+```
+
+Exit 0: 2 files and 123 tests passed.
+
+Focused workspace regression:
+
+```bash
+npm test -- src/features/notes/NotesWorkspace.test.tsx
+```
+
+Exit 0: 1 file and 85 tests passed.
+
+Final Notes verification:
+
+```bash
+npm test -- src/features/notes
+```
+
+Exit 0: 22 files and 611 tests passed. One concurrent untracked performance file
+and its 10 tests were discovered but skipped by their own suite configuration.
+
+Final production verification:
+
+```bash
+npm run build
+```
+
+Exit 0: TypeScript and Vite passed; 2,290 modules transformed.
+
+Concurrent Rust attachment/command/export/repository/type edits and the untracked
+Notes expansion performance test were not modified, staged, reverted, or committed
+by this remediation.

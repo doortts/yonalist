@@ -150,7 +150,9 @@ function authoritative(
   historyStatus?: { canUndo: boolean; canRedo: boolean },
   options?: Pick<
     Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
-    "scopeAgnostic" | "committedHistoryEntryIds"
+    | "scopeAgnostic"
+    | "committedHistoryEntryIds"
+    | "invalidatesTagSummaries"
   >
 ): NotesWorkspaceQueueResult {
   return {
@@ -255,7 +257,8 @@ function directMutationResult(
     return authoritative(
       projection.workspace,
       uiUpdate,
-      mutation.historyStatus
+      mutation.historyStatus,
+      { invalidatesTagSummaries: true }
     );
   }
   return {
@@ -264,6 +267,7 @@ function directMutationResult(
     workspace: projection.workspace,
     historyStatus: mutation.historyStatus,
     scopeAgnostic: true,
+    invalidatesTagSummaries: true,
     ...(mutation.historyEntryId
       ? { committedHistoryEntryIds: [mutation.historyEntryId] }
       : {})
@@ -348,6 +352,11 @@ interface TagFilterOrigin {
   libraryView: Exclude<NotesLibraryView, "tags">;
   navigation: LiveNotesNavigation;
   locallyExpandedNodeIds: ReadonlySet<NoteId>;
+}
+
+interface TagSummaryRefreshWaiter {
+  version: number;
+  resolve(summaries: readonly NoteTagSummary[] | null): void;
 }
 
 const emptyLiveNavigation = (): LiveNotesNavigation => ({
@@ -916,8 +925,8 @@ async function runCompoundQueueWork(
       uiUpdate,
       historyStatus,
       committedHistoryEntryIds.length > 0
-        ? { committedHistoryEntryIds }
-        : undefined
+        ? { committedHistoryEntryIds, invalidatesTagSummaries: true }
+        : { invalidatesTagSummaries: true }
     );
   } catch (cause) {
     if (hasAuthoritativeStep && scope.kind !== "active") {
@@ -936,6 +945,7 @@ async function runCompoundQueueWork(
       error: errorMessage(cause),
       ...(hasAuthoritativeStep ? { workspace } : {}),
       ...(historyStatus ? { historyStatus } : {}),
+      ...(hasAuthoritativeStep ? { invalidatesTagSummaries: true } : {}),
       ...(committedHistoryEntryIds.length > 0
         ? { committedHistoryEntryIds }
         : {})
@@ -1137,6 +1147,11 @@ export function useNotesWorkspace({
     readonly NoteTagFilter[]
   >([]);
   const [tagSummaries, setTagSummaries] = useState<readonly NoteTagSummary[]>([]);
+  const tagSummaryRequestedVersionRef = useRef(0);
+  const tagSummarySettledVersionRef = useRef(0);
+  const tagSummaryRefreshPromiseRef = useRef<Promise<void> | null>(null);
+  const tagSummaryRefreshWaitersRef = useRef<TagSummaryRefreshWaiter[]>([]);
+  const pumpTagSummaryRefreshRef = useRef<(() => void) | null>(null);
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
@@ -1194,6 +1209,96 @@ export function useNotesWorkspace({
     },
     []
   );
+
+  const settleTagSummaryRefreshWaiters = useCallback(
+    (version: number, summaries: readonly NoteTagSummary[] | null): void => {
+      const settled: TagSummaryRefreshWaiter[] = [];
+      const pending: TagSummaryRefreshWaiter[] = [];
+      for (const waiter of tagSummaryRefreshWaitersRef.current) {
+        (waiter.version <= version ? settled : pending).push(waiter);
+      }
+      tagSummaryRefreshWaitersRef.current = pending;
+      for (const waiter of settled) {
+        waiter.resolve(summaries);
+      }
+    },
+    []
+  );
+
+  const pumpTagSummaryRefresh = useCallback((): void => {
+    if (tagSummaryRefreshPromiseRef.current) {
+      return;
+    }
+    let completion!: Promise<void>;
+    completion = (async () => {
+      while (
+        tagSummarySettledVersionRef.current <
+        tagSummaryRequestedVersionRef.current
+      ) {
+        const version = tagSummaryRequestedVersionRef.current;
+        const record = sessionRecordRef.current;
+        const session = record?.session ?? null;
+        let summaries: readonly NoteTagSummary[] | null = null;
+        if (
+          record &&
+          !record.closing &&
+          sessionRef.current === session
+        ) {
+          try {
+            summaries = await record.repository.listTagsWithCounts(
+              record.vaultRoot
+            );
+          } catch {
+            summaries = null;
+          }
+        }
+
+        tagSummarySettledVersionRef.current = Math.max(
+          tagSummarySettledVersionRef.current,
+          version
+        );
+        if (version !== tagSummaryRequestedVersionRef.current) {
+          continue;
+        }
+        const recordStillCurrent =
+          record !== null &&
+          !record.closing &&
+          sessionRecordRef.current === record &&
+          sessionRef.current === session;
+        if (recordStillCurrent && summaries) {
+          setTagSummaries(summaries);
+        }
+        settleTagSummaryRefreshWaiters(
+          version,
+          recordStillCurrent ? summaries : null
+        );
+      }
+    })().finally(() => {
+      if (tagSummaryRefreshPromiseRef.current !== completion) {
+        return;
+      }
+      tagSummaryRefreshPromiseRef.current = null;
+      if (
+        tagSummarySettledVersionRef.current <
+        tagSummaryRequestedVersionRef.current
+      ) {
+        pumpTagSummaryRefreshRef.current?.();
+      }
+    });
+    tagSummaryRefreshPromiseRef.current = completion;
+  }, [settleTagSummaryRefreshWaiters]);
+  pumpTagSummaryRefreshRef.current = pumpTagSummaryRefresh;
+
+  const requestTagSummaryRefresh = useCallback(() => {
+    const version = ++tagSummaryRequestedVersionRef.current;
+    const completion = new Promise<readonly NoteTagSummary[] | null>(
+      (resolve) => {
+        tagSummaryRefreshWaitersRef.current.push({ version, resolve });
+      }
+    );
+    pumpTagSummaryRefreshRef.current?.();
+    return completion;
+  }, []);
 
   const beginRecordShutdown = useCallback(
     (record: NotesWorkspaceSessionRecord): Promise<void> => {
@@ -1263,6 +1368,13 @@ export function useNotesWorkspace({
     liveNavigationRef.current = emptyLiveNavigation();
     setLibraryView("all");
     setActiveTagFilters([]);
+    const invalidatedTagSummaryVersion =
+      ++tagSummaryRequestedVersionRef.current;
+    tagSummarySettledVersionRef.current = Math.max(
+      tagSummarySettledVersionRef.current,
+      invalidatedTagSummaryVersion
+    );
+    settleTagSummaryRefreshWaiters(invalidatedTagSummaryVersion, null);
     setTagSummaries([]);
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let record!: NotesWorkspaceSessionRecord;
@@ -1287,6 +1399,12 @@ export function useNotesWorkspace({
             historyVersionRef.current = event.result.historyVersion;
           }
           setHistoryStatus(event.result.historyStatus);
+        }
+        if (
+          event.result.kind !== "skipped" &&
+          event.result.invalidatesTagSummaries
+        ) {
+          void requestTagSummaryRefresh();
         }
         if (
           event.type === "synchronized" &&
@@ -1436,7 +1554,13 @@ export function useNotesWorkspace({
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       }
     };
-  }, [beginRecordShutdown, repository, vaultRoot]);
+  }, [
+    beginRecordShutdown,
+    repository,
+    requestTagSummaryRefresh,
+    settleTagSummaryRefreshWaiters,
+    vaultRoot
+  ]);
 
   useEffect(() => {
     finalCleanupTokenRef.current = null;
@@ -2340,10 +2464,18 @@ export function useNotesWorkspace({
           sessionRecordRef.current !== record ||
           sessionRef.current !== session
         ) {
-          return authoritative(result.workspace, undefined, {
-            canUndo: result.canUndo,
-            canRedo: result.canRedo
-          }, { scopeAgnostic: currentScope.kind !== "active" });
+          return authoritative(
+            result.workspace,
+            undefined,
+            {
+              canUndo: result.canUndo,
+              canRedo: result.canRedo
+            },
+            {
+              scopeAgnostic: currentScope.kind !== "active",
+              invalidatesTagSummaries: true
+            }
+          );
         }
         const replayOwner = result.replayedEntryId
           ? historyOwnerByEntryIdRef.current.owner(result.replayedEntryId)
@@ -2389,10 +2521,18 @@ export function useNotesWorkspace({
             sessionRecordRef.current !== record ||
             sessionRef.current !== session
           ) {
-            return authoritative(result.workspace, undefined, {
-              canUndo: result.canUndo,
-              canRedo: result.canRedo
-            }, { scopeAgnostic: currentScope.kind !== "active" });
+            return authoritative(
+              result.workspace,
+              undefined,
+              {
+                canUndo: result.canUndo,
+                canRedo: result.canRedo
+              },
+              {
+                scopeAgnostic: currentScope.kind !== "active",
+                invalidatesTagSummaries: true
+              }
+            );
           }
         }
         activeScopeRef.current = replayedScope;
@@ -2414,7 +2554,8 @@ export function useNotesWorkspace({
                 pendingFocusField: focus?.field ?? null
               }
             : undefined,
-          { canUndo: result.canUndo, canRedo: result.canRedo }
+          { canUndo: result.canUndo, canRedo: result.canRedo },
+          { invalidatesTagSummaries: true }
         );
       });
       if (
@@ -2529,9 +2670,9 @@ export function useNotesWorkspace({
         navigation: { ...liveNavigationRef.current },
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
       };
-      let listedTags: NoteTagSummary[] | null = null;
-      await runCommand(async (context) => {
-        listedTags = await context.repository.listTagsWithCounts(context.vaultRoot);
+      let listedTags: readonly NoteTagSummary[] | null = null;
+      await runCommand(async () => {
+        listedTags = await requestTagSummaryRefresh();
         if (
           record.closing ||
           sessionRecordRef.current !== record ||
@@ -2559,12 +2700,12 @@ export function useNotesWorkspace({
       }
       tagFilterOriginRef.current = chooserOrigin;
       setLibraryView("tags");
-      setTagSummaries(listedTags);
       replaceLocalExpansions(new Set());
     }, [
       flushAllDraftsBeforeStructural,
       loadLibraryScope,
       replaceLocalExpansions,
+      requestTagSummaryRefresh,
       runCommand
     ]
   );
@@ -2630,7 +2771,6 @@ export function useNotesWorkspace({
           : cloneWorkspaceScope(origin?.scope ?? { kind: "active" });
       let loaded = false;
       let restoredExpansions: ReadonlySet<NoteId> = new Set();
-      let summaries: NoteTagSummary[] | null = null;
 
       await runCommand(async (context) => {
         if (tagFilterRequestRef.current !== requestId) {
@@ -2638,7 +2778,7 @@ export function useNotesWorkspace({
         }
         const [workspace, countedTags] = await Promise.all([
           context.repository.loadWorkspace(context.vaultRoot, nextScope),
-          context.repository.listTagsWithCounts(context.vaultRoot)
+          requestTagSummaryRefresh()
         ]);
         if (
           tagFilterRequestRef.current !== requestId ||
@@ -2648,8 +2788,10 @@ export function useNotesWorkspace({
         ) {
           return { kind: "skipped" };
         }
+        if (!countedTags) {
+          return { kind: "skipped" };
+        }
         loaded = true;
-        summaries = countedTags;
         activeScopeRef.current = nextScope;
         if (nextFilters.length > 0) {
           return authoritative(workspace, {
@@ -2685,9 +2827,6 @@ export function useNotesWorkspace({
         return;
       }
       setActiveTagFilters(nextFilters);
-      if (summaries) {
-        setTagSummaries(summaries);
-      }
       if (nextFilters.length > 0) {
         setLibraryView("tags");
         replaceLocalExpansions(new Set());
@@ -2697,7 +2836,12 @@ export function useNotesWorkspace({
       replaceLocalExpansions(restoredExpansions);
       tagFilterOriginRef.current = null;
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      requestTagSummaryRefresh,
+      runCommand
+    ]
   );
 
   const searchNotes = useCallback(
@@ -2852,7 +2996,8 @@ export function useNotesWorkspace({
         return authoritative(
           mutation.workspace,
           undefined,
-          mutation.historyStatus
+          mutation.historyStatus,
+          { invalidatesTagSummaries: true }
         );
       }
       created = true;
@@ -2875,7 +3020,8 @@ export function useNotesWorkspace({
       return authoritative(
         mutation.workspace,
         uiUpdate,
-        mutation.historyStatus
+        mutation.historyStatus,
+        { invalidatesTagSummaries: true }
       );
     });
     if (
@@ -3381,12 +3527,10 @@ export function useNotesWorkspace({
         sessionRef.current === ownerRecord.session;
       const lifecycleResult: {
         transition: NotesLifecycleNavigationTransition | null;
-        refreshedTags: NoteTagSummary[] | null;
         recoveredToActive: boolean;
         resolvedNavigationVersion: number | null;
       } = {
         transition: null,
-        refreshedTags: null,
         recoveredToActive: false,
         resolvedNavigationVersion: null
       };
@@ -3425,7 +3569,10 @@ export function useNotesWorkspace({
               mutationResult.workspace,
               undefined,
               mutationResult.historyStatus,
-              { scopeAgnostic: beforeNavigation.scope.kind !== "active" }
+              {
+                scopeAgnostic: beforeNavigation.scope.kind !== "active",
+                invalidatesTagSummaries: true
+              }
             );
           }
           const requestedScope = activeScopeRef.current;
@@ -3440,7 +3587,8 @@ export function useNotesWorkspace({
               return authoritative(
                 projectedWorkspace,
                 undefined,
-                mutationResult.historyStatus
+                mutationResult.historyStatus,
+                { invalidatesTagSummaries: true }
               );
             }
           } catch {
@@ -3449,7 +3597,10 @@ export function useNotesWorkspace({
                 mutationResult.workspace,
                 undefined,
                 mutationResult.historyStatus,
-                { scopeAgnostic: beforeNavigation.scope.kind !== "active" }
+                {
+                  scopeAgnostic: beforeNavigation.scope.kind !== "active",
+                  invalidatesTagSummaries: true
+                }
               );
             }
             lifecycleResult.recoveredToActive = true;
@@ -3463,31 +3614,20 @@ export function useNotesWorkspace({
                 return authoritative(
                   projectedWorkspace,
                   undefined,
-                  mutationResult.historyStatus
+                  mutationResult.historyStatus,
+                  { invalidatesTagSummaries: true }
                 );
               }
             } catch {
               projectedWorkspace = mutationResult.workspace;
             }
           }
-          try {
-            lifecycleResult.refreshedTags =
-              await context.repository.listTagsWithCounts(context.vaultRoot);
-            if (!isLifecycleOwnerActive()) {
-              return authoritative(
-                projectedWorkspace,
-                undefined,
-                mutationResult.historyStatus
-              );
-            }
-          } catch {
-            // The lifecycle result remains authoritative if tag discovery fails.
-          }
           if (!isLifecycleOwnerActive()) {
             return authoritative(
               projectedWorkspace,
               undefined,
-              mutationResult.historyStatus
+              mutationResult.historyStatus,
+              { invalidatesTagSummaries: true }
             );
           }
           const navigationVersion = navigationVersionRef.current;
@@ -3543,7 +3683,8 @@ export function useNotesWorkspace({
           return authoritative(
             projectedWorkspace,
             uiUpdate,
-            mutationResult.historyStatus
+            mutationResult.historyStatus,
+            { invalidatesTagSummaries: true }
           );
         }
       );
@@ -3572,9 +3713,6 @@ export function useNotesWorkspace({
         tagFilterOriginRef.current = null;
         tagFilterRequestRef.current += 1;
         setActiveTagFilters([]);
-      }
-      if (lifecycleResult.refreshedTags) {
-        setTagSummaries(lifecycleResult.refreshedTags);
       }
     },
     [
@@ -3721,30 +3859,86 @@ export function useNotesWorkspace({
   );
 
   const restoreNode = useCallback(
-    (nodeId: NoteId) => {
+    async (nodeId: NoteId) => {
       closeTextBurst();
-      return runStructuralCommand("restore", async (context, historyContext) => {
+      const ownerRecord = sessionRecordRef.current;
+      const beforeNavigationVersion = navigationVersionRef.current;
+      const followsViewedTrashRoot =
+        activeScopeRef.current.kind === "trash" &&
+        rootIdForNode(
+          stateRef.current,
+          liveNavigationRef.current.zoomRootId
+        ) === nodeId;
+      let followedIntoActive = false;
+      await runStructuralCommand("restore", async (context, historyContext) => {
         const mutation = unwrapNotesMutation(await context.repository.restoreNode(
           context.vaultRoot,
           nodeId,
           ...historyArguments(historyContext)
         ));
+        const canFollowIntoActive =
+          followsViewedTrashRoot &&
+          ownerRecord !== null &&
+          !ownerRecord.closing &&
+          sessionRecordRef.current === ownerRecord &&
+          sessionRef.current === ownerRecord.session &&
+          navigationVersionRef.current === beforeNavigationVersion &&
+          activeScopeRef.current.kind === "trash";
+        const nextScope: NotesWorkspaceScope = canFollowIntoActive
+          ? { kind: "active" }
+          : activeScopeRef.current;
         const projection = await projectNotesMutation(
           context,
           mutation,
-          activeScopeRef.current
+          nextScope
         );
+        const restoredNode = projection.workspace.nodes.find(
+          (candidate) => candidate.id === nodeId && candidate.deletedAt === null
+        );
+        followedIntoActive = canFollowIntoActive && restoredNode !== undefined;
+        if (followedIntoActive) {
+          activeScopeRef.current = nextScope;
+        }
+        const uiUpdate = followedIntoActive
+          ? {
+              selectedId: nodeId,
+              zoomRootId: nodeId,
+              editingNoteId: nodeId,
+              pendingFocusId: nodeId,
+              pendingFocusField: "title" as const
+            }
+          : undefined;
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projection.workspace
+          projection.workspace,
+          uiUpdate,
+          followedIntoActive ? { nodeId, field: "title" } : undefined,
+          followedIntoActive ? new Set() : undefined
         );
-        return directMutationResult(mutation, projection);
+        return directMutationResult(mutation, projection, uiUpdate);
       });
+      if (
+        !followedIntoActive ||
+        ownerRecord === null ||
+        ownerRecord.closing ||
+        sessionRecordRef.current !== ownerRecord ||
+        sessionRef.current !== ownerRecord.session ||
+        navigationVersionRef.current !== beforeNavigationVersion
+      ) {
+        return;
+      }
+      setLibraryView("all");
+      requestedTagFiltersRef.current = [];
+      tagFilterOriginRef.current = null;
+      tagFilterRequestRef.current += 1;
+      setActiveTagFilters([]);
+      replaceLocalExpansions(new Set());
     },
     [
       beginStructuralEntry,
       closeTextBurst,
       rememberHistoryAfter,
+      replaceLocalExpansions,
       runCommand,
       runStructuralCommand
     ]
@@ -3779,7 +3973,9 @@ export function useNotesWorkspace({
               pendingFocusId: null,
               pendingFocusField: null
             }
-          : undefined
+          : undefined,
+        undefined,
+        { invalidatesTagSummaries: true }
       );
     });
   }, [closeTextBurst]);

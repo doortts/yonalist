@@ -278,11 +278,9 @@ function NotesLibraryPaneContent() {
                     key={`${filter.prefix}:${filter.normalizedTag}`}
                   >
                     <span>{label}</span>
-                    {summary && (
-                      <span className="notes-tag-count" aria-hidden="true">
-                        {summary.count}
-                      </span>
-                    )}
+                    <span className="notes-tag-count" aria-hidden="true">
+                      {summary?.count ?? 0}
+                    </span>
                     <button
                       type="button"
                       aria-label={`Remove ${label} filter`}
