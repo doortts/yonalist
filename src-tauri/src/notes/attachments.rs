@@ -1,39 +1,44 @@
-use image::{ImageFormat, ImageReader, Limits};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
+use fs4::FileExt;
+use image::codecs::gif::GifDecoder;
+use image::codecs::png::PngDecoder;
+use image::codecs::webp::WebPDecoder;
+use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use rusqlite::Connection;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{Cursor, Read, Write};
+use std::io::{BufReader, Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tempfile::Builder;
 
 use crate::notes::types::NoteAttachment;
 
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_PIXELS: u64 = 40_000_000;
-static ATTACHMENT_STORAGE_LOCK: Mutex<()> = Mutex::new(());
-
-pub(crate) fn with_attachment_storage_lock<T>(
-    operation: impl FnOnce() -> Result<T, String>,
-) -> Result<T, String> {
-    let _guard = ATTACHMENT_STORAGE_LOCK
-        .lock()
-        .map_err(|_| "The Notes attachment storage lock is unavailable.".to_string())?;
-    operation()
-}
+pub(crate) const MAX_ATTACHMENT_FRAMES: u64 = 256;
+pub(crate) const MAX_ATTACHMENT_CUMULATIVE_PIXELS: u64 = 40_000_000;
+static IMPORT_BUDGET_LOCK: Mutex<()> = Mutex::new(());
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ValidationLimits {
     pub(crate) max_bytes: u64,
     pub(crate) max_pixels: u64,
+    pub(crate) max_frames: u64,
+    pub(crate) max_cumulative_pixels: u64,
 }
 
 impl ValidationLimits {
     pub(crate) const DEFAULT: Self = Self {
         max_bytes: MAX_ATTACHMENT_BYTES,
         max_pixels: MAX_ATTACHMENT_PIXELS,
+        max_frames: MAX_ATTACHMENT_FRAMES,
+        max_cumulative_pixels: MAX_ATTACHMENT_CUMULATIVE_PIXELS,
     };
 }
 
@@ -71,6 +76,119 @@ fn extension_matches(format: ImageFormat, extension: &str) -> bool {
         ImageFormat::WebP => extension == "webp",
         ImageFormat::Gif => extension == "gif",
         _ => false,
+    }
+}
+
+fn decoder_limits(dimensions: (u32, u32), limits: ValidationLimits) -> Limits {
+    let mut decode_limits = Limits::default();
+    decode_limits.max_image_width = Some(dimensions.0);
+    decode_limits.max_image_height = Some(dimensions.1);
+    decode_limits.max_alloc = Some(limits.max_pixels.saturating_mul(8));
+    decode_limits
+}
+
+fn validate_animation_frames<'a>(
+    frames: impl Iterator<Item = image::ImageResult<image::Frame>> + 'a,
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    let mut frame_count = 0_u64;
+    let mut cumulative_pixels = 0_u64;
+    for frame in frames {
+        let frame = frame.map_err(|error| {
+            format!("Could not decode a Notes attachment animation frame: {error}")
+        })?;
+        frame_count = frame_count.checked_add(1).ok_or_else(|| {
+            "The Notes attachment animation frame count is too large.".to_string()
+        })?;
+        if frame_count > limits.max_frames {
+            return Err(format!(
+                "Notes attachment animations must contain at most {} frames.",
+                limits.max_frames
+            ));
+        }
+        let frame_pixels = u64::from(frame.buffer().width())
+            .checked_mul(u64::from(frame.buffer().height()))
+            .ok_or_else(|| {
+                "The Notes attachment animation decoded pixel count is too large.".to_string()
+            })?;
+        cumulative_pixels = cumulative_pixels.checked_add(frame_pixels).ok_or_else(|| {
+            "The Notes attachment animation decoded pixel count is too large.".to_string()
+        })?;
+        if cumulative_pixels > limits.max_cumulative_pixels {
+            return Err(format!(
+                "Notes attachment animations must contain at most {} cumulative decoded pixels.",
+                limits.max_cumulative_pixels
+            ));
+        }
+    }
+    if frame_count == 0 {
+        return Err("A Notes attachment animation must contain at least one frame.".to_string());
+    }
+    Ok(())
+}
+
+fn fully_decode_image(
+    format: ImageFormat,
+    bytes: &[u8],
+    dimensions: (u32, u32),
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    match format {
+        ImageFormat::Gif => {
+            let mut decoder = GifDecoder::new(BufReader::new(Cursor::new(bytes)))
+                .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))?;
+            decoder
+                .set_limits(decoder_limits(dimensions, limits))
+                .map_err(|error| format!("Could not limit the Notes attachment image: {error}"))?;
+            validate_animation_frames(decoder.into_frames(), limits)
+        }
+        ImageFormat::WebP => {
+            let mut decoder = WebPDecoder::new(BufReader::new(Cursor::new(bytes)))
+                .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))?;
+            decoder
+                .set_limits(decoder_limits(dimensions, limits))
+                .map_err(|error| format!("Could not limit the Notes attachment image: {error}"))?;
+            if decoder.has_animation() {
+                validate_animation_frames(decoder.into_frames(), limits)
+            } else {
+                let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+                reader.limits(decoder_limits(dimensions, limits));
+                reader.decode().map(|_| ()).map_err(|error| {
+                    format!("Could not decode the Notes attachment image: {error}")
+                })
+            }
+        }
+        ImageFormat::Png => {
+            let mut decoder = PngDecoder::new(BufReader::new(Cursor::new(bytes)))
+                .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))?;
+            decoder
+                .set_limits(decoder_limits(dimensions, limits))
+                .map_err(|error| format!("Could not limit the Notes attachment image: {error}"))?;
+            if decoder
+                .is_apng()
+                .map_err(|error| format!("Could not inspect the Notes attachment image: {error}"))?
+            {
+                let decoder = decoder.apng().map_err(|error| {
+                    format!("Could not decode the Notes attachment animation: {error}")
+                })?;
+                validate_animation_frames(decoder.into_frames(), limits)
+            } else {
+                let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+                reader.limits(decoder_limits(dimensions, limits));
+                reader.decode().map(|_| ()).map_err(|error| {
+                    format!("Could not decode the Notes attachment image: {error}")
+                })
+            }
+        }
+        ImageFormat::Jpeg => {
+            let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
+            reader.limits(decoder_limits(dimensions, limits));
+            reader
+                .decode()
+                .map(|_| ())
+                .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))
+        }
+        _ => Err("The Notes attachment image format is unsupported.".to_string()),
     }
 }
 
@@ -122,15 +240,7 @@ pub(crate) fn validate_image_bytes(
         ));
     }
 
-    let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
-    let mut decode_limits = Limits::default();
-    decode_limits.max_image_width = Some(dimensions.0);
-    decode_limits.max_image_height = Some(dimensions.1);
-    decode_limits.max_alloc = Some(limits.max_pixels.saturating_mul(8));
-    reader.limits(decode_limits);
-    reader
-        .decode()
-        .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))?;
+    fully_decode_image(format, bytes, dimensions, limits)?;
 
     Ok(ValidatedImage {
         mime_type,
@@ -180,11 +290,9 @@ pub(crate) fn resolve_owned_asset_path(
     Ok(metadata_dir.join(relative))
 }
 
-fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
-    let mut file = File::open(path)
-        .map_err(|error| format!("Could not open the Notes attachment image: {error}"))?;
+fn read_bounded(mut reader: impl Read, max_bytes: u64) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
+    Read::by_ref(&mut reader)
         .take(max_bytes.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|error| format!("Could not read the Notes attachment image: {error}"))?;
@@ -196,7 +304,10 @@ fn read_bounded_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub(crate) fn prepare_source_attachment(source_path: &str) -> Result<PreparedAttachment, String> {
+fn prepare_source_attachment_with_budget(source_path: &str) -> Result<PreparedAttachment, String> {
+    let _budget = IMPORT_BUDGET_LOCK
+        .lock()
+        .map_err(|_| "The Notes attachment import budget is unavailable.".to_string())?;
     if source_path.trim().is_empty() {
         return Err("A Notes attachment source path is required.".to_string());
     }
@@ -212,7 +323,9 @@ pub(crate) fn prepare_source_attachment(source_path: &str) -> Result<PreparedAtt
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| "A Notes attachment source must name a file.".to_string())?
         .to_string();
-    let bytes = read_bounded_file(path, MAX_ATTACHMENT_BYTES)?;
+    let file = File::open(path)
+        .map_err(|error| format!("Could not open the Notes attachment image: {error}"))?;
+    let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
     let image = validate_image_bytes(path, &bytes, ValidationLimits::DEFAULT)?;
     Ok(PreparedAttachment {
         bytes,
@@ -221,128 +334,239 @@ pub(crate) fn prepare_source_attachment(source_path: &str) -> Result<PreparedAtt
     })
 }
 
-fn asset_root(vault_path: &str) -> PathBuf {
-    crate::metadata_dir(vault_path).join("notes-assets")
+#[cfg(test)]
+pub(crate) fn prepare_source_attachment(source_path: &str) -> Result<PreparedAttachment, String> {
+    prepare_source_attachment_with_budget(source_path)
 }
 
-fn verify_asset_root(root: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(root) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            Ok(true)
+fn safe_owned_file_name(relative_path: &str) -> Result<&str, String> {
+    let relative = Path::new(relative_path);
+    let components = relative.components().collect::<Vec<_>>();
+    if components.len() != 2
+        || components[0] != Component::Normal("notes-assets".as_ref())
+        || !matches!(components[1], Component::Normal(_))
+    {
+        return Err("A Notes attachment path must be a safe owned relative path.".to_string());
+    }
+    let file_name = relative
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "A Notes attachment owned file name must be UTF-8.".to_string())?;
+    let (hash, extension) = file_name
+        .split_once('.')
+        .ok_or_else(|| "A Notes attachment owned file name is invalid.".to_string())?;
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|value| value.is_ascii_digit() || matches!(value, b'a'..=b'f'))
+        || !matches!(extension, "png" | "jpg" | "webp" | "gif")
+    {
+        return Err("A Notes attachment owned file name is invalid.".to_string());
+    }
+    Ok(file_name)
+}
+
+pub(crate) struct AttachmentStorageLease {
+    _lock_file: File,
+    assets: Dir,
+}
+
+impl AttachmentStorageLease {
+    pub(crate) fn acquire(vault_path: &str) -> Result<Self, String> {
+        let metadata_path = crate::metadata_dir(vault_path);
+        fs::create_dir_all(&metadata_path)
+            .map_err(|error| format!("Could not create the Notes metadata directory: {error}"))?;
+        let metadata = Dir::open_ambient_dir(&metadata_path, ambient_authority())
+            .map_err(|error| format!("Could not open the Notes metadata directory: {error}"))?;
+
+        let mut lock_options = OpenOptions::new();
+        lock_options
+            .read(true)
+            .write(true)
+            .create(true)
+            .follow(FollowSymlinks::No);
+        let lock_file = metadata
+            .open_with(".notes-assets.lock", &lock_options)
+            .map_err(|error| format!("Could not open the Notes attachment storage lock: {error}"))?
+            .into_std();
+        if !lock_file
+            .metadata()
+            .map_err(|error| {
+                format!("Could not inspect the Notes attachment storage lock: {error}")
+            })?
+            .is_file()
+        {
+            return Err("The Notes attachment storage lock must be a regular file.".to_string());
         }
-        Ok(_) => Err(
-            "The Notes attachment directory must be an owned directory, not a file or symlink."
-                .to_string(),
-        ),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!(
-            "Could not inspect the Notes attachment directory: {error}"
-        )),
-    }
-}
+        FileExt::lock(&lock_file)
+            .map_err(|error| format!("Could not lock the Notes attachment storage: {error}"))?;
 
-fn ensure_asset_root(root: &Path) -> Result<(), String> {
-    if !verify_asset_root(root)? {
-        fs::create_dir_all(root)
-            .map_err(|error| format!("Could not create the Notes attachment directory: {error}"))?;
+        let assets = match metadata.open_dir_nofollow("notes-assets") {
+            Ok(assets) => assets,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match metadata.create_dir("notes-assets") {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => {
+                        return Err(format!(
+                            "Could not create the Notes attachment directory: {error}"
+                        ))
+                    }
+                }
+                metadata.open_dir_nofollow("notes-assets").map_err(|error| {
+                    format!(
+                        "The Notes attachment directory must be an owned directory, not a file or symlink: {error}"
+                    )
+                })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "The Notes attachment directory must be an owned directory, not a file or symlink: {error}"
+                ))
+            }
+        };
+
+        Ok(Self {
+            _lock_file: lock_file,
+            assets,
+        })
     }
-    if verify_asset_root(root)? {
+
+    pub(crate) fn prepare_source_attachment(
+        &self,
+        source_path: &str,
+    ) -> Result<PreparedAttachment, String> {
+        prepare_source_attachment_with_budget(source_path)
+    }
+
+    fn open_owned_file(&self, file_name: &str) -> Result<cap_std::fs::File, String> {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        self.assets
+            .open_with(file_name, &options)
+            .map_err(|error| format!("Could not open the Notes attachment image: {error}"))
+    }
+
+    #[cfg(unix)]
+    fn sync_directory(&self) -> Result<(), String> {
+        self.assets
+            .try_clone()
+            .and_then(|directory| directory.into_std_file().sync_all())
+            .map_err(|error| format!("Could not sync the Notes attachment directory: {error}"))
+    }
+
+    #[cfg(not(unix))]
+    fn sync_directory(&self) -> Result<(), String> {
         Ok(())
-    } else {
-        Err("Could not create the Notes attachment directory.".to_string())
     }
-}
 
-#[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), String> {
-    if !verify_asset_root(path)? {
-        return Ok(());
-    }
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("Could not sync the Notes attachment directory: {error}"))
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-pub(crate) fn publish_attachment_bytes(
-    vault_path: &str,
-    prepared: &PreparedAttachment,
-) -> Result<String, String> {
-    let relative_path =
-        canonical_relative_path(&prepared.image.content_hash, prepared.image.mime_type)?;
-    let root = asset_root(vault_path);
-    ensure_asset_root(&root)?;
-    let target = resolve_owned_asset_path(
-        &crate::metadata_dir(vault_path),
-        &relative_path,
-        &prepared.image.content_hash,
-        prepared.image.mime_type,
-    )?;
-
-    if let Ok(metadata) = fs::symlink_metadata(&target) {
-        if metadata.file_type().is_file() {
-            let existing = read_bounded_file(&target, MAX_ATTACHMENT_BYTES)?;
+    pub(crate) fn publish_attachment_bytes(
+        &self,
+        prepared: &PreparedAttachment,
+    ) -> Result<String, String> {
+        let relative_path =
+            canonical_relative_path(&prepared.image.content_hash, prepared.image.mime_type)?;
+        let target_name = safe_owned_file_name(&relative_path)?.to_string();
+        if let Ok(existing) = self.open_owned_file(&target_name) {
+            let existing = read_bounded(existing, MAX_ATTACHMENT_BYTES)?;
             if format!("{:x}", Sha256::digest(&existing)) == prepared.image.content_hash {
                 return Ok(relative_path);
             }
         }
+
+        let (temporary_name, mut temporary) = (0..100)
+            .find_map(|_| {
+                let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+                let name = format!(".attachment-{}-{sequence}", std::process::id());
+                let mut options = OpenOptions::new();
+                options
+                    .write(true)
+                    .create_new(true)
+                    .follow(FollowSymlinks::No);
+                match self.assets.open_with(&name, &options) {
+                    Ok(file) => Some(Ok((name, file))),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(error)),
+                }
+            })
+            .transpose()
+            .map_err(|error| {
+                format!("Could not create a Notes attachment temporary file: {error}")
+            })?
+            .ok_or_else(|| {
+                "Could not allocate a unique Notes attachment temporary file.".to_string()
+            })?;
+
+        let publish_result = (|| {
+            temporary.write_all(&prepared.bytes).map_err(|error| {
+                format!("Could not write a Notes attachment temporary file: {error}")
+            })?;
+            temporary
+                .flush()
+                .and_then(|_| temporary.sync_all())
+                .map_err(|error| {
+                    format!("Could not sync a Notes attachment temporary file: {error}")
+                })?;
+            drop(temporary);
+            self.assets
+                .rename(&temporary_name, &self.assets, &target_name)
+                .map_err(|error| {
+                    format!("Could not publish the Notes attachment atomically: {error}")
+                })?;
+            self.sync_directory()?;
+            Ok(relative_path)
+        })();
+        if publish_result.is_err() {
+            let _ = self.assets.remove_file_or_symlink(&temporary_name);
+        }
+        publish_result
     }
 
-    let mut temporary = Builder::new()
-        .prefix(".attachment-")
-        .tempfile_in(&root)
-        .map_err(|error| format!("Could not create a Notes attachment temporary file: {error}"))?;
-    temporary
-        .write_all(&prepared.bytes)
-        .map_err(|error| format!("Could not write a Notes attachment temporary file: {error}"))?;
-    temporary
-        .flush()
-        .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|error| format!("Could not sync a Notes attachment temporary file: {error}"))?;
-    temporary.persist(&target).map_err(|error| {
-        format!(
-            "Could not publish the Notes attachment atomically: {}",
-            error.error
-        )
-    })?;
-    sync_directory(&root)?;
-    Ok(relative_path)
+    pub(crate) fn read_validated_attachment_bytes(
+        &self,
+        attachment: &NoteAttachment,
+    ) -> Result<Vec<u8>, String> {
+        resolve_owned_asset_path(
+            Path::new("."),
+            &attachment.relative_path,
+            &attachment.content_hash,
+            &attachment.mime_type,
+        )?;
+        let file_name = safe_owned_file_name(&attachment.relative_path)?;
+        let file = self.open_owned_file(file_name)?;
+        if !file
+            .metadata()
+            .map_err(|error| format!("Could not inspect the Notes attachment file: {error}"))?
+            .is_file()
+        {
+            return Err("A Notes attachment owned path must contain a regular file.".to_string());
+        }
+        let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
+        let validated = validate_image_bytes(
+            Path::new(&attachment.relative_path),
+            &bytes,
+            ValidationLimits::DEFAULT,
+        )?;
+        if validated.content_hash != attachment.content_hash
+            || validated.mime_type != attachment.mime_type
+            || validated.byte_size != attachment.byte_size as u64
+            || i64::from(validated.width) != attachment.intrinsic_width
+            || i64::from(validated.height) != attachment.intrinsic_height
+        {
+            return Err(
+                "The Notes attachment file no longer matches its stored metadata.".to_string(),
+            );
+        }
+        Ok(bytes)
+    }
 }
 
-pub(crate) fn read_validated_attachment_bytes(
+#[cfg(test)]
+pub(crate) fn publish_attachment_bytes(
     vault_path: &str,
-    attachment: &NoteAttachment,
-) -> Result<Vec<u8>, String> {
-    let root = asset_root(vault_path);
-    if !verify_asset_root(&root)? {
-        return Err("The Notes attachment directory does not exist.".to_string());
-    }
-    let path = resolve_owned_asset_path(
-        &crate::metadata_dir(vault_path),
-        &attachment.relative_path,
-        &attachment.content_hash,
-        &attachment.mime_type,
-    )?;
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|error| format!("Could not inspect the Notes attachment file: {error}"))?;
-    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        return Err("A Notes attachment owned path must contain a regular file.".to_string());
-    }
-    let bytes = read_bounded_file(&path, MAX_ATTACHMENT_BYTES)?;
-    let validated = validate_image_bytes(&path, &bytes, ValidationLimits::DEFAULT)?;
-    if validated.content_hash != attachment.content_hash
-        || validated.mime_type != attachment.mime_type
-        || validated.byte_size != attachment.byte_size as u64
-        || i64::from(validated.width) != attachment.intrinsic_width
-        || i64::from(validated.height) != attachment.intrinsic_height
-    {
-        return Err("The Notes attachment file no longer matches its stored metadata.".to_string());
-    }
-    Ok(bytes)
+    prepared: &PreparedAttachment,
+) -> Result<String, String> {
+    AttachmentStorageLease::acquire(vault_path)?.publish_attachment_bytes(prepared)
 }
 
 #[derive(Deserialize)]
@@ -427,63 +651,103 @@ fn reachable_asset_paths(connection: &Connection) -> Result<HashSet<String>, Str
     Ok(reachable)
 }
 
-pub(crate) fn reconcile_attachment_files(
-    vault_path: &str,
+fn attachment_path_is_reachable(
     connection: &Connection,
-) -> Result<usize, String> {
-    let reachable = reachable_asset_paths(connection)?;
-    let root = asset_root(vault_path);
-    if !verify_asset_root(&root)? {
-        return Ok(0);
-    }
-    let entries = match fs::read_dir(&root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-        Err(error) => {
-            return Err(format!(
-                "Could not inspect the Notes attachment directory: {error}"
-            ))
-        }
-    };
-    let mut removed = 0;
-    for entry in entries {
-        let entry =
-            entry.map_err(|error| format!("Could not inspect a Notes attachment file: {error}"))?;
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|error| format!("Could not inspect a Notes attachment entry: {error}"))?;
-        if metadata.file_type().is_dir() {
-            continue;
-        }
-        let relative = entry
-            .file_name()
-            .to_str()
-            .map(|name| format!("notes-assets/{name}"));
-        if relative
-            .as_ref()
-            .is_some_and(|path| reachable.contains(path))
-        {
-            continue;
-        }
-        fs::remove_file(entry.path()).map_err(|error| {
-            format!("Could not remove an unreferenced Notes attachment: {error}")
-        })?;
-        removed += 1;
-    }
-    if removed > 0 {
-        sync_directory(&root)?;
-    }
-    Ok(removed)
+    relative_path: &str,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_attachments WHERE relative_path = ?1 \
+               UNION ALL \
+               SELECT 1 FROM notes_history_changes \
+               WHERE table_name = 'notes_attachments' AND (\
+                 json_extract(before_json, '$.relative_path') = ?1 OR \
+                 json_extract(after_json, '$.relative_path') = ?1\
+               )\
+             )",
+            [relative_path],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes attachment reachability: {error}"))
 }
 
-pub(crate) fn delete_attachment_files(vault_path: &str) -> Result<(), String> {
-    let root = asset_root(vault_path);
-    if !verify_asset_root(&root)? {
-        return Ok(());
+impl AttachmentStorageLease {
+    pub(crate) fn reconcile_attachment_files(
+        &self,
+        connection: &Connection,
+    ) -> Result<usize, String> {
+        let reachable = reachable_asset_paths(connection)?;
+        let entries = self.assets.entries().map_err(|error| {
+            format!("Could not inspect the Notes attachment directory: {error}")
+        })?;
+        let mut removed = 0;
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("Could not inspect a Notes attachment file: {error}"))?;
+            if entry
+                .file_type()
+                .map_err(|error| format!("Could not inspect a Notes attachment entry: {error}"))?
+                .is_dir()
+            {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let relative = file_name
+                .to_str()
+                .map(|name| format!("notes-assets/{name}"));
+            if relative
+                .as_ref()
+                .is_some_and(|path| reachable.contains(path))
+            {
+                continue;
+            }
+            self.assets
+                .remove_file_or_symlink(&file_name)
+                .map_err(|error| {
+                    format!("Could not remove an unreferenced Notes attachment: {error}")
+                })?;
+            removed += 1;
+        }
+        if removed > 0 {
+            self.sync_directory()?;
+        }
+        Ok(removed)
     }
-    match fs::remove_dir_all(root) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Could not delete Notes attachment files: {error}")),
+
+    pub(crate) fn reconcile_attachment_candidates(
+        &self,
+        connection: &Connection,
+        candidates: &[String],
+    ) -> Result<usize, String> {
+        let mut removed = 0;
+        for relative_path in candidates {
+            let file_name = safe_owned_file_name(relative_path)?;
+            if attachment_path_is_reachable(connection, relative_path)? {
+                continue;
+            }
+            match self.assets.remove_file_or_symlink(file_name) {
+                Ok(()) => removed += 1,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "Could not remove an evicted Notes attachment: {error}"
+                    ))
+                }
+            }
+        }
+        if removed > 0 {
+            self.sync_directory()?;
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn delete_attachment_files(&self) -> Result<(), String> {
+        match self.assets.try_clone().and_then(Dir::remove_open_dir_all) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("Could not delete Notes attachment files: {error}")),
+        }
     }
 }
 
@@ -491,24 +755,25 @@ pub(crate) fn delete_attachment_files(vault_path: &str) -> Result<(), String> {
 mod tests {
     use super::{
         canonical_relative_path, prepare_source_attachment, publish_attachment_bytes,
-        resolve_owned_asset_path, validate_image_bytes, with_attachment_storage_lock,
-        ValidationLimits,
+        resolve_owned_asset_path, validate_image_bytes, AttachmentStorageLease, ValidationLimits,
     };
     use crate::notes::commands::{
         notes_clear_history, notes_empty_trash, notes_import_attachment, notes_initialize,
-        notes_read_attachment_bytes, notes_remove_attachment, notes_resize_attachment,
-        notes_restore_attachment,
+        notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_resize_attachment,
+        notes_restore_attachment, notes_undo, notes_update_node,
     };
+    use crate::notes::history::HISTORY_MAX_ENTRIES;
     use crate::notes::history::{redo, undo};
     use crate::notes::repository::{
-        archive_node, connect_notes_db, create_node, load_workspace, remove_empty_node,
-        restore_node, soft_delete_node, unarchive_node,
+        archive_node, connect_notes_db, create_attachment, create_node, load_workspace,
+        remove_empty_node, restore_node, soft_delete_node, unarchive_node,
     };
     use crate::notes::types::{
         CreateNodeInput, ImportAttachmentInput, NotesHistoryContext, NotesWorkspaceScope,
-        ResizeAttachmentInput,
+        ResizeAttachmentInput, UpdateNodeInput,
     };
-    use image::{DynamicImage, ImageFormat};
+    use image::codecs::gif::GifEncoder;
+    use image::{DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
     use rusqlite::params;
     use std::fs;
     use std::io::Cursor;
@@ -524,6 +789,24 @@ mod tests {
             .write_to(&mut bytes, format)
             .expect("encode fixture");
         bytes.into_inner()
+    }
+
+    fn encoded_gif_frames(frame_count: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut bytes);
+            for index in 0..frame_count {
+                let frame = RgbaImage::from_pixel(
+                    2,
+                    3,
+                    Rgba([u8::try_from(index % 255).expect("frame color"), 0, 0, 255]),
+                );
+                encoder
+                    .encode_frame(Frame::new(frame))
+                    .expect("encode GIF frame");
+            }
+        }
+        bytes
     }
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -592,6 +875,15 @@ mod tests {
             assert_eq!(validated.byte_size, bytes.len() as u64);
             assert_eq!(validated.content_hash.len(), 64);
         }
+
+        let animated = encoded_gif_frames(2);
+        let validated = validate_image_bytes(
+            Path::new("valid-animation.gif"),
+            &animated,
+            ValidationLimits::DEFAULT,
+        )
+        .expect("valid animation within budgets");
+        assert_eq!((validated.width, validated.height), (2, 3));
     }
 
     #[test]
@@ -620,6 +912,25 @@ mod tests {
         )
         .expect_err("truncated image must fail");
         assert!(truncated.to_lowercase().contains("decode"), "{truncated}");
+
+        let animated = encoded_gif_frames(2);
+        let second_frame = animated
+            .iter()
+            .enumerate()
+            .filter_map(|(index, byte)| (*byte == 0x2c).then_some(index))
+            .nth(1)
+            .expect("second GIF image descriptor");
+        let corrupt_later_frame = &animated[..second_frame + 12];
+        let later_error = validate_image_bytes(
+            Path::new("broken-later.gif"),
+            corrupt_later_frame,
+            ValidationLimits::DEFAULT,
+        )
+        .expect_err("a corrupt later animation frame must fail validation");
+        assert!(
+            later_error.to_lowercase().contains("decode"),
+            "{later_error}"
+        );
     }
 
     #[test]
@@ -631,6 +942,7 @@ mod tests {
             ValidationLimits {
                 max_bytes: png.len() as u64 - 1,
                 max_pixels: 6,
+                ..ValidationLimits::DEFAULT
             },
         )
         .expect_err("byte ceiling must fail");
@@ -642,12 +954,44 @@ mod tests {
             ValidationLimits {
                 max_bytes: png.len() as u64,
                 max_pixels: 5,
+                ..ValidationLimits::DEFAULT
             },
         )
         .expect_err("pixel ceiling must fail");
         assert!(
             pixel_error.to_lowercase().contains("pixel"),
             "{pixel_error}"
+        );
+
+        let animated = encoded_gif_frames(2);
+        let frame_error = validate_image_bytes(
+            Path::new("too-many-frames.gif"),
+            &animated,
+            ValidationLimits {
+                max_frames: 1,
+                max_cumulative_pixels: 6,
+                ..ValidationLimits::DEFAULT
+            },
+        )
+        .expect_err("frame ceiling must fail");
+        assert!(
+            frame_error.to_lowercase().contains("frame"),
+            "{frame_error}"
+        );
+
+        let cumulative_error = validate_image_bytes(
+            Path::new("too-many-frame-pixels.gif"),
+            &animated,
+            ValidationLimits {
+                max_frames: 2,
+                max_cumulative_pixels: 11,
+                ..ValidationLimits::DEFAULT
+            },
+        )
+        .expect_err("cumulative animation pixel ceiling must fail");
+        assert!(
+            cumulative_error.to_lowercase().contains("pixel"),
+            "{cumulative_error}"
         );
     }
 
@@ -677,43 +1021,159 @@ mod tests {
     }
 
     #[test]
-    fn notes_attachment_storage_operations_are_serialized() {
+    fn notes_attachment_storage_lock_prevents_reconciliation_of_a_published_uncommitted_file() {
         use std::sync::mpsc;
         use std::time::Duration;
 
-        let (first_entered_tx, first_entered_rx) = mpsc::channel();
-        let (release_first_tx, release_first_rx) = mpsc::channel();
-        let first = std::thread::spawn(move || {
-            with_attachment_storage_lock(|| {
-                first_entered_tx.send(()).expect("first entered");
-                release_first_rx.recv().expect("release first");
-                Ok(())
-            })
-            .expect("first operation");
-        });
-        first_entered_rx.recv().expect("first lock acquired");
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let source = write_source(
+            &temp_dir,
+            "interprocess.png",
+            &encoded_dimensions(ImageFormat::Png, 320, 200),
+        );
+        let first = AttachmentStorageLease::acquire(&vault_path).expect("first storage lease");
+        let prepared = first
+            .prepare_source_attachment(&source)
+            .expect("prepare while leased");
+        let relative_path = first
+            .publish_attachment_bytes(&prepared)
+            .expect("publish before metadata commit");
+        let asset_path = temp_dir.path().join(".yonalist").join(&relative_path);
 
-        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let (second_ready_tx, second_ready_rx) = mpsc::channel();
+        let (second_done_tx, second_done_rx) = mpsc::channel();
+        let second_vault = vault_path.clone();
         let second = std::thread::spawn(move || {
-            with_attachment_storage_lock(|| {
-                second_entered_tx.send(()).expect("second entered");
-                Ok(())
-            })
-            .expect("second operation");
+            let connection = connect_notes_db(&second_vault).expect("independent connection");
+            second_ready_tx.send(()).expect("second ready");
+            let second =
+                AttachmentStorageLease::acquire(&second_vault).expect("independent storage lease");
+            second
+                .reconcile_attachment_files(&connection)
+                .expect("reconcile after lock handoff");
+            second_done_tx.send(()).expect("second done");
         });
+        second_ready_rx.recv().expect("second connection ready");
         assert!(
-            second_entered_rx
-                .recv_timeout(Duration::from_millis(50))
+            second_done_rx
+                .recv_timeout(Duration::from_millis(100))
                 .is_err(),
-            "second operation entered before the first released storage"
+            "independent reconciliation entered while publication was uncommitted"
+        );
+        assert!(
+            asset_path.is_file(),
+            "in-flight published bytes were deleted"
         );
 
-        release_first_tx.send(()).expect("release first");
-        second_entered_rx
+        let mut connection = connect_notes_db(&vault_path).expect("metadata connection");
+        create_attachment(
+            &mut connection,
+            crate::notes::repository::NewAttachment {
+                id: ATTACHMENT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                relative_path,
+                content_hash: prepared.image.content_hash.clone(),
+                original_name: prepared.original_name.clone(),
+                mime_type: prepared.image.mime_type.to_string(),
+                byte_size: i64::try_from(prepared.image.byte_size).expect("byte size"),
+                intrinsic_width: i64::from(prepared.image.width),
+                intrinsic_height: i64::from(prepared.image.height),
+                display_width: i64::from(prepared.image.width),
+            },
+        )
+        .expect("commit metadata before lock handoff");
+        drop(first);
+        second_done_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("second enters after release");
-        first.join().expect("first thread");
+            .expect("second reconciles after release");
         second.join().expect("second thread");
+        assert!(
+            asset_path.is_file(),
+            "committed shared bytes were reconciled"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_attachment_storage_operations_hold_the_verified_directory_identity() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let external_dir = tempfile::tempdir().expect("external dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let source = write_source(
+            &temp_dir,
+            "identity.png",
+            &encoded_dimensions(ImageFormat::Png, 320, 200),
+        );
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
+        let prepared = storage
+            .prepare_source_attachment(&source)
+            .expect("prepare source");
+        let original_root = temp_dir.path().join(".yonalist/notes-assets");
+        let renamed_root = temp_dir.path().join(".yonalist/notes-assets-held");
+        fs::rename(&original_root, &renamed_root).expect("rename opened asset root");
+        let external_name = format!("{}.png", "a".repeat(64));
+        let external_sentinel = external_dir.path().join(&external_name);
+        fs::write(&external_sentinel, b"external sentinel").expect("external sentinel");
+        symlink(external_dir.path(), &original_root).expect("replace path with symlink");
+
+        let relative_path = storage
+            .publish_attachment_bytes(&prepared)
+            .expect("publish through held directory after path replacement");
+        let held_file = renamed_root.join(
+            Path::new(&relative_path)
+                .file_name()
+                .expect("owned file name"),
+        );
+        assert!(held_file.is_file(), "publish escaped the held directory");
+        let mut connection = connect_notes_db(&vault_path).expect("reconciliation connection");
+        create_attachment(
+            &mut connection,
+            crate::notes::repository::NewAttachment {
+                id: ATTACHMENT_ID.to_string(),
+                node_id: NODE_ID.to_string(),
+                relative_path: relative_path.clone(),
+                content_hash: prepared.image.content_hash.clone(),
+                original_name: prepared.original_name.clone(),
+                mime_type: prepared.image.mime_type.to_string(),
+                byte_size: i64::try_from(prepared.image.byte_size).expect("byte size"),
+                intrinsic_width: i64::from(prepared.image.width),
+                intrinsic_height: i64::from(prepared.image.height),
+                display_width: i64::from(prepared.image.width),
+            },
+        )
+        .expect("metadata for held file");
+        let attachment = crate::notes::repository::attachment_by_id(&connection, ATTACHMENT_ID)
+            .expect("read held metadata")
+            .expect("held metadata exists");
+        assert_eq!(
+            storage
+                .read_validated_attachment_bytes(&attachment)
+                .expect("read through held directory after path replacement"),
+            prepared.bytes
+        );
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("make held bytes unreachable");
+        assert_eq!(
+            storage
+                .reconcile_attachment_files(&connection)
+                .expect("reconcile through held directory"),
+            1
+        );
+
+        assert!(!held_file.exists(), "held directory entry was not removed");
+        assert_eq!(
+            fs::read(&external_sentinel).expect("external sentinel remains"),
+            b"external sentinel"
+        );
     }
 
     #[cfg(unix)]
@@ -1040,6 +1500,125 @@ mod tests {
                 .attachments_by_node_id[NODE_ID][0]
                 .display_width,
             170
+        );
+    }
+
+    #[test]
+    fn notes_attachment_history_replay_rejects_missing_or_corrupt_owned_bytes_atomically() {
+        for (case, replacement) in [
+            ("missing", None),
+            ("corrupt", Some(b"not an image".as_slice())),
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = vault_path(&temp_dir);
+            seed_node(&vault_path);
+            let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+            let source = write_source(&temp_dir, "replay.png", &png);
+            let imported = notes_import_attachment(
+                vault_path.clone(),
+                import_input(ATTACHMENT_ID, source),
+                Some(history_context(1, "importAttachment")),
+            )
+            .expect("journaled import");
+            let asset_path = temp_dir
+                .path()
+                .join(".yonalist")
+                .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+            notes_undo(
+                vault_path.clone(),
+                SESSION_ID.to_string(),
+                NotesWorkspaceScope::Active,
+            )
+            .expect("undo import metadata");
+            match replacement {
+                Some(bytes) => fs::write(&asset_path, bytes).expect("corrupt owned bytes"),
+                None => fs::remove_file(&asset_path).expect("remove owned bytes"),
+            }
+
+            let error = notes_redo(
+                vault_path.clone(),
+                SESSION_ID.to_string(),
+                NotesWorkspaceScope::Active,
+            )
+            .expect_err(&format!("{case} bytes must block metadata replay"));
+
+            assert!(
+                error.to_lowercase().contains("attachment"),
+                "{case}: {error}"
+            );
+            let connection = connect_notes_db(&vault_path).expect("reopen after replay conflict");
+            assert!(
+                load_workspace(&connection, NotesWorkspaceScope::Active)
+                    .expect("workspace after replay conflict")
+                    .attachments_by_node_id
+                    .is_empty(),
+                "{case} replay partially restored attachment metadata"
+            );
+            assert!(
+                connection
+                    .query_row(
+                        "SELECT is_undone FROM notes_history_entries WHERE session_id = ?1",
+                        [SESSION_ID],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .expect("history replay state"),
+                "{case} replay advanced history despite validation failure"
+            );
+        }
+    }
+
+    #[test]
+    fn notes_attachment_non_attachment_history_eviction_reconciles_only_newly_unreachable_bytes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let png = encoded_dimensions(ImageFormat::Png, 320, 200);
+        let source = write_source(&temp_dir, "evicted.png", &png);
+        let imported = notes_import_attachment(
+            vault_path.clone(),
+            import_input(ATTACHMENT_ID, source),
+            Some(history_context(1, "importAttachment")),
+        )
+        .expect("journaled import");
+        let asset_root = temp_dir.path().join(".yonalist/notes-assets");
+        let asset_path = temp_dir
+            .path()
+            .join(".yonalist")
+            .join(&imported.attachments_by_node_id[NODE_ID][0].relative_path);
+        let unrelated = asset_root.join("unrelated-sentinel");
+        fs::write(&unrelated, b"not a managed attachment").expect("write unrelated sentinel");
+        let connection = connect_notes_db(&vault_path).expect("remove live metadata");
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [ATTACHMENT_ID],
+            )
+            .expect("leave bytes reachable only from history");
+        drop(connection);
+
+        for index in 0..HISTORY_MAX_ENTRIES {
+            notes_update_node(
+                vault_path.clone(),
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: format!("ordinary edit {index}"),
+                    note: String::new(),
+                },
+                Some(history_context(
+                    usize::try_from(index + 2).expect("history index"),
+                    "updateNode",
+                )),
+            )
+            .expect("ordinary journaled edit");
+        }
+
+        assert!(
+            !asset_path.exists(),
+            "ordinary history eviction left attachment bytes unreachable"
+        );
+        assert!(
+            unrelated.exists(),
+            "ordinary mutation performed an unconditional asset directory scan"
         );
     }
 

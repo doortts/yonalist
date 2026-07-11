@@ -1,11 +1,9 @@
 use crate::file_io::write_atomic_file;
-use crate::notes::attachments::{
-    delete_attachment_files, prepare_source_attachment, publish_attachment_bytes,
-    read_validated_attachment_bytes, reconcile_attachment_files, with_attachment_storage_lock,
-};
+use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
 use crate::notes::history::{
-    clear_all_history, clear_history, history_status, redo, undo, with_history_transaction,
+    clear_all_history, clear_history, history_status, redo_with_attachment_storage,
+    undo_with_attachment_storage, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
     archive_node, attachment_by_id, connect_notes_db, create_attachment, create_node,
@@ -27,12 +25,11 @@ use std::path::PathBuf;
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        clear_all_history(&mut connection)?;
-        reconcile_attachment_files(&vault_path, &connection)?;
-        Ok(())
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    clear_all_history(&mut connection)?;
+    storage.reconcile_attachment_files(&connection)?;
+    Ok(())
 }
 
 fn run_mutation(
@@ -40,8 +37,12 @@ fn run_mutation(
     history_context: Option<NotesHistoryContext>,
     operation: impl FnOnce(&mut rusqlite::Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesWorkspace, String> {
+    let storage = AttachmentStorageLease::acquire(vault_path)?;
     let mut connection = connect_notes_db(vault_path)?;
-    with_history_transaction(&mut connection, history_context.as_ref(), operation)
+    let result =
+        with_history_transaction_and_prunes(&mut connection, history_context.as_ref(), operation)?;
+    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    Ok(result.workspace)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -202,12 +203,11 @@ pub(crate) fn notes_undo(
     session_id: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let result = undo(&mut connection, &session_id, scope)?;
-        reconcile_after_committed_attachment_change(&vault_path, &connection);
-        Ok(result)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let result = undo_with_attachment_storage(&mut connection, &session_id, scope, &storage)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
+    Ok(result)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -216,12 +216,11 @@ pub(crate) fn notes_redo(
     session_id: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let result = redo(&mut connection, &session_id, scope)?;
-        reconcile_after_committed_attachment_change(&vault_path, &connection);
-        Ok(result)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let result = redo_with_attachment_storage(&mut connection, &session_id, scope, &storage)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
+    Ok(result)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -238,30 +237,28 @@ pub(crate) fn notes_clear_history(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let status = clear_history(&mut connection, &session_id)?;
-        reconcile_attachment_files(&vault_path, &connection)?;
-        Ok(status)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let status = clear_history(&mut connection, &session_id)?;
+    storage.reconcile_attachment_files(&connection)?;
+    Ok(status)
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let workspace = empty_trash(&mut connection)?;
-        reconcile_attachment_files(&vault_path, &connection)?;
-        Ok(workspace)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let workspace = empty_trash(&mut connection)?;
+    storage.reconcile_attachment_files(&connection)?;
+    Ok(workspace)
 }
 
 fn attachment_metadata_error(
-    vault_path: &str,
+    storage: &AttachmentStorageLease,
     connection: &rusqlite::Connection,
     error: String,
 ) -> String {
-    match reconcile_attachment_files(vault_path, connection) {
+    match storage.reconcile_attachment_files(connection) {
         Ok(_) => error,
         Err(reconcile_error) => {
             format!("{error} Attachment reconciliation also failed: {reconcile_error}")
@@ -270,10 +267,10 @@ fn attachment_metadata_error(
 }
 
 fn reconcile_after_committed_attachment_change(
-    vault_path: &str,
+    storage: &AttachmentStorageLease,
     connection: &rusqlite::Connection,
 ) {
-    let _ = reconcile_attachment_files(vault_path, connection);
+    let _ = storage.reconcile_attachment_files(connection);
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -285,38 +282,42 @@ pub(crate) fn notes_import_attachment(
     validate_note_id(&input.id)
         .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
     validate_note_id(&input.node_id)?;
-    let prepared = prepare_source_attachment(&input.source_path)?;
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let prepared = storage.prepare_source_attachment(&input.source_path)?;
     let display_width = input
         .display_width
         .unwrap_or_else(|| i64::from(prepared.image.width));
     let byte_size = i64::try_from(prepared.image.byte_size)
         .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let relative_path = publish_attachment_bytes(&vault_path, &prepared)
-            .map_err(|error| attachment_metadata_error(&vault_path, &connection, error))?;
-        let attachment = NewAttachment {
-            id: input.id,
-            node_id: input.node_id,
-            relative_path,
-            content_hash: prepared.image.content_hash.clone(),
-            original_name: prepared.original_name.clone(),
-            mime_type: prepared.image.mime_type.to_string(),
-            byte_size,
-            intrinsic_width: i64::from(prepared.image.width),
-            intrinsic_height: i64::from(prepared.image.height),
-            display_width,
-        };
-        match with_history_transaction(&mut connection, history_context.as_ref(), |connection| {
-            create_attachment(connection, attachment)
-        }) {
-            Ok(workspace) => {
-                reconcile_after_committed_attachment_change(&vault_path, &connection);
-                Ok(workspace)
-            }
-            Err(error) => Err(attachment_metadata_error(&vault_path, &connection, error)),
+    let mut connection = connect_notes_db(&vault_path)?;
+    let relative_path = storage
+        .publish_attachment_bytes(&prepared)
+        .map_err(|error| attachment_metadata_error(&storage, &connection, error))?;
+    let attachment = NewAttachment {
+        id: input.id,
+        node_id: input.node_id,
+        relative_path,
+        content_hash: prepared.image.content_hash.clone(),
+        original_name: prepared.original_name.clone(),
+        mime_type: prepared.image.mime_type.to_string(),
+        byte_size,
+        intrinsic_width: i64::from(prepared.image.width),
+        intrinsic_height: i64::from(prepared.image.height),
+        display_width,
+    };
+    match with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| create_attachment(connection, attachment),
+    ) {
+        Ok(result) => {
+            storage
+                .reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+            reconcile_after_committed_attachment_change(&storage, &connection);
+            Ok(result.workspace)
         }
-    })
+        Err(error) => Err(attachment_metadata_error(&storage, &connection, error)),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -324,12 +325,11 @@ pub(crate) fn notes_read_attachment_bytes(
     vault_path: String,
     attachment_id: String,
 ) -> Result<Vec<u8>, String> {
-    with_attachment_storage_lock(|| {
-        let connection = connect_notes_db(&vault_path)?;
-        let attachment = attachment_by_id(&connection, &attachment_id)?
-            .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
-        read_validated_attachment_bytes(&vault_path, &attachment)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let connection = connect_notes_db(&vault_path)?;
+    let attachment = attachment_by_id(&connection, &attachment_id)?
+        .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
+    storage.read_validated_attachment_bytes(&attachment)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -338,15 +338,16 @@ pub(crate) fn notes_resize_attachment(
     input: ResizeAttachmentInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let workspace =
-            with_history_transaction(&mut connection, history_context.as_ref(), |connection| {
-                resize_attachment(connection, &input.id, input.display_width)
-            })?;
-        reconcile_after_committed_attachment_change(&vault_path, &connection);
-        Ok(workspace)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let result = with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| resize_attachment(connection, &input.id, input.display_width),
+    )?;
+    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
+    Ok(result.workspace)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -355,15 +356,16 @@ pub(crate) fn notes_remove_attachment(
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let workspace =
-            with_history_transaction(&mut connection, history_context.as_ref(), |connection| {
-                remove_attachment(connection, &attachment_id)
-            })?;
-        reconcile_after_committed_attachment_change(&vault_path, &connection);
-        Ok(workspace)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let result = with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| remove_attachment(connection, &attachment_id),
+    )?;
+    storage.reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+    reconcile_after_committed_attachment_change(&storage, &connection);
+    Ok(result.workspace)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -372,20 +374,23 @@ pub(crate) fn notes_restore_attachment(
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    with_attachment_storage_lock(|| {
-        let mut connection = connect_notes_db(&vault_path)?;
-        let attachment = removed_attachment_snapshot(&connection, &attachment_id)?;
-        read_validated_attachment_bytes(&vault_path, &attachment)?;
-        match with_history_transaction(&mut connection, history_context.as_ref(), |connection| {
-            restore_attachment(connection, attachment)
-        }) {
-            Ok(workspace) => {
-                reconcile_after_committed_attachment_change(&vault_path, &connection);
-                Ok(workspace)
-            }
-            Err(error) => Err(attachment_metadata_error(&vault_path, &connection, error)),
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let mut connection = connect_notes_db(&vault_path)?;
+    let attachment = removed_attachment_snapshot(&connection, &attachment_id)?;
+    storage.read_validated_attachment_bytes(&attachment)?;
+    match with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| restore_attachment(connection, attachment),
+    ) {
+        Ok(result) => {
+            storage
+                .reconcile_attachment_candidates(&connection, &result.pruned_attachment_paths)?;
+            reconcile_after_committed_attachment_change(&storage, &connection);
+            Ok(result.workspace)
         }
-    })
+        Err(error) => Err(attachment_metadata_error(&storage, &connection, error)),
+    }
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -413,10 +418,9 @@ pub(crate) fn notes_list_tags_with_counts(
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_delete_database(vault_path: String) -> Result<(), String> {
-    with_attachment_storage_lock(|| {
-        delete_database(&vault_path)?;
-        delete_attachment_files(&vault_path)
-    })
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    delete_database(&vault_path)?;
+    storage.delete_attachment_files()
 }
 
 fn export_destination_path(destination: &str) -> Result<PathBuf, String> {

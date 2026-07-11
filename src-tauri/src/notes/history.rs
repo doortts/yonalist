@@ -1,7 +1,8 @@
+use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes};
 use crate::notes::types::{
-    validate_note_id, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
-    NotesWorkspace, NotesWorkspaceScope,
+    validate_note_id, NoteAttachment, NotesHistoryContext, NotesHistoryReplayResult,
+    NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
@@ -70,6 +71,9 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
           before_json TEXT,
           after_json TEXT,
           PRIMARY KEY (table_name, row_id)
+        );
+        CREATE TEMP TABLE IF NOT EXISTS notes_history_pruned_attachment_paths (
+          relative_path TEXT PRIMARY KEY
         );
 
         CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_insert
@@ -153,7 +157,10 @@ fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result
         return Err("A Notes history mutation is already active on this connection.".to_string());
     }
     connection
-        .execute("DELETE FROM notes_history_audit", [])
+        .execute_batch(
+            "DELETE FROM notes_history_audit; \
+             DELETE FROM notes_history_pruned_attachment_paths;",
+        )
         .and_then(|_| {
             connection.execute(
                 "INSERT INTO notes_history_context(session_id, entry_id, command_kind) VALUES (?1, ?2, ?3)",
@@ -170,23 +177,67 @@ fn end_audit(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish Notes history auditing: {error}"))
 }
 
+pub(crate) struct HistoryTransactionResult {
+    pub(crate) workspace: NotesWorkspace,
+    pub(crate) pruned_attachment_paths: Vec<String>,
+}
+
+pub(crate) fn with_history_transaction_and_prunes(
+    connection: &mut Connection,
+    context: Option<&NotesHistoryContext>,
+    operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
+) -> Result<HistoryTransactionResult, String> {
+    let Some(context) = context else {
+        return operation(connection).map(|workspace| HistoryTransactionResult {
+            workspace,
+            pruned_attachment_paths: Vec::new(),
+        });
+    };
+    validate_context(context)?;
+    begin_audit(connection, context)?;
+    let result = operation(connection);
+    let pruned_attachment_paths = if result.is_ok() {
+        (|| {
+            let mut statement = connection
+                .prepare(
+                    "SELECT relative_path FROM notes_history_pruned_attachment_paths \
+                     ORDER BY relative_path",
+                )
+                .map_err(|error| {
+                    format!("Could not prepare pruned Notes attachment cleanup: {error}")
+                })?;
+            let paths = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| {
+                    format!("Could not read pruned Notes attachment cleanup: {error}")
+                })?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    format!("Could not collect pruned Notes attachment cleanup: {error}")
+                });
+            paths
+        })()
+    } else {
+        Ok(Vec::new())
+    };
+    let cleanup = end_audit(connection);
+    match (result, pruned_attachment_paths, cleanup) {
+        (Err(error), _, _) => Err(error),
+        (Ok(_), Err(error), _) | (Ok(_), Ok(_), Err(error)) => Err(error),
+        (Ok(workspace), Ok(pruned_attachment_paths), Ok(())) => Ok(HistoryTransactionResult {
+            workspace,
+            pruned_attachment_paths,
+        }),
+    }
+}
+
 pub(crate) fn with_history_transaction(
     connection: &mut Connection,
     context: Option<&NotesHistoryContext>,
     operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesWorkspace, String> {
-    let Some(context) = context else {
-        return operation(connection);
-    };
-    validate_context(context)?;
-    begin_audit(connection, context)?;
-    let result = operation(connection);
-    let cleanup = end_audit(connection);
-    match (result, cleanup) {
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
-        (Ok(workspace), Ok(())) => Ok(workspace),
-    }
+    with_history_transaction_and_prunes(connection, context, operation)
+        .map(|result| result.workspace)
 }
 
 pub(crate) fn has_active_context(connection: &Connection) -> Result<bool, String> {
@@ -207,6 +258,31 @@ pub(crate) fn has_active_context(connection: &Connection) -> Result<bool, String
             |row| row.get(0),
         )
         .map_err(|error| format!("Could not read Notes history context: {error}"))
+}
+
+fn record_pruned_attachment_paths(
+    transaction: &Transaction<'_>,
+    entry_query: &str,
+    parameters: impl rusqlite::Params + Copy,
+) -> Result<(), String> {
+    for json_column in ["before_json", "after_json"] {
+        transaction
+            .execute(
+                &format!(
+                    "INSERT OR IGNORE INTO notes_history_pruned_attachment_paths(relative_path) \
+                     SELECT json_extract({json_column}, '$.relative_path') \
+                     FROM notes_history_changes \
+                     WHERE table_name = 'notes_attachments' \
+                       AND {json_column} IS NOT NULL \
+                       AND entry_id IN ({entry_query})"
+                ),
+                parameters,
+            )
+            .map_err(|error| {
+                format!("Could not retain pruned Notes attachment cleanup paths: {error}")
+            })?;
+    }
+    Ok(())
 }
 
 pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -281,6 +357,11 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
     } else {
         false
     };
+    record_pruned_attachment_paths(
+        transaction,
+        "SELECT id FROM notes_history_entries WHERE is_undone = 1",
+        [],
+    )?;
     transaction
         .execute("DELETE FROM notes_history_entries WHERE is_undone = 1", [])
         .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
@@ -365,12 +446,20 @@ fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
         if entry_count <= HISTORY_MAX_ENTRIES && estimated_bytes <= HISTORY_MAX_BYTES {
             return Ok(());
         }
+        let oldest_entry = transaction
+            .query_row(
+                "SELECT id FROM notes_history_entries ORDER BY rowid, id LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not choose old Notes history to evict: {error}"))?
+            .ok_or_else(|| "Could not enforce Notes history limits.".to_string())?;
+        record_pruned_attachment_paths(transaction, "SELECT ?1", [&oldest_entry])?;
         let deleted = transaction
             .execute(
-                "DELETE FROM notes_history_entries WHERE rowid = (\
-                   SELECT rowid FROM notes_history_entries ORDER BY rowid, id LIMIT 1\
-                 )",
-                [],
+                "DELETE FROM notes_history_entries WHERE id = ?1",
+                [&oldest_entry],
             )
             .map_err(|error| format!("Could not evict old Notes history: {error}"))?;
         if deleted == 0 {
@@ -468,6 +557,35 @@ struct AttachmentSnapshot {
     display_width: i64,
     created_at: String,
     updated_at: String,
+}
+
+impl From<AttachmentSnapshot> for NoteAttachment {
+    fn from(attachment: AttachmentSnapshot) -> Self {
+        Self {
+            id: attachment.id,
+            node_id: attachment.node_id,
+            sort_key: attachment.sort_key,
+            relative_path: attachment.relative_path,
+            content_hash: attachment.content_hash,
+            original_name: attachment.original_name,
+            mime_type: attachment.mime_type,
+            byte_size: attachment.byte_size,
+            intrinsic_width: attachment.intrinsic_width,
+            intrinsic_height: attachment.intrinsic_height,
+            display_width: attachment.display_width,
+            created_at: attachment.created_at,
+            updated_at: attachment.updated_at,
+        }
+    }
+}
+
+fn decode_attachment_snapshot(row_id: &str, state: &str) -> Result<NoteAttachment, String> {
+    let attachment: AttachmentSnapshot = serde_json::from_str(state)
+        .map_err(|error| format!("Could not decode an attachment history row: {error}"))?;
+    if attachment.id != row_id {
+        return Err("A Notes attachment history row ID does not match its snapshot.".to_string());
+    }
+    Ok(attachment.into())
 }
 
 fn current_row_json(
@@ -663,11 +781,7 @@ fn apply_attachment_state(
             })?;
         return Ok(node_id);
     };
-    let attachment: AttachmentSnapshot = serde_json::from_str(state)
-        .map_err(|error| format!("Could not decode an attachment history row: {error}"))?;
-    if attachment.id != row_id {
-        return Err("A Notes attachment history row ID does not match its snapshot.".to_string());
-    }
+    let attachment = decode_attachment_snapshot(row_id, state)?;
     let node_id = attachment.node_id.clone();
     transaction
         .execute(
@@ -697,6 +811,7 @@ fn replay(
     session_id: &str,
     scope: NotesWorkspaceScope,
     undoing: bool,
+    attachment_storage: Option<&AttachmentStorageLease>,
 ) -> Result<NotesHistoryReplayResult, String> {
     validate_history_id("Notes history session ID", session_id)?;
     let transaction = connection
@@ -750,6 +865,18 @@ fn replay(
     };
     validate_expected_states(&transaction, &changes, undoing)?;
     validate_target_lifecycle(&transaction, &changes, undoing)?;
+    if let Some(storage) = attachment_storage {
+        for (table_name, row_id, before_json, after_json) in &changes {
+            if table_name != "notes_attachments" {
+                continue;
+            }
+            let target = if undoing { before_json } else { after_json };
+            if let Some(state) = target {
+                let attachment = decode_attachment_snapshot(row_id, state)?;
+                storage.read_validated_attachment_bytes(&attachment)?;
+            }
+        }
+    }
     let mut affected_nodes = BTreeSet::new();
     for (table_name, row_id, before_json, after_json) in changes {
         let state = if undoing {
@@ -790,20 +917,52 @@ fn replay(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn undo(
     connection: &mut Connection,
     session_id: &str,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    replay(connection, session_id, scope, true)
+    replay(connection, session_id, scope, true, None)
 }
 
+#[cfg(test)]
 pub(crate) fn redo(
     connection: &mut Connection,
     session_id: &str,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    replay(connection, session_id, scope, false)
+    replay(connection, session_id, scope, false, None)
+}
+
+pub(crate) fn undo_with_attachment_storage(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    attachment_storage: &AttachmentStorageLease,
+) -> Result<NotesHistoryReplayResult, String> {
+    replay(
+        connection,
+        session_id,
+        scope,
+        true,
+        Some(attachment_storage),
+    )
+}
+
+pub(crate) fn redo_with_attachment_storage(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    attachment_storage: &AttachmentStorageLease,
+) -> Result<NotesHistoryReplayResult, String> {
+    replay(
+        connection,
+        session_id,
+        scope,
+        false,
+        Some(attachment_storage),
+    )
 }
 
 #[cfg(test)]

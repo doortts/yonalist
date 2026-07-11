@@ -15,6 +15,9 @@ tauri-build = { version = "=2.4.1", features = [] }
 
 [dependencies]
 base64 = "0.22"
+cap-fs-ext = "4.0.2"
+cap-std = "4.0.2"
+fs4 = "1.1.0"
 image = { version = "=0.25.6", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 keyring = "3"
 lopdf = { version = "0.39", default-features = false }
