@@ -463,10 +463,9 @@ function tryNumericMatch(
   ) {
     separatorUtf16 += 1;
   }
-  if (
-    separatorUtf16 > startCandidate.endUtf16 &&
-    source[separatorUtf16] === "-"
-  ) {
+  if (source[separatorUtf16] === "-") {
+    const hasWhitespaceBeforeSeparator =
+      separatorUtf16 > startCandidate.endUtf16;
     let endStartUtf16 = separatorUtf16 + 1;
     while (
       endStartUtf16 < limitUtf16 &&
@@ -474,16 +473,17 @@ function tryNumericMatch(
     ) {
       endStartUtf16 += 1;
     }
-    if (endStartUtf16 > separatorUtf16 + 1) {
-      const endCandidate = readNumericCandidate(
-        source,
-        endStartUtf16,
-        limitUtf16
-      );
-      if (
-        endCandidate !== null &&
-        hasNumericEndBoundary(source, endCandidate.endUtf16)
-      ) {
+    const hasWhitespaceAfterSeparator = endStartUtf16 > separatorUtf16 + 1;
+    const endCandidate = readNumericCandidate(
+      source,
+      endStartUtf16,
+      limitUtf16
+    );
+    if (
+      endCandidate !== null &&
+      hasNumericEndBoundary(source, endCandidate.endUtf16)
+    ) {
+      if (hasWhitespaceBeforeSeparator && hasWhitespaceAfterSeparator) {
         const range = resolveNumericRange(
           startCandidate,
           endCandidate,
@@ -500,8 +500,8 @@ function tryNumericMatch(
             endUtf16: endCandidate.endUtf16
           };
         }
-        return { rejected: true, endUtf16: endCandidate.endUtf16 };
       }
+      return { rejected: true, endUtf16: endCandidate.endUtf16 };
     }
   }
 

@@ -360,6 +360,14 @@ describe("findNoteDateMatches", () => {
     }
   );
 
+  it.each(["07/11- 07/14", "07/11 -07/14"])(
+    "does not index either endpoint of half-spaced range-like input %s",
+    (source) => {
+      expect(parseNoteDateExpression(source, { today })).toBeNull();
+      expect(findNoteDateMatches(source, { today })).toEqual([]);
+    }
+  );
+
   it("returns ordered half-open UTF-16 source offsets", () => {
     const source = "😀 due 07/11/2026, then TOMORROW.";
     const matches = findNoteDateMatches(source, { today });
