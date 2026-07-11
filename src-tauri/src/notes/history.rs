@@ -255,7 +255,7 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
         )
         .optional()
         .map_err(|error| format!("Could not inspect Notes history entry: {error}"))?;
-    if let Some((session_id, sequence, is_undone, row_id)) = existing {
+    let entry_exists = if let Some((session_id, sequence, is_undone, row_id)) = existing {
         let latest_sequence: i64 = transaction
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) FROM notes_history_entries WHERE session_id = ?1",
@@ -277,10 +277,14 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
         {
             return Err("A Notes history entry can only coalesce with the latest applied entry in the database.".to_string());
         }
+        true
     } else {
-        transaction
-            .execute("DELETE FROM notes_history_entries WHERE is_undone = 1", [])
-            .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
+        false
+    };
+    transaction
+        .execute("DELETE FROM notes_history_entries WHERE is_undone = 1", [])
+        .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
+    if !entry_exists {
         let sequence: i64 = transaction
             .query_row(
                 "SELECT COALESCE(MAX(sequence), 0) + 1 FROM notes_history_entries WHERE session_id = ?1",
@@ -529,39 +533,66 @@ fn validate_target_lifecycle(
     changes: &[(String, String, Option<String>, Option<String>)],
     undoing: bool,
 ) -> Result<(), String> {
-    let mut target_nodes = HashMap::new();
+    #[derive(Debug)]
+    struct LifecycleState {
+        parent_id: Option<String>,
+        is_live: bool,
+    }
+
+    let mut resulting_nodes = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT id, parent_id, deleted_at IS NULL AND archived_at IS NULL FROM notes_nodes",
+            )
+            .map_err(|error| format!("Could not prepare Notes hierarchy validation: {error}"))?;
+        let nodes = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    LifecycleState {
+                        parent_id: row.get(1)?,
+                        is_live: row.get(2)?,
+                    },
+                ))
+            })
+            .map_err(|error| format!("Could not read Notes hierarchy validation: {error}"))?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|error| format!("Could not collect Notes hierarchy validation: {error}"))?;
+        nodes
+    };
     for (table_name, row_id, before_json, after_json) in changes {
         if table_name != "notes_nodes" {
             continue;
         }
         let target = if undoing { before_json } else { after_json };
-        let snapshot = target
-            .as_deref()
-            .map(|state| decode_node_snapshot(row_id, state))
-            .transpose()?;
-        target_nodes.insert(row_id.clone(), snapshot);
+        match target.as_deref() {
+            Some(state) => {
+                let node = decode_node_snapshot(row_id, state)?;
+                let is_live = node_is_live(&node);
+                resulting_nodes.insert(
+                    row_id.clone(),
+                    LifecycleState {
+                        parent_id: node.parent_id,
+                        is_live,
+                    },
+                );
+            }
+            None => {
+                resulting_nodes.remove(row_id);
+            }
+        }
     }
 
-    for (row_id, target) in &target_nodes {
-        let Some(node) = target else {
-            continue;
-        };
-        if !node_is_live(node) {
+    for (row_id, node) in &resulting_nodes {
+        if !node.is_live {
             continue;
         }
         let Some(parent_id) = node.parent_id.as_deref() else {
             continue;
         };
-        let parent_is_live = match target_nodes.get(parent_id) {
-            Some(Some(parent)) => node_is_live(parent),
-            Some(None) => false,
-            None => current_row_json(transaction, "notes_nodes", parent_id)?
-                .as_deref()
-                .map(|state| decode_node_snapshot(parent_id, state))
-                .transpose()?
-                .as_ref()
-                .is_some_and(node_is_live),
-        };
+        let parent_is_live = resulting_nodes
+            .get(parent_id)
+            .is_some_and(|parent| parent.is_live);
         if !parent_is_live {
             return Err(format!(
                 "Notes history conflict: replaying live node {row_id} would place it under inactive parent {parent_id}."
@@ -1364,6 +1395,94 @@ mod tests {
     }
 
     #[test]
+    fn notes_history_coalesced_forward_mutation_invalidates_cross_session_redo() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, "Session B before"),
+        )
+        .expect("session B node");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, None, Some(NODE_ID), "Session A before"),
+        )
+        .expect("session A node");
+
+        let session_b = history_context_for_session(SECOND_SESSION_ID, 1, "updateText");
+        journal(&mut connection, &session_b, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Session B journaled".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session B update");
+        let session_a = history_context(2, "updateText");
+        journal(&mut connection, &session_a, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: CHILD_ID.to_string(),
+                    title: "Session A first burst".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session A update");
+        undo(
+            &mut connection,
+            SECOND_SESSION_ID,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("session B undo");
+        assert!(
+            history_status(&connection, SECOND_SESSION_ID)
+                .expect("session B redo status")
+                .can_redo
+        );
+
+        journal(&mut connection, &session_a, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: CHILD_ID.to_string(),
+                    title: "Session A coalesced burst".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("session A coalesced update");
+
+        assert!(
+            !history_status(&connection, SECOND_SESSION_ID)
+                .expect("session B invalidated status")
+                .can_redo
+        );
+        let replay = redo(
+            &mut connection,
+            SECOND_SESSION_ID,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("invalidated session B redo");
+        assert_eq!(replay.replayed_entry_id, None);
+        assert_eq!(
+            replay
+                .workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == NODE_ID)
+                .expect("session B node")
+                .title,
+            "Session B before"
+        );
+    }
+
+    #[test]
     fn notes_history_rejects_stale_redo_expected_state_without_mutation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
@@ -1446,6 +1565,58 @@ mod tests {
                 )
                 .expect("child existence");
             assert!(!child_exists, "{lifecycle} replay created a child");
+        }
+    }
+
+    #[test]
+    fn notes_history_older_undo_cannot_make_parent_inactive_above_newer_live_child() {
+        for lifecycle in ["trash", "archive"] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let mut connection =
+                connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            create_node(&mut connection, create_input(NODE_ID, None, None, "Parent"))
+                .expect("parent");
+            match lifecycle {
+                "trash" => {
+                    soft_delete_node(&mut connection, NODE_ID).expect("trash parent");
+                }
+                _ => {
+                    archive_node(&mut connection, NODE_ID).expect("archive parent");
+                }
+            }
+
+            let session_a = history_context(1, lifecycle);
+            journal(&mut connection, &session_a, |connection| match lifecycle {
+                "trash" => restore_node(connection, NODE_ID),
+                _ => unarchive_node(connection, NODE_ID),
+            })
+            .expect("session A activates parent");
+            let session_b = history_context_for_session(SECOND_SESSION_ID, 2, "create");
+            journal(&mut connection, &session_b, |connection| {
+                create_node(
+                    connection,
+                    create_input(CHILD_ID, Some(NODE_ID), None, "Newer child"),
+                )
+            })
+            .expect("session B child");
+            let before_replay = active(&connection);
+
+            let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect_err("older undo must preserve newer live descendant");
+
+            assert!(
+                error.to_lowercase().contains("history conflict"),
+                "{lifecycle}: {error}"
+            );
+            assert_eq!(active(&connection), before_replay);
+            let parent_state: (Option<String>, Option<String>) = connection
+                .query_row(
+                    "SELECT deleted_at, archived_at FROM notes_nodes WHERE id = ?1",
+                    [NODE_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("parent state");
+            assert_eq!(parent_state, (None, None));
         }
     }
 
