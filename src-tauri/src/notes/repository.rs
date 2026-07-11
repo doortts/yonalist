@@ -285,7 +285,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         }
     }
 
-    ensure_history_command_kind(&transaction)?;
+    ensure_history_schema(&transaction)?;
     transaction
         .execute_batch(
             "CREATE INDEX IF NOT EXISTS notes_nodes_archive_root_order \
@@ -302,8 +302,122 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
 }
 
-fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), String> {
-    let columns = transaction
+const HISTORY_ENTRIES_CURRENT_SQL: &str = "CREATE TABLE notes_history_entries (\
+  id TEXT PRIMARY KEY, \
+  session_id TEXT NOT NULL, \
+  sequence INTEGER NOT NULL, \
+  is_undone INTEGER NOT NULL DEFAULT 0, \
+  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+  command_kind TEXT NOT NULL DEFAULT 'legacy'\
+)";
+const HISTORY_ENTRIES_MISSING_COMMAND_KIND_SQL: &str = "CREATE TABLE notes_history_entries (\
+  id TEXT PRIMARY KEY, \
+  session_id TEXT NOT NULL, \
+  sequence INTEGER NOT NULL, \
+  is_undone INTEGER NOT NULL DEFAULT 0, \
+  estimated_bytes INTEGER NOT NULL DEFAULT 0\
+)";
+const HISTORY_ENTRIES_NO_DEFAULT_SQL: &str = "CREATE TABLE notes_history_entries (\
+  id TEXT PRIMARY KEY, \
+  session_id TEXT NOT NULL, \
+  sequence INTEGER NOT NULL, \
+  is_undone INTEGER NOT NULL DEFAULT 0, \
+  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+  command_kind TEXT NOT NULL\
+)";
+const HISTORY_ENTRIES_BACKUP_SQL: &str = "CREATE TABLE notes_history_entries (\
+  id TEXT PRIMARY KEY, \
+  session_id TEXT NOT NULL, \
+  sequence INTEGER NOT NULL, \
+  command_kind TEXT NOT NULL, \
+  is_undone INTEGER NOT NULL DEFAULT 0, \
+  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+  created_at TEXT NOT NULL\
+)";
+const HISTORY_ENTRIES_HYBRID_SQL: &str = "CREATE TABLE notes_history_entries (\
+  id TEXT PRIMARY KEY, \
+  session_id TEXT NOT NULL, \
+  sequence INTEGER NOT NULL, \
+  is_undone INTEGER NOT NULL DEFAULT 0, \
+  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+  created_at TEXT NOT NULL, \
+  command_kind TEXT NOT NULL DEFAULT 'legacy'\
+)";
+const HISTORY_CHANGES_CURRENT_SQL: &str = "CREATE TABLE notes_history_changes (\
+  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+  table_name TEXT NOT NULL, \
+  row_id TEXT NOT NULL, \
+  ordinal INTEGER NOT NULL, \
+  before_json TEXT, \
+  after_json TEXT, \
+  PRIMARY KEY (entry_id, table_name, row_id)\
+)";
+const HISTORY_CHANGES_HISTORICAL_SQL: &str = "CREATE TABLE notes_history_changes (\
+  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+  sequence INTEGER NOT NULL, \
+  table_name TEXT NOT NULL, \
+  row_id TEXT NOT NULL, \
+  before_json TEXT, \
+  after_json TEXT, \
+  PRIMARY KEY (entry_id, sequence)\
+)";
+
+type HistorySchemaObject = (String, String, String, Option<String>);
+
+fn ensure_history_schema(transaction: &Transaction<'_>) -> Result<(), String> {
+    let actual = history_schema_objects(transaction)?;
+    if actual
+        == expected_history_schema_objects(HISTORY_ENTRIES_CURRENT_SQL, HISTORY_CHANGES_CURRENT_SQL)
+    {
+        return Ok(());
+    }
+    if actual
+        == expected_history_schema_objects(
+            HISTORY_ENTRIES_MISSING_COMMAND_KIND_SQL,
+            HISTORY_CHANGES_CURRENT_SQL,
+        )
+    {
+        return transaction
+            .execute_batch(
+                "ALTER TABLE notes_history_entries \
+                 ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
+            )
+            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
+    }
+    if actual
+        == expected_history_schema_objects(
+            HISTORY_ENTRIES_NO_DEFAULT_SQL,
+            HISTORY_CHANGES_CURRENT_SQL,
+        )
+    {
+        return transaction
+            .execute_batch(
+                "ALTER TABLE notes_history_entries \
+                   ADD COLUMN yonalist_command_kind_repair TEXT NOT NULL DEFAULT 'legacy'; \
+                 UPDATE notes_history_entries \
+                   SET yonalist_command_kind_repair = command_kind; \
+                 ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
+                 ALTER TABLE notes_history_entries \
+                   RENAME COLUMN yonalist_command_kind_repair TO command_kind;",
+            )
+            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
+    }
+    let is_historical_pair = actual
+        == expected_history_schema_objects(
+            HISTORY_ENTRIES_BACKUP_SQL,
+            HISTORY_CHANGES_HISTORICAL_SQL,
+        )
+        || actual
+            == expected_history_schema_objects(
+                HISTORY_ENTRIES_HYBRID_SQL,
+                HISTORY_CHANGES_HISTORICAL_SQL,
+            );
+    if is_historical_pair {
+        validate_historical_history_data(transaction)?;
+        return migrate_historical_history_schema(transaction);
+    }
+
+    let command_kind = transaction
         .prepare("PRAGMA table_info(notes_history_entries)")
         .and_then(|mut statement| {
             statement
@@ -317,60 +431,24 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
                 })?
                 .collect::<Result<Vec<_>, _>>()
         })
-        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?;
-    let Some((_, column_type, not_null, default_value)) = columns
+        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?
         .into_iter()
-        .find(|(name, _, _, _)| name == "command_kind")
-    else {
-        ensure_canonical_legacy_history_schema(
-            transaction,
-            "CREATE TABLE notes_history_entries (\
-               id TEXT PRIMARY KEY, \
-               session_id TEXT NOT NULL, \
-               sequence INTEGER NOT NULL, \
-               is_undone INTEGER NOT NULL DEFAULT 0, \
-               estimated_bytes INTEGER NOT NULL DEFAULT 0\
-             )",
-        )?;
-        return transaction
-            .execute_batch(
-                "ALTER TABLE notes_history_entries \
-                 ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
-            )
-            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
-    };
-    if column_type == "TEXT" && not_null && default_value.as_deref() == Some("'legacy'") {
-        return Ok(());
+        .find(|(name, _, _, _)| name == "command_kind");
+    match command_kind {
+        None => Err(noncanonical_history_schema_error()),
+        Some((_, column_type, not_null, default_value))
+            if column_type == "TEXT"
+                && not_null
+                && matches!(default_value.as_deref(), None | Some("'legacy'")) =>
+        {
+            Err(noncanonical_history_schema_error())
+        }
+        Some((_, column_type, not_null, default_value)) => Err(format!(
+            "Notes history command_kind has incompatible schema metadata \
+             (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
+             expected TEXT NOT NULL DEFAULT 'legacy'."
+        )),
     }
-    if column_type == "TEXT" && not_null && default_value.is_none() {
-        ensure_canonical_legacy_history_schema(
-            transaction,
-            "CREATE TABLE notes_history_entries (\
-               id TEXT PRIMARY KEY, \
-               session_id TEXT NOT NULL, \
-               sequence INTEGER NOT NULL, \
-               is_undone INTEGER NOT NULL DEFAULT 0, \
-               estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-               command_kind TEXT NOT NULL\
-             )",
-        )?;
-        return transaction
-            .execute_batch(
-                "ALTER TABLE notes_history_entries \
-                   ADD COLUMN yonalist_command_kind_repair TEXT NOT NULL DEFAULT 'legacy'; \
-                 UPDATE notes_history_entries \
-                   SET yonalist_command_kind_repair = command_kind; \
-                 ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
-                 ALTER TABLE notes_history_entries \
-                   RENAME COLUMN yonalist_command_kind_repair TO command_kind;",
-            )
-            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
-    }
-    Err(format!(
-        "Notes history command_kind has incompatible schema metadata \
-         (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
-         expected TEXT NOT NULL DEFAULT 'legacy'."
-    ))
 }
 
 fn normalize_schema_sql(sql: Option<String>) -> Option<String> {
@@ -381,19 +459,20 @@ fn normalize_schema_sql(sql: Option<String>) -> Option<String> {
     })
 }
 
-fn ensure_canonical_legacy_history_schema(
+fn history_schema_objects(
     transaction: &Transaction<'_>,
-    expected_entries_sql: &str,
-) -> Result<(), String> {
-    let mut actual = transaction
+) -> Result<Vec<HistorySchemaObject>, String> {
+    let mut objects = transaction
         .prepare(
             "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-             WHERE tbl_name = 'notes_history_entries' \
+             WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
                 OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
              UNION ALL \
              SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
-             WHERE tbl_name = 'notes_history_entries' \
-                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0",
+             WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
+                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0",
         )
         .and_then(|mut statement| {
             statement
@@ -408,8 +487,14 @@ fn ensure_canonical_legacy_history_schema(
                 .collect::<Result<Vec<_>, _>>()
         })
         .map_err(|error| format!("Could not inspect Notes history schema objects: {error}"))?;
-    actual.sort();
+    objects.sort();
+    Ok(objects)
+}
 
+fn expected_history_schema_objects(
+    entries_sql: &str,
+    changes_sql: &str,
+) -> Vec<HistorySchemaObject> {
     let mut expected = vec![
         (
             "index".to_string(),
@@ -428,40 +513,185 @@ fn ensure_canonical_legacy_history_schema(
             None,
         ),
         (
+            "index".to_string(),
+            "sqlite_autoindex_notes_history_changes_1".to_string(),
+            "notes_history_changes".to_string(),
+            None,
+        ),
+        (
             "table".to_string(),
             "notes_history_changes".to_string(),
             "notes_history_changes".to_string(),
-            normalize_schema_sql(Some(
-                "CREATE TABLE notes_history_changes (\
-                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
-                   table_name TEXT NOT NULL, \
-                   row_id TEXT NOT NULL, \
-                   ordinal INTEGER NOT NULL, \
-                   before_json TEXT, \
-                   after_json TEXT, \
-                   PRIMARY KEY (entry_id, table_name, row_id)\
-                 )"
-                .to_string(),
-            )),
+            normalize_schema_sql(Some(changes_sql.to_string())),
         ),
         (
             "table".to_string(),
             "notes_history_entries".to_string(),
             "notes_history_entries".to_string(),
-            normalize_schema_sql(Some(expected_entries_sql.to_string())),
+            normalize_schema_sql(Some(entries_sql.to_string())),
         ),
     ];
     expected.sort();
+    expected
+}
 
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(
-            "Notes history command_kind repair requires the canonical legacy schema without \
-             additional clauses or dependent objects."
-                .to_string(),
+fn noncanonical_history_schema_error() -> String {
+    "Notes history command_kind repair requires the canonical legacy schema without \
+     additional clauses or dependent objects."
+        .to_string()
+}
+
+fn validate_historical_history_data(transaction: &Transaction<'_>) -> Result<(), String> {
+    let repair_name_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM sqlite_schema \
+               WHERE name IN ('notes_history_entries_legacy', 'notes_history_changes_legacy') \
+                  OR instr(lower(COALESCE(sql, '')), 'notes_history_entries_legacy') > 0 \
+                  OR instr(lower(COALESCE(sql, '')), 'notes_history_changes_legacy') > 0 \
+               UNION ALL \
+               SELECT 1 FROM sqlite_temp_schema \
+               WHERE name IN ('notes_history_entries_legacy', 'notes_history_changes_legacy') \
+                  OR instr(lower(COALESCE(sql, '')), 'notes_history_entries_legacy') > 0 \
+                  OR instr(lower(COALESCE(sql, '')), 'notes_history_changes_legacy') > 0\
+             )",
+            [],
+            |row| row.get(0),
         )
+        .map_err(|error| format!("Could not inspect Notes history repair names: {error}"))?;
+    if repair_name_exists {
+        return Err(noncanonical_history_schema_error());
     }
+    let has_orphan: bool = transaction
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_history_changes change \
+               LEFT JOIN notes_history_entries entry ON entry.id = change.entry_id \
+               WHERE entry.id IS NULL\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not validate historical Notes history owners: {error}"))?;
+    if has_orphan {
+        return Err("Historical Notes history contains orphaned changes.".to_string());
+    }
+    let has_unsupported_table: bool = transaction
+        .query_row(
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_history_changes \
+               WHERE table_name NOT IN ('notes_nodes', 'notes_attachments')\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not validate historical Notes history tables: {error}"))?;
+    if has_unsupported_table {
+        return Err("Historical Notes history contains unsupported tables.".to_string());
+    }
+    // Current journaling keeps the first state and last state for each touched row.
+    let has_broken_chain: bool = transaction
+        .query_row(
+            "WITH ordered AS (\
+               SELECT before_json, \
+                      lag(after_json) OVER (\
+                        PARTITION BY entry_id, table_name, row_id ORDER BY sequence\
+                      ) AS previous_after, \
+                      row_number() OVER (\
+                        PARTITION BY entry_id, table_name, row_id ORDER BY sequence\
+                      ) AS position \
+               FROM notes_history_changes\
+             ) \
+             SELECT EXISTS(\
+               SELECT 1 FROM ordered \
+               WHERE position > 1 AND NOT (previous_after IS before_json)\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| {
+            format!("Could not validate historical Notes history continuity: {error}")
+        })?;
+    if has_broken_chain {
+        return Err(
+            "Historical Notes history changes must form a contiguous state chain.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn migrate_historical_history_schema(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            r#"
+            ALTER TABLE notes_history_changes RENAME TO notes_history_changes_legacy;
+            ALTER TABLE notes_history_entries RENAME TO notes_history_entries_legacy;
+
+            CREATE TABLE notes_history_entries (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              is_undone INTEGER NOT NULL DEFAULT 0,
+              estimated_bytes INTEGER NOT NULL DEFAULT 0,
+              command_kind TEXT NOT NULL DEFAULT 'legacy'
+            );
+            INSERT INTO notes_history_entries(
+              id, session_id, sequence, is_undone, estimated_bytes, command_kind
+            )
+              SELECT id, session_id, sequence, is_undone, estimated_bytes, command_kind
+              FROM notes_history_entries_legacy;
+
+            CREATE TABLE notes_history_changes (
+              entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
+              table_name TEXT NOT NULL,
+              row_id TEXT NOT NULL,
+              ordinal INTEGER NOT NULL,
+              before_json TEXT,
+              after_json TEXT,
+              PRIMARY KEY (entry_id, table_name, row_id)
+            );
+            WITH grouped AS (
+              SELECT entry_id, table_name, row_id,
+                     MIN(sequence) AS first_sequence,
+                     MAX(sequence) AS last_sequence
+              FROM notes_history_changes_legacy
+              GROUP BY entry_id, table_name, row_id
+            )
+            INSERT INTO notes_history_changes(
+              entry_id, table_name, row_id, ordinal, before_json, after_json
+            )
+              SELECT grouped.entry_id, grouped.table_name, grouped.row_id,
+                     grouped.first_sequence, first.before_json, last.after_json
+              FROM grouped
+              JOIN notes_history_changes_legacy first
+                ON first.entry_id = grouped.entry_id
+               AND first.sequence = grouped.first_sequence
+              JOIN notes_history_changes_legacy last
+                ON last.entry_id = grouped.entry_id
+               AND last.sequence = grouped.last_sequence
+              WHERE NOT (first.before_json IS last.after_json);
+
+            DELETE FROM notes_history_entries
+              WHERE NOT EXISTS (
+                SELECT 1 FROM notes_history_changes change
+                WHERE change.entry_id = notes_history_entries.id
+              );
+            UPDATE notes_history_entries SET estimated_bytes = (
+              SELECT COALESCE(SUM(
+                length(CAST(COALESCE(before_json, '') AS BLOB)) +
+                length(CAST(COALESCE(after_json, '') AS BLOB))
+              ), 0)
+              FROM notes_history_changes
+              WHERE entry_id = notes_history_entries.id
+            );
+
+            DROP TABLE notes_history_changes_legacy;
+            DROP TABLE notes_history_entries_legacy;
+            CREATE UNIQUE INDEX notes_history_session_sequence
+              ON notes_history_entries(session_id, sequence);
+            "#,
+        )
+        .map_err(|error| format!("Could not migrate historical Notes history: {error}"))
 }
 
 fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -3998,6 +4228,228 @@ mod tests {
             .expect("seed no-default history child");
     }
 
+    fn seed_historical_history_schema(connection: &Connection, hybrid: bool) {
+        let entries_sql = if hybrid {
+            r#"
+            CREATE TABLE notes_history_entries (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              is_undone INTEGER NOT NULL DEFAULT 0,
+              estimated_bytes INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL,
+              command_kind TEXT NOT NULL DEFAULT 'legacy'
+            );
+            "#
+        } else {
+            r#"
+            CREATE TABLE notes_history_entries (
+              id TEXT PRIMARY KEY,
+              session_id TEXT NOT NULL,
+              sequence INTEGER NOT NULL,
+              command_kind TEXT NOT NULL,
+              is_undone INTEGER NOT NULL DEFAULT 0,
+              estimated_bytes INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL
+            );
+            "#
+        };
+        connection
+            .execute_batch(&format!(
+                r#"
+                DROP TABLE notes_history_changes;
+                DROP TABLE notes_history_entries;
+                {entries_sql}
+                CREATE UNIQUE INDEX notes_history_session_sequence
+                  ON notes_history_entries(session_id, sequence);
+                CREATE TABLE notes_history_changes (
+                  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
+                  sequence INTEGER NOT NULL,
+                  table_name TEXT NOT NULL,
+                  row_id TEXT NOT NULL,
+                  before_json TEXT,
+                  after_json TEXT,
+                  PRIMARY KEY (entry_id, sequence)
+                );
+                "#
+            ))
+            .expect("seed historical history schema");
+    }
+
+    fn node_history_snapshot(connection: &Connection, node_id: &str, title: &str) -> String {
+        connection
+            .query_row(
+                "SELECT json_object(\
+                   'id', node.id, 'parent_id', node.parent_id, 'sort_key', node.sort_key, \
+                   'title', ?2, 'note', node.note, 'layout_mode', node.layout_mode, \
+                   'is_collapsed', node.is_collapsed, 'is_starred', node.is_starred, \
+                   'completed_at', node.completed_at, 'created_at', node.created_at, \
+                   'updated_at', node.updated_at, 'deleted_at', node.deleted_at, \
+                   'deleted_batch_id', node.deleted_batch_id, \
+                   'archived_at', node.archived_at, 'archive_root_id', node.archive_root_id\
+                 ) FROM notes_nodes node WHERE node.id = ?1",
+                params![node_id, title],
+                |row| row.get(0),
+            )
+            .expect("build node history snapshot")
+    }
+
+    fn historical_history_snapshot(
+        connection: &Connection,
+    ) -> (
+        Vec<(String, String, String, Option<String>)>,
+        Vec<(String, String, i64, String, i64, i64, String)>,
+        Vec<(String, i64, String, String, Option<String>, Option<String>)>,
+    ) {
+        let objects = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+                 WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
+                 UNION ALL \
+                 SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
+                 WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
+                 ORDER BY 1, 2, 3, 4",
+            )
+            .expect("prepare historical history schema snapshot")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query historical history schema snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect historical history schema snapshot");
+        let entries = connection
+            .prepare(
+                "SELECT id, session_id, sequence, command_kind, is_undone, estimated_bytes, \
+                        created_at \
+                 FROM notes_history_entries ORDER BY id",
+            )
+            .expect("prepare historical history entry snapshot")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            })
+            .expect("query historical history entry snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect historical history entry snapshot");
+        let changes = connection
+            .prepare(
+                "SELECT entry_id, sequence, table_name, row_id, before_json, after_json \
+                 FROM notes_history_changes ORDER BY entry_id, sequence",
+            )
+            .expect("prepare historical history change snapshot")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("query historical history change snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect historical history change snapshot");
+        (objects, entries, changes)
+    }
+
+    fn assert_historical_history_pair_repairs_and_replays_trash(hybrid: bool) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("vault path");
+        {
+            let mut connection = connect_notes_db(vault_path).expect("create notes database");
+            create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
+            seed_historical_history_schema(&connection, hybrid);
+        }
+
+        let mut connection = connect_notes_db(vault_path).expect("repair historical history pair");
+        assert_eq!(
+            table_columns(&connection, "notes_history_entries"),
+            vec![
+                "id",
+                "session_id",
+                "sequence",
+                "is_undone",
+                "estimated_bytes",
+                "command_kind"
+            ]
+        );
+        assert_eq!(
+            table_columns(&connection, "notes_history_changes"),
+            vec![
+                "entry_id",
+                "table_name",
+                "row_id",
+                "ordinal",
+                "before_json",
+                "after_json"
+            ]
+        );
+        assert_eq!(
+            primary_key_columns(&connection, "notes_history_changes"),
+            vec!["entry_id", "table_name", "row_id"]
+        );
+        initialize_notes_db(&mut connection).expect("reinitialize repaired history pair");
+
+        let context = NotesHistoryContext {
+            session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
+            entry_id: "00000000-0000-4000-8000-000000000003".to_string(),
+            command_kind: "trash".to_string(),
+        };
+        with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+            soft_delete_node(connection, NODE_ID)
+        })
+        .expect("move note to trash after historical history repair");
+
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
+                    [&context.entry_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("stored trash command kind"),
+            "trash"
+        );
+        assert!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_history_changes \
+                     WHERE entry_id = ?1 AND ordinal IS NOT NULL",
+                    [&context.entry_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("stored trash changes")
+                > 0
+        );
+        let undone = undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo trash after historical history repair");
+        assert!(undone.workspace.nodes.iter().any(|node| node.id == NODE_ID));
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("historical history foreign key check"),
+            0
+        );
+    }
+
     fn insert_node(
         connection: &Connection,
         id: &str,
@@ -4919,6 +5371,236 @@ mod tests {
         initialize_notes_db(&mut connection).expect("reinitialize version three database");
 
         assert!(object_exists(
+            &connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
+    }
+
+    #[test]
+    fn version_three_initialization_repairs_the_exact_backup_history_pair() {
+        assert_historical_history_pair_repairs_and_replays_trash(false);
+    }
+
+    #[test]
+    fn version_three_initialization_repairs_the_exact_live_hybrid_history_pair() {
+        assert_historical_history_pair_repairs_and_replays_trash(true);
+    }
+
+    #[test]
+    fn version_three_initialization_collapses_contiguous_historical_changes_deterministically() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root final");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Child final");
+        let root_before = node_history_snapshot(&connection, NODE_ID, "Root before");
+        let root_middle = node_history_snapshot(&connection, NODE_ID, "Root middle");
+        let root_final = node_history_snapshot(&connection, NODE_ID, "Root final");
+        let child_before = node_history_snapshot(&connection, CHILD_ID, "Child before");
+        let child_final = node_history_snapshot(&connection, CHILD_ID, "Child final");
+        seed_historical_history_schema(&connection, false);
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind, is_undone, estimated_bytes, created_at\
+                 ) VALUES (?1, ?2, 1, 'updateText', 0, 999, '2026-07-12T00:00:00.000Z')",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ],
+            )
+            .expect("seed populated historical history entry");
+        for (sequence, row_id, before_json, after_json) in [
+            (1, NODE_ID, &root_before, &root_middle),
+            (2, CHILD_ID, &child_before, &child_final),
+            (3, NODE_ID, &root_middle, &root_final),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO notes_history_changes(\
+                       entry_id, sequence, table_name, row_id, before_json, after_json\
+                     ) VALUES (?1, ?2, 'notes_nodes', ?3, ?4, ?5)",
+                    params![
+                        "00000000-0000-4000-8000-000000000001",
+                        sequence,
+                        row_id,
+                        before_json,
+                        after_json
+                    ],
+                )
+                .expect("seed populated historical history change");
+        }
+
+        initialize_notes_db(&mut connection).expect("migrate populated historical history");
+
+        let changes = connection
+            .prepare(
+                "SELECT row_id, ordinal, before_json, after_json \
+                 FROM notes_history_changes ORDER BY ordinal",
+            )
+            .expect("prepare collapsed historical changes")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .expect("query collapsed historical changes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect collapsed historical changes");
+        assert_eq!(
+            changes,
+            vec![
+                (
+                    NODE_ID.to_string(),
+                    1,
+                    Some(root_before.clone()),
+                    Some(root_final.clone())
+                ),
+                (
+                    CHILD_ID.to_string(),
+                    2,
+                    Some(child_before.clone()),
+                    Some(child_final.clone())
+                )
+            ]
+        );
+        let (command_kind, estimated_bytes): (String, i64) = connection
+            .query_row(
+                "SELECT command_kind, estimated_bytes FROM notes_history_entries",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("migrated historical history entry");
+        assert_eq!(command_kind, "updateText");
+        assert_eq!(
+            estimated_bytes,
+            i64::try_from(
+                root_before.len() + root_final.len() + child_before.len() + child_final.len()
+            )
+            .expect("estimated historical payload bytes")
+        );
+
+        undo(
+            &mut connection,
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo migrated historical update");
+        let restored_titles = connection
+            .prepare("SELECT id, title FROM notes_nodes ORDER BY id")
+            .expect("prepare restored historical titles")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query restored historical titles")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect restored historical titles");
+        assert_eq!(
+            restored_titles,
+            vec![
+                (NODE_ID.to_string(), "Root before".to_string()),
+                (CHILD_ID.to_string(), "Child before".to_string())
+            ]
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("populated historical history foreign key check"),
+            0
+        );
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_broken_historical_change_chains_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "Root final");
+        let before = node_history_snapshot(&connection, NODE_ID, "Root before");
+        let middle = node_history_snapshot(&connection, NODE_ID, "Root middle");
+        let wrong = node_history_snapshot(&connection, NODE_ID, "Unrelated state");
+        let final_state = node_history_snapshot(&connection, NODE_ID, "Root final");
+        seed_historical_history_schema(&connection, false);
+        connection
+            .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
+            .expect("drop post-history-repair index");
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind, created_at\
+                 ) VALUES (?1, ?2, 1, 'updateText', '2026-07-12T00:00:00.000Z')",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                ],
+            )
+            .expect("seed broken historical history entry");
+        for (sequence, before_json, after_json) in
+            [(1, &before, &middle), (2, &wrong, &final_state)]
+        {
+            connection
+                .execute(
+                    "INSERT INTO notes_history_changes(\
+                       entry_id, sequence, table_name, row_id, before_json, after_json\
+                     ) VALUES (?1, ?2, 'notes_nodes', ?3, ?4, ?5)",
+                    params![
+                        "00000000-0000-4000-8000-000000000001",
+                        sequence,
+                        NODE_ID,
+                        before_json,
+                        after_json
+                    ],
+                )
+                .expect("seed broken historical history change");
+        }
+        let snapshot = historical_history_snapshot(&connection);
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("broken historical history chain must be rejected");
+
+        assert!(error.contains("contiguous"), "{error}");
+        assert_eq!(historical_history_snapshot(&connection), snapshot);
+        assert!(!object_exists(
+            &connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_live_hybrid_dependencies_without_mutation() {
+        let mut connection = test_connection();
+        seed_historical_history_schema(&connection, true);
+        connection
+            .execute_batch(
+                "CREATE TABLE history_repair_audit (events INTEGER NOT NULL); \
+                 INSERT INTO history_repair_audit(events) VALUES (0); \
+                 CREATE TRIGGER unexpected_hybrid_history_update \
+                 AFTER UPDATE ON notes_history_entries \
+                 BEGIN \
+                   UPDATE history_repair_audit SET events = events + 1; \
+                 END; \
+                 DROP INDEX notes_nodes_archive_root_order;",
+            )
+            .expect("seed unexpected live hybrid dependency");
+        let snapshot = historical_history_snapshot(&connection);
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("live hybrid history dependency must be rejected");
+
+        assert!(error.contains("canonical legacy schema"), "{error}");
+        assert_eq!(historical_history_snapshot(&connection), snapshot);
+        assert_eq!(
+            connection
+                .query_row("SELECT events FROM history_repair_audit", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("hybrid history repair audit count"),
+            0
+        );
+        assert!(!object_exists(
             &connection,
             "index",
             "notes_nodes_archive_root_order"
