@@ -7,6 +7,8 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
 import { NotesDatePicker } from "./NotesDatePicker";
 
@@ -39,6 +41,30 @@ function getDateButton(name: string) {
   return within(getPicker()).getByRole("button", { name });
 }
 
+function createImmediateTestRoot() {
+  const actEnvironment = globalThis as typeof globalThis & {
+    IS_REACT_ACT_ENVIRONMENT?: boolean;
+  };
+  const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+  actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  return {
+    container,
+    root,
+    cleanup() {
+      flushSync(() => root.unmount());
+      container.remove();
+      if (previousActEnvironment === undefined) {
+        delete actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+      } else {
+        actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+      }
+    }
+  };
+}
+
 describe("NotesDatePicker", () => {
   it("opens from a typed !! context with an editable input and Sunday-first calendar", async () => {
     render(<NotesDatePicker {...pickerProps()} />);
@@ -59,6 +85,25 @@ describe("NotesDatePicker", () => {
     );
     expect(picker).toHaveStyle({ width: "320px" });
     expect(within(picker).getByRole("grid")).toHaveStyle({ height: "228px" });
+  });
+
+  it("uses a valid grid row hierarchy for headers and calendar weeks", () => {
+    render(<NotesDatePicker {...pickerProps()} />);
+    const grid = within(getPicker()).getByRole("grid");
+    const rows = within(grid).getAllByRole("row");
+
+    expect(rows).toHaveLength(7);
+    expect(within(rows[0]).getAllByRole("columnheader")).toHaveLength(7);
+    expect(within(rows[0]).queryByRole("gridcell")).toBeNull();
+    for (const weekRow of rows.slice(1)) {
+      expect(within(weekRow).getAllByRole("gridcell")).toHaveLength(7);
+      expect(within(weekRow).queryByRole("columnheader")).toBeNull();
+    }
+    expect(
+      Array.from(grid.children).every(
+        (child) => child.getAttribute("role") === "row"
+      )
+    ).toBe(true);
   });
 
   it("hydrates an existing date context for editing and exposes removal", async () => {
@@ -264,6 +309,64 @@ describe("NotesDatePicker", () => {
       within(picker).getByRole("button", { name: "Previous month" })
     );
     expect(within(picker).getByText("July 2026")).toBeVisible();
+  });
+
+  it("clamps the calendar at 0001-01-01 without throwing", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesDatePicker
+        {...pickerProps({
+          today: { year: 1, month: 1, day: 1 }
+        })}
+      />
+    );
+    const picker = getPicker();
+    const firstDay = within(picker).getByRole("button", {
+      name: "Monday, January 1, 1"
+    });
+
+    expect(
+      within(picker).getByRole("button", { name: "Previous month" })
+    ).toBeDisabled();
+    expect(
+      within(picker).getAllByRole("button", {
+        name: "Outside supported date range"
+      })
+    ).toHaveLength(1);
+
+    firstDay.focus();
+    await user.keyboard("{ArrowLeft}{Home}{PageUp}");
+    expect(firstDay).toHaveFocus();
+    expect(within(picker).getByText("January 1")).toBeVisible();
+  });
+
+  it("clamps the calendar at 9999-12-31 without throwing", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesDatePicker
+        {...pickerProps({
+          today: { year: 9999, month: 12, day: 31 }
+        })}
+      />
+    );
+    const picker = getPicker();
+    const lastDay = within(picker).getByRole("button", {
+      name: "Friday, December 31, 9999"
+    });
+
+    expect(
+      within(picker).getByRole("button", { name: "Next month" })
+    ).toBeDisabled();
+    expect(
+      within(picker).getAllByRole("button", {
+        name: "Outside supported date range"
+      })
+    ).toHaveLength(8);
+
+    lastDay.focus();
+    await user.keyboard("{ArrowRight}{ArrowDown}{End}{PageDown}");
+    expect(lastDay).toHaveFocus();
+    expect(within(picker).getByText("December 9999")).toBeVisible();
   });
 
   it("orders range endpoints selected in reverse and commits one replacement", async () => {
@@ -480,6 +583,115 @@ describe("NotesDatePicker", () => {
 
     rerender(<NotesDatePicker {...pickerProps()} />);
     await waitFor(() => expect(input).toHaveValue("07/12/2026"));
+  });
+
+  it("renders changed context, value, and replacement synchronously", () => {
+    const { container, root, cleanup } = createImmediateTestRoot();
+    const onCommit = vi.fn();
+
+    try {
+      flushSync(() => {
+        root.render(
+          <NotesDatePicker
+            {...pickerProps({
+              context: {
+                kind: "existing-date",
+                startUtf16: 2,
+                endUtf16: 12,
+                raw: "07/11/2026",
+                value: {
+                  start: today,
+                  end: null,
+                  format: "MM/DD/YYYY"
+                }
+              },
+              onCommit
+            })}
+          />
+        );
+      });
+      const input = within(container).getByRole("textbox", { name: "Date" });
+      fireEvent.change(input, { target: { value: "tomorrow" } });
+      expect(input).toHaveValue("tomorrow");
+
+      flushSync(() => {
+        root.render(
+          <NotesDatePicker
+            {...pickerProps({
+              context: {
+                kind: "existing-date",
+                startUtf16: 20,
+                endUtf16: 28,
+                raw: "08-03-26",
+                value: {
+                  start: { year: 2026, month: 8, day: 3 },
+                  end: null,
+                  format: "MM-DD-YY"
+                }
+              },
+              onCommit
+            })}
+          />
+        );
+      });
+
+      expect(
+        within(container).getByRole("textbox", { name: "Date" })
+      ).toHaveValue("08-03-26");
+      expect(
+        within(container).getByRole("combobox", { name: "Format" })
+      ).toHaveValue("MM-DD-YY");
+      expect(
+        within(container).getByRole("button", {
+          name: "Monday, August 3, 2026"
+        })
+      ).toHaveAttribute("aria-pressed", "true");
+
+      fireEvent.click(
+        within(container).getByRole("button", { name: "Remove date" })
+      );
+      expect(onCommit).toHaveBeenLastCalledWith({
+        replacement: { startUtf16: 20, endUtf16: 28, text: "" },
+        value: null
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("renders a reopened session synchronously from its controlled context", () => {
+    const { container, root, cleanup } = createImmediateTestRoot();
+
+    try {
+      flushSync(() => {
+        root.render(<NotesDatePicker {...pickerProps()} />);
+      });
+      fireEvent.click(
+        within(container).getByRole("button", { name: "Tomorrow" })
+      );
+      expect(
+        within(container).getByRole("textbox", { name: "Date" })
+      ).toHaveValue("07/12/2026");
+
+      flushSync(() => {
+        root.render(<NotesDatePicker {...pickerProps({ open: false })} />);
+      });
+      expect(within(container).queryByRole("dialog")).toBeNull();
+
+      flushSync(() => {
+        root.render(<NotesDatePicker {...pickerProps()} />);
+      });
+      expect(
+        within(container).getByRole("textbox", { name: "Date" })
+      ).toHaveValue("");
+      expect(
+        within(container).getByRole("button", {
+          name: "Saturday, July 11, 2026"
+        })
+      ).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      cleanup();
+    }
   });
 
   it("renders nothing while controlled closed", () => {

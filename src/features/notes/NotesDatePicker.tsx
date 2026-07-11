@@ -96,6 +96,9 @@ const formats: readonly NumericDateFormat[] = [
   "MM-DD"
 ];
 
+const minimumLocalDate: LocalDate = { year: 1, month: 1, day: 1 };
+const maximumLocalDate: LocalDate = { year: 9999, month: 12, day: 31 };
+
 const pickerStyles = `
   .notes-date-picker {
     box-sizing: border-box;
@@ -191,10 +194,15 @@ const pickerStyles = `
   }
   .notes-date-picker-calendar {
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
     grid-template-rows: 18px repeat(6, 1fr);
     gap: 3px;
     margin-top: 4px;
+  }
+  .notes-date-picker-calendar-row {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 3px;
+    min-height: 0;
   }
   .notes-date-picker-weekday {
     display: flex;
@@ -220,6 +228,10 @@ const pickerStyles = `
   .notes-date-picker-day[data-outside-month="true"] {
     color: var(--text-3);
     opacity: 0.5;
+  }
+  .notes-date-picker-day:disabled {
+    opacity: 0;
+    pointer-events: none;
   }
   .notes-date-picker-day[data-in-range="true"] {
     border-radius: 3px;
@@ -318,11 +330,56 @@ function formatValue(value: NotesDatePickerValue): string {
     : `${start} - ${formatDate(value.end, value.format)}`;
 }
 
+function tryAddLocalDateDays(
+  date: LocalDate,
+  amount: number
+): LocalDate | null {
+  try {
+    return addLocalDateDays(date, amount);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function tryAddLocalDateMonths(
+  date: LocalDate,
+  amount: number
+): LocalDate | null {
+  try {
+    return addLocalDateMonths(date, amount);
+  } catch (error) {
+    if (error instanceof RangeError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function addLocalDateDaysClamped(date: LocalDate, amount: number): LocalDate {
+  return (
+    tryAddLocalDateDays(date, amount) ??
+    (amount < 0 ? minimumLocalDate : maximumLocalDate)
+  );
+}
+
+function addLocalDateMonthsClamped(
+  date: LocalDate,
+  amount: number
+): LocalDate {
+  return (
+    tryAddLocalDateMonths(date, amount) ??
+    (amount < 0 ? minimumLocalDate : maximumLocalDate)
+  );
+}
+
 function weekdayIndex(date: LocalDate): number {
-  const sunday = startOfLocalWeek(date, "sunday");
+  const monday = startOfLocalWeek(date, "monday");
   for (let index = 0; index < 7; index += 1) {
-    if (sameDate(addLocalDateDays(sunday, index), date)) {
-      return index;
+    if (sameDate(addLocalDateDays(monday, index), date)) {
+      return (index + 1) % 7;
     }
   }
   return 0;
@@ -358,23 +415,25 @@ function initialValue(
     : { start: today, end: null, format: initialFormat };
 }
 
-export function NotesDatePicker({
-  open,
+interface NotesDatePickerSessionProps
+  extends Omit<
+    NotesDatePickerProps,
+    "open" | "weekStartsOn" | "initialFormat"
+  > {
+  readonly weekStartsOn: WeekStartsOn;
+  readonly initialFormat: NumericDateFormat;
+}
+
+function NotesDatePickerSession({
   context,
   today,
-  weekStartsOn = "sunday",
-  initialFormat = "MM/DD/YYYY",
+  weekStartsOn,
+  initialFormat,
   onCommit,
   onDismiss,
   onRequestFocusReturn
-}: NotesDatePickerProps) {
+}: NotesDatePickerSessionProps) {
   const initial = initialValue(context, today, initialFormat);
-  const identity = contextIdentity(
-    context,
-    today,
-    initialFormat,
-    weekStartsOn
-  );
   const dialogRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dayRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -390,25 +449,9 @@ export function NotesDatePicker({
   const [displayMonth, setDisplayMonth] = useState(firstOfMonth(initial.start));
   const [focusDate, setFocusDate] = useState(initial.start);
 
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-    const next = initialValue(context, today, initialFormat);
-    setValue(next);
-    setInputValue(context.kind === "existing-date" ? context.raw : "");
-    setInputValid(true);
-    setRangeEnabled(next.end !== null);
-    setRangePhase("start");
-    setDisplayMonth(firstOfMonth(next.start));
-    setFocusDate(next.start);
-  }, [identity, open]);
-
   useLayoutEffect(() => {
-    if (open) {
-      inputRef.current?.focus();
-    }
-  }, [identity, open]);
+    inputRef.current?.focus();
+  }, []);
 
   useLayoutEffect(() => {
     if (!focusGridRef.current) {
@@ -427,9 +470,6 @@ export function NotesDatePicker({
   );
 
   useEffect(() => {
-    if (!open) {
-      return;
-    }
     const handleOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Node && !dialogRef.current?.contains(target)) {
@@ -440,19 +480,26 @@ export function NotesDatePicker({
     return () => {
       document.removeEventListener("pointerdown", handleOutsidePointer, true);
     };
-  }, [open, requestDismiss]);
+  }, [requestDismiss]);
 
-  const calendarStart = useMemo(
-    () => startOfLocalWeek(firstOfMonth(displayMonth), weekStartsOn),
-    [displayMonth, weekStartsOn]
-  );
+  const leadingCalendarCells = useMemo(() => {
+    const firstWeekday = weekdayIndex(firstOfMonth(displayMonth));
+    return weekStartsOn === "sunday"
+      ? firstWeekday
+      : (firstWeekday + 6) % 7;
+  }, [displayMonth, weekStartsOn]);
   const calendarDays = useMemo(
     () =>
       Array.from({ length: 42 }, (_, index) =>
-        addLocalDateDays(calendarStart, index)
+        tryAddLocalDateDays(
+          firstOfMonth(displayMonth),
+          index - leadingCalendarCells
+        )
       ),
-    [calendarStart]
+    [displayMonth, leadingCalendarCells]
   );
+  const previousMonth = tryAddLocalDateMonths(displayMonth, -1);
+  const nextMonth = tryAddLocalDateMonths(displayMonth, 1);
   const weekdayHeaders =
     weekStartsOn === "sunday"
       ? sundayFirstWeekdays
@@ -571,21 +618,29 @@ export function NotesDatePicker({
     }
     let target: LocalDate | null = null;
     if (event.key === "ArrowLeft") {
-      target = addLocalDateDays(date, -1);
+      target = addLocalDateDaysClamped(date, -1);
     } else if (event.key === "ArrowRight") {
-      target = addLocalDateDays(date, 1);
+      target = addLocalDateDaysClamped(date, 1);
     } else if (event.key === "ArrowUp") {
-      target = addLocalDateDays(date, -7);
+      target = addLocalDateDaysClamped(date, -7);
     } else if (event.key === "ArrowDown") {
-      target = addLocalDateDays(date, 7);
+      target = addLocalDateDaysClamped(date, 7);
     } else if (event.key === "Home") {
-      target = startOfLocalWeek(date, weekStartsOn);
+      const offset =
+        weekStartsOn === "sunday"
+          ? weekdayIndex(date)
+          : (weekdayIndex(date) + 6) % 7;
+      target = addLocalDateDaysClamped(date, -offset);
     } else if (event.key === "End") {
-      target = addLocalDateDays(startOfLocalWeek(date, weekStartsOn), 6);
+      const offset =
+        weekStartsOn === "sunday"
+          ? weekdayIndex(date)
+          : (weekdayIndex(date) + 6) % 7;
+      target = addLocalDateDaysClamped(date, 6 - offset);
     } else if (event.key === "PageUp") {
-      target = addLocalDateMonths(date, -1);
+      target = addLocalDateMonthsClamped(date, -1);
     } else if (event.key === "PageDown") {
-      target = addLocalDateMonths(date, 1);
+      target = addLocalDateMonthsClamped(date, 1);
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (!rangeEnabled) {
@@ -626,9 +681,63 @@ export function NotesDatePicker({
     }
   };
 
-  if (!open) {
-    return null;
-  }
+  const renderCalendarCell = (date: LocalDate | null, index: number) => {
+    if (date === null) {
+      return (
+        <div
+          className="notes-date-picker-cell"
+          role="gridcell"
+          key={`outside-range-${index}`}
+        >
+          <button
+            className="notes-date-picker-day"
+            type="button"
+            aria-label="Outside supported date range"
+            disabled
+            tabIndex={-1}
+          />
+        </div>
+      );
+    }
+    const iso = formatLocalDateIso(date);
+    const endpoint =
+      sameDate(date, value.start) ||
+      (value.end !== null && sameDate(date, value.end));
+    const inRange =
+      value.end !== null &&
+      compareLocalDates(date, value.start) > 0 &&
+      compareLocalDates(date, value.end) < 0;
+    return (
+      <div className="notes-date-picker-cell" role="gridcell" key={iso}>
+        <button
+          ref={(button) => {
+            if (button) {
+              dayRefs.current.set(iso, button);
+            } else {
+              dayRefs.current.delete(iso);
+            }
+          }}
+          className="notes-date-picker-day"
+          type="button"
+          aria-label={accessibleDateName(date)}
+          aria-current={sameDate(date, today) ? "date" : undefined}
+          aria-pressed={endpoint}
+          data-date={iso}
+          data-in-range={inRange || undefined}
+          data-outside-month={
+            date.month !== displayMonth.month ||
+            date.year !== displayMonth.year ||
+            undefined
+          }
+          tabIndex={sameDate(date, focusDate) ? 0 : -1}
+          onClick={() => applyDaySelection(date)}
+          onKeyDown={(event) => handleDayKeyDown(event, date)}
+        >
+          {date.day}
+        </button>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -675,7 +784,12 @@ export function NotesDatePicker({
             type="button"
             aria-label="Previous month"
             title="Previous month"
-            onClick={() => setDisplayMonth(addLocalDateMonths(displayMonth, -1))}
+            disabled={previousMonth === null}
+            onClick={() => {
+              if (previousMonth !== null) {
+                setDisplayMonth(previousMonth);
+              }
+            }}
           >
             <ChevronLeft size={16} aria-hidden="true" />
           </button>
@@ -687,7 +801,12 @@ export function NotesDatePicker({
             type="button"
             aria-label="Next month"
             title="Next month"
-            onClick={() => setDisplayMonth(addLocalDateMonths(displayMonth, 1))}
+            disabled={nextMonth === null}
+            onClick={() => {
+              if (nextMonth !== null) {
+                setDisplayMonth(nextMonth);
+              }
+            }}
           >
             <ChevronRight size={16} aria-hidden="true" />
           </button>
@@ -699,56 +818,31 @@ export function NotesDatePicker({
           aria-label={`${monthNames[displayMonth.month - 1]} ${displayMonth.year}`}
           style={{ height: 228 }}
         >
-          {weekdayHeaders.map((weekday, index) => (
+          <div className="notes-date-picker-calendar-row" role="row">
+            {weekdayHeaders.map((weekday, index) => (
+              <div
+                className="notes-date-picker-weekday"
+                role="columnheader"
+                aria-label={weekday.long}
+                key={`${weekday.long}-${index}`}
+              >
+                {weekday.short}
+              </div>
+            ))}
+          </div>
+          {Array.from({ length: 6 }, (_, weekIndex) => (
             <div
-              className="notes-date-picker-weekday"
-              role="columnheader"
-              aria-label={weekday.long}
-              key={`${weekday.long}-${index}`}
+              className="notes-date-picker-calendar-row"
+              role="row"
+              key={`week-${weekIndex}`}
             >
-              {weekday.short}
+              {calendarDays
+                .slice(weekIndex * 7, weekIndex * 7 + 7)
+                .map((date, dayIndex) =>
+                  renderCalendarCell(date, weekIndex * 7 + dayIndex)
+                )}
             </div>
           ))}
-          {calendarDays.map((date) => {
-            const iso = formatLocalDateIso(date);
-            const endpoint =
-              sameDate(date, value.start) ||
-              (value.end !== null && sameDate(date, value.end));
-            const inRange =
-              value.end !== null &&
-              compareLocalDates(date, value.start) > 0 &&
-              compareLocalDates(date, value.end) < 0;
-            return (
-              <div className="notes-date-picker-cell" role="gridcell" key={iso}>
-                <button
-                  ref={(button) => {
-                    if (button) {
-                      dayRefs.current.set(iso, button);
-                    } else {
-                      dayRefs.current.delete(iso);
-                    }
-                  }}
-                  className="notes-date-picker-day"
-                  type="button"
-                  aria-label={accessibleDateName(date)}
-                  aria-current={sameDate(date, today) ? "date" : undefined}
-                  aria-pressed={endpoint}
-                  data-date={iso}
-                  data-in-range={inRange || undefined}
-                  data-outside-month={
-                    date.month !== displayMonth.month ||
-                    date.year !== displayMonth.year ||
-                    undefined
-                  }
-                  tabIndex={sameDate(date, focusDate) ? 0 : -1}
-                  onClick={() => applyDaySelection(date)}
-                  onKeyDown={(event) => handleDayKeyDown(event, date)}
-                >
-                  {date.day}
-                </button>
-              </div>
-            );
-          })}
         </div>
 
         <div className="notes-date-picker-footer">
@@ -817,5 +911,39 @@ export function NotesDatePicker({
         )}
       </div>
     </>
+  );
+}
+
+export function NotesDatePicker({
+  open,
+  context,
+  today,
+  weekStartsOn = "sunday",
+  initialFormat = "MM/DD/YYYY",
+  onCommit,
+  onDismiss,
+  onRequestFocusReturn
+}: NotesDatePickerProps) {
+  if (!open) {
+    return null;
+  }
+
+  const identity = contextIdentity(
+    context,
+    today,
+    initialFormat,
+    weekStartsOn
+  );
+  return (
+    <NotesDatePickerSession
+      key={identity}
+      context={context}
+      today={today}
+      weekStartsOn={weekStartsOn}
+      initialFormat={initialFormat}
+      onCommit={onCommit}
+      onDismiss={onDismiss}
+      onRequestFocusReturn={onRequestFocusReturn}
+    />
   );
 }
