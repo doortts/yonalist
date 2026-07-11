@@ -230,6 +230,8 @@ export function NotesImageAttachment({
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
   const keyboardResizeRef = useRef<KeyboardResize | null>(null);
+  const contentWidthRef = useRef<number | null>(null);
+  const cancelActiveInteractionRef = useRef<() => void>(() => undefined);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [proposedWidth, setProposedWidth] = useState(attachment.displayWidth);
   const [source, setSource] = useState<ImageSourceState>({ status: "loading" });
@@ -243,6 +245,20 @@ export function NotesImageAttachment({
   const renderedWidth = limits ? clampWidth(proposedWidth, limits) : 0;
   const renderedWidthRef = useRef(renderedWidth);
   renderedWidthRef.current = renderedWidth;
+  cancelActiveInteractionRef.current = () => {
+    const pointerResize = pointerResizeRef.current;
+    const keyboardResize = keyboardResizeRef.current;
+    if (!pointerResize && !keyboardResize) return;
+
+    pointerResizeRef.current = null;
+    keyboardResizeRef.current = null;
+    setProposedWidth(
+      pointerResize?.startingPersistedWidth ??
+        keyboardResize?.startingPersistedWidth ??
+        attachment.displayWidth
+    );
+    if (pointerResize) releaseCapturedPointer(pointerResize);
+  };
 
   useLayoutEffect(() => {
     setProposedWidth(attachment.displayWidth);
@@ -269,7 +285,15 @@ export function NotesImageAttachment({
 
     const measure = (width: number) => {
       if (Number.isFinite(width)) {
-        setContentWidth(Math.max(0, width));
+        const nextWidth = Math.max(0, width);
+        if (
+          contentWidthRef.current !== null &&
+          contentWidthRef.current !== nextWidth
+        ) {
+          cancelActiveInteractionRef.current();
+        }
+        contentWidthRef.current = nextWidth;
+        setContentWidth(nextWidth);
       }
     };
     measure(group.getBoundingClientRect().width);

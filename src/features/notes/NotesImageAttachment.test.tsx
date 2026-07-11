@@ -512,7 +512,7 @@ describe("NotesImageAttachment", () => {
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
 
-  it("preserves a pointer proposal made while responsive rendering is collapsed", () => {
+  it("cancels a pointer proposal when responsive rendering collapses", () => {
     const onDisplayWidthCommit = vi.fn();
     render(
       <NotesImageAttachment
@@ -534,11 +534,10 @@ describe("NotesImageAttachment", () => {
     fireEvent.pointerMove(handle, { clientX: 380, pointerId: 23 });
     expect(getFrame()).toHaveStyle({ width: "0px" });
     resizeContent(500);
-    expect(getFrame()).toHaveStyle({ width: "380px" });
+    expect(getFrame()).toHaveStyle({ width: "320px" });
     fireEvent.pointerUp(handle, { clientX: 380, pointerId: 23 });
 
-    expect(onDisplayWidthCommit).toHaveBeenCalledOnce();
-    expect(onDisplayWidthCommit).toHaveBeenCalledWith(380);
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
 
   it("does not persist zero when responsive collapse follows a keyboard proposal", () => {
@@ -563,7 +562,60 @@ describe("NotesImageAttachment", () => {
     expect(getFrame()).toHaveStyle({ width: "0px" });
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
     resizeContent(500);
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+  });
+
+  it("cancels a pointer resize when positive content width shrinks", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    const releasePointerCapture = vi.fn();
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = releasePointerCapture;
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 25 });
+    fireEvent.pointerMove(handle, { clientX: 336, pointerId: 25 });
     expect(getFrame()).toHaveStyle({ width: "336px" });
+    resizeContent(250);
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(25);
+    expect(getFrame()).toHaveStyle({ width: "250px" });
+    fireEvent.pointerUp(handle, { clientX: 336, pointerId: 25 });
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it("cancels a keyboard resize when positive content width shrinks", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    expect(getFrame()).toHaveStyle({ width: "336px" });
+    resizeContent(250);
+    expect(getFrame()).toHaveStyle({ width: "250px" });
+    fireEvent.keyUp(handle, { key: "ArrowRight" });
+
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
 
   it.each([
