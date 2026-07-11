@@ -3506,7 +3506,7 @@ describe("Notes workspace", () => {
     ).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("focuses the next archived page title after Unarchive closes its menu", async () => {
+  it("keeps the next archived page title read-only after Unarchive closes its menu", async () => {
     const user = userEvent.setup();
     const activeNodes = [node({ id: "active", title: "Active" })];
     let archivedNodes = [
@@ -3520,7 +3520,7 @@ describe("Notes workspace", () => {
       node({
         id: "archived-second",
         sortKey: 2,
-        title: "Archived second",
+        title: "Archived second 07/12/2026",
         archivedAt: "2026-07-11T01:00:00Z",
         archiveRootId: "archived-second"
       })
@@ -3549,13 +3549,32 @@ describe("Notes workspace", () => {
       within(menu).getByRole("menuitem", { name: "Unarchive" })
     );
 
-    const fallbackTitle = await screen.findByRole<HTMLTextAreaElement>(
-      "textbox",
-      { name: "Edit page title" }
-    );
-    expect(fallbackTitle).toHaveValue("Archived second");
-    expect(fallbackTitle).toHaveAttribute("readonly");
-    await waitFor(() => expect(fallbackTitle).toHaveFocus());
+    const fallbackTitle = await screen.findByRole("group", {
+      name: "Page title"
+    });
+    expect(fallbackTitle).toHaveTextContent("Archived second 07/12/2026");
+    expect(fallbackTitle).toHaveAttribute("aria-readonly", "true");
+    expect(fallbackTitle).toHaveAttribute("tabindex", "-1");
+    expect(fallbackTitle).not.toHaveFocus();
+    expect(
+      fallbackTitle.querySelector(".notes-date-token")
+    ).toHaveTextContent("07/12/2026");
+    expect(
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+    ).not.toBeInTheDocument();
+
+    await user.click(fallbackTitle);
+    fireEvent.keyDown(fallbackTitle, { key: "Enter" });
+
+    expect(
+      screen.queryByRole("textbox", { name: "Edit page title" })
+    ).not.toBeInTheDocument();
+    const mountedTitle = queryTextareaByName("Edit page title");
+    expect(mountedTitle).toHaveValue("Archived second 07/12/2026");
+    expect(mountedTitle).toHaveAttribute("readonly");
+    expect(mountedTitle).toHaveAttribute("aria-hidden", "true");
+    expect(mountedTitle).toHaveAttribute("tabindex", "-1");
+    expect(mountedTitle).not.toHaveFocus();
   });
 
   it("keeps Trash read-only while allowing restore and confirmed emptying", async () => {
