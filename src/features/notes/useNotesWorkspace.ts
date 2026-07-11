@@ -745,7 +745,6 @@ export function resolveRootLifecycleNavigation(
     : undefined;
   const focusFallback =
     fallbackRoot !== undefined &&
-    fallbackRoot.archivedAt === null &&
     fallbackRoot.deletedAt === null;
   return {
     before,

@@ -243,8 +243,9 @@ export function NotesPageHeader({
               placeholder="Untitled page"
               rows={1}
               wrap="soft"
-              disabled={disabled || readOnly}
-              onKeyDown={handleTitleKeyDown}
+              disabled={disabled}
+              readOnly={readOnly}
+              onKeyDown={readOnly ? undefined : handleTitleKeyDown}
               onChange={(event) => {
                 resizeTextarea(event.currentTarget);
                 actions.updateNodeDraft(nodeId, {
@@ -264,22 +265,27 @@ export function NotesPageHeader({
             aria-label={`Supporting note: ${label}`}
             placeholder="Add a supporting note"
             rows={1}
-            disabled={disabled || readOnly}
-            onKeyDown={(event) => {
-              const historyShortcut = resolveNotesHistoryShortcut({
-                key: event.key,
-                altKey: event.altKey,
-                ctrlKey: event.ctrlKey,
-                metaKey: event.metaKey,
-                shiftKey: event.shiftKey,
-                isComposing: event.nativeEvent.isComposing,
-                platform: detectOutlineShortcutPlatform()
-              });
-              if (historyShortcut) {
-                event.preventDefault();
-                void actions[historyShortcut]?.();
-              }
-            }}
+            disabled={disabled}
+            readOnly={readOnly}
+            onKeyDown={
+              readOnly
+                ? undefined
+                : (event) => {
+                    const historyShortcut = resolveNotesHistoryShortcut({
+                      key: event.key,
+                      altKey: event.altKey,
+                      ctrlKey: event.ctrlKey,
+                      metaKey: event.metaKey,
+                      shiftKey: event.shiftKey,
+                      isComposing: event.nativeEvent.isComposing,
+                      platform: detectOutlineShortcutPlatform()
+                    });
+                    if (historyShortcut) {
+                      event.preventDefault();
+                      void actions[historyShortcut]?.();
+                    }
+                  }
+            }
             onFocus={() => setRevealedNoteNodeId(nodeId)}
             onChange={(event) => {
               setRevealedNoteNodeId(nodeId);
