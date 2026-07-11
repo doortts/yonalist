@@ -48,6 +48,11 @@ interface InteractionIdentity {
   readonly attachmentId: string;
   readonly bytes: Uint8Array | undefined;
   readonly loadBytes: NotesImageByteLoader | undefined;
+  readonly mimeType: string;
+  readonly intrinsicWidth: number;
+  readonly intrinsicHeight: number;
+  readonly commit: (displayWidth: number) => void;
+  readonly startingPersistedWidth: number;
 }
 
 interface PointerResize extends InteractionIdentity {
@@ -55,10 +60,12 @@ interface PointerResize extends InteractionIdentity {
   readonly startX: number;
   readonly startWidth: number;
   readonly element: HTMLDivElement;
+  proposedWidth: number;
 }
 
 interface KeyboardResize extends InteractionIdentity {
   readonly startWidth: number;
+  proposedWidth: number;
 }
 
 type ImageSourceState =
@@ -184,14 +191,20 @@ function isValidAttachmentMetadata(
 
 function interactionMatches(
   interaction: InteractionIdentity,
-  attachmentId: string,
+  attachment: NotesImageAttachmentMetadata,
   bytes: Uint8Array | undefined,
-  loadBytes: NotesImageByteLoader | undefined
+  loadBytes: NotesImageByteLoader | undefined,
+  commit: (displayWidth: number) => void
 ): boolean {
   return (
-    interaction.attachmentId === attachmentId &&
+    interaction.attachmentId === attachment.id &&
     interaction.bytes === bytes &&
-    interaction.loadBytes === loadBytes
+    interaction.loadBytes === loadBytes &&
+    interaction.mimeType === attachment.mimeType &&
+    interaction.intrinsicWidth === attachment.intrinsicWidth &&
+    interaction.intrinsicHeight === attachment.intrinsicHeight &&
+    interaction.commit === commit &&
+    interaction.startingPersistedWidth === attachment.displayWidth
   );
 }
 
@@ -218,7 +231,7 @@ export function NotesImageAttachment({
   const pointerResizeRef = useRef<PointerResize | null>(null);
   const keyboardResizeRef = useRef<KeyboardResize | null>(null);
   const [contentWidth, setContentWidth] = useState<number | null>(null);
-  const [targetWidth, setTargetWidth] = useState(attachment.displayWidth);
+  const [proposedWidth, setProposedWidth] = useState(attachment.displayWidth);
   const [source, setSource] = useState<ImageSourceState>({ status: "loading" });
   const limits = useMemo(
     () =>
@@ -227,19 +240,28 @@ export function NotesImageAttachment({
         : null,
     [attachment.intrinsicWidth, contentWidth, metadataValid]
   );
-  const renderedWidth = limits ? clampWidth(targetWidth, limits) : 0;
+  const renderedWidth = limits ? clampWidth(proposedWidth, limits) : 0;
   const renderedWidthRef = useRef(renderedWidth);
   renderedWidthRef.current = renderedWidth;
 
   useLayoutEffect(() => {
-    setTargetWidth(attachment.displayWidth);
+    setProposedWidth(attachment.displayWidth);
     return () => {
       const pointerResize = pointerResizeRef.current;
       pointerResizeRef.current = null;
       keyboardResizeRef.current = null;
       if (pointerResize) releaseCapturedPointer(pointerResize);
     };
-  }, [attachment.displayWidth, attachment.id, bytes, loadBytes]);
+  }, [
+    attachment.displayWidth,
+    attachment.id,
+    attachment.intrinsicHeight,
+    attachment.intrinsicWidth,
+    attachment.mimeType,
+    bytes,
+    loadBytes,
+    onDisplayWidthCommit
+  ]);
 
   useLayoutEffect(() => {
     const group = groupRef.current;
@@ -307,26 +329,37 @@ export function NotesImageAttachment({
     metadataValid
   ]);
 
-  const updateTargetWidth = (width: number) => {
-    if (!limits) return 0;
-    const nextWidth = clampWidth(width, limits);
-    renderedWidthRef.current = nextWidth;
-    setTargetWidth(nextWidth);
+  const updateProposedWidth = (width: number) => {
+    const nextWidth = clampWidth(
+      width,
+      widthLimits(attachment.intrinsicWidth, null)
+    );
+    setProposedWidth(nextWidth);
     return nextWidth;
   };
+
+  const interactionIdentity = (): InteractionIdentity => ({
+    attachmentId: attachment.id,
+    bytes,
+    loadBytes,
+    mimeType: attachment.mimeType,
+    intrinsicWidth: attachment.intrinsicWidth,
+    intrinsicHeight: attachment.intrinsicHeight,
+    commit: onDisplayWidthCommit,
+    startingPersistedWidth: attachment.displayWidth
+  });
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !limits || limits.maximum === 0) return;
     event.preventDefault();
     event.stopPropagation();
     pointerResizeRef.current = {
-      attachmentId: attachment.id,
-      bytes,
-      loadBytes,
+      ...interactionIdentity(),
       pointerId: event.pointerId,
       startX: event.clientX,
       startWidth: renderedWidthRef.current,
-      element: event.currentTarget
+      element: event.currentTarget,
+      proposedWidth: renderedWidthRef.current
     };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
@@ -336,12 +369,18 @@ export function NotesImageAttachment({
     if (
       !resize ||
       resize.pointerId !== event.pointerId ||
-      !interactionMatches(resize, attachment.id, bytes, loadBytes)
+      !interactionMatches(
+        resize,
+        attachment,
+        bytes,
+        loadBytes,
+        onDisplayWidthCommit
+      )
     ) {
       return;
     }
     event.preventDefault();
-    updateTargetWidth(
+    resize.proposedWidth = updateProposedWidth(
       resize.startWidth + event.clientX - resize.startX
     );
   };
@@ -355,10 +394,18 @@ export function NotesImageAttachment({
     pointerResizeRef.current = null;
     if (releaseCapture) releaseCapturedPointer(resize);
     if (
-      interactionMatches(resize, attachment.id, bytes, loadBytes) &&
+      interactionMatches(
+        resize,
+        attachment,
+        bytes,
+        loadBytes,
+        onDisplayWidthCommit
+      ) &&
+      resize.proposedWidth !== resize.startWidth &&
+      renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth
     ) {
-      onDisplayWidthCommit(renderedWidthRef.current);
+      resize.commit(renderedWidthRef.current);
     }
   };
 
@@ -388,19 +435,30 @@ export function NotesImageAttachment({
 
     event.preventDefault();
     event.stopPropagation();
-    const activeResize = keyboardResizeRef.current;
+    let resize = keyboardResizeRef.current;
     if (
-      !activeResize ||
-      !interactionMatches(activeResize, attachment.id, bytes, loadBytes)
-    ) {
-      keyboardResizeRef.current = {
-        attachmentId: attachment.id,
+      !resize ||
+      !interactionMatches(
+        resize,
+        attachment,
         bytes,
         loadBytes,
-        startWidth: renderedWidthRef.current
+        onDisplayWidthCommit
+      )
+    ) {
+      resize = {
+        ...interactionIdentity(),
+        startWidth: renderedWidthRef.current,
+        proposedWidth: renderedWidthRef.current
       };
+      keyboardResizeRef.current = resize;
     }
-    updateTargetWidth(nextWidth);
+    const proposedNextWidth =
+      event.key === "Home" || event.key === "End"
+        ? nextWidth
+        : resize.proposedWidth +
+          (event.key === "ArrowLeft" || event.key === "ArrowDown" ? -step : step);
+    resize.proposedWidth = updateProposedWidth(proposedNextWidth);
   };
 
   const finishKeyboardResize = () => {
@@ -408,10 +466,18 @@ export function NotesImageAttachment({
     if (!resize) return;
     keyboardResizeRef.current = null;
     if (
-      interactionMatches(resize, attachment.id, bytes, loadBytes) &&
+      interactionMatches(
+        resize,
+        attachment,
+        bytes,
+        loadBytes,
+        onDisplayWidthCommit
+      ) &&
+      resize.proposedWidth !== resize.startWidth &&
+      renderedWidthRef.current > 0 &&
       renderedWidthRef.current !== resize.startWidth
     ) {
-      onDisplayWidthCommit(renderedWidthRef.current);
+      resize.commit(renderedWidthRef.current);
     }
   };
 

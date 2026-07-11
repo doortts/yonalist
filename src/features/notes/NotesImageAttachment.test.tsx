@@ -313,6 +313,79 @@ describe("NotesImageAttachment", () => {
     expect(thirdCommit).not.toHaveBeenCalled();
   });
 
+  it("cancels a pointer interaction when its commit callback owner changes", () => {
+    const firstCommit = vi.fn();
+    const replacementCommit = vi.fn();
+    const view = render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit: firstCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const retainedHandle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    const releasePointerCapture = vi.fn();
+    retainedHandle.setPointerCapture = vi.fn();
+    retainedHandle.releasePointerCapture = releasePointerCapture;
+
+    fireEvent.pointerDown(retainedHandle, {
+      button: 0,
+      clientX: 320,
+      pointerId: 13
+    });
+    fireEvent.pointerMove(retainedHandle, { clientX: 380, pointerId: 13 });
+    view.rerender(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit: replacementCommit
+        })}
+      />
+    );
+    fireEvent.pointerUp(retainedHandle, { clientX: 380, pointerId: 13 });
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(13);
+    expect(firstCommit).not.toHaveBeenCalled();
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+  });
+
+  it("cancels a keyboard interaction when its commit callback owner changes", () => {
+    const firstCommit = vi.fn();
+    const replacementCommit = vi.fn();
+    const view = render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit: firstCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const retainedHandle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+
+    fireEvent.keyDown(retainedHandle, { key: "ArrowRight" });
+    view.rerender(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit: replacementCommit
+        })}
+      />
+    );
+    fireEvent.keyUp(retainedHandle, { key: "ArrowRight" });
+
+    expect(firstCommit).not.toHaveBeenCalled();
+    expect(replacementCommit).not.toHaveBeenCalled();
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+  });
+
   it("resizes from the accessible handle keyboard contract and commits on key release", async () => {
     const onDisplayWidthCommit = vi.fn();
     render(
@@ -413,6 +486,135 @@ describe("NotesImageAttachment", () => {
     expect(handle).toHaveAttribute("aria-disabled", "false");
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
   });
+
+  it("does not turn a pointer-only container collapse into a persisted zero width", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 22 });
+    resizeContent(0);
+    expect(getFrame()).toHaveStyle({ width: "0px" });
+    fireEvent.pointerUp(handle, { clientX: 320, pointerId: 22 });
+
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it("preserves a pointer proposal made while responsive rendering is collapsed", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 23 });
+    resizeContent(0);
+    fireEvent.pointerMove(handle, { clientX: 380, pointerId: 23 });
+    expect(getFrame()).toHaveStyle({ width: "0px" });
+    resizeContent(500);
+    expect(getFrame()).toHaveStyle({ width: "380px" });
+    fireEvent.pointerUp(handle, { clientX: 380, pointerId: 23 });
+
+    expect(onDisplayWidthCommit).toHaveBeenCalledOnce();
+    expect(onDisplayWidthCommit).toHaveBeenCalledWith(380);
+  });
+
+  it("does not persist zero when responsive collapse follows a keyboard proposal", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+
+    fireEvent.keyDown(handle, { key: "ArrowRight" });
+    resizeContent(0);
+    fireEvent.keyUp(handle, { key: "ArrowRight" });
+
+    expect(getFrame()).toHaveStyle({ width: "0px" });
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+    resizeContent(500);
+    expect(getFrame()).toHaveStyle({ width: "336px" });
+  });
+
+  it.each([
+    ["changes", 400, 200],
+    ["becomes invalid", 0, 200]
+  ])(
+    "cancels and releases an active pointer interaction when intrinsic geometry %s",
+    async (_caseName, intrinsicWidth, intrinsicHeight) => {
+      const onDisplayWidthCommit = vi.fn();
+      const view = render(
+        <NotesImageAttachment
+          {...standardProps({
+            attachment: { ...attachment, displayWidth: 300 },
+            onDisplayWidthCommit
+          })}
+        />
+      );
+      resizeContent(500);
+      await screen.findByRole("img", { name: "diagram.png" });
+      const retainedHandle = screen.getByRole("separator", {
+        name: "Resize diagram.png"
+      });
+      const releasePointerCapture = vi.fn();
+      retainedHandle.setPointerCapture = vi.fn();
+      retainedHandle.releasePointerCapture = releasePointerCapture;
+
+      fireEvent.pointerDown(retainedHandle, {
+        button: 0,
+        clientX: 300,
+        pointerId: 24
+      });
+      fireEvent.pointerMove(retainedHandle, { clientX: 350, pointerId: 24 });
+      view.rerender(
+        <NotesImageAttachment
+          {...standardProps({
+            attachment: {
+              ...attachment,
+              displayWidth: 300,
+              intrinsicWidth,
+              intrinsicHeight
+            },
+            onDisplayWidthCommit
+          })}
+        />
+      );
+
+      expect(releasePointerCapture).toHaveBeenCalledWith(24);
+      fireEvent.pointerUp(retainedHandle, { clientX: 350, pointerId: 24 });
+      expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+    }
+  );
 
   it("does not commit a pointer resize that returns to its clamped starting width", () => {
     const onDisplayWidthCommit = vi.fn();
