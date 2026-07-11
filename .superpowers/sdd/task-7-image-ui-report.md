@@ -10,6 +10,8 @@ Review-fix implementation commit: `03608fe9b34e5076bbead0eb8fd30c234b799ab6`
 
 Remaining-findings implementation commit: `0057403365cf91e084c03fb08bd7186563ec40f3`
 
+Responsive-clamp implementation commit: `9a8484f02641e66a6f2c65d7627a8aaf04ebdb82`
+
 ## Owned Files
 
 - `src/features/notes/NotesImageAttachment.tsx`
@@ -314,3 +316,49 @@ standalone TypeScript retry therefore exit 2 on only those two concurrent errors
 The successful production build above was completed after the owned component
 changes and before those concurrent workspace edits appeared. No unowned file was
 modified, staged, reverted, or committed by this image component slice.
+
+## Final Responsive-Clamp Fix
+
+Every finite `ResizeObserver` width change now checks for active pointer or
+keyboard interactions. If one exists, the component clears both interaction
+records, restores the proposal to that interaction's starting persisted width,
+and releases pointer capture before applying the new responsive width. The new
+width therefore changes rendering and ARIA bounds only; later pointerup, keyup, or
+blur has no interaction left to persist.
+
+The positive-shrink contract is explicit for both input paths: starting at `320`,
+the user proposes `336`, content narrows to `250`, the frame renders at `250`, and
+release emits no commit. Collapse tests now use the same cancellation rule and
+restore the persisted `320` proposal when space returns.
+
+### RED
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "content width shrinks|responsive rendering collapses|responsive collapse follows" \
+  --reporter=verbose
+```
+
+Exit 1 with 4 failed tests. Pointer shrink did not release capture, keyboard
+shrink incorrectly persisted `250`, and collapsed pointer/keyboard proposals
+incorrectly reappeared as `380` and `336` after expansion.
+
+### GREEN And Verification
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx --reporter=verbose
+```
+
+Exit 0: 1 test file passed, 24 tests passed, 0 failures, and no warnings. Existing
+Blob URL creation/revocation, invalid geometry, ownership, and accessibility
+coverage remains green.
+
+```bash
+npx tsc --noEmit --pretty false
+```
+
+Exit 0 with no TypeScript errors.
+
+The staged implementation path audit contained only
+`NotesImageAttachment.tsx` and `NotesImageAttachment.test.tsx`; concurrent Rust,
+history, coordinator, workspace, and unrelated report changes remained unstaged.
