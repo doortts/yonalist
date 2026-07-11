@@ -295,6 +295,43 @@ describe("notesWorkspaceReducer", () => {
     });
   });
 
+  it("applies an owner-only UI update from a partially authoritative failure", () => {
+    const initial = normalizeWorkspace(
+      workspace([
+        node({ id: "root" }),
+        node({ id: "copy", sortKey: 2 })
+      ])
+    );
+
+    const state = notesWorkspaceReducer(initial, {
+      type: "settleQueueWork",
+      result: {
+        kind: "failure",
+        error: "Projection reload failed",
+        workspace: workspace([
+          node({ id: "root" }),
+          node({ id: "copy", sortKey: 2 })
+        ]),
+        uiUpdate: {
+          selectedId: "copy",
+          editingNoteId: "copy",
+          pendingFocusId: "copy",
+          pendingFocusField: "title"
+        }
+      },
+      hasPendingWork: false
+    });
+
+    expect(state).toMatchObject({
+      selectedId: "copy",
+      editingNoteId: "copy",
+      pendingFocusId: "copy",
+      pendingFocusField: "title",
+      status: "error",
+      error: "Projection reload failed"
+    });
+  });
+
   it("retains errors through loading and skipped dependent work", () => {
     const confirmed = normalizeWorkspace(workspace([node({ id: "root" })]));
     const failed = notesWorkspaceReducer(confirmed, {

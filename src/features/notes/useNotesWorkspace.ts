@@ -265,6 +265,7 @@ function directMutationResult(
     kind: "failure",
     error: projection.projectionError,
     workspace: projection.workspace,
+    uiUpdate,
     historyStatus: mutation.historyStatus,
     scopeAgnostic: true,
     invalidatesTagSummaries: true,
@@ -318,6 +319,7 @@ interface NotesWorkspaceSessionRecord {
   pendingDebounceByNodeId: Map<NoteId, number>;
   inFlightDraftByNodeId: Map<NoteId, number>;
   retryWriteByNodeId: Map<NoteId, DraftWriteAttempt>;
+  deferredFieldAttempts: DraftWriteAttempt[];
   draftAttemptReservations: Map<string, Promise<boolean>>;
   draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
   draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
@@ -1443,9 +1445,7 @@ export function useNotesWorkspace({
           liveNavigationRef.current = reconcileLiveNavigation(
             liveNavigationRef.current,
             authoritativeWorkspace,
-            event.result.kind === "authoritative"
-              ? event.result.uiUpdate
-              : undefined
+            event.result.kind === "skipped" ? undefined : event.result.uiUpdate
           );
         }
         dispatch({
@@ -1485,6 +1485,7 @@ export function useNotesWorkspace({
       pendingDebounceByNodeId: new Map(),
       inFlightDraftByNodeId: new Map(),
       retryWriteByNodeId: new Map(),
+      deferredFieldAttempts: [],
       draftAttemptReservations: new Map(),
       draftHistoryContextByNodeId: new Map(),
       draftHistoryFocusByNodeId: new Map(),
@@ -1922,7 +1923,11 @@ export function useNotesWorkspace({
         if (latest?.revision === draft.revision) {
           record.drafts.delete(nodeId);
         }
-        record.pendingDebounceByNodeId.delete(nodeId);
+        if (
+          record.pendingDebounceByNodeId.get(nodeId) === draft.revision
+        ) {
+          record.pendingDebounceByNodeId.delete(nodeId);
+        }
       } else if (writeSucceeded && latest?.revision === draft.revision) {
         record.drafts.delete(nodeId);
       }
@@ -2129,12 +2134,40 @@ export function useNotesWorkspace({
       if (previousFocus && previousFocus.field !== field) {
         const previousHistoryContext =
           record.draftHistoryContextByNodeId.get(nodeId);
+        const previousAttempt = record.retryWriteByNodeId.get(nodeId);
         record.session.history.closeTextBurst(previousHistoryContext?.entryId);
         if (
           previousHistoryContext &&
           record.pendingDebounceByNodeId.has(nodeId)
         ) {
           void record.writeQueue.flush(nodeId).catch(() => undefined);
+        } else if (
+          previousHistoryContext &&
+          previousAttempt?.historyContext?.entryId ===
+            previousHistoryContext.entryId
+        ) {
+          const reservationKey = draftAttemptReservationKey(previousAttempt);
+          if (!record.draftAttemptReservations.has(reservationKey)) {
+            const cutoff = record.structuralIntents.at(0)?.cutoff;
+            if (
+              cutoff !== undefined &&
+              previousAttempt.draft.revision > cutoff
+            ) {
+              if (
+                !record.deferredFieldAttempts.some(
+                  (attempt) => attempt.attemptId === previousAttempt.attemptId
+                )
+              ) {
+                record.deferredFieldAttempts.push(previousAttempt);
+              }
+            } else {
+              void enqueueDraftAttempt(record, previousAttempt).catch(
+                () => undefined
+              );
+            }
+          }
+        } else {
+          discardHistoryEntry(previousHistoryContext);
         }
         record.draftHistoryContextByNodeId.delete(nodeId);
       }
@@ -2174,7 +2207,13 @@ export function useNotesWorkspace({
         scheduleDraftWrite(record, attempt);
       }
     },
-    [beginTextEntry, publishDraftState, scheduleDraftWrite]
+    [
+      beginTextEntry,
+      discardHistoryEntry,
+      enqueueDraftAttempt,
+      publishDraftState,
+      scheduleDraftWrite
+    ]
   );
 
   const flushNodeDraft = useCallback(
@@ -2404,6 +2443,10 @@ export function useNotesWorkspace({
       }
     }
     if (record.closing) {
+      for (const attempt of record.deferredFieldAttempts) {
+        discardHistoryEntry(attempt.historyContext);
+      }
+      record.deferredFieldAttempts.length = 0;
       for (const context of record.draftHistoryContextByNodeId.values()) {
         discardHistoryEntry(context);
       }
@@ -2416,6 +2459,18 @@ export function useNotesWorkspace({
   };
   scheduleDeferredDraftsRef.current = (record) => {
     const nextCutoff = record.structuralIntents.at(0)?.cutoff;
+    const retainedAttempts: DraftWriteAttempt[] = [];
+    for (const attempt of record.deferredFieldAttempts) {
+      if (
+        nextCutoff !== undefined &&
+        attempt.draft.revision > nextCutoff
+      ) {
+        retainedAttempts.push(attempt);
+        continue;
+      }
+      void enqueueDraftAttempt(record, attempt).catch(() => undefined);
+    }
+    record.deferredFieldAttempts = retainedAttempts;
     for (const [nodeId] of record.drafts) {
       const attempt = retryDraftAttempt(record, nodeId, nextCutoff);
       if (

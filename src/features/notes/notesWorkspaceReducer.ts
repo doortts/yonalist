@@ -35,7 +35,12 @@ export type NotesWorkspaceReducerAction =
             uiUpdate?: Partial<UiState>;
           }
         | { kind: "skipped" }
-        | { kind: "failure"; error: string; workspace?: NotesWorkspace };
+        | {
+            kind: "failure";
+            error: string;
+            workspace?: NotesWorkspace;
+            uiUpdate?: Partial<UiState>;
+          };
       hasPendingWork: boolean;
     }
   | ({ type: "setUiState" } & Partial<UiState>)
@@ -67,6 +72,36 @@ function normalizedUiState(
     pendingFocusField:
       pendingFocusId === null ? null : (ui.pendingFocusField ?? "title")
   };
+}
+
+function settledUiState(
+  workspace: NormalizedNotesWorkspace,
+  current: UiState,
+  uiUpdate?: Partial<UiState>
+): UiState {
+  const retainedUi = normalizedUiState(workspace, current);
+  return normalizedUiState(workspace, {
+    selectedId:
+      uiUpdate?.selectedId === undefined
+        ? retainedUi.selectedId
+        : uiUpdate.selectedId,
+    zoomRootId:
+      uiUpdate?.zoomRootId === undefined
+        ? retainedUi.zoomRootId
+        : uiUpdate.zoomRootId,
+    editingNoteId:
+      uiUpdate?.editingNoteId === undefined
+        ? retainedUi.editingNoteId
+        : uiUpdate.editingNoteId,
+    pendingFocusId:
+      uiUpdate?.pendingFocusId === undefined
+        ? retainedUi.pendingFocusId
+        : uiUpdate.pendingFocusId,
+    pendingFocusField:
+      uiUpdate?.pendingFocusField === undefined
+        ? retainedUi.pendingFocusField
+        : uiUpdate.pendingFocusField
+  });
 }
 
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
@@ -111,7 +146,7 @@ export function notesWorkspaceReducer(
           const workspace = normalizeWorkspace(action.result.workspace);
           return {
             ...workspace,
-            ...normalizedUiState(workspace, state),
+            ...settledUiState(workspace, state, action.result.uiUpdate),
             status: action.hasPendingWork ? "loading" : "error",
             error: action.result.error
           };
@@ -135,32 +170,9 @@ export function notesWorkspaceReducer(
       }
 
       const workspace = normalizeWorkspace(action.result.workspace);
-      const retainedUi = normalizedUiState(workspace, state);
-      const uiUpdate = action.result.uiUpdate;
       return {
         ...workspace,
-        ...normalizedUiState(workspace, {
-          selectedId:
-            uiUpdate?.selectedId === undefined
-              ? retainedUi.selectedId
-              : uiUpdate.selectedId,
-          zoomRootId:
-            uiUpdate?.zoomRootId === undefined
-              ? retainedUi.zoomRootId
-              : uiUpdate.zoomRootId,
-          editingNoteId:
-            uiUpdate?.editingNoteId === undefined
-              ? retainedUi.editingNoteId
-              : uiUpdate.editingNoteId,
-          pendingFocusId:
-            uiUpdate?.pendingFocusId === undefined
-              ? retainedUi.pendingFocusId
-              : uiUpdate.pendingFocusId,
-          pendingFocusField:
-            uiUpdate?.pendingFocusField === undefined
-              ? retainedUi.pendingFocusField
-              : uiUpdate.pendingFocusField
-        }),
+        ...settledUiState(workspace, state, action.result.uiUpdate),
         status: action.hasPendingWork ? "loading" : "ready"
       };
     }

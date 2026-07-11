@@ -261,6 +261,61 @@ describe("notesWorkspaceCoordinator registry", () => {
     sibling.close();
   });
 
+  it("settles failure UI only to its owner and strips it from sibling sync", async () => {
+    const confirmed = workspace([
+      node({ id: "owner-selection" }),
+      node({ id: "sibling-selection", sortKey: 2048 })
+    ]);
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const ownerEvents = vi.fn();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/failure-ui",
+      onEvent: ownerEvents
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/failure-ui",
+      onEvent: siblingEvents
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    ownerEvents.mockClear();
+    siblingEvents.mockClear();
+
+    await owner.enqueue(() => ({
+      kind: "failure" as const,
+      error: "Projection reload failed",
+      workspace: confirmed,
+      uiUpdate: {
+        selectedId: "owner-selection",
+        pendingFocusId: "owner-selection"
+      }
+    }));
+
+    expect(ownerEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "settled",
+        result: expect.objectContaining({
+          kind: "failure",
+          uiUpdate: {
+            selectedId: "owner-selection",
+            pendingFocusId: "owner-selection"
+          }
+        })
+      })
+    );
+    expect(siblingEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "synchronized",
+        result: expect.not.objectContaining({ uiUpdate: expect.anything() })
+      })
+    );
+    owner.close();
+    sibling.close();
+  });
+
   it("broadcasts an atomic projection failure as a scope invalidation", async () => {
     const confirmed = workspace([node({ id: "committed" })]);
     const store = repository();

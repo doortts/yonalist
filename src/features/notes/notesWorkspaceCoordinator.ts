@@ -36,6 +36,7 @@ export type NotesWorkspaceQueueResult =
       kind: "failure";
       error: string;
       workspace?: NotesWorkspace;
+      uiUpdate?: NotesWorkspaceUiUpdate;
       historyStatus?: NotesHistoryStatus;
       historyVersion?: number;
       scopeAgnostic?: boolean;
@@ -302,24 +303,28 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             : owner?.active && owner.getScope
               ? owner.getScope()
               : item.sourceScope;
-        const synchronizedResult: NotesWorkspaceQueueSettlement =
-          result.kind === "authoritative"
-            ? {
-                kind: "authoritative",
-                workspace: result.workspace,
-                historyStatus: result.historyStatus,
-                historyVersion: result.historyVersion,
-                ...(result.committedHistoryEntryIds
-                  ? {
-                      committedHistoryEntryIds:
-                        result.committedHistoryEntryIds
-                    }
-                  : {}),
-                ...(result.invalidatesTagSummaries
-                  ? { invalidatesTagSummaries: true }
-                  : {})
-              }
-            : result;
+        let synchronizedResult: NotesWorkspaceQueueSettlement;
+        if (result.kind === "authoritative") {
+          synchronizedResult = {
+            kind: "authoritative",
+            workspace: result.workspace,
+            historyStatus: result.historyStatus,
+            historyVersion: result.historyVersion,
+            ...(result.committedHistoryEntryIds
+              ? {
+                  committedHistoryEntryIds: result.committedHistoryEntryIds
+                }
+              : {}),
+            ...(result.invalidatesTagSummaries
+              ? { invalidatesTagSummaries: true }
+              : {})
+          };
+        } else if (result.kind === "failure") {
+          const { uiUpdate: _ownerUiUpdate, ...synchronizedFailure } = result;
+          synchronizedResult = synchronizedFailure;
+        } else {
+          synchronizedResult = result;
+        }
         for (const session of entry.sessions) {
           if (session !== owner) {
             if (
