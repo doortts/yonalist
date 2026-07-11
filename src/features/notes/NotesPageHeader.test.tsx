@@ -78,7 +78,7 @@ function workspaceValue(options: {
     unarchiveNode: resolved(),
     emptyTrash: resolved(),
     selectLibraryView: resolved(),
-    selectTag: resolved(),
+    toggleTagFilter: resolved(),
     searchNotes: vi.fn().mockResolvedValue([]),
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
@@ -92,8 +92,8 @@ function workspaceValue(options: {
     actions,
     deletingNotesData: false,
     libraryView: "all",
-    activeTag: null,
-    tags: [],
+    activeTagFilters: [],
+    tagSummaries: [],
     locallyExpandedNodeIds: new Set(),
     draftsByNodeId: options.draft ? { project: options.draft } : {},
     writeError: null,
@@ -120,6 +120,29 @@ function renderZoomedOutline(workspace = workspaceValue()) {
   return workspace;
 }
 
+function textareasByName(name: string): HTMLTextAreaElement[] {
+  return Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea"))
+    .filter((textarea) => textarea.getAttribute("aria-label") === name);
+}
+
+function queryTextareaByName(name: string): HTMLTextAreaElement | null {
+  return textareasByName(name)[0] ?? null;
+}
+
+function getTextareaByName(name: string): HTMLTextAreaElement {
+  const textarea = queryTextareaByName(name);
+  if (!textarea) {
+    throw new Error(`Unable to find a textarea named ${name}`);
+  }
+  return textarea;
+}
+
+function editTextareaByName(name: string): HTMLTextAreaElement {
+  const textarea = getTextareaByName(name);
+  fireEvent.focus(textarea);
+  return textarea;
+}
+
 describe("NotesPageHeader", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -133,9 +156,7 @@ describe("NotesPageHeader", () => {
     renderZoomedOutline();
 
     const heading = screen.getByRole("heading", { name: "Project", level: 1 });
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
     const list = screen.getByRole("list");
 
     expect(heading).toBeVisible();
@@ -158,13 +179,9 @@ describe("NotesPageHeader", () => {
 
   it("routes unified history shortcuts from page and outline text fields", () => {
     const workspace = renderZoomedOutline();
-    const title = screen.getByRole("textbox", { name: "Edit page title" });
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
-    const childTitle = screen.getAllByRole("textbox", {
-      name: "Edit node title"
-    })[0]!;
+    const title = editTextareaByName("Edit page title");
+    const note = editTextareaByName("Supporting note: Project");
+    const childTitle = textareasByName("Edit node title")[0]!;
 
     expect(fireEvent.keyDown(title, { key: "z", ctrlKey: true })).toBe(false);
     expect(
@@ -184,7 +201,7 @@ describe("NotesPageHeader", () => {
 
   it("keeps native composition history and suppresses Process shortcuts", () => {
     const workspace = renderZoomedOutline();
-    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const title = editTextareaByName("Edit page title");
 
     expect(
       fireEvent.keyDown(title, {
@@ -207,9 +224,7 @@ describe("NotesPageHeader", () => {
     const workspace = renderZoomedOutline(
       workspaceValue({ pendingFocus: { nodeId: "project", field: "note" } })
     );
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
 
     await waitFor(() => expect(note).toHaveFocus());
     expect(workspace.actions.acknowledgeFocus).toHaveBeenCalledWith("project");
@@ -223,7 +238,7 @@ describe("NotesPageHeader", () => {
     );
     renderZoomedOutline(workspaceValue({ title: longTitle, note: "" }));
 
-    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const title = getTextareaByName("Edit page title");
     const titleRow = title.closest(".notes-page-title-row");
     const heading = title.closest(".notes-page-heading");
     const menu = screen.getByRole("button", {
@@ -243,7 +258,7 @@ describe("NotesPageHeader", () => {
 
   it("does not mount an empty page note before a reveal action", () => {
     const workspace = renderZoomedOutline(workspaceValue({ note: "" }));
-    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const title = editTextareaByName("Edit page title");
     const header = screen
       .getByRole("heading", { name: "Project", level: 1 })
       .closest(".notes-page-header");
@@ -251,7 +266,7 @@ describe("NotesPageHeader", () => {
     expect(header).not.toBeNull();
     expect(header?.querySelector(".notes-page-note")).toBeNull();
     expect(
-      screen.queryByRole("textbox", { name: "Supporting note: Project" })
+      queryTextareaByName("Supporting note: Project")
     ).not.toBeInTheDocument();
     fireEvent.change(title, { target: { value: "Renamed project" } });
     expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
@@ -265,13 +280,13 @@ describe("NotesPageHeader", () => {
 
   it("reveals and focuses an empty page note with Shift+Enter", () => {
     renderZoomedOutline(workspaceValue({ note: "" }));
-    const title = screen.getByRole("textbox", { name: "Edit page title" });
+    const title = editTextareaByName("Edit page title");
 
     expect(
       fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
     ).toBe(false);
     expect(
-      screen.getByRole("textbox", { name: "Supporting note: Project" })
+      getTextareaByName("Supporting note: Project")
     ).toHaveFocus();
   });
 
@@ -336,9 +351,9 @@ describe("NotesPageHeader", () => {
       )
     );
     expect(
-      screen.queryByRole("textbox", { name: "Supporting note: Project" })
+      queryTextareaByName("Supporting note: Project")
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Edit page title" })).toHaveValue(
+    expect(getTextareaByName("Edit page title")).toHaveValue(
       "Project"
     );
   });
@@ -360,7 +375,7 @@ describe("NotesPageHeader", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
       expect(
-        screen.getByRole("textbox", { name: "Supporting note: Project" })
+        getTextareaByName("Supporting note: Project")
       ).toHaveFocus()
     );
     expect(trigger).not.toHaveFocus();
@@ -408,9 +423,7 @@ describe("NotesPageHeader", () => {
         name: "Add note"
       })
     );
-    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = await waitFor(() => getTextareaByName("Supporting note: Project"));
     fireEvent.change(note, {
       target: {
         value:
@@ -455,9 +468,7 @@ describe("NotesPageHeader", () => {
   it("keeps a revealed page note mounted after its draft becomes empty", () => {
     const initialWorkspace = workspaceValue();
     const view = render(zoomedOutline(initialWorkspace));
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
     fireEvent.focus(note);
 
     const clearedWorkspace = workspaceValue({
@@ -470,9 +481,7 @@ describe("NotesPageHeader", () => {
     });
     view.rerender(zoomedOutline(clearedWorkspace));
 
-    const clearedNote = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const clearedNote = getTextareaByName("Supporting note: Project");
     expect(clearedNote).toHaveValue("");
     fireEvent.blur(clearedNote);
     expect(clearedWorkspace.actions.flushNodeDraft).toHaveBeenCalledWith(
@@ -483,7 +492,7 @@ describe("NotesPageHeader", () => {
   it("does not carry page-note reveal state to a different zoom root", () => {
     const view = render(zoomedOutline(workspaceValue()));
     fireEvent.focus(
-      screen.getByRole("textbox", { name: "Supporting note: Project" })
+      getTextareaByName("Supporting note: Project")
     );
     const childWorkspace = workspaceValue();
     childWorkspace.state.zoomRootId = "child";
@@ -494,9 +503,7 @@ describe("NotesPageHeader", () => {
       screen.getByRole("heading", { name: "First child", level: 1 })
     ).toBeVisible();
     expect(
-      screen.queryByRole("textbox", {
-        name: "Supporting note: First child"
-      })
+      queryTextareaByName("Supporting note: First child")
     ).not.toBeInTheDocument();
   });
 
@@ -517,7 +524,7 @@ describe("NotesPageHeader", () => {
       screen.getByRole("heading", { name: "Unsaved project", level: 1 })
     ).toBeVisible();
     expect(
-      screen.getByRole("textbox", { name: "Supporting note: Unsaved project" })
+      getTextareaByName("Supporting note: Unsaved project")
     ).toHaveValue("Unsaved context");
 
     await user.click(

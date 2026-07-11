@@ -101,6 +101,14 @@ async function openExportMenu(user = userEvent.setup()) {
   return screen.findByRole("menu");
 }
 
+function findTitleTextarea(value: string) {
+  return Array.from(
+    document.querySelectorAll<HTMLTextAreaElement>(
+      'textarea[aria-label="Edit node title"]'
+    )
+  ).find((input) => input.value === value);
+}
+
 function note(id: NoteId, title: string, parentId: NoteId | null): NoteNode {
   return {
     id,
@@ -228,7 +236,7 @@ function workspaceValue(
     unarchiveNode: resolved(),
     emptyTrash: resolved(),
     selectLibraryView: resolved(),
-    selectTag: resolved(),
+    toggleTagFilter: resolved(),
     searchNotes: vi.fn().mockResolvedValue([]),
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
@@ -240,8 +248,8 @@ function workspaceValue(
     actions,
     deletingNotesData: options.deletingNotesData ?? false,
     libraryView: options.libraryView ?? "all",
-    activeTag: null,
-    tags: [],
+    activeTagFilters: [],
+    tagSummaries: [],
     locallyExpandedNodeIds: new Set(),
     draftsByNodeId: {
       ...(options.draftTitle === undefined
@@ -538,9 +546,7 @@ describe("NotesExportMenu", () => {
     });
     await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
 
-    const childTitle = screen
-      .getAllByRole<HTMLTextAreaElement>("textbox", { name: "Edit node title" })
-      .find((input) => input.value === "Selected title");
+    const childTitle = findTitleTextarea("Selected title");
     expect(childTitle).toBeDefined();
     fireEvent.change(childTitle!, { target: { value: "Edited child" } });
 
@@ -583,9 +589,7 @@ describe("NotesExportMenu", () => {
     });
     await waitFor(() => expect(currentWorkspace?.status).toBe("ready"));
 
-    const childTitle = screen
-      .getAllByRole<HTMLTextAreaElement>("textbox", { name: "Edit node title" })
-      .find((input) => input.value === "Selected title");
+    const childTitle = findTitleTextarea("Selected title");
     expect(childTitle).toBeDefined();
     fireEvent.change(childTitle!, { target: { value: "Unsaved child" } });
 

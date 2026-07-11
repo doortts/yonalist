@@ -7,6 +7,7 @@ import {
 } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteId } from "../../domain/notes";
+import { NoteTextField } from "./NoteTextField";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -34,6 +35,7 @@ export function NotesPageHeader({
 }: NotesPageHeaderProps) {
   const {
     actions,
+    activeTagFilters,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -235,9 +237,10 @@ export function NotesPageHeader({
             />
           </div>
           <h1 className="notes-page-heading" aria-label={label}>
-            <textarea
+            <NoteTextField
               ref={titleRef}
               className="notes-page-title"
+              containerClassName="notes-page-title-field"
               value={titleValue}
               aria-label="Edit page title"
               placeholder="Untitled page"
@@ -245,6 +248,19 @@ export function NotesPageHeader({
               wrap="soft"
               disabled={disabled}
               readOnly={readOnly}
+              onTagClick={(token) =>
+                void actions.toggleTagFilter({
+                  prefix: token.prefix,
+                  normalizedTag: token.normalized
+                })
+              }
+              isTagActive={(token) =>
+                activeTagFilters.some(
+                  (filter) =>
+                    filter.prefix === token.prefix &&
+                    filter.normalizedTag === token.normalized
+                )
+              }
               onKeyDown={readOnly ? undefined : handleTitleKeyDown}
               onChange={(event) => {
                 resizeTextarea(event.currentTarget);
@@ -258,15 +274,29 @@ export function NotesPageHeader({
           </h1>
         </div>
         {noteVisible && (
-          <textarea
+          <NoteTextField
             ref={noteRef}
             className="notes-page-note"
+            containerClassName="notes-page-note-field"
             value={noteValue}
             aria-label={`Supporting note: ${label}`}
             placeholder="Add a supporting note"
             rows={1}
             disabled={disabled}
             readOnly={readOnly}
+            onTagClick={(token) =>
+              void actions.toggleTagFilter({
+                prefix: token.prefix,
+                normalizedTag: token.normalized
+              })
+            }
+            isTagActive={(token) =>
+              activeTagFilters.some(
+                (filter) =>
+                  filter.prefix === token.prefix &&
+                  filter.normalizedTag === token.normalized
+              )
+            }
             onKeyDown={
               readOnly
                 ? undefined

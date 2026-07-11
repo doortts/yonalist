@@ -36,9 +36,10 @@ const notesStoreMock = vi.hoisted(() => ({
   restoreNode: vi.fn(),
   archiveNode: vi.fn(),
   unarchiveNode: vi.fn(),
-  emptyTrash: vi.fn(),
-  search: vi.fn(),
-  listTags: vi.fn(),
+    emptyTrash: vi.fn(),
+    search: vi.fn(),
+    searchStructured: vi.fn(),
+    listTags: vi.fn(),
   listTagsWithCounts: vi.fn(),
   deleteDatabase: vi.fn()
 }));
@@ -248,6 +249,7 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
     workspace(confirmedNodes)
   );
   notesStoreMock.search.mockResolvedValue([]);
+  notesStoreMock.searchStructured.mockResolvedValue([]);
   notesStoreMock.listTags.mockResolvedValue([]);
   notesStoreMock.listTagsWithCounts.mockResolvedValue([]);
   notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
@@ -268,14 +270,13 @@ function renderNotesWorkspace() {
 
 function queryTitleInput(value: string): HTMLTextAreaElement | null {
   return (
-    screen
-      .queryAllByRole<HTMLTextAreaElement>("textbox", {
-        name: "Edit node title"
-      })
-      .find(
-        (input) =>
-          input.value === value || input.value.trim() === value.trim()
-      ) ?? null
+    Array.from(
+      document.querySelectorAll<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      )
+    ).find(
+      (input) => input.value === value || input.value.trim() === value.trim()
+    ) ?? null
   );
 }
 
@@ -284,11 +285,34 @@ function getTitleInput(value: string): HTMLTextAreaElement {
   if (!input) {
     throw new Error(`Unable to find a node title input with value ${value}`);
   }
+  fireEvent.focus(input);
   return input;
 }
 
 async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
   return waitFor(() => getTitleInput(value));
+}
+
+function textareasByName(name: string): HTMLTextAreaElement[] {
+  return Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea"))
+    .filter((textarea) => textarea.getAttribute("aria-label") === name);
+}
+
+function queryTextareaByName(name: string): HTMLTextAreaElement | null {
+  return textareasByName(name)[0] ?? null;
+}
+
+function getTextareaByName(name: string): HTMLTextAreaElement {
+  const textarea = queryTextareaByName(name);
+  if (!textarea) {
+    throw new Error(`Unable to find a textarea named ${name}`);
+  }
+  fireEvent.focus(textarea);
+  return textarea;
+}
+
+async function findTextareaByName(name: string): Promise<HTMLTextAreaElement> {
+  return waitFor(() => getTextareaByName(name));
 }
 
 async function openNodeMenu(label: string, user = userEvent.setup()) {
@@ -349,6 +373,55 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
+  it("keeps native row and page textareas mounted behind interactive resting tags", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "project",
+        sortKey: 1,
+        title: "Project #today",
+        note: "Owned by @Alice"
+      }),
+      node({ id: "child", parentId: "project", title: "Child" })
+    ]);
+    const { container } = renderNotesWorkspace();
+
+    const rowTag = await screen.findByRole("button", {
+      name: "#today tag filter is inactive"
+    });
+    const row = rowTag.closest(".notes-node");
+    const rowTitle = row?.querySelector("textarea.notes-node-title");
+    const rowNote = row?.querySelector("textarea.notes-node-note");
+
+    expect(rowTitle).toHaveValue("Project #today");
+    expect(rowNote).toHaveValue("Owned by @Alice");
+    expect(
+      within(row as HTMLElement).getByRole("button", {
+        name: "@Alice tag filter is inactive"
+      })
+    ).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Zoom into Project #today" }));
+
+    const pageHeader = container.querySelector(".notes-page-header");
+    expect(pageHeader?.querySelector("textarea.notes-page-title")).toHaveValue(
+      "Project #today"
+    );
+    expect(pageHeader?.querySelector("textarea.notes-page-note")).toHaveValue(
+      "Owned by @Alice"
+    );
+    expect(
+      within(pageHeader as HTMLElement).getByRole("button", {
+        name: "#today tag filter is inactive"
+      })
+    ).toBeVisible();
+    expect(
+      within(pageHeader as HTMLElement).getByRole("button", {
+        name: "@Alice tag filter is inactive"
+      })
+    ).toBeVisible();
+  });
+
   it("renders separate arrow and bullet controls with the bullet as sortable activator", async () => {
     renderNotesWorkspace();
 
@@ -391,7 +464,7 @@ describe("Notes workspace", () => {
             ? "arrow"
             : element.classList.contains("notes-node-bullet")
               ? "bullet"
-              : element.classList.contains("notes-node-title")
+              : element.classList.contains("notes-node-title-field")
                 ? "content"
                 : "other"
       )
@@ -453,7 +526,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-node-title",
+            "notes-text-field notes-node-title-field",
           ],
           "title": "Leaf",
         },
@@ -464,7 +537,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-node-title",
+            "notes-text-field notes-node-title-field",
           ],
           "title": "Expanded",
         },
@@ -475,7 +548,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-node-title",
+            "notes-text-field notes-node-title-field",
           ],
           "title": "Collapsed",
         },
@@ -486,7 +559,7 @@ describe("Notes workspace", () => {
             "notes-node-menu-slot",
             "notes-node-arrow-slot",
             "notes-node-bullet",
-            "notes-node-title",
+            "notes-text-field notes-node-title-field",
           ],
           "title": "Completed collapsed",
         },
@@ -540,9 +613,7 @@ describe("Notes workspace", () => {
     await user.keyboard(" [ArrowLeft][ArrowRight]");
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
 
-    const supportingNote = screen.getByRole("textbox", {
-      name: /Supporting note: Project/
-    });
+    const supportingNote = getTextareaByName("Supporting note: Project");
     await user.click(supportingNote);
     await user.keyboard(" [ArrowUp][ArrowDown]");
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -732,10 +803,7 @@ describe("Notes workspace", () => {
       beforeId: "first"
     });
     expect(
-      screen
-        .getAllByRole<HTMLTextAreaElement>("textbox", {
-          name: "Edit node title"
-        })
+      textareasByName("Edit node title")
         .map((input) => input.value)
     ).toEqual(["First", "Second"]);
 
@@ -747,10 +815,7 @@ describe("Notes workspace", () => {
     );
     await waitFor(() =>
       expect(
-        screen
-          .getAllByRole<HTMLTextAreaElement>("textbox", {
-            name: "Edit node title"
-          })
+        textareasByName("Edit node title")
           .map((input) => input.value)
       ).toEqual(["Second", "First"])
     );
@@ -860,9 +925,7 @@ describe("Notes workspace", () => {
       "aria-level",
       "1"
     );
-    const projectNote = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const projectNote = getTextareaByName("Supporting note: Project");
     expect(projectNote).toHaveValue("Project note");
     expect(projectNote.closest(".notes-page-header")).not.toBeNull();
     expect(projectNote.closest("ol")).toBeNull();
@@ -1432,9 +1495,7 @@ describe("Notes workspace", () => {
     renderNotesWorkspace();
     await findTitleInput("Project");
 
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
     expect(note).toHaveValue("Project note");
 
     await user.clear(note);
@@ -1467,7 +1528,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
       expect(
-        screen.queryByRole("textbox", { name: "Supporting note: Project" })
+        queryTextareaByName("Supporting note: Project")
       ).not.toBeInTheDocument()
     );
     expect(trigger).toHaveFocus();
@@ -1488,9 +1549,7 @@ describe("Notes workspace", () => {
     await findTitleInput("Outside branch");
 
     expect(
-      screen.queryByRole("textbox", {
-        name: "Supporting note: Outside branch"
-      })
+      queryTextareaByName("Supporting note: Outside branch")
     ).not.toBeInTheDocument();
 
     const menu = await openNodeMenu("Outside branch", user);
@@ -1504,9 +1563,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() =>
       expect(
-        screen.getByRole("textbox", {
-          name: "Supporting note: Outside branch"
-        })
+        getTextareaByName("Supporting note: Outside branch")
       ).toHaveFocus()
     );
     expect(trigger).not.toHaveFocus();
@@ -1553,9 +1610,7 @@ describe("Notes workspace", () => {
     await user.click(
       within(menu).getByRole("menuitem", { name: "Add note" })
     );
-    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = await findTextareaByName("Supporting note: Project");
     const longNote =
       "긴 한국어 보조 메모도 데스크톱에서 모바일 너비로 줄어들면 모든 문장이 잘리지 않고 다시 줄바꿈되어야 합니다";
     fireEvent.change(note, { target: { value: longNote } });
@@ -1613,9 +1668,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     await findTitleInput("Project");
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
     vi.useFakeTimers();
 
     fireEvent.change(note, { target: { value: "First note" } });
@@ -1636,9 +1689,7 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
 
     fireEvent.change(title, { target: { value: "Submitted title" } });
     fireEvent.change(note, { target: { value: "Submitted note" } });
@@ -1783,9 +1834,7 @@ describe("Notes workspace", () => {
       .mockReturnValue("00000000-0000-4000-8000-000000000002");
     renderNotesWorkspace();
     const title = await findTitleInput("alphaXYZomega");
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: alphaXYZomega"
-    });
+    const note = getTextareaByName("Supporting note: alphaXYZomega");
     fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
     fireEvent.change(note, { target: { value: "draft note" } });
     title.focus();
@@ -2248,9 +2297,7 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", repeat: true })
     ).toBe(false);
     expect(fireEvent.keyDown(title, { key: "Process" })).toBe(true);
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
     expect(fireEvent.keyDown(note, { key: "Enter" })).toBe(true);
     expect(fireEvent.keyDown(note, { key: "Tab" })).toBe(true);
     expect(fireEvent.keyDown(note, { key: "Backspace" })).toBe(true);
@@ -2268,9 +2315,7 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", shiftKey: true })
     ).toBe(false);
     expect(
-      screen.getByRole("textbox", {
-        name: "Supporting note: Outside branch"
-      })
+      getTextareaByName("Supporting note: Outside branch")
     ).toHaveFocus();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
@@ -2351,9 +2396,7 @@ describe("Notes workspace", () => {
   it("ignores composing, repeated, and textarea Workflowy shortcuts", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Project");
-    const note = screen.getByRole("textbox", {
-      name: "Supporting note: Project"
-    });
+    const note = getTextareaByName("Supporting note: Project");
 
     expect(
       fireEvent.keyDown(title, {
@@ -2398,9 +2441,22 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("reloads All, Starred, Recent, tagged, Archive, and Trash library views", async () => {
+  it("shows counted typed tags, AND filter chips, and accessible removal across library views", async () => {
     const user = userEvent.setup();
-    notesStoreMock.listTags.mockResolvedValue(["Personal", "Work"]);
+    notesStoreMock.listTagsWithCounts.mockResolvedValue([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 2
+      },
+      {
+        prefix: "@",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 1
+      }
+    ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
 
@@ -2418,17 +2474,46 @@ describe("Notes workspace", () => {
       })
     );
     await user.click(within(views).getByRole("button", { name: "Tags" }));
-    await user.click(await screen.findByRole("button", { name: "Work" }));
+    const hashTag = await screen.findByRole("button", {
+      name: "#Work, 2 notes"
+    });
+    const mentionTag = screen.getByRole("button", {
+      name: "@Work, 1 note"
+    });
+    await user.click(hashTag);
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
-        kind: "tag",
-        tag: "Work"
+        kind: "tags",
+        tags: [{ prefix: "#", normalizedTag: "work" }]
       })
     );
-    expect(screen.getByRole("button", { name: "Work" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
+    expect(hashTag).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Remove #Work filter" })
+    ).toBeVisible();
+
+    await user.click(mentionTag);
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "tags",
+        tags: [
+          { prefix: "#", normalizedTag: "work" },
+          { prefix: "@", normalizedTag: "work" }
+        ]
+      })
     );
+    expect(screen.getByRole("button", { name: "Remove @Work filter" }))
+      .toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "Remove #Work filter" }));
+    await waitFor(() =>
+      expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
+        kind: "tags",
+        tags: [{ prefix: "@", normalizedTag: "work" }]
+      })
+    );
+    expect(screen.queryByRole("button", { name: "Remove #Work filter" }))
+      .not.toBeInTheDocument();
     await user.click(within(views).getByRole("button", { name: "Archive" }));
     await waitFor(() =>
       expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
@@ -2501,6 +2586,64 @@ describe("Notes workspace", () => {
     expect(
       screen.queryByRole("option", { name: /Old result/ })
     ).not.toBeInTheDocument();
+  });
+
+  it("runs mixed structured queries and renders their ancestor trail", async () => {
+    notesStoreMock.searchStructured.mockResolvedValue([
+      {
+        nodeId: "plan",
+        title: "Plan",
+        parentTrail: ["Project", "Roadmap"],
+        matchedField: "note"
+      }
+    ]);
+    renderNotesWorkspace();
+    const search = await screen.findByRole("searchbox", {
+      name: "Search notes"
+    });
+
+    fireEvent.change(search, {
+      target: { value: "roadmap #Work -@Alice #Soon OR @Bob" }
+    });
+
+    expect(
+      await screen.findByRole("option", {
+        name: "Plan, in Project / Roadmap, note match"
+      })
+    ).toHaveTextContent("Project / Roadmap");
+    expect(notesStoreMock.searchStructured).toHaveBeenLastCalledWith("/vault", {
+      text: "roadmap",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "work", displayTag: "Work" }
+      ],
+      excludedTags: [
+        { prefix: "@", normalizedTag: "alice", displayTag: "Alice" }
+      ],
+      orGroups: [
+        [
+          { prefix: "#", normalizedTag: "soon", displayTag: "Soon" },
+          { prefix: "@", normalizedTag: "bob", displayTag: "Bob" }
+        ]
+      ]
+    });
+    expect(notesStoreMock.search).not.toHaveBeenCalled();
+  });
+
+  it("shows structured query validation errors without searching", async () => {
+    renderNotesWorkspace();
+    const search = await screen.findByRole("searchbox", {
+      name: "Search notes"
+    });
+    const invalid = Array.from({ length: 65 }, (_, index) => `#tag${index}`)
+      .join(" ");
+
+    fireEvent.change(search, { target: { value: invalid } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Structured Notes search has more than 64 unique tag alternatives."
+    );
+    expect(notesStoreMock.search).not.toHaveBeenCalled();
+    expect(notesStoreMock.searchStructured).not.toHaveBeenCalled();
   });
 
   it("hides rendered search results as soon as the query changes", async () => {
@@ -2795,9 +2938,7 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.archiveNode).toHaveBeenCalledWith("/vault", "project")
     );
-    const activeFallbackTitle = await screen.findByRole("textbox", {
-      name: "Edit page title"
-    });
+    const activeFallbackTitle = await findTextareaByName("Edit page title");
     expect(activeFallbackTitle).toHaveValue("Outside");
     await waitFor(() => expect(activeFallbackTitle).toHaveFocus());
 
@@ -2805,7 +2946,7 @@ describe("Notes workspace", () => {
     await user.click(
       await within(library).findByRole("button", { name: "Project" })
     );
-    expect(screen.getByRole("textbox", { name: "Edit page title" })).toHaveAttribute(
+    expect(getTextareaByName("Edit page title")).toHaveAttribute(
       "readonly"
     );
     expect(screen.getByRole("button", { name: "Add child" })).toBeDisabled();
@@ -2850,9 +2991,7 @@ describe("Notes workspace", () => {
     await user.click(
       await within(library).findByRole("button", { name: "Project" })
     );
-    const trashTitle = screen.getByRole("textbox", {
-      name: "Edit page title"
-    });
+    const trashTitle = getTextareaByName("Edit page title");
     expect(trashTitle).toHaveValue("Project");
     expect(trashTitle).toHaveAttribute("readonly");
     await user.click(
@@ -3003,7 +3142,14 @@ describe("Notes workspace", () => {
       async (_vaultRoot: string, scope: { kind: string }) =>
         workspace(scope.kind === "trash" ? deletedNodes : activeNodes)
     );
-    notesStoreMock.listTags.mockResolvedValue(["Work"]);
+    notesStoreMock.listTagsWithCounts.mockResolvedValue([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 1
+      }
+    ]);
     renderNotesWorkspace();
     await findTitleInput("Project");
 
@@ -3013,7 +3159,9 @@ describe("Notes workspace", () => {
     });
     await user.click(screen.getByRole("button", { name: "Tags" }));
 
-    expect(await screen.findByRole("button", { name: "Work" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("button", { name: "#Work, 1 note" })
+    ).toBeInTheDocument();
     expect(queryTitleInput("Deleted note")).toBeNull();
     expect(screen.queryByRole("button", { name: "Move Deleted note" })).toBeNull();
   });
@@ -3045,7 +3193,7 @@ describe("Notes workspace", () => {
     expect(
       notesStoreMock.updateNode.mock.invocationCallOrder.at(-1)
     ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
-    expect(screen.queryByRole("textbox", { name: "Edit node title" })).toBeNull();
+    expect(queryTextareaByName("Edit node title")).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
   });
@@ -3079,10 +3227,7 @@ describe("Notes workspace", () => {
     expect(
       screen.getByRole("button", { name: "Starred", hidden: true })
     ).toBeDisabled();
-    for (const titleInput of screen.getAllByRole("textbox", {
-      name: "Edit node title",
-      hidden: true
-    })) {
+    for (const titleInput of textareasByName("Edit node title")) {
       expect(titleInput).toBeDisabled();
     }
     expect(
@@ -3165,7 +3310,7 @@ describe("Notes workspace", () => {
       )
     );
     expect(title).toHaveStyle({ height: "76px" });
-    expect(title.parentElement).toBe(row);
+    expect(title.closest(".notes-text-field")?.parentElement).toBe(row);
     expect(menuSlot?.parentElement).toBe(row);
     expect(
       within(row!).getAllByRole("button", {

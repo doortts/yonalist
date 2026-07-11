@@ -15,6 +15,7 @@ import { IconTooltip } from "../../components/ui/Tooltip";
 import { createNoteId, type NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
+import { NoteTextField } from "./NoteTextField";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
@@ -52,6 +53,7 @@ export function OutlineNodeRow({
 }: OutlineNodeRowProps) {
   const {
     actions,
+    activeTagFilters,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -459,8 +461,9 @@ export function OutlineNodeRow({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
-        <textarea
+        <NoteTextField
           className="notes-node-title"
+          containerClassName="notes-node-title-field"
           ref={titleRef}
           value={titleValue}
           aria-label="Edit node title"
@@ -468,6 +471,19 @@ export function OutlineNodeRow({
           rows={1}
           wrap="soft"
           disabled={disabled}
+          onTagClick={(token) =>
+            void actions.toggleTagFilter({
+              prefix: token.prefix,
+              normalizedTag: token.normalized
+            })
+          }
+          isTagActive={(token) =>
+            activeTagFilters.some(
+              (filter) =>
+                filter.prefix === token.prefix &&
+                filter.normalizedTag === token.normalized
+            )
+          }
           onChange={(event) => {
             resizeTextarea(event.currentTarget);
             actions.updateNodeDraft(nodeId, {
@@ -481,13 +497,27 @@ export function OutlineNodeRow({
       </div>
 
       {noteOpen && (
-        <textarea
+        <NoteTextField
           ref={noteRef}
           className="notes-node-note"
+          containerClassName="notes-node-note-field"
           value={noteValue}
           aria-label={`Supporting note: ${label}`}
           rows={2}
           disabled={disabled}
+          onTagClick={(token) =>
+            void actions.toggleTagFilter({
+              prefix: token.prefix,
+              normalizedTag: token.normalized
+            })
+          }
+          isTagActive={(token) =>
+            activeTagFilters.some(
+              (filter) =>
+                filter.prefix === token.prefix &&
+                filter.normalizedTag === token.normalized
+            )
+          }
           onKeyDown={(event) => {
             const historyShortcut = resolveNotesHistoryShortcut({
               key: event.key,

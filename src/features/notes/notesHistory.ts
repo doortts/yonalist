@@ -11,12 +11,16 @@ export interface NotesHistoryFocus {
   field: NotesHistoryFocusField;
 }
 
-export interface NotesHistorySnapshot {
+export interface NotesHistoryLocationSnapshot {
   scope: NotesWorkspaceScope;
   selectedId: NoteId | null;
   zoomRootId: NoteId | null;
   locallyExpandedNodeIds: readonly NoteId[];
   focus: NotesHistoryFocus | null;
+}
+
+export interface NotesHistorySnapshot extends NotesHistoryLocationSnapshot {
+  tagFilterOrigin?: NotesHistoryLocationSnapshot | null;
 }
 
 export type NotesHistoryReplayDirection = "undo" | "redo";
@@ -112,12 +116,27 @@ function cloneScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   return { ...scope };
 }
 
-function cloneSnapshot(snapshot: NotesHistorySnapshot): NotesHistorySnapshot {
+function cloneLocation(
+  snapshot: NotesHistoryLocationSnapshot
+): NotesHistoryLocationSnapshot {
   return {
     ...snapshot,
     scope: cloneScope(snapshot.scope),
     locallyExpandedNodeIds: [...snapshot.locallyExpandedNodeIds],
     focus: snapshot.focus ? { ...snapshot.focus } : null
+  };
+}
+
+function cloneSnapshot(snapshot: NotesHistorySnapshot): NotesHistorySnapshot {
+  return {
+    ...cloneLocation(snapshot),
+    ...(snapshot.tagFilterOrigin === undefined
+      ? {}
+      : {
+          tagFilterOrigin: snapshot.tagFilterOrigin
+            ? cloneLocation(snapshot.tagFilterOrigin)
+            : null
+        })
   };
 }
 

@@ -16,6 +16,8 @@ import type {
   NotesHistoryStatus,
   NotesMutationResponse,
   NoteSearchResult,
+  NoteTagFilter,
+  NoteTagSummary,
   NotesStore,
   NotesStoreError,
   NotesWorkspace,
@@ -37,6 +39,7 @@ import {
   createNotesHistoryOwnerRegistry,
   type NotesHistoryFocus,
   type NotesHistoryFocusField,
+  type NotesHistoryLocationSnapshot,
   type NotesHistorySnapshot
 } from "./notesHistory";
 import {
@@ -44,6 +47,7 @@ import {
   notesWorkspaceReducer,
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
+import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
@@ -88,7 +92,7 @@ export interface NotesWorkspaceActions {
   unarchiveNode(nodeId: NoteId): Promise<void>;
   emptyTrash(): Promise<void>;
   selectLibraryView(view: NotesLibraryView): Promise<void>;
-  selectTag(tag: string): Promise<void>;
+  toggleTagFilter(filter: NoteTagFilter): Promise<void>;
   searchNotes(query: string): Promise<NoteSearchResult[]>;
   openSearchResult(nodeId: NoteId): Promise<void>;
   deleteAllNotesData(): Promise<void>;
@@ -121,8 +125,8 @@ export interface UseNotesWorkspaceResult {
   actions: NotesWorkspaceActions;
   deletingNotesData: boolean;
   libraryView: NotesLibraryView;
-  activeTag: string | null;
-  tags: readonly string[];
+  activeTagFilters: readonly NoteTagFilter[];
+  tagSummaries: readonly NoteTagSummary[];
   locallyExpandedNodeIds: ReadonlySet<NoteId>;
   draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
   writeError: NotesStoreError | null;
@@ -290,6 +294,13 @@ interface LiveNotesNavigation {
   pendingFocusField: NotesHistoryFocusField | null;
 }
 
+interface TagFilterOrigin {
+  scope: NotesWorkspaceScope;
+  libraryView: Exclude<NotesLibraryView, "tags">;
+  navigation: LiveNotesNavigation;
+  locallyExpandedNodeIds: ReadonlySet<NoteId>;
+}
+
 const emptyLiveNavigation = (): LiveNotesNavigation => ({
   selectedId: null,
   zoomRootId: null,
@@ -393,26 +404,102 @@ function sameScope(
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function tagFilterKey(filter: NoteTagFilter): string {
+  return `${filter.prefix}\u0000${filter.normalizedTag}`;
+}
+
+export function canonicalizeTagFilters(
+  filters: readonly NoteTagFilter[]
+): NoteTagFilter[] {
+  const uniqueFilters = new Map(
+    filters.map((filter) => [
+      tagFilterKey(filter),
+      {
+        prefix: filter.prefix,
+        normalizedTag: filter.normalizedTag
+      }
+    ])
+  );
+  return [...uniqueFilters.values()].sort(
+    (left, right) =>
+      (left.prefix === right.prefix ? 0 : left.prefix === "#" ? -1 : 1) ||
+      left.normalizedTag.localeCompare(right.normalizedTag)
+  );
+}
+
+function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
+  return scope.kind === "tags"
+    ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
+    : { ...scope };
+}
+
 function libraryStateForScope(scope: NotesWorkspaceScope): {
   view: Exclude<NotesLibraryView, "tags"> | "tags";
-  tag: string | null;
+  filters: readonly NoteTagFilter[];
 } {
   switch (scope.kind) {
     case "active":
-      return { view: "all", tag: null };
+      return { view: "all", filters: [] };
     case "starred":
-      return { view: "starred", tag: null };
+      return { view: "starred", filters: [] };
     case "recent":
-      return { view: "recent", tag: null };
+      return { view: "recent", filters: [] };
     case "archive":
-      return { view: "archive", tag: null };
+      return { view: "archive", filters: [] };
     case "trash":
-      return { view: "trash", tag: null };
+      return { view: "trash", filters: [] };
     case "tag":
-      return { view: "tags", tag: scope.tag };
+      return {
+        view: "tags",
+        filters: scope.tag.length > 1
+          ? [
+              {
+                prefix: scope.tag[0] as "#" | "@",
+                normalizedTag: scope.tag.slice(1).toLocaleLowerCase()
+              }
+            ]
+          : []
+      };
     case "tags":
-      return { view: "tags", tag: null };
+      return { view: "tags", filters: canonicalizeTagFilters(scope.tags) };
   }
+}
+
+function restoredTagFilterNavigation(
+  workspace: NotesWorkspace,
+  origin: TagFilterOrigin
+): { uiUpdate: NotesWorkspaceUiUpdate; expandedNodeIds: ReadonlySet<NoteId> } {
+  const normalized = normalizeWorkspace(workspace);
+  const existing = (nodeId: NoteId | null): NoteId | null | undefined =>
+    nodeId === null
+      ? null
+      : normalized.nodesById[nodeId]
+        ? nodeId
+        : undefined;
+  const fallbackId = normalized.rootIds[0] ?? null;
+  const restoredZoomRootId = existing(origin.navigation.zoomRootId);
+  const zoomRootId =
+    restoredZoomRootId === undefined ? fallbackId : restoredZoomRootId;
+  const restoredSelectedId = existing(origin.navigation.selectedId);
+  const selectedId =
+    restoredSelectedId === undefined ? zoomRootId ?? fallbackId : restoredSelectedId;
+  const editingNoteId = existing(origin.navigation.editingNoteId) ?? null;
+  const pendingFocusId = existing(origin.navigation.pendingFocusId) ?? null;
+  return {
+    uiUpdate: {
+      selectedId,
+      zoomRootId,
+      editingNoteId,
+      pendingFocusId,
+      pendingFocusField:
+        pendingFocusId === null ? null : origin.navigation.pendingFocusField
+    },
+    expandedNodeIds: new Set(
+      [...origin.locallyExpandedNodeIds].filter((nodeId) =>
+        Boolean(normalized.nodesById[nodeId])
+      )
+    )
+  };
 }
 
 function searchNavigation(
@@ -997,8 +1084,10 @@ export function useNotesWorkspace({
     Readonly<Record<NoteId, NotesNodeDraft>>
   >({});
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
-  const [activeTag, setActiveTag] = useState<string | null>(null);
-  const [tags, setTags] = useState<readonly string[]>([]);
+  const [activeTagFilters, setActiveTagFilters] = useState<
+    readonly NoteTagFilter[]
+  >([]);
+  const [tagSummaries, setTagSummaries] = useState<readonly NoteTagSummary[]>([]);
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
@@ -1011,6 +1100,9 @@ export function useNotesWorkspace({
   });
   const historyVersionRef = useRef(0);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
+  const requestedTagFiltersRef = useRef<readonly NoteTagFilter[]>([]);
+  const tagFilterOriginRef = useRef<TagFilterOrigin | null>(null);
+  const tagFilterRequestRef = useRef(0);
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -1115,11 +1207,14 @@ export function useNotesWorkspace({
     setHistoryStatus({ canUndo: false, canRedo: false });
     historyVersionRef.current = 0;
     activeScopeRef.current = { kind: "active" };
+    requestedTagFiltersRef.current = [];
+    tagFilterOriginRef.current = null;
+    tagFilterRequestRef.current += 1;
     locallyExpandedNodeIdsRef.current = new Set();
     liveNavigationRef.current = emptyLiveNavigation();
     setLibraryView("all");
-    setActiveTag(null);
-    setTags([]);
+    setActiveTagFilters([]);
+    setTagSummaries([]);
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
     let record!: NotesWorkspaceSessionRecord;
     const session = notesWorkspaceCoordinatorRegistry.openSession({
@@ -1356,12 +1451,28 @@ export function useNotesWorkspace({
               }
             : null
           : focus;
+      const origin = tagFilterOriginRef.current;
+      const tagFilterOrigin: NotesHistoryLocationSnapshot | null = origin
+        ? {
+            scope: cloneWorkspaceScope(origin.scope),
+            selectedId: origin.navigation.selectedId,
+            zoomRootId: origin.navigation.zoomRootId,
+            locallyExpandedNodeIds: [...origin.locallyExpandedNodeIds],
+            focus: origin.navigation.editingNoteId
+              ? {
+                  nodeId: origin.navigation.editingNoteId,
+                  field: origin.navigation.pendingFocusField ?? "title"
+                }
+              : null
+          }
+        : null;
       return {
         scope: activeScopeRef.current,
         selectedId: navigation.selectedId,
         zoomRootId: navigation.zoomRootId,
         locallyExpandedNodeIds: [...locallyExpandedNodeIdsRef.current],
-        focus: resolvedFocus
+        focus: resolvedFocus,
+        tagFilterOrigin
       };
     },
     []
@@ -2143,6 +2254,7 @@ export function useNotesWorkspace({
       let replayedSnapshot: NotesHistorySnapshot | null = null;
       let replayedExpansionIds: ReadonlySet<NoteId> | null = null;
       let replayedScope: NotesWorkspaceScope | null = null;
+      let replayedTagFilterOrigin: TagFilterOrigin | null | undefined;
       await session.enqueueStructural(async (context) => {
         const replay =
           direction === "undo" ? context.repository.undo : context.repository.redo;
@@ -2176,6 +2288,28 @@ export function useNotesWorkspace({
               )
             : null;
         replayedScope = replayedSnapshot?.scope ?? currentScope;
+        if (replayedSnapshot) {
+          const origin = replayedSnapshot.tagFilterOrigin;
+          replayedTagFilterOrigin = origin
+            ? {
+                scope: cloneWorkspaceScope(origin.scope),
+                libraryView: (() => {
+                  const library = libraryStateForScope(origin.scope).view;
+                  return library === "tags" ? "all" : library;
+                })(),
+                navigation: {
+                  selectedId: origin.selectedId,
+                  zoomRootId: origin.zoomRootId,
+                  editingNoteId: origin.focus?.nodeId ?? null,
+                  pendingFocusId: origin.focus?.nodeId ?? null,
+                  pendingFocusField: origin.focus?.field ?? null
+                },
+                locallyExpandedNodeIds: new Set(
+                  origin.locallyExpandedNodeIds
+                )
+              }
+            : null;
+        }
         let replayedWorkspace = result.workspace;
         if (!sameScope(replayedScope, currentScope)) {
           replayedWorkspace = await context.repository.loadWorkspace(
@@ -2228,7 +2362,11 @@ export function useNotesWorkspace({
       if (replayedScope) {
         const library = libraryStateForScope(replayedScope);
         setLibraryView(library.view);
-        setActiveTag(library.tag);
+        requestedTagFiltersRef.current = library.filters;
+        setActiveTagFilters(library.filters);
+        if (replayedTagFilterOrigin !== undefined) {
+          tagFilterOriginRef.current = replayedTagFilterOrigin;
+        }
       }
     },
     [
@@ -2245,8 +2383,7 @@ export function useNotesWorkspace({
   const loadLibraryScope = useCallback(
     async (
       view: NotesLibraryView,
-      scope: NotesWorkspaceScope,
-      tag: string | null = null
+      scope: NotesWorkspaceScope
     ): Promise<void> => {
       if (
         (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
@@ -2288,7 +2425,10 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView(view);
-      setActiveTag(tag);
+      requestedTagFiltersRef.current = [];
+      tagFilterOriginRef.current = null;
+      tagFilterRequestRef.current += 1;
+      setActiveTagFilters([]);
       replaceLocalExpansions(new Set());
     },
     [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
@@ -2298,6 +2438,9 @@ export function useNotesWorkspace({
     async (view: NotesLibraryView): Promise<void> => {
       if (view !== "tags") {
         await loadLibraryScope(view, scopeForLibraryView(view));
+        return;
+      }
+      if (requestedTagFiltersRef.current.length > 0) {
         return;
       }
       if (
@@ -2310,9 +2453,17 @@ export function useNotesWorkspace({
       if (!record) {
         return;
       }
-      let listedTags: string[] | null = null;
+      const originLibrary = libraryStateForScope(activeScopeRef.current);
+      const chooserOrigin: TagFilterOrigin = {
+        scope: cloneWorkspaceScope(activeScopeRef.current),
+        libraryView:
+          originLibrary.view === "tags" ? "all" : originLibrary.view,
+        navigation: { ...liveNavigationRef.current },
+        locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
+      };
+      let listedTags: NoteTagSummary[] | null = null;
       await runCommand(async (context) => {
-        listedTags = await context.repository.listTags(context.vaultRoot);
+        listedTags = await context.repository.listTagsWithCounts(context.vaultRoot);
         if (
           record.closing ||
           sessionRecordRef.current !== record ||
@@ -2320,7 +2471,6 @@ export function useNotesWorkspace({
         ) {
           return { kind: "skipped" };
         }
-        activeScopeRef.current = { kind: "active" };
         return authoritative(
           { nodes: [] },
           {
@@ -2339,9 +2489,9 @@ export function useNotesWorkspace({
       ) {
         return;
       }
+      tagFilterOriginRef.current = chooserOrigin;
       setLibraryView("tags");
-      setActiveTag(null);
-      setTags(listedTags);
+      setTagSummaries(listedTags);
       replaceLocalExpansions(new Set());
     }, [
       flushAllDraftsBeforeStructural,
@@ -2351,16 +2501,155 @@ export function useNotesWorkspace({
     ]
   );
 
-  const selectTag = useCallback(
-    async (tag: string): Promise<void> => {
-      await loadLibraryScope("tags", { kind: "tag", tag }, tag);
+  const toggleTagFilter = useCallback(
+    async (filter: NoteTagFilter): Promise<void> => {
+      const currentFilters = requestedTagFiltersRef.current;
+      const key = tagFilterKey(filter);
+      const exists = currentFilters.some(
+        (candidate) => tagFilterKey(candidate) === key
+      );
+      const nextFilters = canonicalizeTagFilters(
+        exists
+          ? currentFilters.filter((candidate) => tagFilterKey(candidate) !== key)
+          : [...currentFilters, filter]
+      );
+      const requestId = ++tagFilterRequestRef.current;
+      requestedTagFiltersRef.current = nextFilters;
+      let capturedOrigin = false;
+      const rollbackRequestedFilters = () => {
+        if (tagFilterRequestRef.current !== requestId) {
+          return;
+        }
+        requestedTagFiltersRef.current = currentFilters;
+        if (capturedOrigin) {
+          tagFilterOriginRef.current = null;
+        }
+      };
+
+      if (
+        currentFilters.length === 0 &&
+        nextFilters.length > 0 &&
+        tagFilterOriginRef.current === null
+      ) {
+        const originLibrary = libraryStateForScope(activeScopeRef.current);
+        tagFilterOriginRef.current = {
+          scope: cloneWorkspaceScope(activeScopeRef.current),
+          libraryView:
+            originLibrary.view === "tags" ? "all" : originLibrary.view,
+          navigation: { ...liveNavigationRef.current },
+          locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
+        };
+        capturedOrigin = true;
+      }
+
+      if (
+        (sessionRecordRef.current?.drafts.size ?? 0) > 0 &&
+        !(await flushAllDraftsBeforeStructural())
+      ) {
+        rollbackRequestedFilters();
+        return;
+      }
+      const record = sessionRecordRef.current;
+      if (!record) {
+        rollbackRequestedFilters();
+        return;
+      }
+      const session = record.session;
+      const origin = tagFilterOriginRef.current;
+      const nextScope: NotesWorkspaceScope =
+        nextFilters.length > 0
+          ? { kind: "tags", tags: nextFilters }
+          : cloneWorkspaceScope(origin?.scope ?? { kind: "active" });
+      let loaded = false;
+      let restoredExpansions: ReadonlySet<NoteId> = new Set();
+      let summaries: NoteTagSummary[] | null = null;
+
+      await runCommand(async (context) => {
+        if (tagFilterRequestRef.current !== requestId) {
+          return { kind: "skipped" };
+        }
+        const [workspace, countedTags] = await Promise.all([
+          context.repository.loadWorkspace(context.vaultRoot, nextScope),
+          context.repository.listTagsWithCounts(context.vaultRoot)
+        ]);
+        if (
+          tagFilterRequestRef.current !== requestId ||
+          record.closing ||
+          sessionRecordRef.current !== record ||
+          sessionRef.current !== session
+        ) {
+          return { kind: "skipped" };
+        }
+        loaded = true;
+        summaries = countedTags;
+        activeScopeRef.current = nextScope;
+        if (nextFilters.length > 0) {
+          return authoritative(workspace, {
+            selectedId: null,
+            zoomRootId: null,
+            editingNoteId: null,
+            pendingFocusId: null
+          });
+        }
+        const restoration = origin
+          ? restoredTagFilterNavigation(workspace, origin)
+          : {
+              uiUpdate: {
+                selectedId: null,
+                zoomRootId: null,
+                editingNoteId: null,
+                pendingFocusId: null
+              },
+              expandedNodeIds: new Set<NoteId>()
+            };
+        restoredExpansions = restoration.expandedNodeIds;
+        return authoritative(workspace, restoration.uiUpdate);
+      });
+
+      if (
+        !loaded ||
+        tagFilterRequestRef.current !== requestId ||
+        record.closing ||
+        sessionRecordRef.current !== record ||
+        sessionRef.current !== session
+      ) {
+        rollbackRequestedFilters();
+        return;
+      }
+      setActiveTagFilters(nextFilters);
+      if (summaries) {
+        setTagSummaries(summaries);
+      }
+      if (nextFilters.length > 0) {
+        setLibraryView("tags");
+        replaceLocalExpansions(new Set());
+        return;
+      }
+      setLibraryView(origin?.libraryView ?? "all");
+      replaceLocalExpansions(restoredExpansions);
+      tagFilterOriginRef.current = null;
     },
-    [loadLibraryScope]
+    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
   );
 
   const searchNotes = useCallback(
-    (query: string): Promise<NoteSearchResult[]> =>
-      repository.search(vaultRoot, query),
+    async (query: string): Promise<NoteSearchResult[]> => {
+      const parsed = parseAndValidateNoteSearchQuery(query);
+      if (!parsed.ok) {
+        throw new Error(parsed.error.message);
+      }
+      const structured =
+        parsed.query.requiredTags.length > 0 ||
+        parsed.query.excludedTags.length > 0 ||
+        parsed.query.orGroups.length > 0;
+      if (!structured) {
+        return repository.search(vaultRoot, parsed.query.text);
+      }
+      if (!repository.searchStructured) {
+        throw new Error("Structured Notes search is unavailable.");
+      }
+      return repository.searchStructured(vaultRoot, parsed.query);
+    },
     [repository, vaultRoot]
   );
 
@@ -2419,7 +2708,10 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView("all");
-      setActiveTag(null);
+      requestedTagFiltersRef.current = [];
+      tagFilterOriginRef.current = null;
+      tagFilterRequestRef.current += 1;
+      setActiveTagFilters([]);
       replaceLocalExpansions(expandedNodeIds);
     },
     [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
@@ -2527,7 +2819,10 @@ export function useNotesWorkspace({
       transitionToAll
     ) {
       setLibraryView("all");
-      setActiveTag(null);
+      requestedTagFiltersRef.current = [];
+      tagFilterOriginRef.current = null;
+      tagFilterRequestRef.current += 1;
+      setActiveTagFilters([]);
       replaceLocalExpansions(new Set());
     }
   }, [
@@ -3042,7 +3337,7 @@ export function useNotesWorkspace({
         sessionRef.current === ownerRecord.session;
       const lifecycleResult: {
         transition: NotesLifecycleNavigationTransition | null;
-        refreshedTags: string[] | null;
+        refreshedTags: NoteTagSummary[] | null;
         recoveredToActive: boolean;
         resolvedNavigationVersion: number | null;
       } = {
@@ -3132,9 +3427,8 @@ export function useNotesWorkspace({
             }
           }
           try {
-            lifecycleResult.refreshedTags = await context.repository.listTags(
-              context.vaultRoot
-            );
+            lifecycleResult.refreshedTags =
+              await context.repository.listTagsWithCounts(context.vaultRoot);
             if (!isLifecycleOwnerActive()) {
               return authoritative(
                 projectedWorkspace,
@@ -3230,10 +3524,13 @@ export function useNotesWorkspace({
       }
       if (lifecycleResult.recoveredToActive) {
         setLibraryView("all");
-        setActiveTag(null);
+        requestedTagFiltersRef.current = [];
+        tagFilterOriginRef.current = null;
+        tagFilterRequestRef.current += 1;
+        setActiveTagFilters([]);
       }
       if (lifecycleResult.refreshedTags) {
-        setTags(lifecycleResult.refreshedTags);
+        setTagSummaries(lifecycleResult.refreshedTags);
       }
     },
     [
@@ -3522,8 +3819,11 @@ export function useNotesWorkspace({
       ) {
         activeScopeRef.current = { kind: "active" };
         setLibraryView("all");
-        setActiveTag(null);
-        setTags([]);
+        requestedTagFiltersRef.current = [];
+        tagFilterOriginRef.current = null;
+        tagFilterRequestRef.current += 1;
+        setActiveTagFilters([]);
+        setTagSummaries([]);
         replaceLocalExpansions(new Set());
       }
     } finally {
@@ -3589,7 +3889,7 @@ export function useNotesWorkspace({
       unarchiveNode: gate(unarchiveNode),
       emptyTrash: gate(emptyTrash),
       selectLibraryView: gate(selectLibraryView),
-      selectTag: gate(selectTag),
+      toggleTagFilter: gate(toggleTagFilter),
       searchNotes: (query) =>
         deletingNotesDataRef.current
           ? Promise.resolve([])
@@ -3622,7 +3922,7 @@ export function useNotesWorkspace({
     unarchiveNode,
     emptyTrash,
     selectLibraryView,
-    selectTag,
+    toggleTagFilter,
     searchNotes,
     openSearchResult,
     deleteAllNotesData,
@@ -3636,8 +3936,8 @@ export function useNotesWorkspace({
     actions,
     deletingNotesData,
     libraryView,
-    activeTag,
-    tags,
+    activeTagFilters,
+    tagSummaries,
     locallyExpandedNodeIds,
     draftsByNodeId,
     writeError: currentWriteError,

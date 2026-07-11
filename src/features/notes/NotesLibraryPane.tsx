@@ -7,7 +7,8 @@ import {
   Settings2,
   Star,
   Tags,
-  Trash2
+  Trash2,
+  X
 } from "lucide-react";
 import {
   type ChangeEvent,
@@ -55,8 +56,14 @@ function resultLabel(result: NoteSearchResult): string {
 }
 
 function NotesLibraryPaneContent() {
-  const { actions, activeTag, deletingNotesData, libraryView, state, tags } =
-    useNotesWorkspaceContext();
+  const {
+    actions,
+    activeTagFilters,
+    deletingNotesData,
+    libraryView,
+    state,
+    tagSummaries
+  } = useNotesWorkspaceContext();
   const exportController = useNotesExportController();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly NoteSearchResult[]>([]);
@@ -68,7 +75,17 @@ function NotesLibraryPaneContent() {
   const resultOptionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const initialLoading = state.status === "loading" && state.rootIds.length === 0;
   const showingTags = libraryView === "tags";
-  const choosingTag = showingTags && activeTag === null;
+  const choosingTag = showingTags && activeTagFilters.length === 0;
+  const isTagActive = (prefix: "#" | "@", normalizedTag: string) =>
+    activeTagFilters.some(
+      (filter) =>
+        filter.prefix === prefix && filter.normalizedTag === normalizedTag
+    );
+  const summaryForFilter = (prefix: "#" | "@", normalizedTag: string) =>
+    tagSummaries.find(
+      (summary) =>
+        summary.prefix === prefix && summary.normalizedTag === normalizedTag
+    );
 
   useEffect(() => {
     const requestId = ++searchRequestRef.current;
@@ -240,6 +257,46 @@ function NotesLibraryPaneContent() {
             ))}
           </div>
 
+          {activeTagFilters.length > 0 && (
+            <div
+              className="notes-tag-filter-chips"
+              role="list"
+              aria-label="Active tag filters"
+            >
+              {activeTagFilters.map((filter) => {
+                const summary = summaryForFilter(
+                  filter.prefix,
+                  filter.normalizedTag
+                );
+                const displayTag = summary?.displayTag ?? filter.normalizedTag;
+                const label = `${filter.prefix}${displayTag}`;
+                return (
+                  <span
+                    className="notes-tag-filter-chip"
+                    role="listitem"
+                    data-prefix={filter.prefix}
+                    key={`${filter.prefix}:${filter.normalizedTag}`}
+                  >
+                    <span>{label}</span>
+                    {summary && (
+                      <span className="notes-tag-count" aria-hidden="true">
+                        {summary.count}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${label} filter`}
+                      disabled={deletingNotesData}
+                      onClick={() => void actions.toggleTagFilter(filter)}
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
           {query.trim() && (
             <div className="notes-search-results" aria-busy={searching}>
               {searchError && (
@@ -282,21 +339,29 @@ function NotesLibraryPaneContent() {
 
           {showingTags && (
             <div className="notes-tag-list" aria-label="Note tags">
-              {tags.length === 0 ? (
+              {tagSummaries.length === 0 ? (
                 <p className="notes-pane-state">No tags yet.</p>
               ) : (
-                tags.map((tag) => (
-                  <button
-                    type="button"
-                    key={tag}
-                    aria-pressed={activeTag === tag}
-                    disabled={deletingNotesData}
-                    onClick={() => void actions.selectTag(tag)}
-                  >
-                    <Tags size={14} aria-hidden="true" />
-                    <span>{tag}</span>
-                  </button>
-                ))
+                tagSummaries.map((summary) => {
+                  const label = `${summary.prefix}${summary.displayTag}`;
+                  const countLabel = `${summary.count} ${summary.count === 1 ? "note" : "notes"}`;
+                  return (
+                    <button
+                      type="button"
+                      key={`${summary.prefix}:${summary.normalizedTag}`}
+                      aria-label={`${label}, ${countLabel}`}
+                      aria-pressed={isTagActive(
+                        summary.prefix,
+                        summary.normalizedTag
+                      )}
+                      disabled={deletingNotesData}
+                      onClick={() => void actions.toggleTagFilter(summary)}
+                    >
+                      <span className="notes-tag-label">{label}</span>
+                      <span className="notes-tag-count">{summary.count}</span>
+                    </button>
+                  );
+                })
               )}
             </div>
           )}

@@ -1664,6 +1664,338 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.split).toBeUndefined();
   });
 
+  it("routes plain and validated structured search queries to their matching APIs", async () => {
+    const search = vi.fn().mockResolvedValue([]);
+    const searchStructured = vi.fn().mockResolvedValue([]);
+    const store = repository({ search, searchStructured });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.searchNotes("  roadmap notes  ");
+    });
+    expect(search).toHaveBeenCalledWith("/vault", "roadmap notes");
+    expect(searchStructured).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.actions.searchNotes(
+        "roadmap #Work -@Alice #Soon OR @Bob"
+      );
+    });
+    expect(searchStructured).toHaveBeenCalledWith("/vault", {
+      text: "roadmap",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "work", displayTag: "Work" }
+      ],
+      excludedTags: [
+        { prefix: "@", normalizedTag: "alice", displayTag: "Alice" }
+      ],
+      orGroups: [
+        [
+          { prefix: "#", normalizedTag: "soon", displayTag: "Soon" },
+          { prefix: "@", normalizedTag: "bob", displayTag: "Bob" }
+        ]
+      ]
+    });
+    expect(search).toHaveBeenCalledOnce();
+
+    const invalid = Array.from({ length: 65 }, (_, index) => `#tag${index}`)
+      .join(" ");
+    await expect(result.current.actions.searchNotes(invalid)).rejects.toThrow(
+      "Structured Notes search has more than 64 unique tag alternatives."
+    );
+    expect(search).toHaveBeenCalledOnce();
+    expect(searchStructured).toHaveBeenCalledOnce();
+  });
+
+  it("canonicalizes AND tag filters and restores the captured live location after the last removal", async () => {
+    const active = workspace([
+      node({ id: "root", title: "Root", isCollapsed: true }),
+      node({ id: "child", parentId: "root", title: "Child" }),
+      node({ id: "other", sortKey: 2, title: "Other" })
+    ]);
+    const filtered = workspace([
+      node({ id: "root", title: "Root", isCollapsed: true }),
+      node({ id: "child", parentId: "root", title: "Child" })
+    ]);
+    const loadWorkspace = vi.fn(async (_vaultRoot, scope) =>
+      scope.kind === "tags" ? filtered : active
+    );
+    const store = repository({
+      loadWorkspace,
+      listTagsWithCounts: vi.fn().mockResolvedValue([
+        {
+          prefix: "#",
+          normalizedTag: "work",
+          displayTag: "Work",
+          count: 2
+        },
+        {
+          prefix: "@",
+          normalizedTag: "alice",
+          displayTag: "Alice",
+          count: 1
+        }
+      ])
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions.openSearchResult("child"));
+    expect(result.current.state).toMatchObject({
+      selectedId: "child",
+      zoomRootId: "root"
+    });
+    expect(result.current.locallyExpandedNodeIds).toEqual(new Set(["root"]));
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "@",
+        normalizedTag: "alice"
+      })
+    );
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" },
+      { prefix: "@", normalizedTag: "alice" }
+    ]);
+    expect(result.current.tagSummaries).toEqual([
+      {
+        prefix: "#",
+        normalizedTag: "work",
+        displayTag: "Work",
+        count: 2
+      },
+      {
+        prefix: "@",
+        normalizedTag: "alice",
+        displayTag: "Alice",
+        count: 1
+      }
+    ]);
+    expect(loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+      kind: "tags",
+      tags: [
+        { prefix: "#", normalizedTag: "work" },
+        { prefix: "@", normalizedTag: "alice" }
+      ]
+    });
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "@", normalizedTag: "alice" }
+    ]);
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "@",
+        normalizedTag: "alice"
+      })
+    );
+
+    expect(result.current.activeTagFilters).toEqual([]);
+    expect(result.current.libraryView).toBe("all");
+    expect(result.current.state).toMatchObject({
+      selectedId: "child",
+      zoomRootId: "root"
+    });
+    expect(result.current.locallyExpandedNodeIds).toEqual(new Set(["root"]));
+    expect(loadWorkspace).toHaveBeenLastCalledWith("/vault", { kind: "active" });
+  });
+
+  it("restores an unzoomed library location instead of treating null as a missing node", async () => {
+    const active = workspace([
+      node({ id: "root", title: "Root" }),
+      node({ id: "other", sortKey: 2, title: "Other" })
+    ]);
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" ? workspace([node({ id: "root" })]) : active
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.state).toMatchObject({
+      selectedId: null,
+      zoomRootId: null
+    });
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+
+    expect(result.current.state).toMatchObject({
+      selectedId: null,
+      zoomRootId: null
+    });
+  });
+
+  it("keeps an active filtered Tags view stable when its selected library control is clicked", async () => {
+    const filtered = workspace([node({ id: "tagged", title: "Tagged" })]);
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" ? filtered : workspace([node({ id: "root" })])
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    await act(async () => result.current.actions.selectLibraryView("tags"));
+
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    expect(result.current.state.nodesById.tagged).toBeDefined();
+    expect(result.current.state.rootIds).toEqual(["tagged"]);
+  });
+
+  it("rolls back a failed first tag request so retrying the same filter adds it", async () => {
+    const active = workspace([node({ id: "root" })]);
+    const filtered = workspace([node({ id: "tagged" })]);
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(active)
+      .mockRejectedValueOnce(new Error("filter failed"))
+      .mockResolvedValueOnce(filtered);
+    const store = repository({ loadWorkspace });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(result.current.activeTagFilters).toEqual([]);
+    expect(result.current.error).toBe("filter failed");
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    expect(result.current.state.nodesById.tagged).toBeDefined();
+    expect(loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+      kind: "tags",
+      tags: [{ prefix: "#", normalizedTag: "work" }]
+    });
+  });
+
+  it("restores tag filters and their prior live location through Undo snapshots", async () => {
+    const active = workspace([
+      node({ id: "root", title: "Root", isCollapsed: true }),
+      node({ id: "child", parentId: "root", title: "Child" }),
+      node({ id: "other", sortKey: 2, title: "Other" })
+    ]);
+    const filtered = workspace([
+      node({ id: "root", title: "Root", isCollapsed: true }),
+      node({ id: "child", parentId: "root", title: "Child" })
+    ]);
+    let replayedEntryId: string | null = null;
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
+        scope.kind === "tags" ? filtered : active
+      ),
+      toggleStar: vi.fn().mockResolvedValue(active),
+      undo: vi.fn().mockImplementation(async () => ({
+        workspace: active,
+        replayedEntryId,
+        canUndo: false,
+        canRedo: true
+      }))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.zoomTo("other");
+      await result.current.actions.focusNode("other");
+      await result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      });
+      await result.current.actions.zoomTo("root");
+      await result.current.actions.focusNode("child");
+      await result.current.actions.toggleStar("child");
+    });
+    replayedEntryId = vi.mocked(store.toggleStar).mock.calls[0][2]?.entryId ?? null;
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other"
+    });
+
+    await act(async () => result.current.actions.undo?.());
+    expect(result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    expect(result.current.state).toMatchObject({
+      selectedId: "child",
+      zoomRootId: "root"
+    });
+
+    await act(async () =>
+      result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other"
+    });
+  });
+
   it("gates hook actions while Notes data deletion is in progress", async () => {
     const deletion = deferred<void>();
     const store = repository({
@@ -2901,6 +3233,65 @@ describe("useNotesWorkspace", () => {
     );
   });
 
+  it("keeps canonical tag and active scopes independent across coordinated hooks", async () => {
+    let starred = false;
+    const activeWorkspace = () =>
+      workspace([
+        node({ id: "active-root", isStarred: starred }),
+        node({ id: "outside", sortKey: 2 })
+      ]);
+    const taggedWorkspace = () =>
+      workspace([node({ id: "active-root", isStarred: starred })]);
+    const loadWorkspace = vi.fn(async (_vaultRoot, scope) =>
+      scope.kind === "tags" ? taggedWorkspace() : activeWorkspace()
+    );
+    const store = repository({
+      loadWorkspace,
+      toggleStar: vi.fn().mockImplementation(async () => {
+        starred = true;
+        return activeWorkspace();
+      })
+    });
+    const tagged = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
+    );
+    const all = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/tag-siblings", repository: store })
+    );
+    await waitFor(() => {
+      expect(tagged.result.current.status).toBe("ready");
+      expect(all.result.current.status).toBe("ready");
+    });
+
+    await act(async () =>
+      tagged.result.current.actions.toggleTagFilter({
+        prefix: "#",
+        normalizedTag: "work"
+      })
+    );
+    await act(async () =>
+      tagged.result.current.actions.toggleStar("active-root")
+    );
+
+    await waitFor(() => {
+      expect(tagged.result.current.state.nodesById["active-root"]?.isStarred)
+        .toBe(true);
+      expect(all.result.current.state.nodesById["active-root"]?.isStarred)
+        .toBe(true);
+    });
+    expect(tagged.result.current.activeTagFilters).toEqual([
+      { prefix: "#", normalizedTag: "work" }
+    ]);
+    expect(tagged.result.current.state.nodesById.outside).toBeUndefined();
+    expect(all.result.current.activeTagFilters).toEqual([]);
+    expect(all.result.current.libraryView).toBe("all");
+    expect(all.result.current.state.nodesById.outside).toBeDefined();
+    expect(loadWorkspace).toHaveBeenCalledWith("/tag-siblings", {
+      kind: "tags",
+      tags: [{ prefix: "#", normalizedTag: "work" }]
+    });
+  });
+
   it("uses the latest backend history status when a cross-scope reload completes", async () => {
     const active = workspace([node({ id: "active-root" })]);
     const archived = workspace([
@@ -4001,7 +4392,14 @@ describe("useNotesWorkspace", () => {
       loadWorkspace: vi.fn().mockResolvedValue(before),
       updateNode: vi.fn().mockResolvedValue(before),
       archiveNode: vi.fn().mockResolvedValue(after),
-      listTags: vi.fn().mockResolvedValue(["#remaining"])
+      listTagsWithCounts: vi.fn().mockResolvedValue([
+        {
+          prefix: "#",
+          normalizedTag: "remaining",
+          displayTag: "remaining",
+          count: 1
+        }
+      ])
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -4038,8 +4436,15 @@ describe("useNotesWorkspace", () => {
     expect(
       vi.mocked(store.updateNode).mock.invocationCallOrder[0]
     ).toBeLessThan(vi.mocked(store.archiveNode).mock.invocationCallOrder[0]);
-    expect(store.listTags).toHaveBeenCalledWith("/vault");
-    expect(result.current.tags).toEqual(["#remaining"]);
+    expect(store.listTagsWithCounts).toHaveBeenCalledWith("/vault");
+    expect(result.current.tagSummaries).toEqual([
+      {
+        prefix: "#",
+        normalizedTag: "remaining",
+        displayTag: "remaining",
+        count: 1
+      }
+    ]);
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
       selectedId: "third",
