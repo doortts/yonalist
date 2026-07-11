@@ -2428,6 +2428,43 @@ pub(crate) fn toggle_collapsed(
     })
 }
 
+fn ensure_active_subtree_is_acyclic(
+    transaction: &Transaction<'_>,
+    root_id: &str,
+) -> Result<(), String> {
+    let mut statement = transaction
+        .prepare(
+            "SELECT id, parent_id FROM notes_nodes \
+             WHERE deleted_at IS NULL AND archived_at IS NULL AND parent_id IS NOT NULL",
+        )
+        .map_err(|error| format!("Could not prepare Note tree validation: {error}"))?;
+    let edges = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Could not read Note tree validation: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect Note tree validation: {error}"))?;
+    let mut children = HashMap::<String, Vec<String>>::new();
+    for (node_id, parent_id) in edges {
+        children.entry(parent_id).or_default().push(node_id);
+    }
+
+    let mut pending = vec![root_id.to_string()];
+    let mut visited = HashSet::new();
+    while let Some(node_id) = pending.pop() {
+        if !visited.insert(node_id.clone()) {
+            return Err(
+                "The Notes tree contains a cycle and cannot be expanded or collapsed.".to_string(),
+            );
+        }
+        if let Some(child_ids) = children.get(&node_id) {
+            pending.extend(child_ids.iter().cloned());
+        }
+    }
+    Ok(())
+}
+
 fn set_subtree_collapsed(
     connection: &mut Connection,
     node_id: &str,
@@ -2436,6 +2473,7 @@ fn set_subtree_collapsed(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         require_active_node(transaction, node_id)?;
+        ensure_active_subtree_is_acyclic(transaction, node_id)?;
         transaction
             .execute(
                 "WITH RECURSIVE subtree(id) AS (\
@@ -4021,6 +4059,54 @@ mod tests {
                 FIFTH_ID.to_string()
             ]
         );
+    }
+
+    #[test]
+    fn collapse_all_rejects_a_two_node_cycle_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, NODE_ID],
+            )
+            .expect("create two-node cycle");
+        let before = persistent_state(&connection);
+
+        let error = collapse_all(&mut connection, NODE_ID).expect_err("cyclic collapse");
+
+        assert_eq!(
+            error,
+            "The Notes tree contains a cycle and cannot be expanded or collapsed."
+        );
+        assert_eq!(persistent_state(&connection), before);
+    }
+
+    #[test]
+    fn expand_all_rejects_a_deeper_cycle_without_mutation() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        insert_node(&connection, THIRD_ID, Some(CHILD_ID), 1024, "grandchild");
+        connection
+            .execute("UPDATE notes_nodes SET is_collapsed = 1", [])
+            .expect("collapse cyclic branches");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![THIRD_ID, NODE_ID],
+            )
+            .expect("create three-node cycle");
+        let before = persistent_state(&connection);
+
+        let error = expand_all(&mut connection, NODE_ID).expect_err("cyclic expand");
+
+        assert_eq!(
+            error,
+            "The Notes tree contains a cycle and cannot be expanded or collapsed."
+        );
+        assert_eq!(persistent_state(&connection), before);
     }
 
     #[test]

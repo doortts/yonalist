@@ -1708,6 +1708,65 @@ mod tests {
     }
 
     #[test]
+    fn cyclic_subtree_collapse_rejects_without_history_or_partial_updates() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for (id, parent_id) in [(ROOT_ID, None), (SPLIT_ID, Some(ROOT_ID))] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: None,
+                    title: id.to_string(),
+                    note: String::new(),
+                },
+                None,
+            )
+            .expect("seed cycle node");
+        }
+        let connection = connect_notes_db(&vault_path).expect("open cycle vault");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![SPLIT_ID, ROOT_ID],
+            )
+            .expect("create command cycle");
+        drop(connection);
+
+        let error = notes_collapse_all(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(NotesHistoryContext {
+                session_id: SESSION_ID.to_string(),
+                entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+                command_kind: "collapseAll".to_string(),
+            }),
+        )
+        .expect_err("cyclic collapse");
+
+        assert_eq!(
+            error,
+            "The Notes tree contains a cycle and cannot be expanded or collapsed."
+        );
+        assert_eq!(
+            notes_history_status(vault_path.clone(), SESSION_ID.to_string())
+                .expect("cycle history status"),
+            NotesHistoryStatus::default()
+        );
+        let connection = connect_notes_db(&vault_path).expect("reopen cycle vault");
+        let collapsed_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE is_collapsed = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count collapsed cycle nodes");
+        assert_eq!(collapsed_count, 0);
+    }
+
+    #[test]
     fn attachment_import_limits_reject_before_metadata_history_or_file_publication() {
         for (label, existing_count, target_node_id, expected_error) in [
             (

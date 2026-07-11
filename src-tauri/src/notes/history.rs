@@ -4,6 +4,7 @@ use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes_at};
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NotesHistoryContext, NotesHistoryReplayResult,
     NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+    MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
@@ -799,6 +800,74 @@ fn validate_target_lifecycle(
     Ok(())
 }
 
+fn validate_target_attachment_capacity(
+    transaction: &Transaction<'_>,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    if !changes
+        .iter()
+        .any(|(table_name, _, _, _)| table_name == "notes_attachments")
+    {
+        return Ok(());
+    }
+
+    let mut resulting_attachments = {
+        let mut statement = transaction
+            .prepare("SELECT id, node_id FROM notes_attachments")
+            .map_err(|error| {
+                format!("Could not prepare Notes attachment capacity replay: {error}")
+            })?;
+        let attachments = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Could not read Notes attachment capacity replay: {error}"))?
+            .collect::<Result<HashMap<_, _>, _>>()
+            .map_err(|error| {
+                format!("Could not collect Notes attachment capacity replay: {error}")
+            })?;
+        attachments
+    };
+
+    for (table_name, row_id, before_json, after_json) in changes {
+        if table_name != "notes_attachments" {
+            continue;
+        }
+        let target = if undoing { before_json } else { after_json };
+        match target.as_deref() {
+            Some(state) => {
+                let attachment = decode_attachment_snapshot(row_id, state)?;
+                resulting_attachments.insert(row_id.clone(), attachment.node_id);
+            }
+            None => {
+                resulting_attachments.remove(row_id);
+            }
+        }
+    }
+
+    let mut per_node_counts = HashMap::<String, i64>::new();
+    for node_id in resulting_attachments.values() {
+        *per_node_counts.entry(node_id.clone()).or_default() += 1;
+    }
+    if per_node_counts
+        .values()
+        .any(|count| *count > MAX_NOTE_ATTACHMENTS_PER_NODE)
+    {
+        return Err(format!(
+            "A Note node can contain at most {MAX_NOTE_ATTACHMENTS_PER_NODE} attachments."
+        ));
+    }
+    let vault_count = i64::try_from(resulting_attachments.len())
+        .map_err(|_| "Could not measure Notes attachment capacity replay.".to_string())?;
+    if vault_count > MAX_NOTE_ATTACHMENTS_PER_VAULT {
+        return Err(format!(
+            "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+    Ok(())
+}
+
 fn apply_node_state(
     transaction: &Transaction<'_>,
     row_id: &str,
@@ -945,6 +1014,7 @@ fn replay(
     };
     validate_expected_states(&transaction, &changes, undoing)?;
     validate_target_lifecycle(&transaction, &changes, undoing)?;
+    validate_target_attachment_capacity(&transaction, &changes, undoing)?;
     if let Some(storage) = attachment_storage {
         for (table_name, row_id, before_json, after_json) in &changes {
             if table_name != "notes_attachments" {
@@ -1078,14 +1148,15 @@ mod tests {
         HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
-        archive_node, connect_notes_db, create_node, delete_database, duplicate_node, empty_trash,
-        list_tags, load_workspace, move_node, restore_node, search_nodes, search_nodes_structured,
-        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node,
+        archive_node, connect_notes_db, create_attachment, create_node, delete_database,
+        duplicate_node, empty_trash, list_tags, load_workspace, move_node, remove_attachment,
+        restore_node, search_nodes, search_nodes_structured, soft_delete_node, split_node,
+        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node, NewAttachment,
     };
     use crate::notes::types::{
         CreateNodeInput, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix,
         NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
 
@@ -1144,6 +1215,146 @@ mod tests {
                 row.get(0)
             })
             .expect("history entry count")
+    }
+
+    fn insert_history_attachment(connection: &Connection, index: i64, node_id: &str) -> String {
+        let id = format!("{index:08x}-dddd-4ddd-8ddd-{index:012x}");
+        let content_hash = format!("{index:064x}");
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, ?5, 'history.png', 'image/png', 1, 1, 1, 1, \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
+                 )",
+                params![
+                    id,
+                    node_id,
+                    (index + 1) * 1024,
+                    format!("notes-assets/{content_hash}.png"),
+                    content_hash
+                ],
+            )
+            .expect("insert history attachment");
+        id
+    }
+
+    fn history_new_attachment(index: i64, node_id: &str) -> NewAttachment {
+        let content_hash = format!("{index:064x}");
+        NewAttachment {
+            id: format!("{index:08x}-eeee-4eee-8eee-{index:012x}"),
+            node_id: node_id.to_string(),
+            relative_path: format!("notes-assets/{content_hash}.png"),
+            content_hash,
+            original_name: "history.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 1,
+            intrinsic_width: 1,
+            intrinsic_height: 1,
+            display_width: 1,
+        }
+    }
+
+    #[test]
+    fn notes_history_undo_rejects_cross_session_attachment_node_overflow_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let mut removed_id = String::new();
+        for index in 0..MAX_NOTE_ATTACHMENTS_PER_NODE {
+            let id = insert_history_attachment(&connection, index, NODE_ID);
+            if index == 0 {
+                removed_id = id;
+            }
+        }
+        let removal = history_context_for_session(SESSION_ID, 1, "removeAttachment");
+        journal(&mut connection, &removal, |connection| {
+            remove_attachment(connection, &removed_id)
+        })
+        .expect("session A removal");
+        let replacement = history_context_for_session(SECOND_SESSION_ID, 2, "importAttachment");
+        journal(&mut connection, &replacement, |connection| {
+            create_attachment(connection, history_new_attachment(10_000, NODE_ID))
+        })
+        .expect("session B replacement");
+        let before = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("node capacity conflict");
+
+        assert_eq!(error, "A Note node can contain at most 128 attachments.");
+        assert_eq!(active(&connection), before);
+        let status = history_status(&connection, SESSION_ID).expect("session A status");
+        assert!(status.can_undo);
+        assert!(!status.can_redo);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&removal.entry_id],
+                |row| row.get(0),
+            )
+            .expect("removal cursor");
+        assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_rejects_attachment_vault_overflow_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let node_ids = [
+            NODE_ID,
+            CHILD_ID,
+            THIRD_ID,
+            "44444444-4444-4444-8444-444444444444",
+            "55555555-5555-4555-8555-555555555555",
+        ];
+        for (index, node_id) in node_ids.iter().enumerate() {
+            create_node(
+                &mut connection,
+                create_input(
+                    node_id,
+                    None,
+                    (index > 0).then(|| node_ids[index - 1]),
+                    node_id,
+                ),
+            )
+            .expect("capacity node");
+        }
+        for index in 0..(MAX_NOTE_ATTACHMENTS_PER_VAULT - 1) {
+            let node_index = usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                .expect("attachment node index");
+            insert_history_attachment(&connection, index, node_ids[node_index]);
+        }
+        let original = history_context_for_session(SESSION_ID, 3, "importAttachment");
+        journal(&mut connection, &original, |connection| {
+            create_attachment(connection, history_new_attachment(20_000, node_ids[4]))
+        })
+        .expect("session A import");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo import");
+        create_attachment(&mut connection, history_new_attachment(20_001, node_ids[4]))
+            .expect("unjournaled replacement");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("vault capacity conflict");
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        assert_eq!(active(&connection), before);
+        let status = history_status(&connection, SESSION_ID).expect("redo status");
+        assert!(!status.can_undo);
+        assert!(status.can_redo);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&original.entry_id],
+                |row| row.get(0),
+            )
+            .expect("import cursor");
+        assert!(is_undone);
     }
 
     #[test]
