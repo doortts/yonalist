@@ -2,6 +2,8 @@ use super::types::{
     validate_note_id, ExportDateSpan, ExportNode, NotesExportSnapshot, MAX_NOTES_EXPORT_ATTACHMENTS,
 };
 use crate::notes::date_index::LocalDate;
+use image::codecs::{gif::GifDecoder, webp::WebPDecoder};
+use image::{AnimationDecoder, RgbaImage};
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
     PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, RawImage, RawImageData, RawImageFormat,
@@ -11,6 +13,7 @@ use rusqlite::Connection;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+use std::io::Cursor;
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 use std::path::{Component, Path};
@@ -1222,6 +1225,7 @@ struct PdfPreparedRow {
 
 struct PdfPreparedImage {
     attachment_id: String,
+    mime_type: String,
     payload_key: ExportPayloadKey,
     bytes: Arc<[u8]>,
     intrinsic_width: usize,
@@ -1249,6 +1253,7 @@ struct PdfPlacedLine {
 
 struct PdfPlacedImage {
     attachment_id: String,
+    mime_type: String,
     payload_key: ExportPayloadKey,
     bytes: Arc<[u8]>,
     intrinsic_width: usize,
@@ -1424,6 +1429,7 @@ fn prepare_pdf_image(
 
     Ok(PdfPreparedImage {
         attachment_id: attachment.id.clone(),
+        mime_type: attachment.mime_type.clone(),
         payload_key: ExportPayloadKey {
             relative_path: attachment.relative_path.clone(),
             content_hash: attachment.content_hash.clone(),
@@ -1578,6 +1584,7 @@ fn build_pdf_pages(
                 let page = pages.last_mut().expect("PDF page exists");
                 page.images.push(PdfPlacedImage {
                     attachment_id: image.attachment_id,
+                    mime_type: image.mime_type,
                     payload_key: image.payload_key,
                     bytes: image.bytes,
                     intrinsic_width: image.intrinsic_width,
@@ -1626,6 +1633,45 @@ fn validate_serialized_pdf(bytes: &[u8], expected_page_count: usize) -> Result<(
     Ok(())
 }
 
+fn decode_pdf_attachment_rgba(bytes: &[u8], mime_type: &str) -> Result<RgbaImage, String> {
+    let first_frame = |mut frames: image::Frames<'_>, format: &str| {
+        frames
+            .next()
+            .ok_or_else(|| format!("A PDF attachment {format} contains no animation frames."))?
+            .map(|frame| frame.into_buffer())
+            .map_err(|error| {
+                format!("Could not decode the first PDF attachment {format} frame: {error}")
+            })
+    };
+
+    match mime_type {
+        "image/gif" => {
+            let decoder = GifDecoder::new(Cursor::new(bytes)).map_err(|error| {
+                format!("Could not open the PDF attachment GIF decoder: {error}")
+            })?;
+            first_frame(decoder.into_frames(), "GIF")
+        }
+        "image/webp" => {
+            let decoder = WebPDecoder::new(Cursor::new(bytes)).map_err(|error| {
+                format!("Could not open the PDF attachment WebP decoder: {error}")
+            })?;
+            if decoder.has_animation() {
+                first_frame(decoder.into_frames(), "WebP")
+            } else {
+                image::load_from_memory(bytes)
+                    .map(|decoded| decoded.into_rgba8())
+                    .map_err(|error| {
+                        format!("Could not decode a PDF attachment WebP image: {error}")
+                    })
+            }
+        }
+        "image/png" | "image/jpeg" => image::load_from_memory(bytes)
+            .map(|decoded| decoded.into_rgba8())
+            .map_err(|error| format!("Could not decode a PDF attachment image: {error}")),
+        _ => Err("A PDF attachment image has an unsupported MIME type.".to_string()),
+    }
+}
+
 pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
     validate_export_node_ids(&snapshot.root)?;
@@ -1646,9 +1692,7 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
             let image_id = if let Some(image_id) = image_ids.get(&image.payload_key) {
                 image_id.clone()
             } else {
-                let decoded = image::load_from_memory(&image.bytes)
-                    .map_err(|error| format!("Could not decode a PDF attachment image: {error}"))?;
-                let rgba = decoded.into_rgba8();
+                let rgba = decode_pdf_attachment_rgba(&image.bytes, &image.mime_type)?;
                 if rgba.width() as usize != image.intrinsic_width
                     || rgba.height() as usize != image.intrinsic_height
                 {
@@ -1714,20 +1758,23 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        build_pdf_pages, classify_export_directory_sync, format_date_matches_for_pdf_display,
-        format_date_matches_for_pdf_display_with_work, hydrate_export_attachments,
-        hydrate_export_attachments_with_budget, inject_export_parent_sync_failure_once,
-        inject_markdown_asset_destination_swap_once, inject_markdown_commit_race_once,
-        inject_markdown_post_asset_publication_swap_once, load_export_snapshot,
-        prepare_markdown_export, publish_markdown_export, render_markdown, render_pdf,
-        sync_export_directory, validate_pdf_attachment_working_budget, validate_serialized_pdf,
-        windows_directory_move_flags, ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM,
-        PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
+        build_pdf_pages, classify_export_directory_sync, decode_pdf_attachment_rgba,
+        format_date_matches_for_pdf_display, format_date_matches_for_pdf_display_with_work,
+        hydrate_export_attachments, hydrate_export_attachments_with_budget,
+        inject_export_parent_sync_failure_once, inject_markdown_asset_destination_swap_once,
+        inject_markdown_commit_race_once, inject_markdown_post_asset_publication_swap_once,
+        load_export_snapshot, prepare_markdown_export, publish_markdown_export, render_markdown,
+        render_pdf, sync_export_directory, validate_pdf_attachment_working_budget,
+        validate_serialized_pdf, windows_directory_move_flags, ExportAttachmentBudget,
+        PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
+    use image::codecs::gif::GifEncoder;
+    use image::{DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
     use rusqlite::{params, Connection};
     use std::collections::{BTreeMap, BTreeSet};
+    use std::io::Cursor;
     use std::sync::Arc;
 
     const ROOT_ID: &str = "11111111-1111-4111-8111-111111111111";
@@ -1796,6 +1843,62 @@ mod tests {
                 .write_image_data(&vec![0x77; width as usize * height as usize * 3])
                 .expect("PNG pixels");
         }
+        bytes
+    }
+
+    fn encoded_animated_gif() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = GifEncoder::new(&mut bytes);
+            for color in [
+                Rgba([0xe1, 0x12, 0x23, 0xff]),
+                Rgba([0x14, 0x25, 0xe2, 0xff]),
+            ] {
+                encoder
+                    .encode_frame(Frame::new(RgbaImage::from_pixel(2, 3, color)))
+                    .expect("encode animated GIF frame");
+            }
+        }
+        bytes
+    }
+
+    fn encoded_webp_frame(color: Rgba<u8>) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(2, 3, color))
+            .write_to(&mut bytes, ImageFormat::WebP)
+            .expect("encode WebP frame");
+        bytes.into_inner()
+    }
+
+    fn push_webp_chunk(output: &mut Vec<u8>, kind: &[u8; 4], payload: &[u8]) {
+        output.extend_from_slice(kind);
+        output.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        output.extend_from_slice(payload);
+        if payload.len() % 2 != 0 {
+            output.push(0);
+        }
+    }
+
+    fn encoded_animated_webp() -> Vec<u8> {
+        let mut chunks = Vec::new();
+        push_webp_chunk(&mut chunks, b"VP8X", &[0x02, 0, 0, 0, 1, 0, 0, 2, 0, 0]);
+        push_webp_chunk(&mut chunks, b"ANIM", &[0, 0, 0, 0, 0, 0]);
+        for (duration, color) in [
+            (10_u8, Rgba([0xd2, 0x21, 0x32, 0xff])),
+            (20_u8, Rgba([0x23, 0x34, 0xd3, 0xff])),
+        ] {
+            let encoded = encoded_webp_frame(color);
+            let mut frame = vec![0_u8; 16];
+            frame[6] = 1;
+            frame[9] = 2;
+            frame[12] = duration;
+            frame.extend_from_slice(&encoded[12..]);
+            push_webp_chunk(&mut chunks, b"ANMF", &frame);
+        }
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend_from_slice(&((4 + chunks.len()) as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WEBP");
+        bytes.extend_from_slice(&chunks);
         bytes
     }
 
@@ -2354,6 +2457,43 @@ mod tests {
         ));
         let markdown = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
         assert_eq!(markdown.matches("(project_assets/0001.png)").count(), 2);
+    }
+
+    #[test]
+    fn markdown_export_preserves_original_animated_gif_and_webp_bytes() {
+        for (id, name, mime_type, extension, bytes) in [
+            (
+                FIRST_ID,
+                "animated.gif",
+                "image/gif",
+                "gif",
+                encoded_animated_gif(),
+            ),
+            (
+                SECOND_ID,
+                "animated.webp",
+                "image/webp",
+                "webp",
+                encoded_animated_webp(),
+            ),
+        ] {
+            let mut attachment = export_attachment(id, name, Some(bytes.clone()));
+            attachment.mime_type = mime_type.to_string();
+            attachment.relative_path = format!("notes-assets/{}.{}", "a".repeat(64), extension);
+            attachment.byte_size = bytes.len() as i64;
+            attachment.intrinsic_width = 2;
+            attachment.intrinsic_height = 3;
+            attachment.display_width = 2;
+            let mut root = export_node(ROOT_ID, "Animations", "", false, Vec::new());
+            root.attachments.push(attachment);
+
+            let prepared = prepare_markdown_export(&snapshot(root), "animations_assets")
+                .unwrap_or_else(|error| panic!("prepare {name}: {error}"));
+
+            assert_eq!(prepared.assets.len(), 1);
+            assert_eq!(prepared.assets[0].bytes.as_ref(), bytes.as_slice());
+            assert_eq!(prepared.assets[0].file_name, format!("0001.{extension}"));
+        }
     }
 
     #[test]
@@ -3571,6 +3711,56 @@ mod tests {
         let text = extracted_pdf_pages(&mut parsed).join(" ");
         assert!(text.contains("first diagram.png"), "{text}");
         assert!(text.contains("second diagram.png"), "{text}");
+    }
+
+    #[test]
+    fn pdf_export_deterministically_decodes_the_first_animation_frame() {
+        for (name, mime_type, bytes, first_pixel) in [
+            (
+                "animated.gif",
+                "image/gif",
+                encoded_animated_gif(),
+                [0xe1, 0x12, 0x23, 0xff],
+            ),
+            (
+                "animated.webp",
+                "image/webp",
+                encoded_animated_webp(),
+                [0xd2, 0x21, 0x32, 0xff],
+            ),
+        ] {
+            let rgba = decode_pdf_attachment_rgba(&bytes, mime_type)
+                .unwrap_or_else(|error| panic!("decode {name}: {error}"));
+            assert_eq!(rgba.dimensions(), (2, 3));
+            let decoded_pixel = rgba.get_pixel(0, 0).0;
+            assert!(
+                decoded_pixel
+                    .iter()
+                    .zip(first_pixel)
+                    .all(|(actual, expected)| actual.abs_diff(expected) <= 2),
+                "{name}: {decoded_pixel:?}"
+            );
+
+            let mut attachment = export_attachment(FIRST_ID, name, Some(bytes.clone()));
+            attachment.mime_type = mime_type.to_string();
+            attachment.relative_path = format!(
+                "notes-assets/{}.{}",
+                "a".repeat(64),
+                if mime_type == "image/gif" {
+                    "gif"
+                } else {
+                    "webp"
+                }
+            );
+            attachment.byte_size = bytes.len() as i64;
+            attachment.intrinsic_width = 2;
+            attachment.intrinsic_height = 3;
+            attachment.display_width = 2;
+            let mut root = export_node(ROOT_ID, "Animations", "", false, Vec::new());
+            root.attachments.push(attachment);
+
+            render_pdf(&snapshot(root)).unwrap_or_else(|error| panic!("render {name}: {error}"));
+        }
     }
 
     #[test]

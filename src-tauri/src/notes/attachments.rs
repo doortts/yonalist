@@ -4,7 +4,8 @@ use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use fs4::FileExt;
-use image::{ImageFormat, ImageReader, Limits};
+use image::codecs::{gif::GifDecoder, webp::WebPDecoder};
+use image::{AnimationDecoder, ImageDecoder, ImageFormat, ImageReader, Limits};
 use rusqlite::Connection;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -20,6 +21,9 @@ use crate::notes::types::{ExportAttachment, NoteAttachment};
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_PIXELS: u64 = 40_000_000;
 pub(crate) const MAX_ATTACHMENT_CONTAINER_CHUNKS: u64 = 100_000;
+// Animations retain the static canvas cap and may decode at most four full-size canvases total.
+pub(crate) const MAX_ATTACHMENT_FRAMES: u64 = 256;
+pub(crate) const MAX_ATTACHMENT_DECODED_PIXEL_WORK: u64 = 160_000_000;
 const RECONCILIATION_MARKER: &str = ".notes-assets-reconcile-needed";
 static IMPORT_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -29,6 +33,8 @@ pub(crate) struct ValidationLimits {
     pub(crate) max_bytes: u64,
     pub(crate) max_pixels: u64,
     pub(crate) max_container_chunks: u64,
+    pub(crate) max_frames: u64,
+    pub(crate) max_decoded_pixel_work: u64,
 }
 
 impl ValidationLimits {
@@ -36,6 +42,21 @@ impl ValidationLimits {
         max_bytes: MAX_ATTACHMENT_BYTES,
         max_pixels: MAX_ATTACHMENT_PIXELS,
         max_container_chunks: MAX_ATTACHMENT_CONTAINER_CHUNKS,
+        max_frames: MAX_ATTACHMENT_FRAMES,
+        max_decoded_pixel_work: MAX_ATTACHMENT_DECODED_PIXEL_WORK,
+    };
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ContainerInspection {
+    frame_count: u64,
+    animated: bool,
+}
+
+impl ContainerInspection {
+    const STATIC: Self = Self {
+        frame_count: 1,
+        animated: false,
     };
 }
 
@@ -132,9 +153,52 @@ fn skip_gif_sub_blocks(
     }
 }
 
-fn inspect_static_gif(bytes: &[u8], limits: ValidationLimits) -> Result<(), String> {
+fn count_animation_frame(
+    frame_count: &mut u64,
+    decoded_pixel_work: &mut u64,
+    canvas_pixels: u64,
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    *frame_count = frame_count
+        .checked_add(1)
+        .ok_or_else(|| "The Notes attachment frame count is too large.".to_string())?;
+    if *frame_count > limits.max_frames {
+        let unit = if limits.max_frames == 1 {
+            "frame"
+        } else {
+            "frames"
+        };
+        return Err(format!(
+            "Animated Notes attachment images must contain at most {} {unit}.",
+            limits.max_frames,
+        ));
+    }
+    *decoded_pixel_work = decoded_pixel_work
+        .checked_add(canvas_pixels)
+        .ok_or_else(|| "The Notes attachment decoded-pixel work is too large.".to_string())?;
+    if *decoded_pixel_work > limits.max_decoded_pixel_work {
+        return Err(format!(
+            "Animated Notes attachment images must require at most {} aggregate decoded pixels.",
+            limits.max_decoded_pixel_work
+        ));
+    }
+    Ok(())
+}
+
+fn inspect_gif(bytes: &[u8], limits: ValidationLimits) -> Result<ContainerInspection, String> {
     if bytes.len() < 13 || !matches!(&bytes[..6], b"GIF87a" | b"GIF89a") {
         return Err("Could not decode the Notes attachment GIF container.".to_string());
+    }
+    let canvas_width = u32::from(u16::from_le_bytes(bytes[6..8].try_into().unwrap()));
+    let canvas_height = u32::from(u16::from_le_bytes(bytes[8..10].try_into().unwrap()));
+    let canvas_pixels = u64::from(canvas_width)
+        .checked_mul(u64::from(canvas_height))
+        .ok_or_else(|| "The Notes attachment decoded pixel count is too large.".to_string())?;
+    if canvas_width == 0 || canvas_height == 0 || canvas_pixels > limits.max_pixels {
+        return Err(format!(
+            "Notes attachment images must contain between 1 and {} decoded pixels.",
+            limits.max_pixels
+        ));
     }
     let packed = bytes[10];
     let mut offset = 13_usize;
@@ -143,7 +207,8 @@ fn inspect_static_gif(bytes: &[u8], limits: ValidationLimits) -> Result<(), Stri
         checked_advance(bytes, &mut offset, table_entries * 3, "GIF")?;
     }
     let mut chunks = 0_u64;
-    let mut images = 0_u64;
+    let mut frame_count = 0_u64;
+    let mut decoded_pixel_work = 0_u64;
     loop {
         count_container_chunk(&mut chunks, limits)?;
         let marker = *bytes.get(offset).ok_or_else(|| {
@@ -152,12 +217,47 @@ fn inspect_static_gif(bytes: &[u8], limits: ValidationLimits) -> Result<(), Stri
         checked_advance(bytes, &mut offset, 1, "GIF")?;
         match marker {
             0x2c => {
-                images += 1;
-                if images > 1 {
-                    return Err("Animated GIF Notes attachments are not supported.".to_string());
-                }
                 let descriptor_start = offset;
                 checked_advance(bytes, &mut offset, 9, "GIF")?;
+                let left = u32::from(u16::from_le_bytes(
+                    bytes[descriptor_start..descriptor_start + 2]
+                        .try_into()
+                        .unwrap(),
+                ));
+                let top = u32::from(u16::from_le_bytes(
+                    bytes[descriptor_start + 2..descriptor_start + 4]
+                        .try_into()
+                        .unwrap(),
+                ));
+                let width = u32::from(u16::from_le_bytes(
+                    bytes[descriptor_start + 4..descriptor_start + 6]
+                        .try_into()
+                        .unwrap(),
+                ));
+                let height = u32::from(u16::from_le_bytes(
+                    bytes[descriptor_start + 6..descriptor_start + 8]
+                        .try_into()
+                        .unwrap(),
+                ));
+                if width == 0
+                    || height == 0
+                    || left
+                        .checked_add(width)
+                        .is_none_or(|right| right > canvas_width)
+                    || top
+                        .checked_add(height)
+                        .is_none_or(|bottom| bottom > canvas_height)
+                {
+                    return Err(
+                        "Could not decode the Notes attachment GIF frame bounds.".to_string()
+                    );
+                }
+                count_animation_frame(
+                    &mut frame_count,
+                    &mut decoded_pixel_work,
+                    canvas_pixels,
+                    limits,
+                )?;
                 let descriptor_packed = bytes[descriptor_start + 8];
                 if descriptor_packed & 0x80 != 0 {
                     let entries = 1_usize << (usize::from(descriptor_packed & 0x07) + 1);
@@ -171,17 +271,23 @@ fn inspect_static_gif(bytes: &[u8], limits: ValidationLimits) -> Result<(), Stri
                 skip_gif_sub_blocks(bytes, &mut offset, &mut chunks, limits)?;
             }
             0x3b => {
-                if images != 1 || offset != bytes.len() {
+                if frame_count == 0 || offset != bytes.len() {
                     return Err("Could not decode the Notes attachment GIF container.".to_string());
                 }
-                return Ok(());
+                return Ok(ContainerInspection {
+                    frame_count,
+                    animated: frame_count > 1,
+                });
             }
             _ => return Err("Could not decode the Notes attachment GIF container.".to_string()),
         }
     }
 }
 
-fn inspect_static_png(bytes: &[u8], limits: ValidationLimits) -> Result<(), String> {
+fn inspect_static_png(
+    bytes: &[u8],
+    limits: ValidationLimits,
+) -> Result<ContainerInspection, String> {
     if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
         return Err("Could not decode the Notes attachment PNG container.".to_string());
     }
@@ -214,10 +320,49 @@ fn inspect_static_png(bytes: &[u8], limits: ValidationLimits) -> Result<(), Stri
     if !saw_end || offset != bytes.len() {
         return Err("Could not decode the Notes attachment PNG container.".to_string());
     }
+    Ok(ContainerInspection::STATIC)
+}
+
+fn webp_u24(bytes: &[u8]) -> u32 {
+    u32::from(bytes[0]) | (u32::from(bytes[1]) << 8) | (u32::from(bytes[2]) << 16)
+}
+
+fn inspect_webp_frame_payload(
+    bytes: &[u8],
+    chunks: &mut u64,
+    limits: ValidationLimits,
+) -> Result<(), String> {
+    let mut offset = 0_usize;
+    let mut saw_alpha = false;
+    let mut saw_image = false;
+    while offset < bytes.len() {
+        count_container_chunk(chunks, limits)?;
+        let header_end = offset
+            .checked_add(8)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| {
+                "Could not decode the truncated Notes attachment WebP frame.".to_string()
+            })?;
+        let kind: [u8; 4] = bytes[offset..offset + 4].try_into().unwrap();
+        let length = u32::from_le_bytes(bytes[offset + 4..header_end].try_into().unwrap()) as usize;
+        offset = header_end;
+        checked_advance(bytes, &mut offset, length, "WebP")?;
+        if length % 2 != 0 {
+            checked_advance(bytes, &mut offset, 1, "WebP")?;
+        }
+        match &kind {
+            b"ALPH" if !saw_alpha && !saw_image => saw_alpha = true,
+            b"VP8 " | b"VP8L" if !saw_image => saw_image = true,
+            _ => return Err("Could not decode the Notes attachment WebP frame chunks.".to_string()),
+        }
+    }
+    if !saw_image {
+        return Err("Could not decode the Notes attachment WebP frame image.".to_string());
+    }
     Ok(())
 }
 
-fn inspect_static_webp(bytes: &[u8], limits: ValidationLimits) -> Result<(), String> {
+fn inspect_webp(bytes: &[u8], limits: ValidationLimits) -> Result<ContainerInspection, String> {
     if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
         return Err("Could not decode the Notes attachment WebP container.".to_string());
     }
@@ -227,6 +372,12 @@ fn inspect_static_webp(bytes: &[u8], limits: ValidationLimits) -> Result<(), Str
     }
     let mut offset = 12_usize;
     let mut chunks = 0_u64;
+    let mut canvas = None;
+    let mut animation_flag = false;
+    let mut saw_animation_header = false;
+    let mut saw_static_image = false;
+    let mut frame_count = 0_u64;
+    let mut decoded_pixel_work = 0_u64;
     while offset < bytes.len() {
         count_container_chunk(&mut chunks, limits)?;
         let header_end = offset
@@ -243,26 +394,104 @@ fn inspect_static_webp(bytes: &[u8], limits: ValidationLimits) -> Result<(), Str
         if length % 2 != 0 {
             checked_advance(bytes, &mut offset, 1, "WebP")?;
         }
-        if (&kind == b"VP8X" && length > 0 && bytes[payload_start] & 0x02 != 0)
-            || &kind == b"ANIM"
-            || &kind == b"ANMF"
-        {
-            return Err("Animated WebP Notes attachments are not supported.".to_string());
+        let payload = &bytes[payload_start..payload_start + length];
+        match &kind {
+            b"VP8X" => {
+                if canvas.is_some() || payload.len() != 10 || payload[0] & 0xc1 != 0 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP extended header.".to_string(),
+                    );
+                }
+                let width = webp_u24(&payload[4..7]) + 1;
+                let height = webp_u24(&payload[7..10]) + 1;
+                canvas = Some((width, height));
+                animation_flag = payload[0] & 0x02 != 0;
+            }
+            b"ANIM" => {
+                if !animation_flag || saw_animation_header || payload.len() != 6 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP animation header.".to_string(),
+                    );
+                }
+                saw_animation_header = true;
+            }
+            b"ANMF" => {
+                let (canvas_width, canvas_height) = canvas.ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP animation canvas.".to_string()
+                })?;
+                if !animation_flag || !saw_animation_header || payload.len() < 16 {
+                    return Err(
+                        "Could not decode the Notes attachment WebP animation frame.".to_string(),
+                    );
+                }
+                let left = webp_u24(&payload[0..3]).checked_mul(2).ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                })?;
+                let top = webp_u24(&payload[3..6]).checked_mul(2).ok_or_else(|| {
+                    "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                })?;
+                let width = webp_u24(&payload[6..9]) + 1;
+                let height = webp_u24(&payload[9..12]) + 1;
+                if left
+                    .checked_add(width)
+                    .is_none_or(|right| right > canvas_width)
+                    || top
+                        .checked_add(height)
+                        .is_none_or(|bottom| bottom > canvas_height)
+                {
+                    return Err(
+                        "Could not decode the Notes attachment WebP frame bounds.".to_string()
+                    );
+                }
+                inspect_webp_frame_payload(&payload[16..], &mut chunks, limits)?;
+                let canvas_pixels = u64::from(canvas_width)
+                    .checked_mul(u64::from(canvas_height))
+                    .ok_or_else(|| {
+                        "The Notes attachment decoded pixel count is too large.".to_string()
+                    })?;
+                count_animation_frame(
+                    &mut frame_count,
+                    &mut decoded_pixel_work,
+                    canvas_pixels,
+                    limits,
+                )?;
+            }
+            b"VP8 " | b"VP8L" => {
+                if saw_static_image || animation_flag {
+                    return Err(
+                        "Could not decode the Notes attachment WebP image chunks.".to_string()
+                    );
+                }
+                saw_static_image = true;
+            }
+            _ => {}
         }
     }
-    Ok(())
+    if animation_flag {
+        if !saw_animation_header || frame_count == 0 || saw_static_image {
+            return Err("Could not decode the Notes attachment WebP animation.".to_string());
+        }
+        Ok(ContainerInspection {
+            frame_count,
+            animated: true,
+        })
+    } else if saw_animation_header || frame_count != 0 || !saw_static_image {
+        Err("Could not decode the Notes attachment WebP container.".to_string())
+    } else {
+        Ok(ContainerInspection::STATIC)
+    }
 }
 
-fn inspect_static_container(
+fn inspect_container(
     format: ImageFormat,
     bytes: &[u8],
     limits: ValidationLimits,
-) -> Result<(), String> {
+) -> Result<ContainerInspection, String> {
     match format {
-        ImageFormat::Gif => inspect_static_gif(bytes, limits),
+        ImageFormat::Gif => inspect_gif(bytes, limits),
         ImageFormat::Png => inspect_static_png(bytes, limits),
-        ImageFormat::WebP => inspect_static_webp(bytes, limits),
-        ImageFormat::Jpeg => Ok(()),
+        ImageFormat::WebP => inspect_webp(bytes, limits),
+        ImageFormat::Jpeg => Ok(ContainerInspection::STATIC),
         _ => Err("The Notes attachment image format is unsupported.".to_string()),
     }
 }
@@ -271,8 +500,38 @@ fn fully_decode_image(
     format: ImageFormat,
     bytes: &[u8],
     dimensions: (u32, u32),
+    inspection: ContainerInspection,
     limits: ValidationLimits,
 ) -> Result<(), String> {
+    let decode_animation = |frames: image::Frames<'_>| -> Result<(), String> {
+        let mut decoded_frames = 0_u64;
+        for frame in frames {
+            frame.map_err(|error| {
+                format!("Could not decode a Notes attachment animation frame: {error}")
+            })?;
+            decoded_frames += 1;
+        }
+        if decoded_frames != inspection.frame_count {
+            return Err(
+                "The Notes attachment decoded frame count does not match its container."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    };
+    if format == ImageFormat::Gif {
+        let mut decoder = GifDecoder::new(Cursor::new(bytes))
+            .map_err(|error| format!("Could not decode the Notes attachment GIF: {error}"))?;
+        decoder
+            .set_limits(decoder_limits(dimensions, limits))
+            .map_err(|error| format!("Could not limit the Notes attachment GIF: {error}"))?;
+        return decode_animation(decoder.into_frames());
+    }
+    if format == ImageFormat::WebP && inspection.animated {
+        let decoder = WebPDecoder::new(Cursor::new(bytes))
+            .map_err(|error| format!("Could not decode the Notes attachment WebP: {error}"))?;
+        return decode_animation(decoder.into_frames());
+    }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     reader.limits(decoder_limits(dimensions, limits));
     reader
@@ -316,7 +575,7 @@ pub(crate) fn validate_image_bytes(
         ));
     }
 
-    inspect_static_container(format, bytes, limits)?;
+    let inspection = inspect_container(format, bytes, limits)?;
 
     let dimensions = ImageReader::with_format(Cursor::new(bytes), format)
         .into_dimensions()
@@ -331,7 +590,7 @@ pub(crate) fn validate_image_bytes(
         ));
     }
 
-    fully_decode_image(format, bytes, dimensions, limits)?;
+    fully_decode_image(format, bytes, dimensions, inspection, limits)?;
 
     Ok(ValidatedImage {
         mime_type,
@@ -1438,15 +1697,84 @@ mod tests {
     }
 
     #[test]
-    fn notes_attachment_validation_rejects_animation_containers_before_frame_decode() {
-        for (name, bytes) in [
-            ("animated.gif", encoded_gif_frames(2)),
-            ("animated.webp", encoded_animated_webp()),
-            ("animated.png", encoded_apng_frames(2)),
+    fn notes_attachment_validation_accepts_gif_and_webp_animation_but_rejects_apng() {
+        for (name, bytes, mime_type) in [
+            ("animated.gif", encoded_gif_frames(2), "image/gif"),
+            ("animated.webp", encoded_animated_webp(), "image/webp"),
         ] {
-            let error = validate_image_bytes(Path::new(name), &bytes, ValidationLimits::DEFAULT)
-                .expect_err(&format!("{name} animation must be rejected"));
-            assert!(error.to_lowercase().contains("animat"), "{name}: {error}");
+            let validated =
+                validate_image_bytes(Path::new(name), &bytes, ValidationLimits::DEFAULT)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(validated.mime_type, mime_type);
+            assert_eq!((validated.width, validated.height), (2, 3));
+        }
+
+        let apng = encoded_apng_frames(2);
+        let error =
+            validate_image_bytes(Path::new("animated.png"), &apng, ValidationLimits::DEFAULT)
+                .expect_err("APNG animation must be rejected");
+        assert!(error.to_lowercase().contains("animat"), "{error}");
+    }
+
+    #[test]
+    fn notes_attachment_animation_import_returns_original_browser_bytes() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault = vault_path(&temp_dir);
+        seed_node(&vault);
+
+        for (id, name, bytes) in [
+            (ATTACHMENT_ID, "animated.gif", encoded_gif_frames(2)),
+            (
+                SECOND_ATTACHMENT_ID,
+                "animated.webp",
+                encoded_animated_webp(),
+            ),
+        ] {
+            let source_path = write_source(&temp_dir, name, &bytes);
+            notes_import_attachment(vault.clone(), import_input(id, source_path), None)
+                .unwrap_or_else(|error| panic!("import {name}: {error}"));
+
+            assert_eq!(
+                notes_read_attachment_bytes(vault.clone(), id.to_string())
+                    .unwrap_or_else(|error| panic!("read {name}: {error}")),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn notes_attachment_animation_enforces_frame_and_aggregate_pixel_caps() {
+        for (name, bytes) in [
+            ("too-many.gif", encoded_gif_frames(2)),
+            ("too-many.webp", encoded_animated_webp()),
+        ] {
+            let frame_error = validate_image_bytes(
+                Path::new(name),
+                &bytes,
+                ValidationLimits {
+                    max_frames: 1,
+                    ..ValidationLimits::DEFAULT
+                },
+            )
+            .expect_err("frame ceiling must fail");
+            assert_eq!(
+                frame_error,
+                "Animated Notes attachment images must contain at most 1 frame."
+            );
+
+            let work_error = validate_image_bytes(
+                Path::new(name),
+                &bytes,
+                ValidationLimits {
+                    max_decoded_pixel_work: 11,
+                    ..ValidationLimits::DEFAULT
+                },
+            )
+            .expect_err("aggregate decoded-pixel ceiling must fail");
+            assert_eq!(
+                work_error,
+                "Animated Notes attachment images must require at most 11 aggregate decoded pixels."
+            );
         }
     }
 

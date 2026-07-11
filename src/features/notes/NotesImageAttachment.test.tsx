@@ -800,6 +800,25 @@ describe("NotesImageAttachment", () => {
     expect(revokeObjectURL).toHaveBeenLastCalledWith("blob:second");
   });
 
+  it.each([
+    ["image/gif", new Uint8Array([71, 73, 70, 56, 57, 97])],
+    ["image/webp", new Uint8Array([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80])]
+  ])("keeps original animated bytes in a %s Blob", async (mimeType, bytes) => {
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, mimeType },
+          bytes
+        })}
+      />
+    );
+
+    await screen.findByRole("img", { name: "diagram.png" });
+    const blob = createObjectURL.mock.calls[0]?.[0];
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob).toMatchObject({ type: mimeType, size: bytes.byteLength });
+  });
+
   it("keeps reserved dimensions while a loader is pending and shows a stable error fallback", async () => {
     const pending = deferred<Uint8Array>();
     const view = render(
