@@ -364,6 +364,8 @@ git commit -m "feat(notes): archive and trash root pages"
 - Create: `src/features/notes/noteTokens.test.ts`
 - Create: `src/features/notes/NoteTokenText.tsx`
 - Create: `src/features/notes/NoteTokenText.test.tsx`
+- Create: `src/features/notes/NoteTextField.tsx`
+- Create: `src/features/notes/NoteTextField.test.tsx`
 - Modify: `src/domain/notes.ts`
 - Modify: `src/features/notes/OutlineNodeRow.tsx`
 - Modify: `src/features/notes/NotesPageHeader.tsx`
@@ -375,7 +377,8 @@ git commit -m "feat(notes): archive and trash root pages"
 - Modify: `src/features/notes/notes.css`
 
 **Interfaces:**
-- Produce `tokenizeNoteText(text): readonly NoteTextToken[]` with original offsets.
+- Produce `tokenizeNoteText(text): readonly NoteTextToken[]` with zero-based,
+  field-local, half-open UTF-16 offsets that reconstruct the original source.
 - Produce structured tag clauses supporting required, excluded, and OR groups.
 - Produce counted tag summaries `{ prefix, normalizedTag, displayTag, count }`.
 
@@ -394,8 +397,10 @@ Expected: FAIL because the tokenizer is absent.
 - [ ] **Step 2: Implement a pure tokenizer and display component**
 
 Resting mode renders text and interactive tag tokens with identical typography and
-white-space rules. Editing mode renders the existing textarea. Clicking a token must
-not first place the title textarea caret.
+white-space rules. `NoteTextField` keeps the existing native textarea mounted across
+both modes and only changes its layout visibility. Clicking a token must not first
+place the title textarea caret. Composition locks editing mode until
+`compositionend`.
 
 - [ ] **Step 3: Add failing repository query tests**
 
@@ -431,7 +436,9 @@ Expected: PASS with zero failures.
 ```bash
 git add src/features/notes/noteTokens.ts src/features/notes/noteTokens.test.ts \
   src/features/notes/NoteTokenText.tsx \
-  src/features/notes/NoteTokenText.test.tsx src/domain/notes.ts \
+  src/features/notes/NoteTokenText.test.tsx \
+  src/features/notes/NoteTextField.tsx \
+  src/features/notes/NoteTextField.test.tsx src/domain/notes.ts \
   src/features/notes/OutlineNodeRow.tsx \
   src/features/notes/NotesPageHeader.tsx \
   src/features/notes/NotesLibraryPane.tsx \

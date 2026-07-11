@@ -89,8 +89,8 @@ images, and keyboard shortcuts.
 - Matching is case-insensitive while display preserves the first encountered
   spelling.
 - In resting display mode tags are underlined interactive tokens. Focus switches to
-  the unchanged textarea so caret, selection, split behavior, and Korean IME remain
-  reliable.
+  the unchanged, permanently mounted textarea so caret, selection, split behavior,
+  auto-growth, programmatic focus, and Korean IME remain reliable.
 - Clicking a tag toggles it as a global Notes filter. Multiple clicked tags combine
   with AND. Clicking an active tag removes it and restores the previous unfiltered
   zoom location when the last filter is removed.
@@ -160,8 +160,9 @@ The migration after schema version 2 adds:
 - `notes_attachments(id, node_id, sort_key, relative_path, content_hash,
   original_name, mime_type, byte_size, intrinsic_width, intrinsic_height,
   display_width, created_at, updated_at)`.
-- `notes_dates(node_id, field, normalized_start, normalized_end, token_text)` as a
-  derived index.
+- `notes_dates(node_id, field, start_utf16, end_utf16, normalized_start,
+  normalized_end, token_text)` as a derived index. Offsets are zero-based,
+  field-local, half-open UTF-16 code-unit ranges matching JavaScript `slice`.
 - A tag-kind column so `#topic` and `@person` do not collide.
 - `notes_history_entries` and `notes_history_changes` hold the current app session's
   bounded row-level before/after journal. Initialization removes entries owned by
