@@ -435,11 +435,16 @@ pub(crate) fn notes_import_attachment(
     validate_note_id(&input.id)
         .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
     validate_note_id(&input.node_id)?;
+    if input.initial_max_display_width <= 0 {
+        return Err(
+            "A Notes attachment initial maximum display width must be positive.".to_string(),
+        );
+    }
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let prepared = storage.prepare_source_attachment(&input.source_path)?;
     let display_width = input
-        .display_width
-        .unwrap_or_else(|| i64::from(prepared.image.width));
+        .initial_max_display_width
+        .min(i64::from(prepared.image.width));
     let byte_size = i64::try_from(prepared.image.byte_size)
         .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
     let mut connection = connect_notes_db(&vault_path)?;
@@ -924,7 +929,7 @@ mod tests {
                 id: attachment_id.to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: source.to_string_lossy().into_owned(),
-                display_width: Some(4),
+                initial_max_display_width: 4,
             },
             None,
         )
@@ -1827,7 +1832,7 @@ mod tests {
                     id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
                     node_id: target_node_id.to_string(),
                     source_path: source.to_string_lossy().into_owned(),
-                    display_width: Some(2),
+                    initial_max_display_width: 2,
                 },
                 Some(NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
@@ -1917,7 +1922,7 @@ mod tests {
                 id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".to_string(),
                 node_id: ROOT_ID.to_string(),
                 source_path: source.to_string_lossy().into_owned(),
-                display_width: Some(2),
+                initial_max_display_width: 2,
             },
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),

@@ -224,7 +224,8 @@ describe("notesStore in Tauri", () => {
     const importInput: ImportNoteAttachmentInput = {
       id: attachmentId,
       nodeId,
-      sourcePath: "/tmp/diagram.png"
+      sourcePath: "/tmp/diagram.png",
+      initialMaxDisplayWidth: 480
     };
     const resizeInput: ResizeNoteAttachmentInput = {
       id: attachmentId,
@@ -278,12 +279,12 @@ describe("notesStore in Tauri", () => {
     ]);
   });
 
-  it("validates and sends an optional attachment import display width exactly", async () => {
+  it("validates and sends the initial attachment max display width exactly", async () => {
     const input: ImportNoteAttachmentInput = {
       id: attachmentId,
       nodeId,
       sourcePath: "/tmp/diagram.png",
-      displayWidth: 180
+      initialMaxDisplayWidth: 480
     };
     invokeMock.mockResolvedValue({
       ...unjournaledMutationResult,
@@ -301,67 +302,49 @@ describe("notesStore in Tauri", () => {
     });
   });
 
-  it("omits an explicitly undefined attachment import display width", async () => {
-    const input: ImportNoteAttachmentInput = {
+  it("rejects a missing initial attachment max display width", async () => {
+    const input = {
       id: attachmentId,
       nodeId,
-      sourcePath: "/tmp/diagram.png",
-      displayWidth: undefined
-    };
-    invokeMock.mockResolvedValue(unjournaledMutationResult);
+      sourcePath: "/tmp/diagram.png"
+    } as ImportNoteAttachmentInput;
 
-    await expect(notesImportAttachment(vaultPath, input)).resolves.toEqual(
-      normalizedUnjournaledMutationResult
-    );
-    expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
-      vaultPath,
-      input: {
-        id: attachmentId,
-        nodeId,
-        sourcePath: "/tmp/diagram.png"
-      },
-      historyContext: null
+    await expect(notesImportAttachment(vaultPath, input)).rejects.toMatchObject({
+      message: "Notes attachment import input is invalid."
     });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("does not forward an inherited attachment import display width", async () => {
-    Object.defineProperty(Object.prototype, "displayWidth", {
+  it("does not forward an inherited initial attachment max display width", async () => {
+    Object.defineProperty(Object.prototype, "initialMaxDisplayWidth", {
       configurable: true,
       value: 180
     });
-    invokeMock.mockResolvedValue(unjournaledMutationResult);
-
     try {
       await expect(
         notesImportAttachment(vaultPath, {
           id: attachmentId,
           nodeId,
           sourcePath: "/tmp/diagram.png"
-        })
-      ).resolves.toEqual(normalizedUnjournaledMutationResult);
-      expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
-        vaultPath,
-        input: {
-          id: attachmentId,
-          nodeId,
-          sourcePath: "/tmp/diagram.png"
-        },
-        historyContext: null
+        } as ImportNoteAttachmentInput)
+      ).rejects.toMatchObject({
+        message: "Notes attachment import input is invalid."
       });
+      expect(invokeMock).not.toHaveBeenCalled();
     } finally {
-      Reflect.deleteProperty(Object.prototype, "displayWidth");
+      Reflect.deleteProperty(Object.prototype, "initialMaxDisplayWidth");
     }
   });
 
   it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
     "rejects invalid attachment import display width %s before invoking native code",
-    async (displayWidth) => {
+    async (initialMaxDisplayWidth) => {
       await expect(
         notesImportAttachment(vaultPath, {
           id: attachmentId,
           nodeId,
           sourcePath: "/tmp/diagram.png",
-          displayWidth
+          initialMaxDisplayWidth
         })
       ).rejects.toMatchObject({
         message: "Notes attachment import input is invalid.",
@@ -376,7 +359,8 @@ describe("notesStore in Tauri", () => {
     const input = Object.assign(Object.create({ inherited: true }), {
       id: attachmentId,
       nodeId,
-      sourcePath: "/tmp/diagram.png"
+      sourcePath: "/tmp/diagram.png",
+      initialMaxDisplayWidth: 480
     }) as ImportNoteAttachmentInput;
 
     await expect(notesImportAttachment(vaultPath, input)).rejects.toMatchObject({
@@ -395,7 +379,8 @@ describe("notesStore in Tauri", () => {
     const importError = await notesImportAttachment(vaultPath, {
       id: attachmentId,
       nodeId,
-      sourcePath: "/tmp/diagram.png"
+      sourcePath: "/tmp/diagram.png",
+      initialMaxDisplayWidth: 480
     }).catch((rejection: unknown) => rejection);
     const readError = await notesReadAttachmentBytes(
       vaultPath,

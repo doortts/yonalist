@@ -408,6 +408,28 @@ function mockOutlineRowRects() {
     });
 }
 
+function mockNotesContentWidth(width: number, viewportWidth = 900): void {
+  vi.spyOn(window, "innerWidth", "get").mockReturnValue(viewportWidth);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: HTMLElement) {
+      const measuredWidth = this.classList.contains("notes-outline-content")
+        ? width
+        : 0;
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: measuredWidth,
+        bottom: 0,
+        left: 0,
+        width: measuredWidth,
+        height: 0,
+        toJSON: () => ({})
+      } as DOMRect;
+    }
+  );
+}
+
 describe("Notes workspace", () => {
   beforeEach(() => {
     mockNarrowViewport(false);
@@ -520,6 +542,7 @@ describe("Notes workspace", () => {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       pathForDroppedFile: vi.fn()
     };
+    mockNotesContentWidth(700, 480);
     notesStoreMock.importAttachment.mockImplementation(
       async (_vaultRoot, input) => {
         expect(input.id).toBe(imported.id);
@@ -558,7 +581,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
       id: imported.id,
       nodeId: root.id,
-      sourcePath: "/incoming/diagram.png"
+      sourcePath: "/incoming/diagram.png",
+      initialMaxDisplayWidth: 480
     });
     expect(
       await screen.findByRole("group", { name: "Image: diagram.png" })
@@ -603,6 +627,7 @@ describe("Notes workspace", () => {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       pathForDroppedFile: vi.fn()
     };
+    mockNotesContentWidth(480);
     notesStoreMock.importAttachment
       .mockRejectedValueOnce(new Error("disk full"))
       .mockImplementation(async () => {
@@ -670,6 +695,7 @@ describe("Notes workspace", () => {
       openImageFile: vi.fn(),
       pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
     };
+    mockNotesContentWidth(480);
     renderNotesWorkspace(attachmentUi);
     await findTitleInput("Project");
     const row = document.querySelector<HTMLElement>(
@@ -690,7 +716,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
       id: attachmentId,
       nodeId: root.id,
-      sourcePath: "/incoming/diagram.webp"
+      sourcePath: "/incoming/diagram.webp",
+      initialMaxDisplayWidth: 480
     });
   });
 

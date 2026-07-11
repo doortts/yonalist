@@ -238,6 +238,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     expect(result.current.actions.uploadImage).toBeTypeOf("function");
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     await act(async () => result.current.actions.uploadImage!(root.id));
 
     expect(attachmentUi.openImageFile).toHaveBeenCalledOnce();
@@ -246,7 +247,8 @@ describe("useNotesWorkspace", () => {
       {
         id: imported.id,
         nodeId: root.id,
-        sourcePath: "/incoming/diagram.png"
+        sourcePath: "/incoming/diagram.png",
+        initialMaxDisplayWidth: 480
       },
       historyContext("attachment-import")
     );
@@ -254,6 +256,59 @@ describe("useNotesWorkspace", () => {
       imported
     ]);
     expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
+  });
+
+  it("keeps the measured 480px import width stable while the picker is open", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const picker = deferred<string | null>();
+    const imported = attachment({
+      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+      nodeId: root.id,
+      intrinsicWidth: 1200,
+      displayWidth: 480
+    });
+    createNoteIdMock.mockReturnValue(imported.id);
+    const importAttachment = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => ({
+        workspace: {
+          nodes: [root],
+          attachmentsByNodeId: { [root.id]: [imported] }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue({
+        nodes: [root],
+        attachmentsByNodeId: {}
+      }),
+      importAttachment
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: {
+          openImageFile: vi.fn().mockReturnValue(picker.promise),
+          pathForDroppedFile: vi.fn()
+        }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
+    const upload = result.current.actions.uploadImage!(root.id);
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(700));
+    await act(async () => picker.resolve("/incoming/wide.png"));
+    await act(async () => upload);
+
+    expect(importAttachment).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({ initialMaxDisplayWidth: 480 }),
+      historyContext("attachment-import")
+    );
   });
 
   it("retries the failed path when an earlier same-node upload succeeds", async () => {
@@ -295,6 +350,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     const first = result.current.actions.uploadImage!(root.id);
     const second = result.current.actions.uploadImage!(root.id);
     await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(1));
@@ -361,6 +417,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     const first = result.current.actions.uploadImage!(root.id);
     const second = result.current.actions.uploadImage!(root.id);
     await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(1));
@@ -429,6 +486,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     expect(result.current.actions.importDroppedImages).toBeTypeOf("function");
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     await act(async () =>
       result.current.actions.importDroppedImages!(root.id, [droppedFile])
     );
@@ -547,6 +605,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     const upload = result.current.actions.uploadImage!("root");
     await waitFor(() => expect(importAttachment).toHaveBeenCalledOnce());
     await act(async () =>
@@ -772,6 +831,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(first.result.current.status).toBe("ready"));
     await waitFor(() => expect(sibling.result.current.status).toBe("ready"));
 
+    act(() => first.result.current.actions.setImageImportMaxDisplayWidth(480));
     await act(async () => first.result.current.actions.uploadImage!(root.id));
 
     await waitFor(() =>
@@ -809,6 +869,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     const staleUpload = result.current.actions.uploadImage!("root");
     rerender({ vaultRoot: "/new" });
     await waitFor(() =>

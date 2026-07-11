@@ -3839,6 +3839,28 @@ mod tests {
     }
 
     #[test]
+    fn pdf_layout_uses_the_persisted_480_pixel_display_width() {
+        let mut attachment = export_attachment(FIRST_ID, "wide.png", Some(encoded_png(1, 1)));
+        attachment.intrinsic_width = 1_200;
+        attachment.intrinsic_height = 800;
+        attachment.display_width = 480;
+        let mut root = export_node(ROOT_ID, "Persisted width", "", false, Vec::new());
+        root.attachments.push(attachment);
+        let mut warnings = Vec::new();
+        let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("font");
+
+        let drafts = build_pdf_pages(&font, &snapshot(root)).expect("PDF image layout");
+        let image = drafts
+            .iter()
+            .flat_map(|page| page.images.iter())
+            .next()
+            .expect("placed image");
+
+        assert!((image.width - 480.0 * super::PDF_CSS_PIXEL_POINTS).abs() < 0.01);
+        assert!((image.height / image.width - 800.0 / 1_200.0).abs() < 0.01);
+    }
+
+    #[test]
     fn pdf_layout_paginates_images_with_their_captions_after_outline_rows() {
         let mut children = (0..68)
             .map(|index| {

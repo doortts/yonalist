@@ -63,6 +63,7 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
     zoomTo: resolved(),
+    setImageImportMaxDisplayWidth: vi.fn(),
     undo: resolved(),
     redo: resolved()
   } as UseNotesWorkspaceResult["actions"];

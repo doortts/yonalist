@@ -1671,7 +1671,7 @@ mod tests {
             id: id.to_string(),
             node_id: NODE_ID.to_string(),
             source_path,
-            display_width: None,
+            initial_max_display_width: 10_000,
         }
     }
 
@@ -2445,6 +2445,51 @@ mod tests {
     }
 
     #[test]
+    fn notes_attachment_import_clamps_initial_max_width_to_measurement_and_intrinsic_width() {
+        for (initial_max_display_width, expected_display_width) in
+            [(100, 100), (480, 480), (2_000, 1_200)]
+        {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = vault_path(&temp_dir);
+            seed_node(&vault_path);
+            let source = write_source(
+                &temp_dir,
+                "wide.png",
+                &encoded_dimensions(ImageFormat::Png, 1_200, 800),
+            );
+            let mut input = import_input(ATTACHMENT_ID, source);
+            input.initial_max_display_width = initial_max_display_width;
+
+            let imported = notes_import_attachment(vault_path, input, None)
+                .expect("import with initial max display width");
+
+            assert_eq!(
+                imported.workspace.attachments_by_node_id[NODE_ID][0].display_width,
+                expected_display_width
+            );
+        }
+    }
+
+    #[test]
+    fn notes_attachment_import_rejects_nonpositive_initial_max_width() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        seed_node(&vault_path);
+        let source = write_source(
+            &temp_dir,
+            "invalid-width.png",
+            &encoded_dimensions(ImageFormat::Png, 320, 200),
+        );
+        let mut input = import_input(ATTACHMENT_ID, source);
+        input.initial_max_display_width = 0;
+
+        let error = notes_import_attachment(vault_path, input, None)
+            .expect_err("nonpositive initial max display width");
+
+        assert!(error.contains("positive"), "{error}");
+    }
+
+    #[test]
     fn notes_attachment_import_failures_reconcile_without_deleting_shared_hashes() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = vault_path(&temp_dir);
@@ -2557,12 +2602,11 @@ mod tests {
         let source = write_source(&temp_dir, "history.png", &png);
         let import_context = history_context(1, "importAttachment");
 
-        let imported = notes_import_attachment(
-            vault_path.clone(),
-            import_input(ATTACHMENT_ID, source),
-            Some(import_context.clone()),
-        )
-        .expect("journaled import");
+        let mut input = import_input(ATTACHMENT_ID, source);
+        input.initial_max_display_width = 100;
+        let imported =
+            notes_import_attachment(vault_path.clone(), input, Some(import_context.clone()))
+                .expect("journaled import");
         assert_eq!(
             imported.history_entry_id.as_deref(),
             Some(import_context.entry_id.as_str())
@@ -2580,7 +2624,10 @@ mod tests {
         assert!(asset_path.is_file(), "redo-reachable bytes were removed");
         let redone =
             redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo import");
-        assert_eq!(redone.workspace.attachments_by_node_id[NODE_ID].len(), 1);
+        assert_eq!(
+            redone.workspace.attachments_by_node_id[NODE_ID][0].display_width,
+            100
+        );
         drop(connection);
 
         let resize_context = history_context(2, "resizeAttachment");
@@ -2606,7 +2653,7 @@ mod tests {
                 .workspace
                 .attachments_by_node_id[NODE_ID][0]
                 .display_width,
-            320
+            100
         );
         assert_eq!(
             redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)

@@ -135,6 +135,7 @@ function workspaceValue(options: {
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
     zoomTo: resolved(),
+    setImageImportMaxDisplayWidth: vi.fn(),
     uploadImage: resolved(),
     retryImageUpload: resolved(),
     loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),

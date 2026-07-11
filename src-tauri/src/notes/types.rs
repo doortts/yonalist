@@ -140,7 +140,7 @@ pub struct ImportAttachmentInput {
     pub id: String,
     pub node_id: NoteId,
     pub source_path: String,
-    pub display_width: Option<i64>,
+    pub initial_max_display_width: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

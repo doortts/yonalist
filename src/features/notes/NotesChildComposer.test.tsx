@@ -89,7 +89,8 @@ function workspaceValue(options: {
     searchNotes: vi.fn().mockResolvedValue([]),
     openSearchResult: resolved(),
     deleteAllNotesData: resolved(),
-    zoomTo: resolved()
+    zoomTo: resolved(),
+    setImageImportMaxDisplayWidth: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
 
   return {

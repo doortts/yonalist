@@ -3189,6 +3189,18 @@ fn validate_attachment_display_width(
     Ok(())
 }
 
+fn validate_initial_attachment_display_width(
+    display_width: i64,
+    intrinsic_width: i64,
+) -> Result<(), String> {
+    if intrinsic_width <= 0 || display_width <= 0 || display_width > intrinsic_width {
+        return Err(format!(
+            "A Notes attachment initial display width must be between 1 and {intrinsic_width} pixels."
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn attachment_by_id(
     connection: &Connection,
     attachment_id: &str,
@@ -3212,7 +3224,10 @@ fn validate_new_attachment(attachment: &NewAttachment) -> Result<(), String> {
     validate_note_id(&attachment.id)
         .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
     validate_note_id(&attachment.node_id)?;
-    validate_attachment_display_width(attachment.display_width, attachment.intrinsic_width)?;
+    validate_initial_attachment_display_width(
+        attachment.display_width,
+        attachment.intrinsic_width,
+    )?;
     if attachment.intrinsic_height <= 0 || attachment.byte_size <= 0 {
         return Err(
             "A Notes attachment must have positive decoded dimensions and byte size.".to_string(),
@@ -3439,7 +3454,10 @@ pub(crate) fn restore_attachment(
     connection: &mut Connection,
     attachment: NoteAttachment,
 ) -> Result<NotesWorkspace, String> {
-    validate_attachment_display_width(attachment.display_width, attachment.intrinsic_width)?;
+    validate_initial_attachment_display_width(
+        attachment.display_width,
+        attachment.intrinsic_width,
+    )?;
     with_workspace_transaction(connection, |transaction| {
         require_active_node(transaction, &attachment.node_id)?;
         let exists: bool = transaction

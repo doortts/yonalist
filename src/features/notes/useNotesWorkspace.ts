@@ -119,6 +119,7 @@ export interface NotesWorkspaceActions {
   removeImage?(attachmentId: string): Promise<void>;
   undo?(): Promise<void>;
   redo?(): Promise<void>;
+  setImageImportMaxDisplayWidth(displayWidth: number | null): void;
 }
 
 export type NotesLibraryView =
@@ -189,6 +190,7 @@ export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
 interface AttachmentUploadAttempt {
   readonly attachmentId: string;
   readonly sourcePath: string;
+  readonly initialMaxDisplayWidth: number;
   status: "pending" | "failed";
   error: string | null;
 }
@@ -1268,6 +1270,7 @@ export function useNotesWorkspace({
   const attachmentUploadAttemptsByNodeIdRef = useRef(
     new Map<NoteId, Map<string, AttachmentUploadAttempt>>()
   );
+  const imageImportMaxDisplayWidthRef = useRef<number | null>(null);
   const [deletingNotesData, setDeletingNotesData] = useState(false);
   const [historyStatus, setHistoryStatus] = useState({
     canUndo: false,
@@ -4448,10 +4451,23 @@ export function useNotesWorkspace({
     [setAttachmentUploadError]
   );
 
+  const setImageImportMaxDisplayWidth = useCallback(
+    (displayWidth: number | null): void => {
+      imageImportMaxDisplayWidthRef.current =
+        displayWidth !== null &&
+        Number.isSafeInteger(displayWidth) &&
+        displayWidth > 0
+          ? displayWidth
+          : null;
+    },
+    []
+  );
+
   const importImagePath = useCallback(
     async (
       nodeId: NoteId,
       sourcePath: string,
+      initialMaxDisplayWidth: number,
       retryAttachmentId?: string
     ): Promise<void> => {
       if (!isSupportedImagePath(sourcePath)) {
@@ -4459,6 +4475,13 @@ export function useNotesWorkspace({
           nodeId,
           "Choose a PNG, JPEG, WebP, or GIF image."
         );
+        return;
+      }
+      if (
+        !Number.isSafeInteger(initialMaxDisplayWidth) ||
+        initialMaxDisplayWidth <= 0
+      ) {
+        setAttachmentUploadError(nodeId, "Image area is not ready.");
         return;
       }
       if (!repository.importAttachment) {
@@ -4479,6 +4502,7 @@ export function useNotesWorkspace({
       const attempt: AttachmentUploadAttempt = {
         attachmentId,
         sourcePath,
+        initialMaxDisplayWidth,
         status: "pending",
         error: null
       };
@@ -4500,7 +4524,12 @@ export function useNotesWorkspace({
             const mutation = unwrapNotesMutation(
               await context.repository.importAttachment!(
                 context.vaultRoot,
-                { id: attachmentId, nodeId, sourcePath },
+                {
+                  id: attachmentId,
+                  nodeId,
+                  sourcePath,
+                  initialMaxDisplayWidth
+                },
                 ...historyArguments(historyContext)
               )
             );
@@ -4541,6 +4570,8 @@ export function useNotesWorkspace({
   const uploadImage = useCallback(
     async (nodeId: NoteId): Promise<void> => {
       const invocationRecord = sessionRecordRef.current;
+      const initialMaxDisplayWidth =
+        imageImportMaxDisplayWidthRef.current ?? 0;
       try {
         const sourcePath = await attachmentUi.openImageFile();
         if (
@@ -4553,7 +4584,7 @@ export function useNotesWorkspace({
           return;
         }
         if (sourcePath === null) return;
-        await importImagePath(nodeId, sourcePath);
+        await importImagePath(nodeId, sourcePath, initialMaxDisplayWidth);
       } catch (cause) {
         if (
           !invocationRecord ||
@@ -4588,6 +4619,7 @@ export function useNotesWorkspace({
           await importImagePath(
             nodeId,
             failedAttempt.sourcePath,
+            failedAttempt.initialMaxDisplayWidth,
             failedAttempt.attachmentId
           );
         }
@@ -4618,7 +4650,11 @@ export function useNotesWorkspace({
         setAttachmentUploadError(nodeId, "Only local image files can be added.");
         return;
       }
-      await importImagePath(nodeId, sourcePath);
+      await importImagePath(
+        nodeId,
+        sourcePath,
+        imageImportMaxDisplayWidthRef.current ?? 0
+      );
     },
     [attachmentUi, importImagePath, setAttachmentUploadError]
   );
@@ -4759,6 +4795,7 @@ export function useNotesWorkspace({
       uploadImage: gate(uploadImage),
       importDroppedImages: gate(importDroppedImages),
       retryImageUpload: gate(retryImageUpload),
+      setImageImportMaxDisplayWidth,
       loadAttachmentBytes,
       resizeImage: gate(resizeImage),
       removeImage: gate(removeImage),
@@ -4799,6 +4836,7 @@ export function useNotesWorkspace({
     uploadImage,
     importDroppedImages,
     retryImageUpload,
+    setImageImportMaxDisplayWidth,
     loadAttachmentBytes,
     resizeImage,
     removeImage,

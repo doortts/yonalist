@@ -76,15 +76,12 @@ function normalizeImportAttachmentInput(
   if (!isPlainRecord(input)) {
     return null;
   }
-  const hasDisplayWidth = Object.prototype.hasOwnProperty.call(
-    input,
-    "displayWidth"
-  );
-  const hasDisplayWidthValue =
-    hasDisplayWidth && input.displayWidth !== undefined;
-  const expectedKeys = hasDisplayWidth
-    ? ["id", "nodeId", "sourcePath", "displayWidth"]
-    : ["id", "nodeId", "sourcePath"];
+  const expectedKeys = [
+    "id",
+    "nodeId",
+    "sourcePath",
+    "initialMaxDisplayWidth"
+  ];
   const keys = Object.keys(input);
   if (
     keys.length !== expectedKeys.length ||
@@ -99,24 +96,17 @@ function normalizeImportAttachmentInput(
     ) ||
     typeof input.sourcePath !== "string" ||
     input.sourcePath.length === 0 ||
-    (hasDisplayWidthValue &&
-      (!Number.isSafeInteger(input.displayWidth) ||
-        (input.displayWidth as number) <= 0))
+    !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
+    (input.initialMaxDisplayWidth as number) <= 0
   ) {
     return null;
   }
-  return hasDisplayWidthValue
-    ? {
-        id: input.id,
-        nodeId: input.nodeId,
-        sourcePath: input.sourcePath,
-        displayWidth: input.displayWidth as number
-      }
-    : {
-        id: input.id,
-        nodeId: input.nodeId,
-        sourcePath: input.sourcePath
-      };
+  return {
+    id: input.id,
+    nodeId: input.nodeId,
+    sourcePath: input.sourcePath,
+    initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+  };
 }
 
 async function invokeNotes<T>(

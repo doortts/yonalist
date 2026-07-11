@@ -96,6 +96,12 @@ describe("Notes domain contract", () => {
       isNoteAttachment({ ...makeNoteAttachment(), displayWidth: 321 })
     ).toBe(false);
     expect(
+      isNoteAttachment({ ...makeNoteAttachment(), displayWidth: 100 })
+    ).toBe(true);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), displayWidth: 0 })
+    ).toBe(false);
+    expect(
       isNoteAttachment({ ...makeNoteAttachment(), originalName: "   " })
     ).toBe(false);
     expect(
@@ -512,7 +518,7 @@ describe("Notes domain contract", () => {
 
   it("defines typed attachment inputs and store APIs with history context", () => {
     expectTypeOf<keyof ImportNoteAttachmentInput>().toEqualTypeOf<
-      "id" | "nodeId" | "sourcePath" | "displayWidth"
+      "id" | "nodeId" | "sourcePath" | "initialMaxDisplayWidth"
     >();
     expectTypeOf<keyof ResizeNoteAttachmentInput>().toEqualTypeOf<
       "id" | "displayWidth"

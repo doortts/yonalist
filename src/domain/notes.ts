@@ -156,7 +156,7 @@ export interface ImportNoteAttachmentInput {
   id: string;
   nodeId: NoteId;
   sourcePath: string;
-  displayWidth?: number;
+  initialMaxDisplayWidth: number;
 }
 
 export interface ResizeNoteAttachmentInput {
@@ -341,11 +341,7 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
 
   const intrinsicWidth = value.intrinsicWidth as number;
   const displayWidth = value.displayWidth as number;
-  const minimumDisplayWidth = Math.min(
-    intrinsicWidth,
-    MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH
-  );
-  if (displayWidth < minimumDisplayWidth || displayWidth > intrinsicWidth) {
+  if (displayWidth <= 0 || displayWidth > intrinsicWidth) {
     return false;
   }
 

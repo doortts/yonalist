@@ -20,6 +20,7 @@ import {
   type CSSProperties,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
@@ -196,6 +197,7 @@ export function NotesOutlinePane() {
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
+  const contentRef = useRef<HTMLDivElement>(null);
   const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
@@ -215,6 +217,42 @@ export function NotesOutlinePane() {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+
+    const publishWidth = (
+      measuredWidth = content.getBoundingClientRect().width
+    ) => {
+      const initialMaxDisplayWidth = Math.floor(
+        Math.min(measuredWidth, window.innerWidth)
+      );
+      actions.setImageImportMaxDisplayWidth(
+        Number.isSafeInteger(initialMaxDisplayWidth) &&
+          initialMaxDisplayWidth > 0
+          ? initialMaxDisplayWidth
+          : null
+      );
+    };
+
+    publishWidth();
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver((entries) => {
+            const entry = entries.find(({ target }) => target === content);
+            publishWidth(entry?.contentRect.width);
+          });
+    resizeObserver?.observe(content);
+    const handleWindowResize = () => publishWidth();
+    window.addEventListener("resize", handleWindowResize);
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", handleWindowResize);
+      actions.setImageImportMaxDisplayWidth(null);
+    };
+  }, [actions]);
   const allStructuralRows = flattenVisibleOutlineRows(
     state,
     state.zoomRootId,
@@ -418,7 +456,7 @@ export function NotesOutlinePane() {
           />
         </div>
         <div className="notes-outline-rows">
-          <div className="notes-outline-content">
+          <div className="notes-outline-content" ref={contentRef}>
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>
           )}
