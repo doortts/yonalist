@@ -181,6 +181,29 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("rejects an excessive native attachment payload as a non-retryable load error", async () => {
+    invokeMock.mockResolvedValue({
+      ...workspaceWithAttachments,
+      attachmentsByNodeId: {
+        [nodeId]: Array.from({ length: 129 }, (_, index) => ({
+          ...attachment,
+          id: `30000000-0000-4000-8000-${(index + 1)
+            .toString(16)
+            .padStart(12, "0")}`,
+          sortKey: index + 1
+        }))
+      }
+    });
+
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "active" })
+    ).rejects.toMatchObject({
+      message: "Notes load returned an invalid workspace.",
+      operation: "load",
+      retryable: false
+    });
+  });
+
   it("maps native workspace load failures to retryable load errors", async () => {
     invokeMock.mockRejectedValue(new Error("Database is busy"));
 

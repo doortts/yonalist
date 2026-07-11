@@ -9,7 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteNode } from "../../domain/notes";
+import type { NoteAttachment, NoteNode } from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -35,6 +35,26 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   };
 }
 
+function attachment(
+  overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
+): NoteAttachment {
+  const contentHash = overrides.contentHash ?? "a".repeat(64);
+  return {
+    sortKey: 1024,
+    relativePath: `notes-assets/${contentHash}.png`,
+    contentHash,
+    originalName: "diagram.png",
+    mimeType: "image/png",
+    byteSize: 4,
+    intrinsicWidth: 640,
+    intrinsicHeight: 320,
+    displayWidth: 320,
+    createdAt: "2026-07-12T00:00:00Z",
+    updatedAt: "2026-07-12T00:00:00Z",
+    ...overrides
+  };
+}
+
 function workspaceValue(options: {
   title?: string;
   note?: string;
@@ -44,6 +64,8 @@ function workspaceValue(options: {
   deletingNotesData?: boolean;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
   pendingFocus?: { nodeId: string; field: "title" | "note" };
+  attachments?: NoteAttachment[];
+  attachmentUploadError?: string;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
@@ -59,7 +81,10 @@ function workspaceValue(options: {
         note: options.childNote ?? ""
       }),
       node({ id: "detail", parentId: "child", title: "Detail" })
-    ]
+    ],
+    attachmentsByNodeId: options.attachments
+      ? { project: options.attachments }
+      : {}
   });
   state.zoomRootId = "project";
   state.pendingFocusId = options.pendingFocus?.nodeId ?? null;
@@ -94,6 +119,10 @@ function workspaceValue(options: {
     deleteAllNotesData: resolved(),
     zoomTo: resolved(),
     uploadImage: resolved(),
+    retryImageUpload: resolved(),
+    loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),
+    resizeImage: resolved(),
+    removeImage: resolved(),
     undo: resolved(),
     redo: resolved()
   } as UseNotesWorkspaceResult["actions"];
@@ -106,7 +135,9 @@ function workspaceValue(options: {
     activeTagFilters: [],
     tagSummaries: [],
     locallyExpandedNodeIds: new Set(),
-    attachmentUploadErrorsByNodeId: {},
+    attachmentUploadErrorsByNodeId: options.attachmentUploadError
+      ? { project: options.attachmentUploadError }
+      : {},
     draftsByNodeId: options.draft ? { project: options.draft } : {},
     writeError: null,
     retryFailedDraft: resolved(),
@@ -189,6 +220,38 @@ describe("NotesPageHeader", () => {
         .getAllByRole("listitem")
         .map((item) => item.getAttribute("aria-level"))
     ).toEqual(["1", "2"]);
+  });
+
+  it("renders page-root attachments and retry UI immediately below the header note", async () => {
+    const user = userEvent.setup();
+    const image = attachment({ id: "image-1", nodeId: "project" });
+    const workspace = workspaceValue({
+      attachments: [image],
+      attachmentUploadError: "Image upload failed: disk full"
+    });
+
+    renderZoomedOutline(workspace);
+
+    const group = screen.getByRole("group", { name: "Image: diagram.png" });
+    const manualLoad = within(group).getByRole("button", {
+      name: "Load image diagram.png"
+    });
+    const alert = screen.getByRole("alert", { name: "Image upload failed" });
+    const note = getTextareaByName("Supporting note: Project");
+    const attachments = group.closest(".notes-page-attachments");
+
+    expect(attachments).not.toBeNull();
+    expect(
+      note.compareDocumentPosition(attachments!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(manualLoad).toBeVisible();
+    expect(alert).toHaveTextContent("disk full");
+    expect(workspace.actions.loadAttachmentBytes).not.toHaveBeenCalled();
+
+    await user.click(
+      within(alert).getByRole("button", { name: "Retry image upload" })
+    );
+    expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith("project");
   });
 
   it("routes unified history shortcuts from page and outline text fields", () => {

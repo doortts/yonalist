@@ -256,6 +256,128 @@ describe("useNotesWorkspace", () => {
     expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
   });
 
+  it("retries the failed path when an earlier same-node upload succeeds", async () => {
+    const root = node({ id: "root" });
+    let idCounter = 0;
+    createNoteIdMock.mockImplementation(
+      () =>
+        `00000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
+    );
+    const firstImport = deferred<NotesMutationResult>();
+    const secondImport = deferred<NotesMutationResult>();
+    const openImageFile = vi
+      .fn()
+      .mockResolvedValueOnce("/incoming/first.png")
+      .mockResolvedValueOnce("/incoming/second.png")
+      .mockResolvedValue(null);
+    const importAttachment = vi
+      .fn()
+      .mockReturnValueOnce(firstImport.promise)
+      .mockReturnValueOnce(secondImport.promise)
+      .mockImplementation(async (_vaultRoot, input, context) => ({
+        workspace: {
+          nodes: [root],
+          attachmentsByNodeId: {
+            root: [attachment({ id: input.id, nodeId: "root" })]
+          }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      }));
+    const store = repository({ importAttachment });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const first = result.current.actions.uploadImage!(root.id);
+    const second = result.current.actions.uploadImage!(root.id);
+    await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(1));
+    firstImport.resolve({
+      workspace: { nodes: [root], attachmentsByNodeId: {} },
+      historyEntryId: null,
+      canUndo: true,
+      canRedo: false
+    });
+    await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(2));
+    secondImport.reject(new Error("second failed"));
+    await act(async () => Promise.all([first, second]));
+
+    await act(async () => result.current.actions.retryImageUpload!(root.id));
+
+    expect(openImageFile).toHaveBeenCalledTimes(2);
+    expect(importAttachment).toHaveBeenCalledTimes(3);
+    expect(importAttachment.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({ sourcePath: "/incoming/second.png" })
+    );
+  });
+
+  it("keeps an earlier failed same-node upload retryable after a later success", async () => {
+    const root = node({ id: "root" });
+    let idCounter = 0;
+    createNoteIdMock.mockImplementation(
+      () =>
+        `10000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
+    );
+    const firstImport = deferred<NotesMutationResult>();
+    const secondImport = deferred<NotesMutationResult>();
+    const openImageFile = vi
+      .fn()
+      .mockResolvedValueOnce("/incoming/first.png")
+      .mockResolvedValueOnce("/incoming/second.png")
+      .mockResolvedValue(null);
+    const importAttachment = vi
+      .fn()
+      .mockReturnValueOnce(firstImport.promise)
+      .mockReturnValueOnce(secondImport.promise)
+      .mockImplementation(async (_vaultRoot, input, context) => ({
+        workspace: {
+          nodes: [root],
+          attachmentsByNodeId: {
+            root: [attachment({ id: input.id, nodeId: "root" })]
+          }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      }));
+    const store = repository({ importAttachment });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store,
+        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+      })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const first = result.current.actions.uploadImage!(root.id);
+    const second = result.current.actions.uploadImage!(root.id);
+    await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(1));
+    firstImport.reject(new Error("first failed"));
+    await waitFor(() => expect(importAttachment).toHaveBeenCalledTimes(2));
+    secondImport.resolve({
+      workspace: { nodes: [root], attachmentsByNodeId: {} },
+      historyEntryId: null,
+      canUndo: true,
+      canRedo: false
+    });
+    await act(async () => Promise.all([first, second]));
+
+    await act(async () => result.current.actions.retryImageUpload!(root.id));
+
+    expect(openImageFile).toHaveBeenCalledTimes(2);
+    expect(importAttachment).toHaveBeenCalledTimes(3);
+    expect(importAttachment.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({ sourcePath: "/incoming/first.png" })
+    );
+  });
+
   it("imports one dropped local image through the same validated path", async () => {
     const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
     const imported = attachment({

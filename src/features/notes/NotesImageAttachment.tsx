@@ -435,6 +435,14 @@ export function NotesImageAttachment({
     }
   };
 
+  const cancelPointerResize = (event: PointerEvent<HTMLDivElement>) => {
+    const resize = pointerResizeRef.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    pointerResizeRef.current = null;
+    releaseCapturedPointer(resize);
+    setProposedWidth(resize.startingPersistedWidth);
+  };
+
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!limits || limits.maximum === 0) return;
     let nextWidth: number | null = null;
@@ -593,7 +601,7 @@ export function NotesImageAttachment({
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={(event) => finishPointerResize(event, true)}
-            onPointerCancel={(event) => finishPointerResize(event, true)}
+            onPointerCancel={cancelPointerResize}
             onLostPointerCapture={(event) => finishPointerResize(event, false)}
             onKeyDown={handleKeyDown}
             onKeyUp={finishKeyboardResize}

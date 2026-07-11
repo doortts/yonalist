@@ -10,6 +10,7 @@ import type { NoteId } from "../../domain/notes";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { NotesBulletMenu } from "./NotesBulletMenu";
+import { NotesAttachmentList } from "./NotesAttachmentList";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
@@ -37,6 +38,7 @@ export function NotesPageHeader({
   const {
     actions,
     activeTagFilters,
+    attachmentUploadErrorsByNodeId,
     draftsByNodeId,
     retryFailedDraft,
     state
@@ -61,6 +63,7 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
+  const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
@@ -400,6 +403,13 @@ export function NotesPageHeader({
             }}
           />
         )}
+        <NotesAttachmentList
+          nodeId={nodeId}
+          attachments={attachments}
+          uploadError={attachmentUploadErrorsByNodeId?.[nodeId]}
+          className="notes-page-attachments"
+          readOnly={readOnly || disabled}
+        />
       </header>
       {datePicker.picker}
       <ConfirmDialog

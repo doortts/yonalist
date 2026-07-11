@@ -244,6 +244,36 @@ describe("NotesImageAttachment", () => {
     expect(onDisplayWidthCommit).toHaveBeenCalledWith(500);
   });
 
+  it("discards a pointer resize on pointercancel and restores persisted width", () => {
+    const onDisplayWidthCommit = vi.fn();
+    render(
+      <NotesImageAttachment
+        {...standardProps({
+          attachment: { ...attachment, displayWidth: 320 },
+          onDisplayWidthCommit
+        })}
+      />
+    );
+    resizeContent(500);
+    const handle = screen.getByRole("separator", {
+      name: "Resize diagram.png"
+    });
+    const releasePointerCapture = vi.fn();
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = releasePointerCapture;
+
+    fireEvent.pointerDown(handle, { button: 0, clientX: 320, pointerId: 8 });
+    fireEvent.pointerMove(handle, { clientX: 400, pointerId: 8 });
+    expect(getFrame()).toHaveStyle({ width: "400px" });
+
+    fireEvent.pointerCancel(handle, { clientX: 400, pointerId: 8 });
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(8);
+    expect(getFrame()).toHaveStyle({ width: "320px" });
+    expect(handle).toHaveAttribute("aria-valuenow", "320");
+    expect(onDisplayWidthCommit).not.toHaveBeenCalled();
+  });
+
   it("cancels pointer and keyboard interactions across attachment, loader, and unmount boundaries", async () => {
     const firstCommit = vi.fn();
     const secondCommit = vi.fn();

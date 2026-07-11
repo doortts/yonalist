@@ -158,6 +158,13 @@ export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
   status: "pending" | "failed";
 }
 
+interface AttachmentUploadAttempt {
+  readonly attachmentId: string;
+  readonly sourcePath: string;
+  status: "pending" | "failed";
+  error: string | null;
+}
+
 function authoritative(
   workspace: NotesWorkspace,
   uiUpdate?: NotesWorkspaceUiUpdate,
@@ -1176,7 +1183,9 @@ export function useNotesWorkspace({
     useState<NotesStoreError | null>(null);
   const [attachmentUploadErrorsByNodeId, setAttachmentUploadErrorsByNodeId] =
     useState<Readonly<Record<NoteId, string>>>({});
-  const attachmentRetryPathByNodeIdRef = useRef(new Map<NoteId, string>());
+  const attachmentUploadAttemptsByNodeIdRef = useRef(
+    new Map<NoteId, Map<string, AttachmentUploadAttempt>>()
+  );
   const [deletingNotesData, setDeletingNotesData] = useState(false);
   const [historyStatus, setHistoryStatus] = useState({
     canUndo: false,
@@ -1376,7 +1385,7 @@ export function useNotesWorkspace({
     setDraftsByNodeId({});
     setCurrentWriteError(null);
     setAttachmentUploadErrorsByNodeId({});
-    attachmentRetryPathByNodeIdRef.current.clear();
+    attachmentUploadAttemptsByNodeIdRef.current.clear();
     deletingNotesDataRef.current = false;
     deletionTokenRef.current = null;
     setDeletingNotesData(false);
@@ -4177,10 +4186,25 @@ export function useNotesWorkspace({
     []
   );
 
+  const publishLatestAttachmentAttemptError = useCallback(
+    (nodeId: NoteId): void => {
+      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
+      let latestError: string | null = null;
+      for (const attempt of attempts?.values() ?? []) {
+        if (attempt.status === "failed") latestError = attempt.error;
+      }
+      setAttachmentUploadError(nodeId, latestError);
+    },
+    [setAttachmentUploadError]
+  );
+
   const importImagePath = useCallback(
-    async (nodeId: NoteId, sourcePath: string): Promise<void> => {
+    async (
+      nodeId: NoteId,
+      sourcePath: string,
+      retryAttachmentId?: string
+    ): Promise<void> => {
       if (!isSupportedImagePath(sourcePath)) {
-        attachmentRetryPathByNodeIdRef.current.delete(nodeId);
         setAttachmentUploadError(
           nodeId,
           "Choose a PNG, JPEG, WebP, or GIF image."
@@ -4192,21 +4216,34 @@ export function useNotesWorkspace({
         return;
       }
 
-      let attachmentId: string;
+      let attachmentId = retryAttachmentId;
       try {
-        attachmentId = createNoteId();
+        attachmentId ??= createNoteId();
       } catch (cause) {
         setAttachmentUploadError(nodeId, errorMessage(cause));
         return;
       }
 
-      attachmentRetryPathByNodeIdRef.current.set(nodeId, sourcePath);
-      setAttachmentUploadError(nodeId, null);
+      const attempts =
+        attachmentUploadAttemptsByNodeIdRef.current.get(nodeId) ?? new Map();
+      const attempt: AttachmentUploadAttempt = {
+        attachmentId,
+        sourcePath,
+        status: "pending",
+        error: null
+      };
+      attempts.set(attachmentId, attempt);
+      attachmentUploadAttemptsByNodeIdRef.current.set(nodeId, attempts);
+      publishLatestAttachmentAttemptError(nodeId);
       return runStructuralCommand(
         "attachment-import",
         async (context, historyContext) => {
           if (!confirmedState(context).nodesById[nodeId]) {
-            attachmentRetryPathByNodeIdRef.current.delete(nodeId);
+            attempts.delete(attachmentId);
+            if (attempts.size === 0) {
+              attachmentUploadAttemptsByNodeIdRef.current.delete(nodeId);
+            }
+            publishLatestAttachmentAttemptError(nodeId);
             return { kind: "skipped" };
           }
           try {
@@ -4217,8 +4254,6 @@ export function useNotesWorkspace({
                 ...historyArguments(historyContext)
               )
             );
-            attachmentRetryPathByNodeIdRef.current.delete(nodeId);
-            setAttachmentUploadError(nodeId, null);
             const projection = await projectNotesMutation(
               context,
               mutation,
@@ -4228,10 +4263,17 @@ export function useNotesWorkspace({
               appliedHistoryContext(historyContext, mutation),
               projection.workspace
             );
+            attempts.delete(attachmentId);
+            if (attempts.size === 0) {
+              attachmentUploadAttemptsByNodeIdRef.current.delete(nodeId);
+            }
+            publishLatestAttachmentAttemptError(nodeId);
             return directMutationResult(mutation, projection);
           } catch (cause) {
             const message = `Image upload failed: ${errorMessage(cause)}`;
-            setAttachmentUploadError(nodeId, message);
+            attempt.status = "failed";
+            attempt.error = message;
+            publishLatestAttachmentAttemptError(nodeId);
             return { kind: "failure", error: message };
           }
         }
@@ -4239,6 +4281,7 @@ export function useNotesWorkspace({
     },
     [
       rememberHistoryAfter,
+      publishLatestAttachmentAttemptError,
       repository,
       runStructuralCommand,
       setAttachmentUploadError
@@ -4269,7 +4312,6 @@ export function useNotesWorkspace({
         ) {
           return;
         }
-        attachmentRetryPathByNodeIdRef.current.delete(nodeId);
         setAttachmentUploadError(
           nodeId,
           `Image picker failed: ${errorMessage(cause)}`
@@ -4287,9 +4329,17 @@ export function useNotesWorkspace({
 
   const retryImageUpload = useCallback(
     async (nodeId: NoteId): Promise<void> => {
-      const sourcePath = attachmentRetryPathByNodeIdRef.current.get(nodeId);
-      if (sourcePath) {
-        await importImagePath(nodeId, sourcePath);
+      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
+      let failedAttempt: AttachmentUploadAttempt | undefined;
+      for (const attempt of attempts?.values() ?? []) {
+        if (attempt.status === "failed") failedAttempt = attempt;
+      }
+      if (failedAttempt) {
+        await importImagePath(
+          nodeId,
+          failedAttempt.sourcePath,
+          failedAttempt.attachmentId
+        );
         return;
       }
       await uploadImage(nodeId);

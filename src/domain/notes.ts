@@ -4,6 +4,8 @@ export type NoteLayoutMode = "bullets";
 export const MAX_NOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_NOTE_ATTACHMENT_PIXELS = 40_000_000;
 export const MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH = 160;
+export const MAX_NOTE_ATTACHMENTS_PER_NODE = 128;
+export const MAX_NOTE_ATTACHMENTS_PER_WORKSPACE = 512;
 
 export interface NoteNode {
   id: NoteId;
@@ -427,6 +429,7 @@ export function normalizeNotesWorkspace(
   const attachmentsByNodeId: NoteAttachmentsByNodeId = {};
   const attachmentIds = new Set<string>();
   const nodeIds = new Set(value.nodes.map((node) => node.id));
+  let attachmentCount = 0;
   for (const [nodeId, attachments] of Object.entries(
     value.attachmentsByNodeId
   )) {
@@ -434,8 +437,13 @@ export function normalizeNotesWorkspace(
       FORBIDDEN_ATTACHMENT_MAP_KEYS.has(nodeId) ||
       !isCanonicalUuidV4(nodeId) ||
       !nodeIds.has(nodeId) ||
-      !isDenseArray(attachments)
+      !isDenseArray(attachments) ||
+      attachments.length > MAX_NOTE_ATTACHMENTS_PER_NODE
     ) {
+      return null;
+    }
+    attachmentCount += attachments.length;
+    if (attachmentCount > MAX_NOTE_ATTACHMENTS_PER_WORKSPACE) {
       return null;
     }
     let previous: NoteAttachment | null = null;

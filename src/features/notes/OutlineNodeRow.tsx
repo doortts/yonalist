@@ -7,21 +7,18 @@ import {
   type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
-import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   createNoteId,
-  type NoteAttachment,
   type NoteId
 } from "../../domain/notes";
+import { NotesAttachmentList } from "./NotesAttachmentList";
 import { NotesBulletMenu } from "./NotesBulletMenu";
-import { NotesImageAttachment } from "./NotesImageAttachment";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
 import { NoteTextField } from "./NoteTextField";
@@ -47,40 +44,6 @@ interface OutlineNodeRowProps {
 
 function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
-}
-
-function OutlineNodeImage({
-  attachment,
-  onRequestRemove,
-  readOnly = false
-}: {
-  attachment: NoteAttachment;
-  onRequestRemove?: () => void;
-  readOnly?: boolean;
-}) {
-  const { actions } = useNotesWorkspaceContext();
-  const loadBytes = useCallback(() => {
-    if (!actions.loadAttachmentBytes) {
-      return Promise.reject(new Error("Image loading is unavailable."));
-    }
-    return actions.loadAttachmentBytes(attachment.id);
-  }, [actions, attachment.id]);
-  const commitWidth = useCallback(
-    (displayWidth: number) => {
-      void actions.resizeImage?.(attachment.id, displayWidth);
-    },
-    [actions, attachment.id]
-  );
-
-  return (
-    <NotesImageAttachment
-      attachment={attachment}
-      loadBytes={loadBytes}
-      onDisplayWidthCommit={commitWidth}
-      onRemove={onRequestRemove}
-      readOnly={readOnly}
-    />
-  );
 }
 
 export function OutlineNodeRow({
@@ -126,8 +89,6 @@ export function OutlineNodeRow({
   const [noteOpen, setNoteOpen] = useState(() =>
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
-  const [pendingImageRemoval, setPendingImageRemoval] =
-    useState<NoteAttachment | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const titleSelectionRef = useRef<{
@@ -261,17 +222,12 @@ export function OutlineNodeRow({
         {node.note.trim() && (
           <p className="notes-node-readonly-note">{node.note}</p>
         )}
-        {attachments.length > 0 && (
-          <div className="notes-node-attachments notes-node-attachments-readonly">
-            {attachments.map((attachment) => (
-              <OutlineNodeImage
-                attachment={attachment}
-                key={attachment.id}
-                readOnly
-              />
-            ))}
-          </div>
-        )}
+        <NotesAttachmentList
+          nodeId={nodeId}
+          attachments={attachments}
+          className="notes-node-attachments notes-node-attachments-readonly"
+          readOnly
+        />
       </div>
     );
   }
@@ -695,52 +651,12 @@ export function OutlineNodeRow({
           }}
         />
       )}
-      {attachments.length > 0 && (
-        <div className="notes-node-attachments">
-          {attachments.map((attachment) => (
-            <OutlineNodeImage
-              attachment={attachment}
-              key={attachment.id}
-              onRequestRemove={() => setPendingImageRemoval(attachment)}
-            />
-          ))}
-        </div>
-      )}
-      {attachmentUploadError && (
-        <div
-          className="notes-node-attachment-error"
-          role="alert"
-          aria-label="Image upload failed"
-        >
-          <span>{attachmentUploadError}</span>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => void actions.retryImageUpload?.(nodeId)}
-          >
-            Retry image upload
-          </button>
-        </div>
-      )}
-      <ConfirmDialog
-        open={pendingImageRemoval !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingImageRemoval(null);
-        }}
-        title="Remove image?"
-        description={
-          pendingImageRemoval
-            ? `Remove ${pendingImageRemoval.originalName} from this note?`
-            : "Remove this image from the note?"
-        }
-        confirmLabel="Remove image"
-        cancelLabel="Cancel"
-        danger
-        onConfirm={() => {
-          const attachmentId = pendingImageRemoval?.id;
-          setPendingImageRemoval(null);
-          if (attachmentId) void actions.removeImage?.(attachmentId);
-        }}
+      <NotesAttachmentList
+        nodeId={nodeId}
+        attachments={attachments}
+        uploadError={attachmentUploadError}
+        className="notes-node-attachments"
+        readOnly={disabled}
       />
       {datePicker.picker}
     </div>

@@ -1220,11 +1220,30 @@ button.notes-date-token:hover {
   margin: 4px 0 10px calc(var(--notes-indent) + var(--notes-content-offset));
 }
 
+.notes-page-attachments {
+  display: grid;
+  width: calc(100% - var(--notes-content-offset));
+  gap: 8px;
+  margin: 12px 0 0 var(--notes-content-offset);
+}
+
+.notes-image-attachment-placeholder {
+  display: grid;
+  width: 100%;
+  min-height: 96px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-3);
+}
+
 .notes-node-attachments-readonly {
   margin-top: 2px;
 }
 
-.notes-node-attachment-error {
+.notes-attachment-error {
   display: flex;
   width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
   align-items: center;
@@ -1239,9 +1258,14 @@ button.notes-date-token:hover {
   font-size: 12.5px;
 }
 
-.notes-node-attachment-error .text-button {
+.notes-attachment-error .text-button {
   flex: 0 0 auto;
   color: inherit;
+}
+
+.notes-page-header > .notes-attachment-error {
+  width: calc(100% - var(--notes-content-offset));
+  margin: 8px 0 0 var(--notes-content-offset);
 }
 
 .notes-node :focus-visible,

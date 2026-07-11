@@ -7,6 +7,8 @@ import {
   isNotesMutationResult,
   isNoteSearchResult,
   isNoteStructuredSearchQuery,
+  MAX_NOTE_ATTACHMENTS_PER_NODE,
+  MAX_NOTE_ATTACHMENTS_PER_WORKSPACE,
   normalizeNotesWorkspace
 } from "./notes";
 import type {
@@ -66,6 +68,12 @@ function makeNoteAttachment(
     updatedAt: "2026-07-11T00:00:01.000Z",
     ...overrides
   };
+}
+
+function indexedUuid(prefix: string, index: number): string {
+  return `${prefix}0000000-0000-4000-8000-${index
+    .toString(16)
+    .padStart(12, "0")}`;
 }
 
 afterEach(() => {
@@ -157,6 +165,49 @@ describe("Notes domain contract", () => {
       nodes: [makeNoteNode()],
       attachmentsByNodeId: {}
     });
+  });
+
+  it("bounds attachment metadata per node and across one workspace", () => {
+    const nodeAttachments = Array.from(
+      { length: MAX_NOTE_ATTACHMENTS_PER_NODE + 1 },
+      (_, index) =>
+        makeNoteAttachment({
+          id: indexedUuid("2", index + 1),
+          sortKey: index + 1
+        })
+    );
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode()],
+        attachmentsByNodeId: { [UUID]: nodeAttachments }
+      })
+    ).toBeNull();
+
+    const nodes = Array.from({ length: 5 }, (_, index) =>
+      makeNoteNode({ id: indexedUuid("1", index + 1), sortKey: index + 1 })
+    );
+    let remaining = MAX_NOTE_ATTACHMENTS_PER_WORKSPACE + 1;
+    let attachmentIndex = 0;
+    const attachmentsByNodeId = Object.fromEntries(
+      nodes.map((currentNode) => {
+        const count = Math.min(MAX_NOTE_ATTACHMENTS_PER_NODE, remaining);
+        remaining -= count;
+        return [
+          currentNode.id,
+          Array.from({ length: count }, (_, index) =>
+            makeNoteAttachment({
+              id: indexedUuid("3", ++attachmentIndex),
+              nodeId: currentNode.id,
+              sortKey: index + 1
+            })
+          )
+        ];
+      })
+    );
+
+    expect(
+      normalizeNotesWorkspace({ nodes, attachmentsByNodeId })
+    ).toBeNull();
   });
 
   it("rejects corrupt workspace attachment maps", () => {

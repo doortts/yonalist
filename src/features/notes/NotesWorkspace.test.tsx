@@ -434,6 +434,7 @@ describe("Notes workspace", () => {
   });
 
   it("renders ordered node images beneath the supporting note and loads bytes lazily", async () => {
+    const user = userEvent.setup();
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
       title: "Project",
@@ -486,12 +487,18 @@ describe("Notes workspace", () => {
       supportingNote.compareDocumentPosition(groups[0]) &
         Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
+    expect(notesStoreMock.readAttachmentBytes).not.toHaveBeenCalled();
+    for (const group of groups) {
+      await user.click(
+        within(group).getByRole("button", { name: /^Load image / })
+      );
+    }
     await waitFor(() =>
       expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(4)
     );
     expect(
       notesStoreMock.readAttachmentBytes.mock.calls.map((call) => call[1])
-    ).toEqual([first.id, second.id, first.id, second.id]);
+    ).toEqual([first.id, first.id, second.id, second.id]);
   });
 
   it("uploads a menu-selected image through the injected picker and publishes it after import", async () => {
@@ -713,6 +720,9 @@ describe("Notes workspace", () => {
     );
     renderNotesWorkspace();
 
+    await user.click(
+      await screen.findByRole("button", { name: "Load image diagram.png" })
+    );
     const remove = await screen.findByRole("button", {
       name: "Remove diagram.png"
     });
