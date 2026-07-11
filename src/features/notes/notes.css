@@ -308,6 +308,24 @@
   white-space: nowrap;
 }
 
+.notes-library-page-rename-input {
+  width: 100%;
+  min-width: 0;
+  height: 24px;
+  padding: 1px 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  outline: 0;
+  background: var(--bg-input);
+  color: var(--text-1);
+  font: inherit;
+  line-height: 20px;
+}
+
+.notes-library-page-rename-input:focus-visible {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .notes-library-page-menu-trigger {
   display: inline-flex;
   align-items: center;

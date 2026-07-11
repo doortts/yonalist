@@ -1,4 +1,11 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { NoteNode } from "../../domain/notes";
@@ -33,11 +40,235 @@ function callbacks() {
     onRestore: vi.fn(),
     onMoveToTrash: vi.fn(),
     onDuplicate: vi.fn(),
-    onExport: vi.fn()
+    onExport: vi.fn(),
+    onRename: vi.fn().mockResolvedValue(true)
   };
 }
 
 describe("NotesLibraryPageRow", () => {
+  it("opens an inactive page before a second click on the selected row starts rename", async () => {
+    const user = userEvent.setup();
+    const props = callbacks();
+    const { rerender } = render(
+      <NotesLibraryPageRow
+        node={node({ title: "Project" })}
+        mode="active"
+        active={false}
+        {...props}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    expect(props.onOpen).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+
+    rerender(
+      <NotesLibraryPageRow
+        node={node({ title: "Project" })}
+        mode="active"
+        active
+        {...props}
+      />
+    );
+    await user.click(screen.getByRole("button", { name: "Project" }));
+    const input = screen.getByRole("textbox", { name: "Rename Project" });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue("Project");
+    expect(input).toHaveProperty("selectionStart", 0);
+    expect(input).toHaveProperty("selectionEnd", "Project".length);
+    expect(props.onOpen).toHaveBeenCalledOnce();
+  });
+
+  it("commits a changed title exactly once with Enter", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    let resolveRename!: (saved: boolean) => void;
+    handlers.onRename.mockImplementation(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveRename = resolve;
+        })
+    );
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    await user.clear(input);
+    await user.type(input, "Renamed");
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+
+    expect(handlers.onRename).toHaveBeenCalledOnce();
+    expect(handlers.onRename).toHaveBeenCalledWith("Renamed");
+    await act(async () => resolveRename(true));
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("commits a changed title exactly once on blur", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    await user.clear(input);
+    await user.type(input, "Renamed");
+    await user.tab();
+
+    await waitFor(() => expect(handlers.onRename).toHaveBeenCalledOnce());
+    expect(handlers.onRename).toHaveBeenCalledWith("Renamed");
+  });
+
+  it("cancels with Escape without committing on the resulting blur", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    await user.clear(input);
+    await user.type(input, "Discard me{Escape}");
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project plan" })).toBeVisible();
+    expect(handlers.onRename).not.toHaveBeenCalled();
+  });
+
+  it("does not commit Enter while Korean IME composition is active", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    fireEvent.change(input, { target: { value: "프로젝트" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(handlers.onRename).not.toHaveBeenCalled();
+    expect(input).toHaveValue("프로젝트");
+    expect(input).toHaveFocus();
+  });
+
+  it("keeps the typed title editable when saving fails", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    handlers.onRename.mockResolvedValue(false);
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    await user.clear(input);
+    await user.type(input, "Retry me{Enter}");
+
+    await waitFor(() => expect(handlers.onRename).toHaveBeenCalledOnce());
+    expect(input).toHaveValue("Retry me");
+    expect(input).toBeInTheDocument();
+  });
+
+  it("commits whitespace titles unchanged and presents them as Untitled page", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    const { rerender } = render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    const input = screen.getByRole("textbox", {
+      name: "Rename Project plan"
+    });
+    await user.clear(input);
+    await user.type(input, "   {Enter}");
+    await waitFor(() => expect(handlers.onRename).toHaveBeenCalledWith("   "));
+
+    rerender(
+      <NotesLibraryPageRow
+        node={node({ title: "   " })}
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+    expect(screen.getByRole("button", { name: "Untitled page" })).toBeVisible();
+  });
+
+  it("keeps the action menu isolated from selected-row rename", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Page actions for Project plan" })
+    );
+
+    expect(await screen.findByRole("menu")).toBeVisible();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(handlers.onOpen).not.toHaveBeenCalled();
+  });
+
+  it("discards rename mode when the row stops being selected", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    const { rerender } = render(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+    await user.click(screen.getByRole("button", { name: "Project plan" }));
+    expect(screen.getByRole("textbox")).toBeInTheDocument();
+
+    rerender(
+      <NotesLibraryPageRow
+        node={node()}
+        mode="active"
+        active={false}
+        {...handlers}
+      />
+    );
+    rerender(
+      <NotesLibraryPageRow node={node()} mode="active" active {...handlers} />
+    );
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Project plan" })).toBeVisible();
+  });
+
+  it.each(["archive", "trash"] as const)(
+    "keeps selected %s rows read-only",
+    async (mode) => {
+      const user = userEvent.setup();
+      const handlers = callbacks();
+      render(
+        <NotesLibraryPageRow node={node()} mode={mode} active {...handlers} />
+      );
+
+      await user.click(screen.getByRole("button", { name: "Project plan" }));
+
+      expect(handlers.onOpen).toHaveBeenCalledOnce();
+      expect(handlers.onRename).not.toHaveBeenCalled();
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    }
+  );
+
   it("keeps page selection and menu activation as separate controls", async () => {
     const user = userEvent.setup();
     const handlers = callbacks();
@@ -45,7 +276,7 @@ describe("NotesLibraryPageRow", () => {
       <NotesLibraryPageRow
         node={node()}
         mode="active"
-        active
+        active={false}
         {...handlers}
       />
     );
@@ -55,7 +286,7 @@ describe("NotesLibraryPageRow", () => {
       name: "Page actions for Project plan"
     });
     expect(selection.contains(menuTrigger)).toBe(false);
-    expect(selection).toHaveAttribute("aria-current", "page");
+    expect(selection).not.toHaveAttribute("aria-current");
 
     await user.click(selection);
     expect(handlers.onOpen).toHaveBeenCalledOnce();

@@ -32,6 +32,7 @@ export interface NotesLibraryPageRowProps {
   onMoveToTrash(): void;
   onDuplicate(): void;
   onExport(format: NotesExportFormat): void;
+  onRename(title: string): Promise<boolean>;
 }
 
 interface CommandItemProps {
@@ -81,15 +82,38 @@ export function NotesLibraryPageRow({
   onRestore,
   onMoveToTrash,
   onDuplicate,
-  onExport
+  onExport,
+  onRename
 }: NotesLibraryPageRowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState(node.title);
+  const [saving, setSaving] = useState(false);
+  const skipBlurCommitRef = useRef(false);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const commitInFlightRef = useRef(false);
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
   const label = pageLabel(node.title);
+
+  useLayoutEffect(() => {
+    if (!editing) {
+      return;
+    }
+    renameInputRef.current?.focus();
+    renameInputRef.current?.select();
+  }, [editing]);
+
+  useLayoutEffect(() => {
+    if (editing && (!active || mode !== "active")) {
+      skipBlurCommitRef.current = true;
+      setEditTitle(node.title);
+      setEditing(false);
+    }
+  }, [active, editing, mode, node.title]);
 
   useLayoutEffect(() => {
     if (viewFocusTargetRef.current === "back" && exportView) {
@@ -101,22 +125,90 @@ export function NotesLibraryPageRow({
     }
   }, [exportView]);
 
+  const commitRename = async () => {
+    if (saving || commitInFlightRef.current) {
+      return;
+    }
+    if (editTitle === node.title) {
+      setEditing(false);
+      return;
+    }
+    commitInFlightRef.current = true;
+    setSaving(true);
+    try {
+      const saved = await onRename(editTitle);
+      if (saved) {
+        setEditing(false);
+      }
+    } finally {
+      commitInFlightRef.current = false;
+      setSaving(false);
+    }
+  };
+
+  const startRename = () => {
+    if (mode !== "active" || !active) {
+      onOpen();
+      return;
+    }
+    skipBlurCommitRef.current = false;
+    setEditTitle(node.title);
+    setEditing(true);
+  };
+
   return (
     <div
       className="notes-library-page-row"
       data-active={active ? "true" : undefined}
     >
-      <button
-        className="notes-library-page"
-        type="button"
-        aria-label={label}
-        aria-current={active ? "page" : undefined}
-        disabled={disabled}
-        onClick={onOpen}
-      >
-        <FileText size={16} aria-hidden="true" />
-        <span>{label}</span>
-      </button>
+      {editing && mode === "active" && active ? (
+        <div className="notes-library-page notes-library-page-editing">
+          <FileText size={16} aria-hidden="true" />
+          <input
+            ref={renameInputRef}
+            className="notes-library-page-rename-input"
+            type="text"
+            aria-label={`Rename ${label}`}
+            value={editTitle}
+            disabled={disabled}
+            readOnly={saving}
+            onChange={(event) => setEditTitle(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                if (event.nativeEvent.isComposing) {
+                  return;
+                }
+                event.preventDefault();
+                void commitRename();
+              } else if (event.key === "Escape" && !saving) {
+                event.preventDefault();
+                skipBlurCommitRef.current = true;
+                setEditTitle(node.title);
+                setEditing(false);
+              }
+            }}
+            onBlur={() => {
+              if (skipBlurCommitRef.current) {
+                skipBlurCommitRef.current = false;
+                return;
+              }
+              void commitRename();
+            }}
+          />
+        </div>
+      ) : (
+        <button
+          className="notes-library-page"
+          type="button"
+          aria-label={label}
+          aria-current={active ? "page" : undefined}
+          disabled={disabled}
+          onClick={startRename}
+        >
+          <FileText size={16} aria-hidden="true" />
+          <span>{label}</span>
+        </button>
+      )}
 
       <Menu.Root
         modal={false}

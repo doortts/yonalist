@@ -60,6 +60,7 @@ function NotesLibraryPaneContent() {
     actions,
     activeTagFilters,
     deletingNotesData,
+    draftsByNodeId,
     libraryView,
     state,
     tagSummaries
@@ -387,11 +388,15 @@ function NotesLibraryPaneContent() {
               if (!node) {
                 return null;
               }
-              const label = pageLabel(node.title);
+              const draft = draftsByNodeId[nodeId];
+              const visibleNode = draft
+                ? { ...node, title: draft.title, note: draft.note }
+                : node;
+              const label = pageLabel(visibleNode.title);
               return (
                 <NotesLibraryPageRow
                   key={nodeId}
-                  node={node}
+                  node={visibleNode}
                   mode={
                     libraryView === "archive"
                       ? "archive"
@@ -411,6 +416,17 @@ function NotesLibraryPaneContent() {
                   onExport={(format) =>
                     exportController.startExport(nodeId, label, format)
                   }
+                  onRename={async (title) => {
+                    if (libraryView === "archive" || libraryView === "trash") {
+                      return false;
+                    }
+                    actions.updateNodeDraft(
+                      nodeId,
+                      { title, note: visibleNode.note },
+                      "title"
+                    );
+                    return actions.flushNodeDraft(nodeId);
+                  }}
                 />
               );
             })}
