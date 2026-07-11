@@ -63,6 +63,7 @@ export interface NoteDateParseOptions {
 const minimumYear = 1;
 const maximumYear = 9999;
 const unicodeWordCharacter = /^[\p{L}\p{N}\p{M}_]$/u;
+const unicodeWhitespace = /^\s$/u;
 const naturalPhrases: readonly NaturalDatePhrase[] = [
   "yesterday",
   "tomorrow",
@@ -261,6 +262,10 @@ function scalarBefore(source: string, offsetUtf16: number): string {
 
 function isWordCharacter(character: string): boolean {
   return unicodeWordCharacter.test(character);
+}
+
+function isWhitespace(character: string): boolean {
+  return unicodeWhitespace.test(character);
 }
 
 function hasStartBoundary(source: string, startUtf16: number): boolean {
@@ -474,7 +479,23 @@ function malformedRangeEndUtf16(
   let endUtf16 = startUtf16;
   while (endUtf16 < limitUtf16) {
     const character = scalarAt(source, endUtf16);
-    if (/^\s$/u.test(character)) {
+    if (isWhitespace(character)) {
+      break;
+    }
+    endUtf16 += character.length;
+  }
+  return endUtf16;
+}
+
+function skipWhitespaceUtf16(
+  source: string,
+  startUtf16: number,
+  limitUtf16: number
+): number {
+  let endUtf16 = startUtf16;
+  while (endUtf16 < limitUtf16) {
+    const character = scalarAt(source, endUtf16);
+    if (!isWhitespace(character)) {
       break;
     }
     endUtf16 += character.length;
@@ -488,23 +509,19 @@ function tryNumericRangeMatch(
   limitUtf16: number,
   todayYear: number
 ): InternalMatch | RejectedNumericSpan | null {
-  let separatorUtf16 = startCandidate.endUtf16;
-  while (
-    separatorUtf16 < limitUtf16 &&
-    (source[separatorUtf16] === " " || source[separatorUtf16] === "\t")
-  ) {
-    separatorUtf16 += 1;
-  }
+  const separatorUtf16 = skipWhitespaceUtf16(
+    source,
+    startCandidate.endUtf16,
+    limitUtf16
+  );
   if (source[separatorUtf16] === "-") {
     const hasWhitespaceBeforeSeparator =
       separatorUtf16 > startCandidate.endUtf16;
-    let endStartUtf16 = separatorUtf16 + 1;
-    while (
-      endStartUtf16 < limitUtf16 &&
-      (source[endStartUtf16] === " " || source[endStartUtf16] === "\t")
-    ) {
-      endStartUtf16 += 1;
-    }
+    const endStartUtf16 = skipWhitespaceUtf16(
+      source,
+      separatorUtf16 + 1,
+      limitUtf16
+    );
     const hasWhitespaceAfterSeparator = endStartUtf16 > separatorUtf16 + 1;
     const malformedEndUtf16 = malformedRangeEndUtf16(
       source,

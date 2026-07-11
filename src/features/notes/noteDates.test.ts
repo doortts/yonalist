@@ -400,6 +400,29 @@ describe("findNoteDateMatches", () => {
         endFormat
       ] as const)
   );
+  const unicodeRangeWhitespace = [
+    ["non-breaking space", "\u00a0"],
+    ["narrow non-breaking space", "\u202f"],
+    ["thin space", "\u2009"]
+  ] as const;
+  const malformedRightEndpoints = [
+    ["short month", "7/14"],
+    ["short day", "07/4"],
+    ["short year", "07/14/2"],
+    ["incomplete date", "07/"],
+    ["invalid date", "13/40"],
+    ["alphabetic token", "nope"],
+    ["invalid boundary", "07/14x"],
+    ["missing endpoint", ""]
+  ] as const;
+  const malformedUnicodeRangeCases = unicodeRangeWhitespace.flatMap(
+    ([whitespaceName, whitespace]) =>
+      malformedRightEndpoints.map(([endpointName, endpoint]) => [
+        whitespaceName,
+        endpointName,
+        `07/11${whitespace}-${whitespace}${endpoint}`
+      ] as const)
+  );
 
   it.each(malformedRangeCases)(
     "rejects malformed yearless range matrix case %s: %s",
@@ -426,6 +449,61 @@ describe("findNoteDateMatches", () => {
           raw: source,
           startUtf16: 0,
           endUtf16: source.length
+        }
+      ]);
+    }
+  );
+
+  it.each(malformedUnicodeRangeCases)(
+    "rejects %s range with %s without partial indexing",
+    (_whitespaceName, _endpointName, source) => {
+      expect(parseNoteDateExpression(source, { today })).toBeNull();
+      expect(findNoteDateMatches(source, { today })).toEqual([]);
+    }
+  );
+
+  it.each(unicodeRangeWhitespace)(
+    "parses valid ranges separated by %s with stable UTF-16 offsets",
+    (_whitespaceName, whitespace) => {
+      const rawRange = `07/11${whitespace}-${whitespace}07/14`;
+      const source = `Plan 😀 ${rawRange}, then 07/15`;
+      const rangeStartUtf16 = source.indexOf(rawRange);
+      const singleStartUtf16 = source.indexOf("07/15");
+
+      expect(findNoteDateMatches(source, { today })).toEqual([
+        {
+          ...numericValue(
+            { year: 2026, month: 7, day: 11 },
+            "MM/DD",
+            { year: 2026, month: 7, day: 14 },
+            "MM/DD"
+          ),
+          raw: rawRange,
+          startUtf16: rangeStartUtf16,
+          endUtf16: rangeStartUtf16 + rawRange.length
+        },
+        {
+          ...numericValue({ year: 2026, month: 7, day: 15 }, "MM/DD"),
+          raw: "07/15",
+          startUtf16: singleStartUtf16,
+          endUtf16: singleStartUtf16 + "07/15".length
+        }
+      ]);
+    }
+  );
+
+  it.each(unicodeRangeWhitespace)(
+    "keeps a valid single date surrounded by %s indexable",
+    (_whitespaceName, whitespace) => {
+      const source = `😀${whitespace}07/15${whitespace}done`;
+      const startUtf16 = source.indexOf("07/15");
+
+      expect(findNoteDateMatches(source, { today })).toEqual([
+        {
+          ...numericValue({ year: 2026, month: 7, day: 15 }, "MM/DD"),
+          raw: "07/15",
+          startUtf16,
+          endUtf16: startUtf16 + "07/15".length
         }
       ]);
     }
