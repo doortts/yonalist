@@ -2434,6 +2434,47 @@ mod tests {
     }
 
     #[test]
+    fn native_exports_reject_an_archived_root_without_writing_output() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        seed_export_vault(&vault_path_string);
+        let connection = connect_notes_db(&vault_path_string).expect("open export database");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET archived_at = '2026-07-12T00:00:00.000Z', \
+                 archive_root_id = ?1 WHERE id = ?1",
+                [ROOT_ID],
+            )
+            .expect("archive export root");
+        drop(connection);
+        let markdown_destination = temp_dir.path().join("archived.md");
+        let pdf_destination = temp_dir.path().join("archived.pdf");
+
+        let markdown_error = notes_export_markdown(
+            vault_path_string.clone(),
+            ROOT_ID.to_string(),
+            markdown_destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("archived Markdown root");
+        let pdf_error = notes_export_pdf(
+            vault_path_string,
+            ROOT_ID.to_string(),
+            pdf_destination.to_string_lossy().into_owned(),
+            false,
+        )
+        .expect_err("archived PDF root");
+
+        let expected =
+            format!("Note node {ROOT_ID} is missing, deleted, or archived and cannot be exported.");
+        assert_eq!(markdown_error, expected);
+        assert_eq!(pdf_error, expected);
+        assert!(!markdown_destination.exists());
+        assert!(!pdf_destination.exists());
+    }
+
+    #[test]
     fn notes_export_attachment_free_formats_do_not_create_asset_storage_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().join("vault");

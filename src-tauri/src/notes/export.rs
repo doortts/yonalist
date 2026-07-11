@@ -1903,7 +1903,8 @@ mod tests {
                    note TEXT NOT NULL,\
                    is_collapsed INTEGER NOT NULL DEFAULT 0,\
                    completed_at TEXT,\
-                   deleted_at TEXT\
+                   deleted_at TEXT,\
+                   archived_at TEXT\
                 );
                  CREATE TABLE notes_dates (
                    node_id TEXT NOT NULL,
@@ -2964,15 +2965,70 @@ mod tests {
     }
 
     #[test]
-    fn export_snapshot_rejects_a_missing_or_deleted_root() {
+    fn export_snapshot_rejects_a_missing_deleted_or_archived_root() {
         let connection = seeded_export_connection();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET archived_at = '2026-07-12T00:00:00.000Z' WHERE id = ?1",
+                [ROOT_ID],
+            )
+            .expect("archive root fixture");
 
         let missing = load_export_snapshot(&connection, "77777777-7777-4777-8777-777777777777")
             .expect_err("missing root");
         let deleted = load_export_snapshot(&connection, DELETED_ID).expect_err("deleted root");
+        let archived = load_export_snapshot(&connection, ROOT_ID).expect_err("archived root");
 
-        assert!(missing.contains("missing or deleted"));
-        assert!(deleted.contains("missing or deleted"));
+        assert!(missing.contains("missing, deleted, or archived"));
+        assert!(deleted.contains("missing, deleted, or archived"));
+        assert!(archived.contains("missing, deleted, or archived"));
+    }
+
+    #[test]
+    fn export_snapshot_excludes_archived_descendant_dates_and_attachments() {
+        let connection = seeded_export_connection();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET archived_at = '2026-07-12T00:00:00.000Z' WHERE id = ?1",
+                [FIRST_ID],
+            )
+            .expect("archive descendant fixture");
+        insert_date_span(
+            &connection,
+            FIRST_ID,
+            "title",
+            &ExportDateSpan {
+                start_utf16: 0,
+                end_utf16: 5,
+                normalized_start: "2026-07-12".to_string(),
+                normalized_end: "2026-07-12".to_string(),
+            },
+            "First",
+        );
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (
+                   id, node_id, sort_key, relative_path, content_hash, original_name,
+                   mime_type, byte_size, intrinsic_width, intrinsic_height, display_width,
+                   created_at, updated_at
+                 ) VALUES (?1, ?2, 1024, ?3, ?4, 'archived.png', 'image/png', 3, 1, 1, 1,
+                           '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![
+                    SECOND_ID,
+                    FIRST_ID,
+                    format!("notes-assets/{}.png", "a".repeat(64)),
+                    "a".repeat(64)
+                ],
+            )
+            .expect("insert archived attachment fixture");
+
+        let snapshot = load_export_snapshot(&connection, ROOT_ID).expect("active root snapshot");
+
+        assert!(!snapshot
+            .root
+            .children
+            .iter()
+            .any(|child| child.id == FIRST_ID));
     }
 
     #[test]

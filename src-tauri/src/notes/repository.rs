@@ -919,13 +919,14 @@ fn load_export_snapshot_queries(
              ), \
              subtree(id, path, cycle) AS (\
                SELECT id, '|' || id || '|', 0 FROM notes_nodes \
-               WHERE id = ?1 AND deleted_at IS NULL \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id, subtree.path || child.id || '|', \
                       instr(subtree.path, '|' || child.id || '|') > 0 \
                FROM notes_nodes child \
                JOIN subtree ON child.parent_id = subtree.id \
-               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
+                 AND subtree.cycle = 0\
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                     node.completed_at, subtree.cycle, export_context.exported_at \
@@ -958,7 +959,7 @@ fn load_export_snapshot_queries(
 
     if rows.is_empty() {
         return Err(format!(
-            "Note node {root_node_id} is missing or deleted and cannot be exported."
+            "Note node {root_node_id} is missing, deleted, or archived and cannot be exported."
         ));
     }
     if rows.iter().any(|(_, cycle, _)| *cycle) {
@@ -979,13 +980,14 @@ fn load_export_snapshot_queries(
         .prepare(
             "WITH RECURSIVE subtree(id, path, cycle) AS (\
                SELECT id, '|' || id || '|', 0 FROM notes_nodes \
-               WHERE id = ?1 AND deleted_at IS NULL \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id, subtree.path || child.id || '|', \
                       instr(subtree.path, '|' || child.id || '|') > 0 \
                FROM notes_nodes child \
                JOIN subtree ON child.parent_id = subtree.id \
-               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
+                 AND subtree.cycle = 0\
              ) \
              SELECT date.node_id, date.field, date.start_utf16, date.end_utf16, \
                     date.normalized_start, date.normalized_end \
@@ -1085,13 +1087,14 @@ fn load_export_snapshot_queries(
         .query_row(
             "WITH RECURSIVE subtree(id, path, cycle) AS (\
                SELECT id, '|' || id || '|', 0 FROM notes_nodes \
-               WHERE id = ?1 AND deleted_at IS NULL \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id, subtree.path || child.id || '|', \
                       instr(subtree.path, '|' || child.id || '|') > 0 \
                FROM notes_nodes child \
                JOIN subtree ON child.parent_id = subtree.id \
-               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
+                 AND subtree.cycle = 0\
              ) \
              SELECT COUNT(*) FROM notes_attachments attachment \
              JOIN subtree ON subtree.id = attachment.node_id \
@@ -1113,13 +1116,14 @@ fn load_export_snapshot_queries(
         .prepare(
             "WITH RECURSIVE subtree(id, path, cycle) AS (\
                SELECT id, '|' || id || '|', 0 FROM notes_nodes \
-               WHERE id = ?1 AND deleted_at IS NULL \
+               WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id, subtree.path || child.id || '|', \
                       instr(subtree.path, '|' || child.id || '|') > 0 \
                FROM notes_nodes child \
                JOIN subtree ON child.parent_id = subtree.id \
-               WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
+               WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
+                 AND subtree.cycle = 0\
              ) \
              SELECT attachment.id, attachment.node_id, attachment.relative_path, \
                     attachment.content_hash, attachment.original_name, attachment.mime_type, \
