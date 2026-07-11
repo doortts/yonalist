@@ -120,25 +120,40 @@ git commit -m "feat(notes): add archive persistence contracts"
 **Files:**
 - Create: `src/features/notes/notesHistory.ts`
 - Create: `src/features/notes/notesHistory.test.ts`
+- Modify: `src/domain/notes.ts`
+- Modify: `src/domain/notes.test.ts`
+- Modify: `src/services/notesStore.ts`
+- Modify: `src/services/notesStore.tauri.test.ts`
 - Modify: `src/features/notes/outlineKeyboard.ts`
 - Modify: `src/features/notes/outlineKeyboard.test.ts`
 - Modify: `src/features/notes/useNotesWorkspace.ts`
 - Modify: `src/features/notes/useNotesWorkspace.test.tsx`
 - Modify: `src/features/notes/notesWorkspaceCoordinator.ts`
+- Modify: `src/features/notes/notesWorkspaceCoordinator.test.ts`
+- Modify: `src/features/notes/notesWorkspaceReducer.ts`
+- Modify: `src/features/notes/notesWorkspaceReducer.test.ts`
+- Modify: `src/features/notes/OutlineNodeRow.tsx`
+- Modify: `src/features/notes/NotesPageHeader.tsx`
+- Create: `src-tauri/src/notes/history.rs`
+- Modify: `src-tauri/src/notes/mod.rs`
 - Modify: `src-tauri/src/notes/types.rs`
 - Modify: `src-tauri/src/notes/repository.rs`
 - Modify: `src-tauri/src/notes/commands.rs`
+- Modify: `src-tauri/src/lib.rs`
 
 **Interfaces:**
-- Produce `NotesHistorySession` with `record`, `undo`, `redo`, `canUndo`, `canRedo`,
-  `clear`, and `closeTextBurst`.
+- Produce one authoritative backend history stack. Frontend `notesHistory.ts` owns
+  stable text-burst ids and UI snapshots keyed by backend entry id, not a second
+  mutation stack.
 - Produce Tauri commands `notes_undo`, `notes_redo`, and `notes_clear_history`.
-- Every mutation result carries `historyEntryId` when journaled.
+- Produce `NotesHistoryContext { sessionId, entryId, commandKind }` and
+  `NotesMutationResult { workspace, historyEntryId, canUndo, canRedo }`.
 
 - [ ] **Step 1: Add failing pure history tests**
 
-Test text-burst coalescing, 100-entry eviction, 50 MiB eviction, Redo clearing after
-a forward command, independent vault sessions, and platform shortcut resolution.
+Test text-burst id reuse/closure, UI snapshot merging, graceful missing/evicted UI
+snapshots, independent vault sessions, and platform shortcut resolution. The backend
+tests own stack eviction and payload-size assertions.
 
 ```bash
 npm test -- src/features/notes/notesHistory.test.ts \
@@ -149,7 +164,8 @@ Expected: FAIL because no history module or shortcut resolutions exist.
 
 - [ ] **Step 2: Add failing repository journal tests**
 
-Cover create, update, split, move with sibling rebalance, complete, collapse, star,
+Cover create, update, text-burst row coalescing, 100-entry and 50 MiB eviction, move
+with sibling rebalance, split, complete, collapse, star,
 duplicate, Trash, restore, Archive, and unarchive. For each operation assert Undo
 restores row values and ordering, Redo reapplies them, and derived tag/search rows
 match the restored content.
@@ -162,22 +178,26 @@ Expected: FAIL because the journal and commands are absent.
 
 - [ ] **Step 3: Implement row-change capture**
 
-Wrap mutating SQLite transactions with temporary audit tables/triggers for
-`notes_nodes` and `notes_attachments`. Persist only changed before/after row images
-under the active history entry. Tags, dates, and FTS remain derived and are rebuilt
-for affected node ids during Undo/Redo.
+Implement `with_history_transaction` in `history.rs`. Start an IMMEDIATE transaction
+and use connection-local temporary audit tables/triggers for `notes_nodes` and
+`notes_attachments`. Store one row per `(entry_id, table_name, row_id)`: UPSERT keeps
+the first `before_json` and replaces the latest `after_json`. Tags, dates, and FTS
+remain derived and are rebuilt for affected node ids during Undo/Redo.
 
 - [ ] **Step 4: Implement bounded session stacks**
 
-Use a generated vault-session id. Clear expired sessions during initialization.
-Enforce both entry-count and estimated-byte limits. File bytes are retained while a
-history record can redo an attachment addition.
+Use a generated vault-session id owned by the shared coordinator entry. Clear expired
+sessions during initialization. Enforce both entry-count and estimated-byte limits.
+File bytes are retained while a history record can redo an attachment addition.
 
 - [ ] **Step 5: Integrate the coordinator**
 
 All Undo/Redo calls are coordinator work items. Close a text burst before any
-structural action. Store before/after selection, zoom root, editing field, and focus
-in the frontend history map keyed by backend entry id.
+structural action. Assign a text entry id when the draft starts, not when debounce
+flushes. Compound move plus incidental expand share one structural entry id, while a
+closed text burst and following split use distinct ids. Store before/after scope,
+selection, zoom root, local expansion, and `{ nodeId, field: "title" | "note" }`
+focus in the frontend UI map keyed by backend entry id.
 
 - [ ] **Step 6: Add keyboard integration tests**
 
@@ -198,13 +218,21 @@ Expected: PASS with zero failures.
 ```bash
 git add src/features/notes/notesHistory.ts \
   src/features/notes/notesHistory.test.ts \
+  src/domain/notes.ts src/domain/notes.test.ts \
+  src/services/notesStore.ts src/services/notesStore.tauri.test.ts \
   src/features/notes/outlineKeyboard.ts \
   src/features/notes/outlineKeyboard.test.ts \
   src/features/notes/useNotesWorkspace.ts \
   src/features/notes/useNotesWorkspace.test.tsx \
   src/features/notes/notesWorkspaceCoordinator.ts \
+  src/features/notes/notesWorkspaceCoordinator.test.ts \
+  src/features/notes/notesWorkspaceReducer.ts \
+  src/features/notes/notesWorkspaceReducer.test.ts \
+  src/features/notes/OutlineNodeRow.tsx \
+  src/features/notes/NotesPageHeader.tsx \
+  src-tauri/src/notes/history.rs src-tauri/src/notes/mod.rs \
   src-tauri/src/notes/types.rs src-tauri/src/notes/repository.rs \
-  src-tauri/src/notes/commands.rs
+  src-tauri/src/notes/commands.rs src-tauri/src/lib.rs
 git commit -m "feat(notes): add unified undo and redo"
 ```
 
