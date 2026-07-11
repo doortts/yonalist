@@ -2912,9 +2912,15 @@ describe("useNotesWorkspace", () => {
     ]);
   });
 
-  it("keeps post-cutoff title and note fields ordered as distinct Undo entries", async () => {
+  it("keeps same-hook post-cutoff fields distinct behind a queued pre-cutoff write", async () => {
     const initial = workspace([
       node({ id: "root", title: "before", note: "before note" }),
+      node({ id: "blocker", sortKey: 2048 }),
+      node({ id: "target", sortKey: 3072 }),
+      node({ id: "other", sortKey: 4096 })
+    ]);
+    const preCutoffSaved = workspace([
+      node({ id: "root", title: "pre-cutoff", note: "before note" }),
       node({ id: "blocker", sortKey: 2048 }),
       node({ id: "target", sortKey: 3072 }),
       node({ id: "other", sortKey: 4096 })
@@ -2939,7 +2945,11 @@ describe("useNotesWorkspace", () => {
         return blockerWrite.promise;
       }
       return Promise.resolve(
-        input.note === "note edit" ? noteSaved : titleSaved
+        input.note === "note edit"
+          ? noteSaved
+          : input.title === "title edit"
+            ? titleSaved
+            : preCutoffSaved
       );
     });
     const toggleStar = vi.fn().mockImplementation(async () => {
@@ -2953,9 +2963,9 @@ describe("useNotesWorkspace", () => {
       );
       const callIndex = undoIndex++;
       return {
-        workspace: callIndex === 0 ? titleSaved : initial,
+        workspace: callIndex === 0 ? titleSaved : preCutoffSaved,
         replayedEntryId:
-          rootCalls[callIndex === 0 ? 1 : 0]?.[2]?.entryId ?? null,
+          rootCalls[callIndex === 0 ? 2 : 1]?.[2]?.entryId ?? null,
         canUndo: callIndex === 0,
         canRedo: true
       };
@@ -2966,38 +2976,40 @@ describe("useNotesWorkspace", () => {
       toggleStar,
       undo
     });
-    const blocker = renderHook(() =>
+    const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/cutoff-field", repository: store })
     );
-    const editor = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/cutoff-field", repository: store })
-    );
-    const requester = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/cutoff-field", repository: store })
-    );
-    await waitFor(() => {
-      expect(blocker.result.current.status).toBe("ready");
-      expect(editor.result.current.status).toBe("ready");
-      expect(requester.result.current.status).toBe("ready");
-    });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
 
+    let blockerFlush!: Promise<boolean>;
     act(() => {
-      blocker.result.current.actions.updateNodeDraft(
+      result.current.actions.updateNodeDraft(
         "blocker",
         { title: "blocking", note: "" },
         "title"
       );
+      blockerFlush = result.current.actions.flushNodeDraft("blocker");
     });
-    const structural = requester.result.current.actions.toggleStar("target");
     await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "root",
+        { title: "pre-cutoff", note: "before note" },
+        "title"
+      );
+    });
+    let structural!: Promise<void>;
+    act(() => {
+      structural = result.current.actions.toggleStar("target");
+    });
 
     act(() => {
-      editor.result.current.actions.updateNodeDraft(
+      result.current.actions.updateNodeDraft(
         "root",
         { title: "title edit", note: "before note" },
         "title"
       );
-      editor.result.current.actions.updateNodeDraft(
+      result.current.actions.updateNodeDraft(
         "root",
         { title: "title edit", note: "note edit" },
         "note"
@@ -3005,12 +3017,15 @@ describe("useNotesWorkspace", () => {
     });
     expect(updateNode).toHaveBeenCalledOnce();
 
-    blockerWrite.resolve(initial);
-    await act(async () => structural);
-    await act(async () => editor.result.current.actions.flushAllDrafts());
+    await act(async () => {
+      blockerWrite.resolve(initial);
+      await Promise.all([blockerFlush, structural]);
+    });
+    await act(async () => result.current.actions.flushAllDrafts());
 
     expect(order).toEqual([
       "update:blocker:blocking:",
+      "update:root:pre-cutoff:before note",
       "structural",
       "update:root:title edit:before note",
       "update:root:title edit:note edit"
@@ -3018,26 +3033,26 @@ describe("useNotesWorkspace", () => {
     const rootCalls = updateNode.mock.calls.filter(
       ([, input]) => input.id === "root"
     );
-    expect(rootCalls).toHaveLength(2);
-    expect(rootCalls[0]?.[2]?.entryId).not.toBe(rootCalls[1]?.[2]?.entryId);
+    expect(rootCalls).toHaveLength(3);
+    expect(rootCalls[1]?.[2]?.entryId).not.toBe(rootCalls[2]?.[2]?.entryId);
 
-    await act(async () => editor.result.current.actions.focusNode("other"));
-    await act(async () => editor.result.current.actions.undo!());
-    expect(editor.result.current.state).toMatchObject({
+    await act(async () => result.current.actions.focusNode("other"));
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
       selectedId: "root",
       pendingFocusId: "root",
       pendingFocusField: "note"
     });
-    await act(async () => editor.result.current.actions.focusNode("other"));
-    await act(async () => editor.result.current.actions.undo!());
-    expect(editor.result.current.state).toMatchObject({
+    await act(async () => result.current.actions.focusNode("other"));
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
       selectedId: "root",
       pendingFocusId: "root",
       pendingFocusField: "title"
     });
   });
 
-  it("retires a deferred field owner when its node disappears before submission", async () => {
+  it("retires a same-hook stale-marker owner when its node disappears", async () => {
     const ids = [
       "10000000-0000-4000-8000-000000000001",
       "10000000-0000-4000-8000-000000000002",
@@ -3068,7 +3083,7 @@ describe("useNotesWorkspace", () => {
       );
       const undo = vi.fn(async () => ({
         workspace: removed,
-        replayedEntryId: ids[2],
+        replayedEntryId: ids[3],
         canUndo: false,
         canRedo: true
       }));
@@ -3078,53 +3093,54 @@ describe("useNotesWorkspace", () => {
         removeEmptyNode: vi.fn().mockResolvedValue(removed),
         undo
       });
-      const blocker = renderHook(() =>
+      const { result } = renderHook(() =>
         useNotesWorkspace({ vaultRoot: "/retire-field", repository: store })
       );
-      const editor = renderHook(() =>
-        useNotesWorkspace({ vaultRoot: "/retire-field", repository: store })
-      );
-      const requester = renderHook(() =>
-        useNotesWorkspace({ vaultRoot: "/retire-field", repository: store })
-      );
-      await waitFor(() => {
-        expect(blocker.result.current.status).toBe("ready");
-        expect(editor.result.current.status).toBe("ready");
-        expect(requester.result.current.status).toBe("ready");
-      });
+      await waitFor(() => expect(result.current.status).toBe("ready"));
 
+      let blockerFlush!: Promise<boolean>;
       act(() => {
-        blocker.result.current.actions.updateNodeDraft("blocker", {
+        result.current.actions.updateNodeDraft("blocker", {
           title: "blocking",
           note: ""
         });
+        blockerFlush = result.current.actions.flushNodeDraft("blocker");
       });
-      const removal = requester.result.current.actions.removeEmptyNode(
-        "root",
-        "other"
-      );
       await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
       act(() => {
-        editor.result.current.actions.updateNodeDraft(
+        result.current.actions.updateNodeDraft(
+          "root",
+          { title: "", note: "" },
+          "title"
+        );
+      });
+      let removal!: Promise<void>;
+      act(() => {
+        removal = result.current.actions.removeEmptyNode("root", "other");
+      });
+      act(() => {
+        result.current.actions.updateNodeDraft(
           "root",
           { title: "title edit", note: "" },
           "title"
         );
-        editor.result.current.actions.updateNodeDraft(
+        result.current.actions.updateNodeDraft(
           "root",
           { title: "title edit", note: "note edit" },
           "note"
         );
       });
-      expect(randomUUID.mock.results[2]?.value).toBe(ids[2]);
+      expect(randomUUID.mock.results[3]?.value).toBe(ids[3]);
 
-      blockerWrite.resolve(initial);
-      await act(async () => removal);
-      await act(async () => editor.result.current.actions.flushAllDrafts());
-      await act(async () => editor.result.current.actions.focusNode("other"));
-      await act(async () => editor.result.current.actions.undo!());
+      await act(async () => {
+        blockerWrite.resolve(initial);
+        await Promise.all([blockerFlush, removal]);
+      });
+      await act(async () => result.current.actions.flushAllDrafts());
+      await act(async () => result.current.actions.focusNode("other"));
+      await act(async () => result.current.actions.undo!());
 
-      expect(editor.result.current.state).toMatchObject({
+      expect(result.current.state).toMatchObject({
         selectedId: "other",
         pendingFocusId: "other"
       });

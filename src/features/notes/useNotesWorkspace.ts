@@ -2138,7 +2138,10 @@ export function useNotesWorkspace({
         record.session.history.closeTextBurst(previousHistoryContext?.entryId);
         if (
           previousHistoryContext &&
-          record.pendingDebounceByNodeId.has(nodeId)
+          previousAttempt?.historyContext?.entryId ===
+            previousHistoryContext.entryId &&
+          record.pendingDebounceByNodeId.get(nodeId) ===
+            previousAttempt.draft.revision
         ) {
           void record.writeQueue.flush(nodeId).catch(() => undefined);
         } else if (
