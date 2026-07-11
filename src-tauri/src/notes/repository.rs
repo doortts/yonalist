@@ -9,7 +9,7 @@ use rusqlite::{
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::Sender;
 
 const NOTES_SCHEMA_VERSION: i64 = 3;
+const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const SORT_KEY_STEP: i64 = 1024;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -130,6 +131,8 @@ fn preflight_existing_notes_schema(database_path: &PathBuf) -> Result<(), String
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     }
 
+    preflight_notes_schema_header(database_path)?;
+
     let connection =
         Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
@@ -137,6 +140,29 @@ fn preflight_existing_notes_schema(database_path: &PathBuf) -> Result<(), String
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
     if user_version > NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "This Notes database uses unsupported schema version {user_version}."
+        ));
+    }
+
+    Ok(())
+}
+
+fn preflight_notes_schema_header(database_path: &PathBuf) -> Result<(), String> {
+    let mut file = fs::File::open(database_path)
+        .map_err(|error| format!("Could not inspect Notes storage: {error}"))?;
+    let mut header = [0_u8; 64];
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(()),
+        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
+    }
+    if &header[..SQLITE_HEADER_MAGIC.len()] != SQLITE_HEADER_MAGIC {
+        return Ok(());
+    }
+
+    let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
+    if i64::from(user_version) > NOTES_SCHEMA_VERSION {
         return Err(format!(
             "This Notes database uses unsupported schema version {user_version}."
         ));
@@ -2760,18 +2786,42 @@ mod tests {
     }
 
     #[test]
-    fn notes_connection_rejects_a_future_schema_version() {
+    fn notes_connection_leaves_short_and_corrupt_headers_to_sqlite_diagnostics() {
+        for (label, bytes) in [("short", vec![0_u8; 8]), ("corrupt", vec![b'x'; 64])] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let path = notes_db_path(temp_dir.path().to_str().expect("path"));
+            std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
+            std::fs::write(&path, bytes).expect("write malformed database");
+
+            let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
+                .expect_err("SQLite must reject malformed database headers");
+
+            assert!(error.contains("file is not a database"), "{label}: {error}");
+        }
+    }
+
+    #[test]
+    fn notes_connection_rejects_a_checkpointed_future_wal_without_creating_companions() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let path = notes_db_path(temp_dir.path().to_str().expect("path"));
         std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
         let connection = Connection::open(&path).expect("open future database");
         connection
-            .pragma_update(None, "user_version", 4)
-            .expect("future user version");
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; \
+                 PRAGMA wal_autocheckpoint = 0; \
+                 PRAGMA user_version = 4; \
+                 PRAGMA wal_checkpoint(TRUNCATE);",
+            )
+            .expect("checkpoint future WAL schema");
         drop(connection);
         let bytes_before = std::fs::read(&path).expect("future database bytes before connect");
-        let wal_path = path.with_file_name("notes.sqlite-wal");
-        let shm_path = path.with_file_name("notes.sqlite-shm");
+        assert_eq!(
+            u32::from_be_bytes(bytes_before[60..64].try_into().expect("user version bytes")),
+            4
+        );
+        let wal_path = sqlite_companion_path(&path, "-wal");
+        let shm_path = sqlite_companion_path(&path, "-shm");
         assert!(!wal_path.exists());
         assert!(!shm_path.exists());
 
