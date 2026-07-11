@@ -32,6 +32,7 @@ export interface NoteTextFieldProps
   ) => void;
   isTagActive?: (token: NoteTagToken) => boolean;
   containerClassName?: string;
+  presentationAriaLabel?: string;
 }
 
 function setForwardedRef<T>(ref: ForwardedRef<T>, value: T | null) {
@@ -56,6 +57,7 @@ export const NoteTextField = forwardRef<
     onDateTrigger,
     isTagActive,
     containerClassName,
+    presentationAriaLabel,
     className,
     style,
     disabled,
@@ -77,6 +79,7 @@ export const NoteTextField = forwardRef<
   const composingRef = useRef(false);
   const focusAfterRevealRef = useRef(false);
   const [editing, setEditing] = useState(false);
+  const nonEditable = Boolean(disabled || readOnly);
   const fieldClassName = ["notes-text-field", containerClassName]
     .filter(Boolean)
     .join(" ");
@@ -90,14 +93,24 @@ export const NoteTextField = forwardRef<
   );
 
   useLayoutEffect(() => {
+    if (nonEditable) {
+      focusAfterRevealRef.current = false;
+      if (editing) {
+        setEditing(false);
+      }
+      return;
+    }
     if (!editing || !focusAfterRevealRef.current) {
       return;
     }
     focusAfterRevealRef.current = false;
     textareaRef.current?.focus();
-  }, [editing]);
+  }, [editing, nonEditable]);
 
   const handleFocus = (event: FocusEvent<HTMLTextAreaElement>) => {
+    if (nonEditable) {
+      return;
+    }
     setEditing(true);
     onFocus?.(event);
   };
@@ -150,7 +163,7 @@ export const NoteTextField = forwardRef<
   };
 
   const revealAndFocusTextarea = () => {
-    if (textareaRef.current?.disabled) {
+    if (nonEditable) {
       return;
     }
     focusAfterRevealRef.current = true;
@@ -204,13 +217,15 @@ export const NoteTextField = forwardRef<
         onDateClick={disabled || readOnly ? undefined : onDateClick}
         isTagActive={isTagActive}
         role="group"
-        aria-label={ariaLabel}
+        aria-label={presentationAriaLabel ?? ariaLabel}
         aria-labelledby={ariaLabelledBy}
+        aria-disabled={disabled || undefined}
+        aria-readonly={readOnly || undefined}
         aria-hidden={editing ? "true" : undefined}
-        tabIndex={editing ? -1 : 0}
+        tabIndex={editing || nonEditable ? -1 : 0}
         style={presentationLayout}
-        onPointerDown={handlePresentationPointerDown}
-        onKeyDown={handlePresentationKeyDown}
+        onPointerDown={nonEditable ? undefined : handlePresentationPointerDown}
+        onKeyDown={nonEditable ? undefined : handlePresentationKeyDown}
       />
       <textarea
         {...textareaProps}

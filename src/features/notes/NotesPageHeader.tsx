@@ -64,6 +64,8 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
+  const titlePresentationLabel =
+    readOnly || disabled ? "Page title" : undefined;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
@@ -275,6 +277,7 @@ export function NotesPageHeader({
               containerClassName="notes-page-title-field"
               value={titleValue}
               aria-label="Edit page title"
+              presentationAriaLabel={titlePresentationLabel}
               placeholder="Untitled page"
               rows={1}
               wrap="soft"

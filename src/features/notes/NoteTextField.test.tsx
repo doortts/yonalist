@@ -357,35 +357,61 @@ describe("NoteTextField", () => {
   });
 
   it.each([
-    ["disabled", { disabled: true }],
-    ["read-only", { readOnly: true }]
+    ["disabled", { disabled: true }, "aria-disabled"],
+    ["read-only", { readOnly: true }, "aria-readonly"]
   ] as const)(
-    "renders a noninteractive date pill and suppresses triggers when %s",
-    (_label, state) => {
+    "renders a noneditable presentation and suppresses date triggers when %s",
+    async (_label, state, stateAttribute) => {
+      const user = userEvent.setup();
       const onDateClick = vi.fn();
       const onDateTrigger = vi.fn();
       const { container } = render(
-        <NoteTextField
-          {...state}
-          value="Due 07/12/2026"
-          today={today}
-          aria-label="Edit title"
-          onChange={vi.fn()}
-          onTagClick={vi.fn()}
-          onDateClick={onDateClick}
-          onDateTrigger={onDateTrigger}
-        />
+        <>
+          <NoteTextField
+            {...state}
+            value="Due 07/12/2026"
+            today={today}
+            aria-label="Title"
+            onChange={vi.fn()}
+            onTagClick={vi.fn()}
+            onDateClick={onDateClick}
+            onDateTrigger={onDateTrigger}
+          />
+          <button type="button">After field</button>
+        </>
       );
       const textarea = container.querySelector(
         "textarea"
       ) as HTMLTextAreaElement;
+      const presentation = screen.getByRole("group", { name: "Title" });
 
+      expect(presentation).toHaveAttribute("tabindex", "-1");
+      expect(presentation).toHaveAttribute(stateAttribute, "true");
+      expect(textarea).toHaveAttribute("aria-hidden", "true");
+      expect(textarea).toHaveAttribute("tabindex", "-1");
+      expect(
+        screen.queryByRole("textbox", { name: "Title" })
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: "Edit date 07/12/2026" })
       ).not.toBeInTheDocument();
       expect(container.querySelector(".notes-date-token")).toHaveTextContent(
         "07/12/2026"
       );
+      fireEvent.pointerDown(presentation);
+      fireEvent.keyDown(presentation, { key: "Enter" });
+      fireEvent.keyDown(presentation, { key: " " });
+      expect(
+        screen.queryByRole("textbox", { name: "Title" })
+      ).not.toBeInTheDocument();
+      expect(presentation.closest(".notes-text-field")).toHaveAttribute(
+        "data-editing",
+        "false"
+      );
+
+      await user.tab();
+      expect(screen.getByRole("button", { name: "After field" })).toHaveFocus();
+
       fireEvent.input(textarea, {
         target: {
           value: "Due 07/12/2026 !!",
@@ -399,4 +425,38 @@ describe("NoteTextField", () => {
       expect(onDateTrigger).not.toHaveBeenCalled();
     }
   );
+
+  it("hides an active textarea when the field becomes read-only", () => {
+    const props = {
+      value: "Project #today",
+      "aria-label": "Title",
+      onChange: vi.fn(),
+      onTagClick: vi.fn()
+    };
+    const { container, rerender } = render(<NoteTextField {...props} />);
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+
+    act(() => textarea.focus());
+    expect(screen.getByRole("textbox", { name: "Title" })).toBe(textarea);
+
+    rerender(<NoteTextField {...props} readOnly />);
+
+    expect(
+      screen.queryByRole("textbox", { name: "Title" })
+    ).not.toBeInTheDocument();
+    const presentation = screen.getByRole("group", { name: "Title" });
+    expect(presentation).toHaveAttribute("aria-readonly", "true");
+    expect(presentation).toHaveAttribute("tabindex", "-1");
+    const tag = screen.getByRole("button", {
+      name: "#today tag filter is inactive"
+    });
+    expect(tag).toBeVisible();
+    fireEvent.click(tag);
+    expect(props.onTagClick).toHaveBeenCalledOnce();
+
+    act(() => textarea.focus());
+    expect(
+      screen.queryByRole("textbox", { name: "Title" })
+    ).not.toBeInTheDocument();
+  });
 });

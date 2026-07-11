@@ -562,9 +562,13 @@ describe("NotesPageHeader", () => {
   });
 
   it.each([
-    ["disabled", { deletingNotesData: true }],
-    ["read-only", { libraryView: "archive" as const }]
-  ])("keeps %s title and note date pills noninteractive", async (_label, mode) => {
+    ["disabled", { deletingNotesData: true }, "aria-disabled"],
+    ["read-only", { libraryView: "archive" as const }, "aria-readonly"]
+  ])("keeps %s title and note presentations noneditable", async (
+    _label,
+    mode,
+    stateAttribute
+  ) => {
     const user = userEvent.setup();
     const workspace = workspaceValue({
       ...mode,
@@ -575,14 +579,40 @@ describe("NotesPageHeader", () => {
     });
     const { container } = render(zoomedOutline(workspace));
 
+    const titlePresentation = screen.getByRole("group", {
+      name: "Page title"
+    });
+    const notePresentation = screen.getByRole("group", {
+      name: "Supporting note: Project 07/12/2026"
+    });
+    expect(titlePresentation).toHaveAttribute("tabindex", "-1");
+    expect(notePresentation).toHaveAttribute("tabindex", "-1");
+    expect(titlePresentation).toHaveAttribute(stateAttribute, "true");
+    expect(notePresentation).toHaveAttribute(stateAttribute, "true");
+    expect(
+      screen.queryByRole("group", { name: "Edit page title" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "Page title" })
+    ).not.toBeInTheDocument();
+    expect(getTextareaByName("Edit page title")).toHaveAttribute(
+      "aria-hidden",
+      "true"
+    );
+
     expect(
       screen.queryByRole("button", { name: /^Edit date / })
     ).not.toBeInTheDocument();
     const pills = container.querySelectorAll(".notes-date-token");
     expect(pills.length).toBeGreaterThanOrEqual(2);
     await user.click(pills[0] as HTMLElement);
+    fireEvent.pointerDown(titlePresentation);
+    fireEvent.keyDown(titlePresentation, { key: "Enter" });
     expect(
       screen.queryByRole("dialog", { name: "Choose date" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", { name: "Page title" })
     ).not.toBeInTheDocument();
     expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
   });
