@@ -251,6 +251,115 @@ describe("notesStore in Tauri", () => {
     ]);
   });
 
+  it("validates and sends an optional attachment import display width exactly", async () => {
+    const input: ImportNoteAttachmentInput = {
+      id: attachmentId,
+      nodeId,
+      sourcePath: "/tmp/diagram.png",
+      displayWidth: 180
+    };
+    invokeMock.mockResolvedValue({
+      ...unjournaledMutationResult,
+      workspace: workspaceWithAttachments
+    });
+
+    await expect(notesImportAttachment(vaultPath, input)).resolves.toEqual({
+      ...unjournaledMutationResult,
+      workspace: workspaceWithAttachments
+    });
+    expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
+      vaultPath,
+      input,
+      historyContext: null
+    });
+  });
+
+  it("omits an explicitly undefined attachment import display width", async () => {
+    const input: ImportNoteAttachmentInput = {
+      id: attachmentId,
+      nodeId,
+      sourcePath: "/tmp/diagram.png",
+      displayWidth: undefined
+    };
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(notesImportAttachment(vaultPath, input)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
+    );
+    expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
+      vaultPath,
+      input: {
+        id: attachmentId,
+        nodeId,
+        sourcePath: "/tmp/diagram.png"
+      },
+      historyContext: null
+    });
+  });
+
+  it("does not forward an inherited attachment import display width", async () => {
+    Object.defineProperty(Object.prototype, "displayWidth", {
+      configurable: true,
+      value: 180
+    });
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    try {
+      await expect(
+        notesImportAttachment(vaultPath, {
+          id: attachmentId,
+          nodeId,
+          sourcePath: "/tmp/diagram.png"
+        })
+      ).resolves.toEqual(normalizedUnjournaledMutationResult);
+      expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
+        vaultPath,
+        input: {
+          id: attachmentId,
+          nodeId,
+          sourcePath: "/tmp/diagram.png"
+        },
+        historyContext: null
+      });
+    } finally {
+      Reflect.deleteProperty(Object.prototype, "displayWidth");
+    }
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid attachment import display width %s before invoking native code",
+    async (displayWidth) => {
+      await expect(
+        notesImportAttachment(vaultPath, {
+          id: attachmentId,
+          nodeId,
+          sourcePath: "/tmp/diagram.png",
+          displayWidth
+        })
+      ).rejects.toMatchObject({
+        message: "Notes attachment import input is invalid.",
+        operation: "write",
+        retryable: false
+      });
+      expect(invokeMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it("rejects a custom-prototype attachment import input", async () => {
+    const input = Object.assign(Object.create({ inherited: true }), {
+      id: attachmentId,
+      nodeId,
+      sourcePath: "/tmp/diagram.png"
+    }) as ImportNoteAttachmentInput;
+
+    await expect(notesImportAttachment(vaultPath, input)).rejects.toMatchObject({
+      message: "Notes attachment import input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("maps native attachment failures to retryable operation-specific errors", async () => {
     invokeMock
       .mockRejectedValueOnce("Could not import attachment")
@@ -286,6 +395,20 @@ describe("notesStore in Tauri", () => {
 
     expect(result).not.toBe(bytes);
     expect([...result]).toEqual([0, 1, 127, 128, 255]);
+  });
+
+  it("rejects a custom-prototype numeric byte array", async () => {
+    const bytes = [0, 255];
+    Object.setPrototypeOf(bytes, Object.create(Array.prototype));
+    invokeMock.mockResolvedValue(bytes);
+
+    await expect(
+      notesReadAttachmentBytes(vaultPath, attachmentId)
+    ).rejects.toMatchObject({
+      message: "Notes attachment bytes returned an invalid result.",
+      operation: "load",
+      retryable: false
+    });
   });
 
   it.each([
@@ -766,10 +889,10 @@ describe("notesStore in Tauri", () => {
     ).resolves.toEqual(normalizedMutationResult);
     await expect(
       notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
-    ).resolves.toBe(replay);
+    ).resolves.toEqual({ ...replay, workspace: normalizedWorkspace });
     await expect(
       notesRedo(vaultPath, historyContext.sessionId, { kind: "trash" })
-    ).resolves.toBe(replay);
+    ).resolves.toEqual({ ...replay, workspace: normalizedWorkspace });
     await expect(
       notesHistoryStatus(vaultPath, historyContext.sessionId)
     ).resolves.toBe(status);
@@ -807,11 +930,76 @@ describe("notesStore in Tauri", () => {
     ]);
   });
 
+  it.each([
+    ["undo", notesUndo],
+    ["redo", notesRedo]
+  ] as const)(
+    "rejects malformed attachment metadata returned by %s",
+    async (_name, replayAdapter) => {
+      invokeMock.mockResolvedValue({
+        workspace: {
+          ...workspaceWithAttachments,
+          attachmentsByNodeId: {
+            [nodeId]: [{ ...attachment, mimeType: "constructor" }]
+          }
+        },
+        replayedEntryId: historyContext.entryId,
+        canUndo: false,
+        canRedo: true
+      });
+
+      await expect(
+        replayAdapter(vaultPath, historyContext.sessionId, { kind: "active" })
+      ).rejects.toMatchObject({
+        message: "Notes history replay returned an invalid result.",
+        operation: "write",
+        retryable: false
+      });
+    }
+  );
+
+  it("maps native history replay failures to retryable write errors", async () => {
+    invokeMock.mockRejectedValue(new Error("Replay database is busy"));
+
+    await expect(
+      notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
+    ).rejects.toMatchObject({
+      message: "Replay database is busy",
+      operation: "write",
+      retryable: true
+    });
+  });
+
   it("empties trash with only the vault path", async () => {
     invokeMock.mockResolvedValue(workspace);
 
-    await expect(notesEmptyTrash(vaultPath)).resolves.toBe(workspace);
+    await expect(notesEmptyTrash(vaultPath)).resolves.toEqual(normalizedWorkspace);
 
     expect(invokeMock).toHaveBeenCalledWith("notes_empty_trash", { vaultPath });
+  });
+
+  it("rejects malformed empty-trash workspaces with a non-retryable write error", async () => {
+    invokeMock.mockResolvedValue({
+      ...workspaceWithAttachments,
+      attachmentsByNodeId: {
+        [secondNodeId]: [{ ...attachment, nodeId: secondNodeId }]
+      }
+    });
+
+    await expect(notesEmptyTrash(vaultPath)).rejects.toMatchObject({
+      message: "Notes empty trash returned an invalid workspace.",
+      operation: "write",
+      retryable: false
+    });
+  });
+
+  it("maps native empty-trash failures to retryable write errors", async () => {
+    invokeMock.mockRejectedValue(new Error("Trash database is busy"));
+
+    await expect(notesEmptyTrash(vaultPath)).rejects.toMatchObject({
+      message: "Trash database is busy",
+      operation: "write",
+      retryable: true
+    });
   });
 });

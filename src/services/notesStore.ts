@@ -1,5 +1,6 @@
 import {
   isNoteSearchResult,
+  isNotesHistoryReplayResult,
   isNotesMutationResult,
   MAX_NOTE_ATTACHMENT_BYTES,
   normalizeNotesWorkspace
@@ -46,6 +47,76 @@ function notesStoreError(
     operation,
     retryable
   });
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isStandardNumericArray(value: unknown): value is number[] {
+  return (
+    Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
+  );
+}
+
+function isStandardByteArray(value: unknown): value is Uint8Array {
+  return (
+    value instanceof Uint8Array &&
+    Object.getPrototypeOf(value) === Uint8Array.prototype
+  );
+}
+
+function normalizeImportAttachmentInput(
+  input: unknown
+): ImportNoteAttachmentInput | null {
+  if (!isPlainRecord(input)) {
+    return null;
+  }
+  const hasDisplayWidth = Object.prototype.hasOwnProperty.call(
+    input,
+    "displayWidth"
+  );
+  const hasDisplayWidthValue =
+    hasDisplayWidth && input.displayWidth !== undefined;
+  const expectedKeys = hasDisplayWidth
+    ? ["id", "nodeId", "sourcePath", "displayWidth"]
+    : ["id", "nodeId", "sourcePath"];
+  const keys = Object.keys(input);
+  if (
+    keys.length !== expectedKeys.length ||
+    !keys.every((key) => expectedKeys.includes(key)) ||
+    typeof input.id !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      input.id
+    ) ||
+    typeof input.nodeId !== "string" ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      input.nodeId
+    ) ||
+    typeof input.sourcePath !== "string" ||
+    input.sourcePath.length === 0 ||
+    (hasDisplayWidthValue &&
+      (!Number.isSafeInteger(input.displayWidth) ||
+        (input.displayWidth as number) <= 0))
+  ) {
+    return null;
+  }
+  return hasDisplayWidthValue
+    ? {
+        id: input.id,
+        nodeId: input.nodeId,
+        sourcePath: input.sourcePath,
+        displayWidth: input.displayWidth as number
+      }
+    : {
+        id: input.id,
+        nodeId: input.nodeId,
+        sourcePath: input.sourcePath
+      };
 }
 
 async function invokeNotes<T>(
@@ -258,7 +329,7 @@ export function notesUndo(
   sessionId: string,
   scope: NotesWorkspaceScope
 ): Promise<NotesHistoryReplayResult> {
-  return invokeNotes<NotesHistoryReplayResult>("notes_undo", { vaultPath, sessionId, scope });
+  return invokeHistoryReplay("notes_undo", { vaultPath, sessionId, scope });
 }
 
 export function notesRedo(
@@ -266,7 +337,35 @@ export function notesRedo(
   sessionId: string,
   scope: NotesWorkspaceScope
 ): Promise<NotesHistoryReplayResult> {
-  return invokeNotes<NotesHistoryReplayResult>("notes_redo", { vaultPath, sessionId, scope });
+  return invokeHistoryReplay("notes_redo", { vaultPath, sessionId, scope });
+}
+
+async function invokeHistoryReplay(
+  command: string,
+  args: Record<string, unknown>
+): Promise<NotesHistoryReplayResult> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError("write", cause, true);
+  }
+  if (!isNotesHistoryReplayResult(result)) {
+    throw notesStoreError(
+      "write",
+      "Notes history replay returned an invalid result.",
+      false
+    );
+  }
+  const workspace = normalizeNotesWorkspace(result.workspace);
+  if (workspace === null) {
+    throw notesStoreError(
+      "write",
+      "Notes history replay returned an invalid result.",
+      false
+    );
+  }
+  return { ...result, workspace };
 }
 
 export function notesHistoryStatus(
@@ -288,9 +387,19 @@ export function notesImportAttachment(
   input: ImportNoteAttachmentInput,
   historyContext: NotesHistoryContext | null = null
 ): Promise<NotesMutationResult> {
+  const normalizedInput = normalizeImportAttachmentInput(input);
+  if (normalizedInput === null) {
+    return Promise.reject(
+      notesStoreError(
+        "write",
+        "Notes attachment import input is invalid.",
+        false
+      )
+    );
+  }
   return invokeMutation(
     "notes_import_attachment",
-    { vaultPath, input, historyContext },
+    { vaultPath, input: normalizedInput, historyContext },
     historyContext
   );
 }
@@ -309,10 +418,20 @@ export async function notesReadAttachmentBytes(
     throw notesStoreError("load", cause, true);
   }
 
+  if (!isStandardNumericArray(result) && !isStandardByteArray(result)) {
+    throw notesStoreError(
+      "load",
+      "Notes attachment bytes returned an invalid result.",
+      false
+    );
+  }
+  const numericKeys = Array.isArray(result) ? Object.keys(result) : null;
   if (
-    (!Array.isArray(result) && !(result instanceof Uint8Array)) ||
     result.length === 0 ||
-    result.length > MAX_NOTE_ATTACHMENT_BYTES
+    result.length > MAX_NOTE_ATTACHMENT_BYTES ||
+    (numericKeys !== null &&
+      (numericKeys.length !== result.length ||
+        !numericKeys.every((key, index) => key === String(index))))
   ) {
     throw notesStoreError(
       "load",
@@ -376,8 +495,24 @@ export function notesRestoreAttachment(
   );
 }
 
-export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_empty_trash", { vaultPath });
+export async function notesEmptyTrash(
+  vaultPath: string
+): Promise<NotesWorkspace> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_empty_trash", { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("write", cause, true);
+  }
+  const workspace = normalizeNotesWorkspace(result);
+  if (workspace === null) {
+    throw notesStoreError(
+      "write",
+      "Notes empty trash returned an invalid workspace.",
+      false
+    );
+  }
+  return workspace;
 }
 
 export async function notesSearch(

@@ -154,6 +154,7 @@ export interface ImportNoteAttachmentInput {
   id: string;
   nodeId: NoteId;
   sourcePath: string;
+  displayWidth?: number;
 }
 
 export interface ResizeNoteAttachmentInput {
@@ -214,7 +215,11 @@ export interface NotesStore {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -229,6 +234,29 @@ function hasExactKeys(
   return (
     keys.length === expected.length &&
     keys.every((key) => expected.includes(key))
+  );
+}
+
+function hasOwnKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[]
+): boolean {
+  return expected.every((key) =>
+    Object.prototype.hasOwnProperty.call(value, key)
+  );
+}
+
+function isDenseArray(value: unknown): value is unknown[] {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype
+  ) {
+    return false;
+  }
+  const keys = Object.keys(value);
+  return (
+    keys.length === value.length &&
+    keys.every((key, index) => key === String(index))
   );
 }
 
@@ -257,12 +285,15 @@ const ATTACHMENT_KEYS = [
   "updatedAt"
 ] as const;
 
-const ATTACHMENT_EXTENSION_BY_MIME = {
-  "image/png": "png",
-  "image/jpeg": "jpg",
-  "image/webp": "webp",
-  "image/gif": "gif"
-} as const;
+const ATTACHMENT_EXTENSION_BY_MIME = new Map<
+  NoteAttachment["mimeType"],
+  string
+>([
+  ["image/png", "png"],
+  ["image/jpeg", "jpg"],
+  ["image/webp", "webp"],
+  ["image/gif", "gif"]
+]);
 
 export function isNoteAttachment(value: unknown): value is NoteAttachment {
   if (!isRecord(value) || !hasExactKeys(value, ATTACHMENT_KEYS)) {
@@ -279,7 +310,6 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
     value.originalName.trim().length === 0 ||
     new TextEncoder().encode(value.originalName).byteLength > 1024 ||
     typeof value.mimeType !== "string" ||
-    !(value.mimeType in ATTACHMENT_EXTENSION_BY_MIME) ||
     !Number.isSafeInteger(value.byteSize) ||
     (value.byteSize as number) <= 0 ||
     (value.byteSize as number) > MAX_NOTE_ATTACHMENT_BYTES ||
@@ -296,6 +326,13 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
     return false;
   }
 
+  const extension = ATTACHMENT_EXTENSION_BY_MIME.get(
+    value.mimeType as NoteAttachment["mimeType"]
+  );
+  if (extension === undefined) {
+    return false;
+  }
+
   const intrinsicWidth = value.intrinsicWidth as number;
   const displayWidth = value.displayWidth as number;
   const minimumDisplayWidth = Math.min(
@@ -306,16 +343,39 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
     return false;
   }
 
-  const mimeType = value.mimeType as keyof typeof ATTACHMENT_EXTENSION_BY_MIME;
   return (
     value.relativePath ===
-    `notes-assets/${value.contentHash}.${ATTACHMENT_EXTENSION_BY_MIME[mimeType]}`
+    `notes-assets/${value.contentHash}.${extension}`
   );
 }
+
+const NOTE_NODE_KEYS = [
+  "id",
+  "parentId",
+  "sortKey",
+  "title",
+  "note",
+  "layoutMode",
+  "isCollapsed",
+  "isStarred",
+  "completedAt",
+  "createdAt",
+  "updatedAt",
+  "deletedAt",
+  "archivedAt",
+  "archiveRootId"
+] as const;
+
+const FORBIDDEN_ATTACHMENT_MAP_KEYS = new Set([
+  "__proto__",
+  "constructor",
+  "prototype"
+]);
 
 export function isNoteNode(value: unknown): value is NoteNode {
   return (
     isRecord(value) &&
+    hasOwnKeys(value, NOTE_NODE_KEYS) &&
     typeof value.id === "string" &&
     isNullableString(value.parentId) &&
     Number.isSafeInteger(value.sortKey) &&
@@ -339,16 +399,25 @@ export function normalizeNotesWorkspace(
   if (!isRecord(value)) {
     return null;
   }
-  const keys = Object.keys(value);
+  const hasAttachmentMap = Object.prototype.hasOwnProperty.call(
+    value,
+    "attachmentsByNodeId"
+  );
   if (
-    !keys.every((key) => key === "nodes" || key === "attachmentsByNodeId") ||
-    !Array.isArray(value.nodes) ||
+    (("nodes" in value &&
+      !Object.prototype.hasOwnProperty.call(value, "nodes")) ||
+      ("attachmentsByNodeId" in value && !hasAttachmentMap)) ||
+    !hasExactKeys(
+      value,
+      hasAttachmentMap ? ["nodes", "attachmentsByNodeId"] : ["nodes"]
+    ) ||
+    !isDenseArray(value.nodes) ||
     !value.nodes.every(isNoteNode)
   ) {
     return null;
   }
 
-  if (value.attachmentsByNodeId === undefined) {
+  if (!hasAttachmentMap) {
     return { nodes: value.nodes, attachmentsByNodeId: {} };
   }
   if (!isRecord(value.attachmentsByNodeId)) {
@@ -357,10 +426,16 @@ export function normalizeNotesWorkspace(
 
   const attachmentsByNodeId: NoteAttachmentsByNodeId = {};
   const attachmentIds = new Set<string>();
+  const nodeIds = new Set(value.nodes.map((node) => node.id));
   for (const [nodeId, attachments] of Object.entries(
     value.attachmentsByNodeId
   )) {
-    if (!isCanonicalUuidV4(nodeId) || !Array.isArray(attachments)) {
+    if (
+      FORBIDDEN_ATTACHMENT_MAP_KEYS.has(nodeId) ||
+      !isCanonicalUuidV4(nodeId) ||
+      !nodeIds.has(nodeId) ||
+      !isDenseArray(attachments)
+    ) {
       return null;
     }
     let previous: NoteAttachment | null = null;
@@ -408,12 +483,31 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
   );
 }
 
+export function isNotesHistoryReplayResult(
+  value: unknown
+): value is NotesHistoryReplayResult {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "workspace",
+      "replayedEntryId",
+      "canUndo",
+      "canRedo"
+    ]) &&
+    isNotesWorkspace(value.workspace) &&
+    isNullableString(value.replayedEntryId) &&
+    typeof value.canUndo === "boolean" &&
+    typeof value.canRedo === "boolean"
+  );
+}
+
 export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
   return (
     isRecord(value) &&
+    hasOwnKeys(value, ["nodeId", "title", "parentTrail", "matchedField"]) &&
     typeof value.nodeId === "string" &&
     typeof value.title === "string" &&
-    Array.isArray(value.parentTrail) &&
+    isDenseArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&
     (value.matchedField === "title" ||
       value.matchedField === "note" ||
@@ -424,6 +518,7 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
 function isNoteSearchTag(value: unknown): value is NoteSearchTag {
   return (
     isRecord(value) &&
+    hasOwnKeys(value, ["prefix", "normalizedTag", "displayTag"]) &&
     (value.prefix === "#" || value.prefix === "@") &&
     typeof value.normalizedTag === "string" &&
     typeof value.displayTag === "string"
@@ -435,14 +530,15 @@ export function isNoteStructuredSearchQuery(
 ): value is NoteStructuredSearchQuery {
   return (
     isRecord(value) &&
+    hasOwnKeys(value, ["text", "requiredTags", "excludedTags", "orGroups"]) &&
     typeof value.text === "string" &&
-    Array.isArray(value.requiredTags) &&
+    isDenseArray(value.requiredTags) &&
     value.requiredTags.every(isNoteSearchTag) &&
-    Array.isArray(value.excludedTags) &&
+    isDenseArray(value.excludedTags) &&
     value.excludedTags.every(isNoteSearchTag) &&
-    Array.isArray(value.orGroups) &&
+    isDenseArray(value.orGroups) &&
     value.orGroups.every(
-      (group) => Array.isArray(group) && group.every(isNoteSearchTag)
+      (group) => isDenseArray(group) && group.every(isNoteSearchTag)
     )
   );
 }

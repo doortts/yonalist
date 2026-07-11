@@ -3,6 +3,7 @@ import {
   createNoteId,
   isNoteAttachment,
   isNoteNode,
+  isNotesHistoryReplayResult,
   isNotesMutationResult,
   isNoteSearchResult,
   isNoteStructuredSearchQuery,
@@ -98,6 +99,41 @@ describe("Notes domain contract", () => {
     expect(isNoteAttachment({ ...makeNoteAttachment(), extra: true })).toBe(false);
   });
 
+  it.each(["__proto__", "constructor", "toString"])(
+    "rejects prototype MIME key %s even when its inherited value matches the path",
+    (mimeType) => {
+      const inheritedExtension = String(
+        ({} as Record<string, unknown>)[mimeType]
+      );
+
+      expect(
+        isNoteAttachment({
+          ...makeNoteAttachment(),
+          mimeType,
+          relativePath: `notes-assets/${CONTENT_HASH}.${inheritedExtension}`
+        })
+      ).toBe(false);
+    }
+  );
+
+  it("requires native records to have plain prototypes and own fields", () => {
+    const customAttachment = Object.assign(
+      Object.create({ inherited: true }),
+      makeNoteAttachment()
+    );
+    const inheritedNode = Object.create(makeNoteNode());
+    const customMutation = Object.assign(Object.create({ inherited: true }), {
+      workspace: { nodes: [makeNoteNode()] },
+      historyEntryId: null,
+      canUndo: false,
+      canRedo: false
+    });
+
+    expect(isNoteAttachment(customAttachment)).toBe(false);
+    expect(isNoteNode(inheritedNode)).toBe(false);
+    expect(isNotesMutationResult(customMutation)).toBe(false);
+  });
+
   it("normalizes ordered workspace attachment arrays without reordering them", () => {
     const secondAttachment = makeNoteAttachment({
       id: "33333333-3333-4333-8333-333333333333",
@@ -154,6 +190,54 @@ describe("Notes domain contract", () => {
     ).toBeNull();
   });
 
+  it("rejects inherited, sparse, and non-record workspace payloads", () => {
+    const inheritedWorkspace = Object.create({ nodes: [makeNoteNode()] });
+    const customMap = Object.assign(Object.create({ inherited: [] }), {
+      [UUID]: [makeNoteAttachment()]
+    });
+    const sparseNodes: NoteNode[] = [];
+    sparseNodes.length = 100_000;
+    sparseNodes[99_999] = makeNoteNode();
+    const arrayWorkspace = Object.assign([], { nodes: [makeNoteNode()] });
+
+    expect(normalizeNotesWorkspace(inheritedWorkspace)).toBeNull();
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode()],
+        attachmentsByNodeId: customMap
+      })
+    ).toBeNull();
+    expect(normalizeNotesWorkspace({ nodes: sparseNodes })).toBeNull();
+    expect(normalizeNotesWorkspace(arrayWorkspace)).toBeNull();
+  });
+
+  it("requires attachment map keys to name workspace nodes", () => {
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode({ id: ATTACHMENT_UUID })],
+        attachmentsByNodeId: { [UUID]: [makeNoteAttachment()] }
+      })
+    ).toBeNull();
+  });
+
+  it.each(["__proto__", "constructor", "prototype"])(
+    "rejects prototype-pollution attachment map key %s",
+    (key) => {
+      const attachmentsByNodeId = Object.create(null) as Record<
+        string,
+        NoteAttachment[]
+      >;
+      attachmentsByNodeId[key] = [];
+
+      expect(
+        normalizeNotesWorkspace({
+          nodes: [makeNoteNode()],
+          attachmentsByNodeId
+        })
+      ).toBeNull();
+    }
+  );
+
   it("recognizes a complete Notes node payload", () => {
     expect(isNoteNode(makeNoteNode())).toBe(true);
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
@@ -196,6 +280,36 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("recognizes only strict history replay result payloads", () => {
+    const replay = {
+      workspace: { nodes: [makeNoteNode()] },
+      replayedEntryId: ATTACHMENT_UUID,
+      canUndo: false,
+      canRedo: true
+    };
+    const customReplay = Object.assign(
+      Object.create({ inherited: true }),
+      replay
+    );
+
+    expect(isNotesHistoryReplayResult(replay)).toBe(true);
+    expect(isNotesHistoryReplayResult({ ...replay, replayedEntryId: null })).toBe(
+      true
+    );
+    expect(isNotesHistoryReplayResult(customReplay)).toBe(false);
+    expect(
+      isNotesHistoryReplayResult({
+        ...replay,
+        workspace: {
+          nodes: [makeNoteNode()],
+          attachmentsByNodeId: {
+            [UUID]: [{ ...makeNoteAttachment(), mimeType: "constructor" }]
+          }
+        }
+      })
+    ).toBe(false);
+  });
+
   it("rejects incomplete Notes node payloads", () => {
     const { note: _note, ...missingNote } = makeNoteNode();
     const { archivedAt: _archivedAt, ...missingArchivedAt } = makeNoteNode();
@@ -219,6 +333,12 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, parentTrail: ["Page", 42] })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "date" })).toBe(true);
+    const inherited = Object.assign(Object.create({ inherited: true }), result);
+    const sparseTrail: string[] = [];
+    sparseTrail.length = 2;
+    sparseTrail[1] = "Section";
+    expect(isNoteSearchResult(inherited)).toBe(false);
+    expect(isNoteSearchResult({ ...result, parentTrail: sparseTrail })).toBe(false);
   });
 
   it("supports typed active, archive, and trash search scopes", () => {
@@ -268,6 +388,16 @@ describe("Notes domain contract", () => {
     ).toBe(false);
     expect(
       isNoteStructuredSearchQuery({ ...query, excludedTags: ["#blocked"] })
+    ).toBe(false);
+    const customQuery = Object.assign(Object.create({ inherited: true }), query);
+    const sparseRequiredTags = [...query.requiredTags];
+    sparseRequiredTags.length = 2;
+    expect(isNoteStructuredSearchQuery(customQuery)).toBe(false);
+    expect(
+      isNoteStructuredSearchQuery({
+        ...query,
+        requiredTags: sparseRequiredTags
+      })
     ).toBe(false);
   });
 
@@ -331,7 +461,7 @@ describe("Notes domain contract", () => {
 
   it("defines typed attachment inputs and store APIs with history context", () => {
     expectTypeOf<keyof ImportNoteAttachmentInput>().toEqualTypeOf<
-      "id" | "nodeId" | "sourcePath"
+      "id" | "nodeId" | "sourcePath" | "displayWidth"
     >();
     expectTypeOf<keyof ResizeNoteAttachmentInput>().toEqualTypeOf<
       "id" | "displayWidth"
