@@ -2,13 +2,16 @@
 
 ## Status
 
-DONE_WITH_CONCURRENT_BUILD_BLOCKER
+DONE
 
 Implementation commit:
 `9dd286a5ef6919a0b6d4814ff384a65c993c088a`
 
 Quality remediation commit:
 `761ade937064d003492b3b21e696f36b041f9b7a`
+
+Canonical tag validation commit:
+`3899f9bd5d6f12d32652f4c14405401eaf2f6f02`
 
 Starting commit:
 `857ad71c2328dcfb8d98430a6fe10222e838a237`
@@ -25,6 +28,10 @@ Starting commit:
 - Reused the existing `"#" | "@"` prefix wire contract. Rust keeps the semantic
   `Hash | Mention` enum internally. Query tags carry `normalizedTag` and
   `displayTag`; SQL uses only the normalized value and prefix.
+- Defined typed `NoteTagFilter.normalizedTag` and `NoteSearchTag.normalizedTag` as
+  canonical body-only values: nonempty, lowercase, marker-free, and accepted by
+  the shared tag-body grammar. Only the string query parser consumes its one
+  syntactic `#` or `@` marker; public typed payloads never repair input.
 - Added `parseNoteSearchQuery`, `canonicalizeNoteSearchQuery`, and
   `canonicalNoteSearchQueryKey`. The stable key omits display casing while filters,
   alternatives, and groups are normalized, deduplicated, and sorted.
@@ -223,12 +230,59 @@ The isolated strict TypeScript source check, Vite production bundle of 2,286
 modules, Rust format check, and standard all-target clippy also passed. Clippy
 retains the same five pre-existing warnings documented above.
 
-## Concurrent Blocker
+## Final Canonical Tag Validation
 
-`npm run build` exits 2 only on concurrent, out-of-scope history work:
+- Added shared TypeScript/Rust canonical-body fixtures covering Korean, ASCII,
+  astral letters, combining marks, `_`/`-`, empty input, case drift, whitespace,
+  punctuation, and all leading-marker combinations.
+- TypeScript validates every typed tag before canonicalization and unique-count
+  enforcement. `notesSearchStructured` and typed tag workspace scopes reject
+  invalid payloads before invoking Tauri, while valid payloads retain their wire
+  shape.
+- Rust commands validate structured search and tag scopes before opening Notes
+  storage. Repository validation uses the same exact body values for
+  canonicalization, deduplication, limit counting, and SQL parameters.
+- The boundary tests prove 63 ordinary tags plus canonical `x` is exactly 64;
+  adding malformed `##x` returns the stable canonical-body error before counting,
+  while adding a 65th canonical value returns the stable 64-tag limit error.
 
-- `src/features/notes/useNotesWorkspace.test.tsx:2172` has four tuple/index type
-  errors in the current concurrent edit.
+Canonical validation RED evidence:
 
-The current concurrent `useNotesWorkspace` and coordinator test files were not
-staged or committed by this task.
+```bash
+npm test -- src/features/notes/noteSearchQuery.test.ts \
+  src/services/notesStore.tauri.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml \
+  notes_tag_filter_body_matches_shared_typescript_fixtures
+cargo test --manifest-path src-tauri/Cargo.toml \
+  notes_tag_command_validates_canonical_bodies_and_exact_limits_before_storage
+```
+
+The TypeScript RED produced 21 expected failures: the body predicate was absent,
+the malformed 65th value was accepted, and the store forwarded invalid input.
+The Rust fixture RED failed to compile because the body predicate was absent; the
+command RED reached vault-path validation instead of rejecting the malformed tag.
+Separate store and repository scope RED tests proved typed tag scopes still
+silently repaired markers.
+
+Final verification:
+
+```bash
+npm test -- src/features/notes/noteTokens.test.ts \
+  src/features/notes/noteSearchQuery.test.ts src/domain/notes.test.ts \
+  src/services/notesStore.test.ts src/services/notesStore.tauri.test.ts
+cargo test --manifest-path src-tauri/Cargo.toml notes_tag
+cargo test --manifest-path src-tauri/Cargo.toml 'notes::'
+npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets
+```
+
+Exit 0: 102/102 focused TypeScript tests, 14/14 focused Rust tag tests, and
+147/147 Notes Rust tests passed. TypeScript typechecking and the Vite production
+build completed with 2,288 modules. Rust formatting passed. Clippy completed with
+the same five pre-existing warnings (`ptr_arg`, `flat_map_identity`,
+`bool_assert_comparison`, `too_many_arguments`, and `manual_split_once`) and no
+new Task 5 warning.
+
+The concurrent history work was available for the final build. No coordinator,
+hook, component, CSS, or shared UI test file was changed or committed here.
