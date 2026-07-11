@@ -75,57 +75,91 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
-  it("repeats a structural barrier until every participant generation is stable", async () => {
+  it("ignores a failed drain from a participant that departed during the pass", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();
-    const laterDrain = deferred<void>();
-    const order: string[] = [];
-    let firstGeneration = 0;
-    let firstPasses = 0;
-    const first = registry.openSession({
+    const drain = deferred<boolean>();
+    const departed = registry.openSession({
       repository: store,
-      vaultRoot: "/epoch",
+      vaultRoot: "/departure",
       onEvent: vi.fn(),
-      draftGeneration: () => firstGeneration,
-      beforeStructural: async () => {
-        firstPasses += 1;
-        order.push(`first:${firstPasses}`);
+      beforeStructural: () => drain.promise
+    });
+    const requester = registry.openSession({
+      repository: store,
+      vaultRoot: "/departure",
+      onEvent: vi.fn()
+    });
+    await Promise.all([departed.activation, requester.activation]);
+    const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    const completion = requester.enqueueStructural(structuralWork);
+    await Promise.resolve();
+    departed.close();
+    drain.resolve(false);
+    await completion;
+
+    expect(structuralWork).toHaveBeenCalledOnce();
+    requester.close();
+  });
+
+  it("ignores a failed drain after a participant switches ownership", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const drain = deferred<boolean>();
+    let current = true;
+    const switched = registry.openSession({
+      repository: store,
+      vaultRoot: "/switched",
+      onEvent: vi.fn(),
+      beforeStructural: () => drain.promise,
+      isCurrent: () => current
+    });
+    const requester = registry.openSession({
+      repository: store,
+      vaultRoot: "/switched",
+      onEvent: vi.fn()
+    });
+    await Promise.all([switched.activation, requester.activation]);
+    const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
+
+    const completion = requester.enqueueStructural(structuralWork);
+    await Promise.resolve();
+    current = false;
+    drain.resolve(false);
+    await completion;
+
+    expect(structuralWork).toHaveBeenCalledOnce();
+    switched.close();
+    requester.close();
+  });
+
+  it("captures one structural cutoff and ignores later draft generations", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    let generation = 4;
+    const cutoffs: number[] = [];
+    const participant = registry.openSession({
+      repository: store,
+      vaultRoot: "/cutoff",
+      onEvent: vi.fn(),
+      captureDraftCutoff: () => generation,
+      beforeStructural: async (cutoff: number) => {
+        cutoffs.push(cutoff);
+        generation += 1;
         return true;
       }
     });
-    const second = registry.openSession({
-      repository: store,
-      vaultRoot: "/epoch",
-      onEvent: vi.fn(),
-      draftGeneration: () => 0,
-      beforeStructural: async () => {
-        order.push("second");
-        if (order.filter((item) => item === "second").length === 1) {
-          await laterDrain.promise;
-        }
-        return true;
-      }
-    });
-    await Promise.all([first.activation, second.activation]);
+    await participant.activation;
+    const structuralWork = vi.fn(() => ({ kind: "skipped" as const }));
 
-    const structural = second.enqueueStructural(() => {
-      order.push("structural");
-      return { kind: "skipped" as const };
-    });
-    await vi.waitFor(() => expect(order).toEqual(["first:1", "second"]));
-    firstGeneration += 1;
-    laterDrain.resolve();
-    await structural;
+    const completion = participant.enqueueStructural(structuralWork);
+    expect(generation).toBe(5);
+    await completion;
 
-    expect(order).toEqual([
-      "first:1",
-      "second",
-      "first:2",
-      "second",
-      "structural"
-    ]);
-    first.close();
-    second.close();
+    expect(cutoffs).toEqual([4]);
+    expect(structuralWork).toHaveBeenCalledOnce();
+    participant.close();
   });
 
   it("queries and broadcasts status for partial-authority failures", async () => {
@@ -165,7 +199,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure",
         error: "move failed",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false }
+        historyStatus: { canUndo: true, canRedo: false },
+        historyVersion: 2
       },
       hasPendingWork: false
     });
@@ -177,7 +212,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure",
         error: "move failed",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false }
+        historyStatus: { canUndo: true, canRedo: false },
+        historyVersion: 2
       }
     });
     owner.close();
@@ -324,7 +360,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       result: {
         kind: "authoritative",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false }
+        historyStatus: { canUndo: true, canRedo: false },
+        historyVersion: 2
       }
     });
     sibling.close();
@@ -356,7 +393,8 @@ describe("notesWorkspaceCoordinator registry", () => {
       result: {
         kind: "authoritative",
         workspace: workspace([node({ id: "root" })]),
-        historyStatus: { canUndo: false, canRedo: true }
+        historyStatus: { canUndo: false, canRedo: true },
+        historyVersion: 1
       },
       hasPendingWork: false
     });

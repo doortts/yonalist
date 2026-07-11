@@ -12,6 +12,8 @@ Second adversarial review commit: the commit containing this report
 
 Third adversarial review commit: the commit containing this report
 
+Fourth adversarial review commit: the commit containing this report
+
 ## Owned Files
 
 - `src/features/notes/notesHistory.ts`
@@ -63,15 +65,23 @@ Third adversarial review commit: the commit containing this report
   workspace and versioned history status, including after owner unmount.
 - Completed owner metadata is bounded while in-flight metadata is never evicted.
   Failed/skipped text and structural entries are explicitly discarded.
-- Structural barriers compare every live participant's draft generation before and
-  after a full drain pass. Unstable passes restart, yielding every 16 retries so
-  continuous typing cannot monopolize the event loop.
+- Structural barriers synchronously close each live participant's current text burst
+  and capture a revision cutoff when the structural intent is accepted. The barrier
+  drains only revisions at or before that cutoff; later typing receives a new entry
+  and remains queued behind the structural command without delaying it.
 - Coordinator sessions own their scope and confirmed projection. Cross-scope
   settlements trigger a generation-guarded subscriber reload; matching scopes receive
   data directly. Both paths preserve subscriber navigation and pending counts.
 - Replay and lifecycle work return backend authority after owner unmount while omitting
   owner UI changes. Inline split/move/remove text entries allocate only after barrier
   admission and explicitly complete or discard through the bounded owner registry.
+- Partial compounds report the history IDs of steps that actually committed. Their UI
+  owners are completed even when a later step fails, while uncommitted IDs are
+  discarded. Scope-agnostic ownerless results invalidate sibling projections instead
+  of labeling a raw Active workspace as Archive.
+- History-status settlements carry a coordinator version. Cross-scope reloads query
+  status at completion and hooks reject older versions, preserving the newest backend
+  `canUndo` / `canRedo` state and each sibling's independent pending count.
 
 ## TDD Evidence
 
@@ -164,6 +174,32 @@ test retains all in-flight entries, bounds completed entries, and remains bounde
 300 explicit failure discards. Inline compound paths use this registry for
 split/move/remove success, failure, and owner abandonment.
 
+### Fourth Adversarial Review
+
+Cutoff coordinator RED: 2 focused failures. A participant that departed during its
+awaited drain aborted the requester's structural command, and the barrier passed no
+captured cutoff to the participant. GREEN: the coordinator tests pass with departure
+and ownership-switch cases, one synchronous cutoff per participant, and no retry loop.
+
+Chronology RED: the focused hook run exposed the old expectations that edits made
+after a click still joined the pre-structural burst. GREEN: sustained post-click typing
+coalesces to the latest draft under a new text ID and runs after the structural call;
+the pre-cutoff drafts retain their exact FIFO order.
+
+Partial metadata and ownerless scope RED: 3/3 focused tests failed. A committed inline
+update plus failed split lost its Archive/focus snapshot, a committed collapse plus
+failed move lost its structural snapshot, and an unmounted Archive owner installed no
+fresh Archive projection in its sibling. GREEN: all 3 pass using committed-entry
+metadata and scope-agnostic sibling invalidation.
+
+Status RED: the cross-scope reload retained S1's replay status after the backend had
+advanced to S2. GREEN: the reload queries current status and applies its coordinator
+version, so S2 wins.
+
+Integration RED: the first cutoff implementation delayed the initial drain by one
+microtask, failing the existing structural-keyboard debounce assertion. GREEN: the
+first intent begins draining synchronously and later intents remain promise-serialized.
+
 ## Verification
 
 - Focused command covering history, keyboard, coordinator, reducer, hook, and header:
@@ -178,6 +214,9 @@ split/move/remove success, failure, and owner abandonment.
 - Third-review focused coordinator/history/hook/workspace run: 4 files, 180/180 passed.
 - Third-review full Notes run: 21 files, 506/506 passed.
 - Third-review `npm run build`: exit 0; 2,286 modules transformed.
+- Fourth-review focused coordinator and hook run: 2 files, 97/97 passed.
+- Fourth-review full Notes run (`--maxWorkers=1`): 22 files, 526/526 passed.
+- Fourth-review `npm run build`: exit 0; 2,286 modules transformed.
 
 ## Concerns
 
@@ -201,6 +240,10 @@ split/move/remove success, failure, and owner abandonment.
 - Atomic `NotesMutationResult` wrapping remains a coordinated backend wire follow-up.
   This frontend continues to accept today's `NotesWorkspace` mutation response and
   derives history status through the existing backend status contract.
+- Under full test-file parallelism, the existing export-subtree debounce fixture can
+  intermittently exceed its real 300 ms timer and disable its menu mid-click. The case
+  passes isolated on both baseline and this change; the complete one-worker Notes run
+  is green.
 
 - The confirmed Task 4 Archive race is not broadened into this task. Task 2B replaces
   render-lagging history reads with a synchronous navigation ref, but the remaining

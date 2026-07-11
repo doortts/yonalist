@@ -25,7 +25,10 @@ export type NotesWorkspaceQueueResult =
       workspace: NotesWorkspace;
       uiUpdate?: NotesWorkspaceUiUpdate;
       historyStatus?: NotesHistoryStatus;
+      historyVersion?: number;
       suppressSynchronization?: boolean;
+      scopeAgnostic?: boolean;
+      committedHistoryEntryIds?: readonly string[];
     }
   | { kind: "skipped" }
   | {
@@ -33,6 +36,8 @@ export type NotesWorkspaceQueueResult =
       error: string;
       workspace?: NotesWorkspace;
       historyStatus?: NotesHistoryStatus;
+      historyVersion?: number;
+      committedHistoryEntryIds?: readonly string[];
     };
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
@@ -53,7 +58,7 @@ export type NotesWorkspaceCoordinatorEvent =
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
       hasPendingWork: boolean;
-      sourceScope: NotesWorkspaceScope;
+      sourceScope: NotesWorkspaceScope | null;
     }
   | {
       type: "settled";
@@ -65,8 +70,10 @@ export interface OpenNotesWorkspaceSessionOptions {
   repository: NotesStore;
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
-  beforeStructural?: () => Promise<boolean>;
-  draftGeneration?: () => number;
+  beforeStructural?: (cutoff: number) => Promise<boolean>;
+  captureDraftCutoff?: () => number;
+  afterStructural?: (cutoff: number) => void;
+  isCurrent?: () => boolean;
   getScope?: () => NotesWorkspaceScope;
 }
 
@@ -98,6 +105,7 @@ interface CoordinatorEntry {
   structuralTail: Promise<void>;
   pendingStructuralBarriers: number;
   historyStatus: NotesHistoryStatus;
+  historyVersion: number;
 }
 
 interface SessionState {
@@ -106,8 +114,10 @@ interface SessionState {
   pendingWork: number;
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
-  beforeStructural: (() => Promise<boolean>) | null;
-  draftGeneration: (() => number) | null;
+  beforeStructural: ((cutoff: number) => Promise<boolean>) | null;
+  captureDraftCutoff: (() => number) | null;
+  afterStructural: ((cutoff: number) => void) | null;
+  isCurrent: (() => boolean) | null;
   getScope: (() => NotesWorkspaceScope) | null;
   closeCompletion: Promise<void>;
   resolveClose: () => void;
@@ -284,20 +294,30 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         !(result.kind === "authoritative" && result.suppressSynchronization)
       ) {
         const sourceScope =
-          owner?.active && owner.getScope
-            ? owner.getScope()
-            : item.sourceScope;
+          result.kind === "authoritative" && result.scopeAgnostic
+            ? null
+            : owner?.active && owner.getScope
+              ? owner.getScope()
+              : item.sourceScope;
         const synchronizedResult: NotesWorkspaceQueueSettlement =
           result.kind === "authoritative"
             ? {
                 kind: "authoritative",
                 workspace: result.workspace,
-                historyStatus: result.historyStatus
+                historyStatus: result.historyStatus,
+                historyVersion: result.historyVersion,
+                ...(result.committedHistoryEntryIds
+                  ? {
+                      committedHistoryEntryIds:
+                        result.committedHistoryEntryIds
+                    }
+                  : {})
               }
             : result;
         for (const session of entry.sessions) {
           if (session !== owner) {
             if (
+              sourceScope !== null &&
               session.getScope &&
               JSON.stringify(session.getScope()) === JSON.stringify(sourceScope)
             ) {
@@ -373,7 +393,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         if (status) {
           item.entry.historyStatus = status;
-          result = { ...result, historyStatus: status };
+          item.entry.historyVersion += 1;
+          result = {
+            ...result,
+            historyStatus: status,
+            historyVersion: item.entry.historyVersion
+          };
         }
       }
     } catch (cause) {
@@ -436,7 +461,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         pendingActivation: null,
         structuralTail: Promise.resolve(),
         pendingStructuralBarriers: 0,
-        historyStatus: { canUndo: false, canRedo: false }
+        historyStatus: { canUndo: false, canRedo: false },
+        historyVersion: 0
       };
       repositoryEntries.set(vaultRoot, entry);
     }
@@ -452,7 +478,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.entry.sessions.delete(session);
     session.onEvent = null;
     session.beforeStructural = null;
-    session.draftGeneration = null;
+    session.captureDraftCutoff = null;
+    session.afterStructural = null;
+    session.isCurrent = null;
     session.getScope = null;
     session.resolveClose();
 
@@ -484,7 +512,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       vaultRoot,
       onEvent,
       beforeStructural,
-      draftGeneration,
+      captureDraftCutoff,
+      afterStructural,
+      isCurrent,
       getScope
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
@@ -502,7 +532,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         activationItem: null,
         onEvent,
         beforeStructural: beforeStructural ?? null,
-        draftGeneration: draftGeneration ?? null,
+        captureDraftCutoff: captureDraftCutoff ?? null,
+        afterStructural: afterStructural ?? null,
+        isCurrent: isCurrent ?? null,
         getScope: getScope ?? null,
         confirmedWorkspace: entry.confirmedWorkspace
       };
@@ -553,53 +585,50 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return enqueueCommand(work);
         },
         enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void> {
+          const participants = [...entry.sessions]
+            .filter((participant) => participant.active)
+            .map((participant) => ({
+              participant,
+              cutoff: participant.captureDraftCutoff?.() ?? 0
+            }));
           entry.pendingStructuralBarriers += 1;
-          const completion = entry.structuralTail.then(async () => {
+          const runStructuralIntent = async (): Promise<void> => {
             if (!session.active) {
+              for (const intent of participants) {
+                intent.participant.afterStructural?.(intent.cutoff);
+              }
               return;
             }
-            let passes = 0;
-            while (session.active) {
-              const participants = [...entry.sessions].filter(
-                (participant) => participant.active
-              );
-              const generations = new Map(
-                participants.map((participant) => [
-                  participant,
-                  participant.draftGeneration?.() ?? 0
-                ])
-              );
-              for (const participant of participants) {
+            for (const intent of participants) {
+              const participant = intent.participant;
+              if (!participant.active) {
+                continue;
+              }
+              if (
+                participant.beforeStructural &&
+                !(await participant.beforeStructural(intent.cutoff))
+              ) {
                 if (
-                  participant.beforeStructural &&
-                  !(await participant.beforeStructural())
+                  participant.active &&
+                  (participant.isCurrent?.() ?? true)
                 ) {
+                  for (const release of participants) {
+                    release.participant.afterStructural?.(release.cutoff);
+                  }
                   return;
                 }
               }
-              const liveParticipants = [...entry.sessions].filter(
-                (participant) => participant.active
-              );
-              const stable =
-                liveParticipants.length === participants.length &&
-                liveParticipants.every(
-                  (participant, index) =>
-                    participant === participants[index] &&
-                    (participant.draftGeneration?.() ?? 0) ===
-                      generations.get(participant)
-                );
-              if (stable) {
-                break;
-              }
-              passes += 1;
-              if (passes % 16 === 0) {
-                await new Promise<void>((resolve) => setTimeout(resolve, 0));
-              }
             }
-            if (session.active) {
-              await enqueueCommand(work);
+            const structural = enqueueCommand(work);
+            for (const intent of participants) {
+              intent.participant.afterStructural?.(intent.cutoff);
             }
-          });
+            await structural;
+          };
+          const completion =
+            entry.pendingStructuralBarriers === 1
+              ? runStructuralIntent()
+              : entry.structuralTail.then(runStructuralIntent);
           entry.structuralTail = completion
             .catch(() => undefined)
             .finally(() => {
