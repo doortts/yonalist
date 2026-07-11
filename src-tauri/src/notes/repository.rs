@@ -112,13 +112,37 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
         return Err("Vault path must not be empty.".to_string());
     }
 
+    let database_path = notes_db_path(vault_path);
+    preflight_existing_notes_schema(&database_path)?;
     let metadata = crate::metadata_dir(vault_path);
     fs::create_dir_all(&metadata)
         .map_err(|error| format!("Could not prepare Notes storage: {error}"))?;
-    let mut connection = Connection::open(notes_db_path(vault_path))
+    let mut connection = Connection::open(database_path)
         .map_err(|error| format!("Could not open Notes storage: {error}"))?;
     initialize_notes_db(&mut connection)?;
     Ok(connection)
+}
+
+fn preflight_existing_notes_schema(database_path: &PathBuf) -> Result<(), String> {
+    match fs::symlink_metadata(database_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
+    }
+
+    let connection =
+        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if user_version > NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "This Notes database uses unsupported schema version {user_version}."
+        ));
+    }
+
+    Ok(())
 }
 
 pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, String> {
@@ -1952,9 +1976,10 @@ mod tests {
         archive_node, connect_notes_db, create_node, create_version_one_schema, delete_database,
         duplicate_node, empty_trash, initialize_notes_db, list_tags, list_tags_with_counts,
         load_workspace, migrate_version_one_to_two, move_node, notes_db_path,
-        observe_next_migration_busy, open_notes_export_db, remove_empty_node, restore_node,
-        search_nodes, soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node,
+        observe_next_migration_busy, open_notes_export_db, preflight_existing_notes_schema,
+        remove_empty_node, restore_node, search_nodes, soft_delete_node, split_node,
+        sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star, unarchive_node,
+        update_node,
     };
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteTagFilter,
@@ -2759,6 +2784,62 @@ mod tests {
         );
         assert!(!wal_path.exists());
         assert!(!shm_path.exists());
+    }
+
+    #[test]
+    fn notes_connection_rejects_a_live_future_wal_without_touching_database_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("vault path");
+        let path = notes_db_path(vault_path);
+        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
+        let writer = Connection::open(&path).expect("open WAL fixture");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode = WAL; \
+                 PRAGMA wal_autocheckpoint = 0; \
+                 PRAGMA user_version = 3; \
+                 PRAGMA wal_checkpoint(TRUNCATE); \
+                 PRAGMA user_version = 4;",
+            )
+            .expect("seed live future WAL schema");
+        let visible_version: i64 = writer
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("live WAL user version");
+        assert_eq!(visible_version, 4);
+
+        let wal_path = sqlite_companion_path(&path, "-wal");
+        let shm_path = sqlite_companion_path(&path, "-shm");
+        assert!(wal_path.exists());
+        assert!(shm_path.exists());
+        let main_before = std::fs::read(&path).expect("main bytes before connect");
+        let wal_before = std::fs::read(&wal_path).expect("WAL bytes before connect");
+        let shm_before = std::fs::read(&shm_path).expect("SHM bytes before connect");
+        assert_eq!(
+            u32::from_be_bytes(main_before[60..64].try_into().expect("user version bytes")),
+            3,
+            "version 4 must remain uncheckpointed in the WAL"
+        );
+
+        let preflight_error = preflight_existing_notes_schema(&path)
+            .expect_err("read-only preflight must reject the future WAL schema");
+        assert!(preflight_error.contains("unsupported schema version 4"));
+
+        let error = connect_notes_db(vault_path).expect_err("future WAL schema must be rejected");
+
+        assert!(error.contains("unsupported schema version 4"));
+        assert_eq!(
+            std::fs::read(&path).expect("main bytes after connect"),
+            main_before
+        );
+        assert_eq!(
+            std::fs::read(&wal_path).expect("WAL bytes after connect"),
+            wal_before
+        );
+        assert_eq!(
+            std::fs::read(&shm_path).expect("SHM bytes after connect"),
+            shm_before
+        );
+        drop(writer);
     }
 
     #[test]
