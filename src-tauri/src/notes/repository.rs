@@ -322,6 +322,16 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
         .into_iter()
         .find(|(name, _, _, _)| name == "command_kind")
     else {
+        ensure_canonical_legacy_history_schema(
+            transaction,
+            "CREATE TABLE notes_history_entries (\
+               id TEXT PRIMARY KEY, \
+               session_id TEXT NOT NULL, \
+               sequence INTEGER NOT NULL, \
+               is_undone INTEGER NOT NULL DEFAULT 0, \
+               estimated_bytes INTEGER NOT NULL DEFAULT 0\
+             )",
+        )?;
         return transaction
             .execute_batch(
                 "ALTER TABLE notes_history_entries \
@@ -333,6 +343,17 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
         return Ok(());
     }
     if column_type == "TEXT" && not_null && default_value.is_none() {
+        ensure_canonical_legacy_history_schema(
+            transaction,
+            "CREATE TABLE notes_history_entries (\
+               id TEXT PRIMARY KEY, \
+               session_id TEXT NOT NULL, \
+               sequence INTEGER NOT NULL, \
+               is_undone INTEGER NOT NULL DEFAULT 0, \
+               estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+               command_kind TEXT NOT NULL\
+             )",
+        )?;
         return transaction
             .execute_batch(
                 "ALTER TABLE notes_history_entries \
@@ -350,6 +371,97 @@ fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), Stri
          (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
          expected TEXT NOT NULL DEFAULT 'legacy'."
     ))
+}
+
+fn normalize_schema_sql(sql: Option<String>) -> Option<String> {
+    sql.map(|sql| {
+        sql.chars()
+            .filter(|character| !character.is_whitespace())
+            .collect()
+    })
+}
+
+fn ensure_canonical_legacy_history_schema(
+    transaction: &Transaction<'_>,
+    expected_entries_sql: &str,
+) -> Result<(), String> {
+    let mut actual = transaction
+        .prepare(
+            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+             WHERE tbl_name = 'notes_history_entries' \
+                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+             UNION ALL \
+             SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
+             WHERE tbl_name = 'notes_history_entries' \
+                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        normalize_schema_sql(row.get::<_, Option<String>>(3)?),
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!("Could not inspect Notes history schema objects: {error}"))?;
+    actual.sort();
+
+    let mut expected = vec![
+        (
+            "index".to_string(),
+            "notes_history_session_sequence".to_string(),
+            "notes_history_entries".to_string(),
+            normalize_schema_sql(Some(
+                "CREATE UNIQUE INDEX notes_history_session_sequence \
+                 ON notes_history_entries(session_id, sequence)"
+                    .to_string(),
+            )),
+        ),
+        (
+            "index".to_string(),
+            "sqlite_autoindex_notes_history_entries_1".to_string(),
+            "notes_history_entries".to_string(),
+            None,
+        ),
+        (
+            "table".to_string(),
+            "notes_history_changes".to_string(),
+            "notes_history_changes".to_string(),
+            normalize_schema_sql(Some(
+                "CREATE TABLE notes_history_changes (\
+                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+                   table_name TEXT NOT NULL, \
+                   row_id TEXT NOT NULL, \
+                   ordinal INTEGER NOT NULL, \
+                   before_json TEXT, \
+                   after_json TEXT, \
+                   PRIMARY KEY (entry_id, table_name, row_id)\
+                 )"
+                .to_string(),
+            )),
+        ),
+        (
+            "table".to_string(),
+            "notes_history_entries".to_string(),
+            "notes_history_entries".to_string(),
+            normalize_schema_sql(Some(expected_entries_sql.to_string())),
+        ),
+    ];
+    expected.sort();
+
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(
+            "Notes history command_kind repair requires the canonical legacy schema without \
+             additional clauses or dependent objects."
+                .to_string(),
+        )
+    }
 }
 
 fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -3581,7 +3693,7 @@ mod tests {
         SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
-    use crate::notes::history::with_history_transaction_and_prunes;
+    use crate::notes::history::{undo, with_history_transaction_and_prunes};
     use crate::notes::types::{
         validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope,
         NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
@@ -3771,6 +3883,119 @@ mod tests {
             .find_map(|(name, column_type, not_null, default_value)| {
                 (name == column).then_some((column_type, not_null, default_value))
             })
+    }
+
+    fn history_schema_snapshot(
+        connection: &Connection,
+    ) -> (
+        Vec<(String, String, String, Option<String>)>,
+        Vec<(String, String, i64, String)>,
+        Vec<(String, String, String, i64, Option<String>, Option<String>)>,
+    ) {
+        let objects = connection
+            .prepare(
+                "SELECT type, name, tbl_name, sql FROM sqlite_schema \
+                 WHERE tbl_name = 'notes_history_entries' \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                 UNION ALL \
+                 SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
+                 WHERE tbl_name = 'notes_history_entries' \
+                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
+                 ORDER BY 1, 2, 3, 4",
+            )
+            .expect("prepare history schema snapshot")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query history schema snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect history schema snapshot");
+        let entries = connection
+            .prepare(
+                "SELECT id, session_id, sequence, command_kind \
+                 FROM notes_history_entries ORDER BY id",
+            )
+            .expect("prepare history entry snapshot")
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .expect("query history entry snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect history entry snapshot");
+        let changes = connection
+            .prepare(
+                "SELECT entry_id, table_name, row_id, ordinal, before_json, after_json \
+                 FROM notes_history_changes ORDER BY entry_id, table_name, row_id",
+            )
+            .expect("prepare history change snapshot")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("query history change snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect history change snapshot");
+        (objects, entries, changes)
+    }
+
+    fn seed_no_default_history_schema(
+        connection: &Connection,
+        command_kind_definition: &str,
+        command_kind: &str,
+    ) {
+        connection
+            .execute_batch(&format!(
+                r#"
+                DROP TABLE notes_history_changes;
+                DROP TABLE notes_history_entries;
+                CREATE TABLE notes_history_entries (
+                  id TEXT PRIMARY KEY,
+                  session_id TEXT NOT NULL,
+                  sequence INTEGER NOT NULL,
+                  is_undone INTEGER NOT NULL DEFAULT 0,
+                  estimated_bytes INTEGER NOT NULL DEFAULT 0,
+                  command_kind {command_kind_definition}
+                );
+                CREATE UNIQUE INDEX notes_history_session_sequence
+                  ON notes_history_entries(session_id, sequence);
+                CREATE TABLE notes_history_changes (
+                  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
+                  table_name TEXT NOT NULL,
+                  row_id TEXT NOT NULL,
+                  ordinal INTEGER NOT NULL,
+                  before_json TEXT,
+                  after_json TEXT,
+                  PRIMARY KEY (entry_id, table_name, row_id)
+                );
+                "#
+            ))
+            .expect("seed no-default history schema");
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind\
+                 ) VALUES (?1, ?2, 1, ?3)",
+                params![
+                    "00000000-0000-4000-8000-000000000001",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    command_kind
+                ],
+            )
+            .expect("seed no-default history entry");
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, table_name, row_id, ordinal, before_json, after_json\
+                 ) VALUES (?1, 'notes_nodes', 'preserved-row', 0, 'before', 'after')",
+                ["00000000-0000-4000-8000-000000000001"],
+            )
+            .expect("seed no-default history child");
     }
 
     fn insert_node(
@@ -4774,28 +4999,18 @@ mod tests {
         {
             let mut connection = connect_notes_db(vault_path).expect("create notes database");
             create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
+            seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
             connection
-                .execute_batch(
-                    "ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
-                     ALTER TABLE notes_history_entries \
-                       ADD COLUMN command_kind TEXT NOT NULL; \
-                     INSERT INTO notes_history_entries(\
+                .execute(
+                    "INSERT INTO notes_history_entries(\
                        id, session_id, sequence, command_kind\
-                     ) VALUES \
-                       (\
-                         '00000000-0000-4000-8000-000000000001', \
-                         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
-                         1, \
-                         'legacy-trash'\
-                       ), \
-                       (\
-                         '00000000-0000-4000-8000-000000000002', \
-                         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
-                         2, \
-                         'updateText'\
-                       );",
+                     ) VALUES (?1, ?2, 2, 'updateText')",
+                    params![
+                        "00000000-0000-4000-8000-000000000002",
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                    ],
                 )
-                .expect("seed no-default version three history command kind");
+                .expect("seed second no-default history entry");
             assert_eq!(
                 table_column_metadata(&connection, "notes_history_entries", "command_kind"),
                 Some(("TEXT".to_string(), 1, None))
@@ -4834,6 +5049,73 @@ mod tests {
                 )
             ]
         );
+        let retained_child = connection
+            .query_row(
+                "SELECT entry_id, table_name, row_id, ordinal, before_json, after_json \
+                 FROM notes_history_changes WHERE row_id = 'preserved-row'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .expect("retained history child");
+        assert_eq!(
+            retained_child,
+            (
+                "00000000-0000-4000-8000-000000000001".to_string(),
+                "notes_nodes".to_string(),
+                "preserved-row".to_string(),
+                0,
+                Some("before".to_string()),
+                Some("after".to_string())
+            )
+        );
+        assert_eq!(
+            primary_key_columns(&connection, "notes_history_entries"),
+            vec!["id"]
+        );
+        assert_eq!(
+            primary_key_columns(&connection, "notes_history_changes"),
+            vec!["entry_id", "table_name", "row_id"]
+        );
+        assert!(object_exists(
+            &connection,
+            "index",
+            "notes_history_session_sequence"
+        ));
+        assert!(connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind\
+                 ) VALUES (\
+                   '00000000-0000-4000-8000-000000000001', \
+                   'cccccccc-cccc-4ccc-8ccc-cccccccccccc', \
+                   1, \
+                   'duplicate-id'\
+                 )",
+                [],
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind\
+                 ) VALUES (\
+                   '00000000-0000-4000-8000-000000000004', \
+                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
+                   1, \
+                   'duplicate-sequence'\
+                 )",
+                [],
+            )
+            .is_err());
 
         let context = NotesHistoryContext {
             session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
@@ -4858,6 +5140,155 @@ mod tests {
             )
             .expect("stored trash command kind");
         assert_eq!(stored, "trash");
+        let captured_changes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("captured trash history changes");
+        assert!(captured_changes > 0);
+
+        let undone = undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo move to trash after schema repair");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert!(undone.workspace.nodes.iter().any(|node| node.id == NODE_ID));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                    [&context.entry_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("undone trash history entry"),
+            1
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_history_changes WHERE row_id = 'preserved-row'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("preserved history child after undo"),
+            1
+        );
+        let foreign_key_violations = connection
+            .prepare("PRAGMA foreign_key_check")
+            .expect("prepare history foreign key check")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .expect("query history foreign key check")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect history foreign key check");
+        assert!(foreign_key_violations.is_empty());
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_hidden_no_default_column_clauses_without_mutation() {
+        for command_kind_definition in [
+            "TEXT NOT NULL CHECK (length(command_kind) > 0)",
+            "TEXT NOT NULL REFERENCES notes_nodes(id)",
+            "TEXT COLLATE NOCASE NOT NULL",
+        ] {
+            let mut connection = test_connection();
+            insert_node(&connection, NODE_ID, None, 1024, "referenced node");
+            seed_no_default_history_schema(&connection, command_kind_definition, NODE_ID);
+            connection
+                .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
+                .expect("drop post-repair index");
+            let before = history_schema_snapshot(&connection);
+
+            let error = initialize_notes_db(&mut connection)
+                .expect_err("hidden command kind clause must be rejected");
+
+            assert!(error.contains("canonical legacy schema"), "{error}");
+            assert_eq!(history_schema_snapshot(&connection), before);
+            assert!(!object_exists(
+                &connection,
+                "index",
+                "notes_nodes_archive_root_order"
+            ));
+        }
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_history_update_triggers_without_mutation() {
+        for temporary in [false, true] {
+            let mut connection = test_connection();
+            seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
+            connection
+                .execute_batch(&format!(
+                    "CREATE TABLE history_repair_audit (events INTEGER NOT NULL); \
+                     INSERT INTO history_repair_audit(events) VALUES (0); \
+                     CREATE {}TRIGGER unexpected_history_update \
+                     AFTER UPDATE ON notes_history_entries \
+                     BEGIN \
+                       UPDATE history_repair_audit SET events = events + 1; \
+                     END; \
+                     DROP INDEX notes_nodes_archive_root_order;",
+                    if temporary { "TEMP " } else { "" }
+                ))
+                .expect("seed unexpected history update trigger");
+            let before = history_schema_snapshot(&connection);
+
+            let error = initialize_notes_db(&mut connection)
+                .expect_err("unexpected history update trigger must be rejected");
+
+            assert!(error.contains("canonical legacy schema"), "{error}");
+            assert_eq!(history_schema_snapshot(&connection), before);
+            assert_eq!(
+                connection
+                    .query_row("SELECT events FROM history_repair_audit", [], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                    .expect("history repair audit count"),
+                0
+            );
+            assert!(!object_exists(
+                &connection,
+                "index",
+                "notes_nodes_archive_root_order"
+            ));
+        }
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_unexpected_history_dependencies_without_mutation() {
+        let mut connection = test_connection();
+        seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
+        connection
+            .execute_batch(
+                "CREATE VIEW unexpected_history_dependency AS \
+                   SELECT command_kind FROM notes_history_entries; \
+                 DROP INDEX notes_nodes_archive_root_order;",
+            )
+            .expect("seed unexpected history dependency");
+        let before = history_schema_snapshot(&connection);
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("unexpected history dependency must be rejected");
+
+        assert!(error.contains("canonical legacy schema"), "{error}");
+        assert_eq!(history_schema_snapshot(&connection), before);
+        assert!(!object_exists(
+            &connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
     }
 
     #[test]
