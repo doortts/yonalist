@@ -1,8 +1,9 @@
 use crate::notes::history;
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteLayoutMode, NoteNode,
-    NoteSearchMatchedField, NoteSearchResult, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode,
+    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteTagFilter, NoteTagPrefix,
+    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
+    UpdateNodeInput,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -22,6 +23,7 @@ use std::sync::mpsc::Sender;
 const NOTES_SCHEMA_VERSION: i64 = 3;
 const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const SORT_KEY_STEP: i64 = 1024;
+pub(crate) const MIN_ATTACHMENT_DISPLAY_WIDTH: i64 = 160;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
@@ -572,6 +574,64 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     })
 }
 
+fn note_attachment_from_row(row: &Row<'_>) -> rusqlite::Result<NoteAttachment> {
+    Ok(NoteAttachment {
+        id: row.get(0)?,
+        node_id: row.get(1)?,
+        sort_key: row.get(2)?,
+        relative_path: row.get(3)?,
+        content_hash: row.get(4)?,
+        original_name: row.get(5)?,
+        mime_type: row.get(6)?,
+        byte_size: row.get(7)?,
+        intrinsic_width: row.get(8)?,
+        intrinsic_height: row.get(9)?,
+        display_width: row.get(10)?,
+        created_at: row.get(11)?,
+        updated_at: row.get(12)?,
+    })
+}
+
+fn attachments_for_nodes(
+    connection: &Connection,
+    nodes: &[NoteNode],
+) -> Result<BTreeMap<String, Vec<NoteAttachment>>, String> {
+    if nodes.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut by_node_id = BTreeMap::<String, Vec<NoteAttachment>>::new();
+    for chunk in nodes.chunks(500) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT id, node_id, sort_key, relative_path, content_hash, original_name, \
+                        mime_type, byte_size, intrinsic_width, intrinsic_height, display_width, \
+                        created_at, updated_at \
+                 FROM notes_attachments WHERE node_id IN ({placeholders}) \
+                 ORDER BY node_id, sort_key, id"
+            ))
+            .map_err(|error| format!("Could not prepare Notes attachments: {error}"))?;
+        let attachments = statement
+            .query_map(
+                params_from_iter(chunk.iter().map(|node| node.id.as_str())),
+                note_attachment_from_row,
+            )
+            .map_err(|error| format!("Could not load Notes attachments: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read Notes attachments: {error}"))?;
+        for attachment in attachments {
+            by_node_id
+                .entry(attachment.node_id.clone())
+                .or_default()
+                .push(attachment);
+        }
+    }
+    Ok(by_node_id)
+}
+
 fn query_workspace<P: Params>(
     connection: &Connection,
     sql: &str,
@@ -585,7 +645,11 @@ fn query_workspace<P: Params>(
         .map_err(|error| format!("Could not load the Notes workspace: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes workspace: {error}"))?;
-    Ok(NotesWorkspace { nodes })
+    let attachments_by_node_id = attachments_for_nodes(connection, &nodes)?;
+    Ok(NotesWorkspace {
+        nodes,
+        attachments_by_node_id,
+    })
 }
 
 struct StoredExportNode {
@@ -817,7 +881,10 @@ pub(crate) fn load_workspace(
         NotesWorkspaceScope::Tag { tag } => {
             let normalized_tag = tag.trim().trim_start_matches('#').to_lowercase();
             if normalized_tag.is_empty() {
-                return Ok(NotesWorkspace { nodes: Vec::new() });
+                return Ok(NotesWorkspace {
+                    nodes: Vec::new(),
+                    attachments_by_node_id: BTreeMap::new(),
+                });
             }
             query_workspace(connection, TAG_SQL, [normalized_tag])
         }
@@ -843,7 +910,10 @@ fn load_tag_workspace(
         })
         .collect::<BTreeSet<_>>();
     if tags.is_empty() {
-        return Ok(NotesWorkspace { nodes: Vec::new() });
+        return Ok(NotesWorkspace {
+            nodes: Vec::new(),
+            attachments_by_node_id: BTreeMap::new(),
+        });
     }
 
     let mut parameters = Vec::with_capacity(tags.len() * 2);
@@ -1773,7 +1843,16 @@ pub(crate) fn remove_empty_node(
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, node_id)?;
-        if !source.title.trim().is_empty() || !source.note.trim().is_empty() {
+        let has_attachments: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE node_id = ?1)",
+                [node_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                format!("Could not inspect attachments on the empty Note node: {error}")
+            })?;
+        if !source.title.trim().is_empty() || !source.note.trim().is_empty() || has_attachments {
             return Err("Only an empty Note node can be removed.".to_string());
         }
         let children = sibling_keys(transaction, Some(node_id), None)?;
@@ -2018,6 +2097,242 @@ pub(crate) fn restore_node(
                 params![node_id, deletion_batch_id],
             )
             .map_err(|error| format!("Could not restore the Note subtree: {error}"))?;
+        Ok(())
+    })
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NewAttachment {
+    pub(crate) id: String,
+    pub(crate) node_id: String,
+    pub(crate) relative_path: String,
+    pub(crate) content_hash: String,
+    pub(crate) original_name: String,
+    pub(crate) mime_type: String,
+    pub(crate) byte_size: i64,
+    pub(crate) intrinsic_width: i64,
+    pub(crate) intrinsic_height: i64,
+    pub(crate) display_width: i64,
+}
+
+fn validate_attachment_display_width(
+    display_width: i64,
+    intrinsic_width: i64,
+) -> Result<(), String> {
+    let minimum = intrinsic_width.min(MIN_ATTACHMENT_DISPLAY_WIDTH);
+    if intrinsic_width <= 0 || display_width < minimum || display_width > intrinsic_width {
+        return Err(format!(
+            "A Notes attachment display width must be between {minimum} and {intrinsic_width} pixels."
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn attachment_by_id(
+    connection: &Connection,
+    attachment_id: &str,
+) -> Result<Option<NoteAttachment>, String> {
+    validate_note_id(attachment_id)
+        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+    connection
+        .query_row(
+            "SELECT id, node_id, sort_key, relative_path, content_hash, original_name, \
+                    mime_type, byte_size, intrinsic_width, intrinsic_height, display_width, \
+                    created_at, updated_at \
+             FROM notes_attachments WHERE id = ?1",
+            [attachment_id],
+            note_attachment_from_row,
+        )
+        .optional()
+        .map_err(|error| format!("Could not read Notes attachment {attachment_id}: {error}"))
+}
+
+pub(crate) fn create_attachment(
+    connection: &mut Connection,
+    attachment: NewAttachment,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(&attachment.id)
+        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+    validate_note_id(&attachment.node_id)?;
+    validate_attachment_display_width(attachment.display_width, attachment.intrinsic_width)?;
+    if attachment.intrinsic_height <= 0 || attachment.byte_size <= 0 {
+        return Err(
+            "A Notes attachment must have positive decoded dimensions and byte size.".to_string(),
+        );
+    }
+    if attachment.original_name.trim().is_empty() || attachment.original_name.len() > 1024 {
+        return Err("A Notes attachment original name must contain 1 to 1024 bytes.".to_string());
+    }
+
+    with_workspace_transaction(connection, |transaction| {
+        require_active_node(transaction, &attachment.node_id)?;
+        let id_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                [&attachment.id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
+        if id_exists {
+            return Err(format!(
+                "Notes attachment ID {} is already in use.",
+                attachment.id
+            ));
+        }
+        let sort_key: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
+                [&attachment.node_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?
+            .checked_add(SORT_KEY_STEP)
+            .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO notes_attachments(\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                           strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                params![
+                    attachment.id,
+                    attachment.node_id,
+                    sort_key,
+                    attachment.relative_path,
+                    attachment.content_hash,
+                    attachment.original_name,
+                    attachment.mime_type,
+                    attachment.byte_size,
+                    attachment.intrinsic_width,
+                    attachment.intrinsic_height,
+                    attachment.display_width,
+                ],
+            )
+            .map_err(|error| format!("Could not create the Notes attachment metadata: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn resize_attachment(
+    connection: &mut Connection,
+    attachment_id: &str,
+    display_width: i64,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(attachment_id)
+        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+    with_workspace_transaction(connection, |transaction| {
+        let attachment = attachment_by_id(transaction, attachment_id)?
+            .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
+        require_active_node(transaction, &attachment.node_id)?;
+        validate_attachment_display_width(display_width, attachment.intrinsic_width)?;
+        transaction
+            .execute(
+                "UPDATE notes_attachments SET display_width = ?1, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?2",
+                params![display_width, attachment_id],
+            )
+            .map_err(|error| format!("Could not resize the Notes attachment: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn remove_attachment(
+    connection: &mut Connection,
+    attachment_id: &str,
+) -> Result<NotesWorkspace, String> {
+    validate_note_id(attachment_id)
+        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+    with_workspace_transaction(connection, |transaction| {
+        let attachment = attachment_by_id(transaction, attachment_id)?
+            .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
+        require_active_node(transaction, &attachment.node_id)?;
+        transaction
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [attachment_id],
+            )
+            .map_err(|error| format!("Could not remove the Notes attachment: {error}"))?;
+        Ok(())
+    })
+}
+
+pub(crate) fn removed_attachment_snapshot(
+    connection: &Connection,
+    attachment_id: &str,
+) -> Result<NoteAttachment, String> {
+    validate_note_id(attachment_id)
+        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+    if attachment_by_id(connection, attachment_id)?.is_some() {
+        return Err(format!("Notes attachment {attachment_id} already exists."));
+    }
+    let snapshot = connection
+        .query_row(
+            "SELECT change.before_json FROM notes_history_changes change \
+             JOIN notes_history_entries entry ON entry.id = change.entry_id \
+             WHERE change.table_name = 'notes_attachments' AND change.row_id = ?1 \
+               AND change.before_json IS NOT NULL AND change.after_json IS NULL \
+             ORDER BY entry.rowid DESC, change.ordinal DESC LIMIT 1",
+            [attachment_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not find removed Notes attachment metadata: {error}"))?
+        .ok_or_else(|| format!("Removed Notes attachment {attachment_id} is not in history."))?;
+    let attachment: NoteAttachment = serde_json::from_str(&snapshot)
+        .map_err(|error| format!("Could not decode removed Notes attachment metadata: {error}"))?;
+    if attachment.id != attachment_id {
+        return Err("A removed Notes attachment snapshot has the wrong ID.".to_string());
+    }
+    Ok(attachment)
+}
+
+pub(crate) fn restore_attachment(
+    connection: &mut Connection,
+    attachment: NoteAttachment,
+) -> Result<NotesWorkspace, String> {
+    validate_attachment_display_width(attachment.display_width, attachment.intrinsic_width)?;
+    with_workspace_transaction(connection, |transaction| {
+        require_active_node(transaction, &attachment.node_id)?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                [&attachment.id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                format!("Could not inspect restored Notes attachment metadata: {error}")
+            })?;
+        if exists {
+            return Err(format!(
+                "Notes attachment {} already exists.",
+                attachment.id
+            ));
+        }
+        transaction
+            .execute(
+                "INSERT INTO notes_attachments(\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    attachment.id,
+                    attachment.node_id,
+                    attachment.sort_key,
+                    attachment.relative_path,
+                    attachment.content_hash,
+                    attachment.original_name,
+                    attachment.mime_type,
+                    attachment.byte_size,
+                    attachment.intrinsic_width,
+                    attachment.intrinsic_height,
+                    attachment.display_width,
+                    attachment.created_at,
+                    attachment.updated_at,
+                ],
+            )
+            .map_err(|error| format!("Could not restore the Notes attachment metadata: {error}"))?;
         Ok(())
     })
 }

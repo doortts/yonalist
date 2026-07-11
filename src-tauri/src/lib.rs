@@ -16,10 +16,12 @@ use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
     notes_archive_node, notes_clear_history, notes_create_node, notes_delete_database,
     notes_duplicate_node, notes_empty_trash, notes_export_markdown, notes_export_pdf,
-    notes_history_status, notes_initialize, notes_list_tags, notes_list_tags_with_counts,
-    notes_load_workspace, notes_move_node, notes_redo, notes_remove_empty_node, notes_restore_node,
-    notes_search, notes_soft_delete_node, notes_split_node, notes_toggle_collapsed,
-    notes_toggle_complete, notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
+    notes_history_status, notes_import_attachment, notes_initialize, notes_list_tags,
+    notes_list_tags_with_counts, notes_load_workspace, notes_move_node,
+    notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
+    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
+    notes_soft_delete_node, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
+    notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1553,6 +1555,11 @@ pub fn run() {
             notes_search,
             notes_list_tags,
             notes_list_tags_with_counts,
+            notes_import_attachment,
+            notes_read_attachment_bytes,
+            notes_resize_attachment,
+            notes_remove_attachment,
+            notes_restore_attachment,
             notes_delete_database,
             notes_export_markdown,
             notes_export_pdf

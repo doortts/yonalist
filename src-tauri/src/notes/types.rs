@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub type NoteId = String;
 
@@ -19,6 +20,36 @@ pub struct NoteNode {
     pub deleted_at: Option<String>,
     pub archived_at: Option<String>,
     pub archive_root_id: Option<NoteId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteAttachment {
+    pub id: String,
+    #[serde(alias = "node_id")]
+    pub node_id: NoteId,
+    #[serde(alias = "sort_key")]
+    pub sort_key: i64,
+    #[serde(alias = "relative_path")]
+    pub relative_path: String,
+    #[serde(alias = "content_hash")]
+    pub content_hash: String,
+    #[serde(alias = "original_name")]
+    pub original_name: String,
+    #[serde(alias = "mime_type")]
+    pub mime_type: String,
+    #[serde(alias = "byte_size")]
+    pub byte_size: i64,
+    #[serde(alias = "intrinsic_width")]
+    pub intrinsic_width: i64,
+    #[serde(alias = "intrinsic_height")]
+    pub intrinsic_height: i64,
+    #[serde(alias = "display_width")]
+    pub display_width: i64,
+    #[serde(alias = "created_at")]
+    pub created_at: String,
+    #[serde(alias = "updated_at")]
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +93,23 @@ pub enum NoteLayoutMode {
 #[serde(rename_all = "camelCase")]
 pub struct NotesWorkspace {
     pub nodes: Vec<NoteNode>,
+    pub attachments_by_node_id: BTreeMap<NoteId, Vec<NoteAttachment>>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAttachmentInput {
+    pub id: String,
+    pub node_id: NoteId,
+    pub source_path: String,
+    pub display_width: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ResizeAttachmentInput {
+    pub id: String,
+    pub display_width: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -267,9 +315,9 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, MoveNodeInput, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
-        NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
+        validate_note_id, MoveNodeInput, NoteAttachment, NoteTagFilter, NoteTagPrefix,
+        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
+        NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -412,7 +460,10 @@ mod tests {
         assert_eq!(context.command_kind, "updateText");
 
         let replay = NotesHistoryReplayResult {
-            workspace: NotesWorkspace { nodes: Vec::new() },
+            workspace: NotesWorkspace {
+                nodes: Vec::new(),
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
             replayed_entry_id: Some(SECOND_ID.to_string()),
             can_undo: true,
             can_redo: false,
@@ -420,7 +471,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(replay).expect("history replay result"),
             json!({
-                "workspace": { "nodes": [] },
+                "workspace": { "nodes": [], "attachmentsByNodeId": {} },
                 "replayedEntryId": SECOND_ID,
                 "canUndo": true,
                 "canRedo": false
@@ -429,6 +480,58 @@ mod tests {
         assert_eq!(
             serde_json::to_value(NotesHistoryStatus::default()).expect("history status"),
             json!({ "canUndo": false, "canRedo": false })
+        );
+    }
+
+    #[test]
+    fn attachment_contracts_use_ordered_camel_case_workspace_shapes() {
+        let attachment = NoteAttachment {
+            id: SECOND_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            sort_key: 1024,
+            relative_path:
+                "notes-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+                    .to_string(),
+            content_hash: "a".repeat(64),
+            original_name: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 123,
+            intrinsic_width: 320,
+            intrinsic_height: 200,
+            display_width: 240,
+            created_at: "2026-07-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-11T00:00:01.000Z".to_string(),
+        };
+        let workspace = NotesWorkspace {
+            nodes: Vec::new(),
+            attachments_by_node_id: std::collections::BTreeMap::from([(
+                NODE_ID.to_string(),
+                vec![attachment],
+            )]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(workspace).expect("attachment workspace"),
+            json!({
+                "nodes": [],
+                "attachmentsByNodeId": {
+                    NODE_ID: [{
+                        "id": SECOND_ID,
+                        "nodeId": NODE_ID,
+                        "sortKey": 1024,
+                        "relativePath": "notes-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+                        "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "originalName": "image.png",
+                        "mimeType": "image/png",
+                        "byteSize": 123,
+                        "intrinsicWidth": 320,
+                        "intrinsicHeight": 200,
+                        "displayWidth": 240,
+                        "createdAt": "2026-07-11T00:00:00.000Z",
+                        "updatedAt": "2026-07-11T00:00:01.000Z"
+                    }]
+                }
+            })
         );
     }
 }
