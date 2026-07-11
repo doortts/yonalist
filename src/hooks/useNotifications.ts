@@ -83,6 +83,7 @@ export function useNotifications(
     fetchNotifications({
       token,
       apiBaseUrl: connection.apiBaseUrl,
+      coalesce: false,
       fetchImpl: (input, init) =>
         fetch(input, { ...init, signal: controller.signal }),
       onPartialResult: (partial) => {

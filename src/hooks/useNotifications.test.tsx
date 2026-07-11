@@ -125,7 +125,7 @@ describe("useNotifications", () => {
     expect(result.current.loading).toBe(false);
   });
 
-  it("aborts and invalidates an active request while disabled, then fetches fresh when re-enabled", async () => {
+  it("starts a fresh request when immediately re-enabled before the aborted request settles", async () => {
     let resolveSecondPage: (response: Response) => void = () => {};
     const secondPage = new Promise<Response>((resolve) => {
       resolveSecondPage = resolve;
@@ -173,6 +173,15 @@ describe("useNotifications", () => {
     expect(secondRequestInit?.signal?.aborted).toBe(true);
     expect(result.current.loading).toBe(false);
 
+    rerender({ enabled: true });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    await waitFor(() =>
+      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+        "fresh"
+      ])
+    );
+
     await act(async () => {
       resolveSecondPage(jsonResponse([makeNotification("late")]));
       await Promise.resolve();
@@ -180,20 +189,11 @@ describe("useNotifications", () => {
     });
 
     expect(result.current.notifications.map((notification) => notification.id)).toEqual([
-      "first"
+      "fresh"
     ]);
     expect(loadCachedNotifications(connection.apiBaseUrl)?.map(({ id }) => id)).toEqual([
-      "first"
+      "fresh"
     ]);
-
-    rerender({ enabled: true });
-
-    await waitFor(() =>
-      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
-        "fresh"
-      ])
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("serves sample data without fetching when the token is empty (demo mode)", () => {

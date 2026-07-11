@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const notificationDetailInputs = vi.hoisted(() => vi.fn());
+const loadVaultStateOverride = vi.hoisted(() => vi.fn());
 
 vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
@@ -12,6 +13,17 @@ vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
     useNotificationDetail: (...args: Parameters<typeof actual.useNotificationDetail>) => {
       notificationDetailInputs(args[0]);
       return actual.useNotificationDetail(...args);
+    }
+  };
+});
+
+vi.mock("./services/vaultStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./services/vaultStore")>();
+  return {
+    ...actual,
+    loadVaultState: (...args: Parameters<typeof actual.loadVaultState>) => {
+      const override = loadVaultStateOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultState(...args);
     }
   };
 });
@@ -70,10 +82,19 @@ function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteN
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
     notificationDetailInputs.mockClear();
+    loadVaultStateOverride.mockReset();
     clearWorkItemsCache();
     clearNotificationCache();
     clearNotificationDetailCache();
@@ -1827,7 +1848,7 @@ describe("Yonalist app shell", () => {
 
   function autoFlushFetchMock(
     issuePost: () => Response,
-    rateLimit: () => Response = () =>
+    rateLimit: () => Response | Promise<Response> = () =>
       new Response(JSON.stringify({ resources: {} }), { status: 200 })
   ) {
     return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -1922,6 +1943,139 @@ describe("Yonalist app shell", () => {
 
       expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
       expect(queuedIssuePostCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("retains a reconnect until the active Inbox vault load completes", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const vaultLoad = deferred<void>();
+    loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+      await vaultLoad.promise;
+      loadVaultStateOverride.mockReset();
+      const { loadVaultState } = await import("./services/vaultStore");
+      return loadVaultState(vaultRoot);
+    });
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 205 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      vaultLoad.resolve();
+
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("waits for a fresh Inbox vault generation after returning from Notes", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 206 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const freshVaultLoad = deferred<void>();
+      loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+        await freshVaultLoad.promise;
+        loadVaultStateOverride.mockReset();
+        const { loadVaultState } = await import("./services/vaultStore");
+        return loadVaultState(vaultRoot);
+      });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+      freshVaultLoad.resolve();
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("ignores a reconnect probe that resolves after Notes becomes active", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const reachability = deferred<Response>();
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 207 }), { status: 201 }),
+      () => reachability.promise
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+      const notesButton = screen.getByRole("button", { name: "Notes" });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await waitFor(() => expect(reconnectProbeCalls(fetchMock)).toHaveLength(1));
+
+      fireEvent.click(notesButton);
+      reachability.resolve(
+        new Response(JSON.stringify({ resources: {} }), { status: 200 })
+      );
+      await settleReconnectProbe();
+
+      expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes an open reconnect prompt when Notes becomes active", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 208 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+      const notesButton = screen.getByRole("button", { name: "Notes" });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+
+      fireEvent.click(notesButton);
+
+      expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
     }

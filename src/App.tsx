@@ -351,7 +351,10 @@ export default function App({ initialOnline }: AppProps) {
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
-  const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
+  const inboxWorkflowGeneration = useRef(0);
+  const inboxVaultLoadGeneration = useRef(0);
+  const loadedInboxVault = useRef<{ vaultRoot: string; generation: number } | null>(null);
+  const [inboxVaultReadinessVersion, setInboxVaultReadinessVersion] = useState(0);
   const [selectedOutboxIds, setSelectedOutboxIds] = useState<Set<string>>(new Set());
   const [showOutbox, setShowOutbox] = useState(false);
   // Pending reconnect-sync confirmation; the captured operations are flushed
@@ -401,6 +404,17 @@ export default function App({ initialOnline }: AppProps) {
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
 
+  function changeActiveFeature(nextFeatureId: FeatureId) {
+    if (nextFeatureId !== activeFeatureId) {
+      inboxWorkflowGeneration.current += 1;
+      loadedInboxVault.current = null;
+      if (nextFeatureId !== "inbox") {
+        setReconnectSyncPrompt(null);
+      }
+    }
+    setActiveFeatureId(nextFeatureId);
+  }
+
   useEffect(() => {
     persistActiveFeature(activeFeatureId);
   }, [activeFeatureId]);
@@ -443,21 +457,29 @@ export default function App({ initialOnline }: AppProps) {
   // Local vault data loads immediately, in parallel with the background auth
   // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
+    const workflowGeneration = ++inboxWorkflowGeneration.current;
+    const generation = ++inboxVaultLoadGeneration.current;
+    loadedInboxVault.current = null;
     if (!inboxActive) {
+      setReconnectSyncPrompt(null);
       return;
     }
     let cancelled = false;
-    setLoadedVaultRoot(null);
     const startedAt = performance.now();
     tracePerf("vault_load_start", { vaultRoot });
     void loadVaultState(vaultRoot)
       .then((state) => {
-        if (cancelled) {
+        if (
+          cancelled ||
+          workflowGeneration !== inboxWorkflowGeneration.current ||
+          generation !== inboxVaultLoadGeneration.current
+        ) {
           return;
         }
         setDrafts(state.items);
         setOutbox(state.outbox);
-        setLoadedVaultRoot(vaultRoot);
+        loadedInboxVault.current = { vaultRoot, generation };
+        setInboxVaultReadinessVersion((version) => version + 1);
         tracePerf("vault_load_done", {
           items: state.items.length,
           outbox: state.outbox.length,
@@ -1203,14 +1225,15 @@ export default function App({ initialOnline }: AppProps) {
   const pendingInboxReconnect = useRef(false);
   useEffect(() => {
     const reconnected = online && !previousOnline.current;
-    if (reconnected && !inboxActive) {
+    if (reconnected) {
       pendingInboxReconnect.current = true;
     }
 
     const shouldHandleReconnect =
       inboxActive &&
       online &&
-      loadedVaultRoot === vaultRoot &&
+      loadedInboxVault.current?.vaultRoot === vaultRoot &&
+      loadedInboxVault.current.generation === inboxVaultLoadGeneration.current &&
       (reconnected || pendingInboxReconnect.current);
     if (
       shouldHandleReconnect &&
@@ -1221,7 +1244,10 @@ export default function App({ initialOnline }: AppProps) {
         (operation) => operation.frontMatter.status !== "blocked"
       );
       if (auth.connection.token.trim() && retryable.length > 0) {
-        void promptReconnectSyncIfReachable(retryable);
+        void promptReconnectSyncIfReachable(
+          retryable,
+          inboxWorkflowGeneration.current
+        );
       } else if (!auth.connection.token.trim()) {
         setSelectedOutboxIds(
           new Set(outbox.map((operation) => operation.frontMatter.id))
@@ -1236,7 +1262,7 @@ export default function App({ initialOnline }: AppProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     inboxActive,
-    loadedVaultRoot,
+    inboxVaultReadinessVersion,
     online,
     outbox,
     settings.syncQueuedOnReconnect,
@@ -1287,7 +1313,7 @@ export default function App({ initialOnline }: AppProps) {
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
-    setActiveFeatureId("settings");
+    changeActiveFeature("settings");
     setSettingsStatus("");
   }
 
@@ -1295,11 +1321,11 @@ export default function App({ initialOnline }: AppProps) {
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(true);
-    setActiveFeatureId("inbox");
+    changeActiveFeature("inbox");
   }
 
   function openNewIssue() {
-    setActiveFeatureId("inbox");
+    changeActiveFeature("inbox");
     setDraftIssue((current) => ({
       ...current,
       repositoryKey:
@@ -1410,7 +1436,7 @@ export default function App({ initialOnline }: AppProps) {
     setFilter("all");
     setQuery("");
     setItemStateFilter("open");
-    setActiveFeatureId("inbox");
+    changeActiveFeature("inbox");
     setShowNotifications(false);
     setShowOutbox(false);
     setShowNewIssue(true);
@@ -1703,7 +1729,7 @@ export default function App({ initialOnline }: AppProps) {
         ? "closed"
         : "open"
     );
-    setActiveFeatureId("inbox");
+    changeActiveFeature("inbox");
     setShowNewIssue(false);
     setShowNotifications(false);
     setShowOutbox(false);
@@ -1718,10 +1744,14 @@ export default function App({ initialOnline }: AppProps) {
    * next offline→online transition re-evaluates.
    */
   async function promptReconnectSyncIfReachable(
-    operations: OutboxOperationDocument[]
+    operations: OutboxOperationDocument[],
+    workflowGeneration: number
   ) {
     const reachable = await isRemoteReachable(auth.connection);
-    if (!reachable) {
+    if (
+      !reachable ||
+      workflowGeneration !== inboxWorkflowGeneration.current
+    ) {
       return;
     }
     setReconnectSyncPrompt({ operations, count: operations.length });
@@ -1939,7 +1969,7 @@ export default function App({ initialOnline }: AppProps) {
     setOutbox((current) => [...current, queuedOperation]);
     setDraftIssue({ title: "", body: "", repositoryKey: "" });
     setShowNewIssue(false);
-    setActiveFeatureId("inbox");
+    changeActiveFeature("inbox");
   }
 
   function updateSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
@@ -2149,7 +2179,7 @@ export default function App({ initialOnline }: AppProps) {
             onUpdate={updateSetting}
             onSave={saveSettings}
             onResetAll={resetAllSettingsAndCaches}
-            onClose={() => setActiveFeatureId("inbox")}
+            onClose={() => changeActiveFeature("inbox")}
           />
         </Suspense>
       )
@@ -2163,7 +2193,7 @@ export default function App({ initialOnline }: AppProps) {
   const ActiveFeatureProvider = activeFeature.Provider;
 
   if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
-    return <AuthRestorePage onOpenNotes={() => setActiveFeatureId("notes")} />;
+    return <AuthRestorePage onOpenNotes={() => changeActiveFeature("notes")} />;
   }
 
   if (
@@ -2178,7 +2208,7 @@ export default function App({ initialOnline }: AppProps) {
         checking={false}
         error={authGate.error}
         onSkip={authGate.skipLogin}
-        onOpenNotes={() => setActiveFeatureId("notes")}
+        onOpenNotes={() => changeActiveFeature("notes")}
       />
     );
   }
@@ -2214,14 +2244,14 @@ export default function App({ initialOnline }: AppProps) {
           setRepositoryFilter(null);
           setShowNewIssue(false);
           setShowNotifications(false);
-          setActiveFeatureId("inbox");
+          changeActiveFeature("inbox");
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={(key) => {
           setRepositoryFilter(key);
           setShowNewIssue(false);
           setShowNotifications(false);
-          setActiveFeatureId("inbox");
+          changeActiveFeature("inbox");
         }}
         repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
@@ -2241,7 +2271,7 @@ export default function App({ initialOnline }: AppProps) {
         }
         activeFeatureId={activeFeatureId}
         featureEntries={featureRegistry}
-        onFeatureChange={setActiveFeatureId}
+        onFeatureChange={changeActiveFeature}
       />
 
       <div

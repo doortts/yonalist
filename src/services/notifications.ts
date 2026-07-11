@@ -14,6 +14,7 @@ export interface FetchNotificationsOptions {
   participating?: boolean;
   fetchImpl?: typeof fetch;
   onPartialResult?: (notifications: GitHubNotification[]) => void;
+  coalesce?: boolean;
 }
 
 interface CacheEntry {
@@ -97,6 +98,9 @@ export function getNotificationCacheStats(): CacheSizeStats {
 export function fetchNotifications(
   options: FetchNotificationsOptions
 ): Promise<GitHubNotification[]> {
+  if (options.coalesce === false) {
+    return doFetchNotifications(options);
+  }
   const key = cacheKey(options);
   const running = inflight.get(key);
   if (running) {
