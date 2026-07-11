@@ -85,11 +85,17 @@ export function NotesLibraryPageRow({
   const [exportView, setExportView] = useState(false);
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
   const exportBackRef = useRef<HTMLElement>(null);
+  const exportCommandRef = useRef<HTMLElement>(null);
+  const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
   const label = pageLabel(node.title);
 
   useLayoutEffect(() => {
-    if (exportView) {
+    if (viewFocusTargetRef.current === "back" && exportView) {
+      viewFocusTargetRef.current = null;
       exportBackRef.current?.focus();
+    } else if (viewFocusTargetRef.current === "export" && !exportView) {
+      viewFocusTargetRef.current = null;
+      exportCommandRef.current?.focus();
     }
   }, [exportView]);
 
@@ -155,7 +161,10 @@ export function NotesLibraryPageRow({
                       closeOnClick={false}
                       itemRef={exportBackRef}
                       icon={<ChevronLeft size={15} aria-hidden="true" />}
-                      onClick={() => setExportView(false)}
+                      onClick={() => {
+                        viewFocusTargetRef.current = "export";
+                        setExportView(false);
+                      }}
                     >
                       Back
                     </CommandItem>
@@ -213,8 +222,12 @@ export function NotesLibraryPageRow({
                     </CommandItem>
                     <CommandItem
                       closeOnClick={false}
+                      itemRef={exportCommandRef}
                       icon={<Download size={15} aria-hidden="true" />}
-                      onClick={() => setExportView(true)}
+                      onClick={() => {
+                        viewFocusTargetRef.current = "back";
+                        setExportView(true);
+                      }}
                     >
                       Export
                     </CommandItem>

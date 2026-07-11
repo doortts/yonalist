@@ -261,6 +261,11 @@
   opacity: 0.34;
 }
 
+.notes-library-page-menu-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .notes-library-page-menu {
   z-index: 40;
   min-width: 196px;

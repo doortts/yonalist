@@ -5,6 +5,7 @@ import {
   useRef,
   useState
 } from "react";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteId } from "../../domain/notes";
 import { NotesBulletMenu } from "./NotesBulletMenu";
 import { useNotesExportController } from "./NotesExportController";
@@ -18,6 +19,7 @@ import {
 interface NotesPageHeaderProps {
   nodeId: NoteId;
   disabled?: boolean;
+  mode?: "standard" | "archive" | "trash";
 }
 
 function pageLabel(title: string): string {
@@ -26,7 +28,8 @@ function pageLabel(title: string): string {
 
 export function NotesPageHeader({
   nodeId,
-  disabled = false
+  disabled = false,
+  mode = "standard"
 }: NotesPageHeaderProps) {
   const {
     actions,
@@ -43,11 +46,13 @@ export function NotesPageHeader({
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
     useState<NoteId | null>(null);
+  const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
   const label = pageLabel(titleValue || node?.title || "");
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
+  const readOnly = mode !== "standard";
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteVisible);
@@ -161,76 +166,107 @@ export function NotesPageHeader({
   };
 
   return (
-    <header
-      className="notes-page-header"
-      data-completed={node.completedAt !== null ? "true" : undefined}
-      data-selected={state.selectedId === nodeId ? "true" : undefined}
-    >
-      <div className="notes-page-title-row">
-        <div className="notes-page-menu-slot">
-          <NotesBulletMenu
-            label={label}
-            completed={node.completedAt !== null}
-            starred={node.isStarred}
-            hasNote={Boolean(noteValue.trim())}
-            saveFailed={draft?.status === "failed"}
-            disabled={disabled}
-            exportDisabled={exportController.unavailable || exportController.busy}
-            onToggleComplete={() => runCommand(() => actions.toggleComplete(nodeId))}
-            onToggleStar={() => runCommand(() => actions.toggleStar(nodeId))}
-            onOpenNote={openAndFocusNote}
-            onRemoveNote={removeNote}
-            onDuplicate={() => runCommand(() => actions.duplicateNode(nodeId))}
-            onExport={(format) =>
-              exportController.startExport(nodeId, titleValue, format)
-            }
-            onDelete={() => runCommand(() => actions.deleteNode(nodeId))}
-            onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
-          />
+    <>
+      <header
+        className="notes-page-header"
+        data-completed={node.completedAt !== null ? "true" : undefined}
+        data-selected={state.selectedId === nodeId ? "true" : undefined}
+      >
+        <div className="notes-page-title-row">
+          <div className="notes-page-menu-slot">
+            <NotesBulletMenu
+              mode={mode}
+              label={label}
+              completed={node.completedAt !== null}
+              starred={node.isStarred}
+              hasNote={Boolean(noteValue.trim())}
+              saveFailed={draft?.status === "failed"}
+              disabled={disabled}
+              exportDisabled={
+                exportController.unavailable || exportController.busy
+              }
+              onToggleComplete={() =>
+                runCommand(() => actions.toggleComplete(nodeId))
+              }
+              onToggleStar={() =>
+                runCommand(() => actions.toggleStar(nodeId))
+              }
+              onOpenNote={openAndFocusNote}
+              onRemoveNote={removeNote}
+              onDuplicate={() =>
+                runCommand(() => actions.duplicateNode(nodeId))
+              }
+              onExport={(format) =>
+                exportController.startExport(nodeId, titleValue, format)
+              }
+              onDelete={() => {
+                if (mode === "archive") {
+                  setTrashConfirmOpen(true);
+                  return;
+                }
+                runCommand(() => actions.deleteNode(nodeId));
+              }}
+              onRetrySave={() => runCommand(() => retryFailedDraft(nodeId))}
+              onRestore={() => runCommand(() => actions.restoreNode(nodeId))}
+              onUnarchive={() =>
+                runCommand(() => actions.unarchiveNode(nodeId))
+              }
+            />
+          </div>
+          <h1 className="notes-page-heading" aria-label={label}>
+            <textarea
+              ref={titleRef}
+              className="notes-page-title"
+              value={titleValue}
+              aria-label="Edit page title"
+              placeholder="Untitled page"
+              rows={1}
+              wrap="soft"
+              disabled={disabled || readOnly}
+              onKeyDown={handleTitleKeyDown}
+              onChange={(event) => {
+                resizeTextarea(event.currentTarget);
+                actions.updateNodeDraft(nodeId, {
+                  title: event.target.value,
+                  note: noteValue
+                });
+              }}
+              onBlur={() => void actions.flushNodeDraft(nodeId)}
+            />
+          </h1>
         </div>
-        <h1 className="notes-page-heading" aria-label={label}>
+        {noteVisible && (
           <textarea
-            ref={titleRef}
-            className="notes-page-title"
-            value={titleValue}
-            aria-label="Edit page title"
-            placeholder="Untitled page"
+            ref={noteRef}
+            className="notes-page-note"
+            value={noteValue}
+            aria-label={`Supporting note: ${label}`}
+            placeholder="Add a supporting note"
             rows={1}
-            wrap="soft"
-            disabled={disabled}
-            onKeyDown={handleTitleKeyDown}
+            disabled={disabled || readOnly}
+            onFocus={() => setRevealedNoteNodeId(nodeId)}
             onChange={(event) => {
+              setRevealedNoteNodeId(nodeId);
               resizeTextarea(event.currentTarget);
               actions.updateNodeDraft(nodeId, {
-                title: event.target.value,
-                note: noteValue
-              })
+                title: titleValue,
+                note: event.target.value
+              });
             }}
             onBlur={() => void actions.flushNodeDraft(nodeId)}
           />
-        </h1>
-      </div>
-      {noteVisible && (
-        <textarea
-          ref={noteRef}
-          className="notes-page-note"
-          value={noteValue}
-          aria-label={`Supporting note: ${label}`}
-          placeholder="Add a supporting note"
-          rows={1}
-          disabled={disabled}
-          onFocus={() => setRevealedNoteNodeId(nodeId)}
-          onChange={(event) => {
-            setRevealedNoteNodeId(nodeId);
-            resizeTextarea(event.currentTarget);
-            actions.updateNodeDraft(nodeId, {
-              title: titleValue,
-              note: event.target.value
-            });
-          }}
-          onBlur={() => void actions.flushNodeDraft(nodeId)}
-        />
-      )}
-    </header>
+        )}
+      </header>
+      <ConfirmDialog
+        open={trashConfirmOpen}
+        onOpenChange={setTrashConfirmOpen}
+        title="Move page to Trash?"
+        description={`Move ${label} and all of its descendants to Trash?`}
+        confirmLabel="Move to Trash"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => void actions.deleteNode(nodeId)}
+      />
+    </>
   );
 }

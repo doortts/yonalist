@@ -2504,7 +2504,105 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
       selectedId: "third",
-      zoomRootId: "third"
+      zoomRootId: "third",
+      editingNoteId: "third",
+      pendingFocusId: "third"
+    });
+  });
+
+  it("falls back to the active projection when a post-archive scoped reload fails", async () => {
+    const target = node({ id: "target", isStarred: true, sortKey: 1 });
+    const outside = node({ id: "outside", sortKey: 2 });
+    const before = workspace([target, outside]);
+    const after = workspace([outside]);
+    let archived = false;
+    const store = repository({
+      loadWorkspace: vi.fn(async (_vaultRoot, scope) => {
+        if (scope.kind === "starred") {
+          if (archived) {
+            throw new Error("Starred projection failed");
+          }
+          return workspace([target]);
+        }
+        return archived ? after : before;
+      }),
+      archiveNode: vi.fn(async () => {
+        archived = true;
+        return after;
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    await act(async () => result.current.actions.zoomTo("target"));
+
+    await act(async () => result.current.actions.archiveNode("target"));
+
+    expect(store.archiveNode).toHaveBeenCalledWith("/vault", "target");
+    expect(result.current.error).toBeNull();
+    expect(result.current.libraryView).toBe("all");
+    expect(result.current.state).toMatchObject({
+      rootIds: ["outside"],
+      selectedId: null,
+      zoomRootId: null,
+      editingNoteId: null,
+      pendingFocusId: null
+    });
+  });
+
+  it("preserves navigation made while a root lifecycle mutation is pending", async () => {
+    const before = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "second", sortKey: 2 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const after = workspace([
+      node({ id: "first", sortKey: 1 }),
+      node({ id: "third", sortKey: 3 })
+    ]);
+    const archive = deferred<NotesWorkspace>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      archiveNode: vi.fn().mockReturnValue(archive.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.zoomTo("second"));
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.archiveNode("second");
+    });
+    await waitFor(() => expect(store.archiveNode).toHaveBeenCalledOnce());
+
+    act(() => {
+      void result.current.actions.zoomTo("first");
+      void result.current.actions.focusNode("first");
+    });
+    await waitFor(() =>
+      expect(result.current.state).toMatchObject({
+        selectedId: "first",
+        zoomRootId: "first",
+        editingNoteId: "first",
+        pendingFocusId: "first"
+      })
+    );
+
+    await act(async () => {
+      archive.resolve(after);
+      await completion;
+    });
+
+    expect(result.current.state).toMatchObject({
+      rootIds: ["first", "third"],
+      selectedId: "first",
+      zoomRootId: "first",
+      editingNoteId: "first",
+      pendingFocusId: "first"
     });
   });
 
@@ -2566,7 +2664,9 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state).toMatchObject({
       rootIds: ["first", "third"],
       selectedId: "third",
-      zoomRootId: "third"
+      zoomRootId: "third",
+      editingNoteId: "third",
+      pendingFocusId: "third"
     });
   });
 

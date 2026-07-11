@@ -233,6 +233,28 @@ describe("NotesBulletMenu", () => {
     expect(onRestore).toHaveBeenCalledOnce();
   });
 
+  it("keeps archived roots limited to Unarchive and Move to Trash", async () => {
+    const onUnarchive = vi.fn();
+    const onDelete = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <NotesBulletMenu
+        mode="archive"
+        label="Project"
+        onUnarchive={onUnarchive}
+        onDelete={onDelete}
+      />
+    );
+
+    const { menu } = await openMenu(user);
+    expect(
+      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+    ).toEqual(["Unarchive", "Move to Trash"]);
+    await user.click(within(menu).getByRole("menuitem", { name: "Unarchive" }));
+    expect(onUnarchive).toHaveBeenCalledOnce();
+    expect(onDelete).not.toHaveBeenCalled();
+  });
+
   it("disables the trigger when row commands are unavailable", () => {
     render(<NotesBulletMenu {...standardProps({ disabled: true })} />);
     expect(

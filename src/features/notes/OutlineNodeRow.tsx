@@ -30,7 +30,7 @@ interface OutlineNodeRowProps {
   visibleNodeIds: readonly NoteId[];
   dragDisabled: boolean;
   disabled?: boolean;
-  readOnly?: boolean;
+  readOnlyMode?: "archive" | "trash";
   locallyExpanded?: boolean;
 }
 
@@ -46,7 +46,7 @@ export function OutlineNodeRow({
   visibleNodeIds,
   dragDisabled,
   disabled = false,
-  readOnly = false,
+  readOnlyMode,
   locallyExpanded = false
 }: OutlineNodeRowProps) {
   const {
@@ -58,6 +58,7 @@ export function OutlineNodeRow({
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
+  const readOnly = readOnlyMode !== undefined;
   const {
     attributes,
     isDragging,
@@ -172,12 +173,14 @@ export function OutlineNodeRow({
         {guides}
         <div className="notes-node-main notes-node-main-readonly">
           <div className="notes-node-menu-slot">
-            <NotesBulletMenu
-              mode="trash"
-              label={label}
-              disabled={disabled}
-              onRestore={() => void actions.restoreNode(nodeId)}
-            />
+            {readOnlyMode === "trash" && (
+              <NotesBulletMenu
+                mode="trash"
+                label={label}
+                disabled={disabled}
+                onRestore={() => void actions.restoreNode(nodeId)}
+              />
+            )}
           </div>
           <span className="notes-node-readonly-title">{label}</span>
         </div>

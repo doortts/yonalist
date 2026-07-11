@@ -25,7 +25,7 @@ import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
 
 export interface NotesBulletMenuProps {
-  mode?: "standard" | "trash";
+  mode?: "standard" | "archive" | "trash";
   label: string;
   completed?: boolean;
   starred?: boolean;
@@ -42,6 +42,7 @@ export interface NotesBulletMenuProps {
   onDelete?(): void;
   onRetrySave?(): void;
   onRestore?(): void;
+  onUnarchive?(): void;
 }
 
 interface CommandItemProps {
@@ -95,7 +96,8 @@ export function NotesBulletMenu({
   onExport,
   onDelete,
   onRetrySave,
-  onRestore
+  onRestore,
+  onUnarchive
 }: NotesBulletMenuProps) {
   const [open, setOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
@@ -155,6 +157,22 @@ export function NotesBulletMenu({
               >
                 Restore
               </CommandItem>
+            ) : mode === "archive" ? (
+              <>
+                <CommandItem
+                  icon={<RotateCcw size={15} aria-hidden="true" />}
+                  onClick={onUnarchive}
+                >
+                  Unarchive
+                </CommandItem>
+                <CommandItem
+                  danger
+                  icon={<Trash2 size={15} aria-hidden="true" />}
+                  onClick={onDelete}
+                >
+                  Move to Trash
+                </CommandItem>
+              </>
             ) : exportView ? (
               <>
                 <CommandItem

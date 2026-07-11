@@ -636,14 +636,21 @@ export function resolveRootLifecycleNavigation(
     afterWorkspace.rootIds,
     removedRootId
   );
+  const fallbackRoot = fallbackRootId
+    ? afterWorkspace.nodesById[fallbackRootId]
+    : undefined;
+  const focusFallback =
+    fallbackRoot !== undefined &&
+    fallbackRoot.archivedAt === null &&
+    fallbackRoot.deletedAt === null;
   return {
     before,
     after: {
       ...before,
       selectedId: fallbackRootId,
       zoomRootId: fallbackRootId,
-      editingNoteId: null,
-      pendingFocusId: null,
+      editingNoteId: focusFallback ? fallbackRootId : null,
+      pendingFocusId: focusFallback ? fallbackRootId : null,
       locallyExpandedNodeIds: new Set()
     }
   };
@@ -689,6 +696,7 @@ export function useNotesWorkspace({
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
   const stateRef = useRef(state);
   stateRef.current = state;
+  const navigationVersionRef = useRef(0);
   const lifecycleNavigationTransitionRef =
     useRef<NotesLifecycleNavigationTransition | null>(null);
   const deletingNotesDataRef = useRef(false);
@@ -905,6 +913,7 @@ export function useNotesWorkspace({
 
   const replaceLocalExpansions = useCallback(
     (nodeIds: ReadonlySet<NoteId>): void => {
+      navigationVersionRef.current += 1;
       locallyExpandedNodeIdsRef.current = nodeIds;
       setLocallyExpandedNodeIds(nodeIds);
     },
@@ -1385,6 +1394,7 @@ export function useNotesWorkspace({
 
   const focusNode = useCallback(async (nodeId: NoteId) => {
     void flushNodeDraft(nodeId);
+    navigationVersionRef.current += 1;
     dispatch({ type: "focusNode", nodeId });
   }, [flushNodeDraft]);
 
@@ -1836,10 +1846,18 @@ export function useNotesWorkspace({
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current),
         scope: activeScopeRef.current
       };
+      const beforeNavigationVersion = navigationVersionRef.current;
       const lifecycleResult: {
         transition: NotesLifecycleNavigationTransition | null;
         refreshedTags: string[] | null;
-      } = { transition: null, refreshedTags: null };
+        recoveredToActive: boolean;
+        resolvedNavigationVersion: number | null;
+      } = {
+        transition: null,
+        refreshedTags: null,
+        recoveredToActive: false,
+        resolvedNavigationVersion: null
+      };
 
       await runCommand(async (context) => {
         const beforeWorkspace = confirmedState(context);
@@ -1852,17 +1870,26 @@ export function useNotesWorkspace({
           : mutation === "unarchive"
             ? context.repository.unarchiveNode(context.vaultRoot, nodeId)
             : context.repository.softDeleteNode(context.vaultRoot, nodeId));
-        const projectedWorkspace = await workspaceForScope(
-          context,
-          mutationWorkspace,
-          activeScopeRef.current
-        );
-        lifecycleResult.transition = resolveRootLifecycleNavigation(
-          beforeWorkspace,
-          normalizeWorkspace(projectedWorkspace),
-          nodeId,
-          beforeNavigation
-        );
+        const requestedScope = activeScopeRef.current;
+        let projectedWorkspace: NotesWorkspace;
+        try {
+          projectedWorkspace = await workspaceForScope(
+            context,
+            mutationWorkspace,
+            requestedScope
+          );
+        } catch {
+          lifecycleResult.recoveredToActive = true;
+          activeScopeRef.current = { kind: "active" };
+          try {
+            projectedWorkspace = await context.repository.loadWorkspace(
+              context.vaultRoot,
+              activeScopeRef.current
+            );
+          } catch {
+            projectedWorkspace = mutationWorkspace;
+          }
+        }
         try {
           lifecycleResult.refreshedTags = await context.repository.listTags(
             context.vaultRoot
@@ -1870,6 +1897,39 @@ export function useNotesWorkspace({
         } catch {
           // The lifecycle result remains authoritative if tag discovery fails.
         }
+        const navigationVersion = navigationVersionRef.current;
+        const navigation =
+          navigationVersion === beforeNavigationVersion
+            ? beforeNavigation
+            : {
+                selectedId: stateRef.current.selectedId,
+                zoomRootId: stateRef.current.zoomRootId,
+                editingNoteId: stateRef.current.editingNoteId,
+                pendingFocusId: stateRef.current.pendingFocusId,
+                locallyExpandedNodeIds: new Set(
+                  locallyExpandedNodeIdsRef.current
+                ),
+                scope: activeScopeRef.current
+              };
+        const transition = resolveRootLifecycleNavigation(
+          beforeWorkspace,
+          normalizeWorkspace(projectedWorkspace),
+          nodeId,
+          navigation
+        );
+        lifecycleResult.transition = lifecycleResult.recoveredToActive
+          ? {
+              before: beforeNavigation,
+              after: {
+                ...transition.after,
+                scope: { kind: "active" }
+              }
+            }
+          : {
+              before: beforeNavigation,
+              after: transition.after
+            };
+        lifecycleResult.resolvedNavigationVersion = navigationVersion;
         return authoritative(projectedWorkspace, {
           selectedId: lifecycleResult.transition.after.selectedId,
           zoomRootId: lifecycleResult.transition.after.zoomRootId,
@@ -1881,9 +1941,18 @@ export function useNotesWorkspace({
       if (lifecycleResult.transition) {
         // Task 2B can attach this single transition to backend history metadata.
         lifecycleNavigationTransitionRef.current = lifecycleResult.transition;
-        replaceLocalExpansions(
-          lifecycleResult.transition.after.locallyExpandedNodeIds
-        );
+        if (
+          lifecycleResult.resolvedNavigationVersion ===
+          navigationVersionRef.current
+        ) {
+          replaceLocalExpansions(
+            lifecycleResult.transition.after.locallyExpandedNodeIds
+          );
+        }
+      }
+      if (lifecycleResult.recoveredToActive) {
+        setLibraryView("all");
+        setActiveTag(null);
       }
       if (lifecycleResult.refreshedTags) {
         setTags(lifecycleResult.refreshedTags);
@@ -2128,6 +2197,7 @@ export function useNotesWorkspace({
   ]);
 
   const zoomTo = useCallback(async (nodeId: NoteId | null) => {
+    navigationVersionRef.current += 1;
     dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
   }, []);
 

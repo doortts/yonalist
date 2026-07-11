@@ -199,6 +199,12 @@ export function NotesOutlinePane() {
   const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
+  const lifecycleMode =
+    libraryView === "archive"
+      ? "archive"
+      : trashView
+        ? "trash"
+        : "standard";
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -440,7 +446,8 @@ export function NotesOutlinePane() {
             <NotesPageHeader
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
-              disabled={deletingNotesData || lifecycleReadOnly}
+              disabled={deletingNotesData}
+              mode={lifecycleMode}
             />
           )}
           <DndContext
@@ -484,7 +491,13 @@ export function NotesOutlinePane() {
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
                       visibleNodeIds={structuralVisibleIds}
-                      readOnly={lifecycleReadOnly}
+                      readOnlyMode={
+                        lifecycleReadOnly
+                          ? lifecycleMode === "archive"
+                            ? "archive"
+                            : "trash"
+                          : undefined
+                      }
                       disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={

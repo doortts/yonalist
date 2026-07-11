@@ -2784,14 +2784,37 @@ describe("Notes workspace", () => {
     expect(screen.getByRole("textbox", { name: "Edit page title" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Add child" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "New page" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "More actions for Child" })
+    ).toBeNull();
 
-    await user.click(
-      within(library).getByRole("button", { name: "Page actions for Project" })
-    );
+    const rootActions = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+    expect(rootActions).toBeEnabled();
+    await user.click(rootActions);
     const archivedMenu = await screen.findByRole("menu");
-    expect(within(archivedMenu).getAllByRole("menuitem")).toHaveLength(2);
+    expect(
+      within(archivedMenu).getAllByRole("menuitem").map((item) => item.textContent)
+    ).toEqual(["Unarchive", "Move to Trash"]);
     await user.click(
-      within(archivedMenu).getByRole("menuitem", { name: "Unarchive" })
+      within(archivedMenu).getByRole("menuitem", { name: "Move to Trash" })
+    );
+    const trashDialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    expect(
+      within(trashDialog).getByText(
+        "Move Project and all of its descendants to Trash?"
+      )
+    ).toBeVisible();
+    expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    await user.click(within(trashDialog).getByRole("button", { name: "Cancel" }));
+
+    await user.click(rootActions);
+    const reopenedArchivedMenu = await screen.findByRole("menu");
+    await user.click(
+      within(reopenedArchivedMenu).getByRole("menuitem", { name: "Unarchive" })
     );
     await waitFor(() =>
       expect(notesStoreMock.unarchiveNode).toHaveBeenCalledWith("/vault", "project")
@@ -3197,6 +3220,12 @@ describe("Notes workspace", () => {
   it("keeps a disabled non-empty child composer subdued on hover and focus", () => {
     expect(notesStyles).toMatch(
       /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-child-composer\[data-has-children="true"\]:hover[\s\S]*\.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer:focus-within \.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer-button:disabled:focus-visible\s*{[^}]*opacity:\s*0\.34;/s
+    );
+  });
+
+  it("gives the library page menu trigger the standard visible focus ring", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/
     );
   });
 });

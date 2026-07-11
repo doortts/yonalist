@@ -182,4 +182,32 @@ describe("NotesLibraryPageRow", () => {
     await user.keyboard("{Escape}");
     await waitFor(() => expect(trigger).toHaveFocus());
   });
+
+  it("returns focus to Export when leaving the export submenu", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesLibraryPageRow
+        node={node()}
+        mode="active"
+        active={false}
+        {...callbacks()}
+      />
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Page actions for Project plan" })
+    );
+    const menu = await screen.findByRole("menu");
+    const exportItem = within(menu).getByRole("menuitem", { name: "Export" });
+    await user.click(exportItem);
+    const back = await within(menu).findByRole("menuitem", { name: "Back" });
+    await waitFor(() => expect(back).toHaveFocus());
+
+    await user.click(back);
+
+    await waitFor(() =>
+      expect(
+        within(menu).getByRole("menuitem", { name: "Export" })
+      ).toHaveFocus()
+    );
+  });
 });
