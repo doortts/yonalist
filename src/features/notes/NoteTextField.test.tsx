@@ -355,4 +355,48 @@ describe("NoteTextField", () => {
 
     expect(onDateTrigger).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["disabled", { disabled: true }],
+    ["read-only", { readOnly: true }]
+  ] as const)(
+    "renders a noninteractive date pill and suppresses triggers when %s",
+    (_label, state) => {
+      const onDateClick = vi.fn();
+      const onDateTrigger = vi.fn();
+      const { container } = render(
+        <NoteTextField
+          {...state}
+          value="Due 07/12/2026"
+          today={today}
+          aria-label="Edit title"
+          onChange={vi.fn()}
+          onTagClick={vi.fn()}
+          onDateClick={onDateClick}
+          onDateTrigger={onDateTrigger}
+        />
+      );
+      const textarea = container.querySelector(
+        "textarea"
+      ) as HTMLTextAreaElement;
+
+      expect(
+        screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+      ).not.toBeInTheDocument();
+      expect(container.querySelector(".notes-date-token")).toHaveTextContent(
+        "07/12/2026"
+      );
+      fireEvent.input(textarea, {
+        target: {
+          value: "Due 07/12/2026 !!",
+          selectionStart: 18,
+          selectionEnd: 18
+        },
+        inputType: "insertText",
+        data: "!"
+      });
+      expect(onDateClick).not.toHaveBeenCalled();
+      expect(onDateTrigger).not.toHaveBeenCalled();
+    }
+  );
 });

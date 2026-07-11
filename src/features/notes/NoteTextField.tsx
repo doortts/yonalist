@@ -58,6 +58,8 @@ export const NoteTextField = forwardRef<
     containerClassName,
     className,
     style,
+    disabled,
+    readOnly,
     onFocus,
     onBlur,
     onChange,
@@ -131,6 +133,8 @@ export const NoteTextField = forwardRef<
     const caret = event.currentTarget.selectionStart;
     if (
       composingRef.current ||
+      disabled ||
+      readOnly ||
       inputEvent.isComposing ||
       inputEvent.inputType !== "insertText" ||
       inputEvent.data !== "!" ||
@@ -197,7 +201,7 @@ export const NoteTextField = forwardRef<
         text={value}
         onTagClick={onTagClick}
         today={today}
-        onDateClick={onDateClick}
+        onDateClick={disabled || readOnly ? undefined : onDateClick}
         isTagActive={isTagActive}
         role="group"
         aria-label={ariaLabel}
@@ -213,6 +217,8 @@ export const NoteTextField = forwardRef<
         ref={assignTextareaRef}
         className={className}
         value={value}
+        disabled={disabled}
+        readOnly={readOnly}
         aria-label={ariaLabel}
         aria-labelledby={ariaLabelledBy}
         aria-hidden={editing ? ariaHidden : true}

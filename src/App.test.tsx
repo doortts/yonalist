@@ -193,9 +193,27 @@ describe("Yonalist app shell", () => {
       await user.click(within(login).getByRole("button", { name: "Notes" }));
       expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
 
+      const presentation = await screen.findByRole("group", {
+        name: "Edit node title"
+      });
+      const mountedTitle = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(presentation).toHaveAttribute("tabindex", "0");
+      expect(
+        screen.queryByRole("textbox", { name: "Edit node title" })
+      ).not.toBeInTheDocument();
+      expect(mountedTitle).toHaveAttribute("aria-hidden", "true");
+      expect(mountedTitle).toHaveAttribute("tabindex", "-1");
+
+      await user.click(presentation);
+
       const title = await screen.findByRole("textbox", {
         name: "Edit node title"
       });
+      expect(title).toBe(mountedTitle);
+      expect(title).toHaveFocus();
+      expect(presentation).toHaveAttribute("aria-hidden", "true");
       await user.clear(title);
       await user.type(title, "Edited offline");
       fireEvent.blur(title);
@@ -204,7 +222,8 @@ describe("Yonalist app shell", () => {
       await waitFor(() =>
         expect(updateNodeSpy).toHaveBeenCalledWith(
           expect.any(String),
-          expect.objectContaining({ title: "Edited offline" })
+          expect.objectContaining({ title: "Edited offline" }),
+          expect.any(Object)
         )
       );
       expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();

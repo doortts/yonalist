@@ -62,7 +62,7 @@ export function NoteTokenText({
   const interactiveTokens: InteractiveToken[] = tokenizeNoteText(text)
     .filter((token): token is NoteTagToken => token.kind === "tag")
     .map((token) => ({ kind: "tag", token }));
-  if (today && onDateClick) {
+  if (today) {
     interactiveTokens.push(
       ...findNoteDateMatches(text, { today }).map((token) => ({
         kind: "date" as const,
@@ -84,18 +84,29 @@ export function NoteTokenText({
 
     if (interactiveToken.kind === "date") {
       const dateToken = interactiveToken.token;
-      content.push(
-        <button
-          className="notes-date-token"
-          type="button"
-          key={`date:${dateToken.startUtf16}:${dateToken.endUtf16}`}
-          aria-label={`Edit date ${dateToken.raw}`}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => onDateClick?.(dateToken, event.currentTarget)}
-        >
-          {dateToken.raw}
-        </button>
-      );
+      if (onDateClick) {
+        content.push(
+          <button
+            className="notes-date-token"
+            type="button"
+            key={`date:${dateToken.startUtf16}:${dateToken.endUtf16}`}
+            aria-label={`Edit date ${dateToken.raw}`}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => onDateClick(dateToken, event.currentTarget)}
+          >
+            {dateToken.raw}
+          </button>
+        );
+      } else {
+        content.push(
+          <span
+            className="notes-date-token"
+            key={`date:${dateToken.startUtf16}:${dateToken.endUtf16}`}
+          >
+            {dateToken.raw}
+          </span>
+        );
+      }
     } else {
       const tagToken = interactiveToken.token;
       const active = isTagActive?.(tagToken) ?? false;

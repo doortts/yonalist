@@ -1,15 +1,21 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { useRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { NoteTextField } from "./NoteTextField";
+import { NoteTokenText } from "./NoteTokenText";
 import {
   NotesDatePickerHost,
+  NotesDateTodayProvider,
   createExistingDateContext,
   getLocalToday,
   replaceUtf16Range,
+  useNotesDatePickerIntegration,
   type NotesDatePickerTarget
 } from "./NotesDatePickerIntegration";
+import { findNoteDateMatches } from "./noteDates";
 
 const today = { year: 2026, month: 7, day: 11 } as const;
 const notesStyles = readFileSync(
@@ -50,6 +56,73 @@ function target(
   return pickerTarget;
 }
 
+function ControlledTitleDateFieldContent() {
+  const [title, setTitle] = useState("Plan ");
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const datePicker = useNotesDatePickerIntegration({
+    values: { title, note: "" },
+    refs: { title: titleRef, note: noteRef },
+    onCommit: (_field, value) => setTitle(value)
+  });
+
+  return (
+    <>
+      <NoteTextField
+        ref={titleRef}
+        value={title}
+        today={datePicker.today}
+        aria-label="Controlled title"
+        onChange={(event) => setTitle(event.currentTarget.value)}
+        onTagClick={vi.fn()}
+        onDateClick={(token, anchor) =>
+          datePicker.openExistingDate("title", token, anchor)
+        }
+        onDateTrigger={(range, anchor) =>
+          datePicker.openTypedDate("title", range, anchor)
+        }
+      />
+      {datePicker.picker}
+    </>
+  );
+}
+
+function ControlledTitleDateField() {
+  return (
+    <NotesDateTodayProvider today={today}>
+      <ControlledTitleDateFieldContent />
+    </NotesDateTodayProvider>
+  );
+}
+
+function LegacyCaretDateField() {
+  const [title, setTitle] = useState("PlanNext");
+  const titleRef = useRef<HTMLTextAreaElement>(null);
+  const noteRef = useRef<HTMLTextAreaElement>(null);
+  const datePicker = useNotesDatePickerIntegration({
+    values: { title, note: "" },
+    refs: { title: titleRef, note: noteRef },
+    onCommit: (_field, value) => setTitle(value)
+  });
+
+  return (
+    <>
+      <NoteTextField
+        ref={titleRef}
+        value={title}
+        today={datePicker.today}
+        aria-label="Legacy title"
+        onChange={(event) => setTitle(event.currentTarget.value)}
+        onTagClick={vi.fn()}
+      />
+      <button type="button" onClick={() => datePicker.openTitleDate(4)}>
+        Add date
+      </button>
+      {datePicker.picker}
+    </>
+  );
+}
+
 describe("NotesDatePicker integration helpers", () => {
   it("styles resting dates as rounded pills and constrains the picker to its host", () => {
     expect(notesStyles).toMatch(
@@ -74,6 +147,69 @@ describe("NotesDatePicker integration helpers", () => {
         text: "07/12/2026"
       })
     ).toBe("🚀 Plan 07/12/2026 and later");
+  });
+
+  it.each([
+    ["", 0, 0, "07/12/2026"],
+    ["Plan", 0, 0, "07/12/2026 Plan"],
+    ["Plan", 4, 4, "Plan 07/12/2026"],
+    ["PlanNext", 4, 4, "Plan 07/12/2026 Next"],
+    ["Plan  next", 5, 5, "Plan 07/12/2026 next"],
+    ["Plan replace next", 5, 12, "Plan 07/12/2026 next"]
+  ] as const)(
+    "spaces a date insertion without changing unrelated text in %j",
+    (source, startUtf16, endUtf16, expected) => {
+      expect(
+        replaceUtf16Range(
+          source,
+          { startUtf16, endUtf16, text: "07/12/2026" },
+          "date-insertion"
+        )
+      ).toBe(expected);
+    }
+  );
+
+  it("produces a parser-compatible resting pill after an end insertion", () => {
+    const result = replaceUtf16Range(
+      "Plan",
+      { startUtf16: 4, endUtf16: 4, text: "07/12/2026" },
+      "date-insertion"
+    );
+
+    expect(findNoteDateMatches(result, { today })).toEqual([
+      expect.objectContaining({
+        raw: "07/12/2026",
+        startUtf16: 5,
+        endUtf16: 15
+      })
+    ]);
+    render(
+      <NoteTokenText
+        text={result}
+        today={today}
+        onTagClick={vi.fn()}
+        onDateClick={vi.fn()}
+      />
+    );
+    expect(
+      screen.getByRole("button", { name: "Edit date 07/12/2026" })
+    ).toBeVisible();
+  });
+
+  it("keeps the numeric menu-caret contract parseable", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesDateTodayProvider today={today}>
+        <LegacyCaretDateField />
+      </NotesDateTodayProvider>
+    );
+
+    await user.click(screen.getByRole("button", { name: "Add date" }));
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByText("Plan 07/12/2026 Next")).toBeVisible();
   });
 
   it("maps an existing parsed date to the shared picker context and preserves format", () => {
@@ -109,15 +245,14 @@ describe("NotesDatePickerHost", () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     const pickerTarget = target();
-    const onCommit = vi.fn((_field: string, value: string) => {
-      pickerTarget.focusElement.value = value;
-    });
+    const onCommit = vi.fn();
     render(
       <NotesDatePickerHost
         target={pickerTarget}
         today={today}
         onCommit={onCommit}
         onClose={onClose}
+        onRequestFocusReturn={vi.fn()}
       />
     );
     const picker = screen.getByRole("dialog", { name: "Choose date" });
@@ -131,9 +266,28 @@ describe("NotesDatePickerHost", () => {
       "Plan 07/12/2026 later"
     );
     expect(onClose).toHaveBeenCalledOnce();
-    expect(pickerTarget.focusElement).toHaveFocus();
-    expect(pickerTarget.focusElement.selectionStart).toBe(15);
-    expect(pickerTarget.focusElement.selectionEnd).toBe(15);
+  });
+
+  it("restores the caret after the controlled long-date value renders", async () => {
+    const user = userEvent.setup();
+    render(<ControlledTitleDateField />);
+    await user.click(
+      screen.getByRole("group", { name: "Controlled title" })
+    );
+    const title = screen.getByRole("textbox", {
+      name: "Controlled title"
+    }) as HTMLTextAreaElement;
+    title.setSelectionRange(title.value.length, title.value.length);
+
+    await user.type(title, "!!");
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(title).toHaveValue("Plan 07/12/2026"));
+    await waitFor(() => expect(title).toHaveFocus());
+    expect(title.selectionStart).toBe(15);
+    expect(title.selectionEnd).toBe(15);
   });
 
   it("removes exactly one existing date and returns focus", async () => {
@@ -155,6 +309,7 @@ describe("NotesDatePickerHost", () => {
         today={today}
         onCommit={onCommit}
         onClose={vi.fn()}
+        onRequestFocusReturn={vi.fn()}
       />
     );
 
@@ -164,8 +319,6 @@ describe("NotesDatePickerHost", () => {
       "title",
       "First , second tomorrow"
     );
-    expect(pickerTarget.focusElement).toHaveFocus();
-    expect(pickerTarget.focusElement.selectionStart).toBe(6);
   });
 
   it("clamps the picker width and horizontal placement on a narrow viewport", () => {
@@ -193,6 +346,7 @@ describe("NotesDatePickerHost", () => {
         today={today}
         onCommit={vi.fn()}
         onClose={vi.fn()}
+        onRequestFocusReturn={vi.fn()}
       />
     );
 

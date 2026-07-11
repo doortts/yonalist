@@ -122,4 +122,21 @@ describe("NoteTokenText", () => {
       numericDate
     );
   });
+
+  it("keeps a resting date pill visible without exposing token interactivity", () => {
+    const { container } = render(
+      <NoteTokenText
+        text="Due 07/12/2026"
+        today={today}
+        onTagClick={vi.fn()}
+      />
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+    ).not.toBeInTheDocument();
+    expect(container.querySelector(".notes-date-token")).toHaveTextContent(
+      "07/12/2026"
+    );
+  });
 });
