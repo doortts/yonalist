@@ -303,25 +303,40 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
 }
 
 fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), String> {
-    let has_column = transaction
+    let columns = transaction
         .prepare("PRAGMA table_info(notes_history_entries)")
         .and_then(|mut statement| {
             statement
-                .query_map([], |row| row.get::<_, String>(1))?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)? != 0,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
                 .collect::<Result<Vec<_>, _>>()
         })
-        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?
-        .iter()
-        .any(|column| column == "command_kind");
-    if has_column {
+        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?;
+    let Some((_, column_type, not_null, default_value)) = columns
+        .into_iter()
+        .find(|(name, _, _, _)| name == "command_kind")
+    else {
+        return transaction
+            .execute_batch(
+                "ALTER TABLE notes_history_entries \
+                 ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
+            )
+            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
+    };
+    if column_type == "TEXT" && not_null && default_value.as_deref() == Some("'legacy'") {
         return Ok(());
     }
-    transaction
-        .execute_batch(
-            "ALTER TABLE notes_history_entries \
-             ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
-        )
-        .map_err(|error| format!("Could not repair Notes history command kinds: {error}"))
+    Err(format!(
+        "Notes history command_kind has incompatible schema metadata \
+         (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
+         expected TEXT NOT NULL DEFAULT 'legacy'."
+    ))
 }
 
 fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -660,7 +675,7 @@ fn migrate_version_two_to_three(transaction: &Transaction<'_>) -> Result<(), Str
               sequence INTEGER NOT NULL,
               is_undone INTEGER NOT NULL DEFAULT 0,
               estimated_bytes INTEGER NOT NULL DEFAULT 0,
-              command_kind TEXT NOT NULL
+              command_kind TEXT NOT NULL DEFAULT 'legacy'
             );
             CREATE UNIQUE INDEX notes_history_session_sequence
               ON notes_history_entries(session_id, sequence);
@@ -3719,6 +3734,31 @@ mod tests {
             .expect("collect table columns")
     }
 
+    fn table_column_metadata(
+        connection: &Connection,
+        table: &str,
+        column: &str,
+    ) -> Option<(String, i64, Option<String>)> {
+        connection
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .expect("prepare table column metadata")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .expect("query table column metadata")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect table column metadata")
+            .into_iter()
+            .find_map(|(name, column_type, not_null, default_value)| {
+                (name == column).then_some((column_type, not_null, default_value))
+            })
+    }
+
     fn insert_node(
         connection: &Connection,
         id: &str,
@@ -4582,6 +4622,10 @@ mod tests {
             ]
         );
         assert_eq!(
+            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
+            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
+        );
+        assert_eq!(
             table_columns(&connection, "notes_history_changes"),
             vec![
                 "entry_id",
@@ -4689,6 +4733,10 @@ mod tests {
                 "command_kind"
             ]
         );
+        assert_eq!(
+            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
+            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
+        );
         let retained: (String, String) = connection
             .query_row(
                 "SELECT id, command_kind FROM notes_history_entries",
@@ -4703,6 +4751,73 @@ mod tests {
                 "legacy".to_string()
             )
         );
+    }
+
+    #[test]
+    fn version_three_initialization_rejects_nullable_history_command_kind_without_mutation() {
+        let mut connection = test_connection();
+        connection
+            .execute_batch(
+                "DROP TABLE notes_history_changes; \
+                 DROP TABLE notes_history_entries; \
+                 DROP INDEX notes_nodes_archive_root_order; \
+                 CREATE TABLE notes_history_entries (\
+                   id TEXT PRIMARY KEY, \
+                   session_id TEXT NOT NULL, \
+                   sequence INTEGER NOT NULL, \
+                   is_undone INTEGER NOT NULL DEFAULT 0, \
+                   estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+                   command_kind TEXT DEFAULT 'legacy'\
+                 ); \
+                 CREATE UNIQUE INDEX notes_history_session_sequence \
+                   ON notes_history_entries(session_id, sequence); \
+                 CREATE TABLE notes_history_changes (\
+                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+                   table_name TEXT NOT NULL, \
+                   row_id TEXT NOT NULL, \
+                   ordinal INTEGER NOT NULL, \
+                   before_json TEXT, \
+                   after_json TEXT, \
+                   PRIMARY KEY (entry_id, table_name, row_id)\
+                 ); \
+                 INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, command_kind\
+                 ) VALUES (\
+                   '00000000-0000-4000-8000-000000000001', \
+                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
+                   1, \
+                   NULL\
+                 );",
+            )
+            .expect("seed nullable version three history command kind");
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("nullable history command kind must be rejected");
+
+        assert!(
+            error.contains("expected TEXT NOT NULL DEFAULT 'legacy'"),
+            "{error}"
+        );
+        assert_eq!(
+            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
+            Some(("TEXT".to_string(), 0, Some("'legacy'".to_string())))
+        );
+        let retained: (String, Option<String>) = connection
+            .query_row(
+                "SELECT id, command_kind FROM notes_history_entries",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("retained malformed history entry");
+        assert_eq!(
+            retained,
+            ("00000000-0000-4000-8000-000000000001".to_string(), None)
+        );
+        assert!(!object_exists(
+            &connection,
+            "index",
+            "notes_nodes_archive_root_order"
+        ));
     }
 
     #[test]
