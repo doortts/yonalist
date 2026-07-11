@@ -271,6 +271,13 @@ function hasStartBoundary(source: string, startUtf16: number): boolean {
   return !isWordCharacter(previous) && previous !== "/";
 }
 
+function hasNumericStartBoundary(source: string, startUtf16: number): boolean {
+  return (
+    hasStartBoundary(source, startUtf16) &&
+    (startUtf16 === 0 || scalarBefore(source, startUtf16) !== "-")
+  );
+}
+
 function hasNaturalEndBoundary(source: string, endUtf16: number): boolean {
   return endUtf16 === source.length || !isWordCharacter(scalarAt(source, endUtf16));
 }
@@ -363,6 +370,13 @@ function resolveCandidate(
   return isValidLocalDate(date) ? date : null;
 }
 
+function canInferYearBoundary(
+  startCandidate: NumericCandidate,
+  endCandidate: NumericCandidate
+): boolean {
+  return startCandidate.month === 12 && endCandidate.month === 1;
+}
+
 function resolveNumericRange(
   startCandidate: NumericCandidate,
   endCandidate: NumericCandidate,
@@ -370,6 +384,7 @@ function resolveNumericRange(
 ): { start: LocalDate; end: LocalDate } | null {
   let startYear = startCandidate.explicitYear;
   let endYear = endCandidate.explicitYear;
+  const mayCrossYear = canInferYearBoundary(startCandidate, endCandidate);
 
   if (startYear === null && endYear === null) {
     startYear = todayYear;
@@ -379,7 +394,8 @@ function resolveNumericRange(
     if (
       sameYearStart !== null &&
       sameYearEnd !== null &&
-      compareLocalDates(sameYearEnd, sameYearStart) < 0
+      compareLocalDates(sameYearEnd, sameYearStart) < 0 &&
+      mayCrossYear
     ) {
       endYear += 1;
     }
@@ -390,7 +406,8 @@ function resolveNumericRange(
     if (
       sameYearStart !== null &&
       sameYearEnd !== null &&
-      compareLocalDates(sameYearEnd, sameYearStart) < 0
+      compareLocalDates(sameYearEnd, sameYearStart) < 0 &&
+      mayCrossYear
     ) {
       endYear += 1;
     }
@@ -401,7 +418,8 @@ function resolveNumericRange(
     if (
       sameYearStart !== null &&
       sameYearEnd !== null &&
-      compareLocalDates(sameYearStart, sameYearEnd) > 0
+      compareLocalDates(sameYearStart, sameYearEnd) > 0 &&
+      mayCrossYear
     ) {
       startYear -= 1;
     }
@@ -419,13 +437,18 @@ interface InternalMatch extends NoteDateValue {
   readonly endUtf16: number;
 }
 
+interface RejectedNumericSpan {
+  readonly rejected: true;
+  readonly endUtf16: number;
+}
+
 function tryNumericMatch(
   source: string,
   startUtf16: number,
   limitUtf16: number,
   todayYear: number
-): InternalMatch | null {
-  if (!hasStartBoundary(source, startUtf16)) {
+): InternalMatch | RejectedNumericSpan | null {
+  if (!hasNumericStartBoundary(source, startUtf16)) {
     return null;
   }
   const startCandidate = readNumericCandidate(source, startUtf16, limitUtf16);
@@ -477,6 +500,7 @@ function tryNumericMatch(
             endUtf16: endCandidate.endUtf16
           };
         }
+        return { rejected: true, endUtf16: endCandidate.endUtf16 };
       }
     }
   }
@@ -624,6 +648,10 @@ export function findNoteDateMatches(
           );
       if (match === null) {
         offsetUtf16 += character.length;
+        continue;
+      }
+      if ("rejected" in match) {
+        offsetUtf16 = match.endUtf16;
         continue;
       }
       matches.push({

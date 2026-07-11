@@ -314,6 +314,17 @@ describe("parseNoteDateExpression", () => {
     );
   });
 
+  it.each([
+    "07/14 - 07/11",
+    "07-14 - 07-11",
+    "07/14/2026 - 07/11",
+    "07/14 - 07/11/2026",
+    "11/30 - 01/02"
+  ])("rejects ambiguous inferred-year range %s without partial matches", (input) => {
+    expect(parseNoteDateExpression(input, { today })).toBeNull();
+    expect(findNoteDateMatches(input, { today })).toEqual([]);
+  });
+
   it("rejects reversed explicit ranges and range syntax without spacing", () => {
     expect(
       parseNoteDateExpression("07/14/2026 - 07/11/2026", { today })
@@ -342,6 +353,13 @@ describe("parseNoteDateExpression", () => {
 });
 
 describe("findNoteDateMatches", () => {
+  it.each(["07/11-07/14", "07-11-07-14"])(
+    "does not partially index malformed compact range-like input %s",
+    (source) => {
+      expect(findNoteDateMatches(source, { today })).toEqual([]);
+    }
+  );
+
   it("returns ordered half-open UTF-16 source offsets", () => {
     const source = "😀 due 07/11/2026, then TOMORROW.";
     const matches = findNoteDateMatches(source, { today });
