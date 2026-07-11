@@ -10,9 +10,73 @@ import { describe, expect, it, vi } from "vitest";
 import { NoteTextField } from "./NoteTextField";
 
 describe("NoteTextField", () => {
+  it("exposes and activates exactly one text representation per mode", async () => {
+    const user = userEvent.setup();
+    const textareaRef = createRef<HTMLTextAreaElement>();
+    const { container } = render(
+      <NoteTextField
+        ref={textareaRef}
+        value="Plan #today"
+        aria-label="Edit node title"
+        tabIndex={2}
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea");
+    const presentation = container.querySelector(".notes-token-text");
+
+    expect(textarea).toBe(textareaRef.current);
+    expect(screen.queryByRole("textbox", { name: "Edit node title" }))
+      .not.toBeInTheDocument();
+    expect(textarea).toHaveAttribute("aria-hidden", "true");
+    expect(textarea).toHaveAttribute("tabindex", "-1");
+    expect(textarea).toHaveStyle({ pointerEvents: "none" });
+    expect(
+      screen.getByRole("group", { name: "Edit node title" })
+    ).toBe(presentation);
+    expect(presentation).toHaveAttribute("tabindex", "0");
+    expect(presentation).not.toHaveAttribute("aria-hidden", "true");
+    expect(
+      screen.getByRole("button", {
+        name: "#today tag filter is inactive"
+      })
+    ).toBeVisible();
+
+    await user.tab();
+    expect(presentation).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("textbox", { name: "Edit node title" })).toBe(
+      textarea
+    );
+    expect(textarea).toHaveFocus();
+    expect(textarea).not.toHaveAttribute("aria-hidden");
+    expect(textarea).toHaveAttribute("tabindex", "2");
+    expect(textarea).not.toHaveStyle({ pointerEvents: "none" });
+    expect(presentation).toHaveAttribute("aria-hidden", "true");
+    expect(presentation).toHaveAttribute("tabindex", "-1");
+    expect(
+      screen.queryByRole("button", {
+        name: "#today tag filter is inactive"
+      })
+    ).not.toBeInTheDocument();
+
+    act(() => textarea?.blur());
+
+    expect(container.querySelector("textarea")).toBe(textarea);
+    expect(screen.queryByRole("textbox", { name: "Edit node title" }))
+      .not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "#today tag filter is inactive"
+      })
+    ).toBeVisible();
+  });
+
   it("keeps one native textarea mounted while focus changes presentation modes", () => {
     const textareaRef = createRef<HTMLTextAreaElement>();
-    const { rerender } = render(
+    const { container, rerender } = render(
       <NoteTextField
         ref={textareaRef}
         className="notes-node-title"
@@ -23,9 +87,7 @@ describe("NoteTextField", () => {
         onTagClick={vi.fn()}
       />
     );
-    const textarea = screen.getByRole("textbox", {
-      name: "Edit node title"
-    });
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     const field = textarea.closest(".notes-text-field");
 
     expect(textarea).toBe(textareaRef.current);
@@ -42,6 +104,9 @@ describe("NoteTextField", () => {
     act(() => textarea.focus());
 
     expect(field).toHaveAttribute("data-editing", "true");
+    expect(screen.getByRole("textbox", { name: "Edit node title" })).toBe(
+      textarea
+    );
     expect(textarea).toHaveStyle({ opacity: "1" });
     expect(
       screen.queryByRole("button", {
@@ -102,7 +167,7 @@ describe("NoteTextField", () => {
     const onFocus = vi.fn(() => focusOrder.push("textarea"));
     const onTagClick = vi.fn(() => {
       focusOrder.push("tag");
-      expect(screen.getByRole("textbox", { name: "Edit title" })).not.toHaveFocus();
+      expect(document.querySelector("textarea")).not.toHaveFocus();
     });
     render(
       <NoteTextField
@@ -144,7 +209,7 @@ describe("NoteTextField", () => {
         onTagClick={vi.fn()}
       />
     );
-    const textarea = screen.getByRole("textbox", { name: "Edit title" });
+    const textarea = document.querySelector("textarea") as HTMLTextAreaElement;
     const field = textarea.closest(".notes-text-field");
 
     act(() => textarea.focus());

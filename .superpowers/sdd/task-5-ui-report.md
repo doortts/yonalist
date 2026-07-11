@@ -107,3 +107,59 @@ staged name check contained only the four owned component/test files.
 - Visual integration and CSS verification are intentionally deferred to the shared
   integration owner because this slice was expressly prohibited from modifying
   host components or `notes.css`.
+
+## Accessibility Follow-up
+
+The resting presentation and permanently mounted textarea previously exposed the
+same text twice to accessibility APIs. Resting mode now exposes a named, keyboard-
+focusable `NoteTokenText` group and its tag buttons while the textarea remains in
+the DOM with `aria-hidden="true"`, `tabindex="-1"`, and pointer input disabled.
+Enter or Space on the presentation, a plain-text pointer press, or programmatic
+textarea focus reveals and focuses the unchanged textarea node. Editing mode hides
+the presentation from accessibility and interaction and restores the textarea's
+original accessibility, tab-order, and pointer semantics.
+
+### Accessibility RED
+
+Command:
+
+```bash
+npm test -- src/features/notes/NoteTextField.test.tsx
+```
+
+First result: exit 1, 1 failed and 5 passed. The focused test expected no resting
+textbox role, but Vitest found the transparent textarea with `aria-label="Edit node
+title"` and `tabindex="2"`. This reproduced the duplicate accessibility exposure.
+
+After adding the resting keyboard-entry assertion, the same command again exited
+1 with 1 failed and 5 passed. Testing Library could not find the required named
+`group`, confirming that removing the textarea from interaction without a resting
+keyboard target would be incomplete.
+
+### Accessibility GREEN
+
+Command:
+
+```bash
+npm test -- src/features/notes/NoteTextField.test.tsx
+```
+
+Result: exit 0, 1 test file passed, 6 tests passed, 0 failures.
+
+Command:
+
+```bash
+npm test -- src/features/notes/noteTokens.test.ts src/features/notes/NoteTokenText.test.tsx src/features/notes/NoteTextField.test.tsx
+```
+
+Result: exit 0, 3 test files passed, 43 tests passed, 0 failures. The run completed
+in 1.22 seconds.
+
+Command:
+
+```bash
+npm run build
+```
+
+Result: exit 0. TypeScript and Vite completed successfully; 2,285 modules were
+transformed and the production build finished in 2.62 seconds.
