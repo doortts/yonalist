@@ -1,5 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type { NoteNode } from "../../domain/notes";
@@ -7,6 +9,11 @@ import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
+
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -148,13 +155,13 @@ describe("NotesChildComposer", () => {
     renderComposer(workspace);
 
     const addChild = screen.getByRole("button", { name: "Add child" });
-    addChild.focus();
+    act(() => addChild.focus());
     await user.keyboard("{Enter}");
 
     expect(workspace.actions.createChild).toHaveBeenCalledWith("project");
   });
 
-  it("disables while createChild is pending and ignores repeated activation", async () => {
+  it("keeps keyboard focus through a rejected create and ignores repeated activation", async () => {
     const user = userEvent.setup();
     const pendingCreate = deferred<void>();
     const workspace = workspaceValue();
@@ -162,16 +169,26 @@ describe("NotesChildComposer", () => {
     renderComposer(workspace);
 
     const addChild = screen.getByRole("button", { name: "Add child" });
-    await user.click(addChild);
-
-    expect(addChild).toBeDisabled();
-    await user.click(addChild);
     addChild.focus();
     await user.keyboard("{Enter}");
-    expect(workspace.actions.createChild).toHaveBeenCalledOnce();
 
-    await act(async () => pendingCreate.resolve());
+    expect(addChild).toHaveFocus();
     expect(addChild).toBeEnabled();
+    expect(addChild).toHaveAttribute("aria-disabled", "true");
+    expect(addChild).toHaveAttribute("data-pending", "true");
+    await user.click(addChild);
+    await user.keyboard("{Enter}");
+    expect(workspace.actions.createChild).toHaveBeenCalledOnce();
+    expect(notesStyles).toMatch(
+      /\.notes-child-composer-button\[data-pending="true"\]\s*{[^}]*opacity:\s*0\.34;/s
+    );
+
+    await act(async () => pendingCreate.reject(new Error("Create failed")));
+
+    expect(addChild).toHaveFocus();
+    expect(addChild).toBeEnabled();
+    expect(addChild).not.toHaveAttribute("aria-disabled");
+    expect(addChild).not.toHaveAttribute("data-pending");
   });
 
   it.each([

@@ -856,6 +856,12 @@
   opacity: 0.34;
 }
 
+.notes-child-composer-button[data-pending="true"] {
+  background: transparent;
+  color: var(--text-3);
+  opacity: 0.34;
+}
+
 .notes-bullet-menu-trigger {
   display: inline-flex;
   align-items: center;
@@ -1054,6 +1060,14 @@
   .notes-child-composer-button:disabled:focus-visible {
     opacity: 0.34;
   }
+
+  .notes-child-composer[data-has-children="true"]:hover
+    .notes-child-composer-button[data-pending="true"],
+  .notes-child-composer:focus-within
+    .notes-child-composer-button[data-pending="true"],
+  .notes-child-composer-button[data-pending="true"]:focus-visible {
+    opacity: 0.34;
+  }
 }
 
 @media (hover: none), (pointer: coarse) {
@@ -1065,6 +1079,10 @@
 
   .notes-bullet-menu-trigger:disabled,
   .notes-child-composer-button:disabled {
+    opacity: 0.34;
+  }
+
+  .notes-child-composer-button[data-pending="true"] {
     opacity: 0.34;
   }
 }

@@ -18,7 +18,6 @@ export function NotesChildComposer({
   const { actions } = useNotesWorkspaceContext();
   const createInFlightRef = useRef(false);
   const [creating, setCreating] = useState(false);
-  const unavailable = disabled || creating;
 
   const createChild = () => {
     if (disabled || createInFlightRef.current) {
@@ -51,7 +50,9 @@ export function NotesChildComposer({
           className="notes-child-composer-button"
           type="button"
           aria-label="Add child"
-          disabled={unavailable}
+          aria-disabled={creating ? "true" : undefined}
+          data-pending={creating ? "true" : undefined}
+          disabled={disabled}
           onClick={createChild}
         >
           <Plus size={14} aria-hidden="true" />
