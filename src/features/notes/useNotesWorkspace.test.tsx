@@ -1107,7 +1107,7 @@ describe("useNotesWorkspace", () => {
       secondCompletion = result.current.actions.createRoot();
     });
 
-    expect(createNoteIdMock).toHaveBeenCalledOnce();
+    await waitFor(() => expect(createNoteIdMock).toHaveBeenCalledOnce());
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
     expect(store.createNode).toHaveBeenNthCalledWith(
       1,
@@ -1150,6 +1150,68 @@ describe("useNotesWorkspace", () => {
         node({ id: "new-root-2", sortKey: 3 })
       ]));
       await Promise.all([firstCompletion, secondCompletion]);
+    });
+  });
+
+  it("materializes structural before snapshots before repository awaits", async () => {
+    createNoteIdMock.mockReturnValue("created");
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const activeReload = deferred<NotesWorkspace>();
+    let activeLoads = 0;
+    const createNode = vi.fn().mockResolvedValue(
+      workspace([
+        node({ id: "root" }),
+        node({ id: "other", sortKey: 2048 }),
+        node({ id: "created", sortKey: 3072 })
+      ])
+    );
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: createNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn((_vaultRoot, scope) => {
+        if (scope?.kind === "active") {
+          activeLoads += 1;
+          return activeLoads === 1
+            ? Promise.resolve(initial)
+            : activeReload.promise;
+        }
+        return Promise.resolve(initial);
+      }),
+      createNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    await act(async () => {
+      await result.current.actions.focusNode("root");
+      await result.current.actions.zoomTo("root");
+    });
+
+    const creation = result.current.actions.createRoot();
+    await waitFor(() => expect(activeLoads).toBe(2));
+    await act(async () => {
+      await result.current.actions.focusNode("other");
+      await result.current.actions.zoomTo("other");
+    });
+    activeReload.resolve(initial);
+    await act(async () => creation);
+    await act(async () => result.current.actions.undo!());
+
+    expect(result.current.state).toMatchObject({
+      selectedId: "root",
+      zoomRootId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
     });
   });
 
@@ -1723,11 +1785,89 @@ describe("useNotesWorkspace", () => {
     expect(updateNode.mock.invocationCallOrder[1]).toBeLessThan(
       splitNode.mock.invocationCallOrder[0]!
     );
-    expect(updateNode.mock.calls[0]?.[2]?.entryId).not.toBe(
+    expect(updateNode.mock.calls[0]?.[2]?.entryId).toBe(
       updateNode.mock.calls[1]?.[2]?.entryId
     );
     expect(updateNode.mock.calls[1]?.[2]?.entryId).not.toBe(
       splitNode.mock.calls[0]?.[2]?.entryId
+    );
+  });
+
+  it("drains sibling-hook drafts through the shared structural barrier", async () => {
+    const initial = workspace([
+      node({ id: "draft", title: "before" }),
+      node({ id: "target", sortKey: 2048 })
+    ]);
+    const firstWrite = deferred<NotesWorkspace>();
+    const updateNode = vi
+      .fn()
+      .mockImplementationOnce(() => firstWrite.promise)
+      .mockResolvedValue(initial);
+    const toggleStar = vi.fn().mockResolvedValue(
+      workspace([
+        node({ id: "draft", title: "second" }),
+        node({ id: "target", sortKey: 2048, isStarred: true })
+      ])
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      toggleStar
+    });
+    const first = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-barrier", repository: store })
+    );
+    const second = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-barrier", repository: store })
+    );
+    await waitFor(() => {
+      expect(first.result.current.status).toBe("ready");
+      expect(second.result.current.status).toBe("ready");
+    });
+
+    act(() => {
+      first.result.current.actions.updateNodeDraft(
+        "draft",
+        { title: "first", note: "" },
+        "title"
+      );
+    });
+    let structural!: Promise<void>;
+    act(() => {
+      structural = second.result.current.actions.toggleStar("target");
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+    act(() => {
+      first.result.current.actions.updateNodeDraft(
+        "draft",
+        { title: "second", note: "" },
+        "title"
+      );
+    });
+    await act(async () => firstWrite.resolve(initial));
+    await act(async () => structural);
+
+    expect(updateNode).toHaveBeenCalledTimes(2);
+    expect(updateNode.mock.invocationCallOrder[1]).toBeLessThan(
+      toggleStar.mock.invocationCallOrder[0]!
+    );
+    expect(updateNode.mock.calls[0]?.[2]?.entryId).toBe(
+      updateNode.mock.calls[1]?.[2]?.entryId
+    );
+
+    act(() => {
+      first.result.current.actions.updateNodeDraft(
+        "draft",
+        { title: "after", note: "" },
+        "title"
+      );
+    });
+    await act(async () => first.result.current.actions.flushAllDrafts());
+    expect(toggleStar.mock.invocationCallOrder[0]).toBeLessThan(
+      updateNode.mock.invocationCallOrder[2]!
+    );
+    expect(updateNode.mock.calls[2]?.[2]?.entryId).not.toBe(
+      updateNode.mock.calls[1]?.[2]?.entryId
     );
   });
 
@@ -1911,6 +2051,102 @@ describe("useNotesWorkspace", () => {
       expect(second.result.current.state.nodesById.root?.isStarred).toBe(false)
     );
     expect(second.result.current.state.zoomRootId).toBe("root");
+  });
+
+  it("keeps owner-only split snapshots out of sibling replay after owner unmount", async () => {
+    const initial = workspace([
+      node({ id: "root" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const splitResult = deferred<NotesWorkspace>();
+    const splitNode = vi.fn().mockReturnValue(splitResult.promise);
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: splitNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      splitNode,
+      undo
+    });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/owner-replay", repository: store })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/owner-replay", repository: store })
+    );
+    await waitFor(() => {
+      expect(owner.result.current.status).toBe("ready");
+      expect(sibling.result.current.status).toBe("ready");
+    });
+    await act(async () => {
+      await sibling.result.current.actions.focusNode("other");
+      await sibling.result.current.actions.zoomTo("other");
+    });
+
+    const split = owner.result.current.actions.splitNode(
+      "root",
+      "split",
+      "ro",
+      "ot"
+    );
+    await waitFor(() => expect(splitNode).toHaveBeenCalledOnce());
+    owner.unmount();
+    splitResult.resolve(
+      workspace([
+        node({ id: "root", title: "ro" }),
+        node({ id: "split", parentId: null, sortKey: 1536, title: "ot" }),
+        node({ id: "other", sortKey: 2048 })
+      ])
+    );
+    await act(async () => split);
+    await waitFor(() =>
+      expect(sibling.result.current.state.nodesById.split).toBeDefined()
+    );
+    expect(sibling.result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other",
+      pendingFocusId: "other"
+    });
+
+    await act(async () => sibling.result.current.actions.undo!());
+    expect(sibling.result.current.state).toMatchObject({
+      selectedId: "other",
+      zoomRootId: "other",
+      pendingFocusId: "other"
+    });
+  });
+
+  it("resets and generation-guards activation history status across vaults", async () => {
+    const firstStatus = deferred<{ canUndo: boolean; canRedo: boolean }>();
+    const secondStatus = deferred<{ canUndo: boolean; canRedo: boolean }>();
+    const historyStatus = vi.fn((vaultRoot: string) =>
+      vaultRoot === "/first" ? firstStatus.promise : secondStatus.promise
+    );
+    const store = repository({ historyStatus });
+    const { result, rerender } = renderHook(
+      ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+      { initialProps: { vaultRoot: "/first" } }
+    );
+    await waitFor(() =>
+      expect(historyStatus).toHaveBeenCalledWith("/first", expect.any(String))
+    );
+
+    rerender({ vaultRoot: "/second" });
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(false);
+    await waitFor(() =>
+      expect(historyStatus).toHaveBeenCalledWith("/second", expect.any(String))
+    );
+
+    secondStatus.resolve({ canUndo: false, canRedo: true });
+    await waitFor(() => expect(result.current.canRedo).toBe(true));
+    firstStatus.resolve({ canUndo: true, canRedo: false });
+    await Promise.resolve();
+    expect(result.current.canUndo).toBe(false);
+    expect(result.current.canRedo).toBe(true);
   });
 
   it("flushes pending drafts before creating a new root", async () => {
@@ -2111,6 +2347,10 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.retryFailedDraft("old-root"));
 
+    expect(vi.mocked(store.updateNode).mock.calls[1]?.[2]?.entryId).not.toBe(
+      vi.mocked(store.updateNode).mock.calls[0]?.[2]?.entryId
+    );
+
     expect(store.updateNode).toHaveBeenNthCalledWith(
       2,
       "/old",
@@ -2299,6 +2539,9 @@ describe("useNotesWorkspace", () => {
     expect(firstFlush).toBe(false);
     expect(retryFlush).toBe(true);
     expect(store.updateNode).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(store.updateNode).mock.calls[1]?.[2]?.entryId).not.toBe(
+      vi.mocked(store.updateNode).mock.calls[0]?.[2]?.entryId
+    );
     expect(mounted.result.current.draftsByNodeId).toEqual({});
   });
 
@@ -2546,7 +2789,7 @@ describe("useNotesWorkspace", () => {
     });
     await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledTimes(2));
     expect(store.updateNode).toHaveBeenCalledOnce();
-    expect(secondMount.result.current.state.rootIds).toEqual([]);
+    expect(secondMount.result.current.state.rootIds).toEqual(["a1-response"]);
 
     await act(async () =>
       refresh.resolve(workspace([node({ id: "after-a1" })]))
@@ -2657,7 +2900,7 @@ describe("useNotesWorkspace", () => {
       await oldA2Completion;
     });
     await waitFor(() => expect(aLoadCount).toBe(2));
-    expect(result.current.state.rootIds).toEqual([]);
+    expect(result.current.state.rootIds).toEqual(["a1-response"]);
     expect(store.updateNode).toHaveBeenCalledTimes(2);
 
     await act(async () =>

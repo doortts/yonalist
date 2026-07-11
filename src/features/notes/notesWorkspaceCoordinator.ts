@@ -1,5 +1,6 @@
 import type {
   NoteId,
+  NotesHistoryStatus,
   NotesStore,
   NotesWorkspace
 } from "../../domain/notes";
@@ -22,6 +23,7 @@ export type NotesWorkspaceQueueResult =
       kind: "authoritative";
       workspace: NotesWorkspace;
       uiUpdate?: NotesWorkspaceUiUpdate;
+      historyStatus?: NotesHistoryStatus;
     }
   | { kind: "skipped" }
   | { kind: "failure"; error: string; workspace?: NotesWorkspace };
@@ -51,12 +53,14 @@ export interface OpenNotesWorkspaceSessionOptions {
   repository: NotesStore;
   vaultRoot: string;
   onEvent(event: NotesWorkspaceCoordinatorEvent): void;
+  beforeStructural?: () => Promise<boolean>;
 }
 
 export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
   readonly history: NotesHistorySession;
   enqueue(work: NotesWorkspaceQueueWork): Promise<void>;
+  enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void>;
   close(): void;
 }
 
@@ -77,6 +81,9 @@ interface CoordinatorEntry {
   queue: QueueItem[];
   running: QueueItem | null;
   pendingActivation: ActivationItem | null;
+  structuralTail: Promise<void>;
+  pendingStructuralBarriers: number;
+  historyStatus: NotesHistoryStatus;
 }
 
 interface SessionState {
@@ -85,6 +92,9 @@ interface SessionState {
   pendingWork: number;
   activationItem: ActivationItem | null;
   onEvent: ((event: NotesWorkspaceCoordinatorEvent) => void) | null;
+  beforeStructural: (() => Promise<boolean>) | null;
+  closeCompletion: Promise<void>;
+  resolveClose: () => void;
 }
 
 interface QueueItemBase {
@@ -151,7 +161,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     if (
       entry.sessions.size > 0 ||
       entry.running !== null ||
-      entry.queue.length > 0
+      entry.queue.length > 0 ||
+      entry.pendingStructuralBarriers > 0
     ) {
       return;
     }
@@ -235,7 +246,6 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.sessions.clear();
     } else {
       const owner = item.owner;
-      item.owner = null;
       item.work = null;
       if (owner?.active) {
         owner.pendingWork = Math.max(0, owner.pendingWork - 1);
@@ -245,13 +255,25 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           hasPendingWork: owner.pendingWork > 0
         });
       }
-      if (authoritativeWorkspace && owner?.active) {
+      if (authoritativeWorkspace) {
+        const synchronizedResult: NotesWorkspaceQueueSettlement =
+          result.kind === "authoritative"
+            ? {
+                kind: "authoritative",
+                workspace: result.workspace,
+                historyStatus: result.historyStatus
+              }
+            : result;
         for (const session of entry.sessions) {
           if (session !== owner) {
-            notify(session, { type: "synchronized", result });
+            notify(session, {
+              type: "synchronized",
+              result: synchronizedResult
+            });
           }
         }
       }
+      item.owner = null;
     }
 
     finishCompletion(item);
@@ -292,6 +314,23 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             vaultRoot: item.entry.vaultRoot,
             confirmedWorkspace: item.entry.confirmedWorkspace
           });
+        }
+      }
+      if (result.kind === "authoritative") {
+        let status = result.historyStatus;
+        if (!status && item.entry.repository.historyStatus) {
+          try {
+            status = await item.entry.repository.historyStatus(
+              item.entry.vaultRoot,
+              item.entry.history.sessionId
+            );
+          } catch {
+            // Workspace authority remains valid when status discovery fails.
+          }
+        }
+        if (status) {
+          item.entry.historyStatus = status;
+          result = { ...result, historyStatus: status };
         }
       }
     } catch (cause) {
@@ -351,7 +390,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         sessions: new Set(),
         queue: [],
         running: null,
-        pendingActivation: null
+        pendingActivation: null,
+        structuralTail: Promise.resolve(),
+        pendingStructuralBarriers: 0,
+        historyStatus: { canUndo: false, canRedo: false }
       };
       repositoryEntries.set(vaultRoot, entry);
     }
@@ -366,6 +408,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     session.active = false;
     session.entry.sessions.delete(session);
     session.onEvent = null;
+    session.beforeStructural = null;
+    session.resolveClose();
 
     const activation = session.activationItem;
     session.activationItem = null;
@@ -385,10 +429,6 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
     }
 
-    const running = session.entry.running;
-    if (running?.kind === "command" && running.owner === session) {
-      running.owner = null;
-    }
     session.pendingWork = 0;
     maybeDeleteEntry(session.entry);
   };
@@ -397,15 +437,24 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     openSession({
       repository,
       vaultRoot,
-      onEvent
+      onEvent,
+      beforeStructural
     }: OpenNotesWorkspaceSessionOptions): NotesWorkspaceCoordinatorSession {
       const entry = getOrCreateEntry(repository, vaultRoot);
       const session: SessionState = {
+        ...(() => {
+          const close = completionParts();
+          return {
+            closeCompletion: close.completion,
+            resolveClose: close.resolveCompletion
+          };
+        })(),
         entry,
         active: true,
         pendingWork: 1,
         activationItem: null,
-        onEvent
+        onEvent,
+        beforeStructural: beforeStructural ?? null
       };
       entry.sessions.add(session);
 
@@ -427,27 +476,63 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       pump(entry);
 
       const activationCompletion = activation.completion;
+      const enqueueCommand = (work: NotesWorkspaceQueueWork): Promise<void> => {
+        if (!session.active) {
+          return Promise.resolve();
+        }
+        const completion = completionParts();
+        const item: CommandItem = {
+          kind: "command",
+          entry,
+          owner: session,
+          work,
+          canceled: false,
+          ...completion
+        };
+        session.pendingWork += 1;
+        entry.queue.push(item);
+        notify(session, { type: "pending" });
+        pump(entry);
+        return item.completion;
+      };
       return {
         activation: activationCompletion,
         history: entry.history,
         enqueue(work: NotesWorkspaceQueueWork): Promise<void> {
-          if (!session.active) {
-            return Promise.resolve();
-          }
-          const completion = completionParts();
-          const item: CommandItem = {
-            kind: "command",
-            entry,
-            owner: session,
-            work,
-            canceled: false,
-            ...completion
-          };
-          session.pendingWork += 1;
-          entry.queue.push(item);
-          notify(session, { type: "pending" });
-          pump(entry);
-          return item.completion;
+          return enqueueCommand(work);
+        },
+        enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void> {
+          entry.pendingStructuralBarriers += 1;
+          const completion = entry.structuralTail.then(async () => {
+            if (!session.active) {
+              return;
+            }
+            const participants = [...entry.sessions];
+            for (const participant of participants) {
+              if (
+                !participant.active ||
+                !participant.beforeStructural ||
+                !(await participant.beforeStructural())
+              ) {
+                if (participant.active && participant.beforeStructural) {
+                  return;
+                }
+              }
+            }
+            if (session.active) {
+              await enqueueCommand(work);
+            }
+          });
+          entry.structuralTail = completion
+            .catch(() => undefined)
+            .finally(() => {
+              entry.pendingStructuralBarriers = Math.max(
+                0,
+                entry.pendingStructuralBarriers - 1
+              );
+              maybeDeleteEntry(entry);
+            });
+          return Promise.race([completion, session.closeCompletion]);
         },
         close(): void {
           closeSession(session);

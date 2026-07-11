@@ -75,6 +75,136 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("drains every live session before enqueuing structural work", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const order: string[] = [];
+    const firstDrain = deferred<void>();
+    const first = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: vi.fn(),
+      beforeStructural: async () => {
+        order.push("first:start");
+        await firstDrain.promise;
+        order.push("first:end");
+        return true;
+      }
+    });
+    const second = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: vi.fn(),
+      beforeStructural: async () => {
+        order.push("second");
+        return true;
+      }
+    });
+    await Promise.all([first.activation, second.activation]);
+
+    const structural = second.enqueueStructural(() => {
+      order.push("structural");
+      return { kind: "skipped" as const };
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["first:start"]);
+
+    firstDrain.resolve();
+    await structural;
+    expect(order).toEqual([
+      "first:start",
+      "first:end",
+      "second",
+      "structural"
+    ]);
+    first.close();
+    second.close();
+  });
+
+  it("broadcasts an unmounted owner's authority without its UI update", async () => {
+    const running = deferred<NotesWorkspace>();
+    const store = repository({
+      historyStatus: vi.fn().mockResolvedValue({
+        canUndo: true,
+        canRedo: false
+      })
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const ownerEvents = vi.fn();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: ownerEvents
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: siblingEvents
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    ownerEvents.mockClear();
+    siblingEvents.mockClear();
+
+    const completion = owner.enqueue(async () => ({
+      kind: "authoritative" as const,
+      workspace: await running.promise,
+      uiUpdate: {
+        selectedId: "owner-selection",
+        zoomRootId: "owner-zoom"
+      }
+    }));
+    ownerEvents.mockClear();
+    owner.close();
+    const confirmed = workspace([node({ id: "confirmed" })]);
+    running.resolve(confirmed);
+    await completion;
+
+    expect(ownerEvents).not.toHaveBeenCalled();
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      result: {
+        kind: "authoritative",
+        workspace: confirmed,
+        historyStatus: { canUndo: true, canRedo: false }
+      }
+    });
+    sibling.close();
+  });
+
+  it("settles activation only after loading authoritative history status", async () => {
+    const history = deferred<{ canUndo: boolean; canRedo: boolean }>();
+    const store = repository({
+      historyStatus: vi.fn().mockReturnValue(history.promise)
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/vault",
+      onEvent: events
+    });
+    let activated = false;
+    void session.activation.then(() => {
+      activated = true;
+    });
+    await vi.waitFor(() => expect(store.historyStatus).toHaveBeenCalledOnce());
+    expect(activated).toBe(false);
+
+    history.resolve({ canUndo: false, canRedo: true });
+    await session.activation;
+    expect(events).toHaveBeenCalledWith({
+      type: "settled",
+      result: {
+        kind: "authoritative",
+        workspace: workspace([node({ id: "root" })]),
+        historyStatus: { canUndo: false, canRedo: true }
+      },
+      hasPendingWork: false
+    });
+    session.close();
+  });
+
   it("shares one history session per repository and vault coordinator entry", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

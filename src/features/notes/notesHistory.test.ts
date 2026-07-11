@@ -132,6 +132,28 @@ describe("notes history session", () => {
     );
   });
 
+  it("discards settled failures without leaking snapshots or the active burst", () => {
+    let sequence = 0;
+    const history = createNotesHistorySession({
+      createId: () => `history-${sequence++}`,
+      maxSnapshots: 2
+    });
+
+    for (let index = 0; index < 300; index += 1) {
+      const structural = history.beginStructuralEntry(
+        "move",
+        snapshot(`node-${index}`)
+      );
+      history.discard(structural.entryId);
+    }
+    const text = history.beginTextBurst("node-a", snapshot("node-a"));
+    history.discard(text.entryId);
+    const nextText = history.beginTextBurst("node-a", snapshot("node-a"));
+
+    expect(nextText.entryId).not.toBe(text.entryId);
+    expect(history.snapshotCount()).toBe(1);
+  });
+
   it("creates independent session IDs for separate vault coordinator entries", () => {
     const createId = idFactory();
     const first = createNotesHistorySession({ createId });

@@ -8,6 +8,8 @@ Original implementation commit: `c23ffc3`
 
 Review-fix commit: the commit containing this report
 
+Second adversarial review commit: the commit containing this report
+
 ## Owned Files
 
 - `src/features/notes/notesHistory.ts`
@@ -51,6 +53,14 @@ Review-fix commit: the commit containing this report
   stored title or note field.
 - Repositories without both replay methods retain their prior two-argument mutation
   calls. The production Tauri store exposes both methods and receives history contexts.
+- The coordinator now owns a cross-session structural barrier. Every live hook drains
+  its drafts through ordinary FIFO commands before structural work is enqueued, so the
+  barrier never waits on a command that is waiting on the barrier itself.
+- Structural history contexts are concrete objects allocated as the first synchronous
+  step of queue execution. Sibling broadcasts strip owner `uiUpdate` while retaining
+  workspace and versioned history status, including after owner unmount.
+- Completed owner metadata is bounded while in-flight metadata is never evicted.
+  Failed/skipped text and structural entries are explicitly discarded.
 
 ## TDD Evidence
 
@@ -98,6 +108,31 @@ and 12 passes: history shortcuts stayed native and note replay focused the title
 
 GREEN: the same command exited 0 with 14 tests passed.
 
+### Second Adversarial Review
+
+Coordinator RED: `notesWorkspaceCoordinator.test.ts` exited 1 with 3 failures and
+5 passes: no shared structural barrier API, no unmounted-owner sibling broadcast, and
+no activation history-status query. GREEN: 8/8 passed.
+
+History cleanup RED: `notesHistory.test.ts` exited 1 with 1 failure and 6 passes
+because `discard` did not exist. GREEN: 7/7 passed after 300 discarded failures left
+only the one active snapshot.
+
+Cross-hook chronology RED: the focused hook test exited 1 because Hook B's structural
+command ran after only one of Hook A's two writes. GREEN: both writes precede the
+structural call with one burst ID, while post-barrier typing uses a new ID.
+
+Retry cleanup RED: the same-mount retry test exited 1 because the failed and retried
+text writes reused one entry ID. GREEN: explicit discard gives the retry a fresh ID.
+
+Owner-only replay RED: the sibling replay test exited 1 because Undo replaced the
+sibling's selection, zoom, and focus with the unmounted split owner's null snapshot.
+GREEN: replay snapshots now require exact local owner identity.
+
+Execution-time snapshot and vault-generation status fixtures also pass, covering a
+navigation change during a pre-mutation repository await and a late Vault A status
+response after switching to Vault B.
+
 ## Verification
 
 - Focused command covering history, keyboard, coordinator, reducer, hook, and header:
@@ -105,6 +140,10 @@ GREEN: the same command exited 0 with 14 tests passed.
 - `npm test -- src/features/notes`: exit 0, 19 files passed, 438 tests passed.
 - `npm run build`: exit 0; TypeScript and Vite completed, 2,286 modules transformed.
 - `git diff --cached --check` before the implementation commit: exit 0.
+- Second-review focused history/coordinator/hook run: 3 files, 90/90 passed.
+- Second-review hook plus workspace integration run: 4 files, 172/172 passed.
+- Second-review final full Notes run: 21 files, 498/498 passed.
+- Second-review `npm run build`: exit 0; 2,286 modules transformed.
 
 ## Concerns
 
@@ -123,10 +162,8 @@ GREEN: the same command exited 0 with 14 tests passed.
 - Review verification: hook plus workspace suites passed 153/153; all 20 Notes
   test files outside the concurrently edited DatePicker passed 450/450;
   `npm run build` passed with 2,286 modules.
-- The full Notes-folder run currently has 434 passing tests and failures rooted in two
-  concurrently edited `NotesDatePicker.test.tsx` controlled-value cases; their failure
-  leaves shared test state dirty and cascades into later workspace timeouts. Task 2B
-  does not touch those date files.
+- The earlier concurrent DatePicker and image test instability is resolved on current
+  HEAD; the final full Notes run is green without exclusions.
 - Atomic `NotesMutationResult` wrapping remains a coordinated backend wire follow-up.
   This frontend continues to accept today's `NotesWorkspace` mutation response and
   derives history status through the existing backend status contract.

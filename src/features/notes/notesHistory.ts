@@ -41,6 +41,8 @@ export interface NotesHistorySession {
     before: NotesHistorySnapshot
   ): NotesHistoryContext;
   rememberAfter(entryId: string, after: NotesHistorySnapshot): void;
+  discard(entryId: string): void;
+  snapshotCount(): number;
   snapshotForReplay(
     entryId: string | null,
     direction: NotesHistoryReplayDirection
@@ -131,6 +133,15 @@ export function createNotesHistorySession({
           }
         }
       }
+    },
+    discard(entryId) {
+      snapshots.delete(entryId);
+      if (textBurst?.context.entryId === entryId) {
+        textBurst = null;
+      }
+    },
+    snapshotCount() {
+      return snapshots.size;
     },
     snapshotForReplay(entryId, direction) {
       if (entryId === null) {
