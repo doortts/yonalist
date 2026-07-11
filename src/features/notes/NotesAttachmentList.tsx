@@ -44,6 +44,14 @@ function DeferredNotesImage({
   const { actions } = useNotesWorkspaceContext();
   const slotRef = useRef<HTMLDivElement>(null);
   const manualFocusPendingRef = useRef(false);
+  const observerGenerationRef = useRef(0);
+  const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelPendingRelease = useCallback(() => {
+    if (releaseTimerRef.current !== null) {
+      clearTimeout(releaseTimerRef.current);
+      releaseTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     const slot = slotRef.current;
@@ -51,42 +59,48 @@ function DeferredNotesImage({
       return;
     }
 
-    let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-    const cancelRelease = () => {
-      if (releaseTimer !== null) {
-        clearTimeout(releaseTimer);
-        releaseTimer = null;
-      }
-    };
+    const generation = observerGenerationRef.current + 1;
+    observerGenerationRef.current = generation;
+    let disposed = false;
+    const isCurrent = () =>
+      !disposed && observerGenerationRef.current === generation;
     const observer = new IntersectionObserver(
       (entries) => {
+        if (!isCurrent()) return;
         const entry = entries.find((candidate) => candidate.target === slot);
         if (!entry) return;
         if (entry.isIntersecting) {
-          cancelRelease();
+          cancelPendingRelease();
           onActivate(attachment.id);
           return;
         }
-        cancelRelease();
-        releaseTimer = setTimeout(
-          () => onDeactivate(attachment.id),
-          offscreenReleaseDelayMs
-        );
+        cancelPendingRelease();
+        releaseTimerRef.current = setTimeout(() => {
+          releaseTimerRef.current = null;
+          if (isCurrent()) onDeactivate(attachment.id);
+        }, offscreenReleaseDelayMs);
       },
       { rootMargin: "160px 0px" }
     );
     observer.observe(slot);
     return () => {
-      cancelRelease();
+      disposed = true;
+      if (observerGenerationRef.current === generation) {
+        observerGenerationRef.current = generation + 1;
+      }
+      cancelPendingRelease();
       observer.disconnect();
     };
-  }, [attachment.id, onActivate, onDeactivate]);
+  }, [attachment.id, cancelPendingRelease, onActivate, onDeactivate]);
 
   useLayoutEffect(() => {
-    if (!active || !manualFocusPendingRef.current) return;
-    manualFocusPendingRef.current = false;
-    slotRef.current?.focus();
-  }, [active]);
+    if (!active) return;
+    cancelPendingRelease();
+    if (manualFocusPendingRef.current) {
+      manualFocusPendingRef.current = false;
+      slotRef.current?.focus();
+    }
+  }, [active, cancelPendingRelease]);
 
   const loadBytes = useCallback(() => {
     if (!actions.loadAttachmentBytes) {
@@ -131,6 +145,7 @@ function DeferredNotesImage({
             className="text-button"
             aria-label={`Load image ${attachment.originalName}`}
             onClick={() => {
+              cancelPendingRelease();
               manualFocusPendingRef.current = true;
               onActivate(attachment.id);
             }}
@@ -178,6 +193,18 @@ export function NotesAttachmentList({
     0,
     MAX_NOTE_ATTACHMENTS_PER_NODE
   );
+
+  useEffect(() => {
+    const currentAttachmentIds = new Set(
+      boundedAttachments.map((attachment) => attachment.id)
+    );
+    setResidentAttachmentIds((current) => {
+      const next = current.filter((attachmentId) =>
+        currentAttachmentIds.has(attachmentId)
+      );
+      return next.length === current.length ? current : next;
+    });
+  }, [attachments]);
 
   if (attachments.length === 0 && !uploadError) {
     return null;

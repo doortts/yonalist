@@ -288,6 +288,110 @@ describe("NotesAttachmentList", () => {
     );
   });
 
+  it("ignores a retained observer callback after replacement without evicting a live image", async () => {
+    installIntersectionObserver();
+    const view = render(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={Array.from({ length: 8 }, (_, index) =>
+          attachment(index + 1)
+        )}
+      />
+    );
+    const initialGroups = screen.getAllByRole("group", { name: /^Image:/ });
+    const removedGroup = initialGroups[0]!;
+    const retainedCallback = intersectionCallbacks.get(removedGroup)!;
+
+    for (const group of initialGroups) {
+      act(() => {
+        intersectionCallbacks.get(group)?.(
+          [
+            {
+              target: group,
+              isIntersecting: true
+            } as unknown as IntersectionObserverEntry
+          ],
+          {} as IntersectionObserver
+        );
+      });
+    }
+    await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(8));
+
+    view.rerender(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={Array.from({ length: 8 }, (_, index) =>
+          attachment(index + 2)
+        )}
+      />
+    );
+    const replacement = screen.getByRole("group", {
+      name: "Image: image-9.png"
+    });
+    act(() => {
+      intersectionCallbacks.get(replacement)?.(
+        [
+          {
+            target: replacement,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await screen.findByRole("img", { name: "image-9.png" });
+
+    act(() => {
+      retainedCallback(
+        [
+          {
+            target: removedGroup,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+
+    expect(screen.getByRole("img", { name: "image-2.png" })).toBeVisible();
+    expect(screen.getAllByRole("img")).toHaveLength(8);
+  });
+
+  it("prunes resident identity when an attachment leaves the metadata set", async () => {
+    installIntersectionObserver();
+    const view = render(
+      <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
+    );
+    const first = screen.getByRole("group", { name: "Image: image-1.png" });
+    act(() => {
+      intersectionCallbacks.get(first)?.(
+        [
+          {
+            target: first,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await screen.findByRole("img", { name: "image-1.png" });
+
+    view.rerender(
+      <NotesAttachmentList nodeId="node-1" attachments={[attachment(2)]} />
+    );
+    view.rerender(
+      <NotesAttachmentList
+        nodeId="node-1"
+        attachments={[attachment(1), attachment(2)]}
+      />
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Load image image-1.png" })
+    ).toBeVisible();
+    expect(workspaceActions.loadAttachmentBytes).toHaveBeenCalledOnce();
+  });
+
   it("offers a manual accessible loader when viewport observation is unavailable", async () => {
     const user = userEvent.setup();
     render(
@@ -305,6 +409,41 @@ describe("NotesAttachmentList", () => {
       "attachment-1"
     );
     expect(group).toHaveFocus();
+  });
+
+  it("cancels a pending offscreen release when keyboard loading manually", async () => {
+    installIntersectionObserver();
+    const user = userEvent.setup();
+    render(
+      <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
+    );
+    const group = screen.getByRole("group", { name: "Image: image-1.png" });
+    const observer = intersectionCallbacks.get(group)!;
+    act(() => {
+      observer(
+        [
+          {
+            target: group,
+            isIntersecting: false
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+
+    await user.tab();
+    expect(
+      screen.getByRole("button", { name: "Load image image-1.png" })
+    ).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await screen.findByRole("img", { name: "image-1.png" });
+    expect(group).toHaveFocus();
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect(screen.getByRole("img", { name: "image-1.png" })).toBeVisible();
+    expect(group).toHaveFocus();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
   });
 
   it("disconnects a dormant observer without loading bytes on cleanup", () => {
