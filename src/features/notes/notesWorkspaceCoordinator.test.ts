@@ -15,6 +15,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }
@@ -49,9 +51,12 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     removeEmptyNode: empty,
     softDeleteNode: empty,
     restoreNode: empty,
+    archiveNode: empty,
+    unarchiveNode: empty,
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
+    listTagsWithCounts: vi.fn().mockResolvedValue([]),
     deleteDatabase: vi.fn().mockResolvedValue(undefined),
     ...overrides
   };

@@ -78,6 +78,8 @@ function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteN
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }

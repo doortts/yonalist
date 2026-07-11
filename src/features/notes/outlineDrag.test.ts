@@ -26,6 +26,8 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     createdAt: "2026-07-10T00:00:00Z",
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
     ...overrides
   };
 }
