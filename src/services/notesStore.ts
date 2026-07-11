@@ -8,6 +8,7 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
+  NoteSearchScope,
   NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesHistoryContext,
@@ -227,9 +228,14 @@ export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
 
 export async function notesSearch(
   vaultPath: string,
-  query: string
+  query: string,
+  scope: NoteSearchScope = { kind: "active" }
 ): Promise<NoteSearchResult[]> {
-  const results = await invokeNotes<unknown>("notes_search", { vaultPath, query });
+  const results = await invokeNotes<unknown>("notes_search", {
+    vaultPath,
+    query,
+    scope
+  });
   if (!Array.isArray(results) || !results.every(isNoteSearchResult)) {
     throw new Error("Notes search returned an invalid result.");
   }

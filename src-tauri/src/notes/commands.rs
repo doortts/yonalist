@@ -1,25 +1,26 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::attachments::AttachmentStorageLease;
+use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
 use crate::notes::history::{
-    clear_all_history, clear_history, history_status, redo_with_attachment_storage,
-    undo_with_attachment_storage, with_history_transaction_and_prunes,
+    clear_all_history, clear_history, history_status, redo_with_attachment_storage_at,
+    undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, connect_notes_db, create_attachment_coordinated, create_node,
-    delete_database, duplicate_node, empty_trash, list_tags, list_tags_with_counts, load_workspace,
-    move_node, open_notes_export_db, remove_attachment, remove_empty_node,
-    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node, search_nodes,
-    search_nodes_structured, soft_delete_node, split_node, toggle_collapsed, toggle_complete,
-    toggle_star, unarchive_node, update_node, validate_note_tag_filters,
-    validate_structured_search_query_input, NewAttachment,
+    archive_node, attachment_by_id, connect_notes_db, create_attachment_coordinated,
+    create_node_at, delete_database, duplicate_node_at, empty_trash, list_tags,
+    list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
+    remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
+    restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node, split_node_at,
+    toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
+    validate_note_tag_filters, validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, MoveNodeInput, NoteSearchResult,
-    NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
-    NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
-    NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
-    SplitNodeInput, UpdateNodeInput,
+    NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat,
+    NotesExportResult, NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult,
+    NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+    ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
 };
 use std::fs;
 use std::io::ErrorKind;
@@ -51,6 +52,31 @@ fn run_mutation(
     Ok(result.into_mutation_result())
 }
 
+fn run_dated_mutation(
+    vault_path: &str,
+    history_context: Option<NotesHistoryContext>,
+    today_provider: &impl LocalTodayProvider,
+    operation: impl FnOnce(
+        &mut rusqlite::Connection,
+        crate::notes::date_index::LocalDate,
+    ) -> Result<NotesWorkspace, String>,
+) -> Result<NotesMutationResult, String> {
+    let storage = AttachmentStorageLease::acquire(vault_path)?;
+    let mut connection = connect_notes_db(vault_path)?;
+    let today = today_provider.local_today(&connection)?;
+    let result = with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| operation(connection, today),
+    )?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
+    Ok(result.into_mutation_result())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_load_workspace(
     vault_path: String,
@@ -69,9 +95,12 @@ pub(crate) fn notes_create_node(
     input: CreateNodeInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        create_node(connection, input)
-    })
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| create_node_at(connection, input, today),
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -80,9 +109,12 @@ pub(crate) fn notes_update_node(
     input: UpdateNodeInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        update_node(connection, input)
-    })
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| update_node_at(connection, input, today),
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -91,9 +123,12 @@ pub(crate) fn notes_split_node(
     input: SplitNodeInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        split_node(connection, input)
-    })
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| split_node_at(connection, input, today),
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -146,9 +181,12 @@ pub(crate) fn notes_duplicate_node(
     node_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        duplicate_node(connection, &node_id)
-    })
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| duplicate_node_at(connection, &node_id, today),
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -179,9 +217,12 @@ pub(crate) fn notes_restore_node(
     node_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    run_mutation(&vault_path, history_context, |connection| {
-        restore_node(connection, &node_id)
-    })
+    run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| restore_node_at(connection, &node_id, today),
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -212,9 +253,20 @@ pub(crate) fn notes_undo(
     session_id: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
+    notes_undo_with_provider(vault_path, session_id, scope, &SystemLocalTodayProvider)
+}
+
+fn notes_undo_with_provider(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+    today_provider: &impl LocalTodayProvider,
+) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
-    let result = undo_with_attachment_storage(&mut connection, &session_id, scope, &storage)?;
+    let today = today_provider.local_today(&connection)?;
+    let result =
+        undo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result)
 }
@@ -225,9 +277,20 @@ pub(crate) fn notes_redo(
     session_id: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
+    notes_redo_with_provider(vault_path, session_id, scope, &SystemLocalTodayProvider)
+}
+
+fn notes_redo_with_provider(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+    today_provider: &impl LocalTodayProvider,
+) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
-    let result = redo_with_attachment_storage(&mut connection, &session_id, scope, &storage)?;
+    let today = today_provider.local_today(&connection)?;
+    let result =
+        redo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result)
 }
@@ -449,9 +512,20 @@ pub(crate) fn notes_restore_attachment(
 pub(crate) fn notes_search(
     vault_path: String,
     query: String,
+    scope: NoteSearchScope,
+) -> Result<Vec<NoteSearchResult>, String> {
+    notes_search_with_provider(vault_path, query, scope, &SystemLocalTodayProvider)
+}
+
+fn notes_search_with_provider(
+    vault_path: String,
+    query: String,
+    scope: NoteSearchScope,
+    today_provider: &impl LocalTodayProvider,
 ) -> Result<Vec<NoteSearchResult>, String> {
     let connection = connect_notes_db(&vault_path)?;
-    search_nodes(&connection, &query)
+    let today = today_provider.local_today(&connection)?;
+    search_nodes_at(&connection, &query, scope, today)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -574,6 +648,7 @@ fn export_notes_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
         NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag,
         NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
@@ -586,6 +661,14 @@ mod tests {
     const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const REPLACEMENT_ENTRY_ID: &str = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
     const INVALID_DESCENDANT_ID: &str = "bad -->\n# injected";
+
+    struct FixedLocalToday;
+
+    impl LocalTodayProvider for FixedLocalToday {
+        fn local_today(&self, _connection: &rusqlite::Connection) -> Result<LocalDate, String> {
+            LocalDate::new(2026, 7, 11).ok_or_else(|| "invalid fixed today".to_string())
+        }
+    }
 
     fn assert_active(workspace: &NotesWorkspace) {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
@@ -997,11 +1080,15 @@ mod tests {
         .expect("create searchable node");
 
         assert_eq!(
-            notes_search(vault_path.clone(), "target".to_string())
-                .expect("search")
-                .first()
-                .expect("search result")
-                .node_id,
+            notes_search(
+                vault_path.clone(),
+                "target".to_string(),
+                NoteSearchScope::Active,
+            )
+            .expect("search")
+            .first()
+            .expect("search result")
+            .node_id,
             ROOT_ID
         );
         assert_eq!(
@@ -1038,6 +1125,34 @@ mod tests {
 
         notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+    }
+
+    #[test]
+    fn notes_date_search_command_uses_the_injected_local_today_provider() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "07/12/2026".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create dated node");
+
+        let results = notes_search_with_provider(
+            vault_path,
+            "tomorrow".to_string(),
+            NoteSearchScope::Active,
+            &FixedLocalToday,
+        )
+        .expect("search with injected today");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].matched_field, NoteSearchMatchedField::Date);
     }
 
     fn command_search_tag(index: usize) -> NoteSearchTag {

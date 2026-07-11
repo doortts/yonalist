@@ -8,6 +8,7 @@ import {
 } from "./notes";
 import type {
   NoteNode,
+  NoteSearchScope,
   NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesMutationResult,
@@ -88,6 +89,28 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult(result)).toBe(true);
     expect(isNoteSearchResult({ ...result, parentTrail: ["Page", 42] })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
+    expect(isNoteSearchResult({ ...result, matchedField: "date" })).toBe(true);
+  });
+
+  it("supports typed active, archive, and trash search scopes", () => {
+    const scopes: NoteSearchScope[] = [
+      { kind: "active" },
+      { kind: "archive" },
+      { kind: "trash" }
+    ];
+
+    expect(scopes.map((scope) => scope.kind)).toEqual([
+      "active",
+      "archive",
+      "trash"
+    ]);
+    expectTypeOf<NotesStore["search"]>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        query: string,
+        scope?: NoteSearchScope
+      ) => Promise<import("./notes").NoteSearchResult[]>
+    >();
   });
 
   it("recognizes structured search queries and rejects malformed tag groups", () => {

@@ -181,7 +181,10 @@ describe("notesStore in Tauri", () => {
         "notes_load_workspace",
         { vaultPath, scope: { kind: "tag", tag: "roadmap" } }
       ],
-      ["notes_search", { vaultPath, query: "target" }],
+      [
+        "notes_search",
+        { vaultPath, query: "target", scope: { kind: "active" } }
+      ],
       ["notes_toggle_star", { vaultPath, nodeId, historyContext: null }],
       ["notes_list_tags", { vaultPath }],
       ["notes_list_tags_with_counts", { vaultPath }],
@@ -202,6 +205,27 @@ describe("notesStore in Tauri", () => {
     await expect(notesSearch(vaultPath, "target")).rejects.toEqual(
       new Error("Notes search returned an invalid result.")
     );
+  });
+
+  it("passes the typed date-search lifecycle scope and accepts date matches", async () => {
+    const results = [
+      {
+        nodeId,
+        title: "Archived plan",
+        parentTrail: [],
+        matchedField: "date" as const
+      }
+    ];
+    invokeMock.mockResolvedValue(results);
+
+    await expect(
+      notesSearch(vaultPath, "next week", { kind: "archive" })
+    ).resolves.toEqual(results);
+    expect(invokeMock).toHaveBeenCalledWith("notes_search", {
+      vaultPath,
+      query: "next week",
+      scope: { kind: "archive" }
+    });
   });
 
   it("maps structured search to an additive typed native command", async () => {

@@ -77,11 +77,16 @@ export type NotesWorkspaceScope =
   | { kind: "archive" }
   | { kind: "trash" };
 
+export type NoteSearchScope =
+  | { kind: "active" }
+  | { kind: "archive" }
+  | { kind: "trash" };
+
 export interface NoteSearchResult {
   nodeId: NoteId;
   title: string;
   parentTrail: string[];
-  matchedField: "title" | "note";
+  matchedField: "title" | "note" | "date";
 }
 
 export interface NotesStoreError extends Error {
@@ -138,7 +143,7 @@ export interface NotesStore {
   historyStatus?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
   clearHistory?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
-  search(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
+  search(vaultPath: string, query: string, scope?: NoteSearchScope): Promise<NoteSearchResult[]>;
   searchStructured?(vaultPath: string, query: NoteStructuredSearchQuery): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
   listTagsWithCounts(vaultPath: string): Promise<NoteTagSummary[]>;
@@ -199,7 +204,9 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     typeof value.title === "string" &&
     Array.isArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&
-    (value.matchedField === "title" || value.matchedField === "note")
+    (value.matchedField === "title" ||
+      value.matchedField === "note" ||
+      value.matchedField === "date")
   );
 }
 

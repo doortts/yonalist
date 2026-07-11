@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import noteDateFixtures from "./noteDateFixtures.json";
 import {
   addLocalDateDays,
   addLocalDateMonths,
@@ -17,6 +18,11 @@ import {
 } from "./noteDates";
 
 const today: LocalDate = { year: 2026, month: 7, day: 11 };
+
+function localDateFromIso(value: string): LocalDate {
+  const [year, month, day] = value.split("-").map(Number);
+  return { year, month, day };
+}
 
 function numericValue(
   start: LocalDate,
@@ -353,6 +359,21 @@ describe("parseNoteDateExpression", () => {
 });
 
 describe("findNoteDateMatches", () => {
+  it.each(noteDateFixtures)("matches shared fixture: $name", (fixture) => {
+    const matches = findNoteDateMatches(fixture.source, {
+      today: localDateFromIso(fixture.today),
+      weekStartsOn: fixture.weekStartsOn as "monday" | "sunday"
+    }).map((match) => ({
+      raw: match.raw,
+      startUtf16: match.startUtf16,
+      endUtf16: match.endUtf16,
+      normalizedStart: formatLocalDateIso(match.start),
+      normalizedEnd: formatLocalDateIso(match.end ?? match.start)
+    }));
+
+    expect(matches).toEqual(fixture.matches);
+  });
+
   const yearlessEndpointFormats = [
     ["/", "MM/DD"],
     ["-", "MM-DD"]

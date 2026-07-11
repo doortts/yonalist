@@ -1,5 +1,6 @@
 use crate::notes::attachments::AttachmentStorageLease;
-use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes};
+use crate::notes::date_index::{LocalDate, LocalTodayProvider, SystemLocalTodayProvider};
+use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes_at};
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NotesHistoryContext, NotesHistoryReplayResult,
     NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
@@ -890,6 +891,7 @@ fn replay(
     scope: NotesWorkspaceScope,
     undoing: bool,
     attachment_storage: Option<&AttachmentStorageLease>,
+    today: LocalDate,
 ) -> Result<NotesHistoryReplayResult, String> {
     validate_history_id("Notes history session ID", session_id)?;
     let transaction = connection
@@ -975,7 +977,7 @@ fn replay(
             _ => return Err(format!("Unsupported Notes history table {table_name}.")),
         }
     }
-    rebuild_derived_for_nodes(&transaction, &affected_nodes)?;
+    rebuild_derived_for_nodes_at(&transaction, &affected_nodes, today)?;
     transaction
         .execute(
             "UPDATE notes_history_entries SET is_undone = ?1 WHERE id = ?2",
@@ -1001,7 +1003,8 @@ pub(crate) fn undo(
     session_id: &str,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    replay(connection, session_id, scope, true, None)
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    replay(connection, session_id, scope, true, None, today)
 }
 
 #[cfg(test)]
@@ -1010,7 +1013,8 @@ pub(crate) fn redo(
     session_id: &str,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
-    replay(connection, session_id, scope, false, None)
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    replay(connection, session_id, scope, false, None, today)
 }
 
 pub(crate) fn undo_with_attachment_storage(
@@ -1019,12 +1023,24 @@ pub(crate) fn undo_with_attachment_storage(
     scope: NotesWorkspaceScope,
     attachment_storage: &AttachmentStorageLease,
 ) -> Result<NotesHistoryReplayResult, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    undo_with_attachment_storage_at(connection, session_id, scope, attachment_storage, today)
+}
+
+pub(crate) fn undo_with_attachment_storage_at(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    attachment_storage: &AttachmentStorageLease,
+    today: LocalDate,
+) -> Result<NotesHistoryReplayResult, String> {
     replay(
         connection,
         session_id,
         scope,
         true,
         Some(attachment_storage),
+        today,
     )
 }
 
@@ -1034,12 +1050,24 @@ pub(crate) fn redo_with_attachment_storage(
     scope: NotesWorkspaceScope,
     attachment_storage: &AttachmentStorageLease,
 ) -> Result<NotesHistoryReplayResult, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    redo_with_attachment_storage_at(connection, session_id, scope, attachment_storage, today)
+}
+
+pub(crate) fn redo_with_attachment_storage_at(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    attachment_storage: &AttachmentStorageLease,
+    today: LocalDate,
+) -> Result<NotesHistoryReplayResult, String> {
     replay(
         connection,
         session_id,
         scope,
         false,
         Some(attachment_storage),
+        today,
     )
 }
 
@@ -1431,13 +1459,13 @@ mod tests {
     }
 
     #[test]
-    fn notes_history_rebuilds_search_tags_and_clears_derived_dates_on_replay() {
+    fn notes_history_rebuilds_search_tags_and_exact_derived_dates_on_replay() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
         create_node(
             &mut connection,
-            create_input(NODE_ID, None, None, "Before #before"),
+            create_input(NODE_ID, None, None, "Before #before 07/11/2026"),
         )
         .expect("seed");
         let context = history_context(1, "updateText");
@@ -1446,16 +1474,15 @@ mod tests {
                 connection,
                 UpdateNodeInput {
                     id: NODE_ID.to_string(),
-                    title: "After #after".to_string(),
+                    title: "After #after 07/12/2026".to_string(),
                     note: String::new(),
                 },
             )
         })
         .expect("update");
-        connection.execute(
-            "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, normalized_start, normalized_end, token_text) VALUES (?1, 'title', 0, 5, '2026-01-01', '2026-01-01', 'stale')",
-            [NODE_ID],
-        ).expect("seed stale derived date");
+        connection
+            .execute("DELETE FROM notes_dates WHERE node_id = ?1", [NODE_ID])
+            .expect("clear derived date before replay");
 
         undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo");
         assert_eq!(list_tags(&connection).expect("tags"), vec!["before"]);
@@ -1484,14 +1511,21 @@ mod tests {
                 .len(),
             1
         );
-        let date_count: i64 = connection
+        let date_row: (String, String, String) = connection
             .query_row(
-                "SELECT COUNT(*) FROM notes_dates WHERE node_id = ?1",
+                "SELECT normalized_start, normalized_end, token_text FROM notes_dates WHERE node_id = ?1",
                 [NODE_ID],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("dates");
-        assert_eq!(date_count, 0);
+        assert_eq!(
+            date_row,
+            (
+                "2026-07-11".to_string(),
+                "2026-07-11".to_string(),
+                "07/11/2026".to_string()
+            )
+        );
 
         redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo");
         assert_eq!(list_tags(&connection).expect("tags"), vec!["after"]);
@@ -1504,6 +1538,14 @@ mod tests {
         assert!(search_nodes_structured(&connection, &before_query)
             .expect("structured before search after redo")
             .is_empty());
+        let redone_date: String = connection
+            .query_row(
+                "SELECT token_text FROM notes_dates WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("redone date");
+        assert_eq!(redone_date, "07/12/2026");
     }
 
     #[test]

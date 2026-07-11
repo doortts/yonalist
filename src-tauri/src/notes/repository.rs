@@ -1,10 +1,14 @@
+use crate::notes::date_index::{
+    find_note_date_matches, parse_note_date_expression, LocalDate, LocalTodayProvider,
+    SystemLocalTodayProvider, WeekStartsOn,
+};
 use crate::notes::history;
 use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode,
-    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery,
-    NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesWorkspace,
-    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
+    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
+    NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -24,6 +28,8 @@ use std::sync::mpsc::Sender;
 const NOTES_SCHEMA_VERSION: i64 = 3;
 const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
 const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
+const NOTE_DATE_PARSER_VERSION: i64 = 1;
+const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
 const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
 const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
@@ -282,6 +288,8 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         )
         .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
     ensure_tag_tokenizer_version(&transaction)?;
+    let today = SystemLocalTodayProvider.local_today(&transaction)?;
+    ensure_date_parser_version(&transaction, today)?;
 
     transaction
         .commit()
@@ -328,6 +336,52 @@ fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), Str
             ],
         )
         .map_err(|error| format!("Could not record the Notes tag tokenizer version: {error}"))?;
+    Ok(())
+}
+
+fn ensure_date_parser_version(
+    transaction: &Transaction<'_>,
+    today: LocalDate,
+) -> Result<(), String> {
+    let stored_version = transaction
+        .query_row(
+            "SELECT value_json FROM notes_preferences WHERE key = ?1",
+            [NOTE_DATE_PARSER_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the Notes date parser version: {error}"))?
+        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
+    if stored_version.is_some_and(|version| version >= NOTE_DATE_PARSER_VERSION) {
+        return Ok(());
+    }
+
+    let nodes = transaction
+        .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
+        .map_err(|error| format!("Could not prepare the Notes date index rebuild: {error}"))?
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not load Notes for the date index rebuild: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read Notes for the date index rebuild: {error}"))?;
+    for (node_id, title, note) in nodes {
+        replace_dates(transaction, &node_id, &title, &note, today)?;
+    }
+    transaction
+        .execute(
+            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![
+                NOTE_DATE_PARSER_VERSION_KEY,
+                NOTE_DATE_PARSER_VERSION.to_string()
+            ],
+        )
+        .map_err(|error| format!("Could not record the Notes date parser version: {error}"))?;
     Ok(())
 }
 
@@ -1105,14 +1159,11 @@ fn fts_match_expression(query: &str) -> Option<String> {
     )
 }
 
-fn live_parent_map(
+fn search_parent_map(
     connection: &Connection,
 ) -> Result<HashMap<String, (Option<String>, String)>, String> {
     let mut statement = connection
-        .prepare(
-            "SELECT id, parent_id, title FROM notes_nodes \
-             WHERE deleted_at IS NULL AND archived_at IS NULL",
-        )
+        .prepare("SELECT id, parent_id, title FROM notes_nodes")
         .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -1163,21 +1214,76 @@ pub(crate) fn search_nodes(
     connection: &Connection,
     query: &str,
 ) -> Result<Vec<NoteSearchResult>, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    search_nodes_at(connection, query, NoteSearchScope::Active, today)
+}
+
+fn search_scope_predicate(scope: NoteSearchScope) -> &'static str {
+    match scope {
+        NoteSearchScope::Active => "node.deleted_at IS NULL AND node.archived_at IS NULL",
+        NoteSearchScope::Archive => "node.deleted_at IS NULL AND node.archived_at IS NOT NULL",
+        NoteSearchScope::Trash => "node.deleted_at IS NOT NULL",
+    }
+}
+
+fn search_nodes_by_date(
+    connection: &Connection,
+    range: crate::notes::date_index::NoteDateRange,
+    scope: NoteSearchScope,
+) -> Result<Vec<NoteSearchResult>, String> {
+    let sql = format!(
+        "SELECT DISTINCT node.id, node.title \
+         FROM notes_dates date INDEXED BY notes_dates_range \
+         JOIN notes_nodes node ON node.id = date.node_id \
+         WHERE date.normalized_start <= ?1 AND date.normalized_end >= ?2 \
+           AND {} \
+         ORDER BY node.updated_at DESC, node.id LIMIT 100",
+        search_scope_predicate(scope)
+    );
+    let matches = connection
+        .prepare(&sql)
+        .map_err(|error| format!("Could not prepare the Notes date search: {error}"))?
+        .query_map(params![range.end.to_iso(), range.start.to_iso()], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Could not search Note dates: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
+    let parents = search_parent_map(connection)?;
+    matches
+        .into_iter()
+        .map(|(node_id, title)| {
+            Ok(NoteSearchResult {
+                parent_trail: parent_trail(&node_id, &parents)?,
+                node_id,
+                title,
+                matched_field: NoteSearchMatchedField::Date,
+            })
+        })
+        .collect()
+}
+
+fn search_nodes_fts(
+    connection: &Connection,
+    query: &str,
+    scope: NoteSearchScope,
+) -> Result<Vec<NoteSearchResult>, String> {
     let Some(match_expression) = fts_match_expression(query) else {
         return Ok(Vec::new());
     };
+    let sql = format!(
+        "SELECT notes_search.node_id, notes_search.title, \
+                highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
+                  <> notes_search.title \
+         FROM notes_search \
+         JOIN notes_nodes node ON node.id = notes_search.node_id \
+         WHERE notes_search MATCH ?1 AND {} \
+         ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+         LIMIT 100",
+        search_scope_predicate(scope)
+    );
     let mut statement = connection
-        .prepare(
-            "SELECT notes_search.node_id, notes_search.title, \
-                    highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
-                      <> notes_search.title \
-             FROM notes_search \
-             JOIN notes_nodes node ON node.id = notes_search.node_id \
-             WHERE notes_search MATCH ?1 AND node.deleted_at IS NULL \
-               AND node.archived_at IS NULL \
-             ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
-             LIMIT 100",
-        )
+        .prepare(&sql)
         .map_err(|error| format!("Could not prepare the Notes search: {error}"))?;
     let matches = statement
         .query_map([match_expression], |row| {
@@ -1190,7 +1296,7 @@ pub(crate) fn search_nodes(
         .map_err(|error| format!("Could not search Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let parents = live_parent_map(connection)?;
+    let parents = search_parent_map(connection)?;
 
     matches
         .into_iter()
@@ -1207,6 +1313,19 @@ pub(crate) fn search_nodes(
             })
         })
         .collect()
+}
+
+pub(crate) fn search_nodes_at(
+    connection: &Connection,
+    query: &str,
+    scope: NoteSearchScope,
+    today: LocalDate,
+) -> Result<Vec<NoteSearchResult>, String> {
+    if let Some(range) = parse_note_date_expression(query, today, WeekStartsOn::Monday) {
+        search_nodes_by_date(connection, range, scope)
+    } else {
+        search_nodes_fts(connection, query, scope)
+    }
 }
 
 fn canonical_search_tag(tag: &NoteSearchTag) -> (NoteTagPrefix, String) {
@@ -1418,7 +1537,7 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let parents = live_parent_map(connection)?;
+    let parents = search_parent_map(connection)?;
 
     matches
         .into_iter()
@@ -1681,16 +1800,71 @@ fn replace_tags(
     Ok(())
 }
 
+// Relative phrases are derived data: every content rebuild resolves them against
+// the command's single injected local `today` value.
+fn replace_dates(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    title: &str,
+    note: &str,
+    today: LocalDate,
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM notes_dates WHERE node_id = ?1", [node_id])
+        .map_err(|error| format!("Could not clear Note dates: {error}"))?;
+    for (field, source) in [("title", title), ("note", note)] {
+        for date in find_note_date_matches(source, today, WeekStartsOn::Monday) {
+            let start_utf16 = i64::try_from(date.start_utf16)
+                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?;
+            let end_utf16 = i64::try_from(date.end_utf16)
+                .map_err(|_| "A Note date offset exceeds SQLite integer range.".to_string())?;
+            transaction
+                .execute(
+                    "INSERT INTO notes_dates (\
+                       node_id, field, start_utf16, end_utf16, normalized_start, \
+                       normalized_end, token_text\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    params![
+                        node_id,
+                        field,
+                        start_utf16,
+                        end_utf16,
+                        date.start.to_iso(),
+                        date.end.unwrap_or(date.start).to_iso(),
+                        date.raw
+                    ],
+                )
+                .map_err(|error| format!("Could not store Note dates: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn replace_derived_content(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    title: &str,
+    note: &str,
+    today: LocalDate,
+) -> Result<(), String> {
+    replace_tags(transaction, node_id, title, note)?;
+    replace_dates(transaction, node_id, title, note, today)
+}
+
 pub(crate) fn rebuild_derived_for_nodes(
     transaction: &Transaction<'_>,
     node_ids: &BTreeSet<String>,
 ) -> Result<(), String> {
+    let today = SystemLocalTodayProvider.local_today(transaction)?;
+    rebuild_derived_for_nodes_at(transaction, node_ids, today)
+}
+
+pub(crate) fn rebuild_derived_for_nodes_at(
+    transaction: &Transaction<'_>,
+    node_ids: &BTreeSet<String>,
+    today: LocalDate,
+) -> Result<(), String> {
     for node_id in node_ids {
-        transaction
-            .execute("DELETE FROM notes_dates WHERE node_id = ?1", [node_id])
-            .map_err(|error| {
-                format!("Could not rebuild Note dates after history replay: {error}")
-            })?;
         let content = transaction
             .query_row(
                 "SELECT title, note FROM notes_nodes WHERE id = ?1",
@@ -1702,7 +1876,18 @@ pub(crate) fn rebuild_derived_for_nodes(
                 format!("Could not read Note content after history replay: {error}")
             })?;
         if let Some((title, note)) = content {
-            replace_tags(transaction, node_id, &title, &note)?;
+            replace_derived_content(transaction, node_id, &title, &note, today)?;
+        } else {
+            transaction
+                .execute("DELETE FROM notes_tags WHERE node_id = ?1", [node_id])
+                .map_err(|error| {
+                    format!("Could not clear Note tags after history replay: {error}")
+                })?;
+            transaction
+                .execute("DELETE FROM notes_dates WHERE node_id = ?1", [node_id])
+                .map_err(|error| {
+                    format!("Could not clear Note dates after history replay: {error}")
+                })?;
         }
     }
     Ok(())
@@ -1711,6 +1896,15 @@ pub(crate) fn rebuild_derived_for_nodes(
 pub(crate) fn create_node(
     connection: &mut Connection,
     input: CreateNodeInput,
+) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    create_node_at(connection, input, today)
+}
+
+pub(crate) fn create_node_at(
+    connection: &mut Connection,
+    input: CreateNodeInput,
+    today: LocalDate,
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
@@ -1733,13 +1927,22 @@ pub(crate) fn create_node(
                 params![input.id, input.parent_id, sort_key, input.title, input.note],
             )
             .map_err(|error| format!("Could not create the Note node: {error}"))?;
-        replace_tags(transaction, &input.id, &input.title, &input.note)
+        replace_derived_content(transaction, &input.id, &input.title, &input.note, today)
     })
 }
 
 pub(crate) fn update_node(
     connection: &mut Connection,
     input: UpdateNodeInput,
+) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    update_node_at(connection, input, today)
+}
+
+pub(crate) fn update_node_at(
+    connection: &mut Connection,
+    input: UpdateNodeInput,
+    today: LocalDate,
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
@@ -1752,13 +1955,22 @@ pub(crate) fn update_node(
                 params![input.title, input.note, input.id],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
-        replace_tags(transaction, &input.id, &input.title, &input.note)
+        replace_derived_content(transaction, &input.id, &input.title, &input.note, today)
     })
 }
 
 pub(crate) fn split_node(
     connection: &mut Connection,
     input: SplitNodeInput,
+) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    split_node_at(connection, input, today)
+}
+
+pub(crate) fn split_node_at(
+    connection: &mut Connection,
+    input: SplitNodeInput,
+    today: LocalDate,
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
@@ -1777,7 +1989,7 @@ pub(crate) fn split_node(
                 params![input.prefix, source.id],
             )
             .map_err(|error| format!("Could not update the split Note node: {error}"))?;
-        replace_tags(transaction, &source.id, &input.prefix, &source.note)?;
+        replace_derived_content(transaction, &source.id, &input.prefix, &source.note, today)?;
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
@@ -1790,7 +2002,7 @@ pub(crate) fn split_node(
                 params![input.new_node_id, source.parent_id, sort_key, input.suffix],
             )
             .map_err(|error| format!("Could not create the split Note node: {error}"))?;
-        replace_tags(transaction, &input.new_node_id, &input.suffix, "")?;
+        replace_derived_content(transaction, &input.new_node_id, &input.suffix, "", today)?;
         Ok(())
     })
 }
@@ -2019,6 +2231,15 @@ pub(crate) fn duplicate_node(
     connection: &mut Connection,
     node_id: &str,
 ) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    duplicate_node_at(connection, node_id, today)
+}
+
+pub(crate) fn duplicate_node_at(
+    connection: &mut Connection,
+    node_id: &str,
+    today: LocalDate,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, node_id)?;
@@ -2078,7 +2299,13 @@ pub(crate) fn duplicate_node(
                     ],
                 )
                 .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
-            replace_tags(transaction, copied_id, &original.title, &original.note)?;
+            replace_derived_content(
+                transaction,
+                copied_id,
+                &original.title,
+                &original.note,
+                today,
+            )?;
         }
 
         if copied_ids.contains_key(node_id) {
@@ -2308,6 +2535,15 @@ pub(crate) fn restore_node(
     connection: &mut Connection,
     node_id: &str,
 ) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    restore_node_at(connection, node_id, today)
+}
+
+pub(crate) fn restore_node_at(
+    connection: &mut Connection,
+    node_id: &str,
+    today: LocalDate,
+) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_deleted_node(transaction, node_id)?;
@@ -2354,7 +2590,7 @@ pub(crate) fn restore_node(
             .into_iter()
             .map(|node| node.id)
             .collect::<BTreeSet<_>>();
-        rebuild_derived_for_nodes(transaction, &restored_node_ids)?;
+        rebuild_derived_for_nodes_at(transaction, &restored_node_ids, today)?;
         Ok(())
     })
 }
@@ -2642,18 +2878,20 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_node, connect_notes_db, create_node, create_version_one_schema, delete_database,
-        duplicate_node, empty_trash, initialize_notes_db, list_tags, list_tags_with_counts,
-        load_workspace, migrate_version_one_to_two, move_node, notes_db_path,
-        observe_next_migration_busy, open_notes_export_db, preflight_existing_notes_schema,
-        remove_empty_node, restore_node, search_nodes, search_nodes_structured, soft_delete_node,
-        split_node, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node,
+        archive_node, connect_notes_db, create_node, create_node_at, create_version_one_schema,
+        delete_database, duplicate_node, duplicate_node_at, empty_trash, initialize_notes_db,
+        list_tags, list_tags_with_counts, load_workspace, migrate_version_one_to_two, move_node,
+        notes_db_path, observe_next_migration_busy, open_notes_export_db,
+        preflight_existing_notes_schema, remove_empty_node, restore_node, restore_node_at,
+        search_nodes, search_nodes_at, search_nodes_structured, soft_delete_node, split_node,
+        split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node, update_node_at,
     };
+    use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NotesWorkspaceScope,
-        SplitNodeInput, UpdateNodeInput,
+        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope,
+        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
     };
     use rusqlite::{params, Connection};
     use std::sync::mpsc;
@@ -2666,6 +2904,35 @@ mod tests {
     const FOURTH_ID: &str = "44444444-4444-4444-8444-444444444444";
     const FIFTH_ID: &str = "55555555-5555-4555-8555-555555555555";
     const SIXTH_ID: &str = "66666666-6666-4666-8666-666666666666";
+
+    fn fixed_today() -> LocalDate {
+        LocalDate::new(2026, 7, 11).expect("fixed date")
+    }
+
+    fn date_rows(
+        connection: &Connection,
+        node_id: &str,
+    ) -> Vec<(String, i64, i64, String, String, String)> {
+        connection
+            .prepare(
+                "SELECT field, start_utf16, end_utf16, normalized_start, normalized_end, token_text \
+                 FROM notes_dates WHERE node_id = ?1 ORDER BY field DESC, start_utf16",
+            )
+            .expect("prepare date rows")
+            .query_map([node_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })
+            .expect("query date rows")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect date rows")
+    }
 
     fn object_exists(connection: &Connection, object_type: &str, name: &str) -> bool {
         connection
@@ -3288,6 +3555,81 @@ mod tests {
             })
             .expect("final rewrite count");
         assert_eq!(final_rewrite_count, old_version_rewrite_count);
+    }
+
+    #[test]
+    fn version_three_initialization_backfills_the_date_index_once() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "DELETE FROM notes_preferences WHERE key = 'derived.dateParserVersion'",
+                [],
+            )
+            .expect("remove date parser version marker");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
+                 VALUES (?1, 1024, 'Due 07/12/2026', '07/13/2026', \
+                         '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                [NODE_ID],
+            )
+            .expect("insert pre-index date node");
+        connection
+            .execute(
+                "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                   normalized_start, normalized_end, token_text) \
+                 VALUES (?1, 'title', 0, 5, '2000-01-01', '2000-01-01', 'stale')",
+                [NODE_ID],
+            )
+            .expect("insert stale date row");
+        connection
+            .execute_batch(
+                "CREATE TABLE date_rebuild_audit (operation TEXT NOT NULL); \
+                 CREATE TRIGGER audit_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
+                   INSERT INTO date_rebuild_audit VALUES ('delete'); \
+                 END; \
+                 CREATE TRIGGER audit_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
+                   INSERT INTO date_rebuild_audit VALUES ('insert'); \
+                 END;",
+            )
+            .expect("install date rebuild audit");
+
+        initialize_notes_db(&mut connection).expect("backfill date index");
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![
+                (
+                    "title".to_string(),
+                    4,
+                    14,
+                    "2026-07-12".to_string(),
+                    "2026-07-12".to_string(),
+                    "07/12/2026".to_string()
+                ),
+                (
+                    "note".to_string(),
+                    0,
+                    10,
+                    "2026-07-13".to_string(),
+                    "2026-07-13".to_string(),
+                    "07/13/2026".to_string()
+                ),
+            ]
+        );
+        let first_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("date rebuild count");
+        assert!(first_rewrite_count >= 3);
+
+        initialize_notes_db(&mut connection).expect("idempotent date index initialization");
+        let second_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("idempotent date rebuild count");
+        assert_eq!(second_rewrite_count, first_rewrite_count);
     }
 
     #[test]
@@ -4887,6 +5229,267 @@ mod tests {
                 ("#".to_string(), "𐐷".to_string(), "𐐷".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn notes_date_index_replaces_title_and_note_rows_for_every_content_copy_path() {
+        let mut connection = test_connection();
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "😀 today #old".to_string(),
+                note: "07/12/2026".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("create dated node");
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![
+                (
+                    "title".to_string(),
+                    3,
+                    8,
+                    "2026-07-11".to_string(),
+                    "2026-07-11".to_string(),
+                    "today".to_string()
+                ),
+                (
+                    "note".to_string(),
+                    0,
+                    10,
+                    "2026-07-12".to_string(),
+                    "2026-07-12".to_string(),
+                    "07/12/2026".to_string()
+                ),
+            ]
+        );
+
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "#new 07/13/2026".to_string(),
+                note: "next week".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("update dated node");
+        assert_eq!(list_tags(&connection).expect("updated tags"), vec!["new"]);
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![
+                (
+                    "title".to_string(),
+                    5,
+                    15,
+                    "2026-07-13".to_string(),
+                    "2026-07-13".to_string(),
+                    "07/13/2026".to_string()
+                ),
+                (
+                    "note".to_string(),
+                    0,
+                    9,
+                    "2026-07-13".to_string(),
+                    "2026-07-19".to_string(),
+                    "next week".to_string()
+                ),
+            ]
+        );
+
+        split_node_at(
+            &mut connection,
+            SplitNodeInput {
+                id: NODE_ID.to_string(),
+                new_node_id: CHILD_ID.to_string(),
+                prefix: "today".to_string(),
+                suffix: "tomorrow".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("split dated node");
+        assert_eq!(date_rows(&connection, NODE_ID)[0].5, "today");
+        assert_eq!(date_rows(&connection, CHILD_ID)[0].5, "tomorrow");
+
+        let duplicated = duplicate_node_at(&mut connection, NODE_ID, fixed_today())
+            .expect("duplicate dated subtree");
+        let copied_root = duplicated
+            .nodes
+            .iter()
+            .find(|node| node.id != NODE_ID && node.id != CHILD_ID && node.title == "today")
+            .expect("copied root");
+        assert_eq!(
+            date_rows(&connection, &copied_root.id),
+            date_rows(&connection, NODE_ID)
+        );
+
+        soft_delete_node(&mut connection, NODE_ID).expect("trash dated subtree");
+        connection
+            .execute("DELETE FROM notes_dates WHERE node_id = ?1", [NODE_ID])
+            .expect("simulate stale derived rows");
+        restore_node_at(&mut connection, NODE_ID, fixed_today()).expect("restore dated subtree");
+        assert_eq!(date_rows(&connection, NODE_ID)[0].5, "today");
+    }
+
+    #[test]
+    fn notes_date_and_tag_replacement_rolls_back_with_the_content_transaction() {
+        let mut connection = test_connection();
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "today #old".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("seed dated node");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_date_projection BEFORE INSERT ON notes_dates \
+                 WHEN NEW.token_text = 'tomorrow' BEGIN SELECT RAISE(ABORT, 'date failure'); END;",
+            )
+            .expect("install date failure");
+
+        assert!(update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "tomorrow #new".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .is_err());
+        assert_eq!(
+            list_tags(&connection).expect("rolled back tags"),
+            vec!["old"]
+        );
+        assert_eq!(date_rows(&connection, NODE_ID)[0].5, "today");
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Active)
+                .expect("workspace")
+                .nodes[0]
+                .title,
+            "today #old"
+        );
+    }
+
+    #[test]
+    fn notes_date_search_uses_interval_overlap_scopes_limits_and_fts_fallback() {
+        let mut connection = test_connection();
+        for (id, title) in [
+            (NODE_ID, "fallback-target 07/12/2026"),
+            (CHILD_ID, "Archived 07/13/2026"),
+            (THIRD_ID, "Trashed 07/14/2026"),
+        ] {
+            create_node_at(
+                &mut connection,
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: None,
+                    after_id: None,
+                    title: title.to_string(),
+                    note: String::new(),
+                },
+                fixed_today(),
+            )
+            .expect("seed date search node");
+        }
+        archive_node(&mut connection, CHILD_ID).expect("archive fixture");
+        soft_delete_node(&mut connection, THIRD_ID).expect("trash fixture");
+
+        let active = search_nodes_at(
+            &connection,
+            "tomorrow",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("natural date search");
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].node_id, NODE_ID);
+        assert_eq!(active[0].matched_field, NoteSearchMatchedField::Date);
+
+        for (scope, expected) in [
+            (NoteSearchScope::Active, NODE_ID),
+            (NoteSearchScope::Archive, CHILD_ID),
+            (NoteSearchScope::Trash, THIRD_ID),
+        ] {
+            let results =
+                search_nodes_at(&connection, "07/12/2026 - 07/14/2026", scope, fixed_today())
+                    .expect("scoped range search");
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].node_id, expected);
+        }
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "fallback-target",
+                NoteSearchScope::Active,
+                fixed_today(),
+            )
+            .expect("FTS fallback")[0]
+                .matched_field,
+            NoteSearchMatchedField::Title
+        );
+
+        for index in 0..101 {
+            let id = format!("{index:08x}-7777-4777-8777-777777777777");
+            create_node_at(
+                &mut connection,
+                CreateNodeInput {
+                    id,
+                    parent_id: None,
+                    after_id: None,
+                    title: "07/12/2026".to_string(),
+                    note: String::new(),
+                },
+                fixed_today(),
+            )
+            .expect("seed date limit node");
+        }
+        connection
+            .execute(
+                "UPDATE notes_nodes SET updated_at = '2026-07-11T00:00:00.000Z'",
+                [],
+            )
+            .expect("set deterministic date result order");
+        let limited = search_nodes_at(
+            &connection,
+            "07/12/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("limited date search");
+        assert_eq!(
+            limited
+                .iter()
+                .map(|result| result.node_id.clone())
+                .collect::<Vec<_>>(),
+            (0..100)
+                .map(|index| format!("{index:08x}-7777-4777-8777-777777777777"))
+                .collect::<Vec<_>>()
+        );
+        let plan = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT node_id FROM notes_dates \
+                 WHERE normalized_start <= ?1 AND normalized_end >= ?2",
+            )
+            .expect("prepare date query plan")
+            .query_map(params!["2026-07-12", "2026-07-12"], |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("query date plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect date plan")
+            .join(" ");
+        assert!(plan.contains("notes_dates_range"), "query plan: {plan}");
     }
 
     #[test]

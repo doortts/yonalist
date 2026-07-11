@@ -208,10 +208,19 @@ pub enum NotesWorkspaceScope {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum NoteSearchScope {
+    Active,
+    Archive,
+    Trash,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NoteSearchMatchedField {
     Title,
     Note,
+    Date,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -341,10 +350,10 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, MoveNodeInput, NoteAttachment, NoteSearchTag, NoteStructuredSearchQuery,
-        NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult,
-        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult,
-        NotesWorkspace, NotesWorkspaceScope,
+        validate_note_id, MoveNodeInput, NoteAttachment, NoteSearchMatchedField, NoteSearchScope,
+        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
+        NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -501,6 +510,17 @@ mod tests {
             }]
         );
         assert_eq!(query.or_groups[0][1].prefix, NoteTagPrefix::Mention);
+    }
+
+    #[test]
+    fn notes_date_search_scope_and_match_use_the_exact_wire_shape() {
+        let scope: NoteSearchScope =
+            serde_json::from_value(json!({ "kind": "trash" })).expect("date search scope");
+        assert_eq!(scope, NoteSearchScope::Trash);
+        assert_eq!(
+            serde_json::to_value(NoteSearchMatchedField::Date).expect("date match field"),
+            json!("date")
+        );
     }
 
     #[test]

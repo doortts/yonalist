@@ -1,4 +1,5 @@
 use super::types::{validate_note_id, ExportNode, NotesExportSnapshot};
+use crate::notes::date_index::{LocalDate, NoteDateMatch};
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
     PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, TextItem,
@@ -116,6 +117,57 @@ pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>,
         .expect("writing to a String cannot fail");
     render_node(&mut markdown, &snapshot.root, 0);
     Ok(markdown.into_bytes())
+}
+
+fn pdf_display_date(date: LocalDate) -> String {
+    let month = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ][usize::from(date.month - 1)];
+    format!("{month} {}, {}", date.day, date.year)
+}
+
+fn byte_offset_for_utf16(source: &str, target: usize) -> Option<usize> {
+    let mut utf16 = 0;
+    for (byte_offset, character) in source.char_indices() {
+        if utf16 == target {
+            return Some(byte_offset);
+        }
+        utf16 += character.len_utf16();
+        if utf16 > target {
+            return None;
+        }
+    }
+    (utf16 == target).then_some(source.len())
+}
+
+pub(crate) fn format_date_matches_for_pdf_display(
+    source: &str,
+    matches: &[NoteDateMatch],
+) -> String {
+    let mut rendered = source.to_string();
+    for date in matches.iter().rev() {
+        let Some(start_byte) = byte_offset_for_utf16(source, date.start_utf16) else {
+            continue;
+        };
+        let Some(end_byte) = byte_offset_for_utf16(source, date.end_utf16) else {
+            continue;
+        };
+        if start_byte > end_byte || end_byte > rendered.len() {
+            continue;
+        }
+        let replacement = match date.end {
+            Some(end) if end != date.start => {
+                format!(
+                    "{} - {}",
+                    pdf_display_date(date.start),
+                    pdf_display_date(end)
+                )
+            }
+            _ => pdf_display_date(date.start),
+        };
+        rendered.replace_range(start_byte..end_byte, &replacement);
+    }
+    rendered
 }
 
 #[derive(Clone, Copy)]
@@ -444,8 +496,10 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        load_export_snapshot, render_markdown, render_pdf, validate_serialized_pdf, PDF_FONT_BYTES,
+        format_date_matches_for_pdf_display, load_export_snapshot, render_markdown, render_pdf,
+        validate_serialized_pdf, PDF_FONT_BYTES,
     };
+    use crate::notes::date_index::{find_note_date_matches, LocalDate, WeekStartsOn};
     use crate::notes::types::{ExportNode, NotesExportSnapshot};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
     use rusqlite::{params, Connection};
@@ -827,6 +881,25 @@ mod tests {
 
         assert!(rendered.contains("  > first\n  >\n  > second\n  > third\n"));
         assert!(!rendered.contains('\r'));
+    }
+
+    #[test]
+    fn markdown_keeps_raw_dates_while_pdf_display_helper_replaces_spans_end_to_start() {
+        let source = "😀 today then tomorrow";
+        let matches = find_note_date_matches(
+            source,
+            LocalDate::new(2026, 7, 11).expect("today"),
+            WeekStartsOn::Monday,
+        );
+        let snapshot = snapshot(export_node(ROOT_ID, source, "", false, vec![]));
+        let markdown = String::from_utf8(render_markdown(&snapshot).expect("render Markdown"))
+            .expect("UTF-8 Markdown");
+
+        assert!(markdown.contains(source));
+        assert_eq!(
+            format_date_matches_for_pdf_display(source, &matches),
+            "😀 Jul 11, 2026 then Jul 12, 2026"
+        );
     }
 
     #[test]

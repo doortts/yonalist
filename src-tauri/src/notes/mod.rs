@@ -3,6 +3,8 @@ pub(crate) mod attachments;
 #[allow(dead_code)]
 pub(crate) mod commands;
 #[allow(dead_code)]
+pub(crate) mod date_index;
+#[allow(dead_code)]
 pub(crate) mod export;
 #[allow(dead_code)]
 pub(crate) mod history;
