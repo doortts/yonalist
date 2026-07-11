@@ -484,6 +484,37 @@ describe("Notes workspace", () => {
     `);
   });
 
+  it("retains an accent focus ring on collapsed bullet halos", async () => {
+    configureRepository([
+      node({ id: "collapsed", title: "Collapsed", isCollapsed: true }),
+      node({ id: "collapsed-child", parentId: "collapsed", title: "Child" }),
+      node({
+        id: "completed-collapsed",
+        sortKey: 2,
+        title: "Completed collapsed",
+        isCollapsed: true,
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({
+        id: "completed-child",
+        parentId: "completed-collapsed",
+        title: "Completed child"
+      })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Collapsed");
+
+    for (const label of ["Collapsed", "Completed collapsed"]) {
+      const bullet = screen.getByRole("button", { name: `Zoom into ${label}` });
+      expect(bullet).toHaveAttribute("data-collapsed", "true");
+      bullet.focus();
+      expect(bullet).toHaveFocus();
+    }
+    expect(notesStyles).toMatch(
+      /\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before,[\s\S]*\.notes-node\[data-completed="true"\][\s\S]*\.notes-node-bullet\[data-collapsed="true"\]:focus-visible::before\s*{[^}]*box-shadow:\s*0 0 0 2px var\(--accent\),\s*inset 0 0 0 1px var\(--border-strong\);/s
+    );
+  });
+
   it("keeps title and supporting-note input outside drag activation", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
@@ -2930,13 +2961,13 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-bullet-center-offset:\s*61px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;/s
     );
     expect(notesStyles).not.toMatch(
       /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*74px;/s
+      /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);/s
     );
     expect(notesStyles).toMatch(
       /\.notes-outline-content\s*{[^}]*width:\s*min\(100%, 700px\);[^}]*min-width:\s*0;[^}]*margin-inline:\s*auto;/s
@@ -2948,7 +2979,7 @@ describe("Notes workspace", () => {
       /\.notes-page-header\s*{[^}]*width:\s*100%;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-title-row\s*{[^}]*grid-template-columns:\s*24px minmax\(0, 1fr\);[^}]*align-items:\s*start;/s
+      /\.notes-page-title-row\s*{[^}]*grid-template-columns:\s*var\(--notes-content-offset\) minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*0;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-main\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 20px 18px minmax\(0, 1fr\);[^}]*align-items:\s*start;[^}]*gap:\s*4px;[^}]*min-height:\s*28px;/s
@@ -2992,7 +3023,7 @@ describe("Notes workspace", () => {
       /\.notes-page-title\s*{[^}]*min-height:\s*34px;[^}]*overflow:\s*hidden;[^}]*resize:\s*none;[^}]*font-size:\s*27px;[^}]*font-weight:\s*700;[^}]*line-height:\s*34px;/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-page-note\s*{[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
+      /\.notes-page-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-content-offset\)\);[^}]*margin:\s*4px 0 0 var\(--notes-content-offset\);[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-note\s*{[^}]*resize:\s*none;[^}]*border:\s*0;[^}]*background:\s*transparent;[^}]*font-size:\s*14px;[^}]*line-height:\s*20px;/s
@@ -3014,7 +3045,7 @@ describe("Notes workspace", () => {
       /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-bullet-center-offset:\s*70px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-menu-width:\s*28px;[^}]*--notes-bullet-center-offset:\s*70px;[^}]*--notes-content-offset:\s*84px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s
@@ -3023,7 +3054,7 @@ describe("Notes workspace", () => {
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*84px;[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node-main,[\s\S]*\.notes-child-composer\s*{[^}]*grid-template-columns:\s*var\(--notes-menu-width\) 28px 28px minmax\(0, 1fr\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*width:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
@@ -3067,5 +3098,11 @@ describe("Notes workspace", () => {
 
     style.remove();
     document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("keeps a disabled non-empty child composer subdued on hover and focus", () => {
+    expect(notesStyles).toMatch(
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-child-composer\[data-has-children="true"\]:hover[\s\S]*\.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer:focus-within \.notes-child-composer-button:disabled,[\s\S]*\.notes-child-composer-button:disabled:focus-visible\s*{[^}]*opacity:\s*0\.34;/s
+    );
   });
 });

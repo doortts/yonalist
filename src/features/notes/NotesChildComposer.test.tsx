@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
@@ -7,6 +7,16 @@ import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -144,9 +154,29 @@ describe("NotesChildComposer", () => {
     expect(workspace.actions.createChild).toHaveBeenCalledWith("project");
   });
 
+  it("disables while createChild is pending and ignores repeated activation", async () => {
+    const user = userEvent.setup();
+    const pendingCreate = deferred<void>();
+    const workspace = workspaceValue();
+    workspace.actions.createChild = vi.fn(() => pendingCreate.promise);
+    renderComposer(workspace);
+
+    const addChild = screen.getByRole("button", { name: "Add child" });
+    await user.click(addChild);
+
+    expect(addChild).toBeDisabled();
+    await user.click(addChild);
+    addChild.focus();
+    await user.keyboard("{Enter}");
+    expect(workspace.actions.createChild).toHaveBeenCalledOnce();
+
+    await act(async () => pendingCreate.resolve());
+    expect(addChild).toBeEnabled();
+  });
+
   it.each([
-    ["a disabled workspace", { deletingNotesData: true }],
-    ["Trash", { libraryView: "trash" as const }]
+    ["a disabled workspace", { deletingNotesData: true, hasChildren: true }],
+    ["Trash", { libraryView: "trash" as const, hasChildren: true }]
   ])("does not create from %s", async (_label, options) => {
     const user = userEvent.setup();
     const workspace = workspaceValue(options);
@@ -154,6 +184,10 @@ describe("NotesChildComposer", () => {
 
     const addChild = screen.getByRole("button", { name: "Add child" });
     expect(addChild).toBeDisabled();
+    expect(addChild.closest(".notes-child-composer")).toHaveAttribute(
+      "data-has-children",
+      "true"
+    );
 
     await user.click(addChild);
 
