@@ -1,10 +1,16 @@
-import { isNoteSearchResult, isNotesMutationResult } from "../domain/notes";
+import {
+  isNoteSearchResult,
+  isNotesMutationResult,
+  MAX_NOTE_ATTACHMENT_BYTES,
+  normalizeNotesWorkspace
+} from "../domain/notes";
 import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
 import type {
   CreateNoteNodeInput,
+  ImportNoteAttachmentInput,
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
@@ -16,11 +22,31 @@ import type {
   NotesHistoryStatus,
   NotesMutationResult,
   NotesStore,
+  NotesStoreError,
   NotesWorkspace,
   NotesWorkspaceScope,
+  ResizeNoteAttachmentInput,
   SplitNoteNodeInput,
   UpdateNoteNodeInput
 } from "../domain/notes";
+
+function errorMessage(cause: unknown): string {
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+  return typeof cause === "string" ? cause : String(cause);
+}
+
+function notesStoreError(
+  operation: NotesStoreError["operation"],
+  cause: unknown,
+  retryable: boolean
+): NotesStoreError {
+  return Object.assign(new Error(errorMessage(cause)), {
+    operation,
+    retryable
+  });
+}
 
 async function invokeNotes<T>(
   command: string,
@@ -37,7 +63,7 @@ export function notesInitialize(vaultPath: string): Promise<void> {
   return invokeNotes<void>("notes_initialize", { vaultPath });
 }
 
-export function notesLoadWorkspace(
+export async function notesLoadWorkspace(
   vaultPath: string,
   scope: NotesWorkspaceScope
 ): Promise<NotesWorkspace> {
@@ -51,10 +77,24 @@ export function notesLoadWorkspace(
       )
     );
   }
-  return invokeNotes<NotesWorkspace>("notes_load_workspace", {
-    vaultPath,
-    scope
-  });
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_load_workspace", {
+      vaultPath,
+      scope
+    });
+  } catch (cause) {
+    throw notesStoreError("load", cause, true);
+  }
+  const workspace = normalizeNotesWorkspace(result);
+  if (workspace === null) {
+    throw notesStoreError(
+      "load",
+      "Notes load returned an invalid workspace.",
+      false
+    );
+  }
+  return workspace;
 }
 
 export function notesCreateNode(
@@ -94,17 +134,38 @@ async function invokeMutation(
   args: Record<string, unknown>,
   historyContext: NotesHistoryContext | null
 ): Promise<NotesMutationResult> {
-  const result = await invokeNotes<unknown>(command, args);
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError("write", cause, true);
+  }
   if (!isNotesMutationResult(result)) {
-    throw new Error("Notes mutation returned an invalid result.");
+    throw notesStoreError(
+      "write",
+      "Notes mutation returned an invalid result.",
+      false
+    );
   }
   if (
     result.historyEntryId !== null &&
     result.historyEntryId !== historyContext?.entryId
   ) {
-    throw new Error("Notes mutation returned an unexpected history entry ID.");
+    throw notesStoreError(
+      "write",
+      "Notes mutation returned an unexpected history entry ID.",
+      false
+    );
   }
-  return result;
+  const workspace = normalizeNotesWorkspace(result.workspace);
+  if (workspace === null) {
+    throw notesStoreError(
+      "write",
+      "Notes mutation returned an invalid result.",
+      false
+    );
+  }
+  return { ...result, workspace };
 }
 
 function invokeNodeMutation(
@@ -222,6 +283,99 @@ export function notesClearHistory(
   return invokeNotes<NotesHistoryStatus>("notes_clear_history", { vaultPath, sessionId });
 }
 
+export function notesImportAttachment(
+  vaultPath: string,
+  input: ImportNoteAttachmentInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_import_attachment",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export async function notesReadAttachmentBytes(
+  vaultPath: string,
+  attachmentId: string
+): Promise<Uint8Array> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_read_attachment_bytes", {
+      vaultPath,
+      attachmentId
+    });
+  } catch (cause) {
+    throw notesStoreError("load", cause, true);
+  }
+
+  if (
+    (!Array.isArray(result) && !(result instanceof Uint8Array)) ||
+    result.length === 0 ||
+    result.length > MAX_NOTE_ATTACHMENT_BYTES
+  ) {
+    throw notesStoreError(
+      "load",
+      "Notes attachment bytes returned an invalid result.",
+      false
+    );
+  }
+
+  const bytes = new Uint8Array(result.length);
+  for (let index = 0; index < result.length; index += 1) {
+    const byte: unknown = result[index];
+    if (
+      !Number.isInteger(byte) ||
+      (byte as number) < 0 ||
+      (byte as number) > 255
+    ) {
+      throw notesStoreError(
+        "load",
+        "Notes attachment bytes returned an invalid result.",
+        false
+      );
+    }
+    bytes[index] = byte as number;
+  }
+  return bytes;
+}
+
+export function notesResizeAttachment(
+  vaultPath: string,
+  input: ResizeNoteAttachmentInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_resize_attachment",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export function notesRemoveAttachment(
+  vaultPath: string,
+  attachmentId: string,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_remove_attachment",
+    { vaultPath, attachmentId, historyContext },
+    historyContext
+  );
+}
+
+export function notesRestoreAttachment(
+  vaultPath: string,
+  attachmentId: string,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  return invokeMutation(
+    "notes_restore_attachment",
+    { vaultPath, attachmentId, historyContext },
+    historyContext
+  );
+}
+
 export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
   return invokeNotes<NotesWorkspace>("notes_empty_trash", { vaultPath });
 }
@@ -294,6 +448,11 @@ export const notesStore: NotesStore = {
   redo: notesRedo,
   historyStatus: notesHistoryStatus,
   clearHistory: notesClearHistory,
+  importAttachment: notesImportAttachment,
+  readAttachmentBytes: notesReadAttachmentBytes,
+  resizeAttachment: notesResizeAttachment,
+  removeAttachment: notesRemoveAttachment,
+  restoreAttachment: notesRestoreAttachment,
   emptyTrash: notesEmptyTrash,
   search: notesSearch,
   searchStructured: notesSearchStructured,

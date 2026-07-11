@@ -1,6 +1,10 @@
 export type NoteId = string;
 export type NoteLayoutMode = "bullets";
 
+export const MAX_NOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_NOTE_ATTACHMENT_PIXELS = 40_000_000;
+export const MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH = 160;
+
 export interface NoteNode {
   id: NoteId;
   parentId: NoteId | null;
@@ -18,9 +22,33 @@ export interface NoteNode {
   archiveRootId: NoteId | null;
 }
 
+export interface NoteAttachment {
+  id: string;
+  nodeId: NoteId;
+  sortKey: number;
+  relativePath: string;
+  contentHash: string;
+  originalName: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  byteSize: number;
+  intrinsicWidth: number;
+  intrinsicHeight: number;
+  displayWidth: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type NoteAttachmentsByNodeId = Record<NoteId, NoteAttachment[]>;
+
 export interface NotesWorkspace {
   nodes: NoteNode[];
+  /** Missing legacy payloads are normalized to an empty attachment map. */
+  attachmentsByNodeId?: NoteAttachmentsByNodeId;
 }
+
+export type NormalizedNotesWorkspace = NotesWorkspace & {
+  attachmentsByNodeId: NoteAttachmentsByNodeId;
+};
 
 export interface NotesHistoryContext {
   sessionId: string;
@@ -122,6 +150,17 @@ export interface SplitNoteNodeInput {
   suffix: string;
 }
 
+export interface ImportNoteAttachmentInput {
+  id: string;
+  nodeId: NoteId;
+  sourcePath: string;
+}
+
+export interface ResizeNoteAttachmentInput {
+  id: string;
+  displayWidth: number;
+}
+
 export interface NotesStore {
   initialize(vaultPath: string): Promise<void>;
   loadWorkspace(vaultPath: string, scope: NotesWorkspaceScope): Promise<NotesWorkspace>;
@@ -142,6 +181,30 @@ export interface NotesStore {
   redo?(vaultPath: string, sessionId: string, scope: NotesWorkspaceScope): Promise<NotesHistoryReplayResult>;
   historyStatus?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
   clearHistory?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
+  importAttachment?(
+    vaultPath: string,
+    input: ImportNoteAttachmentInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  readAttachmentBytes?(
+    vaultPath: string,
+    attachmentId: string
+  ): Promise<Uint8Array>;
+  resizeAttachment?(
+    vaultPath: string,
+    input: ResizeNoteAttachmentInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  removeAttachment?(
+    vaultPath: string,
+    attachmentId: string,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  restoreAttachment?(
+    vaultPath: string,
+    attachmentId: string,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
   search(vaultPath: string, query: string, scope?: NoteSearchScope): Promise<NoteSearchResult[]>;
   searchStructured?(vaultPath: string, query: NoteStructuredSearchQuery): Promise<NoteSearchResult[]>;
@@ -156,6 +219,98 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNullableString(value: unknown): value is string | null {
   return typeof value === "string" || value === null;
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[]
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    keys.every((key) => expected.includes(key))
+  );
+}
+
+function isCanonicalUuidV4(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      value
+    )
+  );
+}
+
+const ATTACHMENT_KEYS = [
+  "id",
+  "nodeId",
+  "sortKey",
+  "relativePath",
+  "contentHash",
+  "originalName",
+  "mimeType",
+  "byteSize",
+  "intrinsicWidth",
+  "intrinsicHeight",
+  "displayWidth",
+  "createdAt",
+  "updatedAt"
+] as const;
+
+const ATTACHMENT_EXTENSION_BY_MIME = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif"
+} as const;
+
+export function isNoteAttachment(value: unknown): value is NoteAttachment {
+  if (!isRecord(value) || !hasExactKeys(value, ATTACHMENT_KEYS)) {
+    return false;
+  }
+  if (
+    !isCanonicalUuidV4(value.id) ||
+    !isCanonicalUuidV4(value.nodeId) ||
+    !Number.isSafeInteger(value.sortKey) ||
+    (value.sortKey as number) <= 0 ||
+    typeof value.contentHash !== "string" ||
+    !/^[0-9a-f]{64}$/.test(value.contentHash) ||
+    typeof value.originalName !== "string" ||
+    value.originalName.trim().length === 0 ||
+    new TextEncoder().encode(value.originalName).byteLength > 1024 ||
+    typeof value.mimeType !== "string" ||
+    !(value.mimeType in ATTACHMENT_EXTENSION_BY_MIME) ||
+    !Number.isSafeInteger(value.byteSize) ||
+    (value.byteSize as number) <= 0 ||
+    (value.byteSize as number) > MAX_NOTE_ATTACHMENT_BYTES ||
+    !Number.isSafeInteger(value.intrinsicWidth) ||
+    (value.intrinsicWidth as number) <= 0 ||
+    !Number.isSafeInteger(value.intrinsicHeight) ||
+    (value.intrinsicHeight as number) <= 0 ||
+    (value.intrinsicWidth as number) * (value.intrinsicHeight as number) >
+      MAX_NOTE_ATTACHMENT_PIXELS ||
+    !Number.isSafeInteger(value.displayWidth) ||
+    typeof value.createdAt !== "string" ||
+    typeof value.updatedAt !== "string"
+  ) {
+    return false;
+  }
+
+  const intrinsicWidth = value.intrinsicWidth as number;
+  const displayWidth = value.displayWidth as number;
+  const minimumDisplayWidth = Math.min(
+    intrinsicWidth,
+    MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH
+  );
+  if (displayWidth < minimumDisplayWidth || displayWidth > intrinsicWidth) {
+    return false;
+  }
+
+  const mimeType = value.mimeType as keyof typeof ATTACHMENT_EXTENSION_BY_MIME;
+  return (
+    value.relativePath ===
+    `notes-assets/${value.contentHash}.${ATTACHMENT_EXTENSION_BY_MIME[mimeType]}`
+  );
 }
 
 export function isNoteNode(value: unknown): value is NoteNode {
@@ -178,6 +333,64 @@ export function isNoteNode(value: unknown): value is NoteNode {
   );
 }
 
+export function normalizeNotesWorkspace(
+  value: unknown
+): NormalizedNotesWorkspace | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const keys = Object.keys(value);
+  if (
+    !keys.every((key) => key === "nodes" || key === "attachmentsByNodeId") ||
+    !Array.isArray(value.nodes) ||
+    !value.nodes.every(isNoteNode)
+  ) {
+    return null;
+  }
+
+  if (value.attachmentsByNodeId === undefined) {
+    return { nodes: value.nodes, attachmentsByNodeId: {} };
+  }
+  if (!isRecord(value.attachmentsByNodeId)) {
+    return null;
+  }
+
+  const attachmentsByNodeId: NoteAttachmentsByNodeId = {};
+  const attachmentIds = new Set<string>();
+  for (const [nodeId, attachments] of Object.entries(
+    value.attachmentsByNodeId
+  )) {
+    if (!isCanonicalUuidV4(nodeId) || !Array.isArray(attachments)) {
+      return null;
+    }
+    let previous: NoteAttachment | null = null;
+    const normalizedAttachments: NoteAttachment[] = [];
+    for (const attachment of attachments) {
+      if (
+        !isNoteAttachment(attachment) ||
+        attachment.nodeId !== nodeId ||
+        attachmentIds.has(attachment.id) ||
+        (previous !== null &&
+          (attachment.sortKey < previous.sortKey ||
+            (attachment.sortKey === previous.sortKey &&
+              attachment.id <= previous.id)))
+      ) {
+        return null;
+      }
+      attachmentIds.add(attachment.id);
+      normalizedAttachments.push(attachment);
+      previous = attachment;
+    }
+    attachmentsByNodeId[nodeId] = normalizedAttachments;
+  }
+
+  return { nodes: value.nodes, attachmentsByNodeId };
+}
+
+export function isNotesWorkspace(value: unknown): value is NotesWorkspace {
+  return normalizeNotesWorkspace(value) !== null;
+}
+
 export function isNotesMutationResult(value: unknown): value is NotesMutationResult {
   if (!isRecord(value)) {
     return false;
@@ -188,9 +401,7 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
     keys.every((key) =>
       ["workspace", "historyEntryId", "canUndo", "canRedo"].includes(key)
     ) &&
-    isRecord(value.workspace) &&
-    Array.isArray(value.workspace.nodes) &&
-    value.workspace.nodes.every(isNoteNode) &&
+    isNotesWorkspace(value.workspace) &&
     isNullableString(value.historyEntryId) &&
     typeof value.canUndo === "boolean" &&
     typeof value.canRedo === "boolean"

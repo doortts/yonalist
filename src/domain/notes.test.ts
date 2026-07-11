@@ -1,22 +1,30 @@
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   createNoteId,
+  isNoteAttachment,
   isNoteNode,
   isNotesMutationResult,
   isNoteSearchResult,
-  isNoteStructuredSearchQuery
+  isNoteStructuredSearchQuery,
+  normalizeNotesWorkspace
 } from "./notes";
 import type {
+  NoteAttachment,
+  ImportNoteAttachmentInput,
   NoteNode,
   NoteSearchScope,
   NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesMutationResult,
+  NotesMutationResponse,
   NotesStore,
-  NotesWorkspaceScope
+  NotesWorkspaceScope,
+  ResizeNoteAttachmentInput
 } from "./notes";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
+const ATTACHMENT_UUID = "22222222-2222-4222-8222-222222222222";
+const CONTENT_HASH = "a".repeat(64);
 
 function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
   return {
@@ -38,11 +46,114 @@ function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
   };
 }
 
+function makeNoteAttachment(
+  overrides: Partial<NoteAttachment> = {}
+): NoteAttachment {
+  return {
+    id: ATTACHMENT_UUID,
+    nodeId: UUID,
+    sortKey: 1024,
+    relativePath: `notes-assets/${CONTENT_HASH}.png`,
+    contentHash: CONTENT_HASH,
+    originalName: "image.png",
+    mimeType: "image/png",
+    byteSize: 123,
+    intrinsicWidth: 320,
+    intrinsicHeight: 200,
+    displayWidth: 240,
+    createdAt: "2026-07-11T00:00:00.000Z",
+    updatedAt: "2026-07-11T00:00:01.000Z",
+    ...overrides
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("Notes domain contract", () => {
+  it("recognizes the exact native attachment metadata contract", () => {
+    expect(isNoteAttachment(makeNoteAttachment())).toBe(true);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), mimeType: "image/svg+xml" })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), byteSize: 20 * 1024 * 1024 + 1 })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), intrinsicWidth: 0 })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), displayWidth: 321 })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), originalName: "   " })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), relativePath: "../image.png" })
+    ).toBe(false);
+    expect(
+      isNoteAttachment({ ...makeNoteAttachment(), contentHash: "A".repeat(64) })
+    ).toBe(false);
+    expect(isNoteAttachment({ ...makeNoteAttachment(), extra: true })).toBe(false);
+  });
+
+  it("normalizes ordered workspace attachment arrays without reordering them", () => {
+    const secondAttachment = makeNoteAttachment({
+      id: "33333333-3333-4333-8333-333333333333",
+      sortKey: 2048,
+      originalName: "second.png"
+    });
+    const attachments = [makeNoteAttachment(), secondAttachment];
+
+    const normalized = normalizeNotesWorkspace({
+      nodes: [makeNoteNode()],
+      attachmentsByNodeId: { [UUID]: attachments }
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized?.attachmentsByNodeId[UUID]).toEqual(attachments);
+    expect(normalized?.attachmentsByNodeId[UUID]).not.toBe(attachments);
+  });
+
+  it("defaults a missing attachment map to empty for legacy workspace fixtures", () => {
+    expect(normalizeNotesWorkspace({ nodes: [makeNoteNode()] })).toEqual({
+      nodes: [makeNoteNode()],
+      attachmentsByNodeId: {}
+    });
+  });
+
+  it("rejects corrupt workspace attachment maps", () => {
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode()],
+        attachmentsByNodeId: {
+          [UUID]: [makeNoteAttachment({ nodeId: ATTACHMENT_UUID })]
+        }
+      })
+    ).toBeNull();
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode()],
+        attachmentsByNodeId: {
+          [UUID]: [
+            makeNoteAttachment({ sortKey: 2048 }),
+            makeNoteAttachment({
+              id: "33333333-3333-4333-8333-333333333333",
+              sortKey: 1024
+            })
+          ]
+        }
+      })
+    ).toBeNull();
+    expect(
+      normalizeNotesWorkspace({
+        nodes: [makeNoteNode()],
+        attachmentsByNodeId: { [UUID]: [{}] }
+      })
+    ).toBeNull();
+  });
+
   it("recognizes a complete Notes node payload", () => {
     expect(isNoteNode(makeNoteNode())).toBe(true);
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
@@ -65,6 +176,24 @@ describe("Notes domain contract", () => {
     expect(isNotesMutationResult({ ...result, workspace: { nodes: [{}] } })).toBe(
       false
     );
+    expect(
+      isNotesMutationResult({
+        ...result,
+        workspace: {
+          nodes: [makeNoteNode()],
+          attachmentsByNodeId: { [UUID]: [makeNoteAttachment()] }
+        }
+      })
+    ).toBe(true);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        workspace: {
+          nodes: [makeNoteNode()],
+          attachmentsByNodeId: { [UUID]: [{ ...makeNoteAttachment(), byteSize: -1 }] }
+        }
+      })
+    ).toBe(false);
   });
 
   it("rejects incomplete Notes node payloads", () => {
@@ -197,6 +326,46 @@ describe("Notes domain contract", () => {
         vaultPath: string,
         query: NoteStructuredSearchQuery
       ) => Promise<import("./notes").NoteSearchResult[]>
+    >();
+  });
+
+  it("defines typed attachment inputs and store APIs with history context", () => {
+    expectTypeOf<keyof ImportNoteAttachmentInput>().toEqualTypeOf<
+      "id" | "nodeId" | "sourcePath"
+    >();
+    expectTypeOf<keyof ResizeNoteAttachmentInput>().toEqualTypeOf<
+      "id" | "displayWidth"
+    >();
+    expectTypeOf<NonNullable<NotesStore["importAttachment"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ImportNoteAttachmentInput,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<NonNullable<NotesStore["readAttachmentBytes"]>>().toEqualTypeOf<
+      (vaultPath: string, attachmentId: string) => Promise<Uint8Array>
+    >();
+    expectTypeOf<NonNullable<NotesStore["resizeAttachment"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ResizeNoteAttachmentInput,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<NonNullable<NotesStore["removeAttachment"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        attachmentId: string,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<NonNullable<NotesStore["restoreAttachment"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        attachmentId: string,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
     >();
   });
 

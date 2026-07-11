@@ -1,13 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateNoteNodeInput,
+  ImportNoteAttachmentInput,
   MoveNoteNodeInput,
+  NoteAttachment,
   NotesHistoryContext,
   NotesHistoryReplayResult,
   NotesHistoryStatus,
   NotesMutationResult,
   NoteStructuredSearchQuery,
   NotesWorkspace,
+  ResizeNoteAttachmentInput,
   SplitNoteNodeInput,
   UpdateNoteNodeInput
 } from "../domain/notes";
@@ -19,13 +22,18 @@ import {
   notesEmptyTrash,
   notesClearHistory,
   notesHistoryStatus,
+  notesImportAttachment,
   notesInitialize,
   notesListTags,
   notesListTagsWithCounts,
   notesLoadWorkspace,
   notesMoveNode,
+  notesReadAttachmentBytes,
+  notesRemoveAttachment,
   notesRemoveEmptyNode,
   notesRestoreNode,
+  notesRestoreAttachment,
+  notesResizeAttachment,
   notesSearch,
   notesSearchStructured,
   notesSoftDeleteNode,
@@ -48,6 +56,23 @@ vi.mock("@tauri-apps/api/core", () => ({
 const vaultPath = "/vault";
 const nodeId = "11111111-1111-4111-8111-111111111111";
 const secondNodeId = "22222222-2222-4222-8222-222222222222";
+const attachmentId = "33333333-3333-4333-8333-333333333333";
+const contentHash = "a".repeat(64);
+const attachment: NoteAttachment = {
+  id: attachmentId,
+  nodeId,
+  sortKey: 1024,
+  relativePath: `notes-assets/${contentHash}.png`,
+  contentHash,
+  originalName: "diagram.png",
+  mimeType: "image/png",
+  byteSize: 5,
+  intrinsicWidth: 320,
+  intrinsicHeight: 200,
+  displayWidth: 240,
+  createdAt: "2026-07-11T00:00:00.000Z",
+  updatedAt: "2026-07-11T00:00:01.000Z"
+};
 const workspace: NotesWorkspace = {
   nodes: [
     {
@@ -68,6 +93,14 @@ const workspace: NotesWorkspace = {
     }
   ]
 };
+const workspaceWithAttachments: NotesWorkspace = {
+  ...workspace,
+  attachmentsByNodeId: { [nodeId]: [attachment] }
+};
+const normalizedWorkspace: NotesWorkspace = {
+  ...workspace,
+  attachmentsByNodeId: {}
+};
 const historyContext: NotesHistoryContext = {
   sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -85,6 +118,14 @@ const unjournaledMutationResult: NotesMutationResult = {
   canUndo: false,
   canRedo: false
 };
+const normalizedMutationResult: NotesMutationResult = {
+  ...mutationResult,
+  workspace: normalizedWorkspace
+};
+const normalizedUnjournaledMutationResult: NotesMutationResult = {
+  ...unjournaledMutationResult,
+  workspace: normalizedWorkspace
+};
 
 describe("notesStore in Tauri", () => {
   beforeEach(() => {
@@ -101,7 +142,7 @@ describe("notesStore in Tauri", () => {
     await expect(notesInitialize(vaultPath)).resolves.toBeUndefined();
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "trash" })
-    ).resolves.toBe(workspace);
+    ).resolves.toEqual({ ...workspace, attachmentsByNodeId: {} });
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_initialize", {
       vaultPath
@@ -109,6 +150,196 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_load_workspace", {
       vaultPath,
       scope: { kind: "trash" }
+    });
+  });
+
+  it("parses ordered attachment metadata from loaded workspaces", async () => {
+    invokeMock.mockResolvedValue(workspaceWithAttachments);
+
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "active" })
+    ).resolves.toEqual(workspaceWithAttachments);
+  });
+
+  it("maps malformed loaded attachment metadata to a non-retryable load error", async () => {
+    invokeMock.mockResolvedValue({
+      ...workspaceWithAttachments,
+      attachmentsByNodeId: {
+        [nodeId]: [{ ...attachment, byteSize: -1 }]
+      }
+    });
+
+    const error = await notesLoadWorkspace(vaultPath, { kind: "active" }).catch(
+      (rejection: unknown) => rejection
+    );
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({
+      message: "Notes load returned an invalid workspace.",
+      operation: "load",
+      retryable: false
+    });
+  });
+
+  it("maps native workspace load failures to retryable load errors", async () => {
+    invokeMock.mockRejectedValue(new Error("Database is busy"));
+
+    await expect(
+      notesLoadWorkspace(vaultPath, { kind: "active" })
+    ).rejects.toMatchObject({
+      message: "Database is busy",
+      operation: "load",
+      retryable: true
+    });
+  });
+
+  it("maps attachment commands to exact native payloads and history context", async () => {
+    const importInput: ImportNoteAttachmentInput = {
+      id: attachmentId,
+      nodeId,
+      sourcePath: "/tmp/diagram.png"
+    };
+    const resizeInput: ResizeNoteAttachmentInput = {
+      id: attachmentId,
+      displayWidth: 180
+    };
+    const attachmentMutation = {
+      ...mutationResult,
+      workspace: workspaceWithAttachments
+    };
+    invokeMock
+      .mockResolvedValueOnce(attachmentMutation)
+      .mockResolvedValueOnce([0, 1, 127, 128, 255])
+      .mockResolvedValueOnce(attachmentMutation)
+      .mockResolvedValueOnce(attachmentMutation)
+      .mockResolvedValueOnce(attachmentMutation);
+
+    await expect(
+      notesImportAttachment(vaultPath, importInput, historyContext)
+    ).resolves.toEqual(attachmentMutation);
+    await expect(notesReadAttachmentBytes(vaultPath, attachmentId)).resolves.toEqual(
+      new Uint8Array([0, 1, 127, 128, 255])
+    );
+    await expect(
+      notesResizeAttachment(vaultPath, resizeInput, historyContext)
+    ).resolves.toEqual(attachmentMutation);
+    await expect(
+      notesRemoveAttachment(vaultPath, attachmentId, historyContext)
+    ).resolves.toEqual(attachmentMutation);
+    await expect(
+      notesRestoreAttachment(vaultPath, attachmentId, historyContext)
+    ).resolves.toEqual(attachmentMutation);
+
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "notes_import_attachment",
+        { vaultPath, input: importInput, historyContext }
+      ],
+      ["notes_read_attachment_bytes", { vaultPath, attachmentId }],
+      [
+        "notes_resize_attachment",
+        { vaultPath, input: resizeInput, historyContext }
+      ],
+      [
+        "notes_remove_attachment",
+        { vaultPath, attachmentId, historyContext }
+      ],
+      [
+        "notes_restore_attachment",
+        { vaultPath, attachmentId, historyContext }
+      ]
+    ]);
+  });
+
+  it("maps native attachment failures to retryable operation-specific errors", async () => {
+    invokeMock
+      .mockRejectedValueOnce("Could not import attachment")
+      .mockRejectedValueOnce(new Error("Could not read attachment"));
+
+    const importError = await notesImportAttachment(vaultPath, {
+      id: attachmentId,
+      nodeId,
+      sourcePath: "/tmp/diagram.png"
+    }).catch((rejection: unknown) => rejection);
+    const readError = await notesReadAttachmentBytes(
+      vaultPath,
+      attachmentId
+    ).catch((rejection: unknown) => rejection);
+
+    expect(importError).toMatchObject({
+      message: "Could not import attachment",
+      operation: "write",
+      retryable: true
+    });
+    expect(readError).toMatchObject({
+      message: "Could not read attachment",
+      operation: "load",
+      retryable: true
+    });
+  });
+
+  it("copies Uint8Array attachment bytes without changing binary boundaries", async () => {
+    const bytes = new Uint8Array([0, 1, 127, 128, 255]);
+    invokeMock.mockResolvedValue(bytes);
+
+    const result = await notesReadAttachmentBytes(vaultPath, attachmentId);
+
+    expect(result).not.toBe(bytes);
+    expect([...result]).toEqual([0, 1, 127, 128, 255]);
+  });
+
+  it.each([
+    [[-1], "out-of-range"],
+    [[256], "out-of-range"],
+    [[1.5], "non-integer"],
+    [[Number.NaN], "non-finite"],
+    [[0, , 255], "sparse"]
+  ])("rejects %s attachment byte payloads (%s)", async (payload) => {
+    invokeMock.mockResolvedValue(payload);
+
+    const error = await notesReadAttachmentBytes(vaultPath, attachmentId).catch(
+      (rejection: unknown) => rejection
+    );
+
+    expect(error).toMatchObject({
+      message: "Notes attachment bytes returned an invalid result.",
+      operation: "load",
+      retryable: false
+    });
+  });
+
+  it("rejects empty and oversized attachment byte payloads", async () => {
+    const oversized: number[] = [];
+    oversized.length = 20 * 1024 * 1024 + 1;
+    invokeMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(oversized);
+
+    await expect(
+      notesReadAttachmentBytes(vaultPath, attachmentId)
+    ).rejects.toMatchObject({ operation: "load", retryable: false });
+    await expect(
+      notesReadAttachmentBytes(vaultPath, attachmentId)
+    ).rejects.toMatchObject({ operation: "load", retryable: false });
+  });
+
+  it("rejects malformed attachment metadata returned by mutations", async () => {
+    invokeMock.mockResolvedValue({
+      ...mutationResult,
+      workspace: {
+        ...workspaceWithAttachments,
+        attachmentsByNodeId: {
+          [nodeId]: [{ ...attachment, relativePath: "../diagram.png" }]
+        }
+      }
+    });
+
+    await expect(
+      notesResizeAttachment(vaultPath, { id: attachmentId, displayWidth: 180 })
+    ).rejects.toMatchObject({
+      message: "Notes mutation returned an invalid result.",
+      operation: "write",
+      retryable: false
     });
   });
 
@@ -146,16 +377,16 @@ describe("notesStore in Tauri", () => {
 
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "starred" })
-    ).resolves.toBe(workspace);
+    ).resolves.toEqual(normalizedWorkspace);
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "recent" })
-    ).resolves.toBe(workspace);
+    ).resolves.toEqual(normalizedWorkspace);
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "tag", tag: "roadmap" })
-    ).resolves.toBe(workspace);
+    ).resolves.toEqual(normalizedWorkspace);
     await expect(notesSearch(vaultPath, "target")).resolves.toBe(searchResults);
-    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
     await expect(notesListTags(vaultPath)).resolves.toEqual(["offline", "roadmap"]);
     await expect(notesListTagsWithCounts(vaultPath)).resolves.toEqual([
@@ -359,17 +590,17 @@ describe("notesStore in Tauri", () => {
     };
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesCreateNode(vaultPath, createInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesCreateNode(vaultPath, createInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
-    await expect(notesUpdateNode(vaultPath, updateInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesUpdateNode(vaultPath, updateInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
-    await expect(notesSplitNode(vaultPath, splitInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesSplitNode(vaultPath, splitInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
-    await expect(notesMoveNode(vaultPath, moveInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesMoveNode(vaultPath, moveInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_create_node", {
@@ -403,7 +634,7 @@ describe("notesStore in Tauri", () => {
         { id: nodeId, title: "Journaled", note: "" },
         historyContext
       )
-    ).resolves.toBe(mutationResult);
+    ).resolves.toEqual(normalizedMutationResult);
 
     expect(invokeMock).toHaveBeenCalledWith("notes_update_node", {
       vaultPath,
@@ -422,16 +653,22 @@ describe("notesStore in Tauri", () => {
 
     await expect(
       notesUpdateNode(vaultPath, { id: nodeId, title: "Invalid", note: "" })
-    ).rejects.toEqual(new Error("Notes mutation returned an invalid result."));
+    ).rejects.toMatchObject({
+      message: "Notes mutation returned an invalid result.",
+      operation: "write",
+      retryable: false
+    });
     await expect(
       notesUpdateNode(
         vaultPath,
         { id: nodeId, title: "Mismatched", note: "" },
         historyContext
       )
-    ).rejects.toEqual(
-      new Error("Notes mutation returned an unexpected history entry ID.")
-    );
+    ).rejects.toMatchObject({
+      message: "Notes mutation returned an unexpected history entry ID.",
+      operation: "write",
+      retryable: false
+    });
   });
 
   it("passes beforeId unchanged and keeps legacy afterId-only moves valid", async () => {
@@ -448,11 +685,11 @@ describe("notesStore in Tauri", () => {
     };
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
-    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_move_node", {
@@ -477,8 +714,8 @@ describe("notesStore in Tauri", () => {
   ] as const)("maps %s to the exact nodeId payload", async (command, adapter) => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(adapter(vaultPath, nodeId)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
@@ -494,8 +731,8 @@ describe("notesStore in Tauri", () => {
   ] as const)("maps %s to the exact root node payload", async (command, adapter) => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toBe(
-      unjournaledMutationResult
+    await expect(adapter(vaultPath, nodeId)).resolves.toEqual(
+      normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
@@ -526,7 +763,7 @@ describe("notesStore in Tauri", () => {
         { id: nodeId, title: "Journaled", note: "" },
         historyContext
       )
-    ).resolves.toBe(mutationResult);
+    ).resolves.toEqual(normalizedMutationResult);
     await expect(
       notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
     ).resolves.toBe(replay);
