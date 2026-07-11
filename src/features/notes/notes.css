@@ -220,6 +220,7 @@
 
 .notes-outline {
   --notes-outline-indent: 36px;
+  --notes-bullet-center-offset: 33px;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -596,7 +597,6 @@
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));
   --notes-menu-width: 24px;
   --notes-content-offset: 46px;
-  --notes-bullet-center-offset: 33px;
   position: relative;
   min-width: 0;
 }
@@ -977,6 +977,7 @@
 @media (max-width: 720px) {
   .notes-outline {
     --notes-outline-indent: 28px;
+    --notes-bullet-center-offset: 42px;
   }
 
   .notes-outline-toolbar {
@@ -1004,7 +1005,6 @@
   .notes-node {
     --notes-menu-width: 28px;
     --notes-content-offset: 56px;
-    --notes-bullet-center-offset: 42px;
   }
 
   .notes-node-main {

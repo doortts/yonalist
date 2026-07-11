@@ -59,14 +59,20 @@ function observeWidth(textarea: HTMLTextAreaElement): () => void {
 
 export function useAutoGrowTextarea(
   ref: RefObject<HTMLTextAreaElement>,
-  value: string
+  value: string,
+  active = true
 ): void {
   useLayoutEffect(() => {
-    resizeTextarea(ref.current);
-  }, [ref, value]);
+    if (active) {
+      resizeTextarea(ref.current);
+    }
+  }, [active, ref, value]);
 
   useEffect(() => {
+    if (!active) {
+      return undefined;
+    }
     const textarea = ref.current;
     return textarea ? observeWidth(textarea) : undefined;
-  }, [ref]);
+  }, [active, ref]);
 }

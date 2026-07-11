@@ -50,14 +50,14 @@ export function NotesPageHeader({
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
 
   useAutoGrowTextarea(titleRef, titleValue);
+  useAutoGrowTextarea(noteRef, noteValue, noteVisible);
 
   useLayoutEffect(() => {
-    resizeTextarea(noteRef.current);
     if (noteVisible && focusNoteOnOpenRef.current && noteRef.current) {
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
     }
-  }, [noteValue, noteVisible]);
+  }, [noteVisible]);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId || !titleRef.current) {

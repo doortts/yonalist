@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -240,6 +241,92 @@ describe("NotesPageHeader", () => {
       ).toHaveFocus()
     );
     expect(trigger).not.toHaveFocus();
+  });
+
+  it("reflows a revealed long page note when its observed width narrows", async () => {
+    const user = userEvent.setup();
+    const callbacksByTarget = new Map<Element, ResizeObserverCallback>();
+    const observe = vi.fn();
+    const unobserve = vi.fn();
+    let noteScrollHeight = 40;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = callback;
+        }
+        observe(target: Element) {
+          observe(target);
+          callbacksByTarget.set(target, this.callback);
+        }
+        unobserve(target: Element) {
+          unobserve(target);
+          callbacksByTarget.delete(target);
+        }
+        disconnect() {}
+      }
+    );
+    vi.spyOn(
+      HTMLTextAreaElement.prototype,
+      "scrollHeight",
+      "get"
+    ).mockImplementation(function (this: HTMLTextAreaElement) {
+      return this.classList.contains("notes-page-note") ? noteScrollHeight : 34;
+    });
+    const view = render(zoomedOutline(workspaceValue({ note: "" })));
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Project" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add note"
+      })
+    );
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Supporting note: Project"
+    });
+    fireEvent.change(note, {
+      target: {
+        value:
+          "페이지의 긴 한국어 보조 메모도 화면 너비가 줄어들 때 전체 내용이 보이도록 높이를 다시 계산해야 합니다"
+      }
+    });
+
+    expect(note).toHaveFocus();
+    expect(note).toHaveStyle({ height: "40px" });
+    expect(observe).toHaveBeenCalledWith(note);
+
+    const resizeCallback = callbacksByTarget.get(note);
+    act(() =>
+      resizeCallback?.(
+        [
+          {
+            target: note,
+            contentRect: { width: 620 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+    noteScrollHeight = 80;
+    act(() =>
+      resizeCallback?.(
+        [
+          {
+            target: note,
+            contentRect: { width: 280 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+
+    expect(note).toHaveStyle({ height: "80px" });
+    view.unmount();
+    expect(unobserve).toHaveBeenCalledWith(note);
   });
 
   it("keeps a revealed page note mounted after its draft becomes empty", () => {

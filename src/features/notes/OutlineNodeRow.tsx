@@ -91,6 +91,7 @@ export function OutlineNodeRow({
   const noteValue = draft?.note ?? node?.note ?? "";
 
   useAutoGrowTextarea(titleRef, titleValue);
+  useAutoGrowTextarea(noteRef, noteValue, noteOpen);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -116,12 +117,11 @@ export function OutlineNodeRow({
     if (!noteOpen || !noteRef.current) {
       return;
     }
-    resizeTextarea(noteRef.current);
     if (focusNoteOnOpenRef.current) {
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
     }
-  }, [noteOpen, noteValue]);
+  }, [noteOpen]);
 
   if (!node) {
     return null;

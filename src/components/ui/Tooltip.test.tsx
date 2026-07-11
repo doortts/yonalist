@@ -1,7 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { IconTooltip } from "./Tooltip";
+
+const tooltipStyles = readFileSync(
+  join(process.cwd(), "src/components/ui/tooltip.css"),
+  "utf8"
+);
 
 describe("IconTooltip", () => {
   it("keeps the trigger name and a stable described-by popup relationship", async () => {
@@ -85,5 +92,11 @@ describe("IconTooltip", () => {
     expect(document.getElementById(secondId!)).toHaveTextContent("Second detail");
     expect(first).toHaveAccessibleName("First action");
     expect(second).toHaveAccessibleName("Second action");
+  });
+
+  it("removes tooltip opacity and transform motion when reduced motion is preferred", () => {
+    expect(tooltipStyles).toMatch(
+      /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.tooltip-popup\s*{[^}]*transition:\s*none;[^}]*}[\s\S]*\.tooltip-popup\[data-starting-style\],[\s\S]*\.tooltip-popup\[data-ending-style\]\s*{[^}]*transform:\s*none;/s
+    );
   });
 });

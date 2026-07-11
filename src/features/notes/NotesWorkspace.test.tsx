@@ -1274,6 +1274,103 @@ describe("Notes workspace", () => {
     expect(trigger).not.toHaveFocus();
   });
 
+  it("reflows a revealed long row note when its observed width narrows", async () => {
+    const user = userEvent.setup();
+    const callbacksByTarget = new Map<Element, ResizeObserverCallback>();
+    const observe = vi.fn();
+    const unobserve = vi.fn();
+    const disconnect = vi.fn();
+    let noteScrollHeight = 40;
+    const scrollHeight = vi
+      .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+      .mockImplementation(function (this: HTMLTextAreaElement) {
+        return this.classList.contains("notes-node-note")
+          ? noteScrollHeight
+          : 28;
+      });
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        private readonly callback: ResizeObserverCallback;
+
+        constructor(callback: ResizeObserverCallback) {
+          this.callback = callback;
+        }
+        observe(target: Element) {
+          observe(target);
+          callbacksByTarget.set(target, this.callback);
+        }
+        unobserve(target: Element) {
+          unobserve(target);
+          callbacksByTarget.delete(target);
+        }
+        disconnect = disconnect;
+      }
+    );
+    configureRepository([node({ id: "project", title: "Project" })]);
+    const view = renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    const menu = await openNodeMenu("Project", user);
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Add note" })
+    );
+    const note = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Supporting note: Project"
+    });
+    const longNote =
+      "긴 한국어 보조 메모도 데스크톱에서 모바일 너비로 줄어들면 모든 문장이 잘리지 않고 다시 줄바꿈되어야 합니다";
+    fireEvent.change(note, { target: { value: longNote } });
+
+    expect(note).toHaveFocus();
+    expect(note).toHaveStyle({ height: "40px" });
+    expect(observe).toHaveBeenCalledWith(note);
+
+    const callback = callbacksByTarget.get(note);
+    act(() =>
+      callback?.(
+        [
+          {
+            target: note,
+            contentRect: { width: 620 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+    noteScrollHeight = 80;
+    act(() =>
+      callback?.(
+        [
+          {
+            target: note,
+            contentRect: { width: 280 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+    expect(note).toHaveStyle({ height: "80px" });
+
+    const measuredCalls = scrollHeight.mock.calls.length;
+    act(() =>
+      callback?.(
+        [
+          {
+            target: note,
+            contentRect: { width: 280 }
+          } as unknown as ResizeObserverEntry
+        ],
+        {} as ResizeObserver
+      )
+    );
+    expect(scrollHeight).toHaveBeenCalledTimes(measuredCalls);
+
+    view.unmount();
+    expect(unobserve).toHaveBeenCalledWith(note);
+    expect(disconnect).toHaveBeenCalled();
+  });
+
   it("debounces supporting-note edits with the latest title patch", async () => {
     const user = userEvent.setup();
     renderNotesWorkspace();
@@ -2636,7 +2733,10 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;/s
+      /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-bullet-center-offset:\s*33px;/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-node\s*{[^}]*--notes-bullet-center-offset:/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node\s*{[^}]*--notes-depth:\s*0;[^}]*--notes-indent:\s*calc\(var\(--notes-depth\) \* var\(--notes-outline-indent\)\);[^}]*--notes-menu-width:\s*24px;[^}]*--notes-content-offset:\s*46px;/s
@@ -2678,7 +2778,7 @@ describe("Notes workspace", () => {
       /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;/s
+      /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled\s*{[^}]*opacity:\s*0\.34;/s
     );
     expect(notesStyles).not.toContain("--notes-actions-width: 149px");
     expect(notesStyles).not.toContain(".notes-node-actions");
@@ -2714,7 +2814,7 @@ describe("Notes workspace", () => {
       /\.notes-outline-drop-preview\s*{[^}]*position:\s*absolute;[^}]*inset-inline-start:\s*calc\([^}]*var\(--notes-drop-depth\)[^}]*var\(--notes-outline-indent\)[^}]*var\(--notes-bullet-center-offset\)[^}]*\);[^}]*height:\s*2px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline\s*{[^}]*--notes-outline-indent:\s*28px;[^}]*--notes-bullet-center-offset:\s*42px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-outline-toolbar\s*{[^}]*padding-inline:\s*8px;[\s\S]*\.notes-outline-rows\s*{[^}]*padding-inline:\s*12px;/s
@@ -2723,7 +2823,7 @@ describe("Notes workspace", () => {
       /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-breadcrumb\s*{[^}]*overflow:\s*hidden;[\s\S]*\.notes-breadcrumb-button\s*{[^}]*max-width:\s*112px;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*56px;[^}]*--notes-bullet-center-offset:\s*42px;[\s\S]*\.notes-node-main\s*{[^}]*grid-template-columns:\s*28px 28px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*width:\s*28px;/s
+      /@media \(max-width:\s*720px\)\s*{[\s\S]*\.notes-node\s*{[^}]*--notes-menu-width:\s*28px;[^}]*--notes-content-offset:\s*56px;[\s\S]*\.notes-node-main\s*{[^}]*grid-template-columns:\s*28px 28px minmax\(0, 1fr\) var\(--notes-menu-width\);[^}]*gap:\s*0;[\s\S]*\.notes-node-arrow-slot,[\s\S]*\.notes-collapse-button,[\s\S]*\.notes-node-bullet,[\s\S]*\.notes-bullet-menu-trigger\s*{[^}]*width:\s*28px;/s
     );
     expect(notesStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
