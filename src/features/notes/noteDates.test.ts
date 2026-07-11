@@ -353,18 +353,60 @@ describe("parseNoteDateExpression", () => {
 });
 
 describe("findNoteDateMatches", () => {
-  it.each(["07/11-07/14", "07-11-07-14"])(
-    "does not partially index malformed compact range-like input %s",
-    (source) => {
+  const yearlessEndpointFormats = [
+    ["/", "MM/DD"],
+    ["-", "MM-DD"]
+  ] as const;
+  const malformedSpacing = [
+    ["zero", "", ""],
+    ["left-only", " ", ""],
+    ["right-only", "", " "]
+  ] as const;
+  const malformedRangeCases = yearlessEndpointFormats.flatMap(
+    ([startDelimiter]) =>
+      yearlessEndpointFormats.flatMap(([endDelimiter]) =>
+        malformedSpacing.map(([spacing, before, after]) => [
+          `${spacing} ${startDelimiter}/${endDelimiter}`,
+          `07${startDelimiter}11${before}-${after}07${endDelimiter}14`
+        ] as const)
+      )
+  );
+  const validRangeCases = yearlessEndpointFormats.flatMap(
+    ([startDelimiter, startFormat]) =>
+      yearlessEndpointFormats.map(([endDelimiter, endFormat]) => [
+        `07${startDelimiter}11 - 07${endDelimiter}14`,
+        startFormat,
+        endFormat
+      ] as const)
+  );
+
+  it.each(malformedRangeCases)(
+    "rejects malformed yearless range matrix case %s: %s",
+    (_label, source) => {
+      expect(parseNoteDateExpression(source, { today })).toBeNull();
       expect(findNoteDateMatches(source, { today })).toEqual([]);
     }
   );
 
-  it.each(["07/11- 07/14", "07/11 -07/14"])(
-    "does not index either endpoint of half-spaced range-like input %s",
-    (source) => {
-      expect(parseNoteDateExpression(source, { today })).toBeNull();
-      expect(findNoteDateMatches(source, { today })).toEqual([]);
+  it.each(validRangeCases)(
+    "parses fully spaced yearless range %s",
+    (source, startFormat, endFormat) => {
+      const value = numericValue(
+        { year: 2026, month: 7, day: 11 },
+        startFormat,
+        { year: 2026, month: 7, day: 14 },
+        endFormat
+      );
+
+      expect(parseNoteDateExpression(source, { today })).toEqual(value);
+      expect(findNoteDateMatches(source, { today })).toEqual([
+        {
+          ...value,
+          raw: source,
+          startUtf16: 0,
+          endUtf16: source.length
+        }
+      ]);
     }
   );
 

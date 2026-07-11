@@ -310,7 +310,7 @@ interface NumericCandidate {
   readonly endUtf16: number;
 }
 
-function readNumericCandidate(
+function readYearlessNumericCandidate(
   source: string,
   startUtf16: number,
   limitUtf16: number
@@ -329,15 +329,33 @@ function readNumericCandidate(
     return null;
   }
 
-  const yearSeparatorUtf16 = startUtf16 + 5;
+  return {
+    month,
+    day,
+    explicitYear: null,
+    format: separator === "-" ? "MM-DD" : "MM/DD",
+    endUtf16: startUtf16 + 5
+  };
+}
+
+function readNumericCandidate(
+  source: string,
+  startUtf16: number,
+  limitUtf16: number
+): NumericCandidate | null {
+  const yearlessCandidate = readYearlessNumericCandidate(
+    source,
+    startUtf16,
+    limitUtf16
+  );
+  if (yearlessCandidate === null) {
+    return null;
+  }
+
+  const separator = source[startUtf16 + 2];
+  const yearSeparatorUtf16 = yearlessCandidate.endUtf16;
   if (source[yearSeparatorUtf16] !== separator) {
-    return {
-      month,
-      day,
-      explicitYear: null,
-      format: separator === "-" ? "MM-DD" : "MM/DD",
-      endUtf16: yearSeparatorUtf16
-    };
+    return yearlessCandidate;
   }
 
   let yearEndUtf16 = yearSeparatorUtf16 + 1;
@@ -359,7 +377,13 @@ function readNumericCandidate(
       : yearLength === 2
         ? "MM/DD/YY"
         : "MM/DD/YYYY";
-  return { month, day, explicitYear, format, endUtf16: yearEndUtf16 };
+  return {
+    month: yearlessCandidate.month,
+    day: yearlessCandidate.day,
+    explicitYear,
+    format,
+    endUtf16: yearEndUtf16
+  };
 }
 
 function resolveCandidate(
@@ -442,20 +466,12 @@ interface RejectedNumericSpan {
   readonly endUtf16: number;
 }
 
-function tryNumericMatch(
+function tryNumericRangeMatch(
   source: string,
-  startUtf16: number,
+  startCandidate: NumericCandidate,
   limitUtf16: number,
   todayYear: number
 ): InternalMatch | RejectedNumericSpan | null {
-  if (!hasNumericStartBoundary(source, startUtf16)) {
-    return null;
-  }
-  const startCandidate = readNumericCandidate(source, startUtf16, limitUtf16);
-  if (startCandidate === null) {
-    return null;
-  }
-
   let separatorUtf16 = startCandidate.endUtf16;
   while (
     separatorUtf16 < limitUtf16 &&
@@ -502,6 +518,51 @@ function tryNumericMatch(
         }
       }
       return { rejected: true, endUtf16: endCandidate.endUtf16 };
+    }
+  }
+  return null;
+}
+
+function tryNumericMatch(
+  source: string,
+  startUtf16: number,
+  limitUtf16: number,
+  todayYear: number
+): InternalMatch | RejectedNumericSpan | null {
+  if (!hasNumericStartBoundary(source, startUtf16)) {
+    return null;
+  }
+  const yearlessCandidate = readYearlessNumericCandidate(
+    source,
+    startUtf16,
+    limitUtf16
+  );
+  if (yearlessCandidate === null) {
+    return null;
+  }
+  const yearlessRange = tryNumericRangeMatch(
+    source,
+    yearlessCandidate,
+    limitUtf16,
+    todayYear
+  );
+  if (yearlessRange !== null) {
+    return yearlessRange;
+  }
+
+  const startCandidate = readNumericCandidate(source, startUtf16, limitUtf16);
+  if (startCandidate === null) {
+    return null;
+  }
+  if (startCandidate.endUtf16 !== yearlessCandidate.endUtf16) {
+    const explicitYearRange = tryNumericRangeMatch(
+      source,
+      startCandidate,
+      limitUtf16,
+      todayYear
+    );
+    if (explicitYearRange !== null) {
+      return explicitYearRange;
     }
   }
 
