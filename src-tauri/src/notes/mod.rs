@@ -8,6 +8,8 @@ pub(crate) mod date_index;
 pub(crate) mod export;
 #[allow(dead_code)]
 pub(crate) mod history;
+#[cfg(test)]
+mod performance;
 #[allow(dead_code)]
 pub(crate) mod repository;
 #[allow(dead_code)]
