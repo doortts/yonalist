@@ -285,6 +285,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         }
     }
 
+    ensure_history_command_kind(&transaction)?;
     transaction
         .execute_batch(
             "CREATE INDEX IF NOT EXISTS notes_nodes_archive_root_order \
@@ -299,6 +300,28 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+}
+
+fn ensure_history_command_kind(transaction: &Transaction<'_>) -> Result<(), String> {
+    let has_column = transaction
+        .prepare("PRAGMA table_info(notes_history_entries)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?
+        .iter()
+        .any(|column| column == "command_kind");
+    if has_column {
+        return Ok(());
+    }
+    transaction
+        .execute_batch(
+            "ALTER TABLE notes_history_entries \
+             ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
+        )
+        .map_err(|error| format!("Could not repair Notes history command kinds: {error}"))
 }
 
 fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -636,7 +659,8 @@ fn migrate_version_two_to_three(transaction: &Transaction<'_>) -> Result<(), Str
               session_id TEXT NOT NULL,
               sequence INTEGER NOT NULL,
               is_undone INTEGER NOT NULL DEFAULT 0,
-              estimated_bytes INTEGER NOT NULL DEFAULT 0
+              estimated_bytes INTEGER NOT NULL DEFAULT 0,
+              command_kind TEXT NOT NULL
             );
             CREATE UNIQUE INDEX notes_history_session_sequence
               ON notes_history_entries(session_id, sequence);
@@ -4553,7 +4577,8 @@ mod tests {
                 "session_id",
                 "sequence",
                 "is_undone",
-                "estimated_bytes"
+                "estimated_bytes",
+                "command_kind"
             ]
         );
         assert_eq!(
@@ -4615,6 +4640,69 @@ mod tests {
             "index",
             "notes_nodes_archive_root_order"
         ));
+    }
+
+    #[test]
+    fn version_three_initialization_repairs_history_command_kind() {
+        let mut connection = test_connection();
+        connection
+            .execute_batch(
+                "DROP TABLE notes_history_changes; \
+                 DROP TABLE notes_history_entries; \
+                 CREATE TABLE notes_history_entries (\
+                   id TEXT PRIMARY KEY, \
+                   session_id TEXT NOT NULL, \
+                   sequence INTEGER NOT NULL, \
+                   is_undone INTEGER NOT NULL DEFAULT 0, \
+                   estimated_bytes INTEGER NOT NULL DEFAULT 0\
+                 ); \
+                 CREATE UNIQUE INDEX notes_history_session_sequence \
+                   ON notes_history_entries(session_id, sequence); \
+                 CREATE TABLE notes_history_changes (\
+                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+                   table_name TEXT NOT NULL, \
+                   row_id TEXT NOT NULL, \
+                   ordinal INTEGER NOT NULL, \
+                   before_json TEXT, \
+                   after_json TEXT, \
+                   PRIMARY KEY (entry_id, table_name, row_id)\
+                 ); \
+                 INSERT INTO notes_history_entries(id, session_id, sequence) \
+                 VALUES (\
+                   '00000000-0000-4000-8000-000000000001', \
+                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
+                   1\
+                 );",
+            )
+            .expect("seed five-column version three history table");
+
+        initialize_notes_db(&mut connection).expect("repair version three history command kind");
+
+        assert_eq!(
+            table_columns(&connection, "notes_history_entries"),
+            vec![
+                "id",
+                "session_id",
+                "sequence",
+                "is_undone",
+                "estimated_bytes",
+                "command_kind"
+            ]
+        );
+        let retained: (String, String) = connection
+            .query_row(
+                "SELECT id, command_kind FROM notes_history_entries",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("retained history entry");
+        assert_eq!(
+            retained,
+            (
+                "00000000-0000-4000-8000-000000000001".to_string(),
+                "legacy".to_string()
+            )
+        );
     }
 
     #[test]

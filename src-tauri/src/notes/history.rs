@@ -337,9 +337,15 @@ fn record_pruned_attachment_paths(
 pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), String> {
     let context = transaction
         .query_row(
-            "SELECT session_id, entry_id FROM notes_history_context LIMIT 1",
+            "SELECT session_id, entry_id, command_kind FROM notes_history_context LIMIT 1",
             [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
         )
         .map_err(|error| format!("Could not read active Notes history context: {error}"))?;
     let audit = {
@@ -424,8 +430,9 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
             .map_err(|error| format!("Could not allocate Notes history order: {error}"))?;
         transaction
             .execute(
-                "INSERT INTO notes_history_entries(id, session_id, sequence) VALUES (?1, ?2, ?3)",
-                params![context.1, context.0, sequence],
+                "INSERT INTO notes_history_entries(id, session_id, sequence, command_kind) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![context.1, context.0, sequence, context.2],
             )
             .map_err(|error| format!("Could not create Notes history entry: {error}"))?;
     }
@@ -1144,8 +1151,8 @@ pub(crate) fn redo_with_attachment_storage_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_history, history_status, redo, undo, with_history_transaction, HISTORY_MAX_BYTES,
-        HISTORY_MAX_ENTRIES,
+        clear_history, history_status, redo, undo, with_history_transaction,
+        with_history_transaction_and_prunes, HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
         archive_node, connect_notes_db, create_attachment, create_node, delete_database,
@@ -1667,6 +1674,53 @@ mod tests {
         );
         redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo unarchive");
         assert_eq!(active(&connection).nodes.len(), 2);
+    }
+
+    #[test]
+    fn notes_history_trash_persists_command_kind() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let has_command_kind: bool = connection
+            .query_row(
+                "SELECT EXISTS(\
+                   SELECT 1 FROM pragma_table_info('notes_history_entries') \
+                   WHERE name = 'command_kind'\
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect history command kind");
+        if !has_command_kind {
+            connection
+                .execute_batch(
+                    "ALTER TABLE notes_history_entries \
+                     ADD COLUMN command_kind TEXT NOT NULL;",
+                )
+                .expect("require history command kind");
+        }
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+
+        let context = history_context(1, "trash");
+        let result =
+            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+                soft_delete_node(connection, NODE_ID)
+            })
+            .expect("trash with history command kind");
+
+        assert_eq!(
+            result.history_entry_id.as_deref(),
+            Some(context.entry_id.as_str())
+        );
+        assert!(result.workspace.nodes.is_empty());
+        let stored: String = connection
+            .query_row(
+                "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("stored command kind");
+        assert_eq!(stored, "trash");
     }
 
     #[test]
