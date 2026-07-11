@@ -168,6 +168,64 @@
     "matches": []
   },
   {
+    "name": "spaced range with short right month is rejected atomically",
+    "source": "07/11 - 7/14",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with short right day is rejected atomically",
+    "source": "07/11 - 07/4",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with short right year is rejected atomically",
+    "source": "07/11 - 07/14/2",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with incomplete right endpoint is rejected atomically",
+    "source": "07/11 - 07/",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with missing right endpoint is rejected atomically",
+    "source": "07/11 - ",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with invalid right date is rejected atomically",
+    "source": "07/11 - 13/40",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "spaced range with alphabetic right endpoint is rejected atomically",
+    "source": "07/11 - nope",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": []
+  },
+  {
+    "name": "malformed right boundary is skipped without hiding a later phrase",
+    "source": "07/11 - 07/14x then tomorrow",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "tomorrow", "startUtf16": 20, "endUtf16": 28, "normalizedStart": "2026-07-12", "normalizedEnd": "2026-07-12" }
+    ]
+  },
+  {
     "name": "invalid and embedded candidates are skipped",
     "source": "todayish x07/11/2026 0007/11/2026 02/29/2023 then yesterday",
     "today": "2026-07-11",

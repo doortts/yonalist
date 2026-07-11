@@ -61,10 +61,20 @@ pub struct NotesExportSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportDateSpan {
+    pub start_utf16: usize,
+    pub end_utf16: usize,
+    pub normalized_start: String,
+    pub normalized_end: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportNode {
     pub id: NoteId,
     pub title: String,
     pub note: String,
+    pub title_date_spans: Vec<ExportDateSpan>,
+    pub note_date_spans: Vec<ExportDateSpan>,
     pub completed: bool,
     pub children: Vec<ExportNode>,
 }

@@ -1,5 +1,5 @@
-use super::types::{validate_note_id, ExportNode, NotesExportSnapshot};
-use crate::notes::date_index::{LocalDate, NoteDateMatch};
+use super::types::{validate_note_id, ExportDateSpan, ExportNode, NotesExportSnapshot};
+use crate::notes::date_index::LocalDate;
 use printpdf::{
     Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
     PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, TextItem,
@@ -142,32 +142,34 @@ fn byte_offset_for_utf16(source: &str, target: usize) -> Option<usize> {
 
 pub(crate) fn format_date_matches_for_pdf_display(
     source: &str,
-    matches: &[NoteDateMatch],
-) -> String {
+    matches: &[ExportDateSpan],
+) -> Result<String, String> {
     let mut rendered = source.to_string();
+    let mut later_start_utf16 = usize::MAX;
     for date in matches.iter().rev() {
-        let Some(start_byte) = byte_offset_for_utf16(source, date.start_utf16) else {
-            continue;
-        };
-        let Some(end_byte) = byte_offset_for_utf16(source, date.end_utf16) else {
-            continue;
-        };
-        if start_byte > end_byte || end_byte > rendered.len() {
-            continue;
+        if date.start_utf16 >= date.end_utf16 || date.end_utf16 > later_start_utf16 {
+            return Err("PDF date spans are invalid or overlapping.".to_string());
         }
-        let replacement = match date.end {
-            Some(end) if end != date.start => {
-                format!(
-                    "{} - {}",
-                    pdf_display_date(date.start),
-                    pdf_display_date(end)
-                )
-            }
-            _ => pdf_display_date(date.start),
+        let start_byte = byte_offset_for_utf16(source, date.start_utf16)
+            .ok_or_else(|| "A PDF date start is not on a UTF-16 scalar boundary.".to_string())?;
+        let end_byte = byte_offset_for_utf16(source, date.end_utf16)
+            .ok_or_else(|| "A PDF date end is not on a UTF-16 scalar boundary.".to_string())?;
+        let start = LocalDate::parse_iso(&date.normalized_start)
+            .ok_or_else(|| "A PDF date has an invalid normalized start.".to_string())?;
+        let end = LocalDate::parse_iso(&date.normalized_end)
+            .ok_or_else(|| "A PDF date has an invalid normalized end.".to_string())?;
+        if start > end {
+            return Err("A PDF date has a reversed normalized range.".to_string());
+        }
+        let replacement = if end != start {
+            format!("{} - {}", pdf_display_date(start), pdf_display_date(end))
+        } else {
+            pdf_display_date(start)
         };
         rendered.replace_range(start_byte..end_byte, &replacement);
+        later_start_utf16 = date.start_utf16;
     }
-    rendered
+    Ok(rendered)
 }
 
 #[derive(Clone, Copy)]
@@ -272,7 +274,8 @@ fn prepare_pdf_row(
     let title_x = margin_x + indentation;
     let title_width = body_width - indentation;
     let marker = if node.completed { 'x' } else { ' ' };
-    let title = format!("[{marker}] {}", node.title);
+    let display_title = format_date_matches_for_pdf_display(&node.title, &node.title_date_spans)?;
+    let title = format!("[{marker}] {display_title}");
     let title_lines = wrap_pdf_text(font, &title, PDF_ROW_SIZE, title_width)?;
     let mut lines = title_lines
         .into_iter()
@@ -288,7 +291,8 @@ fn prepare_pdf_row(
     if !node.note.is_empty() {
         let note_x = title_x + PDF_NOTE_INDENT;
         let note_width = title_width - PDF_NOTE_INDENT;
-        for note_line in normalize_newlines(&node.note).split('\n') {
+        let display_note = format_date_matches_for_pdf_display(&node.note, &node.note_date_spans)?;
+        for note_line in normalize_newlines(&display_note).split('\n') {
             let supporting = if note_line.is_empty() {
                 ">".to_string()
             } else {
@@ -383,7 +387,9 @@ fn build_pdf_pages(
     let content_top = page_height - millimeters_to_points(PDF_MARGIN_TOP_MM);
     let content_bottom = millimeters_to_points(PDF_MARGIN_BOTTOM_MM + PDF_FOOTER_RESERVE_MM);
     let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
-    let title_lines = wrap_pdf_text(font, &snapshot.title, PDF_TITLE_SIZE, body_width)?
+    let display_title =
+        format_date_matches_for_pdf_display(&snapshot.title, &snapshot.root.title_date_spans)?;
+    let title_lines = wrap_pdf_text(font, &display_title, PDF_TITLE_SIZE, body_width)?
         .into_iter()
         .map(|text| PdfPreparedLine {
             text,
@@ -499,8 +505,7 @@ mod tests {
         format_date_matches_for_pdf_display, load_export_snapshot, render_markdown, render_pdf,
         validate_serialized_pdf, PDF_FONT_BYTES,
     };
-    use crate::notes::date_index::{find_note_date_matches, LocalDate, WeekStartsOn};
-    use crate::notes::types::{ExportNode, NotesExportSnapshot};
+    use crate::notes::types::{ExportDateSpan, ExportNode, NotesExportSnapshot};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
     use rusqlite::{params, Connection};
     use std::collections::{BTreeMap, BTreeSet};
@@ -524,6 +529,8 @@ mod tests {
             id: id.to_string(),
             title: title.to_string(),
             note: note.to_string(),
+            title_date_spans: Vec::new(),
+            note_date_spans: Vec::new(),
             completed,
             children,
         }
@@ -644,6 +651,15 @@ mod tests {
                    is_collapsed INTEGER NOT NULL DEFAULT 0,\
                    completed_at TEXT,\
                    deleted_at TEXT\
+                );
+                 CREATE TABLE notes_dates (
+                   node_id TEXT NOT NULL,
+                   field TEXT NOT NULL,
+                   start_utf16 INTEGER NOT NULL,
+                   end_utf16 INTEGER NOT NULL,
+                   normalized_start TEXT NOT NULL,
+                   normalized_end TEXT NOT NULL,
+                   token_text TEXT NOT NULL
                  );",
             )
             .expect("create notes table");
@@ -694,6 +710,31 @@ mod tests {
                 ],
             )
             .expect("insert node");
+    }
+
+    fn insert_date_span(
+        connection: &Connection,
+        node_id: &str,
+        field: &str,
+        span: &ExportDateSpan,
+        token_text: &str,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                   normalized_start, normalized_end, token_text) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    node_id,
+                    field,
+                    i64::try_from(span.start_utf16).expect("date span start offset"),
+                    i64::try_from(span.end_utf16).expect("date span end offset"),
+                    span.normalized_start.as_str(),
+                    span.normalized_end.as_str(),
+                    token_text
+                ],
+            )
+            .expect("insert indexed export date");
     }
 
     fn seeded_export_connection() -> Connection {
@@ -886,20 +927,109 @@ mod tests {
     #[test]
     fn markdown_keeps_raw_dates_while_pdf_display_helper_replaces_spans_end_to_start() {
         let source = "😀 today then tomorrow";
-        let matches = find_note_date_matches(
-            source,
-            LocalDate::new(2026, 7, 11).expect("today"),
-            WeekStartsOn::Monday,
-        );
+        let matches = vec![
+            ExportDateSpan {
+                start_utf16: 3,
+                end_utf16: 8,
+                normalized_start: "2026-07-11".to_string(),
+                normalized_end: "2026-07-11".to_string(),
+            },
+            ExportDateSpan {
+                start_utf16: 14,
+                end_utf16: 22,
+                normalized_start: "2026-07-12".to_string(),
+                normalized_end: "2026-07-12".to_string(),
+            },
+        ];
         let snapshot = snapshot(export_node(ROOT_ID, source, "", false, vec![]));
         let markdown = String::from_utf8(render_markdown(&snapshot).expect("render Markdown"))
             .expect("UTF-8 Markdown");
 
         assert!(markdown.contains(source));
         assert_eq!(
-            format_date_matches_for_pdf_display(source, &matches),
+            format_date_matches_for_pdf_display(source, &matches).expect("format indexed dates"),
             "😀 Jul 11, 2026 then Jul 12, 2026"
         );
+    }
+
+    #[test]
+    fn pdf_uses_immutable_indexed_dates_without_reparsing_relative_export_text() {
+        let connection = seeded_export_connection();
+        connection
+            .execute(
+                "UPDATE notes_nodes SET title = 'today then 07/12/2026', note = 'tomorrow' \
+                 WHERE id = ?1",
+                [ROOT_ID],
+            )
+            .expect("set raw relative export text");
+        insert_date_span(
+            &connection,
+            ROOT_ID,
+            "title",
+            &ExportDateSpan {
+                start_utf16: 0,
+                end_utf16: 5,
+                normalized_start: "2031-02-03".to_string(),
+                normalized_end: "2031-02-03".to_string(),
+            },
+            "today",
+        );
+        insert_date_span(
+            &connection,
+            ROOT_ID,
+            "title",
+            &ExportDateSpan {
+                start_utf16: 11,
+                end_utf16: 21,
+                normalized_start: "2040-04-05".to_string(),
+                normalized_end: "2040-04-05".to_string(),
+            },
+            "07/12/2026",
+        );
+        insert_date_span(
+            &connection,
+            ROOT_ID,
+            "note",
+            &ExportDateSpan {
+                start_utf16: 0,
+                end_utf16: 8,
+                normalized_start: "2050-06-07".to_string(),
+                normalized_end: "2050-06-07".to_string(),
+            },
+            "tomorrow",
+        );
+
+        let snapshot = load_export_snapshot(&connection, ROOT_ID).expect("dated snapshot");
+        assert_eq!(
+            snapshot.root.title_date_spans,
+            vec![
+                ExportDateSpan {
+                    start_utf16: 0,
+                    end_utf16: 5,
+                    normalized_start: "2031-02-03".to_string(),
+                    normalized_end: "2031-02-03".to_string(),
+                },
+                ExportDateSpan {
+                    start_utf16: 11,
+                    end_utf16: 21,
+                    normalized_start: "2040-04-05".to_string(),
+                    normalized_end: "2040-04-05".to_string(),
+                },
+            ]
+        );
+        assert_eq!(snapshot.root.note_date_spans.len(), 1);
+        let markdown = String::from_utf8(render_markdown(&snapshot).expect("raw Markdown"))
+            .expect("UTF-8 Markdown");
+        assert!(markdown.contains("today then 07\\/12\\/2026"));
+        assert!(markdown.contains("> tomorrow"));
+
+        let bytes = render_pdf(&snapshot).expect("render indexed date PDF");
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+        assert!(text.contains("Feb 3, 2031 then Apr 5, 2040"), "{text}");
+        assert!(text.contains("> Jun 7, 2050"), "{text}");
+        assert!(!text.contains("today"), "{text}");
+        assert!(!text.contains("tomorrow"), "{text}");
     }
 
     #[test]

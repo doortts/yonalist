@@ -5,10 +5,10 @@ use crate::notes::date_index::{
 use crate::notes::history;
 use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode,
-    NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
-    NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportSnapshot,
-    NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, ExportDateSpan, ExportNode, MoveNodeInput, NoteAttachment,
+    NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope,
+    NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -30,6 +30,8 @@ const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
 const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
 const NOTE_DATE_PARSER_VERSION: i64 = 1;
 const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
+const NOTE_LIFECYCLE_SEARCH_VERSION: i64 = 1;
+const NOTE_LIFECYCLE_SEARCH_VERSION_KEY: &str = "derived.lifecycleSearchVersion";
 const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
 const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
@@ -287,6 +289,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
              ON notes_nodes(archive_root_id, parent_id, sort_key);",
         )
         .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
+    ensure_lifecycle_search_version(&transaction)?;
     ensure_tag_tokenizer_version(&transaction)?;
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
     ensure_date_parser_version(&transaction, today)?;
@@ -294,6 +297,74 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+}
+
+fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute_batch(
+            r#"
+            CREATE VIRTUAL TABLE IF NOT EXISTS notes_search_lifecycle USING fts5(
+              node_id UNINDEXED,
+              title,
+              note,
+              tokenize = 'unicode61'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_insert
+            AFTER INSERT ON notes_nodes
+            BEGIN
+              INSERT INTO notes_search_lifecycle (node_id, title, note)
+              VALUES (NEW.id, NEW.title, NEW.note);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_update
+            AFTER UPDATE OF title, note ON notes_nodes
+            BEGIN
+              DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
+              INSERT INTO notes_search_lifecycle (node_id, title, note)
+              VALUES (NEW.id, NEW.title, NEW.note);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_delete
+            AFTER DELETE ON notes_nodes
+            BEGIN
+              DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
+            END;
+            "#,
+        )
+        .map_err(|error| format!("Could not ensure the lifecycle Notes search index: {error}"))?;
+
+    let stored_version = transaction
+        .query_row(
+            "SELECT value_json FROM notes_preferences WHERE key = ?1",
+            [NOTE_LIFECYCLE_SEARCH_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not read the lifecycle Notes search version: {error}"))?
+        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
+    if stored_version.is_some_and(|version| version >= NOTE_LIFECYCLE_SEARCH_VERSION) {
+        return Ok(());
+    }
+
+    transaction
+        .execute_batch(
+            "DELETE FROM notes_search_lifecycle; \
+             INSERT INTO notes_search_lifecycle (node_id, title, note) \
+             SELECT id, title, note FROM notes_nodes;",
+        )
+        .map_err(|error| format!("Could not rebuild the lifecycle Notes search index: {error}"))?;
+    transaction
+        .execute(
+            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![
+                NOTE_LIFECYCLE_SEARCH_VERSION_KEY,
+                NOTE_LIFECYCLE_SEARCH_VERSION.to_string()
+            ],
+        )
+        .map_err(|error| format!("Could not record the lifecycle Notes search version: {error}"))?;
+    Ok(())
 }
 
 fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -763,7 +834,17 @@ struct StoredExportNode {
     sort_key: i64,
     title: String,
     note: String,
+    title_date_spans: Vec<ExportDateSpan>,
+    note_date_spans: Vec<ExportDateSpan>,
     completed_at: Option<String>,
+}
+
+struct StoredExportDate {
+    field: String,
+    start_utf16: i64,
+    end_utf16: i64,
+    normalized_start: String,
+    normalized_end: String,
 }
 
 pub(crate) fn load_export_snapshot(
@@ -788,10 +869,14 @@ pub(crate) fn load_export_snapshot(
                WHERE child.deleted_at IS NULL AND subtree.cycle = 0\
              ) \
              SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                    node.completed_at, subtree.cycle, export_context.exported_at \
+                    node.completed_at, subtree.cycle, export_context.exported_at, \
+                    date.field, date.start_utf16, date.end_utf16, \
+                    date.normalized_start, date.normalized_end \
              FROM subtree \
              JOIN notes_nodes node ON node.id = subtree.id \
-             CROSS JOIN export_context",
+             CROSS JOIN export_context \
+             LEFT JOIN notes_dates date ON date.node_id = node.id \
+             ORDER BY node.id, date.field, date.start_utf16, date.end_utf16",
         )
         .map_err(|error| format!("Could not prepare the Notes export snapshot: {error}"))?;
     let rows = statement
@@ -803,10 +888,22 @@ pub(crate) fn load_export_snapshot(
                     sort_key: row.get(2)?,
                     title: row.get(3)?,
                     note: row.get(4)?,
+                    title_date_spans: Vec::new(),
+                    note_date_spans: Vec::new(),
                     completed_at: row.get(5)?,
                 },
                 row.get::<_, i64>(6)? != 0,
                 row.get::<_, String>(7)?,
+                match row.get::<_, Option<String>>(8)? {
+                    Some(field) => Some(StoredExportDate {
+                        field,
+                        start_utf16: row.get(9)?,
+                        end_utf16: row.get(10)?,
+                        normalized_start: row.get(11)?,
+                        normalized_end: row.get(12)?,
+                    }),
+                    None => None,
+                },
             ))
         })
         .map_err(|error| format!("Could not load the Notes export snapshot: {error}"))?
@@ -818,15 +915,52 @@ pub(crate) fn load_export_snapshot(
             "Note node {root_node_id} is missing or deleted and cannot be exported."
         ));
     }
-    if rows.iter().any(|(_, cycle, _)| *cycle) {
+    if rows.iter().any(|(_, cycle, _, _)| *cycle) {
         return Err("The Notes tree contains a cycle and cannot be exported.".to_string());
     }
 
     let exported_at = rows[0].2.clone();
-    let mut by_id = rows
-        .into_iter()
-        .map(|(node, _, _)| (node.id.clone(), node))
-        .collect::<HashMap<_, _>>();
+    let mut by_id = HashMap::new();
+    for (node, _, _, indexed_date) in rows {
+        let node_id = node.id.clone();
+        let stored = by_id.entry(node_id.clone()).or_insert(node);
+        let Some(indexed_date) = indexed_date else {
+            continue;
+        };
+        let start_utf16 = usize::try_from(indexed_date.start_utf16)
+            .map_err(|_| format!("Note node {node_id} has an invalid export date start offset."))?;
+        let end_utf16 = usize::try_from(indexed_date.end_utf16)
+            .map_err(|_| format!("Note node {node_id} has an invalid export date end offset."))?;
+        if start_utf16 >= end_utf16 {
+            return Err(format!(
+                "Note node {node_id} has an invalid export date span."
+            ));
+        }
+        let normalized_start = LocalDate::parse_iso(&indexed_date.normalized_start)
+            .ok_or_else(|| format!("Note node {node_id} has an invalid normalized start date."))?;
+        let normalized_end = LocalDate::parse_iso(&indexed_date.normalized_end)
+            .ok_or_else(|| format!("Note node {node_id} has an invalid normalized end date."))?;
+        if normalized_start > normalized_end {
+            return Err(format!(
+                "Note node {node_id} has a reversed normalized export date range."
+            ));
+        }
+        let span = ExportDateSpan {
+            start_utf16,
+            end_utf16,
+            normalized_start: indexed_date.normalized_start,
+            normalized_end: indexed_date.normalized_end,
+        };
+        match indexed_date.field.as_str() {
+            "title" => stored.title_date_spans.push(span),
+            "note" => stored.note_date_spans.push(span),
+            _ => {
+                return Err(format!(
+                    "Note node {node_id} has an unsupported export date field."
+                ))
+            }
+        }
+    }
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
     for node in by_id.values() {
         if node.id == root_node_id {
@@ -879,6 +1013,8 @@ pub(crate) fn load_export_snapshot(
             id: node.id,
             title: node.title,
             note: node.note,
+            title_date_spans: node.title_date_spans,
+            note_date_spans: node.note_date_spans,
             completed: node.completed_at.is_some(),
             children: child_nodes,
         })
@@ -1161,9 +1297,14 @@ fn fts_match_expression(query: &str) -> Option<String> {
 
 fn search_parent_map(
     connection: &Connection,
+    scope: NoteSearchScope,
 ) -> Result<HashMap<String, (Option<String>, String)>, String> {
+    let sql = format!(
+        "SELECT node.id, node.parent_id, node.title FROM notes_nodes node WHERE {}",
+        search_scope_predicate(scope)
+    );
     let mut statement = connection
-        .prepare("SELECT id, parent_id, title FROM notes_nodes")
+        .prepare(&sql)
         .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
     let rows = statement
         .query_map([], |row| {
@@ -1198,11 +1339,9 @@ fn parent_trail(
                 "Could not assemble the Notes search parent trail for {node_id}: cycle detected."
             ));
         }
-        let (next_parent_id, title) = parents.get(&id).ok_or_else(|| {
-            format!(
-                "Could not assemble the Notes search parent trail for {node_id}: live ancestor {id} is missing."
-            )
-        })?;
+        let Some((next_parent_id, title)) = parents.get(&id) else {
+            break;
+        };
         trail.push(title.clone());
         parent_id = next_parent_id.clone();
     }
@@ -1249,7 +1388,7 @@ fn search_nodes_by_date(
         .map_err(|error| format!("Could not search Note dates: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let parents = search_parent_map(connection)?;
+    let parents = search_parent_map(connection, scope)?;
     matches
         .into_iter()
         .map(|(node_id, title)| {
@@ -1271,14 +1410,18 @@ fn search_nodes_fts(
     let Some(match_expression) = fts_match_expression(query) else {
         return Ok(Vec::new());
     };
+    let search_table = match scope {
+        NoteSearchScope::Active => "notes_search",
+        NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
+    };
     let sql = format!(
-        "SELECT notes_search.node_id, notes_search.title, \
-                highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
-                  <> notes_search.title \
-         FROM notes_search \
-         JOIN notes_nodes node ON node.id = notes_search.node_id \
-         WHERE notes_search MATCH ?1 AND {} \
-         ORDER BY bm25(notes_search, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
+        "SELECT {search_table}.node_id, {search_table}.title, \
+                highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
+                  <> {search_table}.title \
+         FROM {search_table} \
+         JOIN notes_nodes node ON node.id = {search_table}.node_id \
+         WHERE {search_table} MATCH ?1 AND {} \
+         ORDER BY bm25({search_table}, 0.0, 10.0, 1.0), node.updated_at DESC, node.id \
          LIMIT 100",
         search_scope_predicate(scope)
     );
@@ -1296,7 +1439,7 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not search Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let parents = search_parent_map(connection)?;
+    let parents = search_parent_map(connection, scope)?;
 
     matches
         .into_iter()
@@ -1537,7 +1680,7 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let parents = search_parent_map(connection)?;
+    let parents = search_parent_map(connection, NoteSearchScope::Active)?;
 
     matches
         .into_iter()
@@ -3297,6 +3440,7 @@ mod tests {
             "notes_tags",
             "notes_preferences",
             "notes_search",
+            "notes_search_lifecycle",
             "notes_dates",
             "notes_attachments",
             "notes_history_entries",
@@ -3874,12 +4018,16 @@ mod tests {
             ("table", "notes_tags"),
             ("table", "notes_preferences"),
             ("table", "notes_search"),
+            ("table", "notes_search_lifecycle"),
             ("index", "notes_nodes_active_parent_order"),
             ("index", "notes_nodes_deleted_batch"),
             ("index", "notes_tags_normalized_tag"),
             ("trigger", "notes_nodes_search_insert"),
             ("trigger", "notes_nodes_search_update"),
             ("trigger", "notes_nodes_search_delete"),
+            ("trigger", "notes_nodes_lifecycle_search_insert"),
+            ("trigger", "notes_nodes_lifecycle_search_update"),
+            ("trigger", "notes_nodes_lifecycle_search_delete"),
         ] {
             assert!(
                 object_exists(&connection, object_type, name),
@@ -5490,6 +5638,282 @@ mod tests {
             .expect("collect date plan")
             .join(" ");
         assert!(plan.contains("notes_dates_range"), "query plan: {plan}");
+    }
+
+    #[test]
+    fn notes_archive_and_trash_text_search_preserves_matches_order_and_limits() {
+        let mut connection = test_connection();
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Active needle".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create active search control");
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: CHILD_ID.to_string(),
+                parent_id: None,
+                after_id: Some(NODE_ID.to_string()),
+                title: "Archived needle".to_string(),
+                note: "supportdetail".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("create archive search fixture");
+        archive_node(&mut connection, CHILD_ID).expect("archive search fixture");
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: THIRD_ID.to_string(),
+                parent_id: None,
+                after_id: Some(NODE_ID.to_string()),
+                title: "Trashed needle".to_string(),
+                note: "trashextra".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("create trash search fixture");
+        soft_delete_node(&mut connection, THIRD_ID).expect("trash search fixture");
+
+        let archived = search_nodes_at(
+            &connection,
+            "needle",
+            NoteSearchScope::Archive,
+            fixed_today(),
+        )
+        .expect("archive text search");
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].node_id, CHILD_ID);
+        assert_eq!(archived[0].matched_field, NoteSearchMatchedField::Title);
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "supportdetail",
+                NoteSearchScope::Archive,
+                fixed_today(),
+            )
+            .expect("archive note search")[0]
+                .matched_field,
+            NoteSearchMatchedField::Note
+        );
+
+        let trashed = search_nodes_at(&connection, "needle", NoteSearchScope::Trash, fixed_today())
+            .expect("trash text search");
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(trashed[0].node_id, THIRD_ID);
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "trashextra",
+                NoteSearchScope::Trash,
+                fixed_today(),
+            )
+            .expect("trash note search")[0]
+                .matched_field,
+            NoteSearchMatchedField::Note
+        );
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "needle",
+                NoteSearchScope::Active,
+                fixed_today(),
+            )
+            .expect("active FTS control")
+            .iter()
+            .map(|result| result.node_id.as_str())
+            .collect::<Vec<_>>(),
+            vec![NODE_ID]
+        );
+
+        for index in 0..101 {
+            let id = format!("{index:08x}-8888-4888-8888-888888888888");
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, \
+                       archived_at, archive_root_id) \
+                     VALUES (?1, ?2, 'lifecyclelimit', '2026-07-11T00:00:00.000Z', \
+                             '2026-07-11T00:00:00.000Z', '2026-07-11T00:00:00.000Z', ?1)",
+                    params![id, i64::from(index + 1) * 1024],
+                )
+                .expect("insert archive limit fixture");
+        }
+        let limited = search_nodes_at(
+            &connection,
+            "lifecyclelimit",
+            NoteSearchScope::Archive,
+            fixed_today(),
+        )
+        .expect("limited archive text search");
+        assert_eq!(limited.len(), 100);
+        assert_eq!(
+            limited
+                .iter()
+                .map(|result| result.node_id.clone())
+                .collect::<Vec<_>>(),
+            (0..100)
+                .map(|index| format!("{index:08x}-8888-4888-8888-888888888888"))
+                .collect::<Vec<_>>()
+        );
+
+        for (index, updated_at) in [
+            (0, "2026-07-11T01:00:00.000Z"),
+            (1, "2026-07-11T03:00:00.000Z"),
+            (2, "2026-07-11T02:00:00.000Z"),
+        ] {
+            let id = format!("{index:08x}-9999-4999-8999-999999999999");
+            connection
+                .execute(
+                    "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, \
+                       deleted_at, deleted_batch_id) \
+                     VALUES (?1, ?2, 'trashorder', '2026-07-11T00:00:00.000Z', ?3, \
+                             '2026-07-11T00:00:00.000Z', 'trash-order')",
+                    params![id, i64::from(index + 1) * 1024, updated_at],
+                )
+                .expect("insert trash order fixture");
+        }
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "trashorder",
+                NoteSearchScope::Trash,
+                fixed_today(),
+            )
+            .expect("ordered trash text search")
+            .iter()
+            .map(|result| result.node_id.clone())
+            .collect::<Vec<_>>(),
+            vec![
+                "00000001-9999-4999-8999-999999999999".to_string(),
+                "00000002-9999-4999-8999-999999999999".to_string(),
+                "00000000-9999-4999-8999-999999999999".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn notes_lifecycle_search_trails_match_trash_rerooting_and_archive_context() {
+        let mut connection = test_connection();
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Live parent".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create live parent");
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: CHILD_ID.to_string(),
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                title: "Independent trash 07/12/2026".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create independent trash child");
+        soft_delete_node(&mut connection, CHILD_ID).expect("trash child only");
+        let trash_workspace =
+            load_workspace(&connection, NotesWorkspaceScope::Trash).expect("trash workspace");
+        assert_eq!(trash_workspace.nodes[0].parent_id, None);
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "07/12/2026",
+                NoteSearchScope::Trash,
+                fixed_today(),
+            )
+            .expect("re-rooted trash search")[0]
+                .parent_trail,
+            Vec::<String>::new()
+        );
+
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: THIRD_ID.to_string(),
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                title: "Trash subtree root".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create trash subtree root");
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: FOURTH_ID.to_string(),
+                parent_id: Some(THIRD_ID.to_string()),
+                after_id: None,
+                title: "Nested trash 07/13/2026".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create nested trash child");
+        soft_delete_node(&mut connection, THIRD_ID).expect("trash subtree");
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "07/13/2026",
+                NoteSearchScope::Trash,
+                fixed_today(),
+            )
+            .expect("nested trash search")[0]
+                .parent_trail,
+            vec!["Trash subtree root"]
+        );
+
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: FIFTH_ID.to_string(),
+                parent_id: None,
+                after_id: Some(NODE_ID.to_string()),
+                title: "Archive root".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create archive root");
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: SIXTH_ID.to_string(),
+                parent_id: Some(FIFTH_ID.to_string()),
+                after_id: None,
+                title: "Archived child 07/14/2026".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create archive child");
+        archive_node(&mut connection, FIFTH_ID).expect("archive subtree");
+        assert_eq!(
+            search_nodes_at(
+                &connection,
+                "07/14/2026",
+                NoteSearchScope::Archive,
+                fixed_today(),
+            )
+            .expect("archive context search")[0]
+                .parent_trail,
+            vec!["Archive root"]
+        );
     }
 
     #[test]

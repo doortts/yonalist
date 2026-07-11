@@ -338,6 +338,17 @@ fn resolve_numeric_range(
     (start <= end).then_some((start, end))
 }
 
+fn malformed_range_end(source: &str, start_byte: usize) -> usize {
+    let mut end_byte = start_byte;
+    for (relative_byte, character) in source[start_byte..].char_indices() {
+        if character.is_whitespace() {
+            break;
+        }
+        end_byte = start_byte + relative_byte + character.len_utf8();
+    }
+    end_byte
+}
+
 fn try_numeric_range(
     source: &str,
     start_candidate: NumericCandidate,
@@ -363,23 +374,27 @@ fn try_numeric_range(
         end_start += 1;
     }
     let has_after_space = end_start > separator + 1;
-    let end_candidate = read_numeric_candidate(source, end_start)?;
-    if !has_numeric_end_boundary(source, end_candidate.end_byte) {
-        return None;
-    }
-    if has_before_space && has_after_space {
-        if let Some((start, end)) =
-            resolve_numeric_range(start_candidate, end_candidate, today_year)
-        {
-            return Some(Attempt::Match(InternalMatch {
-                start,
-                end: Some(end),
+    let malformed_end = malformed_range_end(source, end_start);
+    if let Some(end_candidate) = read_numeric_candidate(source, end_start) {
+        if has_numeric_end_boundary(source, end_candidate.end_byte) {
+            if has_before_space && has_after_space {
+                if let Some((start, end)) =
+                    resolve_numeric_range(start_candidate, end_candidate, today_year)
+                {
+                    return Some(Attempt::Match(InternalMatch {
+                        start,
+                        end: Some(end),
+                        end_byte: end_candidate.end_byte,
+                    }));
+                }
+            }
+            return Some(Attempt::Rejected {
                 end_byte: end_candidate.end_byte,
-            }));
+            });
         }
     }
-    Some(Attempt::Rejected {
-        end_byte: end_candidate.end_byte,
+    (has_before_space || has_after_space).then_some(Attempt::Rejected {
+        end_byte: malformed_end,
     })
 }
 

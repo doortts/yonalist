@@ -4,7 +4,8 @@
 
 Implemented the Task 6 backend foundation with shared TypeScript/Rust fixtures,
 transactional date indexing, lifecycle-scoped date search, history replay,
-an injectable local-today boundary, and an export-only PDF display helper.
+an injectable local-today boundary, and indexed canonical date display in PDF
+exports.
 
 The concurrently owned Notes workspace/header/library/outline/token/CSS files were
 not edited or staged by this backend work.
@@ -70,11 +71,47 @@ not edited or staged by this backend work.
 
 - Markdown rendering remains unchanged and preserves readable source date text
   under the existing Markdown escaping contract.
-- Added `format_date_matches_for_pdf_display`, which transforms validated spans
-  from end to start so earlier UTF-16 offsets remain stable.
-- The helper is pure and attachment-independent. It is deliberately not wired
-  into current PDF rendering, so current PDF bytes/layout and attachment export
-  behavior do not change without a later fully integrated test pass.
+- Immutable export snapshot nodes now carry canonical indexed date spans for
+  title and note fields. Snapshot loading does not reparse source text.
+- PDF rendering transforms those validated spans from end to start so earlier
+  UTF-16 offsets remain stable; Markdown continues to render raw source text.
+- Relative text therefore keeps the canonical date captured when it was last
+  indexed, even if PDF export occurs under a different system-local day.
+- The transformation remains attachment-independent and runs only over title
+  and note fields already owned by the text export path.
+
+## Review Remediation
+
+### Atomic malformed ranges
+
+- Expanded the shared JSON fixture matrix with malformed spaced ranges whose
+  right endpoint is short, incomplete, invalid, missing, alphabetic, or has an
+  invalid trailing boundary.
+- Both scanners now consume the malformed right-hand token as one rejected span
+  instead of preserving the valid left endpoint as a standalone date.
+- A malformed range does not hide a later independent date phrase, preserving
+  the parser's forward O(n) scan.
+
+### Lifecycle text search
+
+- Added a versioned derived `notes_search_lifecycle` FTS index containing active,
+  archived, and trashed nodes. It is transactionally rebuilt once for existing
+  version-three databases and maintained by insert, content-update, and delete
+  triggers.
+- Active search remains on the original active-only `notes_search` table and
+  retains its existing parameterized FTS expression and `bm25` ranking.
+- Archive and Trash use the all-state index plus parameterized lifecycle joins,
+  with the same deterministic rank/update/id ordering and 100-result limit.
+- Tests cover title/note `matchedField`, active-state isolation, exact limiting,
+  and deterministic ordering.
+
+### Lifecycle parent trails
+
+- Search ancestor maps are now built only from the selected lifecycle scope.
+  Missing out-of-scope parents terminate the trail, matching workspace
+  re-rooting rather than exposing a live ancestor.
+- Mixed-parent tests cover an independently trashed child under a live parent, a
+  trashed subtree under a live parent, and an archived root/child context.
 
 ## Strict TDD Evidence
 
@@ -144,6 +181,15 @@ npm test -- src/features/notes/noteDates.test.ts \
 
 Result: 3/3 files and 120/120 tests passed.
 
+Review-remediation fixture/domain rerun:
+
+```text
+npm test -- src/features/notes/noteDates.test.ts src/domain/notes.test.ts
+```
+
+Result: 2/2 files and 107/107 tests passed, including all 96 shared date
+fixture/parser tests.
+
 Final focused and complete Rust:
 
 ```text
@@ -156,10 +202,11 @@ Result: 6/6 passed.
 cargo test --manifest-path src-tauri/Cargo.toml notes::
 ```
 
-Result: 156/156 passed.
+Result after review remediation: 159/159 passed.
 
-The dedicated backfill, history date replay, and export helper tests also each
-passed independently.
+The focused repository, history, and export suites passed 68/68, 17/17, and
+17/17 respectively. The immutable relative-date PDF export test and shared Rust
+fixture parity test also passed independently.
 
 Build and formatting:
 
@@ -171,6 +218,12 @@ git diff --check
 
 All exited 0. TypeScript compilation and Vite production build completed with
 2,290 modules transformed.
+
+The full Vitest run completed 1,836/1,837 tests. Its one failure reproduces in
+isolation in the pre-existing `App.test.tsx` case `continues to edit Notes while
+offline and unsigned in`, which cannot find the UI-owned `Edit node title`
+textbox. No app-shell, workspace hook, Outline, Header, Library, CSS, or
+NoteToken file is part of this backend change.
 
 Clippy:
 
@@ -193,6 +246,7 @@ Allowing only those five known baseline lints, all targets pass with
   already exist in version three. A derived parser-version preference handles
   data backfill independently of structural migration.
 - No dependency was added; system-local date resolution uses SQLite.
-- No current PDF output or attachment pipeline was changed.
-- Concurrent frontend integration changes remain present in the worktree but
-  are outside this commit.
+- PDF title/note display now uses immutable canonical indexed dates; Markdown
+  and the attachment pipeline remain unchanged.
+- Concurrent frontend integration changes landed separately and remain outside
+  this backend commit.

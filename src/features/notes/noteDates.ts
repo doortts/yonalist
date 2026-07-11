@@ -466,6 +466,22 @@ interface RejectedNumericSpan {
   readonly endUtf16: number;
 }
 
+function malformedRangeEndUtf16(
+  source: string,
+  startUtf16: number,
+  limitUtf16: number
+): number {
+  let endUtf16 = startUtf16;
+  while (endUtf16 < limitUtf16) {
+    const character = scalarAt(source, endUtf16);
+    if (/^\s$/u.test(character)) {
+      break;
+    }
+    endUtf16 += character.length;
+  }
+  return endUtf16;
+}
+
 function tryNumericRangeMatch(
   source: string,
   startCandidate: NumericCandidate,
@@ -490,6 +506,11 @@ function tryNumericRangeMatch(
       endStartUtf16 += 1;
     }
     const hasWhitespaceAfterSeparator = endStartUtf16 > separatorUtf16 + 1;
+    const malformedEndUtf16 = malformedRangeEndUtf16(
+      source,
+      endStartUtf16,
+      limitUtf16
+    );
     const endCandidate = readNumericCandidate(
       source,
       endStartUtf16,
@@ -518,6 +539,9 @@ function tryNumericRangeMatch(
         }
       }
       return { rejected: true, endUtf16: endCandidate.endUtf16 };
+    }
+    if (hasWhitespaceBeforeSeparator || hasWhitespaceAfterSeparator) {
+      return { rejected: true, endUtf16: malformedEndUtf16 };
     }
   }
   return null;
