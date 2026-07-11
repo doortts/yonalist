@@ -597,6 +597,76 @@ fn remove_path_nofollow(path: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExportDirectoryIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn export_directory_identity(path: &Path) -> Result<ExportDirectoryIdentity, String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    Ok(ExportDirectoryIdentity {
+        volume: metadata.dev(),
+        file: metadata.ino(),
+    })
+}
+
+#[cfg(windows)]
+fn export_directory_identity(path: &Path) -> Result<ExportDirectoryIdentity, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    let inspected = unsafe { GetFileInformationByHandle(handle, &mut information) };
+    let inspect_error = if inspected == 0 {
+        Some(std::io::Error::last_os_error())
+    } else {
+        None
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+    if let Some(error) = inspect_error {
+        return Err(error.to_string());
+    }
+    Ok(ExportDirectoryIdentity {
+        volume: u64::from(information.dwVolumeSerialNumber),
+        file: (u64::from(information.nFileIndexHigh) << 32) | u64::from(information.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn export_directory_identity(_path: &Path) -> Result<ExportDirectoryIdentity, String> {
+    Err("Notes export rollback identity checks are unsupported on this platform.".to_string())
+}
+
 #[cfg(any(
     target_vendor = "apple",
     target_os = "linux",
@@ -620,13 +690,47 @@ fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), 
 }
 
 #[cfg(windows)]
+fn windows_directory_move_flags() -> u32 {
+    0
+}
+
+#[cfg(all(test, not(windows)))]
+fn windows_directory_move_flags() -> u32 {
+    0
+}
+
+#[cfg(windows)]
 fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), String> {
-    match fs::rename(staged, destination) {
-        Ok(()) => Ok(()),
-        Err(error) if fs::symlink_metadata(destination).is_ok() => {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
+    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+    let staged = staged
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let moved = unsafe {
+        MoveFileExW(
+            staged.as_ptr(),
+            destination.as_ptr(),
+            windows_directory_move_flags(),
+        )
+    };
+    if moved != 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_ALREADY_EXISTS) | Some(ERROR_FILE_EXISTS) => {
             Err("Destination already exists.".to_string())
         }
-        Err(error) => Err(error.to_string()),
+        _ => Err(error.to_string()),
     }
 }
 
@@ -639,6 +743,52 @@ fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), 
 )))]
 fn publish_directory_noreplace(_staged: &Path, _destination: &Path) -> Result<(), String> {
     Err("Atomic no-replace Notes asset publication is unsupported on this platform.".to_string())
+}
+
+fn rollback_published_directory(
+    published: &Path,
+    parent: &Path,
+    expected_identity: ExportDirectoryIdentity,
+) -> Result<(), String> {
+    let quarantine = tempfile::Builder::new()
+        .prefix(".yonalist-notes-rollback-")
+        .tempdir_in(parent)
+        .map_err(|error| error.to_string())?
+        .keep();
+    fs::remove_dir(&quarantine).map_err(|error| error.to_string())?;
+    publish_directory_noreplace(published, &quarantine)
+        .map_err(|error| format!("Could not quarantine Notes export assets: {error}"))?;
+
+    let actual_identity = match export_directory_identity(&quarantine) {
+        Ok(identity) => identity,
+        Err(error) => {
+            let restore = publish_directory_noreplace(&quarantine, published);
+            return match restore {
+                Ok(()) => Err(format!(
+                    "Could not verify the quarantined Notes export asset identity; the directory was preserved: {error}"
+                )),
+                Err(restore_error) => Err(format!(
+                    "Could not verify the quarantined Notes export asset identity; the directory was preserved at {}: {error}; restore failed: {restore_error}",
+                    quarantine.display()
+                )),
+            };
+        }
+    };
+    if actual_identity != expected_identity {
+        let restore = publish_directory_noreplace(&quarantine, published);
+        return match restore {
+            Ok(()) => Err(
+                "Notes export asset directory identity changed before rollback; the unrelated replacement was preserved."
+                    .to_string(),
+            ),
+            Err(restore_error) => Err(format!(
+                "Notes export asset directory identity changed before rollback; the unrelated replacement was preserved at {} because restore failed: {restore_error}",
+                quarantine.display()
+            )),
+        };
+    }
+
+    remove_path_nofollow(&quarantine)
 }
 
 fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), String> {
@@ -665,6 +815,8 @@ thread_local! {
     static INJECT_MARKDOWN_COMMIT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INJECT_MARKDOWN_ASSET_DESTINATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     static INJECT_EXPORT_PARENT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -700,6 +852,22 @@ fn inject_markdown_asset_destination_swap_once(action: impl FnOnce() + 'static) 
 fn maybe_inject_markdown_asset_destination_swap() {
     #[cfg(test)]
     INJECT_MARKDOWN_ASSET_DESTINATION_SWAP.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_post_asset_publication_swap_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_post_asset_publication_swap() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP.with(|injected| {
         if let Some(action) = injected.borrow_mut().take() {
             action();
         }
@@ -774,6 +942,7 @@ pub(crate) fn publish_markdown_export(
         .map_err(|error| error.to_string())?;
     document.sync_all().map_err(|error| error.to_string())?;
     sync_export_directory(&staged_assets)?;
+    let staged_asset_identity = export_directory_identity(&staged_assets)?;
     maybe_inject_markdown_commit_race();
 
     if !overwrite {
@@ -782,6 +951,7 @@ pub(crate) fn publish_markdown_export(
         let publish_result = (|| {
             publish_directory_noreplace(&staged_assets, asset_destination)?;
             published_assets = true;
+            maybe_inject_markdown_post_asset_publication_swap();
             maybe_fail_markdown_publish()?;
             match fs::hard_link(&staged_document, destination) {
                 Ok(()) => Ok(()),
@@ -793,7 +963,11 @@ pub(crate) fn publish_markdown_export(
         })();
         if let Err(error) = publish_result {
             if published_assets {
-                return match remove_path_nofollow(asset_destination) {
+                return match rollback_published_directory(
+                    asset_destination,
+                    parent,
+                    staged_asset_identity,
+                ) {
                     Ok(()) => Err(error),
                     Err(rollback_error) => Err(format!(
                         "{error} Notes export rollback also failed: {rollback_error}"
@@ -826,6 +1000,7 @@ pub(crate) fn publish_markdown_export(
         }
         fs::rename(&staged_assets, asset_destination).map_err(|error| error.to_string())?;
         published_assets = true;
+        maybe_inject_markdown_post_asset_publication_swap();
         maybe_fail_markdown_publish()?;
         fs::rename(&staged_document, destination).map_err(|error| error.to_string())?;
         published_document = true;
@@ -840,7 +1015,9 @@ pub(crate) fn publish_markdown_export(
             }
         }
         if published_assets {
-            if let Err(rollback_error) = remove_path_nofollow(asset_destination) {
+            if let Err(rollback_error) =
+                rollback_published_directory(asset_destination, parent, staged_asset_identity)
+            {
                 rollback_errors.push(rollback_error);
             }
         }
@@ -1484,9 +1661,10 @@ mod tests {
         format_date_matches_for_pdf_display_with_work, hydrate_export_attachments,
         hydrate_export_attachments_with_budget, inject_export_parent_sync_failure_once,
         inject_markdown_asset_destination_swap_once, inject_markdown_commit_race_once,
-        load_export_snapshot, prepare_markdown_export, publish_markdown_export, render_markdown,
-        render_pdf, sync_export_directory, validate_pdf_attachment_working_budget,
-        validate_serialized_pdf, ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM,
+        inject_markdown_post_asset_publication_swap_once, load_export_snapshot,
+        prepare_markdown_export, publish_markdown_export, render_markdown, render_pdf,
+        sync_export_directory, validate_pdf_attachment_working_budget, validate_serialized_pdf,
+        windows_directory_move_flags, ExportAttachmentBudget, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM,
         PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
@@ -2349,6 +2527,34 @@ mod tests {
     }
 
     #[test]
+    fn notes_export_windows_directory_publication_never_requests_replace_existing() {
+        assert_eq!(windows_directory_move_flags(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notes_export_windows_directory_publication_preserves_an_existing_empty_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let staged = temp_dir.path().join("staged-assets");
+        let destination = temp_dir.path().join("existing-assets");
+        std::fs::create_dir(&staged).expect("staged directory");
+        std::fs::write(staged.join("0001.png"), b"image").expect("staged asset");
+        std::fs::create_dir(&destination).expect("existing empty directory");
+
+        let error = super::publish_directory_noreplace(&staged, &destination)
+            .expect_err("existing destination must not be replaced");
+
+        assert_eq!(error, "Destination already exists.");
+        assert!(staged.join("0001.png").is_file());
+        assert_eq!(
+            std::fs::read_dir(&destination)
+                .expect("existing destination")
+                .count(),
+            0
+        );
+    }
+
+    #[test]
     fn notes_export_no_overwrite_preserves_document_created_at_markdown_commit() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let destination = temp_dir.path().join("race.md");
@@ -2452,6 +2658,50 @@ mod tests {
             std::fs::read(outside.join("sentinel.txt")).expect("sentinel survives"),
             b"outside"
         );
+    }
+
+    #[test]
+    fn notes_export_rollback_preserves_a_directory_swapped_after_asset_publication() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("rollback-swap.md");
+        let assets = temp_dir.path().join("rollback-swap_assets");
+        let displaced_assets = temp_dir.path().join("displaced-export-assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "rollback-swap_assets")
+            .expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_displaced = displaced_assets.clone();
+        inject_markdown_post_asset_publication_swap_once(move || {
+            std::fs::rename(&raced_assets, &raced_displaced).expect("displace published assets");
+            std::fs::create_dir(&raced_assets).expect("replacement directory");
+            std::fs::write(raced_assets.join("unrelated.txt"), b"unrelated")
+                .expect("replacement content");
+        });
+        super::inject_markdown_publish_failure_once();
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("injected publish failure");
+
+        assert!(
+            error.contains("Injected Notes Markdown publish failure."),
+            "{error}"
+        );
+        assert!(error.contains("rollback also failed"), "{error}");
+        assert!(error.contains("identity changed"), "{error}");
+        assert_eq!(
+            std::fs::read(assets.join("unrelated.txt")).expect("replacement preserved"),
+            b"unrelated"
+        );
+        assert_eq!(
+            std::fs::read(displaced_assets.join("0001.png")).expect("published assets displaced"),
+            [1, 2, 3]
+        );
+        assert!(!destination.exists());
     }
 
     #[test]
