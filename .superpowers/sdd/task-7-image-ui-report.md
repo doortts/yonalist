@@ -6,6 +6,8 @@ DONE_WITH_CONCERNS
 
 Implementation commit: `16776c87fde96e204333ef637be58553165663ef`
 
+Review-fix implementation commit: `03608fe9b34e5076bbead0eb8fd30c234b799ab6`
+
 ## Owned Files
 
 - `src/features/notes/NotesImageAttachment.tsx`
@@ -123,3 +125,102 @@ the two owned React files.
   build are green.
 - Concurrent edits in Rust and Notes history/coordinator/store integration files
   were left unstaged, unmodified, and out of the implementation commit.
+
+## Four-Finding Review Fixes
+
+### Interaction Identity And Cancellation
+
+Pointer and keyboard interaction records now capture attachment ID plus the
+specific direct-byte/loader source active when the interaction begins. Identity,
+source, persisted-width changes, and unmount synchronously clear both interaction
+records, restore the persisted target, and release active pointer capture. Move,
+release, keyup, and blur handlers also verify identity before committing, so a
+retained DOM handle cannot call a replacement attachment's callback.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "cancels pointer and keyboard" --reporter=verbose
+```
+
+Observed: exit 1. The replacement attachment callback was incorrectly called once
+with width `280` after the original attachment's pointer interaction was released.
+
+### Zero And Tiny Content Widths
+
+Finite `ResizeObserver` widths now include zero. A zero-width host produces a
+stable zero-width frame and zero-valued disabled separator bounds, removes the
+handle from tab order, and ignores pointer/keyboard resizing. Tiny positive widths
+floor deterministically and remain capped below intrinsic width while preserving
+the valid intrinsic aspect ratio.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "collapses deterministically" --reporter=verbose
+```
+
+Observed: exit 1. After a zero-width observer entry, the frame incorrectly remained
+`320px` wide instead of collapsing to `0px`.
+
+### No-Op Interaction Commits
+
+Both pointer and keyboard interactions now retain their clamped starting width and
+compare it with the final clamped width. Moving away and returning to the start
+does not call persistence and therefore creates no empty history entry.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "does not commit" --reporter=verbose
+```
+
+Observed: exit 1. Both pointer and keyboard return-to-start tests incorrectly
+called persistence once with the unchanged width `320`.
+
+### Invalid Intrinsic Geometry
+
+Zero and nonfinite intrinsic width/height now select an immediate stable error
+frame before width limits, aspect ratio, image attributes, or resize ARIA are
+constructed. No Blob URL is created for invalid metadata. Changing the same
+attachment back to valid dimensions retriggers the byte-to-Blob lifecycle.
+
+RED command:
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx \
+  -t "immediate stable error" --reporter=verbose
+```
+
+Observed: exit 1 with 4 failed cases. Zero/nonfinite width and height exposed a
+loading state plus invalid ratios such as `0 / 320` and `640 / NaN`; invalid width
+also produced incorrect resize ARIA values.
+
+### Review-Fix GREEN And Verification
+
+```bash
+npm test -- src/features/notes/NotesImageAttachment.test.tsx --reporter=verbose
+```
+
+Exit 0: 1 test file passed, 15 tests passed, 0 failures, and no warnings. The
+original Blob URL replacement/unmount coverage remains green.
+
+```bash
+npx tsc --noEmit --pretty false
+```
+
+Exit 0 with no TypeScript errors.
+
+```bash
+npm run build
+```
+
+Exit 0. TypeScript and Vite completed successfully; 2,286 modules were
+transformed.
+
+The full frontend suite was not run for this pure-component review fix. Focused
+behavior, complete TypeScript compilation, and the production bundle were
+verified.
