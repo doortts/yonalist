@@ -2379,6 +2379,259 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.root).toBeDefined();
   });
 
+  it.each([
+    ["expandAll", "expandAll", "expand-all"],
+    ["collapseAll", "collapseAll", "collapse-all"],
+    ["sortSubtreeAscending", "sortSubtreeAscending", "sort-ascending"],
+    ["sortSubtreeDescending", "sortSubtreeDescending", "sort-descending"]
+  ] as const)(
+    "routes %s through atomic history and restores focus on Undo",
+    async (actionName, repositoryMethod, commandKind) => {
+      const rootId = "11111111-1111-4111-8111-111111111111";
+      const rootAttachment = attachment({
+        id: "22222222-2222-4222-8222-222222222222",
+        nodeId: rootId
+      });
+      const before: NotesWorkspace = {
+        nodes: [
+          node({ id: rootId, title: "Root", isCollapsed: true }),
+          node({ id: "child", parentId: rootId, title: "Zulu" }),
+          node({ id: "other", sortKey: 2048 })
+        ],
+        attachmentsByNodeId: { [rootId]: [rootAttachment] }
+      };
+      const after: NotesWorkspace = {
+        nodes: [
+          node({ id: rootId, title: "Root", isCollapsed: false }),
+          node({ id: "child", parentId: rootId, title: "Alpha" }),
+          node({ id: "other", sortKey: 2048 })
+        ],
+        attachmentsByNodeId: { [rootId]: [rootAttachment] }
+      };
+      const atomic = vi.fn().mockImplementation(
+        async (_vaultRoot, _nodeId, context) => ({
+          workspace: after,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      );
+      const undo = vi.fn().mockImplementation(async () => ({
+        workspace: before,
+        replayedEntryId: atomic.mock.calls[0]?.[2]?.entryId ?? null,
+        canUndo: false,
+        canRedo: true
+      }));
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(before),
+        [repositoryMethod]: atomic,
+        undo
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({ vaultRoot: `/atomic-${actionName}`, repository: store })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () => result.current.actions.focusNode(rootId));
+
+      await act(async () => result.current.actions[actionName](rootId));
+
+      expect(atomic).toHaveBeenCalledWith(
+        `/atomic-${actionName}`,
+        rootId,
+        historyContext(commandKind)
+      );
+      await waitFor(() =>
+        expect(result.current).toMatchObject({ canUndo: true, canRedo: false })
+      );
+      expect(result.current.state.attachmentsByNodeId[rootId]).toEqual([
+        rootAttachment
+      ]);
+      await act(async () => {
+        await result.current.actions.focusNode("other");
+        await result.current.actions.undo!();
+      });
+      expect(undo).toHaveBeenCalledOnce();
+      expect(result.current.state).toMatchObject({
+        selectedId: rootId,
+        pendingFocusId: rootId,
+        pendingFocusField: "title"
+      });
+    }
+  );
+
+  it.each([
+    ["expandAll", "expandAll"],
+    ["collapseAll", "collapseAll"],
+    ["sortSubtreeAscending", "sortSubtreeAscending"],
+    ["sortSubtreeDescending", "sortSubtreeDescending"]
+  ] as const)("does not create Undo for a no-op %s mutation", async (
+    actionName,
+    repositoryMethod
+  ) => {
+    const initial = workspace([node({ id: "root" })]);
+    const atomic = vi.fn().mockResolvedValue({
+      workspace: initial,
+      historyEntryId: null,
+      canUndo: false,
+      canRedo: false
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      [repositoryMethod]: atomic
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: `/noop-${actionName}`, repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => result.current.actions[actionName]("root"));
+
+    expect(atomic).toHaveBeenCalledOnce();
+    expect(result.current).toMatchObject({ canUndo: false, canRedo: false });
+  });
+
+  it("commits one atomic Move To and restores its focus with one Undo", async () => {
+    const initial = workspace([
+      node({ id: "project" }),
+      node({ id: "child", parentId: "project" }),
+      node({ id: "inbox", sortKey: 2048 })
+    ]);
+    const moved = workspace([
+      node({ id: "project" }),
+      node({ id: "child", parentId: "inbox" }),
+      node({ id: "inbox", sortKey: 2048 })
+    ]);
+    const moveNode = vi.fn().mockImplementation(
+      async (_vaultRoot, _input, context) => ({
+        workspace: moved,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const undo = vi.fn().mockImplementation(async () => ({
+      workspace: initial,
+      replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      canUndo: false,
+      canRedo: true
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      moveNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/move-to", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () => result.current.actions.focusNode("child"));
+
+    await act(async () =>
+      result.current.actions.moveNode(
+        { id: "child", parentId: "inbox", afterId: null },
+        "child"
+      )
+    );
+
+    expect(moveNode).toHaveBeenCalledOnce();
+    expect(moveNode).toHaveBeenCalledWith(
+      "/move-to",
+      { id: "child", parentId: "inbox", afterId: null },
+      historyContext("move")
+    );
+    await act(async () => result.current.actions.undo!());
+    expect(undo).toHaveBeenCalledOnce();
+    expect(result.current.state).toMatchObject({
+      selectedId: "child",
+      pendingFocusId: "child",
+      pendingFocusField: "title"
+    });
+    expect(result.current.state.nodesById.child.parentId).toBe("project");
+  });
+
+  it("broadcasts atomic subtree actions to sibling hooks without replacing navigation", async () => {
+    const initial = workspace([
+      node({ id: "root", isCollapsed: true }),
+      node({ id: "child", parentId: "root", isCollapsed: true })
+    ]);
+    const expanded = workspace([
+      node({ id: "root", isCollapsed: false }),
+      node({ id: "child", parentId: "root", isCollapsed: false })
+    ]);
+    const expandAll = vi.fn().mockImplementation(
+      async (_vaultRoot, _nodeId, context) => ({
+        workspace: expanded,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      expandAll
+    });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-subtree", repository: store })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-subtree", repository: store })
+    );
+    await waitFor(() => {
+      expect(owner.result.current.status).toBe("ready");
+      expect(sibling.result.current.status).toBe("ready");
+    });
+    await act(async () => sibling.result.current.actions.zoomTo("root"));
+
+    await act(async () => owner.result.current.actions.expandAll("root"));
+
+    await waitFor(() =>
+      expect(sibling.result.current.state.nodesById.child.isCollapsed).toBe(
+        false
+      )
+    );
+    expect(sibling.result.current.state.zoomRootId).toBe("root");
+  });
+
+  it("clears sibling search expansions for a no-op Collapse all", async () => {
+    const collapsed = workspace([
+      node({ id: "root", isCollapsed: true }),
+      node({ id: "child", parentId: "root" })
+    ]);
+    const collapseAll = vi.fn().mockResolvedValue({
+      workspace: collapsed,
+      historyEntryId: null,
+      canUndo: false,
+      canRedo: false
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(collapsed),
+      collapseAll
+    });
+    const owner = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-collapse", repository: store })
+    );
+    const sibling = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/shared-collapse", repository: store })
+    );
+    await waitFor(() => {
+      expect(owner.result.current.status).toBe("ready");
+      expect(sibling.result.current.status).toBe("ready");
+    });
+    await act(async () =>
+      sibling.result.current.actions.openSearchResult("child")
+    );
+    expect(sibling.result.current.locallyExpandedNodeIds).toEqual(
+      new Set(["root"])
+    );
+
+    await act(async () => owner.result.current.actions.collapseAll("root"));
+
+    await waitFor(() =>
+      expect(sibling.result.current.locallyExpandedNodeIds).toEqual(new Set())
+    );
+    expect(owner.result.current.canUndo).toBe(false);
+  });
+
   it("retains the last scoped projection when reload fails after a mutation", async () => {
     const starred = node({ id: "starred", title: "Starred", isStarred: true });
     const outside = node({ id: "outside", title: "Outside" });
@@ -2551,6 +2804,31 @@ describe("useNotesWorkspace", () => {
       });
     }
   );
+
+  it("loads every active Move To node without replacing a filtered projection", async () => {
+    const root = node({ id: "root", isStarred: true });
+    const outside = node({ id: "outside", sortKey: 2048 });
+    const loadWorkspace = vi.fn(async (_vaultRoot, scope) =>
+      scope.kind === "starred" ? workspace([root]) : workspace([root, outside])
+    );
+    const store = repository({ loadWorkspace });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/move-targets", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    await act(async () =>
+      result.current.actions.selectLibraryView("starred")
+    );
+    expect(result.current.state.rootIds).toEqual(["root"]);
+
+    const activeNodes = await result.current.loadActiveNodesForMove!();
+
+    expect(activeNodes.map((item) => item.id)).toEqual(["root", "outside"]);
+    expect(result.current.state.rootIds).toEqual(["root"]);
+    expect(loadWorkspace).toHaveBeenLastCalledWith("/move-targets", {
+      kind: "active"
+    });
+  });
 
   it("routes plain and validated structured search queries to their matching APIs", async () => {
     const search = vi.fn().mockResolvedValue([]);

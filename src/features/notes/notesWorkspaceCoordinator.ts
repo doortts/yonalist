@@ -28,6 +28,7 @@ export type NotesWorkspaceQueueResult =
       historyVersion?: number;
       suppressSynchronization?: boolean;
       scopeAgnostic?: boolean;
+      clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
     }
@@ -40,6 +41,7 @@ export type NotesWorkspaceQueueResult =
       historyStatus?: NotesHistoryStatus;
       historyVersion?: number;
       scopeAgnostic?: boolean;
+      clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
     };
@@ -310,6 +312,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             workspace: result.workspace,
             historyStatus: result.historyStatus,
             historyVersion: result.historyVersion,
+            ...(result.clearLocalExpansionSubtreeId
+              ? {
+                  clearLocalExpansionSubtreeId:
+                    result.clearLocalExpansionSubtreeId
+                }
+              : {}),
             ...(result.committedHistoryEntryIds
               ? {
                   committedHistoryEntryIds: result.committedHistoryEntryIds

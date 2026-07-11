@@ -9,7 +9,11 @@ import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteId } from "../../domain/notes";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
-import { NotesBulletMenu } from "./NotesBulletMenu";
+import {
+  buildNotesMoveDestinations,
+  buildNotesMoveNodeInput,
+  NotesBulletMenu
+} from "./NotesBulletMenu";
 import { NotesAttachmentList } from "./NotesAttachmentList";
 import { useNotesExportController } from "./NotesExportController";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
@@ -41,6 +45,7 @@ export function NotesPageHeader({
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    loadActiveNodesForMove,
     retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
@@ -58,6 +63,7 @@ export function NotesPageHeader({
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
     useState<NoteId | null>(null);
   const [trashConfirmOpen, setTrashConfirmOpen] = useState(false);
+  const [commandBusy, setCommandBusy] = useState(false);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
   const label = pageLabel(titleValue || node?.title || "");
@@ -117,6 +123,7 @@ export function NotesPageHeader({
       return;
     }
     commandInFlightRef.current = true;
+    setCommandBusy(true);
     let completion: Promise<void>;
     try {
       completion = command();
@@ -126,6 +133,7 @@ export function NotesPageHeader({
     }
     const settle = () => {
       commandInFlightRef.current = false;
+      setCommandBusy(false);
     };
     void completion.then(settle, settle);
   };
@@ -230,6 +238,26 @@ export function NotesPageHeader({
               hasNote={Boolean(noteValue.trim())}
               saveFailed={draft?.status === "failed"}
               disabled={disabled}
+              actionBusy={commandBusy}
+              createdAt={node.createdAt}
+              updatedAt={node.updatedAt}
+              getMoveDestinations={() => {
+                if (!loadActiveNodesForMove) {
+                  return buildNotesMoveDestinations(state.nodesById, nodeId);
+                }
+                return loadActiveNodesForMove()
+                  .then((nodes) =>
+                    buildNotesMoveDestinations(
+                      Object.fromEntries(
+                        nodes.map((item) => [item.id, item])
+                      ),
+                      nodeId
+                    )
+                  )
+                  .catch(() =>
+                    buildNotesMoveDestinations(state.nodesById, nodeId)
+                  );
+              }}
               exportDisabled={
                 exportController.unavailable || exportController.busy
               }
@@ -248,6 +276,26 @@ export function NotesPageHeader({
                 actions.uploadImage
                   ? () => void actions.uploadImage?.(nodeId)
                   : undefined
+              }
+              onMoveTo={(destinationId) => {
+                const input = buildNotesMoveNodeInput(
+                  state.nodesById,
+                  nodeId,
+                  destinationId
+                );
+                if (input) {
+                  runCommand(() => actions.moveNode(input, nodeId));
+                }
+              }}
+              onExpandAll={() => runCommand(() => actions.expandAll(nodeId))}
+              onCollapseAll={() =>
+                runCommand(() => actions.collapseAll(nodeId))
+              }
+              onSortAscending={() =>
+                runCommand(() => actions.sortSubtreeAscending(nodeId))
+              }
+              onSortDescending={() =>
+                runCommand(() => actions.sortSubtreeDescending(nodeId))
               }
               onRemoveNote={removeNote}
               onDuplicate={() =>

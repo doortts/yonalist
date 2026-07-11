@@ -85,6 +85,10 @@ export interface NotesWorkspaceActions {
   ): Promise<void>;
   toggleComplete(nodeId: NoteId): Promise<void>;
   toggleCollapsed(nodeId: NoteId): Promise<void>;
+  expandAll(nodeId: NoteId): Promise<void>;
+  collapseAll(nodeId: NoteId): Promise<void>;
+  sortSubtreeAscending(nodeId: NoteId): Promise<void>;
+  sortSubtreeDescending(nodeId: NoteId): Promise<void>;
   toggleStar(nodeId: NoteId): Promise<void>;
   duplicateNode(nodeId: NoteId): Promise<void>;
   removeEmptyNode(
@@ -152,6 +156,7 @@ export interface UseNotesWorkspaceResult {
   error: string | null;
   canUndo?: boolean;
   canRedo?: boolean;
+  loadActiveNodesForMove?(): Promise<readonly NoteNode[]>;
 }
 
 export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
@@ -233,6 +238,32 @@ function historyArguments(
 
 function supportsHistory(repository: NotesStore): boolean {
   return repository.undo !== undefined && repository.redo !== undefined;
+}
+
+function expansionsOutsideSubtree(
+  current: ReadonlySet<NoteId>,
+  workspace: NotesWorkspace,
+  subtreeRootId: NoteId
+): Set<NoteId> {
+  const nodesById = Object.fromEntries(
+    workspace.nodes.map((node) => [node.id, node])
+  ) as Record<NoteId, NoteNode>;
+  const next = new Set(current);
+  for (const candidateId of current) {
+    let candidate: NoteNode | undefined = nodesById[candidateId];
+    const visited = new Set<NoteId>();
+    while (candidate && !visited.has(candidate.id)) {
+      if (candidate.id === subtreeRootId) {
+        next.delete(candidateId);
+        break;
+      }
+      visited.add(candidate.id);
+      candidate = candidate.parentId
+        ? nodesById[candidate.parentId]
+        : undefined;
+    }
+  }
+  return next;
 }
 
 async function workspaceForScope(
@@ -1442,6 +1473,25 @@ export function useNotesWorkspace({
           event.result.invalidatesTagSummaries
         ) {
           void requestTagSummaryRefresh();
+        }
+        const expansionWorkspace =
+          event.result.kind === "authoritative"
+            ? event.result.workspace
+            : event.result.kind === "failure"
+              ? event.result.workspace
+              : undefined;
+        if (
+          expansionWorkspace &&
+          event.result.kind !== "skipped" &&
+          event.result.clearLocalExpansionSubtreeId
+        ) {
+          const next = expansionsOutsideSubtree(
+            locallyExpandedNodeIdsRef.current,
+            expansionWorkspace,
+            event.result.clearLocalExpansionSubtreeId
+          );
+          locallyExpandedNodeIdsRef.current = next;
+          setLocallyExpandedNodeIds(next);
         }
         if (
           event.type === "synchronized" &&
@@ -3514,6 +3564,102 @@ export function useNotesWorkspace({
     ]
   );
 
+  const runAtomicSubtreeCommand = useCallback(
+    async (
+      commandKind: string,
+      method:
+        | "expandAll"
+        | "collapseAll"
+        | "sortSubtreeAscending"
+        | "sortSubtreeDescending",
+      nodeId: NoteId,
+      reconcileExpansions: boolean
+    ) => {
+      return runStructuralCommand(
+        commandKind,
+        async (context, historyContext) => {
+          const before = confirmedState(context);
+          const repositoryCommand = context.repository[method];
+          if (!before.nodesById[nodeId] || !repositoryCommand) {
+            return { kind: "skipped" };
+          }
+          const mutation = unwrapNotesMutation(
+            await repositoryCommand(
+              context.vaultRoot,
+              nodeId,
+              ...historyArguments(historyContext)
+            )
+          );
+          const projection = await projectNotesMutation(
+            context,
+            mutation,
+            activeScopeRef.current
+          );
+          const appliedContext = appliedHistoryContext(
+            historyContext,
+            mutation
+          );
+          let expandedNodeIds: ReadonlySet<NoteId> | undefined;
+          if (reconcileExpansions) {
+            const next = expansionsOutsideSubtree(
+              locallyExpandedNodeIdsRef.current,
+              mutation.workspace,
+              nodeId
+            );
+            replaceLocalExpansions(next);
+            expandedNodeIds = next;
+          }
+          rememberHistoryAfter(
+            appliedContext,
+            projection.workspace,
+            undefined,
+            undefined,
+            expandedNodeIds
+          );
+          const result = directMutationResult(mutation, projection);
+          return reconcileExpansions
+            ? { ...result, clearLocalExpansionSubtreeId: nodeId }
+            : result;
+        }
+      );
+    },
+    [rememberHistoryAfter, replaceLocalExpansions, runStructuralCommand]
+  );
+
+  const expandAll = useCallback(
+    (nodeId: NoteId) =>
+      runAtomicSubtreeCommand("expand-all", "expandAll", nodeId, true),
+    [runAtomicSubtreeCommand]
+  );
+
+  const collapseAll = useCallback(
+    (nodeId: NoteId) =>
+      runAtomicSubtreeCommand("collapse-all", "collapseAll", nodeId, true),
+    [runAtomicSubtreeCommand]
+  );
+
+  const sortSubtreeAscending = useCallback(
+    (nodeId: NoteId) =>
+      runAtomicSubtreeCommand(
+        "sort-ascending",
+        "sortSubtreeAscending",
+        nodeId,
+        false
+      ),
+    [runAtomicSubtreeCommand]
+  );
+
+  const sortSubtreeDescending = useCallback(
+    (nodeId: NoteId) =>
+      runAtomicSubtreeCommand(
+        "sort-descending",
+        "sortSubtreeDescending",
+        nodeId,
+        false
+      ),
+    [runAtomicSubtreeCommand]
+  );
+
   const toggleStar = useCallback(
     async (nodeId: NoteId) => {
       return runStructuralCommand("star", async (context, historyContext) => {
@@ -4519,6 +4665,10 @@ export function useNotesWorkspace({
       moveNode: gate(moveNode),
       toggleComplete: gate(toggleComplete),
       toggleCollapsed: gate(toggleCollapsed),
+      expandAll: gate(expandAll),
+      collapseAll: gate(collapseAll),
+      sortSubtreeAscending: gate(sortSubtreeAscending),
+      sortSubtreeDescending: gate(sortSubtreeDescending),
       toggleStar: gate(toggleStar),
       duplicateNode: gate(duplicateNode),
       removeEmptyNode: gate(removeEmptyNode),
@@ -4558,6 +4708,10 @@ export function useNotesWorkspace({
     moveNode,
     toggleComplete,
     toggleCollapsed,
+    expandAll,
+    collapseAll,
+    sortSubtreeAscending,
+    sortSubtreeDescending,
     toggleStar,
     duplicateNode,
     removeEmptyNode,
@@ -4582,6 +4736,12 @@ export function useNotesWorkspace({
     redo
   ]);
 
+  const loadActiveNodesForMove = useCallback(
+    async (): Promise<readonly NoteNode[]> =>
+      (await repository.loadWorkspace(vaultRoot, { kind: "active" })).nodes,
+    [repository, vaultRoot]
+  );
+
   return {
     state,
     actions,
@@ -4600,6 +4760,7 @@ export function useNotesWorkspace({
     loading: state.status === "loading",
     error: state.error,
     canUndo: historyStatus.canUndo,
-    canRedo: historyStatus.canRedo
+    canRedo: historyStatus.canRedo,
+    loadActiveNodesForMove
   };
 }

@@ -67,6 +67,7 @@ function workspaceValue(options: {
   attachments?: NoteAttachment[];
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
+  includeOtherRoot?: boolean;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
@@ -81,7 +82,10 @@ function workspaceValue(options: {
         title: options.childTitle ?? "First child",
         note: options.childNote ?? ""
       }),
-      node({ id: "detail", parentId: "child", title: "Detail" })
+      node({ id: "detail", parentId: "child", title: "Detail" }),
+      ...(options.includeOtherRoot
+        ? [node({ id: "inbox", sortKey: 2048, title: "Inbox" })]
+        : [])
     ],
     attachmentsByNodeId: options.attachments
       ? { project: options.attachments }
@@ -105,6 +109,10 @@ function workspaceValue(options: {
     moveNode: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
+    expandAll: resolved(),
+    collapseAll: resolved(),
+    sortSubtreeAscending: resolved(),
+    sortSubtreeDescending: resolved(),
     toggleStar: resolved(),
     duplicateNode: resolved(),
     removeEmptyNode: resolved(),
@@ -392,6 +400,11 @@ describe("NotesPageHeader", () => {
       "Edit note",
       "Add date",
       "Upload image",
+      "Move To...",
+      "Expand all",
+      "Collapse all",
+      "Sort A-Z",
+      "Sort Z-A",
       "Remove note",
       "Duplicate",
       "Export subtree",
@@ -410,6 +423,96 @@ describe("NotesPageHeader", () => {
       })
     );
     expect(workspace.actions.uploadImage).toHaveBeenCalledWith("project");
+  });
+
+  it("moves a normal row to an active destination while excluding its subtree", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline(
+      workspaceValue({ includeOtherRoot: true })
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for First child" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Move To..."
+      })
+    );
+
+    expect(screen.getByRole("option", { name: "Top level" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Project" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Inbox" })).toBeVisible();
+    expect(screen.queryByRole("option", { name: "First child" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Detail" }))
+      .not.toBeInTheDocument();
+
+    const search = screen.getByRole("searchbox", {
+      name: "Search move destinations"
+    });
+    await user.type(search, "Inbox");
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    expect(workspace.actions.moveNode).toHaveBeenCalledOnce();
+    expect(workspace.actions.moveNode).toHaveBeenCalledWith(
+      { id: "child", parentId: "inbox", afterId: null },
+      "child"
+    );
+  });
+
+  it("gives the page root subtree actions and readable timestamps", async () => {
+    const user = userEvent.setup();
+    const workspace = renderZoomedOutline();
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Project" })
+    );
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText(/^Created /)).toBeVisible();
+    expect(within(menu).getByText(/^Changed /)).toBeVisible();
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Sort A-Z" })
+    );
+
+    expect(workspace.actions.sortSubtreeAscending).toHaveBeenCalledWith(
+      "project"
+    );
+  });
+
+  it("disables subtree command re-entry while a page action is pending", async () => {
+    let resolveExpand!: () => void;
+    const workspace = workspaceValue();
+    workspace.actions.expandAll = vi.fn(
+      () => new Promise<void>((resolve) => { resolveExpand = resolve; })
+    );
+    const user = userEvent.setup();
+    renderZoomedOutline(workspace);
+    const trigger = screen.getByRole("button", {
+      name: "More actions for Project"
+    });
+
+    await user.click(trigger);
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Expand all"
+      })
+    );
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+
+    await user.click(trigger);
+    const pendingCommand = within(await screen.findByRole("menu")).getByRole(
+      "menuitem",
+      { name: "Expand all" }
+    );
+    expect(pendingCommand).toHaveAttribute("data-disabled");
+    await user.dblClick(pendingCommand);
+    expect(workspace.actions.expandAll).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      resolveExpand();
+      await Promise.resolve();
+    });
   });
 
   it("opens a title picker from non-composing !! and commits one flush and one Undo step", async () => {

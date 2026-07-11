@@ -18,7 +18,11 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
-import { NotesBulletMenu } from "./NotesBulletMenu";
+import {
+  buildNotesMoveDestinations,
+  buildNotesMoveNodeInput,
+  NotesBulletMenu
+} from "./NotesBulletMenu";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
 import { NoteTextField } from "./NoteTextField";
@@ -63,6 +67,7 @@ export function OutlineNodeRow({
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    loadActiveNodesForMove,
     retryFailedDraft,
     state
   } = useNotesWorkspaceContext();
@@ -90,6 +95,7 @@ export function OutlineNodeRow({
   const [noteOpen, setNoteOpen] = useState(() =>
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
+  const [structuralCommandBusy, setStructuralCommandBusy] = useState(false);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const titleSelectionRef = useRef<{
@@ -276,6 +282,7 @@ export function OutlineNodeRow({
       return;
     }
     structuralCommandInFlightRef.current = true;
+    setStructuralCommandBusy(true);
     let completion: Promise<void>;
     try {
       completion = command();
@@ -285,6 +292,7 @@ export function OutlineNodeRow({
     }
     const settle = () => {
       structuralCommandInFlightRef.current = false;
+      setStructuralCommandBusy(false);
     };
     void completion.then(settle, settle);
   };
@@ -457,6 +465,24 @@ export function OutlineNodeRow({
             hasNote={Boolean(noteValue.trim())}
             saveFailed={draft?.status === "failed"}
             disabled={disabled}
+            actionBusy={structuralCommandBusy}
+            createdAt={node.createdAt}
+            updatedAt={node.updatedAt}
+            getMoveDestinations={() => {
+              if (!loadActiveNodesForMove) {
+                return buildNotesMoveDestinations(state.nodesById, nodeId);
+              }
+              return loadActiveNodesForMove()
+                .then((nodes) =>
+                  buildNotesMoveDestinations(
+                    Object.fromEntries(nodes.map((item) => [item.id, item])),
+                    nodeId
+                  )
+                )
+                .catch(() =>
+                  buildNotesMoveDestinations(state.nodesById, nodeId)
+                );
+            }}
             exportDisabled={exportController.unavailable || exportController.busy}
             onToggleComplete={() =>
               runStructuralCommand(() => actions.toggleComplete(nodeId))
@@ -473,6 +499,28 @@ export function OutlineNodeRow({
               actions.uploadImage
                 ? () => void actions.uploadImage?.(nodeId)
                 : undefined
+            }
+            onMoveTo={(destinationId) => {
+              const input = buildNotesMoveNodeInput(
+                state.nodesById,
+                nodeId,
+                destinationId
+              );
+              if (input) {
+                runStructuralCommand(() => actions.moveNode(input, nodeId));
+              }
+            }}
+            onExpandAll={() =>
+              runStructuralCommand(() => actions.expandAll(nodeId))
+            }
+            onCollapseAll={() =>
+              runStructuralCommand(() => actions.collapseAll(nodeId))
+            }
+            onSortAscending={() =>
+              runStructuralCommand(() => actions.sortSubtreeAscending(nodeId))
+            }
+            onSortDescending={() =>
+              runStructuralCommand(() => actions.sortSubtreeDescending(nodeId))
             }
             onRemoveNote={removeNote}
             onDuplicate={() =>
