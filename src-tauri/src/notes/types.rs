@@ -64,6 +64,30 @@ pub struct NotesWorkspace {
     pub nodes: Vec<NoteNode>,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryContext {
+    pub session_id: String,
+    pub entry_id: String,
+    pub command_kind: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryStatus {
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryReplayResult {
+    pub workspace: NotesWorkspace,
+    pub replayed_entry_id: Option<String>,
+    pub can_undo: bool,
+    pub can_redo: bool,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NoteTagPrefix {
     #[serde(rename = "#")]
@@ -244,7 +268,8 @@ impl SplitNodeInput {
 mod tests {
     use super::{
         validate_note_id, MoveNodeInput, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat, NotesExportResult, NotesWorkspaceScope,
+        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
+        NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -371,6 +396,39 @@ mod tests {
                 "displayTag": "Minji",
                 "count": 2
             })
+        );
+    }
+
+    #[test]
+    fn history_contracts_use_exact_camel_case_wire_shapes() {
+        let context: NotesHistoryContext = serde_json::from_value(json!({
+            "sessionId": NODE_ID,
+            "entryId": SECOND_ID,
+            "commandKind": "updateText"
+        }))
+        .expect("history context");
+        assert_eq!(context.session_id, NODE_ID);
+        assert_eq!(context.entry_id, SECOND_ID);
+        assert_eq!(context.command_kind, "updateText");
+
+        let replay = NotesHistoryReplayResult {
+            workspace: NotesWorkspace { nodes: Vec::new() },
+            replayed_entry_id: Some(SECOND_ID.to_string()),
+            can_undo: true,
+            can_redo: false,
+        };
+        assert_eq!(
+            serde_json::to_value(replay).expect("history replay result"),
+            json!({
+                "workspace": { "nodes": [] },
+                "replayedEntryId": SECOND_ID,
+                "canUndo": true,
+                "canRedo": false
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(NotesHistoryStatus::default()).expect("history status"),
+            json!({ "canUndo": false, "canRedo": false })
         );
     }
 }

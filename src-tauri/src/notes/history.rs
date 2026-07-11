@@ -1,0 +1,1259 @@
+use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes};
+use crate::notes::types::{
+    validate_note_id, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
+    NotesWorkspace, NotesWorkspaceScope,
+};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde::Deserialize;
+use std::collections::BTreeSet;
+
+pub(crate) const HISTORY_MAX_ENTRIES: i64 = 100;
+pub(crate) const HISTORY_MAX_BYTES: i64 = 50 * 1024 * 1024;
+
+const NODE_JSON_NEW: &str = "json_object(\
+  'id', NEW.id, 'parent_id', NEW.parent_id, 'sort_key', NEW.sort_key, \
+  'title', NEW.title, 'note', NEW.note, 'layout_mode', NEW.layout_mode, \
+  'is_collapsed', NEW.is_collapsed, 'is_starred', NEW.is_starred, \
+  'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
+  'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
+  'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
+  'archive_root_id', NEW.archive_root_id)";
+const NODE_JSON_OLD: &str = "json_object(\
+  'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
+  'title', OLD.title, 'note', OLD.note, 'layout_mode', OLD.layout_mode, \
+  'is_collapsed', OLD.is_collapsed, 'is_starred', OLD.is_starred, \
+  'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
+  'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
+  'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
+  'archive_root_id', OLD.archive_root_id)";
+const ATTACHMENT_JSON_NEW: &str = "json_object(\
+  'id', NEW.id, 'node_id', NEW.node_id, 'sort_key', NEW.sort_key, \
+  'relative_path', NEW.relative_path, 'content_hash', NEW.content_hash, \
+  'original_name', NEW.original_name, 'mime_type', NEW.mime_type, \
+  'byte_size', NEW.byte_size, 'intrinsic_width', NEW.intrinsic_width, \
+  'intrinsic_height', NEW.intrinsic_height, 'display_width', NEW.display_width, \
+  'created_at', NEW.created_at, 'updated_at', NEW.updated_at)";
+const ATTACHMENT_JSON_OLD: &str = "json_object(\
+  'id', OLD.id, 'node_id', OLD.node_id, 'sort_key', OLD.sort_key, \
+  'relative_path', OLD.relative_path, 'content_hash', OLD.content_hash, \
+  'original_name', OLD.original_name, 'mime_type', OLD.mime_type, \
+  'byte_size', OLD.byte_size, 'intrinsic_width', OLD.intrinsic_width, \
+  'intrinsic_height', OLD.intrinsic_height, 'display_width', OLD.display_width, \
+  'created_at', OLD.created_at, 'updated_at', OLD.updated_at)";
+
+fn validate_history_id(label: &str, value: &str) -> Result<(), String> {
+    validate_note_id(value).map_err(|_| format!("{label} must be a canonical UUID v4 string."))
+}
+
+fn validate_context(context: &NotesHistoryContext) -> Result<(), String> {
+    validate_history_id("Notes history session ID", &context.session_id)?;
+    validate_history_id("Notes history entry ID", &context.entry_id)?;
+    let command_kind = context.command_kind.trim();
+    if command_kind.is_empty() || command_kind.len() > 128 {
+        return Err("Notes history command kind must contain 1 to 128 characters.".to_string());
+    }
+    Ok(())
+}
+
+fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
+    let sql = format!(
+        r#"
+        CREATE TEMP TABLE IF NOT EXISTS notes_history_context (
+          session_id TEXT NOT NULL,
+          entry_id TEXT NOT NULL,
+          command_kind TEXT NOT NULL
+        );
+        CREATE TEMP TABLE IF NOT EXISTS notes_history_audit (
+          table_name TEXT NOT NULL,
+          row_id TEXT NOT NULL,
+          ordinal INTEGER NOT NULL,
+          before_json TEXT,
+          after_json TEXT,
+          PRIMARY KEY (table_name, row_id)
+        );
+
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_insert
+        AFTER INSERT ON notes_nodes
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_nodes', NEW.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  NULL, {NODE_JSON_NEW})
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
+        END;
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_update
+        AFTER UPDATE ON notes_nodes
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_nodes', NEW.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  {NODE_JSON_OLD}, {NODE_JSON_NEW})
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
+        END;
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_nodes_delete
+        AFTER DELETE ON notes_nodes
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_nodes', OLD.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  {NODE_JSON_OLD}, NULL)
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = NULL;
+        END;
+
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_attachments_insert
+        AFTER INSERT ON notes_attachments
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_attachments', NEW.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  NULL, {ATTACHMENT_JSON_NEW})
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
+        END;
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_attachments_update
+        AFTER UPDATE ON notes_attachments
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_attachments', NEW.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  {ATTACHMENT_JSON_OLD}, {ATTACHMENT_JSON_NEW})
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = excluded.after_json;
+        END;
+        CREATE TEMP TRIGGER IF NOT EXISTS notes_history_attachments_delete
+        AFTER DELETE ON notes_attachments
+        WHEN EXISTS (SELECT 1 FROM notes_history_context)
+        BEGIN
+          INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json)
+          VALUES ('notes_attachments', OLD.id,
+                  (SELECT COALESCE(MAX(ordinal), 0) + 1 FROM notes_history_audit),
+                  {ATTACHMENT_JSON_OLD}, NULL)
+          ON CONFLICT(table_name, row_id) DO UPDATE SET after_json = NULL;
+        END;
+        "#
+    );
+    connection
+        .execute_batch(&sql)
+        .map_err(|error| format!("Could not prepare Notes history auditing: {error}"))
+}
+
+fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result<(), String> {
+    install_audit_infrastructure(connection)?;
+    let active: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_history_context)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes history auditing: {error}"))?;
+    if active {
+        return Err("A Notes history mutation is already active on this connection.".to_string());
+    }
+    connection
+        .execute("DELETE FROM notes_history_audit", [])
+        .and_then(|_| {
+            connection.execute(
+                "INSERT INTO notes_history_context(session_id, entry_id, command_kind) VALUES (?1, ?2, ?3)",
+                params![context.session_id, context.entry_id, context.command_kind.trim()],
+            )
+        })
+        .map_err(|error| format!("Could not start Notes history auditing: {error}"))?;
+    Ok(())
+}
+
+fn end_audit(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch("DELETE FROM notes_history_context; DELETE FROM notes_history_audit;")
+        .map_err(|error| format!("Could not finish Notes history auditing: {error}"))
+}
+
+pub(crate) fn with_history_transaction(
+    connection: &mut Connection,
+    context: Option<&NotesHistoryContext>,
+    operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
+) -> Result<NotesWorkspace, String> {
+    let Some(context) = context else {
+        return operation(connection);
+    };
+    validate_context(context)?;
+    begin_audit(connection, context)?;
+    let result = operation(connection);
+    let cleanup = end_audit(connection);
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(workspace), Ok(())) => Ok(workspace),
+    }
+}
+
+pub(crate) fn has_active_context(connection: &Connection) -> Result<bool, String> {
+    let table_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = 'notes_history_context')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes history context: {error}"))?;
+    if !table_exists {
+        return Ok(false);
+    }
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_history_context)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not read Notes history context: {error}"))
+}
+
+pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), String> {
+    let context = transaction
+        .query_row(
+            "SELECT session_id, entry_id FROM notes_history_context LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|error| format!("Could not read active Notes history context: {error}"))?;
+    let audit = {
+        let mut statement = transaction
+            .prepare("SELECT table_name, row_id, ordinal, before_json, after_json FROM notes_history_audit ORDER BY ordinal")
+            .map_err(|error| format!("Could not prepare Notes history changes: {error}"))?;
+        let changes = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(|error| format!("Could not read Notes history changes: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect Notes history changes: {error}"))?;
+        changes
+    };
+    if audit.is_empty() {
+        return Ok(());
+    }
+
+    let existing = transaction
+        .query_row(
+            "SELECT session_id, sequence, is_undone FROM notes_history_entries WHERE id = ?1",
+            [&context.1],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| format!("Could not inspect Notes history entry: {error}"))?;
+    if let Some((session_id, sequence, is_undone)) = existing {
+        let latest_sequence: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM notes_history_entries WHERE session_id = ?1",
+                [&context.0],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect Notes history order: {error}"))?;
+        if session_id != context.0 || is_undone || sequence != latest_sequence {
+            return Err("A Notes history entry can only coalesce with the latest applied entry in its session.".to_string());
+        }
+    } else {
+        transaction
+            .execute(
+                "DELETE FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 1",
+                [&context.0],
+            )
+            .map_err(|error| format!("Could not invalidate Notes redo history: {error}"))?;
+        let sequence: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM notes_history_entries WHERE session_id = ?1",
+                [&context.0],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not allocate Notes history order: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO notes_history_entries(id, session_id, sequence) VALUES (?1, ?2, ?3)",
+                params![context.1, context.0, sequence],
+            )
+            .map_err(|error| format!("Could not create Notes history entry: {error}"))?;
+    }
+
+    let base_ordinal: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal), 0) FROM notes_history_changes WHERE entry_id = ?1",
+            [&context.1],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes history change order: {error}"))?;
+    for (table_name, row_id, ordinal, before_json, after_json) in audit {
+        transaction
+            .execute(
+                "INSERT INTO notes_history_changes(entry_id, table_name, row_id, ordinal, before_json, after_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 ON CONFLICT(entry_id, table_name, row_id) DO UPDATE SET after_json = excluded.after_json",
+                params![context.1, table_name, row_id, base_ordinal + ordinal, before_json, after_json],
+            )
+            .map_err(|error| format!("Could not merge Notes history changes: {error}"))?;
+    }
+    transaction
+        .execute(
+            "DELETE FROM notes_history_changes WHERE entry_id = ?1 AND before_json IS after_json",
+            [&context.1],
+        )
+        .map_err(|error| format!("Could not compact Notes history changes: {error}"))?;
+    let change_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
+            [&context.1],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not count Notes history changes: {error}"))?;
+    if change_count == 0 {
+        transaction
+            .execute(
+                "DELETE FROM notes_history_entries WHERE id = ?1",
+                [&context.1],
+            )
+            .map_err(|error| format!("Could not remove empty Notes history entry: {error}"))?;
+        return Ok(());
+    }
+    transaction
+        .execute(
+            "UPDATE notes_history_entries SET estimated_bytes = (\
+               SELECT COALESCE(SUM(\
+                 length(CAST(COALESCE(before_json, '') AS BLOB)) + \
+                 length(CAST(COALESCE(after_json, '') AS BLOB))\
+               ), 0) FROM notes_history_changes WHERE entry_id = ?1\
+             ) WHERE id = ?1",
+            [&context.1],
+        )
+        .map_err(|error| format!("Could not estimate Notes history payload: {error}"))?;
+    enforce_limits(transaction, &context.0)
+}
+
+fn enforce_limits(transaction: &Transaction<'_>, session_id: &str) -> Result<(), String> {
+    loop {
+        let (entry_count, estimated_bytes): (i64, i64) = transaction
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(estimated_bytes), 0) FROM notes_history_entries WHERE session_id = ?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|error| format!("Could not measure Notes history limits: {error}"))?;
+        if entry_count <= HISTORY_MAX_ENTRIES && estimated_bytes <= HISTORY_MAX_BYTES {
+            return Ok(());
+        }
+        let deleted = transaction
+            .execute(
+                "DELETE FROM notes_history_entries WHERE id = (\
+                   SELECT id FROM notes_history_entries WHERE session_id = ?1 ORDER BY sequence LIMIT 1\
+                 )",
+                [session_id],
+            )
+            .map_err(|error| format!("Could not evict old Notes history: {error}"))?;
+        if deleted == 0 {
+            return Err("Could not enforce Notes history limits.".to_string());
+        }
+    }
+}
+
+pub(crate) fn history_status(
+    connection: &Connection,
+    session_id: &str,
+) -> Result<NotesHistoryStatus, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    connection
+        .query_row(
+            "SELECT \
+               EXISTS(SELECT 1 FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 0), \
+               EXISTS(SELECT 1 FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 1)",
+            [session_id],
+            |row| Ok(NotesHistoryStatus { can_undo: row.get(0)?, can_redo: row.get(1)? }),
+        )
+        .map_err(|error| format!("Could not read Notes history status: {error}"))
+}
+
+pub(crate) fn clear_history(
+    connection: &mut Connection,
+    session_id: &str,
+) -> Result<NotesHistoryStatus, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start clearing Notes history: {error}"))?;
+    transaction
+        .execute(
+            "DELETE FROM notes_history_entries WHERE session_id = ?1",
+            [session_id],
+        )
+        .map_err(|error| format!("Could not clear Notes history: {error}"))?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit cleared Notes history: {error}"))?;
+    Ok(NotesHistoryStatus::default())
+}
+
+pub(crate) fn clear_all_history(connection: &mut Connection) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start expiring Notes history: {error}"))?;
+    clear_all_history_in_transaction(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit expired Notes history: {error}"))
+}
+
+pub(crate) fn clear_all_history_in_transaction(
+    transaction: &Transaction<'_>,
+) -> Result<(), String> {
+    transaction
+        .execute("DELETE FROM notes_history_entries", [])
+        .map_err(|error| format!("Could not clear all Notes history: {error}"))?;
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct NodeSnapshot {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    layout_mode: String,
+    is_collapsed: i64,
+    is_starred: i64,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+    deleted_batch_id: Option<String>,
+    archived_at: Option<String>,
+    archive_root_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct AttachmentSnapshot {
+    id: String,
+    node_id: String,
+    sort_key: i64,
+    relative_path: String,
+    content_hash: String,
+    original_name: String,
+    mime_type: String,
+    byte_size: i64,
+    intrinsic_width: i64,
+    intrinsic_height: i64,
+    display_width: i64,
+    created_at: String,
+    updated_at: String,
+}
+
+fn apply_node_state(
+    transaction: &Transaction<'_>,
+    row_id: &str,
+    state: Option<&str>,
+) -> Result<(), String> {
+    let Some(state) = state else {
+        transaction
+            .execute("DELETE FROM notes_nodes WHERE id = ?1", [row_id])
+            .map_err(|error| {
+                format!("Could not remove a Note row during history replay: {error}")
+            })?;
+        return Ok(());
+    };
+    let node: NodeSnapshot = serde_json::from_str(state)
+        .map_err(|error| format!("Could not decode a Note history row: {error}"))?;
+    if node.id != row_id {
+        return Err("A Notes history row ID does not match its snapshot.".to_string());
+    }
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes(\
+               id, parent_id, sort_key, title, note, layout_mode, is_collapsed, is_starred, \
+               completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, archive_root_id\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+             ON CONFLICT(id) DO UPDATE SET \
+               parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
+               note = excluded.note, layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
+               is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
+               created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
+               deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
+               archive_root_id = excluded.archive_root_id",
+            params![
+                node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode,
+                node.is_collapsed, node.is_starred, node.completed_at, node.created_at,
+                node.updated_at, node.deleted_at, node.deleted_batch_id, node.archived_at,
+                node.archive_root_id
+            ],
+        )
+        .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
+    Ok(())
+}
+
+fn apply_attachment_state(
+    transaction: &Transaction<'_>,
+    row_id: &str,
+    state: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(state) = state else {
+        let node_id = transaction
+            .query_row(
+                "SELECT node_id FROM notes_attachments WHERE id = ?1",
+                [row_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| {
+                format!("Could not inspect an attachment during history replay: {error}")
+            })?;
+        transaction
+            .execute("DELETE FROM notes_attachments WHERE id = ?1", [row_id])
+            .map_err(|error| {
+                format!("Could not remove an attachment during history replay: {error}")
+            })?;
+        return Ok(node_id);
+    };
+    let attachment: AttachmentSnapshot = serde_json::from_str(state)
+        .map_err(|error| format!("Could not decode an attachment history row: {error}"))?;
+    if attachment.id != row_id {
+        return Err("A Notes attachment history row ID does not match its snapshot.".to_string());
+    }
+    let node_id = attachment.node_id.clone();
+    transaction
+        .execute(
+            "INSERT INTO notes_attachments(\
+               id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+               byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) \
+             ON CONFLICT(id) DO UPDATE SET \
+               node_id = excluded.node_id, sort_key = excluded.sort_key, relative_path = excluded.relative_path, \
+               content_hash = excluded.content_hash, original_name = excluded.original_name, \
+               mime_type = excluded.mime_type, byte_size = excluded.byte_size, \
+               intrinsic_width = excluded.intrinsic_width, intrinsic_height = excluded.intrinsic_height, \
+               display_width = excluded.display_width, created_at = excluded.created_at, updated_at = excluded.updated_at",
+            params![
+                attachment.id, attachment.node_id, attachment.sort_key, attachment.relative_path,
+                attachment.content_hash, attachment.original_name, attachment.mime_type,
+                attachment.byte_size, attachment.intrinsic_width, attachment.intrinsic_height,
+                attachment.display_width, attachment.created_at, attachment.updated_at
+            ],
+        )
+        .map_err(|error| format!("Could not restore an attachment during history replay: {error}"))?;
+    Ok(Some(node_id))
+}
+
+fn replay(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    undoing: bool,
+) -> Result<NotesHistoryReplayResult, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start Notes history replay: {error}"))?;
+    let entry_id = transaction
+        .query_row(
+            if undoing {
+                "SELECT id FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 0 ORDER BY sequence DESC LIMIT 1"
+            } else {
+                "SELECT id FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 1 ORDER BY sequence ASC LIMIT 1"
+            },
+            [session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not choose a Notes history entry: {error}"))?;
+    let Some(entry_id) = entry_id else {
+        let workspace = load_workspace(&transaction, scope)?;
+        let status = history_status(&transaction, session_id)?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Could not finish empty Notes history replay: {error}"))?;
+        return Ok(NotesHistoryReplayResult {
+            workspace,
+            replayed_entry_id: None,
+            can_undo: status.can_undo,
+            can_redo: status.can_redo,
+        });
+    };
+    let changes = {
+        let order = if undoing { "DESC" } else { "ASC" };
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT table_name, row_id, before_json, after_json FROM notes_history_changes WHERE entry_id = ?1 ORDER BY ordinal {order}"
+            ))
+            .map_err(|error| format!("Could not prepare Notes history replay: {error}"))?;
+        let changes = statement
+            .query_map([&entry_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Could not read Notes history replay: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect Notes history replay: {error}"))?;
+        changes
+    };
+    let mut affected_nodes = BTreeSet::new();
+    for (table_name, row_id, before_json, after_json) in changes {
+        let state = if undoing {
+            before_json.as_deref()
+        } else {
+            after_json.as_deref()
+        };
+        match table_name.as_str() {
+            "notes_nodes" => {
+                affected_nodes.insert(row_id.clone());
+                apply_node_state(&transaction, &row_id, state)?;
+            }
+            "notes_attachments" => {
+                if let Some(node_id) = apply_attachment_state(&transaction, &row_id, state)? {
+                    affected_nodes.insert(node_id);
+                }
+            }
+            _ => return Err(format!("Unsupported Notes history table {table_name}.")),
+        }
+    }
+    rebuild_derived_for_nodes(&transaction, &affected_nodes)?;
+    transaction
+        .execute(
+            "UPDATE notes_history_entries SET is_undone = ?1 WHERE id = ?2",
+            params![undoing, entry_id],
+        )
+        .map_err(|error| format!("Could not advance Notes history replay: {error}"))?;
+    let workspace = load_workspace(&transaction, scope)?;
+    let status = history_status(&transaction, session_id)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit Notes history replay: {error}"))?;
+    Ok(NotesHistoryReplayResult {
+        workspace,
+        replayed_entry_id: Some(entry_id),
+        can_undo: status.can_undo,
+        can_redo: status.can_redo,
+    })
+}
+
+pub(crate) fn undo(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    replay(connection, session_id, scope, true)
+}
+
+pub(crate) fn redo(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    replay(connection, session_id, scope, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        clear_history, history_status, redo, undo, with_history_transaction, HISTORY_MAX_BYTES,
+        HISTORY_MAX_ENTRIES,
+    };
+    use crate::notes::repository::{
+        archive_node, connect_notes_db, create_node, delete_database, duplicate_node, empty_trash,
+        list_tags, load_workspace, move_node, restore_node, search_nodes, soft_delete_node,
+        split_node, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
+    };
+    use crate::notes::types::{
+        CreateNodeInput, MoveNodeInput, NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope,
+        SplitNodeInput, UpdateNodeInput,
+    };
+    use rusqlite::{params, Connection};
+
+    const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const CHILD_ID: &str = "22222222-2222-4222-8222-222222222222";
+    const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
+    const SESSION_ID: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+    fn history_context(index: usize, command_kind: &str) -> NotesHistoryContext {
+        NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            entry_id: format!("00000000-0000-4000-8000-{index:012x}"),
+            command_kind: command_kind.to_string(),
+        }
+    }
+
+    fn create_input(
+        id: &str,
+        parent_id: Option<&str>,
+        after_id: Option<&str>,
+        title: &str,
+    ) -> CreateNodeInput {
+        CreateNodeInput {
+            id: id.to_string(),
+            parent_id: parent_id.map(str::to_string),
+            after_id: after_id.map(str::to_string),
+            title: title.to_string(),
+            note: String::new(),
+        }
+    }
+
+    fn active(connection: &Connection) -> NotesWorkspace {
+        load_workspace(connection, NotesWorkspaceScope::Active).expect("active workspace")
+    }
+
+    fn journal(
+        connection: &mut Connection,
+        context: &NotesHistoryContext,
+        operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
+    ) -> Result<NotesWorkspace, String> {
+        with_history_transaction(connection, Some(context), operation)
+    }
+
+    fn entry_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("history entry count")
+    }
+
+    #[test]
+    fn notes_history_create_undo_redo_and_forward_mutation_ordering_are_authoritative() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let create_context = history_context(1, "create");
+
+        journal(&mut connection, &create_context, |connection| {
+            create_node(connection, create_input(NODE_ID, None, None, "Created"))
+        })
+        .expect("journaled create");
+        assert_eq!(active(&connection).nodes.len(), 1);
+        assert_eq!(
+            history_status(&connection, SESSION_ID)
+                .expect("status")
+                .can_undo,
+            true
+        );
+
+        let undone = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(create_context.entry_id.as_str())
+        );
+        assert!(undone.workspace.nodes.is_empty());
+        assert!(!undone.can_undo);
+        assert!(undone.can_redo);
+
+        let redone = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo");
+        assert_eq!(
+            redone.replayed_entry_id.as_deref(),
+            Some(create_context.entry_id.as_str())
+        );
+        assert_eq!(redone.workspace.nodes[0].title, "Created");
+        assert!(redone.can_undo);
+        assert!(!redone.can_redo);
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo again");
+        let replacement = history_context(2, "create");
+        journal(&mut connection, &replacement, |connection| {
+            create_node(
+                connection,
+                create_input(CHILD_ID, None, None, "Replacement"),
+            )
+        })
+        .expect("new forward mutation");
+        let status = history_status(&connection, SESSION_ID).expect("status after replacement");
+        assert!(status.can_undo);
+        assert!(!status.can_redo, "a forward mutation must invalidate redo");
+    }
+
+    #[test]
+    fn notes_history_coalesces_text_updates_with_the_same_entry_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let context = history_context(1, "updateText");
+
+        for title in ["Middle", "After"] {
+            journal(&mut connection, &context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                    },
+                )
+            })
+            .expect("coalesced update");
+        }
+
+        assert_eq!(entry_count(&connection), 1);
+        let change_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("change count");
+        assert_eq!(change_count, 1);
+        assert_eq!(
+            undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect("undo")
+                .workspace
+                .nodes[0]
+                .title,
+            "Before"
+        );
+        assert_eq!(
+            redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect("redo")
+                .workspace
+                .nodes[0]
+                .title,
+            "After"
+        );
+    }
+
+    #[test]
+    fn notes_history_replays_split_and_move_with_sibling_rebalance() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, "AlphaBeta"),
+        )
+        .expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, None, Some(NODE_ID), "Second"),
+        )
+        .expect("second");
+        create_node(
+            &mut connection,
+            create_input(THIRD_ID, None, Some(CHILD_ID), "Third"),
+        )
+        .expect("third");
+
+        let split_context = history_context(1, "split");
+        journal(&mut connection, &split_context, |connection| {
+            split_node(
+                connection,
+                SplitNodeInput {
+                    id: NODE_ID.to_string(),
+                    new_node_id: "44444444-4444-4444-8444-444444444444".to_string(),
+                    prefix: "Alpha".to_string(),
+                    suffix: "Beta".to_string(),
+                },
+            )
+        })
+        .expect("split");
+        let after_split = active(&connection);
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo split");
+        assert_eq!(
+            active(&connection)
+                .nodes
+                .iter()
+                .map(|node| node.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["AlphaBeta", "Second", "Third"]
+        );
+        assert_eq!(
+            redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect("redo split")
+                .workspace,
+            after_split
+        );
+
+        connection.execute("UPDATE notes_nodes SET sort_key = CASE id WHEN ?1 THEN 1 WHEN ?2 THEN 2 ELSE 3 END", params![NODE_ID, CHILD_ID]).expect("force exhausted gaps");
+        let before_move = active(&connection);
+        let move_context = history_context(2, "move");
+        journal(&mut connection, &move_context, |connection| {
+            move_node(
+                connection,
+                MoveNodeInput {
+                    id: THIRD_ID.to_string(),
+                    parent_id: None,
+                    after_id: None,
+                    before_id: Some(CHILD_ID.to_string()),
+                },
+            )
+        })
+        .expect("rebalance move");
+        let after_move = active(&connection);
+        let changed_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
+                [&move_context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("rebalanced row snapshots");
+        assert!(
+            changed_rows >= 4,
+            "the move must snapshot rebalanced siblings"
+        );
+        assert_eq!(after_move.nodes[1].id, THIRD_ID);
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo move");
+        assert_eq!(active(&connection), before_move);
+        assert_eq!(
+            redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect("redo move")
+                .workspace,
+            after_move
+        );
+    }
+
+    #[test]
+    fn notes_history_replays_toggles_and_duplicate_in_reverse_then_forward_order() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+        )
+        .expect("child");
+
+        for (index, kind) in ["complete", "collapse", "star"].into_iter().enumerate() {
+            let context = history_context(index + 1, kind);
+            journal(&mut connection, &context, |connection| match kind {
+                "complete" => toggle_complete(connection, NODE_ID),
+                "collapse" => toggle_collapsed(connection, NODE_ID),
+                _ => toggle_star(connection, NODE_ID),
+            })
+            .expect("toggle");
+        }
+        let duplicate_context = history_context(4, "duplicate");
+        journal(&mut connection, &duplicate_context, |connection| {
+            duplicate_node(connection, NODE_ID)
+        })
+        .expect("duplicate");
+        assert_eq!(active(&connection).nodes.len(), 4);
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo duplicate");
+        assert_eq!(active(&connection).nodes.len(), 2);
+        for expected in [
+            (true, true, false),
+            (true, false, false),
+            (false, false, false),
+        ] {
+            let replay = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+                .expect("undo toggle");
+            let root = replay
+                .workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == NODE_ID)
+                .expect("root");
+            assert_eq!(
+                (
+                    root.completed_at.is_some(),
+                    root.is_collapsed,
+                    root.is_starred
+                ),
+                expected
+            );
+        }
+        for _ in 0..4 {
+            redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo command");
+        }
+        assert_eq!(active(&connection).nodes.len(), 4);
+    }
+
+    #[test]
+    fn notes_history_replays_trash_restore_archive_and_unarchive() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+        )
+        .expect("child");
+
+        let trash_context = history_context(1, "trash");
+        journal(&mut connection, &trash_context, |connection| {
+            soft_delete_node(connection, NODE_ID)
+        })
+        .expect("trash");
+        assert!(active(&connection).nodes.is_empty());
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo trash");
+        assert_eq!(active(&connection).nodes.len(), 2);
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Trash).expect("redo trash");
+
+        let restore_context = history_context(2, "restore");
+        journal(&mut connection, &restore_context, |connection| {
+            restore_node(connection, NODE_ID)
+        })
+        .expect("restore");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Trash).expect("undo restore");
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo restore");
+
+        let archive_context = history_context(3, "archive");
+        journal(&mut connection, &archive_context, |connection| {
+            archive_node(connection, NODE_ID)
+        })
+        .expect("archive");
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Archive)
+                .expect("archive")
+                .nodes
+                .len(),
+            2
+        );
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo archive");
+        let unarchive_seed = history_context(4, "archive");
+        journal(&mut connection, &unarchive_seed, |connection| {
+            archive_node(connection, NODE_ID)
+        })
+        .expect("archive again");
+        let unarchive_context = history_context(5, "unarchive");
+        journal(&mut connection, &unarchive_context, |connection| {
+            unarchive_node(connection, NODE_ID)
+        })
+        .expect("unarchive");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Archive).expect("undo unarchive");
+        assert_eq!(
+            load_workspace(&connection, NotesWorkspaceScope::Archive)
+                .expect("archive")
+                .nodes
+                .len(),
+            2
+        );
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo unarchive");
+        assert_eq!(active(&connection).nodes.len(), 2);
+    }
+
+    #[test]
+    fn notes_history_rebuilds_search_tags_and_clears_derived_dates_on_replay() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, "Before #before"),
+        )
+        .expect("seed");
+        let context = history_context(1, "updateText");
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "After #after".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("update");
+        connection.execute(
+            "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, normalized_start, normalized_end, token_text) VALUES (?1, 'title', 0, 5, '2026-01-01', '2026-01-01', 'stale')",
+            [NODE_ID],
+        ).expect("seed stale derived date");
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo");
+        assert_eq!(list_tags(&connection).expect("tags"), vec!["before"]);
+        assert_eq!(
+            search_nodes(&connection, "Before")
+                .expect("before search")
+                .len(),
+            1
+        );
+        assert!(search_nodes(&connection, "After")
+            .expect("after search")
+            .is_empty());
+        let date_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_dates WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("dates");
+        assert_eq!(date_count, 0);
+
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo");
+        assert_eq!(list_tags(&connection).expect("tags"), vec!["after"]);
+        assert_eq!(
+            search_nodes(&connection, "After")
+                .expect("after search")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn notes_history_failed_mutation_and_invalid_contexts_leave_no_journal() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+        )
+        .expect("child");
+        let before = active(&connection);
+        let context = history_context(1, "move");
+        let error = journal(&mut connection, &context, |connection| {
+            move_node(
+                connection,
+                MoveNodeInput {
+                    id: NODE_ID.to_string(),
+                    parent_id: Some(CHILD_ID.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            )
+        })
+        .expect_err("cycle must fail");
+        assert!(error.contains("descendant"));
+        assert_eq!(active(&connection), before);
+        assert_eq!(entry_count(&connection), 0);
+
+        for invalid in [
+            NotesHistoryContext {
+                session_id: "bad".to_string(),
+                ..history_context(2, "update")
+            },
+            NotesHistoryContext {
+                entry_id: "bad".to_string(),
+                ..history_context(3, "update")
+            },
+            NotesHistoryContext {
+                command_kind: "  ".to_string(),
+                ..history_context(4, "update")
+            },
+        ] {
+            assert!(journal(&mut connection, &invalid, |connection| toggle_star(
+                connection, NODE_ID
+            ))
+            .is_err());
+        }
+        assert_eq!(entry_count(&connection), 0);
+        assert!(history_status(&connection, "bad").is_err());
+    }
+
+    #[test]
+    fn notes_history_enforces_one_hundred_entry_limit_and_fifty_mib_payload_limit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        assert_eq!(HISTORY_MAX_ENTRIES, 100);
+        assert_eq!(HISTORY_MAX_BYTES, 50 * 1024 * 1024);
+
+        for index in 1..=101 {
+            let context = history_context(index, "star");
+            journal(&mut connection, &context, |connection| {
+                toggle_star(connection, NODE_ID)
+            })
+            .expect("toggle");
+        }
+        assert_eq!(entry_count(&connection), 100);
+        let oldest_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_history_entries WHERE id = ?1)",
+                [history_context(1, "star").entry_id],
+                |row| row.get(0),
+            )
+            .expect("oldest exists");
+        assert!(!oldest_exists);
+
+        clear_history(&mut connection, SESSION_ID).expect("clear entry limit history");
+        let large_before = "a".repeat(26 * 1024 * 1024);
+        let large_after = "b".repeat(26 * 1024 * 1024);
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: large_before,
+                note: String::new(),
+            },
+        )
+        .expect("large seed");
+        let context = history_context(200, "updateText");
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: large_after,
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("oversized update remains a successful mutation");
+        assert_eq!(
+            entry_count(&connection),
+            0,
+            "an entry above the payload ceiling is evicted"
+        );
+        assert!(
+            !history_status(&connection, SESSION_ID)
+                .expect("status")
+                .can_undo
+        );
+    }
+
+    #[test]
+    fn notes_history_session_clear_expiry_and_permanent_operations_are_explicit() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let context = history_context(1, "trash");
+        journal(&mut connection, &context, |connection| {
+            soft_delete_node(connection, NODE_ID)
+        })
+        .expect("trash");
+        assert_eq!(
+            clear_history(&mut connection, SESSION_ID).expect("clear"),
+            Default::default()
+        );
+        assert_eq!(entry_count(&connection), 0);
+
+        let context = history_context(2, "restore");
+        journal(&mut connection, &context, |connection| {
+            restore_node(connection, NODE_ID)
+        })
+        .expect("restore");
+        crate::notes::commands::notes_initialize(vault_path.to_string())
+            .expect("expire sessions at initialize");
+        assert_eq!(entry_count(&connection), 0);
+
+        let context = history_context(3, "trash");
+        journal(&mut connection, &context, |connection| {
+            soft_delete_node(connection, NODE_ID)
+        })
+        .expect("trash again");
+        empty_trash(&mut connection).expect("permanent empty trash");
+        assert_eq!(
+            entry_count(&connection),
+            0,
+            "empty trash must invalidate resurrection history"
+        );
+        assert!(load_workspace(&connection, NotesWorkspaceScope::Trash)
+            .expect("trash")
+            .nodes
+            .is_empty());
+        drop(connection);
+        delete_database(vault_path).expect("delete database");
+        assert!(!crate::notes::repository::notes_db_path(vault_path).exists());
+    }
+}

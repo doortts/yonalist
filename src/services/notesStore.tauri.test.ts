@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateNoteNodeInput,
   MoveNoteNodeInput,
+  NotesHistoryContext,
+  NotesHistoryReplayResult,
+  NotesHistoryStatus,
   NotesWorkspace,
   SplitNoteNodeInput,
   UpdateNoteNodeInput
@@ -12,6 +15,8 @@ import {
   notesDeleteDatabase,
   notesDuplicateNode,
   notesEmptyTrash,
+  notesClearHistory,
+  notesHistoryStatus,
   notesInitialize,
   notesListTags,
   notesListTagsWithCounts,
@@ -25,6 +30,8 @@ import {
   notesToggleCollapsed,
   notesToggleComplete,
   notesToggleStar,
+  notesRedo,
+  notesUndo,
   notesUnarchiveNode,
   notesUpdateNode
 } from "./notesStore";
@@ -57,6 +64,11 @@ const workspace: NotesWorkspace = {
       archiveRootId: null
     }
   ]
+};
+const historyContext: NotesHistoryContext = {
+  sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  commandKind: "updateText"
 };
 
 describe("notesStore in Tauri", () => {
@@ -153,7 +165,7 @@ describe("notesStore in Tauri", () => {
         { vaultPath, scope: { kind: "tag", tag: "roadmap" } }
       ],
       ["notes_search", { vaultPath, query: "target" }],
-      ["notes_toggle_star", { vaultPath, nodeId }],
+      ["notes_toggle_star", { vaultPath, nodeId, historyContext: null }],
       ["notes_list_tags", { vaultPath }],
       ["notes_list_tags_with_counts", { vaultPath }],
       ["notes_delete_database", { vaultPath }]
@@ -208,19 +220,23 @@ describe("notesStore in Tauri", () => {
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_create_node", {
       vaultPath,
-      input: createInput
+      input: createInput,
+      historyContext: null
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_update_node", {
       vaultPath,
-      input: updateInput
+      input: updateInput,
+      historyContext: null
     });
     expect(invokeMock).toHaveBeenNthCalledWith(3, "notes_split_node", {
       vaultPath,
-      input: splitInput
+      input: splitInput,
+      historyContext: null
     });
     expect(invokeMock).toHaveBeenNthCalledWith(4, "notes_move_node", {
       vaultPath,
-      input: moveInput
+      input: moveInput,
+      historyContext: null
     });
   });
 
@@ -243,11 +259,13 @@ describe("notesStore in Tauri", () => {
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_move_node", {
       vaultPath,
-      input: beforeInput
+      input: beforeInput,
+      historyContext: null
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_move_node", {
       vaultPath,
-      input: legacyInput
+      input: legacyInput,
+      historyContext: null
     });
   });
 
@@ -263,7 +281,11 @@ describe("notesStore in Tauri", () => {
 
     await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);
 
-    expect(invokeMock).toHaveBeenCalledWith(command, { vaultPath, nodeId });
+    expect(invokeMock).toHaveBeenCalledWith(command, {
+      vaultPath,
+      nodeId,
+      historyContext: null
+    });
   });
 
   it.each([
@@ -274,7 +296,76 @@ describe("notesStore in Tauri", () => {
 
     await expect(adapter(vaultPath, nodeId)).resolves.toBe(workspace);
 
-    expect(invokeMock).toHaveBeenCalledWith(command, { vaultPath, nodeId });
+    expect(invokeMock).toHaveBeenCalledWith(command, {
+      vaultPath,
+      nodeId,
+      historyContext: null
+    });
+  });
+
+  it("passes explicit history context and exposes replay and status commands", async () => {
+    const replay: NotesHistoryReplayResult = {
+      workspace,
+      replayedEntryId: historyContext.entryId,
+      canUndo: false,
+      canRedo: true
+    };
+    const status: NotesHistoryStatus = { canUndo: true, canRedo: false };
+    invokeMock
+      .mockResolvedValueOnce(workspace)
+      .mockResolvedValueOnce(replay)
+      .mockResolvedValueOnce(replay)
+      .mockResolvedValueOnce(status)
+      .mockResolvedValueOnce({ canUndo: false, canRedo: false });
+
+    await expect(
+      notesUpdateNode(
+        vaultPath,
+        { id: nodeId, title: "Journaled", note: "" },
+        historyContext
+      )
+    ).resolves.toBe(workspace);
+    await expect(
+      notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
+    ).resolves.toBe(replay);
+    await expect(
+      notesRedo(vaultPath, historyContext.sessionId, { kind: "trash" })
+    ).resolves.toBe(replay);
+    await expect(
+      notesHistoryStatus(vaultPath, historyContext.sessionId)
+    ).resolves.toBe(status);
+    await expect(
+      notesClearHistory(vaultPath, historyContext.sessionId)
+    ).resolves.toEqual({ canUndo: false, canRedo: false });
+
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "notes_update_node",
+        {
+          vaultPath,
+          input: { id: nodeId, title: "Journaled", note: "" },
+          historyContext
+        }
+      ],
+      [
+        "notes_undo",
+        {
+          vaultPath,
+          sessionId: historyContext.sessionId,
+          scope: { kind: "active" }
+        }
+      ],
+      [
+        "notes_redo",
+        {
+          vaultPath,
+          sessionId: historyContext.sessionId,
+          scope: { kind: "trash" }
+        }
+      ],
+      ["notes_history_status", { vaultPath, sessionId: historyContext.sessionId }],
+      ["notes_clear_history", { vaultPath, sessionId: historyContext.sessionId }]
+    ]);
   });
 
   it("empties trash with only the vault path", async () => {

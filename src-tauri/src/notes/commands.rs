@@ -1,5 +1,8 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::export::{load_export_snapshot, render_markdown, render_pdf};
+use crate::notes::history::{
+    clear_all_history, clear_history, history_status, redo, undo, with_history_transaction,
+};
 use crate::notes::repository::{
     archive_node, connect_notes_db, create_node, delete_database, duplicate_node, empty_trash,
     list_tags, list_tags_with_counts, load_workspace, move_node, open_notes_export_db,
@@ -8,7 +11,8 @@ use crate::notes::repository::{
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchResult, NoteTagSummary,
-    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope,
+    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
+    NotesHistoryReplayResult, NotesHistoryStatus, NotesWorkspace, NotesWorkspaceScope,
     SplitNodeInput, UpdateNodeInput,
 };
 use std::fs;
@@ -17,7 +21,17 @@ use std::path::PathBuf;
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
-    connect_notes_db(&vault_path).map(|_| ())
+    let mut connection = connect_notes_db(&vault_path)?;
+    clear_all_history(&mut connection)
+}
+
+fn run_mutation(
+    vault_path: &str,
+    history_context: Option<NotesHistoryContext>,
+    operation: impl FnOnce(&mut rusqlite::Connection) -> Result<NotesWorkspace, String>,
+) -> Result<NotesWorkspace, String> {
+    let mut connection = connect_notes_db(vault_path)?;
+    with_history_transaction(&mut connection, history_context.as_ref(), operation)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -33,117 +47,181 @@ pub(crate) fn notes_load_workspace(
 pub(crate) fn notes_create_node(
     vault_path: String,
     input: CreateNodeInput,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    create_node(&mut connection, input)
+    run_mutation(&vault_path, history_context, |connection| {
+        create_node(connection, input)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_update_node(
     vault_path: String,
     input: UpdateNodeInput,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    update_node(&mut connection, input)
+    run_mutation(&vault_path, history_context, |connection| {
+        update_node(connection, input)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_split_node(
     vault_path: String,
     input: SplitNodeInput,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    split_node(&mut connection, input)
+    run_mutation(&vault_path, history_context, |connection| {
+        split_node(connection, input)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_move_node(
     vault_path: String,
     input: MoveNodeInput,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    move_node(&mut connection, input)
+    run_mutation(&vault_path, history_context, |connection| {
+        move_node(connection, input)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_toggle_complete(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    toggle_complete(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        toggle_complete(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_toggle_collapsed(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    toggle_collapsed(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        toggle_collapsed(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_toggle_star(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    toggle_star(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        toggle_star(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_duplicate_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    duplicate_node(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        duplicate_node(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_remove_empty_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    remove_empty_node(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        remove_empty_node(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_soft_delete_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    soft_delete_node(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        soft_delete_node(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_restore_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    restore_node(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        restore_node(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_archive_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
-    let mut connection = connect_notes_db(&vault_path)?;
-    archive_node(&mut connection, &node_id)
+    run_mutation(&vault_path, history_context, |connection| {
+        archive_node(connection, &node_id)
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_unarchive_node(
     vault_path: String,
     node_id: String,
+    history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesWorkspace, String> {
+    run_mutation(&vault_path, history_context, |connection| {
+        unarchive_node(connection, &node_id)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_undo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
     let mut connection = connect_notes_db(&vault_path)?;
-    unarchive_node(&mut connection, &node_id)
+    undo(&mut connection, &session_id, scope)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_redo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    let mut connection = connect_notes_db(&vault_path)?;
+    redo(&mut connection, &session_id, scope)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_history_status(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    let connection = connect_notes_db(&vault_path)?;
+    history_status(&connection, &session_id)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_clear_history(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    let mut connection = connect_notes_db(&vault_path)?;
+    clear_history(&mut connection, &session_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -482,6 +560,7 @@ mod tests {
                 title: "Page".to_string(),
                 note: String::new(),
             },
+            None,
         )
         .expect("create");
         assert_active(&workspace);
@@ -493,6 +572,7 @@ mod tests {
                 title: "Updated page".to_string(),
                 note: "Context".to_string(),
             },
+            None,
         )
         .expect("update");
         assert_eq!(workspace.nodes[0].title, "Updated page");
@@ -505,6 +585,7 @@ mod tests {
                 prefix: "First".to_string(),
                 suffix: "Second".to_string(),
             },
+            None,
         )
         .expect("split");
         assert_active(&workspace);
@@ -518,6 +599,7 @@ mod tests {
                 title: String::new(),
                 note: String::new(),
             },
+            None,
         )
         .expect("create empty child");
 
@@ -529,11 +611,12 @@ mod tests {
                 after_id: Some(EMPTY_ID.to_string()),
                 before_id: None,
             },
+            None,
         )
         .expect("move");
         assert_active(&workspace);
 
-        let workspace = notes_toggle_complete(vault_path.clone(), ROOT_ID.to_string())
+        let workspace = notes_toggle_complete(vault_path.clone(), ROOT_ID.to_string(), None)
             .expect("toggle complete");
         assert!(workspace
             .nodes
@@ -543,7 +626,7 @@ mod tests {
             .completed_at
             .is_some());
 
-        let workspace = notes_toggle_collapsed(vault_path.clone(), ROOT_ID.to_string())
+        let workspace = notes_toggle_collapsed(vault_path.clone(), ROOT_ID.to_string(), None)
             .expect("toggle collapsed");
         assert!(
             workspace
@@ -555,17 +638,17 @@ mod tests {
         );
 
         let workspace =
-            notes_duplicate_node(vault_path.clone(), ROOT_ID.to_string()).expect("duplicate");
+            notes_duplicate_node(vault_path.clone(), ROOT_ID.to_string(), None).expect("duplicate");
         assert_eq!(workspace.nodes.len(), 6);
         assert_active(&workspace);
 
-        let workspace = notes_remove_empty_node(vault_path.clone(), EMPTY_ID.to_string())
+        let workspace = notes_remove_empty_node(vault_path.clone(), EMPTY_ID.to_string(), None)
             .expect("remove empty");
         assert_eq!(workspace.nodes.len(), 5);
         assert_active(&workspace);
 
-        let workspace =
-            notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string()).expect("soft delete");
+        let workspace = notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string(), None)
+            .expect("soft delete");
         assert_eq!(workspace.nodes.len(), 4);
         assert_active(&workspace);
         assert_eq!(
@@ -577,11 +660,11 @@ mod tests {
         );
 
         let workspace =
-            notes_restore_node(vault_path.clone(), SPLIT_ID.to_string()).expect("restore");
+            notes_restore_node(vault_path.clone(), SPLIT_ID.to_string(), None).expect("restore");
         assert_eq!(workspace.nodes.len(), 5);
         assert_active(&workspace);
 
-        notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string())
+        notes_soft_delete_node(vault_path.clone(), SPLIT_ID.to_string(), None)
             .expect("soft delete again");
         let workspace = notes_empty_trash(vault_path.clone()).expect("empty trash");
         assert_eq!(workspace.nodes.len(), 4);
@@ -605,6 +688,7 @@ mod tests {
                 title: "#Roadmap target".to_string(),
                 note: String::new(),
             },
+            None,
         )
         .expect("create searchable node");
 
@@ -621,7 +705,7 @@ mod tests {
             vec!["roadmap"]
         );
         assert!(
-            notes_toggle_star(vault_path.clone(), ROOT_ID.to_string())
+            notes_toggle_star(vault_path.clone(), ROOT_ID.to_string(), None)
                 .expect("toggle star")
                 .nodes[0]
                 .is_starred
@@ -644,13 +728,16 @@ mod tests {
                 title: "#Roadmap @Minji".to_string(),
                 note: String::new(),
             },
+            None,
         )
         .expect("create tagged root");
 
-        assert!(notes_archive_node(vault_path.clone(), ROOT_ID.to_string())
-            .expect("archive root")
-            .nodes
-            .is_empty());
+        assert!(
+            notes_archive_node(vault_path.clone(), ROOT_ID.to_string(), None)
+                .expect("archive root")
+                .nodes
+                .is_empty()
+        );
         let archived = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Archive)
             .expect("archive scope");
         assert_eq!(archived.nodes.len(), 1);
@@ -675,8 +762,8 @@ mod tests {
             .expect("archived tag counts")
             .is_empty());
 
-        let active =
-            notes_unarchive_node(vault_path.clone(), ROOT_ID.to_string()).expect("unarchive root");
+        let active = notes_unarchive_node(vault_path.clone(), ROOT_ID.to_string(), None)
+            .expect("unarchive root");
         assert_eq!(active.nodes.len(), 1);
         assert_eq!(
             notes_load_workspace(vault_path.clone(), tag_scope)

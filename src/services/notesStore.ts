@@ -5,6 +5,9 @@ import type {
   NoteId,
   NoteSearchResult,
   NoteTagSummary,
+  NotesHistoryContext,
+  NotesHistoryReplayResult,
+  NotesHistoryStatus,
   NotesStore,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -39,101 +42,145 @@ export function notesLoadWorkspace(
 
 export function notesCreateNode(
   vaultPath: string,
-  input: CreateNoteNodeInput
+  input: CreateNoteNodeInput,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_create_node", { vaultPath, input });
+  return invokeNotes<NotesWorkspace>("notes_create_node", { vaultPath, input, historyContext });
 }
 
 export function notesUpdateNode(
   vaultPath: string,
-  input: UpdateNoteNodeInput
+  input: UpdateNoteNodeInput,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_update_node", { vaultPath, input });
+  return invokeNotes<NotesWorkspace>("notes_update_node", { vaultPath, input, historyContext });
 }
 
 export function notesSplitNode(
   vaultPath: string,
-  input: SplitNoteNodeInput
+  input: SplitNoteNodeInput,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_split_node", { vaultPath, input });
+  return invokeNotes<NotesWorkspace>("notes_split_node", { vaultPath, input, historyContext });
 }
 
 export function notesMoveNode(
   vaultPath: string,
-  input: MoveNoteNodeInput
+  input: MoveNoteNodeInput,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>("notes_move_node", { vaultPath, input });
+  return invokeNotes<NotesWorkspace>("notes_move_node", { vaultPath, input, historyContext });
 }
 
 function invokeNodeMutation(
   command: string,
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNotes<NotesWorkspace>(command, { vaultPath, nodeId });
+  return invokeNotes<NotesWorkspace>(command, { vaultPath, nodeId, historyContext });
 }
 
 export function notesToggleComplete(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_toggle_complete", vaultPath, nodeId);
+  return invokeNodeMutation("notes_toggle_complete", vaultPath, nodeId, historyContext);
 }
 
 export function notesToggleCollapsed(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId);
+  return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId, historyContext);
 }
 
 export function notesToggleStar(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_toggle_star", vaultPath, nodeId);
+  return invokeNodeMutation("notes_toggle_star", vaultPath, nodeId, historyContext);
 }
 
 export function notesDuplicateNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_duplicate_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_duplicate_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesRemoveEmptyNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_remove_empty_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_remove_empty_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesSoftDeleteNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_soft_delete_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_soft_delete_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesRestoreNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_restore_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_restore_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesArchiveNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_archive_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_archive_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesUnarchiveNode(
   vaultPath: string,
-  nodeId: NoteId
+  nodeId: NoteId,
+  historyContext: NotesHistoryContext | null = null
 ): Promise<NotesWorkspace> {
-  return invokeNodeMutation("notes_unarchive_node", vaultPath, nodeId);
+  return invokeNodeMutation("notes_unarchive_node", vaultPath, nodeId, historyContext);
+}
+
+export function notesUndo(
+  vaultPath: string,
+  sessionId: string,
+  scope: NotesWorkspaceScope
+): Promise<NotesHistoryReplayResult> {
+  return invokeNotes<NotesHistoryReplayResult>("notes_undo", { vaultPath, sessionId, scope });
+}
+
+export function notesRedo(
+  vaultPath: string,
+  sessionId: string,
+  scope: NotesWorkspaceScope
+): Promise<NotesHistoryReplayResult> {
+  return invokeNotes<NotesHistoryReplayResult>("notes_redo", { vaultPath, sessionId, scope });
+}
+
+export function notesHistoryStatus(
+  vaultPath: string,
+  sessionId: string
+): Promise<NotesHistoryStatus> {
+  return invokeNotes<NotesHistoryStatus>("notes_history_status", { vaultPath, sessionId });
+}
+
+export function notesClearHistory(
+  vaultPath: string,
+  sessionId: string
+): Promise<NotesHistoryStatus> {
+  return invokeNotes<NotesHistoryStatus>("notes_clear_history", { vaultPath, sessionId });
 }
 
 export function notesEmptyTrash(vaultPath: string): Promise<NotesWorkspace> {
@@ -181,6 +228,10 @@ export const notesStore: NotesStore = {
   restoreNode: notesRestoreNode,
   archiveNode: notesArchiveNode,
   unarchiveNode: notesUnarchiveNode,
+  undo: notesUndo,
+  redo: notesRedo,
+  historyStatus: notesHistoryStatus,
+  clearHistory: notesClearHistory,
   emptyTrash: notesEmptyTrash,
   search: notesSearch,
   listTags: notesListTags,

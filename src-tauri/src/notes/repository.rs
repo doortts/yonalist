@@ -1,3 +1,4 @@
+use crate::notes::history;
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ExportNode, MoveNodeInput, NoteLayoutMode, NoteNode,
     NoteSearchMatchedField, NoteSearchResult, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
@@ -1085,11 +1086,18 @@ fn with_workspace_transaction(
     connection: &mut Connection,
     operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
+    let journaled = history::has_active_context(connection)?;
+    let transaction = if journaled {
+        connection.transaction_with_behavior(TransactionBehavior::Immediate)
+    } else {
+        connection.transaction()
+    }
+    .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
     operation(&transaction)?;
     let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    if journaled {
+        history::finalize_transaction(&transaction)?;
+    }
     transaction
         .commit()
         .map_err(|error| format!("Could not commit the Notes transaction: {error}"))?;
@@ -1346,6 +1354,33 @@ fn replace_tags(
                 params![node_id, prefix.as_str(), tag, normalized_tag],
             )
             .map_err(|error| format!("Could not store Note tags: {error}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn rebuild_derived_for_nodes(
+    transaction: &Transaction<'_>,
+    node_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    for node_id in node_ids {
+        transaction
+            .execute("DELETE FROM notes_dates WHERE node_id = ?1", [node_id])
+            .map_err(|error| {
+                format!("Could not rebuild Note dates after history replay: {error}")
+            })?;
+        let content = transaction
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [node_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| {
+                format!("Could not read Note content after history replay: {error}")
+            })?;
+        if let Some((title, note)) = content {
+            replace_tags(transaction, node_id, &title, &note)?;
+        }
     }
     Ok(())
 }
@@ -1992,6 +2027,7 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
         transaction
             .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
             .map_err(|error| format!("Could not permanently empty Notes trash: {error}"))?;
+        history::clear_all_history_in_transaction(transaction)?;
         Ok(())
     })
 }

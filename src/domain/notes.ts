@@ -22,6 +22,22 @@ export interface NotesWorkspace {
   nodes: NoteNode[];
 }
 
+export interface NotesHistoryContext {
+  sessionId: string;
+  entryId: string;
+  commandKind: string;
+}
+
+export interface NotesHistoryStatus {
+  canUndo: boolean;
+  canRedo: boolean;
+}
+
+export interface NotesHistoryReplayResult extends NotesHistoryStatus {
+  workspace: NotesWorkspace;
+  replayedEntryId: string | null;
+}
+
 export type NoteTagPrefix = "#" | "@";
 
 export interface NoteTagFilter {
@@ -86,19 +102,23 @@ export interface SplitNoteNodeInput {
 export interface NotesStore {
   initialize(vaultPath: string): Promise<void>;
   loadWorkspace(vaultPath: string, scope: NotesWorkspaceScope): Promise<NotesWorkspace>;
-  createNode(vaultPath: string, input: CreateNoteNodeInput): Promise<NotesWorkspace>;
-  updateNode(vaultPath: string, input: UpdateNoteNodeInput): Promise<NotesWorkspace>;
-  splitNode(vaultPath: string, input: SplitNoteNodeInput): Promise<NotesWorkspace>;
-  moveNode(vaultPath: string, input: MoveNoteNodeInput): Promise<NotesWorkspace>;
-  toggleComplete(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  toggleCollapsed(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  toggleStar(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  duplicateNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  removeEmptyNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  softDeleteNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  restoreNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  archiveNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
-  unarchiveNode(vaultPath: string, nodeId: NoteId): Promise<NotesWorkspace>;
+  createNode(vaultPath: string, input: CreateNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  updateNode(vaultPath: string, input: UpdateNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  splitNode(vaultPath: string, input: SplitNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  moveNode(vaultPath: string, input: MoveNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  toggleComplete(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  toggleCollapsed(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  toggleStar(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  duplicateNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  removeEmptyNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  softDeleteNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  restoreNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  archiveNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  unarchiveNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesWorkspace>;
+  undo?(vaultPath: string, sessionId: string, scope: NotesWorkspaceScope): Promise<NotesHistoryReplayResult>;
+  redo?(vaultPath: string, sessionId: string, scope: NotesWorkspaceScope): Promise<NotesHistoryReplayResult>;
+  historyStatus?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
+  clearHistory?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
   emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
   search(vaultPath: string, query: string): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
