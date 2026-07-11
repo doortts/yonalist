@@ -29,7 +29,7 @@ use std::sync::mpsc::Sender;
 const NOTES_SCHEMA_VERSION: i64 = 3;
 const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
 const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
-const NOTE_DATE_PARSER_VERSION: i64 = 1;
+const NOTE_DATE_PARSER_VERSION: i64 = 2;
 const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
 const NOTE_LIFECYCLE_SEARCH_VERSION: i64 = 1;
 const NOTE_LIFECYCLE_SEARCH_VERSION_KEY: &str = "derived.lifecycleSearchVersion";
@@ -3893,6 +3893,150 @@ mod tests {
             })
             .expect("idempotent date rebuild count");
         assert_eq!(second_rewrite_count, first_rewrite_count);
+        let version: String = connection
+            .query_row(
+                "SELECT value_json FROM notes_preferences \
+                 WHERE key = 'derived.dateParserVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("current date parser version marker");
+        assert_eq!(version, "2");
+    }
+
+    #[test]
+    fn version_three_initialization_upgrades_stored_v1_dates_without_mutating_source() {
+        let mut connection = test_connection();
+        let title = "Plan 07/11 - 7/14 then 07/15/2026";
+        let note = "Window 07/20/2026 - 07/22/2026";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
+                 VALUES (?1, 1024, ?2, ?3, '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, title, note],
+            )
+            .expect("insert stored-v1 date node");
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
+                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                   normalized_start, normalized_end, token_text) VALUES \
+                   ('{NODE_ID}', 'title', 5, 10, '2026-07-11', '2026-07-11', '07/11'), \
+                   ('{NODE_ID}', 'note', 7, 17, '1999-01-01', '1999-01-01', 'stale-note'); \
+                 UPDATE notes_preferences SET value_json = '1' \
+                 WHERE key = 'derived.dateParserVersion';"
+            ))
+            .expect("seed stored-v1 stale date rows");
+        connection
+            .execute_batch(
+                "CREATE TABLE v1_date_rebuild_audit (operation TEXT NOT NULL); \
+                 CREATE TRIGGER audit_v1_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
+                   INSERT INTO v1_date_rebuild_audit VALUES ('delete'); \
+                 END; \
+                 CREATE TRIGGER audit_v1_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
+                   INSERT INTO v1_date_rebuild_audit VALUES ('insert'); \
+                 END;",
+            )
+            .expect("install stored-v1 rebuild audit");
+
+        initialize_notes_db(&mut connection).expect("upgrade stored-v1 date index");
+
+        assert_eq!(
+            date_rows(&connection, NODE_ID),
+            vec![
+                (
+                    "title".to_string(),
+                    23,
+                    33,
+                    "2026-07-15".to_string(),
+                    "2026-07-15".to_string(),
+                    "07/15/2026".to_string(),
+                ),
+                (
+                    "note".to_string(),
+                    7,
+                    30,
+                    "2026-07-20".to_string(),
+                    "2026-07-22".to_string(),
+                    "07/20/2026 - 07/22/2026".to_string(),
+                ),
+            ]
+        );
+        let stored_source: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("unchanged stored-v1 source");
+        assert_eq!(stored_source, (title.to_string(), note.to_string()));
+        let version: String = connection
+            .query_row(
+                "SELECT value_json FROM notes_preferences \
+                 WHERE key = 'derived.dateParserVersion'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("upgraded date parser marker");
+        assert_eq!(version, "2");
+        let first_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM v1_date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("stored-v1 rebuild count");
+        assert_eq!(first_rewrite_count, 4);
+
+        initialize_notes_db(&mut connection).expect("idempotent stored-v1 upgrade");
+        let second_rewrite_count: i64 = connection
+            .query_row("SELECT count(*) FROM v1_date_rebuild_audit", [], |row| {
+                row.get(0)
+            })
+            .expect("idempotent stored-v1 rebuild count");
+        assert_eq!(second_rewrite_count, first_rewrite_count);
+    }
+
+    #[test]
+    fn version_three_date_upgrade_failure_rolls_back_rows_marker_and_source() {
+        let mut connection = test_connection();
+        let title = "Plan 07/11 - 7/14 then 07/15/2026";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
+                 VALUES (?1, 1024, ?2, '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, title],
+            )
+            .expect("insert failing stored-v1 date node");
+        connection
+            .execute_batch(&format!(
+                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
+                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
+                   normalized_start, normalized_end, token_text) \
+                 VALUES ('{NODE_ID}', 'title', 5, 10, '2026-07-11', '2026-07-11', '07/11'); \
+                 UPDATE notes_preferences SET value_json = '1' \
+                 WHERE key = 'derived.dateParserVersion'; \
+                 CREATE TRIGGER reject_v1_date_upgrade BEFORE INSERT ON notes_dates \
+                 WHEN NEW.token_text = '07/15/2026' \
+                 BEGIN SELECT RAISE(ABORT, 'stored-v1 date upgrade rejected'); END;"
+            ))
+            .expect("seed rejected stored-v1 upgrade");
+        let stale_rows = date_rows(&connection, NODE_ID);
+
+        let error = initialize_notes_db(&mut connection).expect_err("date upgrade must fail");
+
+        assert!(error.contains("stored-v1 date upgrade rejected"), "{error}");
+        assert_eq!(date_rows(&connection, NODE_ID), stale_rows);
+        let preserved: (String, String) = connection
+            .query_row(
+                "SELECT node.title, preference.value_json \
+                 FROM notes_nodes node CROSS JOIN notes_preferences preference \
+                 WHERE node.id = ?1 AND preference.key = 'derived.dateParserVersion'",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("rolled-back date upgrade state");
+        assert_eq!(preserved, (title.to_string(), "1".to_string()));
     }
 
     #[test]
