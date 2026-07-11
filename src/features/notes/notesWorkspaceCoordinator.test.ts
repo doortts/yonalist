@@ -261,6 +261,50 @@ describe("notesWorkspaceCoordinator registry", () => {
     sibling.close();
   });
 
+  it("broadcasts an atomic projection failure as a scope invalidation", async () => {
+    const confirmed = workspace([node({ id: "committed" })]);
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const ownerEvents = vi.fn();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/projection-failure",
+      onEvent: ownerEvents,
+      getScope: () => ({ kind: "starred" })
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/projection-failure",
+      onEvent: siblingEvents,
+      getScope: () => ({ kind: "starred" })
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    ownerEvents.mockClear();
+    siblingEvents.mockClear();
+
+    await owner.enqueue(() => ({
+      kind: "failure" as const,
+      error: "Projection reload failed",
+      workspace: confirmed,
+      historyStatus: { canUndo: true, canRedo: false },
+      scopeAgnostic: true
+    }));
+
+    expect(siblingEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "synchronized",
+        sourceScope: null,
+        result: expect.objectContaining({
+          workspace: confirmed,
+          historyStatus: { canUndo: true, canRedo: false }
+        })
+      })
+    );
+    owner.close();
+    sibling.close();
+  });
+
   it("does not clear sibling pending state when another owner settles", async () => {
     const ownerWork = deferred<NotesWorkspace>();
     const siblingWork = deferred<NotesWorkspace>();

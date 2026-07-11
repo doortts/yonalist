@@ -7,7 +7,12 @@ import {
   type PropsWithChildren
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
+import type {
+  NoteNode,
+  NotesMutationResult,
+  NotesStore,
+  NotesWorkspace
+} from "../../domain/notes";
 import {
   useNotesWorkspace,
   type NotesWorkspaceActions,
@@ -687,6 +692,111 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.root.title).toBe("Updated");
     expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
   });
+
+  it.each(["split", "move", "remove"] as const)(
+    "discards a %s inline snapshot when its atomic history entry is null",
+    async (operation) => {
+      const initial = workspace([
+        node({ id: "source", title: operation === "remove" ? "" : "before" }),
+        node({ id: "target", sortKey: 2048 }),
+        node({ id: "other", sortKey: 3072 })
+      ]);
+      const inlineWorkspace = workspace([
+        node({ id: "source", title: operation === "remove" ? "" : "edited" }),
+        node({ id: "target", sortKey: 2048 }),
+        node({ id: "other", sortKey: 3072 })
+      ]);
+      const finalWorkspace = workspace([
+        ...(operation === "remove"
+          ? []
+          : [
+              node({
+                id: "source",
+                title: "edited",
+                parentId: operation === "move" ? "target" : null
+              })
+            ]),
+        node({ id: "target", sortKey: 2048 }),
+        node({ id: "other", sortKey: 3072 }),
+        ...(operation === "split"
+          ? [node({ id: "split", sortKey: 4096 })]
+          : [])
+      ]);
+      const updateNode = vi.fn().mockResolvedValue({
+        workspace: inlineWorkspace,
+        historyEntryId: null,
+        canUndo: false,
+        canRedo: false
+      });
+      const structuralMutation = vi.fn((_vaultRoot, _input, context) =>
+        Promise.resolve({
+          workspace: finalWorkspace,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      );
+      const undo = vi.fn(async () => ({
+        workspace: finalWorkspace,
+        replayedEntryId: updateNode.mock.calls[0]?.[2]?.entryId ?? null,
+        canUndo: false,
+        canRedo: true
+      }));
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        updateNode,
+        ...(operation === "split" ? { splitNode: structuralMutation } : {}),
+        ...(operation === "move" ? { moveNode: structuralMutation } : {}),
+        ...(operation === "remove"
+          ? { removeEmptyNode: structuralMutation }
+          : {}),
+        undo
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/null-inline-${operation}`,
+          repository: store
+        })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () => result.current.actions.focusNode("source"));
+
+      await act(async () => {
+        if (operation === "split") {
+          await result.current.actions.splitNode(
+            "source",
+            "split",
+            "edited",
+            "",
+            { draft: { title: "edited", note: "" } }
+          );
+        } else if (operation === "move") {
+          await result.current.actions.moveNode(
+            { id: "source", parentId: "target", afterId: null },
+            "source",
+            { draft: { title: "edited", note: "" } }
+          );
+        } else {
+          await result.current.actions.removeEmptyNode("source", "target", {
+            draft: { title: "", note: "" }
+          });
+        }
+      });
+
+      const inlineEntryId = updateNode.mock.calls[0]?.[2]?.entryId;
+      expect(inlineEntryId).toEqual(expect.any(String));
+      expect(structuralMutation.mock.calls[0]?.[2]?.entryId).not.toBe(
+        inlineEntryId
+      );
+
+      await act(async () => result.current.actions.focusNode("other"));
+      await act(async () => result.current.actions.undo!());
+      expect(result.current.state).toMatchObject({
+        selectedId: "other",
+        pendingFocusId: "other"
+      });
+    }
+  );
 
   it("keeps the committed text snapshot when a later split step fails", async () => {
     const active = workspace([node({ id: "other" })]);
@@ -1663,6 +1773,120 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.nodesById.outside).toBeUndefined();
     expect(result.current.state.nodesById.split).toBeUndefined();
   });
+
+  it.each(["update", "toggle", "duplicate", "restore"] as const)(
+    "retains atomic %s authority when a non-active projection reload fails",
+    async (operation) => {
+      const deletedAt = "2026-07-12T00:00:00Z";
+      const root = node({
+        id: "root",
+        title: "Before",
+        isStarred: true,
+        deletedAt: operation === "restore" ? deletedAt : null
+      });
+      const activeBefore = workspace([
+        operation === "restore" ? node({ ...root, deletedAt: null }) : root,
+        node({ id: "outside", sortKey: 2048 })
+      ]);
+      const scopedBefore = workspace([root]);
+      const atomicWorkspace = workspace([
+        node({
+          ...root,
+          title: operation === "update" ? "After" : root.title,
+          isCollapsed: operation === "toggle",
+          deletedAt: null
+        }),
+        node({ id: "outside", sortKey: 2048 }),
+        ...(operation === "duplicate"
+          ? [node({ id: "copy", sortKey: 3072, isStarred: true })]
+          : [])
+      ]);
+      let rejectProjection = false;
+      const loadWorkspace = vi.fn(async (_vaultRoot, scope) => {
+        if (scope.kind !== "active") {
+          if (rejectProjection) {
+            throw new Error("Projection reload failed");
+          }
+          return scopedBefore;
+        }
+        return activeBefore;
+      });
+      const atomicMutation = vi.fn((_vaultRoot, _input, context) =>
+        Promise.resolve({
+          workspace: atomicWorkspace,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      );
+      const historyStatus = vi
+        .fn()
+        .mockResolvedValue({ canUndo: false, canRedo: false });
+      const undo = vi.fn(async () => ({
+        workspace: scopedBefore,
+        replayedEntryId: atomicMutation.mock.calls[0]?.[2]?.entryId ?? null,
+        canUndo: false,
+        canRedo: true
+      }));
+      const store = repository({
+        loadWorkspace,
+        ...(operation === "update" ? { updateNode: atomicMutation } : {}),
+        ...(operation === "toggle"
+          ? { toggleComplete: atomicMutation }
+          : {}),
+        ...(operation === "duplicate"
+          ? { duplicateNode: atomicMutation }
+          : {}),
+        ...(operation === "restore" ? { restoreNode: atomicMutation } : {}),
+        historyStatus,
+        undo
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({
+          vaultRoot: `/projection-${operation}`,
+          repository: store
+        })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () =>
+        result.current.actions.selectLibraryView(
+          operation === "restore" ? "trash" : "starred"
+        )
+      );
+      await act(async () => result.current.actions.focusNode("root"));
+      const historyStatusCallsBeforeMutation = historyStatus.mock.calls.length;
+      rejectProjection = true;
+
+      await act(async () => {
+        if (operation === "update") {
+          await result.current.actions.updateNode("root", {
+            title: "After",
+            note: ""
+          });
+        } else if (operation === "toggle") {
+          await result.current.actions.toggleComplete("root");
+        } else if (operation === "duplicate") {
+          await result.current.actions.duplicateNode("root");
+        } else {
+          await result.current.actions.restoreNode("root");
+        }
+      });
+
+      expect(result.current.error).toBe("Projection reload failed");
+      expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
+      expect(result.current.state.nodesById.outside).toBeDefined();
+      expect(historyStatus).toHaveBeenCalledTimes(
+        historyStatusCallsBeforeMutation
+      );
+
+      await act(async () => result.current.actions.focusNode("outside"));
+      await act(async () => result.current.actions.undo!());
+      expect(result.current.state).toMatchObject({
+        selectedId: "root",
+        pendingFocusId: "root"
+      });
+    }
+  );
 
   it("routes plain and validated structured search queries to their matching APIs", async () => {
     const search = vi.fn().mockResolvedValue([]);
@@ -2848,6 +3072,112 @@ describe("useNotesWorkspace", () => {
     });
     expect(result.current.canUndo).toBe(false);
     expect(result.current.canRedo).toBe(true);
+  });
+
+  it("separates a fast title-to-note transition into field-aware Undo entries", async () => {
+    const initial = workspace([
+      node({ id: "root", title: "before", note: "before note" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const titleSaved = workspace([
+      node({ id: "root", title: "title edit", note: "before note" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const noteSaved = workspace([
+      node({ id: "root", title: "title edit", note: "note edit" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const titleWrite = deferred<NotesMutationResult>();
+    const noteWrite = deferred<NotesMutationResult>();
+    const updateNode = vi
+      .fn()
+      .mockReturnValueOnce(titleWrite.promise)
+      .mockReturnValueOnce(noteWrite.promise);
+    let undoIndex = 0;
+    const undo = vi.fn(async () => {
+      const callIndex = undoIndex++;
+      return {
+        workspace: callIndex === 0 ? titleSaved : initial,
+        replayedEntryId:
+          updateNode.mock.calls[callIndex === 0 ? 1 : 0]?.[2]?.entryId ?? null,
+        canUndo: callIndex === 0,
+        canRedo: true
+      };
+    });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/field-transition", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "root",
+        { title: "title edit", note: "before note" },
+        "title"
+      );
+    });
+    let titleFlush!: Promise<boolean>;
+    act(() => {
+      titleFlush = result.current.actions.flushNodeDraft("root");
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+
+    act(() => {
+      result.current.actions.updateNodeDraft(
+        "root",
+        { title: "title edit", note: "note edit" },
+        "note"
+      );
+    });
+    const titleContext = updateNode.mock.calls[0]?.[2];
+    await act(async () => {
+      titleWrite.resolve({
+        workspace: titleSaved,
+        historyEntryId: titleContext?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      });
+      await titleFlush;
+    });
+
+    let noteFlush!: Promise<boolean>;
+    act(() => {
+      noteFlush = result.current.actions.flushNodeDraft("root");
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledTimes(2));
+    const noteContext = updateNode.mock.calls[1]?.[2];
+    await act(async () => {
+      noteWrite.resolve({
+        workspace: noteSaved,
+        historyEntryId: noteContext?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      });
+      await noteFlush;
+    });
+
+    expect(titleContext?.entryId).not.toBe(noteContext?.entryId);
+
+    await act(async () => result.current.actions.focusNode("other"));
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "note"
+    });
+
+    await act(async () => result.current.actions.focusNode("other"));
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "root",
+      pendingFocusId: "root",
+      pendingFocusField: "title"
+    });
   });
 
   it("applies replayed backend data and normalizes live UI without a snapshot", async () => {

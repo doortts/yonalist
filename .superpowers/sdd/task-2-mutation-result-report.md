@@ -96,3 +96,44 @@ direct mutation failed to install the wrapped workspace/status.
   wrapped.
 - Tag, date, image UI behavior and attachment storage safety behavior were not
   changed.
+
+## Final Review Closure
+
+### Findings Fixed
+
+- Text bursts are keyed by `(nodeId, field)`. A history-enabled title-to-note or
+  note-to-title transition closes and flushes the prior burst before allocating the
+  next entry, including when the prior blur flush is still pending. Legacy stores
+  without history support retain their existing combined draft-save behavior.
+- A direct atomic mutation remains authoritative if a selected-scope projection
+  reload fails. The hook retains the atomic workspace, actual entry ID, and status,
+  completes the committed snapshot, reports the projection error, and broadcasts a
+  scope-agnostic invalidation. It does not issue a post-mutation status query.
+- Compound split, move, and remove settlement uses only actual committed entry IDs
+  returned by atomic steps. An inline result with a null or pruned entry ID discards
+  its pending UI snapshot and owner instead of completing frontend-only history.
+
+### Review TDD Evidence
+
+- Field identity RED: 2 expected failures among 106 tests; the pure history session
+  and fast title-to-note hook both reused the title entry for the note.
+- Projection authority RED: 5 expected failures among 116 tests; update, complete,
+  duplicate, and restore lost atomic status, and the coordinator broadcast the
+  failure as selected-scope data.
+- Null inline RED: 3 expected failures among 104 hook tests; split and move restored
+  stale source focus, while remove restored an invalid deleted-source snapshot.
+- Combined GREEN: history, coordinator, and hook focused run passed 128 tests.
+- Legacy compatibility GREEN: the pre-existing stale-response UI test and 15 focused
+  field/projection/null tests passed after limiting immediate field flushes to stores
+  with an actual history context.
+
+### Final Verification
+
+- All Notes frontend/domain/adapter tests: 24 files, 637 passed.
+- Production build: passed; TypeScript and Vite completed with 2,290 modules.
+- Rust history: 17 passed; Rust commands: 21 passed; all Rust Notes: 157 passed.
+- Rust formatting: passed.
+- Strict all-target Clippy stopped only on the five documented baseline lint classes.
+  The all-target `-D warnings` run allowing only those classes passed.
+- Task-owned diff whitespace validation passed. Unrelated in-progress date/export
+  changes in the shared worktree were preserved and excluded from the Task 2 commit.

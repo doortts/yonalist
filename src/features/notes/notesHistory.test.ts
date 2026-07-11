@@ -76,6 +76,27 @@ describe("notes history session", () => {
     expect(next.entryId).toBe(ids[2]);
   });
 
+  it("closes the active burst when editing switches fields on the same node", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+
+    const title = history.beginTextBurst(
+      "node-a",
+      snapshot("node-a", "title")
+    );
+    const continuedTitle = history.beginTextBurst(
+      "node-a",
+      snapshot("node-a", "title")
+    );
+    const note = history.beginTextBurst(
+      "node-a",
+      snapshot("node-a", "note")
+    );
+
+    expect(continuedTitle.entryId).toBe(title.entryId);
+    expect(note.entryId).not.toBe(title.entryId);
+    expect(note.entryId).toBe(ids[2]);
+  });
+
   it("closes text before allocating a distinct structural entry", () => {
     const history = createNotesHistorySession({ createId: idFactory() });
     const text = history.beginTextBurst("node-a", snapshot("node-a"));

@@ -221,6 +221,55 @@ async function workspaceForScope(
     : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
+interface ProjectedNotesMutation {
+  workspace: NotesWorkspace;
+  projectionError?: string;
+}
+
+async function projectNotesMutation(
+  context: NotesWorkspaceQueueContext,
+  mutation: UnwrappedNotesMutation,
+  scope: NotesWorkspaceScope
+): Promise<ProjectedNotesMutation> {
+  try {
+    return {
+      workspace: await workspaceForScope(context, mutation.workspace, scope)
+    };
+  } catch (cause) {
+    if (!mutation.atomic) {
+      throw cause;
+    }
+    return {
+      workspace: mutation.workspace,
+      projectionError: errorMessage(cause)
+    };
+  }
+}
+
+function directMutationResult(
+  mutation: UnwrappedNotesMutation,
+  projection: ProjectedNotesMutation,
+  uiUpdate?: NotesWorkspaceUiUpdate
+): NotesWorkspaceQueueResult {
+  if (!projection.projectionError) {
+    return authoritative(
+      projection.workspace,
+      uiUpdate,
+      mutation.historyStatus
+    );
+  }
+  return {
+    kind: "failure",
+    error: projection.projectionError,
+    workspace: projection.workspace,
+    historyStatus: mutation.historyStatus,
+    scopeAgnostic: true,
+    ...(mutation.historyEntryId
+      ? { committedHistoryEntryIds: [mutation.historyEntryId] }
+      : {})
+  };
+}
+
 interface NotesWorkspaceQueueStep {
   run(): Promise<NotesMutationResponse>;
   historyEntryId?: string;
@@ -1620,9 +1669,8 @@ export function useNotesWorkspace({
       }
       record.session.history.closeTextBurst(context.entryId);
       if (
-        (result.kind === "authoritative" ||
-          (result.kind === "failure" &&
-            result.committedHistoryEntryIds?.includes(context.entryId))) &&
+        result.kind !== "skipped" &&
+        result.committedHistoryEntryIds?.includes(context.entryId) &&
         historyOwnerByEntryIdRef.current.owner(context.entryId) ===
           record.session &&
         sessionRef.current === record.session
@@ -1770,6 +1818,16 @@ export function useNotesWorkspace({
           discardHistoryEntry(historyContext);
         }
       }
+      const activeHistoryContext =
+        record.draftHistoryContextByNodeId.get(nodeId);
+      if (
+        writeSucceeded &&
+        historyContext &&
+        activeHistoryContext?.entryId !== historyContext.entryId
+      ) {
+        record.session.history.closeTextBurst(historyContext.entryId);
+        completeHistoryOwner(historyContext.entryId);
+      }
       record.writeError = latestWriteError(record.failedWritesByNodeId);
       if (!record.drafts.has(nodeId)) {
         record.retryWriteByNodeId.delete(nodeId);
@@ -1838,9 +1896,9 @@ export function useNotesWorkspace({
               ...historyArguments(historyContext)
             )
           );
-          const projectedWorkspace = await workspaceForScope(
+          const projection = await projectNotesMutation(
             context,
-            mutation.workspace,
+            mutation,
             activeScopeRef.current
           );
           const appliedContext = appliedHistoryContext(historyContext, mutation);
@@ -1849,15 +1907,11 @@ export function useNotesWorkspace({
           }
           rememberHistoryAfter(
             appliedContext,
-            projectedWorkspace,
+            projection.workspace,
             undefined,
             attempt.focus
           );
-          result = authoritative(
-            projectedWorkspace,
-            undefined,
-            mutation.historyStatus
-          );
+          result = directMutationResult(mutation, projection);
         } catch (cause) {
           result = { kind: "failure", error: errorMessage(cause) };
         }
@@ -1875,7 +1929,8 @@ export function useNotesWorkspace({
         record,
         attempt,
         result,
-        result.kind === "authoritative"
+        result.kind === "authoritative" ||
+          (result.kind === "failure" && result.scopeAgnostic === true)
       );
     },
     [
@@ -1946,6 +2001,19 @@ export function useNotesWorkspace({
       }
       const previous = record.drafts.get(nodeId);
       const focus = { nodeId, field } satisfies NotesHistoryFocus;
+      const previousFocus = record.draftHistoryFocusByNodeId.get(nodeId);
+      if (previousFocus && previousFocus.field !== field) {
+        const previousHistoryContext =
+          record.draftHistoryContextByNodeId.get(nodeId);
+        record.session.history.closeTextBurst(previousHistoryContext?.entryId);
+        if (
+          previousHistoryContext &&
+          record.pendingDebounceByNodeId.has(nodeId)
+        ) {
+          void record.writeQueue.flush(nodeId).catch(() => undefined);
+        }
+        record.draftHistoryContextByNodeId.delete(nodeId);
+      }
       liveNavigationRef.current = {
         ...liveNavigationRef.current,
         selectedId: nodeId,
@@ -2854,9 +2922,9 @@ export function useNotesWorkspace({
           },
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         const uiUpdate = {
@@ -2867,14 +2935,10 @@ export function useNotesWorkspace({
         };
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace,
+          projection.workspace,
           uiUpdate
         );
-        return authoritative(
-          projectedWorkspace,
-          uiUpdate,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection, uiUpdate);
       });
     },
     [
@@ -3005,20 +3069,16 @@ export function useNotesWorkspace({
           },
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [
@@ -3153,20 +3213,16 @@ export function useNotesWorkspace({
           nodeId,
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [
@@ -3196,20 +3252,16 @@ export function useNotesWorkspace({
           nodeId,
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [
@@ -3234,20 +3286,16 @@ export function useNotesWorkspace({
           nodeId,
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [
@@ -3272,9 +3320,9 @@ export function useNotesWorkspace({
           ...historyArguments(historyContext)
         ));
         const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         const uiUpdate = duplicateId
@@ -3287,14 +3335,10 @@ export function useNotesWorkspace({
           : undefined;
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace,
+          projection.workspace,
           uiUpdate
         );
-        return authoritative(
-          projectedWorkspace,
-          uiUpdate,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection, uiUpdate);
       });
     },
     [
@@ -3654,20 +3698,16 @@ export function useNotesWorkspace({
           nodeId,
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [
@@ -3689,20 +3729,16 @@ export function useNotesWorkspace({
           nodeId,
           ...historyArguments(historyContext)
         ));
-        const projectedWorkspace = await workspaceForScope(
+        const projection = await projectNotesMutation(
           context,
-          mutation.workspace,
+          mutation,
           activeScopeRef.current
         );
         rememberHistoryAfter(
           appliedHistoryContext(historyContext, mutation),
-          projectedWorkspace
+          projection.workspace
         );
-        return authoritative(
-          projectedWorkspace,
-          undefined,
-          mutation.historyStatus
-        );
+        return directMutationResult(mutation, projection);
       });
     },
     [

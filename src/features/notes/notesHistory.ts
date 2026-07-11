@@ -146,7 +146,11 @@ export function createNotesHistorySession({
 }: CreateNotesHistorySessionOptions = {}): NotesHistorySession {
   const sessionId = createId();
   const snapshots = new Map<string, NotesHistorySnapshotPair>();
-  let textBurst: { nodeId: NoteId; context: NotesHistoryContext } | null = null;
+  let textBurst: {
+    nodeId: NoteId;
+    field: NotesHistoryFocusField;
+    context: NotesHistoryContext;
+  } | null = null;
 
   const rememberBefore = (
     entryId: string,
@@ -168,11 +172,14 @@ export function createNotesHistorySession({
   return {
     sessionId,
     beginTextBurst(nodeId, before) {
-      if (textBurst?.nodeId === nodeId) {
+      const field =
+        before.focus?.nodeId === nodeId ? before.focus.field : "title";
+      if (textBurst?.nodeId === nodeId && textBurst.field === field) {
         return textBurst.context;
       }
       textBurst = {
         nodeId,
+        field,
         context: context(createId(), "text")
       };
       rememberBefore(textBurst.context.entryId, before);

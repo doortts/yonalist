@@ -37,6 +37,7 @@ export type NotesWorkspaceQueueResult =
       workspace?: NotesWorkspace;
       historyStatus?: NotesHistoryStatus;
       historyVersion?: number;
+      scopeAgnostic?: boolean;
       committedHistoryEntryIds?: readonly string[];
     };
 
@@ -294,7 +295,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         !(result.kind === "authoritative" && result.suppressSynchronization)
       ) {
         const sourceScope =
-          result.kind === "authoritative" && result.scopeAgnostic
+          result.kind !== "skipped" && result.scopeAgnostic
             ? null
             : owner?.active && owner.getScope
               ? owner.getScope()
