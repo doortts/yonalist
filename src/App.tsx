@@ -351,6 +351,7 @@ export default function App({ initialOnline }: AppProps) {
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
+  const [loadedVaultRoot, setLoadedVaultRoot] = useState<string | null>(null);
   const [selectedOutboxIds, setSelectedOutboxIds] = useState<Set<string>>(new Set());
   const [showOutbox, setShowOutbox] = useState(false);
   // Pending reconnect-sync confirmation; the captured operations are flushed
@@ -446,6 +447,7 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
     let cancelled = false;
+    setLoadedVaultRoot(null);
     const startedAt = performance.now();
     tracePerf("vault_load_start", { vaultRoot });
     void loadVaultState(vaultRoot)
@@ -455,6 +457,7 @@ export default function App({ initialOnline }: AppProps) {
         }
         setDrafts(state.items);
         setOutbox(state.outbox);
+        setLoadedVaultRoot(vaultRoot);
         tracePerf("vault_load_done", {
           items: state.items.length,
           outbox: state.outbox.length,
@@ -1194,13 +1197,23 @@ export default function App({ initialOnline }: AppProps) {
   // never sent silently: for signed-in sessions we first confirm the actual
   // remote is reachable, then ask before flushing; unsigned sessions surface
   // the queue for review so it is never forgotten. The transition is evaluated
-  // once per offline→online edge (guarded by previousOnline), so a cancelled or
-  // unreachable probe is not re-asked until the next reconnect.
+  // once per offline→online edge. Notes preserves that edge without touching
+  // Inbox; returning to Inbox consumes it after the queued vault data is ready.
   const previousOnline = useRef(online);
+  const pendingInboxReconnect = useRef(false);
   useEffect(() => {
-    if (
+    const reconnected = online && !previousOnline.current;
+    if (reconnected && !inboxActive) {
+      pendingInboxReconnect.current = true;
+    }
+
+    const shouldHandleReconnect =
+      inboxActive &&
       online &&
-      !previousOnline.current &&
+      loadedVaultRoot === vaultRoot &&
+      (reconnected || pendingInboxReconnect.current);
+    if (
+      shouldHandleReconnect &&
       settings.syncQueuedOnReconnect &&
       outbox.length > 0
     ) {
@@ -1216,9 +1229,19 @@ export default function App({ initialOnline }: AppProps) {
         setShowOutbox(true);
       }
     }
+    if (shouldHandleReconnect) {
+      pendingInboxReconnect.current = false;
+    }
     previousOnline.current = online;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online, outbox, settings.syncQueuedOnReconnect]);
+  }, [
+    inboxActive,
+    loadedVaultRoot,
+    online,
+    outbox,
+    settings.syncQueuedOnReconnect,
+    vaultRoot
+  ]);
 
   // Sync feedback surfaces as an auto-dismissing toast. Reset the state after
   // queuing so an identical follow-up message re-fires the toast.

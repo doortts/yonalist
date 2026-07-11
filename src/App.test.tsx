@@ -1927,6 +1927,47 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("defers a Notes reconnect until Inbox is active without touching Inbox data", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 204 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes")
+      );
+      vi.mocked(window.localStorage.setItem).mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await settleReconnectProbe();
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+        "yonalist.vaultDocuments.v1",
+        expect.anything()
+      );
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not send and does not re-ask when the reconnect prompt is cancelled", async () => {
     const user = userEvent.setup();
     await seedQueuedIssueDraft(user);

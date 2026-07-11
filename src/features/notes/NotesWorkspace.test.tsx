@@ -759,7 +759,24 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });
 
-  it("returns to All so a page created from Starred stays visible and focused", async () => {
+  it("unzooms an All view before focusing a newly created root page", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+
+    await user.click(screen.getByRole("button", { name: "Zoom into Project" }));
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 })
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "New page" }));
+
+    expect(await findTitleInput("")).toHaveFocus();
+    expect(
+      screen.queryByRole("heading", { name: "Project", level: 1 })
+    ).not.toBeInTheDocument();
+  });
+
+  it("returns to unzoomed All so a page created from zoomed Starred stays visible and focused", async () => {
     const user = userEvent.setup();
     configureRepository([
       node({ id: "starred", title: "Starred page", isStarred: true }),
@@ -778,6 +795,12 @@ describe("Notes workspace", () => {
 
     await user.click(screen.getByRole("button", { name: "Starred" }));
     await waitFor(() => expect(queryTitleInput("Outside page")).toBeNull());
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Starred page" })
+    );
+    expect(
+      screen.getByRole("heading", { name: "Starred page", level: 1 })
+    ).toBeVisible();
     await user.click(screen.getByRole("button", { name: "New page" }));
 
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
@@ -785,6 +808,9 @@ describe("Notes workspace", () => {
       "true"
     );
     expect(await findTitleInput("")).toHaveFocus();
+    expect(
+      screen.queryByRole("heading", { name: "Starred page", level: 1 })
+    ).not.toBeInTheDocument();
     expect(queryTitleInput("Outside page")).toBeInTheDocument();
     expect(notesStoreMock.createNode).toHaveBeenCalledOnce();
   });

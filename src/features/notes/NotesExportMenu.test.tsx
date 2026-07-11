@@ -787,9 +787,14 @@ describe("NotesExportMenu", () => {
       destination: "/exports/selected.pdf"
     }
   ])(
-    "retries a $format conflict once with the matching renderer and exact captured request",
+    "revalidates drafts before replacing a $format conflict with the exact captured request",
     async ({ command, format, destination }) => {
       const user = userEvent.setup();
+      const overwriteFlush = deferred<boolean>();
+      const onFlushDrafts = vi
+        .fn()
+        .mockResolvedValueOnce(true)
+        .mockReturnValueOnce(overwriteFlush.promise);
       const request: NotesExportRequest = {
         vaultPath: "/captured-vault",
         rootNodeId: "captured-node",
@@ -809,7 +814,7 @@ describe("NotesExportMenu", () => {
           ? exportServiceMock.renderPdfExport
           : exportServiceMock.renderMarkdownExport;
       expectedRenderer.mockResolvedValue(expectedResult);
-      renderExportMenu();
+      renderExportMenu({ onFlushDrafts });
 
       const menu = await openExportMenu(user);
       await user.click(within(menu).getByRole("menuitem", { name: command }));
@@ -820,9 +825,16 @@ describe("NotesExportMenu", () => {
         within(dialog).getByRole("button", { name: "Replace" })
       );
 
+      expect(onFlushDrafts).toHaveBeenCalledTimes(2);
+      expect(expectedRenderer).not.toHaveBeenCalled();
+
+      await act(async () => overwriteFlush.resolve(true));
       await waitFor(() => {
         expect(expectedRenderer).toHaveBeenCalledTimes(1);
       });
+      expect(onFlushDrafts.mock.invocationCallOrder[1]).toBeLessThan(
+        expectedRenderer.mock.invocationCallOrder[0]
+      );
       expect(expectedRenderer).toHaveBeenCalledWith({
         ...request,
         overwrite: true
@@ -836,6 +848,60 @@ describe("NotesExportMenu", () => {
       });
     }
   );
+
+  it("aborts replacement when the current draft barrier fails and retries the captured overwrite", async () => {
+    const user = userEvent.setup();
+    const onFlushDrafts = vi
+      .fn()
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const request: NotesExportRequest = {
+      vaultPath: "/captured-vault",
+      rootNodeId: "captured-node",
+      destination: "/exports/selected.md",
+      overwrite: false
+    };
+    exportServiceMock.saveNotesExport.mockRejectedValue(
+      new NotesExportConflictError(request.destination, request)
+    );
+    exportServiceMock.renderMarkdownExport.mockResolvedValue({
+      destination: request.destination,
+      format: "markdown"
+    });
+    renderExportMenu({ onFlushDrafts });
+
+    const menu = await openExportMenu(user);
+    await user.click(
+      within(menu).getByRole("menuitem", {
+        name: "Selected node as Markdown"
+      })
+    );
+    const dialog = await screen.findByRole("alertdialog", {
+      name: "Replace existing export?"
+    });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Replace" })
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Save this note before exporting.");
+    expect(onFlushDrafts).toHaveBeenCalledTimes(2);
+    expect(exportServiceMock.renderMarkdownExport).not.toHaveBeenCalled();
+    expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
+
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(onFlushDrafts).toHaveBeenCalledTimes(3);
+      expect(exportServiceMock.renderMarkdownExport).toHaveBeenCalledOnce();
+    });
+    expect(exportServiceMock.renderMarkdownExport).toHaveBeenCalledWith({
+      ...request,
+      overwrite: true
+    });
+    expect(request.overwrite).toBe(false);
+  });
 
   it("shows a Notes-local accessible error and retries the failed operation", async () => {
     const user = userEvent.setup();

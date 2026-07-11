@@ -1307,7 +1307,8 @@ export function useNotesWorkspace({
         {
           selectedId: id,
           editingNoteId: id,
-          pendingFocusId: id
+          pendingFocusId: id,
+          zoomRootId: null
         }
       );
     });

@@ -3,7 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GitHubNotification } from "../domain/notifications";
 import { sampleNotifications } from "../fixtures/sampleNotifications";
 import { clearNotificationCache } from "../services/notifications";
-import { persistCachedNotifications } from "../services/notificationStores";
+import {
+  loadCachedNotifications,
+  persistCachedNotifications
+} from "../services/notificationStores";
 import type { GithubConnection } from "./useGithubAuth";
 import { useNotifications } from "./useNotifications";
 
@@ -120,6 +123,77 @@ describe("useNotifications", () => {
       ])
     );
     expect(result.current.loading).toBe(false);
+  });
+
+  it("aborts and invalidates an active request while disabled, then fetches fresh when re-enabled", async () => {
+    let resolveSecondPage: (response: Response) => void = () => {};
+    const secondPage = new Promise<Response>((resolve) => {
+      resolveSecondPage = resolve;
+    });
+    let secondRequestInit: RequestInit | undefined;
+    let callCount = 0;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Response(JSON.stringify([makeNotification("first")]), {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              Link: '<https://api.github.com/notifications?page=2>; rel="next"'
+            }
+          });
+        }
+        if (callCount === 2) {
+          secondRequestInit = init;
+          return secondPage;
+        }
+        return jsonResponse([makeNotification("fresh")]);
+      }
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useNotifications(connection, true, enabled),
+      { initialProps: { enabled: true } }
+    );
+
+    await waitFor(() =>
+      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+        "first"
+      ])
+    );
+    expect(loadCachedNotifications(connection.apiBaseUrl)?.map(({ id }) => id)).toEqual([
+      "first"
+    ]);
+
+    rerender({ enabled: false });
+
+    expect(secondRequestInit?.signal).toBeInstanceOf(AbortSignal);
+    expect(secondRequestInit?.signal?.aborted).toBe(true);
+    expect(result.current.loading).toBe(false);
+
+    await act(async () => {
+      resolveSecondPage(jsonResponse([makeNotification("late")]));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+      "first"
+    ]);
+    expect(loadCachedNotifications(connection.apiBaseUrl)?.map(({ id }) => id)).toEqual([
+      "first"
+    ]);
+
+    rerender({ enabled: true });
+
+    await waitFor(() =>
+      expect(result.current.notifications.map((notification) => notification.id)).toEqual([
+        "fresh"
+      ])
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("serves sample data without fetching when the token is empty (demo mode)", () => {

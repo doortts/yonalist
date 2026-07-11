@@ -234,13 +234,27 @@ export function NotesExportControllerProvider({
     const overwriteRequest = { ...conflict.request, overwrite: true };
     const attempt: ExportAttempt = {
       format: conflict.format,
-      run: () =>
-        conflict.format === "markdown"
+      run: async (isCurrent) => {
+        awaitingDraftFlushRef.current = true;
+        let saved: boolean;
+        try {
+          saved = await onFlushDrafts();
+        } finally {
+          awaitingDraftFlushRef.current = false;
+        }
+        if (!isCurrent()) {
+          return null;
+        }
+        if (!saved) {
+          throw new Error("Save this note before exporting.");
+        }
+        return conflict.format === "markdown"
           ? renderMarkdownExport(overwriteRequest)
-          : renderPdfExport(overwriteRequest)
+          : renderPdfExport(overwriteRequest);
+      }
     };
     void executeAttempt(attempt, false);
-  }, [executeAttempt, pendingOverwrite, unavailable]);
+  }, [executeAttempt, onFlushDrafts, pendingOverwrite, unavailable]);
 
   const value = useMemo<NotesExportControllerValue>(
     () => ({

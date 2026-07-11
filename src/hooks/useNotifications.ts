@@ -50,6 +50,7 @@ export function useNotifications(
   const [error, setError] = useState<string | null>(null);
   const [viewedAt, setViewedAt] = useState<ViewedAtMap>(() => loadViewedAt());
   const requestSeq = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -67,9 +68,12 @@ export function useNotifications(
   }, [token, connection.apiBaseUrl]);
 
   const load = useCallback(() => {
-    if (!token || !online) {
+    if (!enabled || !token || !online) {
       return;
     }
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     const seq = ++requestSeq.current;
     const startedAt = performance.now();
     tracePerf("notifications_remote_start", {
@@ -79,8 +83,10 @@ export function useNotifications(
     fetchNotifications({
       token,
       apiBaseUrl: connection.apiBaseUrl,
+      fetchImpl: (input, init) =>
+        fetch(input, { ...init, signal: controller.signal }),
       onPartialResult: (partial) => {
-        if (requestSeq.current === seq) {
+        if (requestSeq.current === seq && !controller.signal.aborted) {
           setFetched((previous) => reconcileNotifications(previous, partial));
           persistCachedNotifications(connection.apiBaseUrl, partial);
           tracePerf("notifications_partial_result", {
@@ -91,7 +97,7 @@ export function useNotifications(
       }
     })
       .then((result) => {
-        if (requestSeq.current === seq) {
+        if (requestSeq.current === seq && !controller.signal.aborted) {
           setFetched((previous) => reconcileNotifications(previous, result));
           persistCachedNotifications(connection.apiBaseUrl, result);
           setError(null);
@@ -102,7 +108,7 @@ export function useNotifications(
         }
       })
       .catch((cause) => {
-        if (requestSeq.current === seq) {
+        if (requestSeq.current === seq && !controller.signal.aborted) {
           setError(cause instanceof Error ? cause.message : String(cause));
           tracePerf("notifications_remote_error", {
             message: cause instanceof Error ? cause.message : String(cause),
@@ -111,19 +117,31 @@ export function useNotifications(
         }
       })
       .finally(() => {
-        if (requestSeq.current === seq) {
+        if (abortRef.current === controller) {
+          abortRef.current = null;
+        }
+        if (requestSeq.current === seq && !controller.signal.aborted) {
           setLoading(false);
         }
       });
-  }, [token, online, connection.apiBaseUrl]);
+  }, [enabled, token, online, connection.apiBaseUrl]);
 
   useEffect(() => {
     if (!enabled || !token || !online) {
+      requestSeq.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setLoading(false);
       return;
     }
     load();
     const interval = window.setInterval(load, POLL_INTERVAL_MS);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      requestSeq.current += 1;
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
   }, [enabled, token, online, load]);
 
   const all = useMemo(
