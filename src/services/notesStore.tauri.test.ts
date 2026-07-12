@@ -744,7 +744,7 @@ describe("notesStore in Tauri", () => {
           count: 1
         }
       ])
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ attachmentCleanupFailed: false });
 
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "starred" })
@@ -774,7 +774,9 @@ describe("notesStore in Tauri", () => {
         count: 1
       }
     ]);
-    await expect(notesDeleteDatabase(vaultPath)).resolves.toBeUndefined();
+    await expect(notesDeleteDatabase(vaultPath)).resolves.toEqual({
+      attachmentCleanupFailed: false
+    });
 
     expect(invokeMock.mock.calls).toEqual([
       ["notes_load_workspace", { vaultPath, scope: { kind: "starred" } }],
@@ -792,6 +794,25 @@ describe("notesStore in Tauri", () => {
       ["notes_list_tags_with_counts", { vaultPath }],
       ["notes_delete_database", { vaultPath }]
     ]);
+  });
+
+  it("parses the attachment cleanup flag from a database deletion", async () => {
+    invokeMock.mockResolvedValue({ attachmentCleanupFailed: true });
+
+    await expect(notesDeleteDatabase(vaultPath)).resolves.toEqual({
+      attachmentCleanupFailed: true
+    });
+    expect(invokeMock).toHaveBeenCalledWith("notes_delete_database", {
+      vaultPath
+    });
+  });
+
+  it("rejects a malformed database deletion payload", async () => {
+    invokeMock.mockResolvedValue(undefined);
+
+    await expect(notesDeleteDatabase(vaultPath)).rejects.toEqual(
+      new Error("Notes data deletion returned an invalid result.")
+    );
   });
 
   it("rejects a malformed native search payload", async () => {

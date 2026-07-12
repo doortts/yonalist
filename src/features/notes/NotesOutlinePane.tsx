@@ -195,7 +195,9 @@ export function NotesOutlinePane() {
     draftsByNodeId,
     libraryView,
     locallyExpandedNodeIds,
-    state
+    retryLastFailedWrite,
+    state,
+    writeError
   } = workspace;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
@@ -556,6 +558,24 @@ export function NotesOutlinePane() {
             loading={state.status === "loading"}
           />
         </div>
+        {writeError && (
+          <div
+            className="notes-inline-error notes-write-error-banner"
+            role="alert"
+          >
+            <span>
+              A note could not be saved, so editing commands are paused.
+              Retry the save to continue.
+            </span>
+            <button
+              type="button"
+              className="notes-write-error-retry"
+              onClick={() => void retryLastFailedWrite()}
+            >
+              Retry save
+            </button>
+          </div>
+        )}
         <div className="notes-outline-rows">
           <div className="notes-outline-content" ref={contentRef}>
           {initialLoading && (

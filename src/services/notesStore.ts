@@ -822,8 +822,28 @@ export function notesListTagsWithCounts(
   return invokeNotes<NoteTagSummary[]>("notes_list_tags_with_counts", { vaultPath });
 }
 
-export function notesDeleteDatabase(vaultPath: string): Promise<void> {
-  return invokeNotes<void>("notes_delete_database", { vaultPath });
+export interface NotesDeleteDatabaseResult {
+  /**
+   * True when the database was removed but one or more attachment files could
+   * not be deleted from disk. The deletion still succeeded; this only signals
+   * that some orphaned files were left behind.
+   */
+  attachmentCleanupFailed: boolean;
+}
+
+export async function notesDeleteDatabase(
+  vaultPath: string
+): Promise<NotesDeleteDatabaseResult> {
+  const result = await invokeNotes<unknown>("notes_delete_database", {
+    vaultPath
+  });
+  if (
+    !isPlainRecord(result) ||
+    typeof result.attachmentCleanupFailed !== "boolean"
+  ) {
+    throw new Error("Notes data deletion returned an invalid result.");
+  }
+  return { attachmentCleanupFailed: result.attachmentCleanupFailed };
 }
 
 export const notesStore: NotesStore = {
@@ -862,5 +882,9 @@ export const notesStore: NotesStore = {
   searchStructured: notesSearchStructured,
   listTags: notesListTags,
   listTagsWithCounts: notesListTagsWithCounts,
-  deleteDatabase: notesDeleteDatabase
+  // The `NotesStore` interface (in src/domain/notes.ts) types `deleteDatabase`
+  // as `Promise<void>`, but the Tauri command actually reports whether some
+  // attachment files were left on disk. We keep the richer runtime result and
+  // widen it to the interface signature here; callers re-narrow structurally.
+  deleteDatabase: notesDeleteDatabase as unknown as NotesStore["deleteDatabase"]
 };

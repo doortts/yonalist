@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NOTES_DRAFTS_FLUSH_FAILED_CODE } from "./useNotesWorkspace";
 
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
 
@@ -24,7 +25,7 @@ function deferred<T>() {
 describe("NotesDataSettingsDialog", () => {
   beforeEach(() => {
     deleteAllNotesDataMock.mockReset();
-    deleteAllNotesDataMock.mockResolvedValue(undefined);
+    deleteAllNotesDataMock.mockResolvedValue({ attachmentCleanupFailed: false });
   });
 
   it("requires confirmation and cancellation has no side effect", async () => {
@@ -119,5 +120,72 @@ describe("NotesDataSettingsDialog", () => {
 
     await act(async () => deletion.resolve());
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("confirms discarding unsaved edits before deleting when the flush fails", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    deleteAllNotesDataMock.mockRejectedValueOnce(
+      Object.assign(new Error("A draft could not be saved."), {
+        name: "NotesDraftsFlushFailedError",
+        code: NOTES_DRAFTS_FLUSH_FAILED_CODE
+      })
+    );
+    deleteAllNotesDataMock.mockResolvedValueOnce({
+      attachmentCleanupFailed: false
+    });
+    render(<NotesDataSettingsDialog open onOpenChange={onOpenChange} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+
+    const discardConfirm = await screen.findByRole("alertdialog", {
+      name: "Discard unsaved edits and delete?"
+    });
+    expect(deleteAllNotesDataMock).toHaveBeenCalledTimes(1);
+    await user.click(
+      within(discardConfirm).getByRole("button", { name: "Discard and delete" })
+    );
+
+    await waitFor(() =>
+      expect(deleteAllNotesDataMock).toHaveBeenCalledTimes(2)
+    );
+    expect(deleteAllNotesDataMock).toHaveBeenNthCalledWith(1, undefined);
+    expect(deleteAllNotesDataMock).toHaveBeenNthCalledWith(2, {
+      discardDrafts: true
+    });
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("warns without closing when some attachment files remain on disk", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    deleteAllNotesDataMock.mockResolvedValueOnce({
+      attachmentCleanupFailed: true
+    });
+    render(<NotesDataSettingsDialog open onOpenChange={onOpenChange} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Delete all Notes data" })
+    );
+    await user.click(
+      within(
+        screen.getByRole("alertdialog", { name: "Delete all Notes data?" })
+      ).getByRole("button", { name: "Delete Notes data" })
+    );
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "some attachment files could not be removed"
+    );
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(
+      screen.getByRole("dialog", { name: "Notes data" })
+    ).toBeInTheDocument();
   });
 });

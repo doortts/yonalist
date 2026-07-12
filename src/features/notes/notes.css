@@ -874,6 +874,43 @@ button.notes-date-token:hover {
   font-size: 12.5px;
 }
 
+.notes-write-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+  margin: 0 10px 10px;
+}
+
+.notes-write-error-retry {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.notes-write-error-retry:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+.notes-inline-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+  color: var(--warning);
+  font-size: 12.5px;
+}
+
 .notes-node {
   --notes-depth: 0;
   --notes-indent: calc(var(--notes-depth) * var(--notes-outline-indent));

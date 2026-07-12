@@ -276,7 +276,9 @@ describe("notes attachment UI boundary", () => {
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     let providedAttachmentUi: unknown;
-    useNotesWorkspace.mockReturnValue({});
+    useNotesWorkspace.mockReturnValue({
+      actions: { flushAllDrafts: vi.fn().mockResolvedValue(true) }
+    });
 
     function AttachmentUiProbe() {
       providedAttachmentUi = attachmentContext.useNotesAttachmentUi();

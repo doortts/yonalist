@@ -1,9 +1,10 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Database, Trash2, X } from "lucide-react";
+import { AlertTriangle, Database, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 
 interface NotesDataSettingsDialogProps {
   open: boolean;
@@ -16,8 +17,12 @@ export function NotesDataSettingsDialog({
 }: NotesDataSettingsDialogProps) {
   const { actions, deletingNotesData } = useNotesWorkspaceContext();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [attachmentWarning, setAttachmentWarning] = useState<string | null>(
+    null
+  );
   const deleteTriggerRef = useRef<HTMLButtonElement>(null);
   const deleting = deletingNotesData || deletionRequestPending;
 
@@ -33,23 +38,42 @@ export function NotesDataSettingsDialog({
     }
     if (!nextOpen) {
       setConfirmOpen(false);
+      setDiscardConfirmOpen(false);
       setError(null);
+      setAttachmentWarning(null);
     }
     onOpenChange(nextOpen);
   };
 
-  const deleteNotesData = async () => {
+  const deleteNotesData = async (discardDrafts = false) => {
     if (deleting) {
       return;
     }
     setDeletionRequestPending(true);
     setError(null);
+    setAttachmentWarning(null);
     try {
-      await actions.deleteAllNotesData();
+      const result = await actions.deleteAllNotesData(
+        discardDrafts ? { discardDrafts: true } : undefined
+      );
       setConfirmOpen(false);
+      setDiscardConfirmOpen(false);
       setError(null);
-      onOpenChange(false);
+      if (result?.attachmentCleanupFailed) {
+        // Deletion succeeded; keep the dialog open to surface the non-blocking
+        // warning that some attachment files were left on disk.
+        setAttachmentWarning(
+          "Notes data was deleted, but some attachment files could not be removed from disk."
+        );
+      } else {
+        onOpenChange(false);
+      }
     } catch (cause) {
+      if (isNotesDraftsFlushFailedError(cause)) {
+        setConfirmOpen(false);
+        setDiscardConfirmOpen(true);
+        return;
+      }
       setError(
         cause instanceof Error ? cause.message : "Notes data could not be deleted."
       );
@@ -112,6 +136,12 @@ export function NotesDataSettingsDialog({
                 {error}
               </p>
             )}
+            {attachmentWarning && (
+              <p className="notes-inline-warning" role="status">
+                <AlertTriangle size={15} aria-hidden="true" />
+                {attachmentWarning}
+              </p>
+            )}
           </Dialog.Popup>
         </Dialog.Portal>
       </Dialog.Root>
@@ -125,6 +155,17 @@ export function NotesDataSettingsDialog({
         cancelLabel="Cancel"
         danger
         onConfirm={() => void deleteNotesData()}
+      />
+
+      <ConfirmDialog
+        open={discardConfirmOpen}
+        onOpenChange={setDiscardConfirmOpen}
+        title="Discard unsaved edits and delete?"
+        description="Unsaved edits could not be written. Discard them and delete all Notes data anyway?"
+        confirmLabel="Discard and delete"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => void deleteNotesData(true)}
       />
     </>
   );

@@ -76,6 +76,8 @@ function workspaceValue(options: {
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   includeOtherRoot?: boolean;
+  writeError?: UseNotesWorkspaceResult["writeError"];
+  retryLastFailedWrite?: UseNotesWorkspaceResult["retryLastFailedWrite"];
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
@@ -162,9 +164,9 @@ function workspaceValue(options: {
         ? { project: options.attachmentUploadRetryAttemptId }
         : {},
     draftsByNodeId: options.draft ? { project: options.draft } : {},
-    writeError: null,
+    writeError: options.writeError ?? null,
     retryFailedDraft: resolved(),
-    retryLastFailedWrite: resolved(),
+    retryLastFailedWrite: options.retryLastFailedWrite ?? resolved(),
     status: "ready",
     loading: false,
     error: null
@@ -1258,5 +1260,31 @@ describe("NotesPageHeader", () => {
       })
     );
     expect(workspace.retryFailedDraft).toHaveBeenCalledWith("project");
+  });
+
+  it("surfaces a workspace write-failure banner and wires its retry action", async () => {
+    const user = userEvent.setup();
+    const retryLastFailedWrite = vi.fn().mockResolvedValue(undefined);
+    const writeError = Object.assign(new Error("Draft save failed"), {
+      operation: "write" as const,
+      retryable: true
+    });
+    renderZoomedOutline(
+      workspaceValue({ writeError, retryLastFailedWrite })
+    );
+
+    const banner = screen.getByRole("alert");
+    expect(banner).toHaveTextContent("editing commands are paused");
+    await user.click(
+      within(banner).getByRole("button", { name: "Retry save" })
+    );
+    expect(retryLastFailedWrite).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the write-failure banner when there is no write error", () => {
+    renderZoomedOutline(workspaceValue());
+    expect(
+      screen.queryByRole("button", { name: "Retry save" })
+    ).not.toBeInTheDocument();
   });
 });

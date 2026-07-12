@@ -1023,12 +1023,26 @@ pub(crate) fn notes_list_tags_with_counts(
     list_tags_with_counts(&connection)
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteDatabaseOutcome {
+    attachment_cleanup_failed: bool,
+}
+
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_delete_database(vault_path: String) -> Result<(), String> {
+pub(crate) fn notes_delete_database(vault_path: String) -> Result<DeleteDatabaseOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     delete_database(&vault_path)?;
-    let _ = storage.delete_attachment_files();
-    Ok(())
+    let attachment_cleanup_failed = match storage.delete_attachment_files() {
+        Ok(()) => false,
+        Err(error) => {
+            eprintln!("Notes attachment cleanup warning: {error}");
+            true
+        }
+    };
+    Ok(DeleteDatabaseOutcome {
+        attachment_cleanup_failed,
+    })
 }
 
 fn export_destination_path(destination: &str) -> Result<PathBuf, String> {
@@ -2972,7 +2986,8 @@ mod tests {
                 .is_starred
         );
 
-        notes_delete_database(vault_path.clone()).expect("delete database");
+        let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
+        assert!(!deletion.attachment_cleanup_failed);
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
     }
 
