@@ -20,6 +20,7 @@ import {
   type CSSProperties,
   type ClipboardEvent,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -32,6 +33,7 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
+import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
@@ -68,6 +70,14 @@ const outlineScreenReaderInstructions = {
 interface ImageIngestError {
   readonly label: "Image drop failed" | "Image paste failed";
   readonly message: string;
+}
+
+interface ImagePasteExecutionScope {
+  readonly vaultRoot: string;
+  readonly libraryView: UseNotesWorkspaceResult["libraryView"];
+  readonly status: UseNotesWorkspaceResult["state"]["status"];
+  readonly deletingNotesData: boolean;
+  readonly importClipboardImages: UseNotesWorkspaceResult["actions"]["importClipboardImages"];
 }
 
 interface NotesBreadcrumbProps {
@@ -199,6 +209,7 @@ function useOutlineIndentPx(): number {
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
   const attachmentUi = useNotesAttachmentUi();
+  const vaultRoot = useContext(VaultRootContext);
   const {
     actions,
     deletingNotesData,
@@ -221,6 +232,24 @@ export function NotesOutlinePane() {
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
   const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
+  const imagePasteExecutionScope = useMemo<ImagePasteExecutionScope>(
+    () => ({
+      vaultRoot,
+      libraryView,
+      status: state.status,
+      deletingNotesData,
+      importClipboardImages: actions.importClipboardImages
+    }),
+    [
+      actions.importClipboardImages,
+      deletingNotesData,
+      libraryView,
+      state.status,
+      vaultRoot
+    ]
+  );
+  const imagePasteExecutionScopeRef = useRef(imagePasteExecutionScope);
+  imagePasteExecutionScopeRef.current = imagePasteExecutionScope;
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
   const lifecycleMode =
@@ -235,12 +264,15 @@ export function NotesOutlinePane() {
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
   const imagePasteAvailable =
-    !deletingNotesData &&
+    !imagePasteExecutionScope.deletingNotesData &&
     !lifecycleReadOnly &&
-    state.status !== "loading" &&
-    actions.importClipboardImages !== undefined;
+    imagePasteExecutionScope.status !== "loading" &&
+    imagePasteExecutionScope.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
   importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
+  useLayoutEffect(() => {
+    setImageIngestError(null);
+  }, [imagePasteExecutionScope]);
   useEffect(() => {
     imagePasteLifecycleRef.current.mounted = true;
     return () => {
@@ -260,9 +292,12 @@ export function NotesOutlinePane() {
     if (!hasImageCandidate) return;
 
     const lifecycle = imagePasteLifecycleRef.current;
+    const executionScope = imagePasteExecutionScopeRef.current;
     const attemptGeneration = ++lifecycle.generation;
     const isCurrentAttempt = (): boolean =>
-      lifecycle.mounted && lifecycle.generation === attemptGeneration;
+      lifecycle.mounted &&
+      lifecycle.generation === attemptGeneration &&
+      imagePasteExecutionScopeRef.current === executionScope;
     const setCurrentPasteError = (message: string): void => {
       if (!isCurrentAttempt()) return;
       setImageIngestError({ label: "Image paste failed", message });
@@ -300,7 +335,7 @@ export function NotesOutlinePane() {
       return;
     }
 
-    const importClipboardImages = actions.importClipboardImages;
+    const importClipboardImages = executionScope.importClipboardImages;
     if (!importClipboardImages) return;
     try {
       void Promise.resolve(
