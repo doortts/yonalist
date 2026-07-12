@@ -308,4 +308,17 @@ describe("notes attachment UI boundary", () => {
     expect("openImageFile" in nativeNotesAttachmentUi).toBe(false);
     expect("pathForDroppedFile" in nativeNotesAttachmentUi).toBe(false);
   });
+
+  // Paths are prefixed with a separator where needed so the absolute-path gate
+  // passes and the assertion exercises extension parsing rather than the gate.
+  it.each([
+    ["/tmp/png", false], // directory named "png" — no file extension
+    ["C:\\gif", false], // windows directory named "gif" — no file extension
+    ["/a/b.png", true],
+    ["/photo.JPG", true], // uppercase extensions are accepted
+    ["/archive.png.txt", false], // only the final extension segment counts
+    ["photo.JPG", false] // relative paths are rejected by the absolute-path gate
+  ] as const)("isSupportedImagePath(%j) === %s", (path, expected) => {
+    expect(isSupportedImagePath(path)).toBe(expected);
+  });
 });

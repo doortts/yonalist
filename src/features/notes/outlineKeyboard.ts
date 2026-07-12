@@ -289,7 +289,8 @@ export function resolveOutlineKey(
       selectionStart !== 0 ||
       input.title.trim() ||
       input.note.trim() ||
-      visibleIndex < 0
+      visibleIndex < 0 ||
+      (input.workspace.attachmentsByNodeId[input.nodeId]?.length ?? 0) > 0
     ) {
       return null;
     }

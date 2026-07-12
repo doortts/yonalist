@@ -631,6 +631,59 @@ describe("resolveOutlineKey", () => {
     ).toEqual({ type: "remove", focusNodeId: "lifted-a" });
   });
 
+  it("keeps Backspace native for an empty row that still has image attachments", () => {
+    const attachment = {
+      id: "att-1",
+      nodeId: "with-att",
+      sortKey: 1,
+      relativePath: "assets/att-1.png",
+      contentHash: "hash",
+      originalName: "att-1.png",
+      mimeType: "image/png" as const,
+      byteSize: 10,
+      intrinsicWidth: 1,
+      intrinsicHeight: 1,
+      displayWidth: 1,
+      createdAt: "2026-07-10T00:00:00Z",
+      updatedAt: "2026-07-10T00:00:00Z"
+    };
+    const withAttachment = normalizeWorkspace({
+      nodes: [
+        node({ id: "keep", sortKey: 1, title: "" }),
+        node({ id: "with-att", sortKey: 2, title: "" })
+      ],
+      attachmentsByNodeId: { "with-att": [attachment] }
+    });
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "with-att",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "keep",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toEqual({ type: "remove", focusNodeId: "with-att" });
+  });
+
   it("keeps Backspace native for nonempty notes, repeats, and non-start carets", () => {
     expect(
       resolveOutlineKey(

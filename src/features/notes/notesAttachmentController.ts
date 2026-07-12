@@ -40,8 +40,13 @@ async function unlistenAll(
 }
 
 function hasSupportedImageExtension(path: string): boolean {
-  const extension = path.split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase();
-  return extension !== undefined && supportedExtensions.has(extension);
+  const name = path.split(/[\\/]/).pop() ?? "";
+  const dotIndex = name.lastIndexOf(".");
+  if (dotIndex <= 0) {
+    return false;
+  }
+  const extension = name.slice(dotIndex + 1).toLowerCase();
+  return extension.length > 0 && supportedExtensions.has(extension);
 }
 
 export function isSupportedImagePath(path: string): boolean {
