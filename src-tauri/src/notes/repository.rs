@@ -3753,6 +3753,73 @@ fn validate_attachment_capacity(
     Ok(())
 }
 
+fn validate_attachment_batch_capacity(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    batch_len: usize,
+) -> Result<(), String> {
+    require_active_node(transaction, node_id)?;
+    let batch_len = i64::try_from(batch_len)
+        .map_err(|_| "Could not measure the Notes attachment batch.".to_string())?;
+    let (node_count, vault_count): (i64, i64) = transaction
+        .query_row(
+            "SELECT \
+               (SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1), \
+               (SELECT COUNT(*) FROM notes_attachments)",
+            [node_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(|error| format!("Could not inspect Notes attachment capacity: {error}"))?;
+    if node_count
+        .checked_add(batch_len)
+        .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_NODE)
+    {
+        return Err(format!(
+            "A Note node can contain at most {MAX_NOTE_ATTACHMENTS_PER_NODE} attachments."
+        ));
+    }
+    if vault_count
+        .checked_add(batch_len)
+        .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
+    {
+        return Err(format!(
+            "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+    Ok(())
+}
+
+fn insert_new_attachment_at_sort_key(
+    transaction: &Transaction<'_>,
+    attachment: NewAttachment,
+    sort_key: i64,
+) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO notes_attachments(\
+               id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+               byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+            params![
+                attachment.id,
+                attachment.node_id,
+                sort_key,
+                attachment.relative_path,
+                attachment.content_hash,
+                attachment.original_name,
+                attachment.mime_type,
+                attachment.byte_size,
+                attachment.intrinsic_width,
+                attachment.intrinsic_height,
+                attachment.display_width,
+            ],
+        )
+        .map_err(|error| format!("Could not create the Notes attachment metadata: {error}"))?;
+    Ok(())
+}
+
 fn insert_new_attachment(
     transaction: &Transaction<'_>,
     attachment: NewAttachment,
@@ -3780,30 +3847,7 @@ fn insert_new_attachment(
         .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?
         .checked_add(SORT_KEY_STEP)
         .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
-    transaction
-        .execute(
-            "INSERT INTO notes_attachments(\
-               id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
-               byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
-            params![
-                attachment.id,
-                attachment.node_id,
-                sort_key,
-                attachment.relative_path,
-                attachment.content_hash,
-                attachment.original_name,
-                attachment.mime_type,
-                attachment.byte_size,
-                attachment.intrinsic_width,
-                attachment.intrinsic_height,
-                attachment.display_width,
-            ],
-        )
-        .map_err(|error| format!("Could not create the Notes attachment metadata: {error}"))?;
-    Ok(())
+    insert_new_attachment_at_sort_key(transaction, attachment, sort_key)
 }
 
 pub(crate) fn create_attachment(
@@ -3818,23 +3862,67 @@ pub(crate) fn create_attachment(
 
 fn create_attachment_coordinated_inner(
     connection: &mut Connection,
-    node_id: Option<&str>,
-    prepare: impl FnOnce() -> Result<NewAttachment, String>,
+    capacity_preflight: Option<(&str, usize)>,
+    prepare: impl FnOnce() -> Result<(String, Vec<NewAttachment>), String>,
+    publish: impl FnOnce() -> Result<(), String>,
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
     let journaled = history::has_active_context(connection)?;
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes attachment transaction: {error}"))?;
-    if let Some(node_id) = node_id {
-        validate_attachment_capacity(&transaction, node_id)?;
+    if let Some((node_id, batch_len)) = capacity_preflight {
+        validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
     }
-    let attachment = prepare()?;
-    validate_new_attachment(&attachment)?;
-    if node_id.is_some_and(|node_id| attachment.node_id != node_id) {
-        return Err("Prepared Notes attachment targets an unexpected node.".to_string());
+    let (node_id, attachments) = prepare()?;
+    validate_attachment_batch_capacity(&transaction, &node_id, attachments.len())?;
+
+    let mut ids = HashSet::with_capacity(attachments.len());
+    for attachment in &attachments {
+        validate_new_attachment(attachment)?;
+        if attachment.node_id != node_id {
+            return Err("Prepared Notes attachment targets an unexpected node.".to_string());
+        }
+        if !ids.insert(attachment.id.as_str()) {
+            return Err(format!(
+                "Notes attachment ID {} is already in use.",
+                attachment.id
+            ));
+        }
+        let id_exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                [&attachment.id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
+        if id_exists {
+            return Err(format!(
+                "Notes attachment ID {} is already in use.",
+                attachment.id
+            ));
+        }
     }
-    insert_new_attachment(&transaction, attachment)?;
+
+    let mut sort_key: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
+            [&node_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?;
+    let mut sort_keys = Vec::with_capacity(attachments.len());
+    for _ in &attachments {
+        sort_key = sort_key
+            .checked_add(SORT_KEY_STEP)
+            .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
+        sort_keys.push(sort_key);
+    }
+
+    publish()?;
+    for (attachment, sort_key) in attachments.into_iter().zip(sort_keys) {
+        insert_new_attachment_at_sort_key(&transaction, attachment, sort_key)?;
+    }
     let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
     if journaled {
         history::finalize_transaction(&transaction)?;
@@ -3852,7 +3940,30 @@ pub(crate) fn create_attachment_coordinated_for_node(
     prepare: impl FnOnce() -> Result<NewAttachment, String>,
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
-    create_attachment_coordinated_inner(connection, Some(node_id), prepare, before_commit)
+    create_attachment_coordinated_inner(
+        connection,
+        Some((node_id, 1)),
+        || prepare().map(|attachment| (node_id.to_string(), vec![attachment])),
+        || Ok(()),
+        before_commit,
+    )
+}
+
+pub(crate) fn create_attachments_coordinated_for_node(
+    connection: &mut Connection,
+    node_id: &str,
+    attachments: Vec<NewAttachment>,
+    publish: impl FnOnce() -> Result<(), String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    let batch_len = attachments.len();
+    create_attachment_coordinated_inner(
+        connection,
+        Some((node_id, batch_len)),
+        || Ok((node_id.to_string(), attachments)),
+        publish,
+        before_commit,
+    )
 }
 
 #[cfg(test)]
@@ -3861,7 +3972,17 @@ pub(crate) fn create_attachment_coordinated(
     prepare: impl FnOnce() -> Result<NewAttachment, String>,
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
-    create_attachment_coordinated_inner(connection, None, prepare, before_commit)
+    create_attachment_coordinated_inner(
+        connection,
+        None,
+        || {
+            let attachment = prepare()?;
+            let node_id = attachment.node_id.clone();
+            Ok((node_id, vec![attachment]))
+        },
+        || Ok(()),
+        before_commit,
+    )
 }
 
 pub(crate) fn resize_attachment(
@@ -4004,7 +4125,7 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 mod tests {
     use super::{
         archive_node, collapse_all, connect_notes_db, create_attachment,
-        create_attachment_coordinated_for_node, create_node, create_node_at,
+        create_attachments_coordinated_for_node, create_node, create_node_at,
         create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
         expand_all, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
         migrate_version_one_to_two, move_node, notes_db_path, observe_next_migration_busy,
@@ -4740,34 +4861,268 @@ mod tests {
     }
 
     #[test]
-    fn coordinated_attachment_limit_rejection_happens_before_prepare_or_publication() {
+    fn coordinated_attachment_batch_inserts_in_source_order_inside_one_transaction() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "root");
-        for index in 0..MAX_NOTE_ATTACHMENTS_PER_NODE {
+        let first = test_new_attachment(30_000, NODE_ID);
+        let second = test_new_attachment(30_001, NODE_ID);
+        let expected_ids = [first.id.clone(), second.id.clone()];
+
+        let workspace = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![first, second],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("coordinated attachment batch");
+
+        let ids = workspace.attachments_by_node_id[NODE_ID]
+            .iter()
+            .map(|attachment| attachment.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            expected_ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_rejects_node_capacity_before_publication() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        for index in 0..(MAX_NOTE_ATTACHMENTS_PER_NODE - 1) {
             insert_test_attachment(
                 &connection,
                 usize::try_from(index).expect("attachment index"),
                 NODE_ID,
             );
         }
-        let prepare_called = std::cell::Cell::new(false);
+        let publish_called = std::cell::Cell::new(false);
 
-        let error = create_attachment_coordinated_for_node(
+        let error = create_attachments_coordinated_for_node(
             &mut connection,
             NODE_ID,
+            vec![
+                test_new_attachment(30_000, NODE_ID),
+                test_new_attachment(30_001, NODE_ID),
+            ],
             || {
-                prepare_called.set(true);
-                Ok(test_new_attachment(30_000, NODE_ID))
+                publish_called.set(true);
+                Ok(())
             },
             || Ok(()),
         )
         .expect_err("capacity preflight");
 
         assert_eq!(error, "A Note node can contain at most 128 attachments.");
+        assert!(!publish_called.get(), "capacity must precede publication");
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("count node attachments");
+        assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_NODE - 1);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_rejects_vault_capacity_before_publication() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        let populated_nodes = [NODE_ID, CHILD_ID, THIRD_ID, FOURTH_ID];
+        for index in 0..(MAX_NOTE_ATTACHMENTS_PER_VAULT - 1) {
+            let node_index = usize::try_from(index / MAX_NOTE_ATTACHMENTS_PER_NODE)
+                .expect("attachment node index");
+            insert_test_attachment(
+                &connection,
+                usize::try_from(index).expect("attachment index"),
+                populated_nodes[node_index],
+            );
+        }
+        let publish_called = std::cell::Cell::new(false);
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            FIFTH_ID,
+            vec![
+                test_new_attachment(31_000, FIFTH_ID),
+                test_new_attachment(31_001, FIFTH_ID),
+            ],
+            || {
+                publish_called.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect_err("vault capacity preflight");
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        assert!(!publish_called.get(), "capacity must precede publication");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count vault attachments");
+        assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_VAULT - 1);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_rejects_duplicate_ids_before_publication() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let first = test_new_attachment(32_000, NODE_ID);
+        let mut second = test_new_attachment(32_001, NODE_ID);
+        second.id = first.id.clone();
+        let publish_called = std::cell::Cell::new(false);
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![first, second],
+            || {
+                publish_called.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect_err("duplicate attachment IDs");
+
         assert!(
-            !prepare_called.get(),
-            "prepare must not publish attachment bytes"
+            error.contains("already in use"),
+            "unexpected error: {error}"
         );
+        assert!(
+            !publish_called.get(),
+            "ID validation must precede publication"
+        );
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_publication_failure_leaves_zero_rows() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![
+                test_new_attachment(33_000, NODE_ID),
+                test_new_attachment(33_001, NODE_ID),
+            ],
+            || Err("publication failed".to_string()),
+            || Ok(()),
+        )
+        .expect_err("publication failure");
+
+        assert_eq!(error, "publication failed");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_before_commit_failure_rolls_back_all_rows() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![
+                test_new_attachment(34_000, NODE_ID),
+                test_new_attachment(34_001, NODE_ID),
+            ],
+            || Ok(()),
+            || Err("identity changed".to_string()),
+        )
+        .expect_err("before commit failure");
+
+        assert_eq!(error, "identity changed");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_rejects_sort_key_overflow_before_publication() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let existing_id = insert_test_attachment(&connection, 35_000, NODE_ID);
+        connection
+            .execute(
+                "UPDATE notes_attachments SET sort_key = ?1 WHERE id = ?2",
+                params![i64::MAX - SORT_KEY_STEP, existing_id],
+            )
+            .expect("move existing attachment near sort-key limit");
+        let publish_called = std::cell::Cell::new(false);
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![
+                test_new_attachment(35_001, NODE_ID),
+                test_new_attachment(35_002, NODE_ID),
+            ],
+            || {
+                publish_called.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect_err("sort-key overflow");
+
+        assert_eq!(error, "The Notes attachment ordering is too large.");
+        assert!(!publish_called.get(), "ordering must precede publication");
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_without_history_context_creates_no_history_row() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+
+        create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![test_new_attachment(36_000, NODE_ID)],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("unjournaled attachment batch");
+
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("count history entries");
+        assert_eq!(count, 0);
     }
 
     #[test]

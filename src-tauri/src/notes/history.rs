@@ -1155,10 +1155,11 @@ mod tests {
         with_history_transaction_and_prunes, HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
-        archive_node, connect_notes_db, create_attachment, create_node, delete_database,
-        duplicate_node, empty_trash, list_tags, load_workspace, move_node, remove_attachment,
-        restore_node, search_nodes, search_nodes_structured, soft_delete_node, split_node,
-        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node, NewAttachment,
+        archive_node, connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
+        create_node, delete_database, duplicate_node, empty_trash, list_tags, load_workspace,
+        move_node, remove_attachment, restore_node, search_nodes, search_nodes_structured,
+        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node, NewAttachment,
     };
     use crate::notes::types::{
         CreateNodeInput, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix,
@@ -1262,6 +1263,38 @@ mod tests {
             intrinsic_height: 1,
             display_width: 1,
         }
+    }
+
+    #[test]
+    fn attachment_history_batch_failure_rolls_back_metadata_and_history_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let context = history_context(1, "importAttachments");
+
+        let error = journal(&mut connection, &context, |connection| {
+            create_attachments_coordinated_for_node(
+                connection,
+                NODE_ID,
+                vec![
+                    history_new_attachment(30_000, NODE_ID),
+                    history_new_attachment(30_001, NODE_ID),
+                ],
+                || Ok(()),
+                || Err("identity changed".to_string()),
+            )
+        })
+        .expect_err("coordinated failure");
+
+        assert_eq!(error, "identity changed");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count");
+        assert_eq!(attachment_count, 0);
+        assert_eq!(entry_count(&connection), 0);
     }
 
     #[test]
