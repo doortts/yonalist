@@ -209,6 +209,7 @@ describe("useNotesWorkspace", () => {
     createNoteIdMock.mockReturnValue(imported.id);
     const attachmentUi = {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       pathForDroppedFile: vi.fn()
     };
     const store = repository({
@@ -292,6 +293,9 @@ describe("useNotesWorkspace", () => {
         repository: store,
         attachmentUi: {
           openImageFile: vi.fn().mockReturnValue(picker.promise),
+          openImageFiles: vi.fn().mockReturnValue(
+            picker.promise.then((path) => (path === null ? null : [path]))
+          ),
           pathForDroppedFile: vi.fn()
         }
       })
@@ -325,6 +329,11 @@ describe("useNotesWorkspace", () => {
       .mockResolvedValueOnce("/incoming/first.png")
       .mockResolvedValueOnce("/incoming/second.png")
       .mockResolvedValue(null);
+    const openImageFiles = vi
+      .fn()
+      .mockResolvedValueOnce(["/incoming/first.png"])
+      .mockResolvedValueOnce(["/incoming/second.png"])
+      .mockResolvedValue(null);
     const importAttachment = vi
       .fn()
       .mockReturnValueOnce(firstImport.promise)
@@ -345,7 +354,11 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+        attachmentUi: {
+          openImageFile,
+          openImageFiles,
+          pathForDroppedFile: vi.fn()
+        }
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -392,6 +405,11 @@ describe("useNotesWorkspace", () => {
       .mockResolvedValueOnce("/incoming/first.png")
       .mockResolvedValueOnce("/incoming/second.png")
       .mockResolvedValue(null);
+    const openImageFiles = vi
+      .fn()
+      .mockResolvedValueOnce(["/incoming/first.png"])
+      .mockResolvedValueOnce(["/incoming/second.png"])
+      .mockResolvedValue(null);
     const importAttachment = vi
       .fn()
       .mockReturnValueOnce(firstImport.promise)
@@ -412,7 +430,11 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+        attachmentUi: {
+          openImageFile,
+          openImageFiles,
+          pathForDroppedFile: vi.fn()
+        }
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -457,6 +479,7 @@ describe("useNotesWorkspace", () => {
     });
     const attachmentUi = {
       openImageFile: vi.fn(),
+      openImageFiles: vi.fn().mockResolvedValue(null),
       pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
     };
     const store = repository({
@@ -535,6 +558,7 @@ describe("useNotesWorkspace", () => {
         repository: store,
         attachmentUi: {
           openImageFile,
+          openImageFiles: vi.fn().mockResolvedValue(null),
           pathForDroppedFile
         }
       })
@@ -559,12 +583,19 @@ describe("useNotesWorkspace", () => {
 
   it("does not expose a stale retry target for picker failures", async () => {
     const openImageFile = vi.fn().mockRejectedValue(new Error("dialog failed"));
+    const openImageFiles = vi
+      .fn()
+      .mockRejectedValue(new Error("dialog failed"));
     const store = repository({ importAttachment: vi.fn() });
     const { result } = renderHook(() =>
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: { openImageFile, pathForDroppedFile: vi.fn() }
+        attachmentUi: {
+          openImageFile,
+          openImageFiles,
+          pathForDroppedFile: vi.fn()
+        }
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -588,6 +619,9 @@ describe("useNotesWorkspace", () => {
         `20000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
     );
     const openImageFile = vi.fn().mockResolvedValue("/incoming/pending.png");
+    const openImageFiles = vi
+      .fn()
+      .mockResolvedValue(["/incoming/pending.png"]);
     const importAttachment = vi
       .fn()
       .mockReturnValueOnce(pendingImport.promise)
@@ -599,6 +633,7 @@ describe("useNotesWorkspace", () => {
         repository: store,
         attachmentUi: {
           openImageFile,
+          openImageFiles,
           pathForDroppedFile: vi.fn()
         }
       })
@@ -801,6 +836,7 @@ describe("useNotesWorkspace", () => {
     };
     const attachmentUi = {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       pathForDroppedFile: vi.fn()
     };
     const store = repository({
@@ -850,6 +886,12 @@ describe("useNotesWorkspace", () => {
       .fn()
       .mockReturnValueOnce(oldSelection.promise)
       .mockResolvedValueOnce("/new/fresh.png");
+    const openImageFiles = vi
+      .fn()
+      .mockReturnValueOnce(
+        oldSelection.promise.then((path) => (path === null ? null : [path]))
+      )
+      .mockResolvedValueOnce(["/new/fresh.png"]);
     createNoteIdMock.mockReturnValue("1c17ba74-a617-45e7-9e21-74068b63befe");
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
@@ -862,6 +904,7 @@ describe("useNotesWorkspace", () => {
           repository: store,
           attachmentUi: {
             openImageFile,
+            openImageFiles,
             pathForDroppedFile: vi.fn()
           }
         }),

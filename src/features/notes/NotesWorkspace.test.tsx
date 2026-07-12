@@ -313,6 +313,7 @@ function configureRepository(
 function renderNotesWorkspace(
   attachmentUi?: {
     openImageFile(): Promise<string | null>;
+    openImageFiles(): Promise<readonly string[] | null>;
     pathForDroppedFile(file: File): string | null;
   }
 ) {
@@ -602,6 +603,7 @@ describe("Notes workspace", () => {
     );
     const attachmentUi = {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       pathForDroppedFile: vi.fn()
     };
     mockNotesContentWidth(700, 480);
@@ -656,6 +658,7 @@ describe("Notes workspace", () => {
     configureRepository([node({ id: "project", title: "Project" })]);
     const attachmentUi = {
       openImageFile: vi.fn().mockResolvedValue(null),
+      openImageFiles: vi.fn().mockResolvedValue(null),
       pathForDroppedFile: vi.fn()
     };
     renderNotesWorkspace(attachmentUi);
@@ -687,6 +690,7 @@ describe("Notes workspace", () => {
     );
     const attachmentUi = {
       openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
+      openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
       pathForDroppedFile: vi.fn()
     };
     mockNotesContentWidth(480);
@@ -755,6 +759,7 @@ describe("Notes workspace", () => {
     vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(attachmentId);
     const attachmentUi = {
       openImageFile: vi.fn(),
+      openImageFiles: vi.fn().mockResolvedValue(null),
       pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
     };
     mockNotesContentWidth(480);
