@@ -368,24 +368,63 @@ describe("native Notes image drop ingest", () => {
     expect(
       document.querySelectorAll("[data-notes-attachment-target]")
     ).toHaveLength(2);
-    const firstRow = document.querySelector<HTMLElement>(
-      '[data-outline-id="first"]'
-    )!;
-    elementFromPoint.mockReturnValue(firstRow);
-    act(() =>
-      nativeDrop?.({
-        type: "enter",
-        paths: ["/incoming/one.png"],
-        position: { x: 20, y: 20 }
-      })
-    );
-    expect(firstRow).toHaveAttribute("data-image-drop-active", "true");
-    active.rerenderWorkspace(workspaceValue({ deletingNotesData: true }));
-    expect(screen.queryByTestId("notes-image-drop-placeholder")).toBeNull();
-    active.rerenderWorkspace(workspaceValue());
-    expect(
-      document.querySelector("[data-image-drop-active='true']")
-    ).toBeNull();
+    const transitions: Array<
+      [string, Parameters<typeof workspaceValue>[0]]
+    > = [
+      ["archive", { libraryView: "archive" }],
+      ["trash", { libraryView: "trash" }],
+      ["loading", { status: "loading" }],
+      ["deleting", { deletingNotesData: true }]
+    ];
+    for (const [label, blockedOptions] of transitions) {
+      const firstRow = document.querySelector<HTMLElement>(
+        '[data-outline-id="first"]'
+      )!;
+      elementFromPoint.mockReturnValue(firstRow);
+      act(() =>
+        nativeDrop?.({
+          type: "enter",
+          paths: ["/incoming/one.png"],
+          position: { x: 20, y: 20 }
+        })
+      );
+      expect(firstRow, label).toHaveAttribute(
+        "data-image-drop-active",
+        "true"
+      );
+      expect(
+        screen.getByTestId("notes-image-drop-placeholder"),
+        label
+      ).toBeVisible();
+
+      active.rerenderWorkspace(workspaceValue(blockedOptions));
+      expect(
+        document.querySelector("[data-notes-attachment-target]"),
+        label
+      ).toBeNull();
+      expect(
+        document.querySelector("[data-image-drop-active='true']"),
+        label
+      ).toBeNull();
+      expect(
+        screen.queryByTestId("notes-image-drop-placeholder"),
+        label
+      ).toBeNull();
+
+      active.rerenderWorkspace(workspaceValue());
+      expect(
+        document.querySelectorAll("[data-notes-attachment-target]"),
+        label
+      ).toHaveLength(2);
+      expect(
+        document.querySelector("[data-image-drop-active='true']"),
+        label
+      ).toBeNull();
+      expect(
+        screen.queryByTestId("notes-image-drop-placeholder"),
+        label
+      ).toBeNull();
+    }
     active.unmount();
 
     const zoomedSubscribe = vi.fn().mockResolvedValue(vi.fn());
