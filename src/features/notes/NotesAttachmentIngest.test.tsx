@@ -1,5 +1,7 @@
 import {
   act,
+  createEvent,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -8,7 +10,11 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteNode } from "../../domain/notes";
+import type {
+  NoteAttachment,
+  NoteNode,
+  PendingNoteAttachmentByteItem
+} from "../../domain/notes";
 import { NotesAttachmentUiContext } from "./NotesAttachmentUiContext";
 import type {
   NotesAttachmentUiBoundary,
@@ -39,6 +45,24 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   };
 }
 
+function attachment(nodeId: string): NoteAttachment {
+  return {
+    id: `attachment-${nodeId}`,
+    nodeId,
+    sortKey: 1024,
+    relativePath: `notes-assets/${"a".repeat(64)}.png`,
+    contentHash: "a".repeat(64),
+    originalName: "existing.png",
+    mimeType: "image/png",
+    byteSize: 1,
+    intrinsicWidth: 320,
+    intrinsicHeight: 200,
+    displayWidth: 320,
+    createdAt: "2026-07-13T00:00:00Z",
+    updatedAt: "2026-07-13T00:00:00Z"
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -49,8 +73,57 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function clipboardItem(
+  type: string,
+  file: File | null,
+  kind: DataTransferItem["kind"] = type.startsWith("image/")
+    ? "file"
+    : "string"
+): DataTransferItem {
+  return {
+    kind,
+    type,
+    getAsFile: vi.fn(() => file),
+    getAsString: vi.fn(),
+    webkitGetAsEntry: vi.fn()
+  } as unknown as DataTransferItem;
+}
+
+function clipboardItems(
+  entries: readonly DataTransferItem[]
+): DataTransferItemList {
+  return Object.assign([...entries], {
+    add: vi.fn(),
+    clear: vi.fn(),
+    remove: vi.fn()
+  }) as unknown as DataTransferItemList;
+}
+
+function createClipboardPasteEvent(
+  target: Element,
+  entries: readonly DataTransferItem[]
+) {
+  return createEvent.paste(target, {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: { items: clipboardItems(entries) }
+  });
+}
+
+function pasteClipboardItems(
+  target: Element,
+  entries: readonly DataTransferItem[]
+) {
+  const event = createClipboardPasteEvent(target, entries);
+  fireEvent(target, event);
+  return event;
+}
+
 function workspaceValue(options: {
   zoomRootId?: string | null;
+  selectedId?: string | null;
+  notesByNodeId?: Readonly<Record<string, string>>;
+  attachmentNodeId?: string;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
   deletingNotesData?: boolean;
   status?: "loading" | "ready" | "error";
@@ -58,16 +131,43 @@ function workspaceValue(options: {
     nodeId: string,
     paths: readonly string[]
   ) => Promise<void>;
+  importClipboardImages?:
+    | ((
+        nodeId: string,
+        items: readonly PendingNoteAttachmentByteItem[]
+      ) => Promise<void>)
+    | null;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
-      node({ id: "first", title: "First", isCollapsed: true }),
-      node({ id: "second", sortKey: 2, title: "Second" }),
-      node({ id: "child", parentId: "first", title: "Child" })
+      node({
+        id: "first",
+        title: "First",
+        note: options.notesByNodeId?.first ?? "",
+        isCollapsed: true
+      }),
+      node({
+        id: "second",
+        sortKey: 2,
+        title: "Second",
+        note: options.notesByNodeId?.second ?? ""
+      }),
+      node({
+        id: "child",
+        parentId: "first",
+        title: "Child",
+        note: options.notesByNodeId?.child ?? ""
+      })
     ],
-    attachmentsByNodeId: {}
+    attachmentsByNodeId:
+      options.attachmentNodeId === undefined
+        ? {}
+        : {
+            [options.attachmentNodeId]: [attachment(options.attachmentNodeId)]
+          }
   });
   state.zoomRootId = options.zoomRootId ?? null;
+  state.selectedId = options.selectedId ?? null;
   state.status = options.status ?? "ready";
   const resolved = () => vi.fn().mockResolvedValue(undefined);
   const actions = {
@@ -104,7 +204,10 @@ function workspaceValue(options: {
     uploadImage: resolved(),
     importDroppedImagePaths:
       options.importDroppedImagePaths ?? vi.fn().mockResolvedValue(undefined),
-    importClipboardImages: resolved(),
+    importClipboardImages:
+      options.importClipboardImages === null
+        ? undefined
+        : (options.importClipboardImages ?? resolved()),
     retryImageUpload: resolved(),
     loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),
     resizeImage: resolved(),
@@ -169,7 +272,7 @@ const originalElementFromPoint = Object.getOwnPropertyDescriptor(
   "elementFromPoint"
 );
 
-describe("native Notes image drop ingest", () => {
+describe("Notes image ingest", () => {
   beforeAll(() => {
     Object.defineProperty(document, "elementFromPoint", {
       configurable: true,
@@ -405,6 +508,378 @@ describe("native Notes image drop ingest", () => {
     } finally {
       window.removeEventListener("unhandledrejection", unhandled);
     }
+  });
+
+  it("pastes one ordered mixed-flavor batch into the closest row without changing editor state", async () => {
+    const pendingImport = deferred<void>();
+    let pasteEvent: Event | undefined;
+    let preventedWhenImported = false;
+    const importClipboardImages = vi.fn(() => {
+      preventedWhenImported = pasteEvent?.defaultPrevented ?? false;
+      return pendingImport.promise;
+    });
+    const workspace = workspaceValue({
+      selectedId: "second",
+      importClipboardImages
+    });
+    const rootIdsBefore = [...workspace.state.rootIds];
+    const childIdsBefore = JSON.stringify(workspace.state.childIdsByParent);
+    const nodeIdsBefore = Object.keys(workspace.state.nodesById);
+    renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
+    const firstRow = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    const title = firstRow.querySelector<HTMLTextAreaElement>(
+      "textarea.notes-node-title"
+    )!;
+    act(() => {
+      title.focus();
+      title.setSelectionRange(1, 4);
+    });
+    const first = new File(["first"], "first.png", { type: "image/png" });
+    const second = new File(["second"], "second.jpg", {
+      type: "image/jpeg"
+    });
+    pasteEvent = createClipboardPasteEvent(title, [
+      clipboardItem("text/plain", null),
+      clipboardItem("image/png", first),
+      clipboardItem("text/html", null),
+      clipboardItem("image/jpeg", second)
+    ]);
+
+    fireEvent(title, pasteEvent);
+
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(preventedWhenImported).toBe(true);
+    expect(importClipboardImages).toHaveBeenCalledOnce();
+    expect(importClipboardImages).toHaveBeenCalledWith("first", [
+      { blob: first, originalName: "first.png", mimeType: "image/png" },
+      { blob: second, originalName: "second.jpg", mimeType: "image/jpeg" }
+    ]);
+    expect(document.activeElement).toBe(title);
+    expect(title.selectionStart).toBe(1);
+    expect(title.selectionEnd).toBe(4);
+    expect(workspace.state.selectedId).toBe("second");
+    expect(workspace.state.nodesById.first.isCollapsed).toBe(true);
+    expect(workspace.state.rootIds).toEqual(rootIdsBefore);
+    expect(workspace.state.childIdsByParent).toEqual(
+      JSON.parse(childIdsBefore)
+    );
+    expect(Object.keys(workspace.state.nodesById)).toEqual(nodeIdsBefore);
+
+    await act(async () => pendingImport.resolve(undefined));
+    expect(document.activeElement).toBe(title);
+    expect(title.selectionStart).toBe(1);
+    expect(title.selectionEnd).toBe(4);
+  });
+
+  it("leaves ordinary text paste browser-owned", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const workspace = workspaceValue({ importClipboardImages });
+    renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
+    const title = document.querySelector<HTMLTextAreaElement>(
+      '[data-outline-id="first"] textarea.notes-node-title'
+    )!;
+
+    const event = pasteClipboardItems(title, [
+      clipboardItem("text/plain", null),
+      clipboardItem("text/html", null)
+    ]);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("routes supporting-note, page-title, header, and attachment-area pastes", () => {
+    const scenarios: Array<{
+      name: string;
+      options: Parameters<typeof workspaceValue>[0];
+      selector: string;
+      nodeId: string;
+    }> = [
+      {
+        name: "supporting-note",
+        options: { notesByNodeId: { second: "Details" } },
+        selector: '[data-outline-id="second"] textarea.notes-node-note',
+        nodeId: "second"
+      },
+      {
+        name: "page-title",
+        options: { zoomRootId: "first" },
+        selector: ".notes-page-title",
+        nodeId: "first"
+      },
+      {
+        name: "page-header",
+        options: { zoomRootId: "first" },
+        selector: ".notes-page-header",
+        nodeId: "first"
+      },
+      {
+        name: "page-attachments",
+        options: { zoomRootId: "first", attachmentNodeId: "first" },
+        selector: ".notes-page-attachments",
+        nodeId: "first"
+      }
+    ];
+
+    for (const scenario of scenarios) {
+      const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+      const workspace = workspaceValue({
+        ...scenario.options,
+        importClipboardImages
+      });
+      const view = renderPane(
+        workspace,
+        vi.fn().mockResolvedValue(vi.fn())
+      );
+      const target = document.querySelector(scenario.selector)!;
+      const image = new File([scenario.name], `${scenario.name}.png`, {
+        type: "image/png"
+      });
+
+      const event = pasteClipboardItems(target, [
+        clipboardItem("image/png", image)
+      ]);
+
+      expect(event.defaultPrevented, scenario.name).toBe(true);
+      expect(importClipboardImages, scenario.name).toHaveBeenCalledOnce();
+      expect(importClipboardImages, scenario.name).toHaveBeenCalledWith(
+        scenario.nodeId,
+        [{ blob: image, originalName: image.name, mimeType: "image/png" }]
+      );
+      view.unmount();
+    }
+  });
+
+  it("uses the selected writable note only when the paste target has no note", async () => {
+    const selectedImport = vi.fn().mockResolvedValue(undefined);
+    const selectedView = renderPane(
+      workspaceValue({
+        selectedId: "second",
+        importClipboardImages: selectedImport
+      }),
+      vi.fn().mockResolvedValue(vi.fn())
+    );
+    const targetless = document.querySelector(".notes-outline-list")!;
+    const selectedImage = new File(["selected"], "selected.png", {
+      type: "image/png"
+    });
+
+    const selectedEvent = pasteClipboardItems(targetless, [
+      clipboardItem("image/png", selectedImage)
+    ]);
+
+    expect(selectedEvent.defaultPrevented).toBe(true);
+    expect(selectedImport).toHaveBeenCalledWith("second", [
+      {
+        blob: selectedImage,
+        originalName: "selected.png",
+        mimeType: "image/png"
+      }
+    ]);
+    selectedView.unmount();
+
+    const noTargetImport = vi.fn().mockResolvedValue(undefined);
+    renderPane(
+      workspaceValue({ importClipboardImages: noTargetImport }),
+      vi.fn().mockResolvedValue(vi.fn())
+    );
+    const noTarget = document.querySelector(".notes-outline-list")!;
+    const noTargetEvent = pasteClipboardItems(noTarget, [
+      clipboardItem("image/png", selectedImage)
+    ]);
+
+    expect(noTargetEvent.defaultPrevented).toBe(true);
+    expect(noTargetImport).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("alert", { name: "Image paste failed" })
+    ).toHaveTextContent("Select a note before pasting images.");
+  });
+
+  it("reports one extraction error without saving a partial batch or changing state", async () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const workspace = workspaceValue({
+      selectedId: "first",
+      importClipboardImages
+    });
+    const selectedIdBefore = workspace.state.selectedId;
+    const collapsedBefore = workspace.state.nodesById.first.isCollapsed;
+    const structureBefore = JSON.stringify({
+      rootIds: workspace.state.rootIds,
+      childIdsByParent: workspace.state.childIdsByParent,
+      nodeIds: Object.keys(workspace.state.nodesById)
+    });
+    renderPane(workspace, vi.fn().mockResolvedValue(vi.fn()));
+    const title = document.querySelector<HTMLTextAreaElement>(
+      '[data-outline-id="first"] textarea.notes-node-title'
+    )!;
+    act(() => {
+      title.focus();
+      title.setSelectionRange(0, 2);
+    });
+    const readable = new File(["readable"], "readable.png", {
+      type: "image/png"
+    });
+
+    const event = pasteClipboardItems(title, [
+      clipboardItem("image/png", readable),
+      clipboardItem("image/jpeg", null)
+    ]);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+    expect(
+      await screen.findByRole("alert", { name: "Image paste failed" })
+    ).toHaveTextContent("An image could not be read from the clipboard.");
+    expect(
+      screen.getAllByRole("alert", { name: "Image paste failed" })
+    ).toHaveLength(1);
+    expect(document.activeElement).toBe(title);
+    expect(title.selectionStart).toBe(0);
+    expect(title.selectionEnd).toBe(2);
+    expect(workspace.state.selectedId).toBe(selectedIdBefore);
+    expect(workspace.state.nodesById.first.isCollapsed).toBe(collapsedBefore);
+    expect(
+      JSON.stringify({
+        rootIds: workspace.state.rootIds,
+        childIdsByParent: workspace.state.childIdsByParent,
+        nodeIds: Object.keys(workspace.state.nodesById)
+      })
+    ).toBe(structureBefore);
+  });
+
+  it("passes unnamed and unsupported image MIME items once and absorbs rejection", async () => {
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+    const importClipboardImages = vi
+      .fn()
+      .mockRejectedValue(new Error("HEIC is unsupported"));
+    renderPane(
+      workspaceValue({ importClipboardImages }),
+      vi.fn().mockResolvedValue(vi.fn())
+    );
+    const title = document.querySelector(
+      '[data-outline-id="first"] textarea.notes-node-title'
+    )!;
+    const png = new File(["png"], "", { type: "image/png" });
+    const heic = new File(["heic"], "", { type: "image/heic" });
+
+    try {
+      const event = pasteClipboardItems(title, [
+        clipboardItem("image/png", png),
+        clipboardItem("image/heic", heic)
+      ]);
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(importClipboardImages).toHaveBeenCalledOnce();
+      expect(importClipboardImages).toHaveBeenCalledWith("first", [
+        {
+          blob: png,
+          originalName: "clipboard-image-1.png",
+          mimeType: "image/png"
+        },
+        {
+          blob: heic,
+          originalName: "clipboard-image-2",
+          mimeType: "image/heic"
+        }
+      ]);
+      expect(
+        await screen.findByRole("alert", { name: "Image paste failed" })
+      ).toHaveTextContent("Image paste failed: HEIC is unsupported");
+      await Promise.resolve();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandled);
+    }
+  });
+
+  it("reports a synchronous clipboard import throw without escaping the event", () => {
+    const importClipboardImages = vi.fn(() => {
+      throw new Error("clipboard import crashed");
+    });
+    renderPane(
+      workspaceValue({ importClipboardImages }),
+      vi.fn().mockResolvedValue(vi.fn())
+    );
+    const title = document.querySelector(
+      '[data-outline-id="first"] textarea.notes-node-title'
+    )!;
+    const image = new File(["png"], "image.png", { type: "image/png" });
+
+    expect(() =>
+      pasteClipboardItems(title, [clipboardItem("image/png", image)])
+    ).not.toThrow();
+    expect(
+      screen.getByRole("alert", { name: "Image paste failed" })
+    ).toHaveTextContent("Image paste failed: clipboard import crashed");
+    expect(importClipboardImages).toHaveBeenCalledOnce();
+  });
+
+  it("blocks clipboard image writes in read-only and unavailable states", () => {
+    const scenarios: Array<
+      [string, Parameters<typeof workspaceValue>[0], boolean]
+    > = [
+      ["archive", { libraryView: "archive" }, false],
+      ["trash", { libraryView: "trash" }, false],
+      ["loading", { status: "loading" }, false],
+      ["deleting", { deletingNotesData: true }, false],
+      ["missing action", { importClipboardImages: null }, true]
+    ];
+
+    for (const [name, options, missingAction] of scenarios) {
+      const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+      const workspace = workspaceValue({
+        ...options,
+        selectedId: "first",
+        importClipboardImages: missingAction ? null : importClipboardImages
+      });
+      const view = renderPane(
+        workspace,
+        vi.fn().mockResolvedValue(vi.fn())
+      );
+      const content = document.querySelector(".notes-outline-content")!;
+      const image = new File([name], `${name}.png`, { type: "image/png" });
+
+      const event = pasteClipboardItems(content, [
+        clipboardItem("image/png", image)
+      ]);
+
+      expect(event.defaultPrevented, name).toBe(true);
+      expect(importClipboardImages, name).not.toHaveBeenCalled();
+      expect(
+        screen.queryByRole("alert", { name: "Image paste failed" }),
+        name
+      ).toBeNull();
+      view.unmount();
+    }
+  });
+
+  it("replaces a drop error with one paste error instead of overlapping alerts", async () => {
+    renderPane(
+      workspaceValue(),
+      vi.fn().mockRejectedValue(new Error("native listener unavailable"))
+    );
+    expect(
+      await screen.findByRole("alert", { name: "Image drop failed" })
+    ).toHaveTextContent("native listener unavailable");
+    const title = document.querySelector(
+      '[data-outline-id="first"] textarea.notes-node-title'
+    )!;
+
+    const event = pasteClipboardItems(title, [
+      clipboardItem("image/png", null)
+    ]);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(
+      await screen.findByRole("alert", { name: "Image paste failed" })
+    ).toHaveTextContent("An image could not be read from the clipboard.");
+    expect(
+      screen.queryByRole("alert", { name: "Image drop failed" })
+    ).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
   });
 
   it("exposes targets only for active writable rows and a writable page header", async () => {

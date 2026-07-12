@@ -18,6 +18,7 @@ import {
 import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
 import {
   type CSSProperties,
+  type ClipboardEvent,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -36,7 +37,11 @@ import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
-import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
+import {
+  attachmentTargetFromPaste,
+  attachmentTargetFromPoint
+} from "./notesAttachmentTargets";
+import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import {
@@ -59,6 +64,11 @@ const outlineScreenReaderInstructions = {
   draggable:
     "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
 };
+
+interface ImageIngestError {
+  readonly label: "Image drop failed" | "Image paste failed";
+  readonly message: string;
+}
 
 interface NotesBreadcrumbProps {
   disabled: boolean;
@@ -203,7 +213,8 @@ export function NotesOutlinePane() {
   const [showCompleted, setShowCompleted] = useState(true);
   const [imageDropTargetId, setImageDropTargetId] =
     useState<NoteId | null>(null);
-  const [imageDropError, setImageDropError] = useState<string | null>(null);
+  const [imageIngestError, setImageIngestError] =
+    useState<ImageIngestError | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
@@ -222,8 +233,76 @@ export function NotesOutlinePane() {
     !lifecycleReadOnly &&
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
+  const imagePasteAvailable =
+    !deletingNotesData &&
+    !lifecycleReadOnly &&
+    state.status !== "loading" &&
+    actions.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
   importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
+  const reportImagePasteError = (cause: unknown) => {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    setImageIngestError({
+      label: "Image paste failed",
+      message: `Image paste failed: ${detail}`
+    });
+  };
+  const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboardItems = event.clipboardData.items;
+    let hasImageCandidate = false;
+    for (let index = 0; index < clipboardItems.length; index += 1) {
+      if (clipboardItems[index].type.startsWith("image/")) {
+        hasImageCandidate = true;
+        break;
+      }
+    }
+    if (!hasImageCandidate) return;
+
+    event.preventDefault();
+    setImageIngestError(null);
+    let extraction: ReturnType<typeof extractClipboardImages>;
+    try {
+      extraction = extractClipboardImages(clipboardItems);
+    } catch (cause) {
+      reportImagePasteError(cause);
+      return;
+    }
+    if (extraction.kind === "error") {
+      setImageIngestError({
+        label: "Image paste failed",
+        message: extraction.message
+      });
+      return;
+    }
+    if (extraction.kind === "none" || !imagePasteAvailable) return;
+
+    const selectedId =
+      state.selectedId !== null && state.nodesById[state.selectedId]
+        ? state.selectedId
+        : null;
+    const targetId = attachmentTargetFromPaste(
+      event.currentTarget,
+      event.target,
+      selectedId
+    );
+    if (targetId === null) {
+      setImageIngestError({
+        label: "Image paste failed",
+        message: "Select a note before pasting images."
+      });
+      return;
+    }
+
+    const importClipboardImages = actions.importClipboardImages;
+    if (!importClipboardImages) return;
+    try {
+      void Promise.resolve(
+        importClipboardImages(targetId, extraction.items)
+      ).catch(reportImagePasteError);
+    } catch (cause) {
+      reportImagePasteError(cause);
+    }
+  };
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -258,7 +337,10 @@ export function NotesOutlinePane() {
     const reportDropError = (cause: unknown) => {
       if (disposed) return;
       const detail = cause instanceof Error ? cause.message : String(cause);
-      setImageDropError(`Image drop failed: ${detail}`);
+      setImageIngestError({
+        label: "Image drop failed",
+        message: `Image drop failed: ${detail}`
+      });
     };
     const listener = (event: NotesNativeImageDropEvent) => {
       if (disposed) return;
@@ -272,7 +354,7 @@ export function NotesOutlinePane() {
       }
       if (event.type === "enter") {
         imageDropPathsRef.current = event.paths;
-        setImageDropError(null);
+        setImageIngestError(null);
         setImageDropTargetId(
           event.paths.length > 0 ? targetFromEvent(event) : null
         );
@@ -288,7 +370,7 @@ export function NotesOutlinePane() {
       const targetId =
         event.paths.length > 0 ? targetFromEvent(event) : null;
       clearPreview();
-      setImageDropError(null);
+      setImageIngestError(null);
       const importDroppedImagePaths = importDroppedImagePathsRef.current;
       if (!targetId || !importDroppedImagePaths) return;
       try {
@@ -564,7 +646,11 @@ export function NotesOutlinePane() {
           />
         </div>
         <div className="notes-outline-rows">
-          <div className="notes-outline-content" ref={contentRef}>
+          <div
+            className="notes-outline-content"
+            ref={contentRef}
+            onPasteCapture={handlePasteCapture}
+          >
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>
           )}
@@ -588,13 +674,13 @@ export function NotesOutlinePane() {
               {state.error}
             </p>
           )}
-          {imageDropError && (
+          {imageIngestError && (
             <p
               className="notes-inline-error"
               role="alert"
-              aria-label="Image drop failed"
+              aria-label={imageIngestError.label}
             >
-              {imageDropError}
+              {imageIngestError.message}
             </p>
           )}
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (

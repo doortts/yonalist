@@ -1,5 +1,8 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
+import {
+  attachmentTargetFromPaste,
+  attachmentTargetFromPoint
+} from "./notesAttachmentTargets";
 
 const elementFromPoint = vi.fn(
   (_x: number, _y: number): Element | null => null
@@ -22,7 +25,7 @@ function appendTarget(
   return target;
 }
 
-describe("attachmentTargetFromPoint", () => {
+describe("notes attachment target resolution", () => {
   let root: HTMLElement;
 
   beforeAll(() => {
@@ -112,4 +115,42 @@ describe("attachmentTargetFromPoint", () => {
       expect(attachmentTargetFromPoint(root, { x: 20, y: 30 })).toBeNull();
     }
   );
+
+  it("prefers the closest paste target over the selected fallback", () => {
+    const row = appendTarget(root, "row-note");
+    const title = document.createElement("textarea");
+    const titleText = document.createTextNode("Title");
+    title.append(titleText);
+    row.append(title);
+
+    expect(
+      attachmentTargetFromPaste(root, title, "selected-note")
+    ).toBe("row-note");
+    expect(
+      attachmentTargetFromPaste(root, titleText, "selected-note")
+    ).toBe("row-note");
+  });
+
+  it("falls back to a selected note for targetless or outside paste elements", () => {
+    const targetless = document.createElement("textarea");
+    root.append(targetless);
+    const outsideRoot = document.createElement("aside");
+    const outsideTarget = appendTarget(outsideRoot, "outside-note");
+    document.body.append(outsideRoot);
+
+    expect(
+      attachmentTargetFromPaste(root, targetless, "selected-note")
+    ).toBe("selected-note");
+    expect(
+      attachmentTargetFromPaste(root, outsideTarget, "selected-note")
+    ).toBe("selected-note");
+  });
+
+  it("returns null when neither paste target nor selected fallback is valid", () => {
+    const targetless = document.createElement("div");
+    root.append(targetless);
+
+    expect(attachmentTargetFromPaste(root, targetless, null)).toBeNull();
+    expect(attachmentTargetFromPaste(root, targetless, "  ")).toBeNull();
+  });
 });
