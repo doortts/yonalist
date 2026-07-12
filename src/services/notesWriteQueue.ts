@@ -24,9 +24,19 @@ interface DebouncedEntry {
   timer: ReturnType<typeof setTimeout> | null;
   operation: () => Promise<unknown>;
   waiters: DebouncedWaiter[];
+  firstEnqueuedAt: number;
 }
 
 const DEFAULT_DEBOUNCE_MS = 300;
+
+/**
+ * Hard ceiling on how long a debounced write can be deferred while a key is
+ * continuously re-armed. Without it, uninterrupted typing would push the timer
+ * forward forever and never persist, widening the crash/data-loss window. Once
+ * this much time has elapsed since the first enqueue of the current window, the
+ * next enqueue (or the pending timer) forces a flush.
+ */
+export const MAX_DEBOUNCE_LATENCY_MS = 2000;
 
 export function createNotesWriteQueue(): NotesWriteQueue {
   const queued: QueueItem[] = [];
@@ -118,27 +128,43 @@ export function createNotesWriteQueue(): NotesWriteQueue {
     operation: () => Promise<T>,
     delayMs = DEFAULT_DEBOUNCE_MS
   ): Promise<T> => {
+    const now = Date.now();
     const existing = debounced.get(key);
     if (existing) {
-      if (existing.timer !== null) {
-        clearTimeout(existing.timer);
-      }
       existing.operation = operation;
-      existing.timer = setTimeout(
-        () => void startDebounced(key, existing),
-        delayMs
-      );
-      return new Promise<T>((resolve, reject) => {
+      const completion = new Promise<T>((resolve, reject) => {
         existing.waiters.push({ resolve, reject });
       });
+      const elapsed = now - existing.firstEnqueuedAt;
+      const remaining = Math.min(delayMs, MAX_DEBOUNCE_LATENCY_MS - elapsed);
+      if (existing.timer !== null) {
+        clearTimeout(existing.timer);
+        existing.timer = null;
+      }
+      if (remaining <= 0) {
+        // The max-latency ceiling has been reached; flush immediately instead
+        // of deferring further. startDebounced deletes the map entry, so the
+        // next enqueue for this key opens a fresh window and cap.
+        void startDebounced(key, existing);
+      } else {
+        existing.timer = setTimeout(
+          () => void startDebounced(key, existing),
+          remaining
+        );
+      }
+      return completion;
     }
 
     const entry: DebouncedEntry = {
       operation,
       waiters: [],
-      timer: null
+      timer: null,
+      firstEnqueuedAt: now
     };
-    entry.timer = setTimeout(() => void startDebounced(key, entry), delayMs);
+    entry.timer = setTimeout(
+      () => void startDebounced(key, entry),
+      Math.min(delayMs, MAX_DEBOUNCE_LATENCY_MS)
+    );
     debounced.set(key, entry);
     return new Promise<T>((resolve, reject) => {
       entry.waiters.push({ resolve, reject });
