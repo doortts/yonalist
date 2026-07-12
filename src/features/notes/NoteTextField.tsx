@@ -33,6 +33,7 @@ export interface NoteTextFieldProps
   isTagActive?: (token: NoteTagToken) => boolean;
   containerClassName?: string;
   presentationAriaLabel?: string;
+  placeCaretFromPointer?: boolean;
 }
 
 function setForwardedRef<T>(ref: ForwardedRef<T>, value: T | null) {
@@ -43,6 +44,52 @@ function setForwardedRef<T>(ref: ForwardedRef<T>, value: T | null) {
   if (ref) {
     ref.current = value;
   }
+}
+
+interface CaretDocument {
+  caretPositionFromPoint?: (
+    x: number,
+    y: number
+  ) => { offsetNode: Node; offset: number } | null;
+  caretRangeFromPoint?: (x: number, y: number) => Range | null;
+}
+
+function textOffsetWithin(
+  root: HTMLElement,
+  node: Node,
+  nodeOffset: number
+): number | null {
+  if (node !== root && !root.contains(node)) return null;
+  try {
+    const range = root.ownerDocument.createRange();
+    range.selectNodeContents(root);
+    range.setEnd(node, nodeOffset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
+function resolvePointerCaretOffset(
+  root: HTMLElement,
+  clientX: number,
+  clientY: number,
+  fallback: number
+): number {
+  const documentWithCaret = root.ownerDocument as CaretDocument;
+  const position = documentWithCaret.caretPositionFromPoint?.(
+    clientX,
+    clientY
+  );
+  const range = position
+    ? null
+    : documentWithCaret.caretRangeFromPoint?.(clientX, clientY);
+  const offset = position
+    ? textOffsetWithin(root, position.offsetNode, position.offset)
+    : range
+      ? textOffsetWithin(root, range.startContainer, range.startOffset)
+      : null;
+  return Math.max(0, Math.min(fallback, offset ?? fallback));
 }
 
 export const NoteTextField = forwardRef<
@@ -58,6 +105,7 @@ export const NoteTextField = forwardRef<
     isTagActive,
     containerClassName,
     presentationAriaLabel,
+    placeCaretFromPointer,
     className,
     style,
     disabled,
@@ -78,6 +126,7 @@ export const NoteTextField = forwardRef<
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
   const focusAfterRevealRef = useRef(false);
+  const selectionAfterRevealRef = useRef<number | null>(null);
   const [editing, setEditing] = useState(false);
   const nonEditable = Boolean(disabled || readOnly);
   const fieldClassName = ["notes-text-field", containerClassName]
@@ -95,6 +144,7 @@ export const NoteTextField = forwardRef<
   useLayoutEffect(() => {
     if (nonEditable) {
       focusAfterRevealRef.current = false;
+      selectionAfterRevealRef.current = null;
       const textarea = textareaRef.current;
       if (textarea && document.activeElement === textarea) {
         textarea.blur();
@@ -108,7 +158,13 @@ export const NoteTextField = forwardRef<
       return;
     }
     focusAfterRevealRef.current = false;
-    textareaRef.current?.focus();
+    const textarea = textareaRef.current;
+    textarea?.focus();
+    const selection = selectionAfterRevealRef.current;
+    selectionAfterRevealRef.current = null;
+    if (textarea && selection !== null) {
+      textarea.setSelectionRange(selection, selection);
+    }
   }, [editing, nonEditable]);
 
   const handleFocus = (event: FocusEvent<HTMLTextAreaElement>) => {
@@ -178,6 +234,14 @@ export const NoteTextField = forwardRef<
   const handlePresentationPointerDown = (
     event: ReactPointerEvent<HTMLSpanElement>
   ) => {
+    if (placeCaretFromPointer) {
+      selectionAfterRevealRef.current = resolvePointerCaretOffset(
+        event.currentTarget,
+        event.clientX,
+        event.clientY,
+        value.length
+      );
+    }
     event.preventDefault();
     revealAndFocusTextarea();
   };

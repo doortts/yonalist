@@ -163,6 +163,117 @@ describe("NoteTextField", () => {
     });
   });
 
+  it("places the editing caret at the clicked UTF-16 text position", () => {
+    const original = document.caretPositionFromPoint;
+    const { container } = render(
+      <NoteTextField
+        placeCaretFromPointer
+        value="A😀BC"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const presentation = container.querySelector(".notes-token-text")!;
+    const textNode = presentation.firstChild!;
+    document.caretPositionFromPoint = vi.fn(() => ({
+      offsetNode: textNode,
+      offset: 3,
+      getClientRect: vi.fn()
+    } as CaretPosition));
+
+    fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
+
+    const textarea = screen.getByRole("textbox", { name: "Edit title" });
+    expect(textarea).toHaveFocus();
+    expect(textarea).toHaveProperty("selectionStart", 3);
+    expect(textarea).toHaveProperty("selectionEnd", 3);
+    document.caretPositionFromPoint = original;
+  });
+
+  it("places the editing caret from the WebKit range fallback", () => {
+    const documentWithCaret = document as unknown as {
+      caretPositionFromPoint?: Document["caretPositionFromPoint"];
+      caretRangeFromPoint?: Document["caretRangeFromPoint"];
+    };
+    const originalPosition = documentWithCaret.caretPositionFromPoint;
+    const originalRange = documentWithCaret.caretRangeFromPoint;
+    const { container } = render(
+      <NoteTextField
+        placeCaretFromPointer
+        value="Plan"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const presentation = container.querySelector(".notes-token-text")!;
+    const textNode = presentation.firstChild!;
+    const range = document.createRange();
+    range.setStart(textNode, 2);
+    documentWithCaret.caretPositionFromPoint = undefined;
+    documentWithCaret.caretRangeFromPoint = vi.fn(() => range);
+
+    fireEvent.pointerDown(presentation, { clientX: 24, clientY: 12 });
+
+    const textarea = screen.getByRole("textbox", { name: "Edit title" });
+    expect(textarea).toHaveFocus();
+    expect(textarea).toHaveProperty("selectionStart", 2);
+    expect(textarea).toHaveProperty("selectionEnd", 2);
+    documentWithCaret.caretPositionFromPoint = originalPosition;
+    documentWithCaret.caretRangeFromPoint = originalRange;
+  });
+
+  it("places the editing caret at the end when hit testing is outside", () => {
+    const original = document.caretPositionFromPoint;
+    const { container } = render(
+      <NoteTextField
+        placeCaretFromPointer
+        value="Plan"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    document.caretPositionFromPoint = vi.fn(() => ({
+      offsetNode: document.body,
+      offset: 0,
+      getClientRect: vi.fn()
+    } as CaretPosition));
+
+    fireEvent.pointerDown(container.querySelector(".notes-token-text")!, {
+      clientX: 80,
+      clientY: 12
+    });
+
+    const textarea = screen.getByRole("textbox", { name: "Edit title" });
+    expect(textarea).toHaveFocus();
+    expect(textarea).toHaveProperty("selectionStart", 4);
+    expect(textarea).toHaveProperty("selectionEnd", 4);
+    document.caretPositionFromPoint = original;
+  });
+
+  it("does not assign pointer-derived selection without opting in", () => {
+    const { container } = render(
+      <NoteTextField
+        value="Plan"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const textarea = container.querySelector("textarea")!;
+    const setSelectionRange = vi.spyOn(textarea, "setSelectionRange");
+
+    fireEvent.pointerDown(container.querySelector(".notes-token-text")!, {
+      clientX: 24,
+      clientY: 12
+    });
+
+    expect(textarea).toHaveFocus();
+    expect(setSelectionRange).not.toHaveBeenCalled();
+  });
+
   it("activates a tag without focusing the textarea first", async () => {
     const user = userEvent.setup();
     const focusOrder: string[] = [];
