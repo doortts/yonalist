@@ -16,9 +16,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
+use crate::notes::attachment_ingest::RawAttachmentSource;
 use crate::notes::types::{ExportAttachment, NoteAttachment};
 
 pub(crate) const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_ATTACHMENT_BATCH_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_PIXELS: u64 = 40_000_000;
 pub(crate) const MAX_ATTACHMENT_CONTAINER_CHUNKS: u64 = 100_000;
 // Animations retain the static canvas cap and may decode at most four full-size canvases total.
@@ -75,7 +77,17 @@ pub(crate) struct PreparedAttachment {
     pub(crate) bytes: Vec<u8>,
     pub(crate) original_name: String,
     pub(crate) image: ValidatedImage,
-    _budget: MutexGuard<'static, ()>,
+}
+
+#[derive(Debug)]
+struct AttachmentImportBudget {
+    _guard: MutexGuard<'static, ()>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedAttachmentBatch {
+    _budget: AttachmentImportBudget,
+    attachments: Vec<PreparedAttachment>,
 }
 
 fn supported_format(format: ImageFormat) -> Option<(&'static str, &'static str)> {
@@ -540,19 +552,23 @@ fn fully_decode_image(
         .map_err(|error| format!("Could not decode the Notes attachment image: {error}"))
 }
 
-pub(crate) fn validate_image_bytes(
-    source_path: &Path,
+fn validate_image_bytes_with_extension_policy(
+    source_path: Option<&Path>,
     bytes: &[u8],
     limits: ValidationLimits,
 ) -> Result<ValidatedImage, String> {
     let extension = source_path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| {
-            "Notes attachment images must have a supported file extension.".to_string()
-        })?;
-    if extension == "svg" {
+        .map(|source_path| {
+            source_path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase)
+                .ok_or_else(|| {
+                    "Notes attachment images must have a supported file extension.".to_string()
+                })
+        })
+        .transpose()?;
+    if extension.as_deref() == Some("svg") {
         return Err("SVG Notes attachments are not supported.".to_string());
     }
     let byte_size = u64::try_from(bytes.len())
@@ -569,10 +585,12 @@ pub(crate) fn validate_image_bytes(
     let (mime_type, canonical_extension) = supported_format(format).ok_or_else(|| {
         "Only PNG, JPEG, WebP, and GIF Notes attachment images are supported.".to_string()
     })?;
-    if !extension_matches(format, &extension) {
-        return Err(format!(
-            "The Notes attachment file extension .{extension} does not match its decoded image format."
-        ));
+    if let Some(extension) = extension {
+        if !extension_matches(format, &extension) {
+            return Err(format!(
+                "The Notes attachment file extension .{extension} does not match its decoded image format."
+            ));
+        }
     }
 
     let inspection = inspect_container(format, bytes, limits)?;
@@ -600,6 +618,21 @@ pub(crate) fn validate_image_bytes(
         byte_size,
         content_hash: format!("{:x}", Sha256::digest(bytes)),
     })
+}
+
+pub(crate) fn validate_image_bytes(
+    source_path: &Path,
+    bytes: &[u8],
+    limits: ValidationLimits,
+) -> Result<ValidatedImage, String> {
+    validate_image_bytes_with_extension_policy(Some(source_path), bytes, limits)
+}
+
+fn validate_import_image_bytes(
+    bytes: &[u8],
+    limits: ValidationLimits,
+) -> Result<ValidatedImage, String> {
+    validate_image_bytes_with_extension_policy(None, bytes, limits)
 }
 
 fn canonical_relative_path(content_hash: &str, mime_type: &str) -> Result<String, String> {
@@ -654,10 +687,17 @@ fn read_bounded(mut reader: impl Read, max_bytes: u64) -> Result<Vec<u8>, String
     Ok(bytes)
 }
 
-fn prepare_source_attachment_with_budget(source_path: &str) -> Result<PreparedAttachment, String> {
-    let budget = IMPORT_BUDGET_LOCK
+fn acquire_import_budget() -> Result<AttachmentImportBudget, String> {
+    IMPORT_BUDGET_LOCK
         .lock()
-        .map_err(|_| "The Notes attachment import budget is unavailable.".to_string())?;
+        .map(|guard| AttachmentImportBudget { _guard: guard })
+        .map_err(|_| "The Notes attachment import budget is unavailable.".to_string())
+}
+
+fn prepare_source_attachment_without_budget(
+    source_path: &str,
+    remaining_batch_bytes: u64,
+) -> Result<PreparedAttachment, String> {
     if source_path.trim().is_empty() {
         return Err("A Notes attachment source path is required.".to_string());
     }
@@ -693,19 +733,119 @@ fn prepare_source_attachment_with_budget(source_path: &str) -> Result<PreparedAt
             "Notes attachment images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
         ));
     }
+    if metadata.len() > remaining_batch_bytes {
+        return Err(format!(
+            "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+        ));
+    }
     let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
-    let image = validate_image_bytes(path, &bytes, ValidationLimits::DEFAULT)?;
+    let image = validate_import_image_bytes(&bytes, ValidationLimits::DEFAULT)?;
     Ok(PreparedAttachment {
         bytes,
         original_name,
         image,
-        _budget: budget,
     })
 }
 
+impl PreparedAttachmentBatch {
+    pub(crate) fn from_bytes(sources: Vec<RawAttachmentSource<'_>>) -> Result<Self, String> {
+        validate_batch_item_count(sources.len())?;
+        let mut aggregate_bytes = 0_u64;
+        for source in &sources {
+            let byte_length = u64::try_from(source.bytes.len())
+                .map_err(|_| "A Notes attachment byte length is too large.".to_string())?;
+            if byte_length == 0 || byte_length > MAX_ATTACHMENT_BYTES {
+                return Err(format!(
+                    "Notes attachment images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
+                ));
+            }
+            aggregate_bytes = aggregate_bytes
+                .checked_add(byte_length)
+                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
+            if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+                return Err(format!(
+                    "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+                ));
+            }
+        }
+
+        let budget = acquire_import_budget()?;
+        let mut attachments = Vec::with_capacity(sources.len());
+        for source in sources {
+            let image = validate_import_image_bytes(source.bytes, ValidationLimits::DEFAULT)
+                .map_err(|error| format!("{}: {error}", source.original_name))?;
+            if source.declared_mime_type != image.mime_type {
+                return Err(format!(
+                    "The declared MIME type for {} does not match its decoded image format.",
+                    source.original_name
+                ));
+            }
+            attachments.push(PreparedAttachment {
+                bytes: source.bytes.to_vec(),
+                original_name: source.original_name,
+                image,
+            });
+        }
+        Ok(Self {
+            _budget: budget,
+            attachments,
+        })
+    }
+
+    pub(crate) fn from_source_paths(source_paths: &[&str]) -> Result<Self, String> {
+        validate_batch_item_count(source_paths.len())?;
+        let budget = acquire_import_budget()?;
+        let mut aggregate_bytes = 0_u64;
+        let mut attachments = Vec::with_capacity(source_paths.len());
+        for source_path in source_paths {
+            let remaining = MAX_ATTACHMENT_BATCH_BYTES
+                .checked_sub(aggregate_bytes)
+                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
+            let prepared = prepare_source_attachment_without_budget(source_path, remaining)?;
+            aggregate_bytes = aggregate_bytes
+                .checked_add(prepared.image.byte_size)
+                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
+            if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+                return Err(format!(
+                    "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+                ));
+            }
+            attachments.push(prepared);
+        }
+        Ok(Self {
+            _budget: budget,
+            attachments,
+        })
+    }
+
+    pub(crate) fn attachments(&self) -> &[PreparedAttachment] {
+        &self.attachments
+    }
+}
+
+impl Drop for PreparedAttachmentBatch {
+    fn drop(&mut self) {
+        // Release prepared byte buffers before the budget guard's field drop.
+        self.attachments.clear();
+    }
+}
+
+fn validate_batch_item_count(item_count: usize) -> Result<(), String> {
+    let max_items = usize::try_from(crate::notes::types::MAX_NOTE_ATTACHMENTS_PER_NODE)
+        .map_err(|_| "The Notes attachment item cap is invalid.".to_string())?;
+    if item_count == 0 || item_count > max_items {
+        return Err(format!(
+            "A Notes attachment batch must contain between 1 and {max_items} images."
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-pub(crate) fn prepare_source_attachment(source_path: &str) -> Result<PreparedAttachment, String> {
-    prepare_source_attachment_with_budget(source_path)
+pub(crate) fn prepare_source_attachment(
+    source_path: &str,
+) -> Result<PreparedAttachmentBatch, String> {
+    PreparedAttachmentBatch::from_source_paths(&[source_path])
 }
 
 fn safe_owned_file_name(relative_path: &str) -> Result<&str, String> {
@@ -1061,8 +1201,8 @@ impl AttachmentStorageLease {
     pub(crate) fn prepare_source_attachment(
         &self,
         source_path: &str,
-    ) -> Result<PreparedAttachment, String> {
-        prepare_source_attachment_with_budget(source_path)
+    ) -> Result<PreparedAttachmentBatch, String> {
+        PreparedAttachmentBatch::from_source_paths(&[source_path])
     }
 
     fn open_owned_file(&self, file_name: &str) -> Result<cap_std::fs::File, String> {
@@ -1972,7 +2112,7 @@ mod tests {
                 .prepare_source_attachment(&second_source)
                 .expect("second prepared bytes");
             second_prepared_tx
-                .send(prepared.bytes.len())
+                .send(prepared.attachments()[0].bytes.len())
                 .expect("second prepared");
         });
         assert!(
@@ -2003,9 +2143,10 @@ mod tests {
             &encoded_dimensions(ImageFormat::Png, 320, 200),
         );
         let first = AttachmentStorageLease::acquire(&vault_path).expect("first storage lease");
-        let prepared = first
+        let prepared_batch = first
             .prepare_source_attachment(&source)
             .expect("prepare while leased");
+        let prepared = &prepared_batch.attachments()[0];
         let mut connection = connect_notes_db(&vault_path).expect("metadata connection");
         let identity = first
             .capture_database_identity(&connection)
@@ -2017,7 +2158,7 @@ mod tests {
             &mut connection,
             || {
                 let relative_path =
-                    first.publish_attachment_bytes_for_import(&prepared, &identity)?;
+                    first.publish_attachment_bytes_for_import(prepared, &identity)?;
                 asset_path = Some(temp_dir.path().join(".yonalist").join(&relative_path));
 
                 let sqlite_contender =
@@ -2095,9 +2236,10 @@ mod tests {
             &encoded_dimensions(ImageFormat::Png, 320, 200),
         );
         let storage = AttachmentStorageLease::acquire(&vault_path).expect("storage lease");
-        let prepared = storage
+        let prepared_batch = storage
             .prepare_source_attachment(&source)
             .expect("prepare source");
+        let prepared = &prepared_batch.attachments()[0];
         let original_root = temp_dir.path().join(".yonalist/notes-assets");
         let renamed_root = temp_dir.path().join(".yonalist/notes-assets-held");
         fs::rename(&original_root, &renamed_root).expect("rename opened asset root");
@@ -2107,7 +2249,7 @@ mod tests {
         symlink(external_dir.path(), &original_root).expect("replace path with symlink");
 
         let error = storage
-            .publish_attachment_bytes(&prepared)
+            .publish_attachment_bytes(prepared)
             .expect_err("replaced asset identity must abort publication");
         assert!(error.to_lowercase().contains("identity"), "{error}");
         assert_eq!(
@@ -2499,7 +2641,9 @@ mod tests {
         let first_source = write_source(&temp_dir, "shared.png", &first_png);
         let second_source = write_source(&temp_dir, "unshared.png", &second_png);
 
-        let blocked = prepare_source_attachment(&second_source).expect("prepare blocked publish");
+        let blocked_batch =
+            prepare_source_attachment(&second_source).expect("prepare blocked publish");
+        let blocked = &blocked_batch.attachments()[0];
         let blocked_relative =
             canonical_relative_path(&blocked.image.content_hash, blocked.image.mime_type)
                 .expect("blocked relative path");
@@ -2517,7 +2661,7 @@ mod tests {
             "failed publish left a temporary file"
         );
         fs::remove_dir(blocked_target).expect("remove blocking target");
-        drop(blocked);
+        drop(blocked_batch);
 
         let imported = notes_import_attachment(
             vault_path.clone(),

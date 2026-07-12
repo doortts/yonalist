@@ -441,7 +441,8 @@ pub(crate) fn notes_import_attachment(
         );
     }
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let prepared = storage.prepare_source_attachment(&input.source_path)?;
+    let prepared_batch = storage.prepare_source_attachment(&input.source_path)?;
+    let prepared = &prepared_batch.attachments()[0];
     let display_width = input
         .initial_max_display_width
         .min(i64::from(prepared.image.width));
@@ -459,7 +460,7 @@ pub(crate) fn notes_import_attachment(
                 &target_node_id,
                 || {
                     let relative_path =
-                        storage.publish_attachment_bytes_for_import(&prepared, &identity)?;
+                        storage.publish_attachment_bytes_for_import(prepared, &identity)?;
                     Ok(NewAttachment {
                         id: input.id,
                         node_id: input.node_id,

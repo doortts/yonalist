@@ -144,6 +144,21 @@ pub struct ImportAttachmentInput {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportAttachmentPathBatchInput {
+    pub(crate) node_id: String,
+    pub(crate) attachments: Vec<ImportAttachmentPathItem>,
+    pub(crate) initial_max_display_width: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportAttachmentPathItem {
+    pub(crate) id: String,
+    pub(crate) source_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ResizeAttachmentInput {
     pub id: String,
@@ -151,7 +166,7 @@ pub struct ResizeAttachmentInput {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotesHistoryContext {
     pub session_id: String,
     pub entry_id: String,
@@ -379,10 +394,11 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, MoveNodeInput, NoteAttachment, NoteSearchMatchedField, NoteSearchScope,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
-        NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+        validate_note_id, ImportAttachmentPathBatchInput, MoveNodeInput, NoteAttachment,
+        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult,
+        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult,
+        NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -406,6 +422,36 @@ mod tests {
                 "accepted invalid ID {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn path_attachment_batch_deserializes_camel_case_and_rejects_unknown_fields() {
+        let input: ImportAttachmentPathBatchInput = serde_json::from_value(json!({
+            "nodeId": NODE_ID,
+            "attachments": [{
+                "id": SECOND_ID,
+                "sourcePath": "/incoming/image.png"
+            }],
+            "initialMaxDisplayWidth": 480
+        }))
+        .expect("path batch input");
+        assert_eq!(input.node_id, NODE_ID);
+        assert_eq!(input.attachments[0].id, SECOND_ID);
+        assert_eq!(input.attachments[0].source_path, "/incoming/image.png");
+        assert_eq!(input.initial_max_display_width, 480);
+
+        assert!(
+            serde_json::from_value::<ImportAttachmentPathBatchInput>(json!({
+                "nodeId": NODE_ID,
+                "attachments": [{
+                    "id": SECOND_ID,
+                    "sourcePath": "/incoming/image.png",
+                    "unexpected": true
+                }],
+                "initialMaxDisplayWidth": 480
+            }))
+            .is_err()
+        );
     }
 
     #[test]

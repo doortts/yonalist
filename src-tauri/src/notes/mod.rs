@@ -1,4 +1,6 @@
 #[allow(dead_code)]
+pub(crate) mod attachment_ingest;
+#[allow(dead_code)]
 pub(crate) mod attachments;
 #[allow(dead_code)]
 pub(crate) mod commands;
