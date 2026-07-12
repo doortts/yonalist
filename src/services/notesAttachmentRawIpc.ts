@@ -14,6 +14,50 @@ const VERSION = 1;
 const HEADER_BYTES = 9;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const HISTORY_CONTEXT_KEYS = ["sessionId", "entryId", "commandKind"] as const;
+
+function isCanonicalUuidV4(value: unknown): value is string {
+  return typeof value === "string" && UUID_V4.test(value);
+}
+
+function normalizeHistoryContext(
+  historyContext: NotesHistoryContext | null | undefined
+): NotesHistoryContext | null {
+  if (historyContext == null) {
+    return null;
+  }
+  if (
+    typeof historyContext !== "object" ||
+    Reflect.ownKeys(historyContext).length !== HISTORY_CONTEXT_KEYS.length ||
+    HISTORY_CONTEXT_KEYS.some(
+      (key) => !Object.prototype.hasOwnProperty.call(historyContext, key)
+    )
+  ) {
+    throw new Error(
+      "History context must contain exactly sessionId, entryId, and commandKind."
+    );
+  }
+  if (!isCanonicalUuidV4(historyContext.sessionId)) {
+    throw new Error("History session ID must be a canonical UUID v4.");
+  }
+  if (!isCanonicalUuidV4(historyContext.entryId)) {
+    throw new Error("History entry ID must be a canonical UUID v4.");
+  }
+  if (typeof historyContext.commandKind !== "string") {
+    throw new Error("History command kind must contain 1 to 128 characters.");
+  }
+
+  const commandKind = historyContext.commandKind.trim();
+  if (commandKind.length === 0 || commandKind.length > 128) {
+    throw new Error("History command kind must contain 1 to 128 characters.");
+  }
+
+  return {
+    sessionId: historyContext.sessionId,
+    entryId: historyContext.entryId,
+    commandKind
+  };
+}
 
 export async function encodeNotesAttachmentRawEnvelope(
   vaultPath: string,
@@ -32,14 +76,16 @@ export async function encodeNotesAttachmentRawEnvelope(
   ) {
     throw new Error("Initial attachment display width must be positive.");
   }
-  if (!UUID_V4.test(input.nodeId)) {
+  if (!isCanonicalUuidV4(input.nodeId)) {
     throw new Error("The attachment node ID must be a canonical UUID v4.");
   }
+
+  const normalizedHistoryContext = normalizeHistoryContext(historyContext);
 
   const ids = new Set<string>();
   let bodyBytes = 0;
   const attachments = input.attachments.map((attachment, ordinal) => {
-    if (!UUID_V4.test(attachment.id)) {
+    if (!isCanonicalUuidV4(attachment.id)) {
       throw new Error("Every attachment ID must be a canonical UUID v4.");
     }
     if (ids.has(attachment.id)) {
@@ -74,7 +120,7 @@ export async function encodeNotesAttachmentRawEnvelope(
       nodeId: input.nodeId,
       attachments,
       initialMaxDisplayWidth: input.initialMaxDisplayWidth,
-      historyContext: historyContext ?? null
+      historyContext: normalizedHistoryContext
     })
   );
   if (metadataBytes.byteLength > MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES) {

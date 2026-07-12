@@ -268,6 +268,78 @@ describe("notes attachment raw IPC envelope", () => {
     ).rejects.toThrow(/display width must be positive/i);
   });
 
+  it("rejects an invalid node ID before reading blobs", async () => {
+    const read = vi.fn();
+
+    await expect(
+      encodeNotesAttachmentRawEnvelope(
+        "/vault",
+        {
+          ...input([item(FIRST_ID, sizedBlob(1, read))]),
+          nodeId: "11111111-1111-4111-8111-11111111111A"
+        },
+        null
+      )
+    ).rejects.toThrow(/node ID must be a canonical UUID v4/i);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["session ID", { ...HISTORY_CONTEXT, sessionId: "not-a-uuid" }],
+    [
+      "entry ID",
+      { ...HISTORY_CONTEXT, entryId: "55555555-5555-1555-8555-555555555555" }
+    ]
+  ])("rejects an invalid history %s", async (_label, historyContext) => {
+    await expect(
+      encodeNotesAttachmentRawEnvelope(
+        "/vault",
+        input([item(FIRST_ID)]),
+        historyContext
+      )
+    ).rejects.toThrow(/history .+ ID must be a canonical UUID v4/i);
+  });
+
+  it("trims history command kinds and enforces their length", async () => {
+    const envelope = await encodeNotesAttachmentRawEnvelope(
+      "/vault",
+      input([item(FIRST_ID)]),
+      { ...HISTORY_CONTEXT, commandKind: "  importAttachmentBytes  " }
+    );
+
+    expect(decodeMetadata(envelope).historyContext).toEqual(HISTORY_CONTEXT);
+
+    await expect(
+      encodeNotesAttachmentRawEnvelope(
+        "/vault",
+        input([item(FIRST_ID)]),
+        { ...HISTORY_CONTEXT, commandKind: " \t " }
+      )
+    ).rejects.toThrow(/command kind must contain 1 to 128 characters/i);
+    await expect(
+      encodeNotesAttachmentRawEnvelope(
+        "/vault",
+        input([item(FIRST_ID)]),
+        { ...HISTORY_CONTEXT, commandKind: ` ${"x".repeat(129)} ` }
+      )
+    ).rejects.toThrow(/command kind must contain 1 to 128 characters/i);
+  });
+
+  it("rejects extra own keys on structurally typed history contexts", async () => {
+    const historyContext: NotesHistoryContext & { extra: string } = {
+      ...HISTORY_CONTEXT,
+      extra: "must-not-cross-the-boundary"
+    };
+
+    await expect(
+      encodeNotesAttachmentRawEnvelope(
+        "/vault",
+        input([item(FIRST_ID)]),
+        historyContext
+      )
+    ).rejects.toThrow(/history context must contain exactly/i);
+  });
+
   it("preflights every size and reads blob buffers sequentially", async () => {
     let activeReads = 0;
     const order: string[] = [];
