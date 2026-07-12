@@ -694,6 +694,35 @@ fn acquire_import_budget() -> Result<AttachmentImportBudget, String> {
         .map_err(|_| "The Notes attachment import budget is unavailable.".to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    static INJECTED_SOURCE_GROWTH: std::cell::RefCell<Option<Vec<u8>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_source_growth(bytes: Vec<u8>) {
+    INJECTED_SOURCE_GROWTH.with(|growth| *growth.borrow_mut() = Some(bytes));
+}
+
+#[cfg(test)]
+fn maybe_inject_source_growth(path: &Path) -> Result<(), String> {
+    let growth = INJECTED_SOURCE_GROWTH.with(|growth| growth.borrow_mut().take());
+    if let Some(growth) = growth {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(&growth))
+            .map_err(|error| format!("Could not grow the Notes attachment test source: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn maybe_inject_source_growth(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
 fn prepare_source_attachment_without_budget(
     source_path: &str,
     remaining_batch_bytes: u64,
@@ -738,8 +767,9 @@ fn prepare_source_attachment_without_budget(
             "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
         ));
     }
-    let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
-    let image = validate_import_image_bytes(&bytes, ValidationLimits::DEFAULT)?;
+    maybe_inject_source_growth(path)?;
+    let bytes = read_bounded(file, remaining_batch_bytes.min(MAX_ATTACHMENT_BYTES))?;
+    let image = validate_image_bytes(path, &bytes, ValidationLimits::DEFAULT)?;
     Ok(PreparedAttachment {
         bytes,
         original_name,
@@ -1653,7 +1683,8 @@ impl AttachmentStorageLease {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_relative_path, inject_cleanup_failure, prepare_source_attachment,
+        canonical_relative_path, inject_cleanup_failure, inject_source_growth,
+        prepare_source_attachment, prepare_source_attachment_without_budget,
         publish_attachment_bytes, resolve_owned_asset_path, validate_image_bytes,
         AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
     };
@@ -1806,6 +1837,16 @@ mod tests {
         path.to_string_lossy().into_owned()
     }
 
+    fn expect_source_preparation_error(source_path: &str, expectation: &str) -> String {
+        match prepare_source_attachment(source_path) {
+            Ok(batch) => {
+                drop(batch);
+                panic!("{expectation}");
+            }
+            Err(error) => error,
+        }
+    }
+
     fn import_input(id: &str, source_path: String) -> ImportAttachmentInput {
         ImportAttachmentInput {
             id: id.to_string(),
@@ -1945,6 +1986,53 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_secs(1),
             "FIFO source open blocked"
+        );
+    }
+
+    #[test]
+    fn notes_attachment_source_path_rejects_png_named_jpeg() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_source(&temp_dir, "spoofed.jpg", &encoded(ImageFormat::Png));
+
+        let error = expect_source_preparation_error(
+            &source,
+            "path import must validate the source extension",
+        );
+
+        assert!(error.to_lowercase().contains("extension"), "{error}");
+    }
+
+    #[test]
+    fn notes_attachment_source_path_rejects_png_named_svg() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source = write_source(&temp_dir, "spoofed.svg", &encoded(ImageFormat::Png));
+
+        let error = expect_source_preparation_error(
+            &source,
+            "path import must keep SVG source names rejected",
+        );
+
+        assert!(error.to_lowercase().contains("svg"), "{error}");
+    }
+
+    #[test]
+    fn notes_attachment_source_read_rejects_growth_past_remaining_batch_budget() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let png = encoded(ImageFormat::Png);
+        let source = write_source(&temp_dir, "growing.png", &png);
+        let remaining_batch_bytes = u64::try_from(png.len()).expect("remaining batch bytes");
+        inject_source_growth(vec![0xff]);
+
+        let error = prepare_source_attachment_without_budget(&source, remaining_batch_bytes)
+            .expect_err("source growth must not exceed the remaining batch budget");
+
+        assert_eq!(
+            error,
+            format!("Notes attachment images must contain at most {remaining_batch_bytes} bytes.")
+        );
+        assert_eq!(
+            fs::metadata(&source).expect("grown source metadata").len(),
+            remaining_batch_bytes + 1
         );
     }
 
