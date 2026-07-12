@@ -3823,9 +3823,13 @@ mod tests {
             fs::read(assets.join("0001.png")).expect("first exported attachment"),
             expected_bytes
         );
+        let exported_images = fs::read_dir(assets)
+            .expect("list assets")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
+            .count();
         assert_eq!(
-            fs::read_dir(assets).expect("list assets").count(),
-            1,
+            exported_images, 1,
             "duplicate placements should share one physical exported asset"
         );
     }
@@ -3847,6 +3851,18 @@ mod tests {
         fs::write(&destination, b"old Markdown").expect("seed old Markdown");
         fs::create_dir(&assets).expect("seed old assets");
         fs::write(assets.join("old.png"), b"old attachment").expect("seed old attachment");
+        // A real prior export leaves our marker behind; the overwrite guard
+        // requires it before it will displace the directory.
+        let prior_marker = serde_json::json!({
+            "createdBy": crate::notes::export::EXPORT_ASSET_MARKER_CREATED_BY,
+            "version": 1,
+            "files": ["old.png"],
+        });
+        fs::write(
+            assets.join(crate::notes::export::EXPORT_ASSET_MARKER_NAME),
+            serde_json::to_vec(&prior_marker).expect("serialize prior export marker"),
+        )
+        .expect("seed prior export marker");
         crate::notes::export::inject_markdown_publish_failure_once();
 
         let error = notes_export_markdown(
@@ -3866,9 +3882,14 @@ mod tests {
             fs::read(assets.join("old.png")).expect("restored attachment"),
             b"old attachment"
         );
+        // The prior directory is restored intact: its attachment plus its marker,
+        // and nothing from the failed export.
+        assert!(assets
+            .join(crate::notes::export::EXPORT_ASSET_MARKER_NAME)
+            .is_file());
         assert_eq!(
             fs::read_dir(&assets).expect("list restored assets").count(),
-            1
+            2
         );
     }
 
