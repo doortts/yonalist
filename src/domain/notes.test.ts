@@ -521,6 +521,10 @@ describe("Notes domain contract", () => {
   });
 
   it("defines typed attachment inputs and store APIs with history context", () => {
+    expectTypeOf<NotesStore>().toMatchTypeOf<{
+      importAttachmentPaths: NonNullable<NotesStore["importAttachmentPaths"]>;
+      importAttachmentBytes: NonNullable<NotesStore["importAttachmentBytes"]>;
+    }>();
     expectTypeOf<keyof ImportNoteAttachmentInput>().toEqualTypeOf<
       "id" | "nodeId" | "sourcePath" | "initialMaxDisplayWidth"
     >();

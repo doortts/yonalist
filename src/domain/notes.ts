@@ -222,12 +222,12 @@ export interface NotesStore {
     input: ImportNoteAttachmentInput,
     historyContext?: NotesHistoryContext | null
   ): Promise<NotesMutationResponse>;
-  importAttachmentPaths?(
+  importAttachmentPaths(
     vaultPath: string,
     input: ImportNoteAttachmentPathBatchInput,
     historyContext?: NotesHistoryContext | null
   ): Promise<NotesMutationResponse>;
-  importAttachmentBytes?(
+  importAttachmentBytes(
     vaultPath: string,
     input: ImportNoteAttachmentBytesBatchInput,
     historyContext?: NotesHistoryContext | null

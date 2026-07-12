@@ -1,5 +1,6 @@
 use crate::file_io::write_atomic_file;
-use crate::notes::attachments::AttachmentStorageLease;
+use crate::notes::attachment_ingest::decode_raw_attachment_envelope;
+use crate::notes::attachments::{AttachmentStorageLease, PreparedAttachmentBatch};
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{
     hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
@@ -12,7 +13,7 @@ use crate::notes::history::{
 };
 use crate::notes::repository::{
     archive_node, attachment_by_id, collapse_all, connect_notes_db,
-    create_attachment_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
+    create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
     empty_trash, expand_all, list_tags, list_tags_with_counts, load_workspace, move_node,
     open_notes_export_db, remove_attachment, remove_empty_node, removed_attachment_snapshot,
     resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
@@ -21,15 +22,90 @@ use crate::notes::repository::{
     validate_note_tag_filters, validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ImportAttachmentInput, MoveNodeInput, NoteSearchResult,
-    NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat,
-    NotesExportResult, NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult,
-    NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
-    ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
+    validate_note_id, CreateNodeInput, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+    MoveNodeInput, NoteAttachment, NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery,
+    NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
+    NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
+    NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
 };
+use rusqlite::OptionalExtension;
+use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentBatchFault {
+    ReturnAfterPublished(usize),
+    CrashAfterPublished(usize),
+    CrashBeforeCommit,
+}
+
+#[cfg(test)]
+thread_local! {
+    static ATTACHMENT_BATCH_FAULT: std::cell::Cell<Option<AttachmentBatchFault>> = const { std::cell::Cell::new(None) };
+    static ATTACHMENT_BATCH_CRASH_INTERRUPTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn inject_attachment_batch_fault(fault: AttachmentBatchFault) {
+    ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|interrupted| interrupted.set(false));
+    ATTACHMENT_BATCH_FAULT.with(|current| current.set(Some(fault)));
+}
+
+fn maybe_inject_attachment_batch_after_publish(published_count: usize) -> Result<(), String> {
+    #[cfg(not(test))]
+    let _ = published_count;
+    #[cfg(test)]
+    {
+        let fault = ATTACHMENT_BATCH_FAULT.with(std::cell::Cell::get);
+        match fault {
+            Some(AttachmentBatchFault::ReturnAfterPublished(expected))
+                if expected == published_count =>
+            {
+                ATTACHMENT_BATCH_FAULT.with(|current| current.set(None));
+                return Err("injected publication failure".to_string());
+            }
+            Some(AttachmentBatchFault::CrashAfterPublished(expected))
+                if expected == published_count =>
+            {
+                ATTACHMENT_BATCH_FAULT.with(|current| current.set(None));
+                ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|interrupted| interrupted.set(true));
+                return Err(format!(
+                    "injected attachment batch crash after published item {published_count}"
+                ));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn maybe_inject_attachment_batch_before_commit() -> Result<(), String> {
+    #[cfg(test)]
+    if ATTACHMENT_BATCH_FAULT.with(std::cell::Cell::get)
+        == Some(AttachmentBatchFault::CrashBeforeCommit)
+    {
+        ATTACHMENT_BATCH_FAULT.with(|current| current.set(None));
+        ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|interrupted| interrupted.set(true));
+        return Err("injected attachment batch crash before metadata commit".to_string());
+    }
+    Ok(())
+}
+
+fn take_attachment_batch_crash_interruption() -> bool {
+    #[cfg(test)]
+    {
+        return ATTACHMENT_BATCH_CRASH_INTERRUPTED.with(|interrupted| {
+            let value = interrupted.get();
+            interrupted.set(false);
+            value
+        });
+    }
+    #[cfg(not(test))]
+    false
+}
 
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
@@ -426,64 +502,402 @@ fn reconcile_candidates_after_committed_change(
     }
 }
 
+fn reconcile_before_attachment_batch(
+    storage: &AttachmentStorageLease,
+    connection: &rusqlite::Connection,
+) -> Result<(), String> {
+    if storage.reconciliation_needed()? {
+        storage.reconcile_attachment_files(connection)?;
+        storage.clear_reconciliation_marker()?;
+    }
+    Ok(())
+}
+
+fn reconcile_failed_attachment_batch(
+    storage: &AttachmentStorageLease,
+    connection: &rusqlite::Connection,
+    candidates: &[String],
+    error: String,
+) -> String {
+    let cleanup = storage
+        .reconcile_attachment_candidates(connection, candidates)
+        .and_then(|_| storage.clear_reconciliation_marker());
+    match cleanup {
+        Ok(()) => error,
+        Err(cleanup_error) => {
+            let _ = storage.mark_reconciliation_needed();
+            format!("{error} Attachment reconciliation also failed: {cleanup_error}")
+        }
+    }
+}
+
+fn validate_attachment_batch_ids(node_id: &str, ids: &[String]) -> Result<(), String> {
+    validate_note_id(node_id)?;
+    let mut unique_ids = HashSet::with_capacity(ids.len());
+    for id in ids {
+        validate_note_id(id)
+            .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
+        if !unique_ids.insert(id.as_str()) {
+            return Err(format!(
+                "A Notes attachment batch contains duplicate ID {id}."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn attachment_matches_prepared(existing: &NoteAttachment, expected: &NewAttachment) -> bool {
+    existing.id == expected.id
+        && existing.node_id == expected.node_id
+        && existing.relative_path == expected.relative_path
+        && existing.content_hash == expected.content_hash
+        && existing.original_name == expected.original_name
+        && existing.mime_type == expected.mime_type
+        && existing.byte_size == expected.byte_size
+        && existing.intrinsic_width == expected.intrinsic_width
+        && existing.intrinsic_height == expected.intrinsic_height
+        && existing.display_width == expected.display_width
+}
+
+fn inconsistent_attachment_batch() -> String {
+    "The requested Notes attachment batch conflicts with inconsistent committed state.".to_string()
+}
+
+fn committed_attachment_batch_retry(
+    connection: &rusqlite::Connection,
+    expected: &[NewAttachment],
+    history_context: Option<&NotesHistoryContext>,
+) -> Result<Option<NotesMutationResult>, String> {
+    let existing = expected
+        .iter()
+        .map(|attachment| attachment_by_id(connection, &attachment.id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let existing_count = existing
+        .iter()
+        .filter(|attachment| attachment.is_some())
+        .count();
+    if existing_count == 0 {
+        return Ok(None);
+    }
+    if existing_count != expected.len() {
+        return Err(inconsistent_attachment_batch());
+    }
+
+    let existing = existing
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(inconsistent_attachment_batch)?;
+    let fields_match = existing
+        .iter()
+        .zip(expected)
+        .all(|(actual, expected)| attachment_matches_prepared(actual, expected));
+    let source_order_matches = existing
+        .windows(2)
+        .all(|pair| pair[0].sort_key < pair[1].sort_key);
+    if !fields_match || !source_order_matches {
+        return Err(inconsistent_attachment_batch());
+    }
+
+    let history_entry_id = if let Some(context) = history_context {
+        let entry = connection
+            .query_row(
+                "SELECT session_id, command_kind, is_undone \
+                 FROM notes_history_entries WHERE id = ?1",
+                [&context.entry_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| format!("Could not inspect retry Notes history: {error}"))?;
+        if entry.as_ref()
+            != Some(&(
+                context.session_id.clone(),
+                context.command_kind.trim().to_string(),
+                false,
+            ))
+        {
+            return Err(inconsistent_attachment_batch());
+        }
+
+        let mut statement = connection
+            .prepare(
+                "SELECT table_name, row_id, before_json, after_json \
+                 FROM notes_history_changes WHERE entry_id = ?1 ORDER BY ordinal",
+            )
+            .map_err(|error| format!("Could not prepare retry Notes history: {error}"))?;
+        let changes = statement
+            .query_map([&context.entry_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|error| format!("Could not read retry Notes history: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect retry Notes history: {error}"))?;
+        if changes.len() != existing.len() {
+            return Err(inconsistent_attachment_batch());
+        }
+        for ((table_name, row_id, before_json, after_json), actual) in
+            changes.into_iter().zip(&existing)
+        {
+            let after = after_json
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<NoteAttachment>(json).ok());
+            if table_name != "notes_attachments"
+                || row_id != actual.id
+                || before_json.is_some()
+                || after.as_ref() != Some(actual)
+            {
+                return Err(inconsistent_attachment_batch());
+            }
+        }
+        Some(context.entry_id.clone())
+    } else {
+        for actual in &existing {
+            let journaled: bool = connection
+                .query_row(
+                    "SELECT EXISTS(\
+                       SELECT 1 FROM notes_history_changes \
+                       WHERE table_name = 'notes_attachments' AND row_id = ?1\
+                     )",
+                    [&actual.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("Could not inspect retry Notes history: {error}"))?;
+            if journaled {
+                return Err(inconsistent_attachment_batch());
+            }
+        }
+        None
+    };
+
+    let status = match history_context {
+        Some(context) => history_status(connection, &context.session_id)?,
+        None => NotesHistoryStatus::default(),
+    };
+    Ok(Some(NotesMutationResult {
+        workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
+        history_entry_id,
+        can_undo: status.can_undo,
+        can_redo: status.can_redo,
+    }))
+}
+
+fn import_prepared_attachment_batch(
+    node_id: String,
+    ids: Vec<String>,
+    initial_max_display_width: i64,
+    history_context: Option<NotesHistoryContext>,
+    prepared_batch: PreparedAttachmentBatch,
+    storage: AttachmentStorageLease,
+    mut connection: rusqlite::Connection,
+) -> Result<NotesMutationResult, String> {
+    validate_attachment_batch_ids(&node_id, &ids)?;
+    if initial_max_display_width <= 0 {
+        return Err(
+            "A Notes attachment initial maximum display width must be positive.".to_string(),
+        );
+    }
+    if ids.len() != prepared_batch.attachments().len() {
+        return Err("Notes attachment metadata does not match the prepared batch.".to_string());
+    }
+
+    let identity = storage.capture_database_identity(&connection)?;
+    let mut attachments = Vec::with_capacity(ids.len());
+    for (id, prepared) in ids.into_iter().zip(prepared_batch.attachments()) {
+        let byte_size = i64::try_from(prepared.image.byte_size)
+            .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
+        attachments.push(NewAttachment {
+            id,
+            node_id: node_id.clone(),
+            relative_path: format!(
+                "notes-assets/{}.{}",
+                prepared.image.content_hash, prepared.image.extension
+            ),
+            content_hash: prepared.image.content_hash.clone(),
+            original_name: prepared.original_name.clone(),
+            mime_type: prepared.image.mime_type.to_string(),
+            byte_size,
+            intrinsic_width: i64::from(prepared.image.width),
+            intrinsic_height: i64::from(prepared.image.height),
+            display_width: initial_max_display_width.min(i64::from(prepared.image.width)),
+        });
+    }
+    let candidates = attachments
+        .iter()
+        .map(|attachment| attachment.relative_path.clone())
+        .collect::<Vec<_>>();
+
+    if let Some(result) =
+        committed_attachment_batch_retry(&connection, &attachments, history_context.as_ref())?
+    {
+        return Ok(result);
+    }
+
+    storage.mark_reconciliation_needed()?;
+    let result = with_history_transaction_and_prunes(
+        &mut connection,
+        history_context.as_ref(),
+        |connection| {
+            create_attachments_coordinated_for_node(
+                connection,
+                &node_id,
+                attachments,
+                || {
+                    for (index, (prepared, expected_path)) in prepared_batch
+                        .attachments()
+                        .iter()
+                        .zip(&candidates)
+                        .enumerate()
+                    {
+                        let published =
+                            storage.publish_attachment_bytes_for_import(prepared, &identity)?;
+                        if published != *expected_path {
+                            return Err(
+                                "Published Notes attachment path did not match its prepared metadata."
+                                    .to_string(),
+                            );
+                        }
+                        maybe_inject_attachment_batch_after_publish(index + 1)?;
+                    }
+                    Ok(())
+                },
+                || {
+                    storage.validate_identity(&identity)?;
+                    maybe_inject_attachment_batch_before_commit()
+                },
+            )
+        },
+    );
+
+    match result {
+        Ok(result) => {
+            reconcile_after_committed_attachment_change(&storage, &connection);
+            Ok(result.into_mutation_result())
+        }
+        Err(error) => {
+            if take_attachment_batch_crash_interruption() {
+                Err(error)
+            } else {
+                Err(reconcile_failed_attachment_batch(
+                    &storage,
+                    &connection,
+                    &candidates,
+                    error,
+                ))
+            }
+        }
+    }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) fn notes_import_attachment_paths_batch(
+    vault_path: String,
+    input: ImportAttachmentPathBatchInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    let ids = input
+        .attachments
+        .iter()
+        .map(|attachment| attachment.id.clone())
+        .collect::<Vec<_>>();
+    validate_attachment_batch_ids(&input.node_id, &ids)?;
+    if input.initial_max_display_width <= 0 {
+        return Err(
+            "A Notes attachment initial maximum display width must be positive.".to_string(),
+        );
+    }
+    let source_paths = input
+        .attachments
+        .iter()
+        .map(|attachment| attachment.source_path.as_str())
+        .collect::<Vec<_>>();
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let connection = connect_notes_db(&vault_path)?;
+    reconcile_before_attachment_batch(&storage, &connection)?;
+    let prepared_batch =
+        PreparedAttachmentBatch::from_source_paths(&source_paths).map_err(|error| {
+            let names = input
+                .attachments
+                .iter()
+                .map(|attachment| attachment.source_path.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("Could not prepare Notes attachment batch [{names}]: {error}")
+        })?;
+    import_prepared_attachment_batch(
+        input.node_id,
+        ids,
+        input.initial_max_display_width,
+        history_context,
+        prepared_batch,
+        storage,
+        connection,
+    )
+}
+
+fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult, String> {
+    let decoded = decode_raw_attachment_envelope(body)?;
+    let ids = decoded
+        .metadata
+        .attachments
+        .iter()
+        .map(|attachment| attachment.id.clone())
+        .collect::<Vec<_>>();
+    validate_attachment_batch_ids(&decoded.metadata.node_id, &ids)?;
+    let storage = AttachmentStorageLease::acquire(&decoded.metadata.vault_path)?;
+    let connection = connect_notes_db(&decoded.metadata.vault_path)?;
+    reconcile_before_attachment_batch(&storage, &connection)?;
+    let prepared_batch = PreparedAttachmentBatch::from_bytes(decoded.sources)?;
+    import_prepared_attachment_batch(
+        decoded.metadata.node_id,
+        ids,
+        decoded.metadata.initial_max_display_width,
+        decoded.metadata.history_context,
+        prepared_batch,
+        storage,
+        connection,
+    )
+}
+
+#[tauri::command]
+pub(crate) fn notes_import_attachment_bytes(
+    request: tauri::ipc::Request<'_>,
+) -> Result<NotesMutationResult, String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(body) => notes_import_attachment_bytes_body(body),
+        tauri::ipc::InvokeBody::Json(_) => {
+            Err("Notes attachment byte imports require a raw IPC body.".to_string())
+        }
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) fn notes_import_attachment(
     vault_path: String,
     input: ImportAttachmentInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    validate_note_id(&input.id)
-        .map_err(|_| "A Notes attachment ID must be a canonical UUID v4 string.".to_string())?;
-    validate_note_id(&input.node_id)?;
-    if input.initial_max_display_width <= 0 {
-        return Err(
-            "A Notes attachment initial maximum display width must be positive.".to_string(),
-        );
-    }
-    let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let prepared_batch = storage.prepare_source_attachment(&input.source_path)?;
-    let prepared = &prepared_batch.attachments()[0];
-    let display_width = input
-        .initial_max_display_width
-        .min(i64::from(prepared.image.width));
-    let byte_size = i64::try_from(prepared.image.byte_size)
-        .map_err(|_| "The Notes attachment byte size is too large.".to_string())?;
-    let mut connection = connect_notes_db(&vault_path)?;
-    let identity = storage.capture_database_identity(&connection)?;
-    match with_history_transaction_and_prunes(
-        &mut connection,
-        history_context.as_ref(),
-        |connection| {
-            let target_node_id = input.node_id.clone();
-            create_attachment_coordinated_for_node(
-                connection,
-                &target_node_id,
-                || {
-                    let relative_path =
-                        storage.publish_attachment_bytes_for_import(prepared, &identity)?;
-                    Ok(NewAttachment {
-                        id: input.id,
-                        node_id: input.node_id,
-                        relative_path,
-                        content_hash: prepared.image.content_hash.clone(),
-                        original_name: prepared.original_name.clone(),
-                        mime_type: prepared.image.mime_type.to_string(),
-                        byte_size,
-                        intrinsic_width: i64::from(prepared.image.width),
-                        intrinsic_height: i64::from(prepared.image.height),
-                        display_width,
-                    })
-                },
-                || storage.validate_identity(&identity),
-            )
+    notes_import_attachment_paths_batch(
+        vault_path,
+        ImportAttachmentPathBatchInput {
+            node_id: input.node_id,
+            attachments: vec![crate::notes::types::ImportAttachmentPathItem {
+                id: input.id,
+                source_path: input.source_path,
+            }],
+            initial_max_display_width: input.initial_max_display_width,
         },
-    ) {
-        Ok(result) => {
-            reconcile_after_committed_attachment_change(&storage, &connection);
-            Ok(result.into_mutation_result())
-        }
-        Err(error) => Err(attachment_metadata_error(&storage, &connection, error)),
-    }
+        history_context,
+    )
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -761,9 +1175,10 @@ mod tests {
     use super::*;
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        ImportAttachmentInput, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportAttachmentPathItem,
+        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::params;
     use serde_json::json;
@@ -916,6 +1331,95 @@ mod tests {
         bytes
     }
 
+    fn raw_attachment_envelope(
+        vault_path: &str,
+        attachments: &[(&str, &str, &str, &[u8])],
+        history_context: Option<&NotesHistoryContext>,
+    ) -> Vec<u8> {
+        let history_context = history_context.map(|context| {
+            json!({
+                "sessionId": context.session_id,
+                "entryId": context.entry_id,
+                "commandKind": context.command_kind
+            })
+        });
+        let metadata = json!({
+            "vaultPath": vault_path,
+            "nodeId": ROOT_ID,
+            "attachments": attachments
+                .iter()
+                .enumerate()
+                .map(|(ordinal, (id, original_name, mime_type, bytes))| json!({
+                    "id": id,
+                    "ordinal": ordinal,
+                    "originalName": original_name,
+                    "mimeType": mime_type,
+                    "byteLength": bytes.len()
+                }))
+                .collect::<Vec<_>>(),
+            "initialMaxDisplayWidth": 480,
+            "historyContext": history_context
+        });
+        let metadata = serde_json::to_vec(&metadata).expect("encode raw metadata");
+        let mut envelope = Vec::new();
+        envelope.extend_from_slice(b"YNAB");
+        envelope.push(1);
+        envelope.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .expect("raw metadata length")
+                .to_le_bytes(),
+        );
+        envelope.extend_from_slice(&metadata);
+        for (_, _, _, bytes) in attachments {
+            envelope.extend_from_slice(bytes);
+        }
+        envelope
+    }
+
+    fn seed_attachment_batch_node(vault_path: &str) {
+        notes_initialize(vault_path.to_string()).expect("initialize batch vault");
+        notes_create_node(
+            vault_path.to_string(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create batch root");
+    }
+
+    fn path_batch_input(
+        first_source: &PathBuf,
+        second_source: &PathBuf,
+    ) -> ImportAttachmentPathBatchInput {
+        ImportAttachmentPathBatchInput {
+            node_id: ROOT_ID.to_string(),
+            attachments: vec![
+                ImportAttachmentPathItem {
+                    id: SPLIT_ID.to_string(),
+                    source_path: first_source.to_string_lossy().into_owned(),
+                },
+                ImportAttachmentPathItem {
+                    id: EMPTY_ID.to_string(),
+                    source_path: second_source.to_string_lossy().into_owned(),
+                },
+            ],
+            initial_max_display_width: 480,
+        }
+    }
+
+    fn batch_history_context() -> NotesHistoryContext {
+        NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+            command_kind: "importAttachmentPaths".to_string(),
+        }
+    }
+
     fn import_export_attachment(
         temp_dir: &tempfile::TempDir,
         vault_path: &str,
@@ -944,6 +1448,402 @@ mod tests {
             )
             .expect("read owned attachment path");
         crate::metadata_dir(vault_path).join(relative_path)
+    }
+
+    #[test]
+    fn notes_attachment_batch_paths_preserve_source_order_and_one_history_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create root");
+        let first_source = temp_dir.path().join("first.png");
+        let second_source = temp_dir.path().join("second.png");
+        fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+        fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+        let history_context = NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+            command_kind: "importAttachmentPaths".to_string(),
+        };
+
+        let imported = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            ImportAttachmentPathBatchInput {
+                node_id: ROOT_ID.to_string(),
+                attachments: vec![
+                    ImportAttachmentPathItem {
+                        id: SPLIT_ID.to_string(),
+                        source_path: first_source.to_string_lossy().into_owned(),
+                    },
+                    ImportAttachmentPathItem {
+                        id: EMPTY_ID.to_string(),
+                        source_path: second_source.to_string_lossy().into_owned(),
+                    },
+                ],
+                initial_max_display_width: 480,
+            },
+            Some(history_context.clone()),
+        )
+        .expect("import path batch");
+
+        let attachment_ids = imported.workspace.attachments_by_node_id[ROOT_ID]
+            .iter()
+            .map(|attachment| attachment.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(attachment_ids, vec![SPLIT_ID, EMPTY_ID]);
+        assert_eq!(
+            imported.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        let connection = connect_notes_db(&vault_path).expect("history database");
+        let history_entries: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_history_entries WHERE id = ?1",
+                [REPLACEMENT_ENTRY_ID],
+                |row| row.get(0),
+            )
+            .expect("count history entries");
+        assert_eq!(history_entries, 1);
+        drop(connection);
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo path batch");
+        assert!(undone
+            .workspace
+            .attachments_by_node_id
+            .get(ROOT_ID)
+            .is_none_or(Vec::is_empty));
+        let redone = notes_redo(
+            vault_path,
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo path batch");
+        assert_eq!(
+            redone.workspace.attachments_by_node_id[ROOT_ID]
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![SPLIT_ID, EMPTY_ID]
+        );
+    }
+
+    #[test]
+    fn notes_attachment_batch_raw_preserves_order_and_rejects_malformed_bodies() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Root".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create root");
+        let first = encoded_png(4, 3);
+        let second = encoded_png(5, 4);
+        let history_context = NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            entry_id: REPLACEMENT_ENTRY_ID.to_string(),
+            command_kind: "importAttachmentBytes".to_string(),
+        };
+        let envelope = raw_attachment_envelope(
+            &vault_path,
+            &[
+                (SPLIT_ID, "first.png", "image/png", &first),
+                (EMPTY_ID, "second.png", "image/png", &second),
+            ],
+            Some(&history_context),
+        );
+
+        let imported = notes_import_attachment_bytes_body(&envelope).expect("import raw batch");
+        assert_eq!(
+            imported.workspace.attachments_by_node_id[ROOT_ID]
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![SPLIT_ID, EMPTY_ID]
+        );
+        assert_eq!(
+            imported.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+
+        let malformed =
+            notes_import_attachment_bytes_body(b"bad").expect_err("malformed raw attachment body");
+        assert!(malformed.contains("header is truncated"), "{malformed}");
+
+        let oversized_metadata = json!({
+            "vaultPath": vault_path,
+            "nodeId": ROOT_ID,
+            "attachments": (0..4).map(|ordinal| json!({
+                "id": format!("90000000-0000-4000-8000-{ordinal:012x}"),
+                "ordinal": ordinal,
+                "originalName": format!("oversized-{ordinal}.png"),
+                "mimeType": "image/png",
+                "byteLength": 16 * 1024 * 1024 + 1
+            })).collect::<Vec<_>>(),
+            "initialMaxDisplayWidth": 480,
+            "historyContext": null
+        });
+        let metadata = serde_json::to_vec(&oversized_metadata).expect("oversized metadata");
+        let mut oversized = b"YNAB\x01".to_vec();
+        oversized.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .expect("oversized metadata length")
+                .to_le_bytes(),
+        );
+        oversized.extend_from_slice(&metadata);
+        let error =
+            notes_import_attachment_bytes_body(&oversized).expect_err("aggregate raw batch limit");
+        assert!(error.contains("67108864"), "{error}");
+    }
+
+    #[test]
+    fn notes_attachment_batch_prevalidates_all_paths_and_cleans_publication_failures() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let first_source = temp_dir.path().join("first.png");
+        let invalid_source = temp_dir.path().join("invalid.txt");
+        fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+        fs::write(&invalid_source, b"not an image").expect("write invalid image");
+
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            path_batch_input(&first_source, &invalid_source),
+            Some(batch_history_context()),
+        )
+        .expect_err("mixed invalid path batch");
+        assert!(error.contains("invalid.txt"), "{error}");
+        assert!(asset_directory_entries(&vault_path).is_empty());
+
+        let second_source = temp_dir.path().join("second.png");
+        fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+        inject_attachment_batch_fault(AttachmentBatchFault::ReturnAfterPublished(1));
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            path_batch_input(&first_source, &second_source),
+            Some(batch_history_context()),
+        )
+        .expect_err("injected publication failure");
+        assert!(error.contains("injected publication failure"), "{error}");
+        let connection = connect_notes_db(&vault_path).expect("inspect publication failure");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachment rows");
+        let history_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("count history rows");
+        assert_eq!((attachment_count, history_count), (0, 0));
+        assert!(asset_directory_entries(&vault_path).is_empty());
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("inspect marker");
+        assert!(!storage.reconciliation_needed().expect("marker state"));
+    }
+
+    #[test]
+    fn notes_attachment_batch_crash_marker_recovers_every_publication_boundary() {
+        for fault in [
+            AttachmentBatchFault::CrashAfterPublished(1),
+            AttachmentBatchFault::CrashAfterPublished(2),
+            AttachmentBatchFault::CrashBeforeCommit,
+        ] {
+            let temp_dir = tempfile::tempdir().expect("temp dir");
+            let vault_path = temp_dir.path().to_string_lossy().into_owned();
+            seed_attachment_batch_node(&vault_path);
+            let first_source = temp_dir.path().join("first.png");
+            let second_source = temp_dir.path().join("second.png");
+            fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+            fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+            inject_attachment_batch_fault(fault);
+
+            let error = notes_import_attachment_paths_batch(
+                vault_path.clone(),
+                path_batch_input(&first_source, &second_source),
+                Some(batch_history_context()),
+            )
+            .expect_err("injected crash");
+            assert!(error.contains("injected attachment batch crash"), "{error}");
+            let storage = AttachmentStorageLease::acquire(&vault_path).expect("crash marker");
+            assert!(storage.reconciliation_needed().expect("marker state"));
+            drop(storage);
+            let connection = connect_notes_db(&vault_path).expect("crash database");
+            let attachment_count: i64 = connection
+                .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                    row.get(0)
+                })
+                .expect("count rolled back attachments");
+            assert_eq!(attachment_count, 0);
+            drop(connection);
+
+            notes_initialize(vault_path.clone()).expect("restart reconciliation");
+            assert!(asset_directory_entries(&vault_path).is_empty());
+            let storage = AttachmentStorageLease::acquire(&vault_path).expect("cleared marker");
+            assert!(!storage.reconciliation_needed().expect("marker state"));
+        }
+    }
+
+    #[test]
+    fn notes_attachment_batch_failure_preserves_a_preexisting_shared_hash() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let shared_source = temp_dir.path().join("shared.png");
+        let unique_source = temp_dir.path().join("unique.png");
+        fs::write(&shared_source, encoded_png(4, 3)).expect("write shared image");
+        fs::write(&unique_source, encoded_png(5, 4)).expect("write unique image");
+        notes_import_attachment(
+            vault_path.clone(),
+            ImportAttachmentInput {
+                id: NOOP_ENTRY_ID.to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: shared_source.to_string_lossy().into_owned(),
+                initial_max_display_width: 480,
+            },
+            None,
+        )
+        .expect("seed shared attachment");
+        let shared_entries = asset_directory_entries(&vault_path);
+        assert_eq!(shared_entries.len(), 1);
+
+        inject_attachment_batch_fault(AttachmentBatchFault::ReturnAfterPublished(2));
+        notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            path_batch_input(&shared_source, &unique_source),
+            Some(batch_history_context()),
+        )
+        .expect_err("batch failure after shared publication");
+
+        assert_eq!(asset_directory_entries(&vault_path), shared_entries);
+        let connection = connect_notes_db(&vault_path).expect("shared database");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count shared attachment rows");
+        assert_eq!(attachment_count, 1);
+    }
+
+    #[test]
+    fn notes_attachment_batch_retry_is_idempotent_and_rejects_inconsistent_duplicates() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let first_source = temp_dir.path().join("first.png");
+        let second_source = temp_dir.path().join("second.png");
+        fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+        fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+        let input = path_batch_input(&first_source, &second_source);
+        let history_context = batch_history_context();
+
+        let committed = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            input.clone(),
+            Some(history_context.clone()),
+        )
+        .expect("commit batch before response loss");
+        let retried = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            input.clone(),
+            Some(history_context.clone()),
+        )
+        .expect("retry committed batch");
+        assert_eq!(retried, committed);
+        let connection = connect_notes_db(&vault_path).expect("retry database");
+        let counts: (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM notes_attachments), \
+                        (SELECT COUNT(*) FROM notes_history_entries)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("retry counts");
+        assert_eq!(counts, (2, 1));
+        drop(connection);
+
+        let mut reversed = input.clone();
+        reversed.attachments.reverse();
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            reversed,
+            Some(history_context.clone()),
+        )
+        .expect_err("mismatched duplicate source order");
+        assert!(error.contains("inconsistent"), "{error}");
+
+        let mismatched_source = temp_dir.path().join("mismatched.png");
+        fs::write(&mismatched_source, encoded_png(6, 5)).expect("write mismatched image");
+        let mut mismatched = input.clone();
+        mismatched.attachments[1].source_path = mismatched_source.to_string_lossy().into_owned();
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            mismatched,
+            Some(history_context.clone()),
+        )
+        .expect_err("mismatched duplicate content");
+        assert!(error.contains("inconsistent"), "{error}");
+
+        let mut mismatched_history = history_context;
+        mismatched_history.command_kind = "differentCommand".to_string();
+        let error =
+            notes_import_attachment_paths_batch(vault_path, input, Some(mismatched_history))
+                .expect_err("mismatched duplicate history");
+        assert!(error.contains("inconsistent"), "{error}");
+    }
+
+    #[test]
+    fn notes_attachment_batch_rejects_a_partial_duplicate_set() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let first_source = temp_dir.path().join("first.png");
+        let second_source = temp_dir.path().join("second.png");
+        fs::write(&first_source, encoded_png(4, 3)).expect("write first image");
+        fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
+        notes_import_attachment(
+            vault_path.clone(),
+            ImportAttachmentInput {
+                id: SPLIT_ID.to_string(),
+                node_id: ROOT_ID.to_string(),
+                source_path: first_source.to_string_lossy().into_owned(),
+                initial_max_display_width: 480,
+            },
+            None,
+        )
+        .expect("seed partial duplicate");
+
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            path_batch_input(&first_source, &second_source),
+            Some(batch_history_context()),
+        )
+        .expect_err("partial duplicate batch");
+        assert!(error.contains("inconsistent"), "{error}");
+        assert_eq!(asset_directory_entries(&vault_path).len(), 1);
     }
 
     #[test]

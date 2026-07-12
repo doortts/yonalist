@@ -2,16 +2,21 @@ import {
   isNoteSearchResult,
   isNotesHistoryReplayResult,
   isNotesMutationResult,
+  MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
+  MAX_NOTE_ATTACHMENTS_PER_NODE,
   normalizeNotesWorkspace
 } from "../domain/notes";
+import { encodeNotesAttachmentRawEnvelope } from "./notesAttachmentRawIpc";
 import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
 import type {
   CreateNoteNodeInput,
+  ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
+  ImportNoteAttachmentPathBatchInput,
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
@@ -57,6 +62,52 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[]
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === expectedKeys.length &&
+    keys.every(
+      (key) => typeof key === "string" && expectedKeys.includes(key)
+    )
+  );
+}
+
+function isCanonicalUuidV4(value: unknown): value is string {
+  return typeof value === "string" && UUID_V4.test(value);
+}
+
+function normalizeAttachmentHistoryContext(
+  historyContext: unknown
+): NotesHistoryContext | null | undefined {
+  if (historyContext == null) {
+    return null;
+  }
+  if (
+    !isPlainRecord(historyContext) ||
+    !hasExactKeys(historyContext, ["sessionId", "entryId", "commandKind"]) ||
+    !isCanonicalUuidV4(historyContext.sessionId) ||
+    !isCanonicalUuidV4(historyContext.entryId) ||
+    typeof historyContext.commandKind !== "string"
+  ) {
+    return undefined;
+  }
+  const commandKind = historyContext.commandKind.trim();
+  if (commandKind.length === 0 || commandKind.length > 128) {
+    return undefined;
+  }
+  return {
+    sessionId: historyContext.sessionId,
+    entryId: historyContext.entryId,
+    commandKind
+  };
+}
+
 function isStandardNumericArray(value: unknown): value is number[] {
   return (
     Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
@@ -82,20 +133,13 @@ function normalizeImportAttachmentInput(
     "sourcePath",
     "initialMaxDisplayWidth"
   ];
-  const keys = Object.keys(input);
   if (
-    keys.length !== expectedKeys.length ||
-    !keys.every((key) => expectedKeys.includes(key)) ||
-    typeof input.id !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-      input.id
-    ) ||
-    typeof input.nodeId !== "string" ||
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
-      input.nodeId
-    ) ||
+    !hasExactKeys(input, expectedKeys) ||
+    !isCanonicalUuidV4(input.id) ||
+    !isCanonicalUuidV4(input.nodeId) ||
     typeof input.sourcePath !== "string" ||
     input.sourcePath.length === 0 ||
+    input.sourcePath.includes("\0") ||
     !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
     (input.initialMaxDisplayWidth as number) <= 0
   ) {
@@ -105,6 +149,121 @@ function normalizeImportAttachmentInput(
     id: input.id,
     nodeId: input.nodeId,
     sourcePath: input.sourcePath,
+    initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+  };
+}
+
+function normalizeImportAttachmentPathBatchInput(
+  input: unknown
+): ImportNoteAttachmentPathBatchInput | null {
+  if (
+    !isPlainRecord(input) ||
+    !hasExactKeys(input, [
+      "nodeId",
+      "attachments",
+      "initialMaxDisplayWidth"
+    ]) ||
+    !isCanonicalUuidV4(input.nodeId) ||
+    !Array.isArray(input.attachments) ||
+    Object.getPrototypeOf(input.attachments) !== Array.prototype ||
+    input.attachments.length === 0 ||
+    input.attachments.length > MAX_NOTE_ATTACHMENTS_PER_NODE ||
+    !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
+    (input.initialMaxDisplayWidth as number) <= 0
+  ) {
+    return null;
+  }
+
+  const ids = new Set<string>();
+  const attachments: Array<{ id: string; sourcePath: string }> = [];
+  for (let index = 0; index < input.attachments.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(input.attachments, index)) {
+      return null;
+    }
+    const attachment = input.attachments[index];
+    if (
+      !isPlainRecord(attachment) ||
+      !hasExactKeys(attachment, ["id", "sourcePath"]) ||
+      !isCanonicalUuidV4(attachment.id) ||
+      ids.has(attachment.id) ||
+      typeof attachment.sourcePath !== "string" ||
+      attachment.sourcePath.length === 0 ||
+      attachment.sourcePath.includes("\0")
+    ) {
+      return null;
+    }
+    ids.add(attachment.id);
+    attachments.push({ id: attachment.id, sourcePath: attachment.sourcePath });
+  }
+
+  return {
+    nodeId: input.nodeId,
+    attachments,
+    initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+  };
+}
+
+function normalizeImportAttachmentBytesBatchInput(
+  input: unknown
+): ImportNoteAttachmentBytesBatchInput | null {
+  if (
+    !isPlainRecord(input) ||
+    !hasExactKeys(input, [
+      "nodeId",
+      "attachments",
+      "initialMaxDisplayWidth"
+    ]) ||
+    !isCanonicalUuidV4(input.nodeId) ||
+    !Array.isArray(input.attachments) ||
+    Object.getPrototypeOf(input.attachments) !== Array.prototype ||
+    input.attachments.length === 0 ||
+    input.attachments.length > MAX_NOTE_ATTACHMENTS_PER_NODE ||
+    !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
+    (input.initialMaxDisplayWidth as number) <= 0
+  ) {
+    return null;
+  }
+
+  const ids = new Set<string>();
+  let aggregateBytes = 0;
+  const attachments = [] as ImportNoteAttachmentBytesBatchInput["attachments"][number][];
+  for (let index = 0; index < input.attachments.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(input.attachments, index)) {
+      return null;
+    }
+    const attachment = input.attachments[index];
+    if (
+      !isPlainRecord(attachment) ||
+      !hasExactKeys(attachment, ["id", "originalName", "mimeType", "blob"]) ||
+      !isCanonicalUuidV4(attachment.id) ||
+      ids.has(attachment.id) ||
+      typeof attachment.originalName !== "string" ||
+      typeof attachment.mimeType !== "string" ||
+      typeof attachment.blob !== "object" ||
+      attachment.blob === null ||
+      !Number.isSafeInteger((attachment.blob as Blob).size) ||
+      (attachment.blob as Blob).size <= 0 ||
+      (attachment.blob as Blob).size > MAX_NOTE_ATTACHMENT_BYTES ||
+      typeof (attachment.blob as Blob).arrayBuffer !== "function"
+    ) {
+      return null;
+    }
+    aggregateBytes += (attachment.blob as Blob).size;
+    if (aggregateBytes > MAX_NOTE_ATTACHMENT_BATCH_BYTES) {
+      return null;
+    }
+    ids.add(attachment.id);
+    attachments.push({
+      id: attachment.id,
+      originalName: attachment.originalName,
+      mimeType: attachment.mimeType,
+      blob: attachment.blob as Blob
+    });
+  }
+
+  return {
+    nodeId: input.nodeId,
+    attachments,
     initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
   };
 }
@@ -201,6 +360,13 @@ async function invokeMutation(
   } catch (cause) {
     throw notesStoreError("write", cause, true);
   }
+  return normalizeMutationResult(result, historyContext);
+}
+
+function normalizeMutationResult(
+  result: unknown,
+  historyContext: NotesHistoryContext | null
+): NotesMutationResult {
   if (!isNotesMutationResult(result)) {
     throw notesStoreError(
       "write",
@@ -429,11 +595,75 @@ export function notesImportAttachment(
       )
     );
   }
-  return invokeMutation(
-    "notes_import_attachment",
-    { vaultPath, input: normalizedInput, historyContext },
+  return notesImportAttachmentPaths(
+    vaultPath,
+    {
+      nodeId: normalizedInput.nodeId,
+      attachments: [
+        { id: normalizedInput.id, sourcePath: normalizedInput.sourcePath }
+      ],
+      initialMaxDisplayWidth: normalizedInput.initialMaxDisplayWidth
+    },
     historyContext
   );
+}
+
+export function notesImportAttachmentPaths(
+  vaultPath: string,
+  input: ImportNoteAttachmentPathBatchInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  const normalizedInput = normalizeImportAttachmentPathBatchInput(input);
+  const normalizedHistoryContext =
+    normalizeAttachmentHistoryContext(historyContext);
+  if (normalizedInput === null || normalizedHistoryContext === undefined) {
+    return Promise.reject(
+      notesStoreError(
+        "write",
+        "Notes attachment path batch input is invalid.",
+        false
+      )
+    );
+  }
+  return invokeMutation(
+    "notes_import_attachment_paths_batch",
+    { vaultPath, input: normalizedInput, historyContext: normalizedHistoryContext },
+    normalizedHistoryContext
+  );
+}
+
+export async function notesImportAttachmentBytes(
+  vaultPath: string,
+  input: ImportNoteAttachmentBytesBatchInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  const normalizedInput = normalizeImportAttachmentBytesBatchInput(input);
+  const normalizedHistoryContext =
+    normalizeAttachmentHistoryContext(historyContext);
+  if (normalizedInput === null || normalizedHistoryContext === undefined) {
+    throw notesStoreError(
+      "write",
+      "Notes attachment byte batch input is invalid.",
+      false
+    );
+  }
+
+  let result: unknown;
+  try {
+    const body = await encodeNotesAttachmentRawEnvelope(
+      vaultPath,
+      normalizedInput,
+      normalizedHistoryContext
+    );
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      throw new Error("Notes requires Tauri desktop storage.");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    result = await invoke<unknown>("notes_import_attachment_bytes", body);
+  } catch (cause) {
+    throw notesStoreError("write", cause, true);
+  }
+  return normalizeMutationResult(result, normalizedHistoryContext);
 }
 
 export async function notesReadAttachmentBytes(
@@ -620,6 +850,8 @@ export const notesStore: NotesStore = {
   historyStatus: notesHistoryStatus,
   clearHistory: notesClearHistory,
   importAttachment: notesImportAttachment,
+  importAttachmentPaths: notesImportAttachmentPaths,
+  importAttachmentBytes: notesImportAttachmentBytes,
   readAttachmentBytes: notesReadAttachmentBytes,
   resizeAttachment: notesResizeAttachment,
   removeAttachment: notesRemoveAttachment,

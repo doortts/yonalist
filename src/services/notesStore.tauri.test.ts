@@ -1,7 +1,10 @@
+import { Blob as NodeBlob } from "node:buffer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CreateNoteNodeInput,
+  ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
+  ImportNoteAttachmentPathBatchInput,
   MoveNoteNodeInput,
   NoteAttachment,
   NotesHistoryContext,
@@ -25,6 +28,8 @@ import {
   notesClearHistory,
   notesHistoryStatus,
   notesImportAttachment,
+  notesImportAttachmentBytes,
+  notesImportAttachmentPaths,
   notesInitialize,
   notesListTags,
   notesListTagsWithCounts,
@@ -61,6 +66,7 @@ const vaultPath = "/vault";
 const nodeId = "11111111-1111-4111-8111-111111111111";
 const secondNodeId = "22222222-2222-4222-8222-222222222222";
 const attachmentId = "33333333-3333-4333-8333-333333333333";
+const secondAttachmentId = "44444444-4444-4444-8444-444444444444";
 const contentHash = "a".repeat(64);
 const attachment: NoteAttachment = {
   id: attachmentId,
@@ -260,8 +266,18 @@ describe("notesStore in Tauri", () => {
 
     expect(invokeMock.mock.calls).toEqual([
       [
-        "notes_import_attachment",
-        { vaultPath, input: importInput, historyContext }
+        "notes_import_attachment_paths_batch",
+        {
+          vaultPath,
+          input: {
+            nodeId,
+            attachments: [
+              { id: attachmentId, sourcePath: importInput.sourcePath }
+            ],
+            initialMaxDisplayWidth: importInput.initialMaxDisplayWidth
+          },
+          historyContext
+        }
       ],
       ["notes_read_attachment_bytes", { vaultPath, attachmentId }],
       [
@@ -277,6 +293,116 @@ describe("notesStore in Tauri", () => {
         { vaultPath, attachmentId, historyContext }
       ]
     ]);
+  });
+
+  it("invokes one JSON batch command for ordered attachment paths", async () => {
+    const input: ImportNoteAttachmentPathBatchInput = {
+      nodeId,
+      attachments: [
+        { id: attachmentId, sourcePath: "/tmp/first.png" },
+        { id: secondAttachmentId, sourcePath: "/tmp/second.webp" }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue(mutationResult);
+
+    await expect(
+      notesImportAttachmentPaths(vaultPath, input, historyContext)
+    ).resolves.toEqual(normalizedMutationResult);
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "notes_import_attachment_paths_batch",
+      { vaultPath, input, historyContext }
+    );
+  });
+
+  it("invokes one raw batch command for ordered attachment bytes", async () => {
+    const input: ImportNoteAttachmentBytesBatchInput = {
+      nodeId,
+      attachments: [
+        {
+          id: attachmentId,
+          originalName: "first.png",
+          mimeType: "image/png",
+          blob: new NodeBlob([Uint8Array.of(1, 2)], {
+            type: "image/png"
+          }) as Blob
+        },
+        {
+          id: secondAttachmentId,
+          originalName: "second.webp",
+          mimeType: "image/webp",
+          blob: new NodeBlob([Uint8Array.of(3, 4, 5)], {
+            type: "image/webp"
+          }) as Blob
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue(mutationResult);
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, input, historyContext)
+    ).resolves.toEqual(normalizedMutationResult);
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "notes_import_attachment_bytes",
+      expect.any(Uint8Array)
+    );
+  });
+
+  it("rejects malformed path and byte batches before invoking native code", async () => {
+    await expect(
+      notesImportAttachmentPaths(vaultPath, {
+        nodeId,
+        attachments: [
+          { id: attachmentId, sourcePath: "/tmp/first.png" },
+          { id: attachmentId, sourcePath: "/tmp/second.png" }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "image.png",
+            mimeType: "image/png",
+            blob: { size: 0 } as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an inexact path batch history context before invoking native code", async () => {
+    const inexactHistory = {
+      ...historyContext,
+      extra: "must-not-cross-the-boundary"
+    } as NotesHistoryContext;
+
+    await expect(
+      notesImportAttachmentPaths(
+        vaultPath,
+        {
+          nodeId,
+          attachments: [
+            { id: attachmentId, sourcePath: "/tmp/first.png" }
+          ],
+          initialMaxDisplayWidth: 480
+        },
+        inexactHistory
+      )
+    ).rejects.toMatchObject({ operation: "write", retryable: false });
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it("validates and sends the initial attachment max display width exactly", async () => {
@@ -295,9 +421,13 @@ describe("notesStore in Tauri", () => {
       ...unjournaledMutationResult,
       workspace: workspaceWithAttachments
     });
-    expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment", {
+    expect(invokeMock).toHaveBeenCalledWith("notes_import_attachment_paths_batch", {
       vaultPath,
-      input,
+      input: {
+        nodeId,
+        attachments: [{ id: attachmentId, sourcePath: input.sourcePath }],
+        initialMaxDisplayWidth: input.initialMaxDisplayWidth
+      },
       historyContext: null
     });
   });

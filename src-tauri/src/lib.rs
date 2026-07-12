@@ -17,10 +17,11 @@ use notes::commands::{
     notes_archive_node, notes_clear_history, notes_collapse_all, notes_create_node,
     notes_delete_database, notes_duplicate_node, notes_empty_trash, notes_expand_all,
     notes_export_markdown, notes_export_pdf, notes_history_status, notes_import_attachment,
-    notes_initialize, notes_list_tags, notes_list_tags_with_counts, notes_load_workspace,
-    notes_move_node, notes_read_attachment_bytes, notes_redo, notes_remove_attachment,
-    notes_remove_empty_node, notes_resize_attachment, notes_restore_attachment, notes_restore_node,
-    notes_search, notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
+    notes_import_attachment_bytes, notes_import_attachment_paths_batch, notes_initialize,
+    notes_list_tags, notes_list_tags_with_counts, notes_load_workspace, notes_move_node,
+    notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
+    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
+    notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
     notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
     notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
 };
@@ -1562,6 +1563,8 @@ pub fn run() {
             notes_list_tags,
             notes_list_tags_with_counts,
             notes_import_attachment,
+            notes_import_attachment_paths_batch,
+            notes_import_attachment_bytes,
             notes_read_attachment_bytes,
             notes_resize_attachment,
             notes_remove_attachment,
@@ -1594,6 +1597,8 @@ mod tests {
             "notes_collapse_all",
             "notes_sort_subtree_ascending",
             "notes_sort_subtree_descending",
+            "notes_import_attachment_paths_batch",
+            "notes_import_attachment_bytes",
         ] {
             assert!(
                 handler
