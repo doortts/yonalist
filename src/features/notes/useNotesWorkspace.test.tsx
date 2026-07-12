@@ -23,11 +23,41 @@ import {
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
+const notesHistorySpies = vi.hoisted(() => ({
+  discard: vi.fn(),
+  rememberAfter: vi.fn()
+}));
 
 vi.mock("../../domain/notes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../domain/notes")>()),
   createNoteId: createNoteIdMock
 }));
+
+vi.mock("./notesHistory", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./notesHistory")>();
+  return {
+    ...actual,
+    createNotesHistorySession: (
+      options?: Parameters<typeof actual.createNotesHistorySession>[0]
+    ) => {
+      const session = actual.createNotesHistorySession(options);
+      return {
+        ...session,
+        discard(entryId: string) {
+          notesHistorySpies.discard(entryId);
+          session.discard(entryId);
+        },
+        rememberAfter(
+          entryId: string,
+          after: Parameters<typeof session.rememberAfter>[1]
+        ) {
+          notesHistorySpies.rememberAfter(entryId);
+          session.rememberAfter(entryId, after);
+        }
+      };
+    }
+  };
+});
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -206,6 +236,8 @@ function StartupHarness({
 describe("useNotesWorkspace", () => {
   beforeEach(() => {
     createNoteIdMock.mockReset();
+    notesHistorySpies.discard.mockClear();
+    notesHistorySpies.rememberAfter.mockClear();
   });
 
   afterEach(() => {
@@ -941,7 +973,7 @@ describe("useNotesWorkspace", () => {
     );
   });
 
-  it("starts and applies exactly the next batch after the first settles", async () => {
+  it("clears a failed batch after the exactly-next same-node batch succeeds", async () => {
     const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
     const secondAttachment = attachment({
       id: "8f257d31-d255-4fc8-89dc-4e3b30f24a6e",
@@ -990,6 +1022,12 @@ describe("useNotesWorkspace", () => {
     expect(importAttachmentPaths).toHaveBeenCalledTimes(1);
     firstImport.reject(new Error("first failed"));
     await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(2));
+    const failedAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
+    expect(failedAttemptId).toBeDefined();
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBe(
+      "Image upload failed: first failed"
+    );
     expect(importAttachmentPaths.mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({
         attachments: [
@@ -1014,23 +1052,184 @@ describe("useNotesWorkspace", () => {
       ])
     );
 
-    const visibleAttemptId =
-      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
-    expect(visibleAttemptId).toBeDefined();
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id]
+    ).toBeUndefined();
+    const failedHistoryEntryId =
+      importAttachmentPaths.mock.calls[0]?.[2]?.entryId;
+    const successfulHistoryEntryId =
+      importAttachmentPaths.mock.calls[1]?.[2]?.entryId;
+    expect(
+      notesHistorySpies.discard.mock.calls.filter(
+        ([entryId]) => entryId === failedHistoryEntryId
+      )
+    ).toHaveLength(1);
+    expect(
+      notesHistorySpies.discard.mock.calls.filter(
+        ([entryId]) => entryId === successfulHistoryEntryId
+      )
+    ).toHaveLength(0);
+    expect(
+      notesHistorySpies.rememberAfter.mock.calls.filter(
+        ([entryId]) => entryId === successfulHistoryEntryId
+      )
+    ).toHaveLength(1);
+
     await act(async () =>
-      result.current.actions.retryImageUpload!(root.id, visibleAttemptId)
+      result.current.actions.retryImageUpload!(root.id, failedAttemptId)
     );
 
-    expect(importAttachmentPaths).toHaveBeenCalledTimes(3);
-    expect(importAttachmentPaths.mock.calls[2]?.[1]).toEqual(
-      expect.objectContaining({
-        attachments: [
-          expect.objectContaining({ sourcePath: "/incoming/first.png" })
-        ]
-      })
+    expect(importAttachmentPaths).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves other-node and newer pending failures around same-node success", async () => {
+    const root = node({ id: "62000000-0000-4000-8000-000000000001" });
+    const other = node({
+      id: "62000000-0000-4000-8000-000000000002",
+      sortKey: 2048
+    });
+    const imported = attachment({
+      id: "61000000-0000-4000-8000-000000000003",
+      nodeId: root.id
+    });
+    let idCounter = 0;
+    createNoteIdMock.mockImplementation(
+      () =>
+        `61000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
     );
-    expect(importAttachmentPaths.mock.calls[2]?.[2]).toBe(
-      importAttachmentPaths.mock.calls[0]?.[2]
+    const newestFailure = deferred<NotesMutationResult>();
+    const importAttachmentPaths = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("old root failure"))
+      .mockRejectedValueOnce(new Error("other failure"))
+      .mockImplementationOnce(async (_vaultRoot, _input, context) => ({
+        workspace: {
+          nodes: [root, other],
+          attachmentsByNodeId: { [root.id]: [imported] }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      }))
+      .mockReturnValueOnce(newestFailure.promise)
+      .mockImplementationOnce(async (_vaultRoot, _input, context) => ({
+        workspace: {
+          nodes: [root, other],
+          attachmentsByNodeId: { [root.id]: [imported] }
+        },
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      }));
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([root, other])),
+      importAttachmentPaths
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
+
+    let oldRoot!: Promise<void>;
+    let otherFailure!: Promise<void>;
+    let successfulRoot!: Promise<void>;
+    let pendingRoot!: Promise<void>;
+    act(() => {
+      oldRoot = result.current.actions.importDroppedImagePaths!(root.id, [
+        "/incoming/old-root.png"
+      ]);
+      otherFailure = result.current.actions.importDroppedImagePaths!(other.id, [
+        "/incoming/other.png"
+      ]);
+      successfulRoot = result.current.actions.importDroppedImagePaths!(root.id, [
+        "/incoming/success.png"
+      ]);
+      pendingRoot = result.current.actions.importDroppedImagePaths!(root.id, [
+        "/incoming/newest.png"
+      ]);
+    });
+
+    await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(4));
+    await act(async () => Promise.all([oldRoot, otherFailure, successfulRoot]));
+
+    await waitFor(() =>
+      expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([imported])
+    );
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id]
+    ).toBeUndefined();
+    expect(result.current.attachmentUploadErrorsByNodeId?.[other.id]).toBe(
+      "Image upload failed: other failure"
+    );
+    const otherRetryAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[other.id];
+    expect(otherRetryAttemptId).toBeDefined();
+
+    const oldRootHistoryEntryId =
+      importAttachmentPaths.mock.calls[0]?.[2]?.entryId;
+    const otherHistoryEntryId =
+      importAttachmentPaths.mock.calls[1]?.[2]?.entryId;
+    const successfulHistoryEntryId =
+      importAttachmentPaths.mock.calls[2]?.[2]?.entryId;
+    const pendingHistoryEntryId =
+      importAttachmentPaths.mock.calls[3]?.[2]?.entryId;
+    expect(
+      notesHistorySpies.discard.mock.calls.filter(
+        ([entryId]) => entryId === oldRootHistoryEntryId
+      )
+    ).toHaveLength(1);
+    expect(
+      notesHistorySpies.discard.mock.calls.filter(
+        ([entryId]) => entryId === otherHistoryEntryId
+      )
+    ).toHaveLength(0);
+    expect(
+      notesHistorySpies.discard.mock.calls.filter(
+        ([entryId]) => entryId === pendingHistoryEntryId
+      )
+    ).toHaveLength(0);
+    expect(
+      notesHistorySpies.rememberAfter.mock.calls.filter(
+        ([entryId]) => entryId === successfulHistoryEntryId
+      )
+    ).toHaveLength(1);
+
+    newestFailure.reject(new Error("newest root failure"));
+    await act(async () => pendingRoot);
+
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBe(
+      "Image upload failed: newest root failure"
+    );
+    expect(result.current.attachmentUploadErrorsByNodeId?.[other.id]).toBe(
+      "Image upload failed: other failure"
+    );
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[other.id]
+    ).toBe(otherRetryAttemptId);
+    const newestRetryAttemptId =
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
+    expect(newestRetryAttemptId).toBeDefined();
+
+    await act(async () =>
+      result.current.actions.retryImageUpload!(root.id, newestRetryAttemptId)
+    );
+
+    expect(importAttachmentPaths).toHaveBeenCalledTimes(5);
+    expect(importAttachmentPaths.mock.calls[4]?.[1]).toEqual(
+      importAttachmentPaths.mock.calls[3]?.[1]
+    );
+    expect(importAttachmentPaths.mock.calls[4]?.[2]).toBe(
+      importAttachmentPaths.mock.calls[3]?.[2]
+    );
+    expect(result.current.attachmentUploadErrorsByNodeId?.[root.id]).toBeUndefined();
+    expect(
+      result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id]
+    ).toBeUndefined();
+    expect(result.current.attachmentUploadErrorsByNodeId?.[other.id]).toBe(
+      "Image upload failed: other failure"
     );
   });
 

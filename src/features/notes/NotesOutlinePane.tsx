@@ -219,6 +219,7 @@ export function NotesOutlinePane() {
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
+  const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
@@ -240,13 +241,13 @@ export function NotesOutlinePane() {
     actions.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
   importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
-  const reportImagePasteError = (cause: unknown) => {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    setImageIngestError({
-      label: "Image paste failed",
-      message: `Image paste failed: ${detail}`
-    });
-  };
+  useEffect(() => {
+    imagePasteLifecycleRef.current.mounted = true;
+    return () => {
+      imagePasteLifecycleRef.current.mounted = false;
+      imagePasteLifecycleRef.current.generation += 1;
+    };
+  }, []);
   const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
     const clipboardItems = event.clipboardData.items;
     let hasImageCandidate = false;
@@ -258,20 +259,29 @@ export function NotesOutlinePane() {
     }
     if (!hasImageCandidate) return;
 
+    const lifecycle = imagePasteLifecycleRef.current;
+    const attemptGeneration = ++lifecycle.generation;
+    const isCurrentAttempt = (): boolean =>
+      lifecycle.mounted && lifecycle.generation === attemptGeneration;
+    const setCurrentPasteError = (message: string): void => {
+      if (!isCurrentAttempt()) return;
+      setImageIngestError({ label: "Image paste failed", message });
+    };
+    const reportCurrentPasteError = (cause: unknown): void => {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setCurrentPasteError(`Image paste failed: ${detail}`);
+    };
     event.preventDefault();
-    setImageIngestError(null);
+    if (isCurrentAttempt()) setImageIngestError(null);
     let extraction: ReturnType<typeof extractClipboardImages>;
     try {
       extraction = extractClipboardImages(clipboardItems);
     } catch (cause) {
-      reportImagePasteError(cause);
+      reportCurrentPasteError(cause);
       return;
     }
     if (extraction.kind === "error") {
-      setImageIngestError({
-        label: "Image paste failed",
-        message: extraction.message
-      });
+      setCurrentPasteError(extraction.message);
       return;
     }
     if (extraction.kind === "none" || !imagePasteAvailable) return;
@@ -286,10 +296,7 @@ export function NotesOutlinePane() {
       selectedId
     );
     if (targetId === null) {
-      setImageIngestError({
-        label: "Image paste failed",
-        message: "Select a note before pasting images."
-      });
+      setCurrentPasteError("Select a note before pasting images.");
       return;
     }
 
@@ -298,9 +305,9 @@ export function NotesOutlinePane() {
     try {
       void Promise.resolve(
         importClipboardImages(targetId, extraction.items)
-      ).catch(reportImagePasteError);
+      ).catch(reportCurrentPasteError);
     } catch (cause) {
-      reportImagePasteError(cause);
+      reportCurrentPasteError(cause);
     }
   };
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.

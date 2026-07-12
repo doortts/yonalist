@@ -81,11 +81,16 @@ export function OutlineNodeRow({
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
   const readOnly = readOnlyMode !== undefined;
-  const imageDropEnabled =
+  const imageIngestEnabled =
     !disabled &&
     !readOnly &&
-    state.status !== "loading" &&
-    actions.importDroppedImagePaths !== undefined;
+    state.status !== "loading";
+  const imageAttachmentTargetEnabled =
+    imageIngestEnabled &&
+    (actions.importDroppedImagePaths !== undefined ||
+      actions.importClipboardImages !== undefined);
+  const imageDropEnabled =
+    imageIngestEnabled && actions.importDroppedImagePaths !== undefined;
   const {
     attributes,
     isDragging,
@@ -446,7 +451,9 @@ export function OutlineNodeRow({
       data-dragging={isDragging ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
-      data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
+      data-notes-attachment-target={
+        imageAttachmentTargetEnabled ? nodeId : undefined
+      }
       data-image-drop-active={
         imageDropEnabled && imageDropActive ? "true" : undefined
       }
