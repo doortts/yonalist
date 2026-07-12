@@ -16,6 +16,8 @@ import type {
   PendingNoteAttachmentByteItem
 } from "../../domain/notes";
 import {
+  isNotesDraftsFlushFailedError,
+  NOTES_DRAFTS_FLUSH_FAILED_CODE,
   useNotesWorkspace,
   type NotesWorkspaceActions,
   type UseNotesWorkspaceResult
@@ -133,7 +135,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue(undefined),
+    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
     importAttachmentPaths: vi.fn().mockResolvedValue(workspace([])),
     importAttachmentBytes: vi.fn().mockResolvedValue(workspace([])),
     ...overrides
@@ -4346,7 +4348,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let deletionCompletion!: Promise<void>;
+    let deletionCompletion!: Promise<unknown>;
     act(() => {
       deletionCompletion = result.current.actions.deleteAllNotesData();
     });
@@ -4401,12 +4403,21 @@ describe("useNotesWorkspace", () => {
       });
     });
 
+    let rejection: unknown;
     await act(async () => {
-      await expect(
-        result.current.actions.deleteAllNotesData()
-      ).rejects.toThrow("Draft save failed");
+      rejection = await result.current.actions
+        .deleteAllNotesData()
+        .then(
+          () => undefined,
+          (cause) => cause
+        );
     });
 
+    expect(isNotesDraftsFlushFailedError(rejection)).toBe(true);
+    expect((rejection as { code?: string }).code).toBe(
+      NOTES_DRAFTS_FLUSH_FAILED_CODE
+    );
+    expect((rejection as Error).message).toBe("Draft save failed");
     expect(store.deleteDatabase).not.toHaveBeenCalled();
     expect(result.current.deletingNotesData).toBe(false);
     expect(result.current.draftsByNodeId.root).toMatchObject({
@@ -4415,6 +4426,49 @@ describe("useNotesWorkspace", () => {
       status: "failed"
     });
     expect(result.current.state.nodesById.root).toBeDefined();
+  });
+
+  it("discards unsaved drafts and deletes when asked to skip the flush", async () => {
+    const store = repository({
+      updateNode: vi.fn().mockRejectedValue(new Error("Draft save failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "Unsaveable draft",
+        note: "drop me"
+      });
+    });
+    expect(result.current.draftsByNodeId.root).toBeDefined();
+
+    // The regular path bails before touching the database because the draft
+    // can never be written.
+    let rejection: unknown;
+    await act(async () => {
+      rejection = await result.current.actions
+        .deleteAllNotesData()
+        .then(
+          () => undefined,
+          (cause) => cause
+        );
+    });
+    expect(isNotesDraftsFlushFailedError(rejection)).toBe(true);
+    expect(store.deleteDatabase).not.toHaveBeenCalled();
+
+    // Discarding the drafts skips that gate and deletes anyway.
+    await act(async () => {
+      await result.current.actions.deleteAllNotesData({ discardDrafts: true });
+    });
+
+    expect(store.deleteDatabase).toHaveBeenCalledWith("/vault");
+    expect(result.current.deletingNotesData).toBe(false);
+    expect(result.current.draftsByNodeId.root).toBeUndefined();
+    expect(result.current.writeError).toBeNull();
+    expect(result.current.state.rootIds).toEqual([]);
   });
 
   it("coalesces rapid node drafts and writes the latest patch after 300 ms", async () => {

@@ -308,7 +308,9 @@ function configureRepository(
   notesStoreMock.searchStructured.mockResolvedValue([]);
   notesStoreMock.listTags.mockResolvedValue([]);
   notesStoreMock.listTagsWithCounts.mockResolvedValue([]);
-  notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
+  notesStoreMock.deleteDatabase.mockResolvedValue({
+    attachmentCleanupFailed: false
+  });
 }
 
 function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {

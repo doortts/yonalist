@@ -59,6 +59,72 @@ import {
   isActiveMoveNode
 } from "./notesMoveTargets";
 
+export interface NotesDeleteAllOptions {
+  /**
+   * Discard any pending drafts that could not be written and delete the Notes
+   * data regardless. Recovers a vault whose database is broken enough that the
+   * pre-delete flush can never succeed.
+   */
+  discardDrafts?: boolean;
+}
+
+export interface NotesDeleteAllResult {
+  /**
+   * True when the database was deleted but some attachment files were left on
+   * disk. Non-blocking: the deletion still completed.
+   */
+  attachmentCleanupFailed: boolean;
+}
+
+/**
+ * Discriminator for the rejection `deleteAllNotesData` throws when the
+ * pre-delete draft flush fails and the caller has not opted into discarding
+ * drafts. Lets the settings dialog offer an explicit "discard and delete"
+ * confirmation instead of surfacing a dead end.
+ */
+export const NOTES_DRAFTS_FLUSH_FAILED_CODE = "notes-drafts-flush-failed";
+
+interface NotesDraftsFlushFailedError extends Error {
+  code: typeof NOTES_DRAFTS_FLUSH_FAILED_CODE;
+}
+
+function notesDraftsFlushFailedError(
+  cause: NotesStoreError | null
+): NotesDraftsFlushFailedError {
+  const error = new Error(
+    cause?.message ?? "Pending Notes changes could not be saved."
+  ) as NotesDraftsFlushFailedError;
+  error.name = "NotesDraftsFlushFailedError";
+  error.code = NOTES_DRAFTS_FLUSH_FAILED_CODE;
+  return error;
+}
+
+export function isNotesDraftsFlushFailedError(
+  value: unknown
+): value is NotesDraftsFlushFailedError {
+  return (
+    value instanceof Error &&
+    (value as { code?: unknown }).code === NOTES_DRAFTS_FLUSH_FAILED_CODE
+  );
+}
+
+/**
+ * Narrows the value resolved by `NotesStore.deleteDatabase`. The store's
+ * interface (src/domain/notes.ts) types the result as `void`, but the Tauri
+ * command reports whether some attachment files could not be cleaned up. We
+ * validate the shape structurally rather than trusting the interface type.
+ */
+function hasAttachmentCleanupFlag(
+  value: unknown
+): value is { attachmentCleanupFailed: boolean } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { attachmentCleanupFailed?: unknown })
+      .attachmentCleanupFailed === "boolean"
+  );
+}
+
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
   focusNode(nodeId: NoteId): Promise<void>;
@@ -109,7 +175,9 @@ export interface NotesWorkspaceActions {
   toggleTagFilter(filter: NoteTagFilter): Promise<void>;
   searchNotes(query: string): Promise<NoteSearchResult[]>;
   openSearchResult(nodeId: NoteId): Promise<void>;
-  deleteAllNotesData(): Promise<void>;
+  deleteAllNotesData(
+    options?: NotesDeleteAllOptions
+  ): Promise<NotesDeleteAllResult>;
   zoomTo(nodeId: NoteId | null): Promise<void>;
   uploadImage?(nodeId: NoteId): Promise<void>;
   importDroppedImagePaths?(
@@ -4342,58 +4410,8 @@ export function useNotesWorkspace({
     });
   }, [closeTextBurst]);
 
-  const deleteAllNotesData = useCallback(async (): Promise<void> => {
-    const record = sessionRecordRef.current;
-    if (!record || record.closing || sessionRef.current !== record.session) {
-      throw new Error("The Notes workspace is unavailable.");
-    }
-    if (deletingNotesDataRef.current) {
-      throw new Error("Notes data deletion is already in progress.");
-    }
-
-    const deletionToken = {};
-    deletionTokenRef.current = deletionToken;
-    deletingNotesDataRef.current = true;
-    setDeletingNotesData(true);
-
-    try {
-      if (
-        record.drafts.size > 0 &&
-        !(await flushAllDraftsBeforeStructural())
-      ) {
-        throw (
-          record.writeError ??
-          new Error("Pending Notes changes could not be saved.")
-        );
-      }
-
-      let deletionError: unknown = null;
-      let deleted = false;
-      await record.session.enqueueStructural(async (context) => {
-        try {
-          await context.repository.deleteDatabase(context.vaultRoot);
-          deleted = true;
-          return authoritative(
-            { nodes: [] },
-            {
-              selectedId: null,
-              zoomRootId: null,
-              editingNoteId: null,
-              pendingFocusId: null
-            }
-          );
-        } catch (cause) {
-          deletionError = cause;
-          return { kind: "failure", error: errorMessage(cause) };
-        }
-      });
-      if (deletionError) {
-        throw deletionError;
-      }
-      if (!deleted) {
-        throw new Error("Notes data deletion did not complete.");
-      }
-
+  const discardPendingDrafts = useCallback(
+    (record: NotesWorkspaceSessionRecord): void => {
       record.drafts.clear();
       record.pendingDebounceByNodeId.clear();
       record.inFlightDraftByNodeId.clear();
@@ -4403,37 +4421,112 @@ export function useNotesWorkspace({
       record.draftHistoryFocusByNodeId.clear();
       record.failedWritesByNodeId.clear();
       record.writeError = null;
-      record.recoveryEntry = null;
-      record.session.history.clearSnapshots();
-      clearRecoveryEntry(repository, vaultRoot);
       publishDraftState(record);
-      if (
-        sessionRecordRef.current === record &&
-        sessionRef.current === record.session
-      ) {
-        activeScopeRef.current = { kind: "active" };
-        setLibraryView("all");
-        requestedTagFiltersRef.current = [];
-        tagFilterOriginRef.current = null;
-        tagFilterRequestRef.current += 1;
-        setActiveTagFilters([]);
-        setTagSummaries([]);
-        replaceLocalExpansions(new Set());
+    },
+    [publishDraftState]
+  );
+
+  const deleteAllNotesData = useCallback(
+    async (options?: NotesDeleteAllOptions): Promise<NotesDeleteAllResult> => {
+      const record = sessionRecordRef.current;
+      if (!record || record.closing || sessionRef.current !== record.session) {
+        throw new Error("The Notes workspace is unavailable.");
       }
-    } finally {
-      if (deletionTokenRef.current === deletionToken) {
-        deletionTokenRef.current = null;
-        deletingNotesDataRef.current = false;
-        setDeletingNotesData(false);
+      if (deletingNotesDataRef.current) {
+        throw new Error("Notes data deletion is already in progress.");
       }
-    }
-  }, [
-    flushAllDraftsBeforeStructural,
-    publishDraftState,
-    replaceLocalExpansions,
-    repository,
-    vaultRoot
-  ]);
+
+      const discardDrafts = options?.discardDrafts === true;
+      const deletionToken = {};
+      deletionTokenRef.current = deletionToken;
+      deletingNotesDataRef.current = true;
+      setDeletingNotesData(true);
+
+      try {
+        if (record.drafts.size > 0) {
+          if (discardDrafts) {
+            discardPendingDrafts(record);
+          } else if (!(await flushAllDraftsBeforeStructural())) {
+            throw notesDraftsFlushFailedError(record.writeError);
+          }
+        }
+
+        let deletionError: unknown = null;
+        let deleted = false;
+        let attachmentCleanupFailed = false;
+        await record.session.enqueueStructural(async (context) => {
+          try {
+            const outcome = (await context.repository.deleteDatabase(
+              context.vaultRoot
+            )) as unknown;
+            attachmentCleanupFailed =
+              hasAttachmentCleanupFlag(outcome) && outcome.attachmentCleanupFailed;
+            deleted = true;
+            return authoritative(
+              { nodes: [] },
+              {
+                selectedId: null,
+                zoomRootId: null,
+                editingNoteId: null,
+                pendingFocusId: null
+              }
+            );
+          } catch (cause) {
+            deletionError = cause;
+            return { kind: "failure", error: errorMessage(cause) };
+          }
+        });
+        if (deletionError) {
+          throw deletionError;
+        }
+        if (!deleted) {
+          throw new Error("Notes data deletion did not complete.");
+        }
+
+        record.drafts.clear();
+        record.pendingDebounceByNodeId.clear();
+        record.inFlightDraftByNodeId.clear();
+        record.retryWriteByNodeId.clear();
+        record.draftAttemptReservations.clear();
+        record.draftHistoryContextByNodeId.clear();
+        record.draftHistoryFocusByNodeId.clear();
+        record.failedWritesByNodeId.clear();
+        record.writeError = null;
+        record.recoveryEntry = null;
+        record.session.history.clearSnapshots();
+        clearRecoveryEntry(repository, vaultRoot);
+        publishDraftState(record);
+        if (
+          sessionRecordRef.current === record &&
+          sessionRef.current === record.session
+        ) {
+          activeScopeRef.current = { kind: "active" };
+          setLibraryView("all");
+          requestedTagFiltersRef.current = [];
+          tagFilterOriginRef.current = null;
+          tagFilterRequestRef.current += 1;
+          setActiveTagFilters([]);
+          setTagSummaries([]);
+          replaceLocalExpansions(new Set());
+        }
+        return { attachmentCleanupFailed };
+      } finally {
+        if (deletionTokenRef.current === deletionToken) {
+          deletionTokenRef.current = null;
+          deletingNotesDataRef.current = false;
+          setDeletingNotesData(false);
+        }
+      }
+    },
+    [
+      discardPendingDrafts,
+      flushAllDraftsBeforeStructural,
+      publishDraftState,
+      replaceLocalExpansions,
+      repository,
+      vaultRoot
+    ]
+  );
 
   const zoomTo = useCallback(async (nodeId: NoteId | null) => {
     navigationVersionRef.current += 1;
