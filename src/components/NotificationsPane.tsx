@@ -149,7 +149,11 @@ const NotificationRow = memo(function NotificationRow({
   );
 });
 
-export function NotificationsPane({
+// Memoized so App commits that don't touch notification props (comment
+// drafts, outbox churn, metrics) skip re-rendering the whole non-virtualized
+// list. Requires every prop — including `state` and the callbacks — to be
+// referentially stable in App.
+export const NotificationsPane = memo(function NotificationsPane({
   state,
   webBaseUrl,
   online,
@@ -289,4 +293,4 @@ export function NotificationsPane({
       </div>
     </section>
   );
-}
+});

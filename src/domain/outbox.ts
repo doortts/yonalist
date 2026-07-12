@@ -31,6 +31,15 @@ interface CreateCommentOperationInput extends RepositoryIdentity {
   vaultRoot?: string;
 }
 
+/** Unique id for a freshly queued operation, prefixed by its kind. */
+export function createOperationId(prefix: string): string {
+  const unique =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${unique}`;
+}
+
 function closeAfterCommentFrontMatter(
   closeAfterComment: CreateCommentOperationInput["closeAfterComment"]
 ): boolean | CommentCloseAction | undefined {

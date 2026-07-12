@@ -203,6 +203,9 @@ export function NotificationDetail({
             reactions={detail.reactions}
           />
           <CommentThread
+            // Keyed by conversation so the incremental mount count resets
+            // when a different notification opens but survives refreshes.
+            key={notification.id}
             comments={detail.comments}
             subjectAuthor={detail.author}
             replyDraft={replyDraft}

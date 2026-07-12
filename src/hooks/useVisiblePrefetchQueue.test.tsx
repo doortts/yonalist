@@ -26,7 +26,7 @@ interface HarnessProps {
   isProtected?: (value: string) => boolean;
   onEvicted?: (value: string) => void;
   onError?: (message: string) => void;
-  onStats?: (stats: VisiblePrefetchQueueStats) => void;
+  onGetStats?: (getStats: () => VisiblePrefetchQueueStats) => void;
 }
 
 function Harness({
@@ -41,9 +41,9 @@ function Harness({
   isProtected,
   onEvicted,
   onError,
-  onStats
+  onGetStats
 }: HarnessProps) {
-  const stats = useVisiblePrefetchQueue<string>({
+  const getStats = useVisiblePrefetchQueue<string>({
     entries,
     enabled,
     dwellMs,
@@ -57,8 +57,8 @@ function Harness({
     onError
   });
   useEffect(() => {
-    onStats?.(stats);
-  }, [onStats, stats]);
+    onGetStats?.(getStats);
+  }, [onGetStats, getStats]);
   return null;
 }
 
@@ -343,10 +343,10 @@ describe("useVisiblePrefetchQueue", () => {
     expect(prefetchEntry).toHaveBeenLastCalledWith("b");
   });
 
-  it("publishes referentially stable stats and survives StrictMode double effects", async () => {
-    const statsList: VisiblePrefetchQueueStats[] = [];
-    const onStats = (stats: VisiblePrefetchQueueStats) => {
-      statsList.push(stats);
+  it("exposes settled stats through a stable getter and survives StrictMode double effects", async () => {
+    const getters: Array<() => VisiblePrefetchQueueStats> = [];
+    const onGetStats = (getStats: () => VisiblePrefetchQueueStats) => {
+      getters.push(getStats);
     };
     const prefetchEntry = vi.fn().mockResolvedValue(true);
 
@@ -355,7 +355,7 @@ describe("useVisiblePrefetchQueue", () => {
         <Harness
           entries={[entry("a")]}
           prefetchEntry={prefetchEntry}
-          onStats={onStats}
+          onGetStats={onGetStats}
           rescheduleSignature="r1"
         />
       </StrictMode>
@@ -363,7 +363,8 @@ describe("useVisiblePrefetchQueue", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await flushPromises();
 
-    const settled = statsList[statsList.length - 1];
+    const getStats = getters[getters.length - 1];
+    const settled = getStats();
     expect(settled).toEqual(
       expect.objectContaining({
         enabled: true,
@@ -373,14 +374,14 @@ describe("useVisiblePrefetchQueue", () => {
       })
     );
 
-    // A scheduling pass that changes nothing observable must not mint a new
-    // stats object (the field-by-field equality guard preserves the P3 fix).
+    // A scheduling pass that changes nothing observable keeps both the getter
+    // identity (no re-render churn) and the reported values unchanged.
     rerender(
       <StrictMode>
         <Harness
           entries={[entry("a")]}
           prefetchEntry={prefetchEntry}
-          onStats={onStats}
+          onGetStats={onGetStats}
           rescheduleSignature="r2"
         />
       </StrictMode>
@@ -388,6 +389,7 @@ describe("useVisiblePrefetchQueue", () => {
     await vi.advanceTimersByTimeAsync(0);
     await flushPromises();
 
-    expect(statsList[statsList.length - 1]).toBe(settled);
+    expect(getters[getters.length - 1]).toBe(getStats);
+    expect(getStats()).toEqual(settled);
   });
 });

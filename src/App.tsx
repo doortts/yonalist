@@ -7,11 +7,17 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  useTransition
 } from "react";
 import { Toast } from "@base-ui/react/toast";
 import { NotebookPen } from "lucide-react";
-import "./components/ui/toast.css";
+import {
+  APP_SNACKBAR_TIMEOUT_MS,
+  AppSnackbarToasts,
+  appToastManager,
+  showAppSnackbar
+} from "./components/AppSnackbar";
 import {
   defaultSettings,
   loadSettings,
@@ -35,7 +41,6 @@ import {
 import { LoginPage } from "./components/LoginPage";
 import {
   NewIssuePage,
-  type DraftIssue,
   type RepositoryEntry
 } from "./components/NewIssuePage";
 import { NotificationDetail } from "./components/NotificationDetail";
@@ -63,7 +68,7 @@ import {
 import { toggleFavorite } from "./domain/favorites";
 import {
   createCommentOutboxOperation,
-  createIssueOutboxOperation
+  createOperationId
 } from "./domain/outbox";
 import {
   DEFAULT_ITEM_SORT,
@@ -72,7 +77,7 @@ import {
   withVaultItemPath,
   type ItemSort
 } from "./domain/items";
-import { commentFilePath, draftIssuePath, itemMainPath } from "./domain/paths";
+import { commentFilePath, itemMainPath } from "./domain/paths";
 import {
   isReadAndQuiet,
   notificationWebUrl,
@@ -117,6 +122,9 @@ import { paneWidthLimits, usePaneResize } from "./hooks/usePaneResize";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useScrollbarHover } from "./hooks/useScrollbarHover";
 import { useTheme } from "./hooks/useTheme";
+import { useDraftIssue } from "./hooks/useDraftIssue";
+import { useOutboxSync } from "./hooks/useOutboxSync";
+import { useSettingsReset } from "./hooks/useSettingsReset";
 import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
 import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
 import { featureRegistry, getFeatureDefinition } from "./features/core/featureRegistry";
@@ -125,17 +133,6 @@ import {
   persistActiveFeature
 } from "./features/core/featureSelection";
 import type { FeatureId, FeaturePanes } from "./features/core/featureTypes";
-import {
-  resetApplicationData,
-  type ResetApplicationStepId
-} from "./services/appReset";
-import {
-  idleResetProgress,
-  type ResetProgressItem,
-  type ResetProgressState,
-  type ResetProgressStepStatus
-} from "./resetProgress";
-import { createGitHubClient } from "./services/github";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import {
@@ -156,24 +153,14 @@ import {
   getNotificationCacheStats
 } from "./services/notifications";
 import { tracePerf, tracePerfOnce } from "./services/perfTrace";
-import { isRemoteReachable } from "./services/remoteReachability";
-import { syncOutboxOperations, type OutboxSyncResult } from "./services/sync";
 import {
-  commentDocumentContents,
-  deleteVaultDocument,
-  itemDocumentContents,
   loadItemDocumentBody,
   loadVaultState,
-  moveVaultDocument,
   persistCommentDocument,
-  persistItemDocument,
   persistItemDocuments,
   persistOutboxOperation,
   rebuildVaultStateFromMarkdown
 } from "./services/vaultStore";
-
-// Auto-dismiss timing matches the legacy fixed snackbar (6s).
-const APP_SNACKBAR_TIMEOUT_MS = 6000;
 
 // How many of the newest notifications to warm ahead of a click. The
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
@@ -196,24 +183,6 @@ const neutralStatusMetrics: StatusBarMetrics = {
   caches: []
 };
 
-// A standalone manager lets feedback fire from effects and event handlers in
-// the App body without needing the `useToastManager` hook (which must run
-// under a Toast.Provider that App itself renders).
-const appToastManager = Toast.createToastManager();
-
-function showAppSnackbar(message: string) {
-  appToastManager.add({ title: message, timeout: APP_SNACKBAR_TIMEOUT_MS });
-}
-
-// Renders the queued toasts inside the provider using the shared manager.
-function AppSnackbarToasts() {
-  const { toasts } = Toast.useToastManager();
-  return toasts.map((toast) => (
-    <Toast.Root key={toast.id} toast={toast} className="app-snackbar">
-      <Toast.Title />
-    </Toast.Root>
-  ));
-}
 
 interface AppProps {
   initialOnline?: boolean;
@@ -225,36 +194,6 @@ interface CommentTarget {
   repo: string;
   kind: ItemKind;
   number: number;
-}
-
-const resetStepTemplates: Array<{
-  id: ResetApplicationStepId | "restore-defaults";
-  label: string;
-}> = [
-  { id: "session-tokens", label: "Sign out saved GitHub sessions" },
-  { id: "runtime-caches", label: "Clear in-memory notification and thread caches" },
-  { id: "local-storage", label: "Clear local settings and browser caches" },
-  { id: "vault-cache", label: "Clear vault index, avatar, and search caches" },
-  { id: "restore-defaults", label: "Restore app preferences to defaults" }
-];
-
-function createResetProgress(): ResetProgressState {
-  return {
-    status: "running",
-    message: "Resetting settings and caches...",
-    steps: resetStepTemplates.map((step) => ({
-      ...step,
-      status: "pending"
-    }))
-  };
-}
-
-function createOperationId(prefix: string): string {
-  const unique =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-  return `${prefix}-${unique}`;
 }
 
 function hostFromWebBaseUrl(webBaseUrl: string): string {
@@ -350,19 +289,10 @@ export default function App({ initialOnline }: AppProps) {
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
-  const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
-  const inboxWorkflowGeneration = useRef(0);
-  const inboxVaultLoadGeneration = useRef(0);
-  const loadedInboxVault = useRef<{ vaultRoot: string; generation: number } | null>(null);
-  const [inboxVaultReadinessVersion, setInboxVaultReadinessVersion] = useState(0);
-  const [selectedOutboxIds, setSelectedOutboxIds] = useState<Set<string>>(new Set());
-  const [showOutbox, setShowOutbox] = useState(false);
-  // Pending reconnect-sync confirmation; the captured operations are flushed
-  // only if the user accepts. Null when no prompt is open.
-  const [reconnectSyncPrompt, setReconnectSyncPrompt] = useState<{
-    operations: OutboxOperationDocument[];
-    count: number;
-  } | null>(null);
+  // Reconnect-sync offers are only valid once the current vault's queued
+  // operations are actually loaded for the active Inbox; Notes must neither
+  // consume nor discard a reconnect edge (see useOutboxSync.reconnectEligible).
+  const [inboxVaultReady, setInboxVaultReady] = useState(false);
   const [showNewIssue, setShowNewIssue] = useState(false);
   const [activeFeatureId, setActiveFeatureId] =
     useState<FeatureId>(loadActiveFeature);
@@ -372,8 +302,6 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   // Notifications are the landing view once authentication passes.
   const [showNotifications, setShowNotifications] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [syncFeedback, setSyncFeedback] = useState<string | null>(null);
   const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
   const [visiblePrefetchItems, setVisiblePrefetchItems] = useState<ItemDocument[]>([]);
   const [visibleNotificationPrefetchItems, setVisibleNotificationPrefetchItems] =
@@ -381,8 +309,6 @@ export default function App({ initialOnline }: AppProps) {
   const [conversationRefreshKey, setConversationRefreshKey] = useState(0);
   const [settings, setSettings] = useState<AppSettings>(() => loadSettings());
   const [settingsStatus, setSettingsStatus] = useState("");
-  const [resetProgress, setResetProgress] =
-    useState<ResetProgressState>(idleResetProgress);
   const {
     paneWidths,
     paneCollapsed,
@@ -405,15 +331,15 @@ export default function App({ initialOnline }: AppProps) {
   const authGate = useAuthGate({ auth, servers, online });
 
   function changeActiveFeature(nextFeatureId: FeatureId) {
-    if (nextFeatureId !== activeFeatureId) {
-      inboxWorkflowGeneration.current += 1;
-      loadedInboxVault.current = null;
-      if (nextFeatureId !== "inbox") {
-        setReconnectSyncPrompt(null);
-      }
+    if (nextFeatureId !== activeFeatureId && nextFeatureId !== "inbox") {
+      outboxSync.setReconnectSyncPrompt(null);
     }
     setActiveFeatureId(nextFeatureId);
   }
+  // Mirror changeActiveFeature through a ref so render-stable callbacks can call
+  // the latest closure without listing it (a new identity each render) in deps.
+  const changeActiveFeatureRef = useRef(changeActiveFeature);
+  changeActiveFeatureRef.current = changeActiveFeature;
 
   useEffect(() => {
     persistActiveFeature(activeFeatureId);
@@ -457,11 +383,9 @@ export default function App({ initialOnline }: AppProps) {
   // Local vault data loads immediately, in parallel with the background auth
   // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
-    const workflowGeneration = ++inboxWorkflowGeneration.current;
-    const generation = ++inboxVaultLoadGeneration.current;
-    loadedInboxVault.current = null;
+    setInboxVaultReady(false);
     if (!inboxActive) {
-      setReconnectSyncPrompt(null);
+      outboxSync.setReconnectSyncPrompt(null);
       return;
     }
     let cancelled = false;
@@ -469,17 +393,12 @@ export default function App({ initialOnline }: AppProps) {
     tracePerf("vault_load_start", { vaultRoot });
     void loadVaultState(vaultRoot)
       .then((state) => {
-        if (
-          cancelled ||
-          workflowGeneration !== inboxWorkflowGeneration.current ||
-          generation !== inboxVaultLoadGeneration.current
-        ) {
+        if (cancelled) {
           return;
         }
         setDrafts(state.items);
-        setOutbox(state.outbox);
-        loadedInboxVault.current = { vaultRoot, generation };
-        setInboxVaultReadinessVersion((version) => version + 1);
+        outboxSync.setOutbox(state.outbox);
+        setInboxVaultReady(true);
         tracePerf("vault_load_done", {
           items: state.items.length,
           outbox: state.outbox.length,
@@ -496,6 +415,7 @@ export default function App({ initialOnline }: AppProps) {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [inboxActive, vaultRoot]);
 
   // Warm the markdown renderer chunk while the app is idle so the first
@@ -522,7 +442,7 @@ export default function App({ initialOnline }: AppProps) {
             return;
           }
           setDrafts(state.items);
-          setOutbox(state.outbox);
+          outboxSync.setOutbox(state.outbox);
           tracePerf("vault_rebuild_done", {
             items: state.items.length,
             outbox: state.outbox.length,
@@ -553,15 +473,18 @@ export default function App({ initialOnline }: AppProps) {
     ? `repository:${repositoryFilter}`
     : `inbox:${filter}`;
   const itemSort = itemSortByScope[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
-  function setScopedItemSort(nextSort: ItemSort) {
-    setItemSortByScope((current) => {
-      const currentSort = current[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
-      if (itemSortEquals(currentSort, nextSort)) {
-        return current;
-      }
-      return { ...current, [itemSortScopeKey]: nextSort };
-    });
-  }
+  const setScopedItemSort = useCallback(
+    (nextSort: ItemSort) => {
+      setItemSortByScope((current) => {
+        const currentSort = current[itemSortScopeKey] ?? DEFAULT_ITEM_SORT;
+        if (itemSortEquals(currentSort, nextSort)) {
+          return current;
+        }
+        return { ...current, [itemSortScopeKey]: nextSort };
+      });
+    },
+    [itemSortScopeKey]
+  );
   const inboxWorkItems = useWorkItems(
     auth.connection,
     online,
@@ -609,28 +532,6 @@ export default function App({ initialOnline }: AppProps) {
     inboxItems,
     unfilteredNotifications.notifications
   );
-  // Conflict hint: comment targets that changed remotely after the comment
-  // was queued, so the user can re-read the thread before syncing.
-  const remoteChangedOutboxIds = useMemo(() => {
-    const changed = new Set<string>();
-    for (const operation of outbox) {
-      if (operation.frontMatter.operation !== "create_comment") {
-        continue;
-      }
-      const { target } = operation.frontMatter;
-      const item = items.find(
-        (candidate) =>
-          candidate.frontMatter.owner === target.owner &&
-          candidate.frontMatter.repo === target.repo &&
-          candidate.frontMatter.number === target.number
-      );
-      if (item && item.frontMatter.updated_at > operation.frontMatter.created_at) {
-        changed.add(operation.frontMatter.id);
-      }
-    }
-    return changed;
-  }, [outbox, items]);
-
   useEffect(() => {
     if (
       authGate.state !== "passed" ||
@@ -710,11 +611,40 @@ export default function App({ initialOnline }: AppProps) {
       auth.connection.webBaseUrl
     ]
   );
-  const notifications = {
-    ...unfilteredNotifications,
-    notifications: filteredNotificationItems,
-    unreadCount: filteredUnreadNotificationCount
-  };
+  const notifications = useMemo(
+    () => ({
+      ...unfilteredNotifications,
+      notifications: filteredNotificationItems,
+      unreadCount: filteredUnreadNotificationCount
+    }),
+    [
+      unfilteredNotifications,
+      filteredNotificationItems,
+      filteredUnreadNotificationCount
+    ]
+  );
+  // A sync that pushed changes invalidates cached conversations and re-pulls
+  // both lists so the pushed changes come back with server-side ids.
+  const refreshAfterOutboxSync = useCallback(() => {
+    clearItemThreadCache();
+    clearNotificationDetailCache();
+    setConversationRefreshKey((current) => current + 1);
+    workItems.refresh();
+    notifications.refresh();
+  }, [workItems.refresh, notifications.refresh]);
+  const outboxSync = useOutboxSync({
+    vaultRoot,
+    connection: auth.connection,
+    online,
+    syncQueuedOnReconnect: settings.syncQueuedOnReconnect,
+    items,
+    setDrafts,
+    setLoadedItemBodies,
+    onAfterSync: refreshAfterOutboxSync,
+    // Reconnect offers are only valid once the active Inbox's queued vault data
+    // is loaded; Notes must neither consume nor discard a reconnect edge.
+    reconnectEligible: inboxActive && inboxVaultReady
+  });
   const displayedUnreadNotificationCount =
     repositoryGroups.loaded ? notifications.unreadCount : 0;
   useAppBadge(authGate.state === "passed" ? displayedUnreadNotificationCount : 0);
@@ -785,13 +715,6 @@ export default function App({ initialOnline }: AppProps) {
     darkTheme,
     setDarkTheme
   } = useTheme();
-  const [draftIssue, setDraftIssue] = useState<DraftIssue>({
-    title: "",
-    body: "",
-    repositoryKey: ""
-  });
-
-
 
   const repositories = useMemo<RepositoryEntry[]>(() => {
     const counts = new Map<string, RepositoryEntry>();
@@ -894,6 +817,32 @@ export default function App({ initialOnline }: AppProps) {
   const selectedItem =
     filteredItems.find((item) => item.path === selectedPath) ??
     (repositoryFilter ? undefined : filteredItems[0]);
+  const appendOutboxOperation = useCallback(
+    (operation: OutboxOperationDocument) => {
+      outboxSync.setOutbox((current) => [...current, operation]);
+    },
+    [outboxSync.setOutbox]
+  );
+  // The branch replaced boolean settings state with the feature registry, so
+  // adapt the hook's setShowSettings toggle onto changeActiveFeature. Keep this
+  // render-stable (calling the latest closure via the ref) so useDraftIssue's
+  // openNewIssue keeps a stable identity and ItemListPane's React.memo bailout
+  // holds across app-level state churn (e.g. notification polls).
+  const setShowSettingsFromDraftIssue = useCallback(
+    (show: boolean) =>
+      changeActiveFeatureRef.current(show ? "settings" : "inbox"),
+    []
+  );
+  const { draftIssue, setDraftIssue, openNewIssue, queueIssue } = useDraftIssue({
+    vaultRoot,
+    repositories,
+    selectedItem,
+    setDrafts,
+    setSelectedPath,
+    setShowNewIssue,
+    setShowSettings: setShowSettingsFromDraftIssue,
+    appendOutboxOperation
+  });
   const selectedItemWithBody = useMemo(() => {
     if (!selectedItem) {
       return selectedItem;
@@ -949,7 +898,7 @@ export default function App({ initialOnline }: AppProps) {
     conversationRefreshKey
   );
 
-  const prefetchStats = useVisibleItemPrefetch({
+  const getItemPrefetchStats = useVisibleItemPrefetch({
     visibleItems: detailVisible ? visiblePrefetchItems : [],
     selectedPath: selectedItem?.path ?? null,
     vaultRoot,
@@ -999,7 +948,7 @@ export default function App({ initialOnline }: AppProps) {
     authGate.state === "passed" &&
     !notifications.demoMode &&
     !showNewIssue;
-  const notificationPrefetchStats = useVisibleNotificationPrefetch({
+  const getNotificationPrefetchStats = useVisibleNotificationPrefetch({
     visibleNotifications: notificationPrefetchEnabled
       ? notificationPrefetchTargets
       : [],
@@ -1148,64 +1097,97 @@ export default function App({ initialOnline }: AppProps) {
     onChanged: refreshActiveDetailAfterRemoteChange,
     onError: (message) => tracePerf("detail_revalidation_error", { message })
   });
-  const { detailDisplayDurationMs, startDetailTransition } =
+  // Selection renders run as a transition so heavy detail renders stay
+  // interruptible (clicking another row mid-render is never blocked).
+  // `selectionPending` also keeps the paint-timing hook from completing a
+  // measurement against a frame painted before the transition commits.
+  const [selectionPending, startSelectionTransition] = useTransition();
+  const { getDetailDisplayDurationMs, startDetailTransition } =
     useDetailDisplayTiming(
       activeDetailKey,
-      Boolean(activeDetailRenderSnapshot) || (detailReady && detailContentReady)
+      !selectionPending &&
+        (Boolean(activeDetailRenderSnapshot) ||
+          (detailReady && detailContentReady))
     );
-
-  // Body byte estimation walks every loaded body, so it is memoized on its own
-  // input and kept out of statusMetrics' broader dependency set — a prefetch
-  // tick that leaves loadedItemBodies untouched no longer re-estimates it.
-  const bodyCacheStats = useMemo(
-    () => estimateRecordBytes(loadedItemBodies),
-    [loadedItemBodies]
-  );
-
-  const statusMetrics = useMemo<StatusBarMetrics>(
-    () => {
-      if (activeFeatureId !== "inbox") {
-        return neutralStatusMetrics;
-      }
-      const bodyStats = bodyCacheStats;
-      const threadStats = getItemThreadCacheStats();
-      const notificationStats = getNotificationCacheStats();
-      const notificationDetailStats = getNotificationDetailCacheStats();
-      const markdownStats = getMarkdownRenderCacheStats();
-      return {
-        listFetchDurationMs: workItems.lastFetchDurationMs,
-        detailDisplayDurationMs,
-        // Surface whichever prefetcher is active for the current view.
-        prefetch:
-          activeFeatureId === "inbox" && showNotifications
-            ? notificationPrefetchStats
-            : prefetchStats,
-        caches: activeFeatureId === "inbox" && showNotifications
-          ? [
-              { label: "Notifications", ...notificationStats },
-              { label: "Notification details", ...notificationDetailStats },
-              { label: "Markdown", ...markdownStats }
-            ]
-          : [
-              { label: "Bodies", ...bodyStats },
-              { label: "Threads", ...threadStats },
-              { label: "Markdown", ...markdownStats }
-            ]
-      };
+  const selectItemPath = useCallback(
+    (path: string) => {
+      const startedAt =
+        typeof performance !== "undefined" ? performance.now() : Date.now();
+      startDetailTransition(startedAt);
+      startSelectionTransition(() => {
+        setSelectedPath(path);
+        setShowNewIssue(false);
+      });
     },
-    [
-      bodyCacheStats,
-      activeFeatureId,
-      detailDisplayDurationMs,
-      itemThread.thread,
-      notificationDetail.detail,
-      notifications.notifications,
-      notificationPrefetchStats,
-      prefetchStats,
-      showNotifications,
-      workItems.lastFetchDurationMs
-    ]
+    [startDetailTransition, startSelectionTransition]
   );
+  const markNotificationViewed = unfilteredNotifications.markNotificationViewed;
+  const selectNotification = useCallback(
+    (notification: GitHubNotification) => {
+      startSelectionTransition(() => {
+        setSelectedNotification(notification);
+        markNotificationViewed(notification);
+      });
+    },
+    [markNotificationViewed, startSelectionTransition]
+  );
+
+  // Pull-based status metrics: the status bar polls this stable getter on its
+  // own interval, so metric churn (prefetch progress, cache growth, paint
+  // timings) never re-renders the app shell. State-held inputs are mirrored
+  // through a ref refreshed each render; everything else is read from O(1)
+  // cache-stat getters at poll time. Body byte estimation (O(total bytes))
+  // also runs at poll time, which only happens in dev/perf builds.
+  const statusMetricsInputs = useRef({
+    activeFeatureId,
+    listFetchDurationMs: workItems.lastFetchDurationMs,
+    showNotifications,
+    loadedItemBodies
+  });
+  statusMetricsInputs.current = {
+    activeFeatureId,
+    listFetchDurationMs: workItems.lastFetchDurationMs,
+    showNotifications,
+    loadedItemBodies
+  };
+  const getStatusMetrics = useCallback((): StatusBarMetrics => {
+    const inputs = statusMetricsInputs.current;
+    // Notes (and any non-Inbox feature) never touches the Inbox caches, so the
+    // status bar reads neutral metrics rather than polling stale getters.
+    if (inputs.activeFeatureId !== "inbox") {
+      return neutralStatusMetrics;
+    }
+    return {
+      listFetchDurationMs: inputs.listFetchDurationMs,
+      detailDisplayDurationMs: getDetailDisplayDurationMs(),
+      // Surface whichever prefetcher is active for the current view.
+      prefetch: inputs.showNotifications
+        ? getNotificationPrefetchStats()
+        : getItemPrefetchStats(),
+      caches: inputs.showNotifications
+        ? [
+            { label: "Notifications", ...getNotificationCacheStats() },
+            {
+              label: "Notification details",
+              ...getNotificationDetailCacheStats()
+            },
+            { label: "Markdown", ...getMarkdownRenderCacheStats() }
+          ]
+        : [
+            { label: "Bodies", ...estimateRecordBytes(inputs.loadedItemBodies) },
+            { label: "Threads", ...getItemThreadCacheStats() },
+            { label: "Markdown", ...getMarkdownRenderCacheStats() }
+          ]
+    };
+    // activeFeatureId gates the whole readout (neutral off Inbox), so a feature
+    // switch must give the status bar a fresh getter to re-poll immediately
+    // rather than waiting for the next interval tick.
+  }, [
+    activeFeatureId,
+    getDetailDisplayDurationMs,
+    getItemPrefetchStats,
+    getNotificationPrefetchStats
+  ]);
 
   const layoutStyle = {
     ...navigationListAccentStyle,
@@ -1214,70 +1196,6 @@ export default function App({ initialOnline }: AppProps) {
     "--sidebar-width": paneCollapsed.sidebar ? "0px" : `${paneWidths.sidebar}px`,
     "--list-width": paneCollapsed.list ? "0px" : `${paneWidths.list}px`
   } as CSSProperties;
-
-  // When connectivity returns (browser event or manual toggle), queued work is
-  // never sent silently: for signed-in sessions we first confirm the actual
-  // remote is reachable, then ask before flushing; unsigned sessions surface
-  // the queue for review so it is never forgotten. The transition is evaluated
-  // once per offline→online edge. Notes preserves that edge without touching
-  // Inbox; returning to Inbox consumes it after the queued vault data is ready.
-  const previousOnline = useRef(online);
-  const pendingInboxReconnect = useRef(false);
-  useEffect(() => {
-    const reconnected = online && !previousOnline.current;
-    if (reconnected) {
-      pendingInboxReconnect.current = true;
-    }
-
-    const shouldHandleReconnect =
-      inboxActive &&
-      online &&
-      loadedInboxVault.current?.vaultRoot === vaultRoot &&
-      loadedInboxVault.current.generation === inboxVaultLoadGeneration.current &&
-      (reconnected || pendingInboxReconnect.current);
-    if (
-      shouldHandleReconnect &&
-      settings.syncQueuedOnReconnect &&
-      outbox.length > 0
-    ) {
-      const retryable = outbox.filter(
-        (operation) => operation.frontMatter.status !== "blocked"
-      );
-      if (auth.connection.token.trim() && retryable.length > 0) {
-        void promptReconnectSyncIfReachable(
-          retryable,
-          inboxWorkflowGeneration.current
-        );
-      } else if (!auth.connection.token.trim()) {
-        setSelectedOutboxIds(
-          new Set(outbox.map((operation) => operation.frontMatter.id))
-        );
-        setShowOutbox(true);
-      }
-    }
-    if (shouldHandleReconnect) {
-      pendingInboxReconnect.current = false;
-    }
-    previousOnline.current = online;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    inboxActive,
-    inboxVaultReadinessVersion,
-    online,
-    outbox,
-    settings.syncQueuedOnReconnect,
-    vaultRoot
-  ]);
-
-  // Sync feedback surfaces as an auto-dismissing toast. Reset the state after
-  // queuing so an identical follow-up message re-fires the toast.
-  useEffect(() => {
-    if (!syncFeedback) {
-      return;
-    }
-    showAppSnackbar(syncFeedback);
-    setSyncFeedback(null);
-  }, [syncFeedback]);
 
   useEffect(() => {
     const message = repositoryGroups.error ?? visibleRepositoryCounts.error;
@@ -1301,11 +1219,6 @@ export default function App({ initialOnline }: AppProps) {
     workItems.toggleFavorite(selectedItem.path);
   }
 
-  function openOutbox() {
-    setSelectedOutboxIds(new Set(outbox.map((operation) => operation.frontMatter.id)));
-    setShowOutbox(true);
-  }
-
   function openSettings(section?: SettingsSection) {
     if (section) {
       setSettingsSection(section);
@@ -1324,79 +1237,6 @@ export default function App({ initialOnline }: AppProps) {
     changeActiveFeature("inbox");
   }
 
-  function openNewIssue() {
-    changeActiveFeature("inbox");
-    setDraftIssue((current) => ({
-      ...current,
-      repositoryKey:
-        current.repositoryKey ||
-        (selectedItem
-          ? `${selectedItem.frontMatter.owner}/${selectedItem.frontMatter.repo}`
-          : repositories[0]?.key ?? "")
-    }));
-    setShowNewIssue(true);
-  }
-
-  function toggleOutboxSelection(id: string) {
-    setSelectedOutboxIds((current) => {
-      const next = new Set(current);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  }
-
-  function removeOutboxOperationFromState(operation: OutboxOperationDocument) {
-    const operationId = operation.frontMatter.id;
-    const localFilePath = operation.frontMatter.local_file_path;
-
-    setOutbox((current) =>
-      current.filter((entry) => entry.frontMatter.id !== operationId)
-    );
-    setSelectedOutboxIds((current) => {
-      const next = new Set(current);
-      next.delete(operationId);
-      return next;
-    });
-    if (operation.frontMatter.operation === "create_issue") {
-      setDrafts((current) =>
-        current.filter((draft) => draft.path !== localFilePath)
-      );
-    }
-    setLoadedItemBodies((current) => {
-      const next = { ...current };
-      delete next[localFilePath];
-      return next;
-    });
-  }
-
-  function removeOutboxOperationDocuments(operation: OutboxOperationDocument) {
-    const shouldDeleteLocalDocument =
-      operation.frontMatter.operation === "create_issue" ||
-      operation.body.trim().length > 0;
-    return Promise.all([
-      deleteVaultDocument(vaultRoot, operation.path),
-      ...(shouldDeleteLocalDocument
-        ? [deleteVaultDocument(vaultRoot, operation.frontMatter.local_file_path)]
-        : [])
-    ]);
-  }
-
-  function discardOutboxOperation(operation: OutboxOperationDocument) {
-    removeOutboxOperationDocuments(operation).catch(() => {
-      showAppSnackbar("Queued change could not be removed from disk.");
-    });
-    removeOutboxOperationFromState(operation);
-  }
-
-  function deleteOutboxOperation(operation: OutboxOperationDocument) {
-    discardOutboxOperation(operation);
-    showAppSnackbar("Queued change deleted.");
-  }
-
   function editQueuedComment(operation: OutboxOperationDocument) {
     const { target } = operation.frontMatter;
 
@@ -1413,7 +1253,7 @@ export default function App({ initialOnline }: AppProps) {
       setReplyDraft(undefined);
       setCommentDraft(operation.body);
     }
-    discardOutboxOperation(operation);
+    outboxSync.discardOutboxOperation(operation);
   }
 
   function editQueuedIssue(operation: OutboxOperationDocument) {
@@ -1438,7 +1278,7 @@ export default function App({ initialOnline }: AppProps) {
     setItemStateFilter("open");
     changeActiveFeature("inbox");
     setShowNotifications(false);
-    setShowOutbox(false);
+    outboxSync.setShowOutbox(false);
     setShowNewIssue(true);
 
     if (draft && !draft.body) {
@@ -1450,9 +1290,9 @@ export default function App({ initialOnline }: AppProps) {
               : current
           );
         })
-        .finally(() => discardOutboxOperation(operation));
+        .finally(() => outboxSync.discardOutboxOperation(operation));
     } else {
-      discardOutboxOperation(operation);
+      outboxSync.discardOutboxOperation(operation);
     }
   }
 
@@ -1462,240 +1302,6 @@ export default function App({ initialOnline }: AppProps) {
       return;
     }
     editQueuedComment(operation);
-  }
-
-  async function applySyncedOutboxResult(result: OutboxSyncResult) {
-    const { operation, remote } = result;
-    if (!remote) {
-      return;
-    }
-
-    if (remote.type === "issue") {
-      const draft = items.find(
-        (item) => item.path === operation.frontMatter.local_file_path
-      );
-      if (!draft) {
-        await deleteVaultDocument(vaultRoot, operation.path);
-        return;
-      }
-
-      const syncedFrontMatter = {
-        ...draft.frontMatter,
-        number: remote.number,
-        node_id: remote.node_id,
-        html_url: remote.html_url,
-        updated_at: remote.updated_at ?? new Date().toISOString(),
-        synced_at: new Date().toISOString(),
-        sync: { status: "synced" as const }
-      };
-      const syncedItem: ItemDocument = {
-        path: itemMainPath(vaultRoot, syncedFrontMatter),
-        frontMatter: syncedFrontMatter,
-        body: draft.body
-      };
-
-      await moveVaultDocument(
-        vaultRoot,
-        draft.path,
-        syncedItem.path,
-        itemDocumentContents(syncedItem)
-      );
-      setDrafts((current) =>
-        current.map((item) => (item.path === draft.path ? syncedItem : item))
-      );
-    }
-
-    if (remote.type === "comment") {
-      const target = operation.frontMatter.target;
-      if (target.kind && typeof target.number === "number") {
-        const createdAt = remote.created_at ?? new Date().toISOString();
-        const comment: CommentDocument = {
-          path: commentFilePath(vaultRoot, {
-            kind: target.kind,
-            host: target.host,
-            owner: target.owner,
-            repo: target.repo,
-            number: target.number,
-            created_at: createdAt,
-            remote_id: remote.id
-          }),
-          body: remote.body ?? operation.body,
-          frontMatter: {
-            kind: "issue_comment",
-            remote_id:
-              typeof remote.id === "number" ? remote.id : Number(remote.id) || undefined,
-            node_id: remote.node_id,
-            ...(target.parent_comment_id !== undefined
-              ? { parent_remote_id: target.parent_comment_id }
-              : {}),
-            ...(target.parent_comment_node_id
-              ? { parent_node_id: target.parent_comment_node_id }
-              : {}),
-            author: "local",
-            created_at: createdAt,
-            updated_at: remote.updated_at ?? createdAt,
-            sync: { status: "synced" }
-          }
-        };
-
-        await moveVaultDocument(
-          vaultRoot,
-          operation.frontMatter.local_file_path,
-          comment.path,
-          commentDocumentContents(comment)
-        );
-      }
-    }
-
-    await deleteVaultDocument(vaultRoot, operation.path);
-  }
-
-  interface SyncOutcome {
-    synced: number;
-    failed: number;
-    blocked: number;
-  }
-
-  /**
-   * Pushes the given operations to GitHub and reconciles the vault/outbox.
-   * Transient failures stay "failed" (retryable); definitive rejections
-   * (target gone, validation) become "blocked" so they are never auto-retried.
-   */
-  async function performSync(
-    selected: OutboxOperationDocument[]
-  ): Promise<SyncOutcome | null> {
-    if (selected.length === 0) {
-      return null;
-    }
-
-    const token = auth.connection.token.trim();
-    if (!token) {
-      // Without credentials the queue is drained locally (prototype mode).
-      const syncedIds = new Set(selected.map((operation) => operation.frontMatter.id));
-      setOutbox((current) =>
-        current.filter((operation) => !syncedIds.has(operation.frontMatter.id))
-      );
-      setSelectedOutboxIds(new Set());
-      setShowOutbox(false);
-      return { synced: selected.length, failed: 0, blocked: 0 };
-    }
-
-    setSyncing(true);
-    try {
-      const client = createGitHubClient({
-        token,
-        apiBaseUrl: auth.connection.apiBaseUrl,
-        webBaseUrl: auth.connection.webBaseUrl
-      });
-      const results = await syncOutboxOperations(client, selected, items);
-      await Promise.all(
-        results
-          .filter((result) => result.ok)
-          .map((result) => applySyncedOutboxResult(result))
-      );
-      const syncedIds = new Set(
-        results.filter((result) => result.ok).map((result) => result.operation.frontMatter.id)
-      );
-      const failures = new Map(
-        results
-          .filter((result) => !result.ok)
-          .map((result) => [result.operation.frontMatter.id, result])
-      );
-
-      const operationsById = new Map(
-        outbox.map((operation) => [operation.frontMatter.id, operation])
-      );
-      for (const operation of selected) {
-        operationsById.set(operation.frontMatter.id, operation);
-      }
-      const failedOperations = Array.from(failures.entries()).flatMap(
-        ([id, failure]) => {
-          const operation = operationsById.get(id);
-          if (!operation) {
-            return [];
-          }
-          return [
-            {
-              ...operation,
-              frontMatter: {
-                ...operation.frontMatter,
-                status: failure.permanent ? ("blocked" as const) : ("failed" as const),
-                last_error: failure.error ?? "Sync failed."
-              }
-            }
-          ];
-        }
-      );
-      await Promise.all(
-        failedOperations.map((operation) =>
-          persistOutboxOperation(vaultRoot, operation)
-        )
-      );
-      setOutbox((current) =>
-        current
-          .filter((operation) => !syncedIds.has(operation.frontMatter.id))
-          .map(
-            (operation) =>
-              failedOperations.find(
-                (failed) => failed.frontMatter.id === operation.frontMatter.id
-              ) ?? operation
-          )
-      );
-      setSelectedOutboxIds(new Set());
-      return {
-        synced: syncedIds.size,
-        failed: failedOperations.filter(
-          (operation) => operation.frontMatter.status === "failed"
-        ).length,
-        blocked: failedOperations.filter(
-          (operation) => operation.frontMatter.status === "blocked"
-        ).length
-      };
-    } finally {
-      setSyncing(false);
-    }
-  }
-
-  function describeSyncOutcome(outcome: SyncOutcome): string {
-    const parts: string[] = [];
-    if (outcome.synced > 0) {
-      parts.push(
-        `Synced ${outcome.synced} queued change${outcome.synced === 1 ? "" : "s"}`
-      );
-    }
-    if (outcome.failed > 0) {
-      parts.push(`${outcome.failed} failed`);
-    }
-    if (outcome.blocked > 0) {
-      parts.push(`${outcome.blocked} blocked`);
-    }
-    return parts.join(" · ");
-  }
-
-  function refreshAfterSync(outcome: SyncOutcome) {
-    if (outcome.synced === 0) {
-      return;
-    }
-    clearItemThreadCache();
-    clearNotificationDetailCache();
-    setConversationRefreshKey((current) => current + 1);
-    workItems.refresh();
-    notifications.refresh();
-  }
-
-  async function syncSelectedOutbox() {
-    const selected = outbox.filter((operation) =>
-      selectedOutboxIds.has(operation.frontMatter.id)
-    );
-    const outcome = await performSync(selected);
-    if (!outcome) {
-      return;
-    }
-    refreshAfterSync(outcome);
-    setSyncFeedback(describeSyncOutcome(outcome));
-    if (outcome.failed === 0 && outcome.blocked === 0) {
-      setShowOutbox(false);
-    }
   }
 
   function openOutboxTarget(operation: OutboxOperationDocument) {
@@ -1732,62 +1338,7 @@ export default function App({ initialOnline }: AppProps) {
     changeActiveFeature("inbox");
     setShowNewIssue(false);
     setShowNotifications(false);
-    setShowOutbox(false);
-  }
-
-  /**
-   * On reconnect, confirm the configured server is actually reachable before
-   * offering to flush. `navigator.onLine` (and the manual toggle) only prove a
-   * network exists — an intranet GHE host can stay unreachable behind a live
-   * internet connection — so we probe the real endpoint first. Only when it
-   * answers do we surface the confirmation; any failure stays silent, and the
-   * next offline→online transition re-evaluates.
-   */
-  async function promptReconnectSyncIfReachable(
-    operations: OutboxOperationDocument[],
-    workflowGeneration: number
-  ) {
-    const reachable = await isRemoteReachable(auth.connection);
-    if (
-      !reachable ||
-      workflowGeneration !== inboxWorkflowGeneration.current
-    ) {
-      return;
-    }
-    setReconnectSyncPrompt({ operations, count: operations.length });
-  }
-
-  /** Reconnect flush: sync everything retryable after the user confirms. */
-  async function autoFlushOutbox(operations: OutboxOperationDocument[]) {
-    const outcome = await performSync(operations);
-    if (!outcome) {
-      return;
-    }
-    refreshAfterSync(outcome);
-    setSyncFeedback(describeSyncOutcome(outcome));
-    if (outcome.failed > 0 || outcome.blocked > 0) {
-      // Leave nothing preselected: blocked entries should not be one-click
-      // retried, and the user should review what went wrong.
-      setSelectedOutboxIds(new Set());
-      setShowOutbox(true);
-    }
-  }
-
-  async function syncQueuedOperation(operation: OutboxOperationDocument) {
-    if (!online || !auth.connection.token.trim()) {
-      return;
-    }
-
-    const outcome = await performSync([operation]);
-    if (!outcome) {
-      return;
-    }
-    refreshAfterSync(outcome);
-    setSyncFeedback(describeSyncOutcome(outcome));
-    if (outcome.failed > 0 || outcome.blocked > 0) {
-      setSelectedOutboxIds(new Set([operation.frontMatter.id]));
-      setShowOutbox(true);
-    }
+    outboxSync.setShowOutbox(false);
   }
 
   function queueCommentForTarget(
@@ -1844,7 +1395,7 @@ export default function App({ initialOnline }: AppProps) {
     };
     const queuedOperation = { ...operation, body };
 
-    setOutbox((current) => [...current, queuedOperation]);
+    appendOutboxOperation(queuedOperation);
     if (bodyOverride === undefined) {
       setCommentDraft("");
     }
@@ -1854,7 +1405,7 @@ export default function App({ initialOnline }: AppProps) {
           persistOutboxOperation(vaultRoot, queuedOperation)
         ])
       : persistOutboxOperation(vaultRoot, queuedOperation);
-    void persistence.then(() => syncQueuedOperation(queuedOperation));
+    void persistence.then(() => outboxSync.syncQueuedOperation(queuedOperation));
     if (closeAfterComment) {
       showAppSnackbar(body ? "Close with comment queued." : "Close queued.");
     }
@@ -1912,66 +1463,6 @@ export default function App({ initialOnline }: AppProps) {
     );
   }
 
-  function queueIssue(event: FormEvent) {
-    event.preventDefault();
-    if (!draftIssue.title.trim()) {
-      return;
-    }
-
-    const repository =
-      repositories.find((entry) => entry.key === draftIssue.repositoryKey) ??
-      repositories[0];
-    if (!repository) {
-      return;
-    }
-
-    const localId = createOperationId("issue");
-    const draftPath = draftIssuePath(vaultRoot, {
-      host: repository.host,
-      owner: repository.owner,
-      repo: repository.repo,
-      local_id: localId
-    });
-    const newItem: ItemDocument = {
-      path: draftPath,
-      body: draftIssue.body,
-      frontMatter: {
-        kind: "issue",
-        host: repository.host,
-        owner: repository.owner,
-        repo: repository.repo,
-        number: 0,
-        title: draftIssue.title,
-        state: "open",
-        author: "local",
-        labels: [],
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        local: { favorite: false },
-        sync: { status: "pending" }
-      }
-    };
-    const operation = createIssueOutboxOperation({
-      id: localId,
-      host: repository.host,
-      owner: repository.owner,
-      repo: repository.repo,
-      localFilePath: draftPath,
-      createdAt: new Date().toISOString(),
-      vaultRoot
-    });
-    const queuedOperation = { ...operation, body: draftIssue.title };
-
-    void persistItemDocument(vaultRoot, newItem);
-    void persistOutboxOperation(vaultRoot, queuedOperation);
-    setDrafts((current) => [newItem, ...current]);
-    setSelectedPath(draftPath);
-    setOutbox((current) => [...current, queuedOperation]);
-    setDraftIssue({ title: "", body: "", repositoryKey: "" });
-    setShowNewIssue(false);
-    changeActiveFeature("inbox");
-  }
-
   function updateSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]) {
     setSettings((current) => ({
       ...current,
@@ -1986,53 +1477,12 @@ export default function App({ initialOnline }: AppProps) {
     setSettingsStatus("Settings saved");
   }
 
-  function updateResetStep(
-    id: ResetProgressItem["id"],
-    status: ResetProgressStepStatus,
-    detail?: string
-  ) {
-    setResetProgress((current) => ({
-      ...current,
-      steps: current.steps.map((step) =>
-        step.id === id
-          ? {
-              ...step,
-              status,
-              detail: detail ?? step.detail
-            }
-          : step
-      )
-    }));
-  }
-
-  function failCurrentResetStep(message: string) {
-    setResetProgress((current) => ({
-      status: "failed",
-      message: `Reset failed: ${message}`,
-      steps: current.steps.map((step) =>
-        step.status === "running"
-          ? {
-              ...step,
-              status: "failed",
-              detail: message
-            }
-          : step
-      )
-    }));
-  }
-
-  async function resetAllSettingsAndCaches() {
-    setResetProgress(createResetProgress());
-    setSettingsStatus("Resetting...");
-    try {
-      await resetApplicationData({
-        vaultRoot,
-        serverUrls: servers.urls,
-        onStep: ({ id, status }) => {
-          updateResetStep(id, status === "complete" ? "done" : "running");
-        }
-      });
-      updateResetStep("restore-defaults", "running");
+  // Settings → Reset flow: the hook drives resetApplicationData and step
+  // progress; this callback restores App-owned state to its defaults.
+  const { resetProgress, resetAllSettingsAndCaches } = useSettingsReset({
+    vaultRoot,
+    serverUrls: servers.urls,
+    onRestoreDefaults: () => {
       auth.logout();
       servers.reset();
       projectVisibility.reset();
@@ -2041,7 +1491,7 @@ export default function App({ initialOnline }: AppProps) {
       setDarkTheme("dark");
       setSettings(defaultSettings);
       setDrafts([]);
-      setOutbox([]);
+      outboxSync.setOutbox([]);
       setSelectedPath(null);
       setSelectedNotification(null);
       setQuery("");
@@ -2052,20 +1502,9 @@ export default function App({ initialOnline }: AppProps) {
       setShowNotifications(false);
       setDraftIssue({ title: "", body: "", repositoryKey: "" });
       setCommentDraft("");
-      updateResetStep("restore-defaults", "done");
-      setSettingsStatus("Settings and caches reset");
-      setResetProgress((current) => ({
-        ...current,
-        status: "done",
-        message: "Reset complete. Vault Markdown files and outbox documents were kept."
-      }));
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      failCurrentResetStep(message);
-      setSettingsStatus(`Reset failed: ${message}`);
-      showAppSnackbar(`Reset failed: ${message}`);
-    }
-  }
+    },
+    onStatus: setSettingsStatus
+  });
 
   const showingResetResult =
     showSettings && settingsSection === "reset" && resetProgress.status !== "idle";
@@ -2078,10 +1517,7 @@ export default function App({ initialOnline }: AppProps) {
           webBaseUrl={auth.connection.webBaseUrl}
           online={online}
           selectedId={selectedNotification?.id ?? null}
-          onSelect={(notification) => {
-            setSelectedNotification(notification);
-            notifications.markNotificationViewed(notification);
-          }}
+          onSelect={selectNotification}
           onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
         />
       ) : (
@@ -2099,13 +1535,7 @@ export default function App({ initialOnline }: AppProps) {
           onItemSortChange={setScopedItemSort}
           onStateFilterChange={setItemStateFilter}
           onQueryChange={setQuery}
-          onSelect={(path) => {
-            const startedAt =
-              typeof performance !== "undefined" ? performance.now() : Date.now();
-            startDetailTransition(startedAt);
-            setSelectedPath(path);
-            setShowNewIssue(false);
-          }}
+          onSelect={selectItemPath}
           onVisibleItemsChange={setVisiblePrefetchItems}
           onNewIssue={openNewIssue}
           onRefresh={workItems.refresh}
@@ -2315,46 +1745,48 @@ export default function App({ initialOnline }: AppProps) {
       </ActiveFeatureProvider>
 
       <AppStatusBar
-        outboxCount={outbox.length}
+        outboxCount={outboxSync.outbox.length}
         online={online}
-        syncing={syncing}
-        metrics={statusMetrics}
-        onOpenOutbox={openOutbox}
+        syncing={outboxSync.syncing}
+        getMetrics={getStatusMetrics}
+        onOpenOutbox={outboxSync.openOutbox}
       />
 
-      {showOutbox && (
+      {outboxSync.showOutbox && (
         <OutboxModal
-          outbox={outbox}
-          selectedIds={selectedOutboxIds}
+          outbox={outboxSync.outbox}
+          selectedIds={outboxSync.selectedOutboxIds}
           online={online}
-          syncing={syncing}
-          remoteChangedIds={remoteChangedOutboxIds}
-          onToggleSelection={toggleOutboxSelection}
+          syncing={outboxSync.syncing}
+          remoteChangedIds={outboxSync.remoteChangedOutboxIds}
+          onToggleSelection={outboxSync.toggleOutboxSelection}
           onOpenTarget={openOutboxTarget}
           onEdit={editOutboxOperation}
-          onDelete={deleteOutboxOperation}
-          onSync={() => void syncSelectedOutbox()}
-          onClose={() => setShowOutbox(false)}
+          onDelete={outboxSync.deleteOutboxOperation}
+          onSync={() => void outboxSync.syncSelectedOutbox()}
+          onClose={() => outboxSync.setShowOutbox(false)}
         />
       )}
       <ConfirmDialog
-        open={reconnectSyncPrompt !== null}
+        open={outboxSync.reconnectSyncPrompt !== null}
         onOpenChange={(next) => {
           if (!next) {
-            setReconnectSyncPrompt(null);
+            outboxSync.setReconnectSyncPrompt(null);
           }
         }}
         title="대기 중인 변경 전송"
         description={
-          reconnectSyncPrompt
-            ? `오프라인에서 작성한 변경 ${reconnectSyncPrompt.count}건을 지금 원격으로 보낼까요?`
+          outboxSync.reconnectSyncPrompt
+            ? `오프라인에서 작성한 변경 ${outboxSync.reconnectSyncPrompt.count}건을 지금 원격으로 보낼까요?`
             : ""
         }
         confirmLabel="전송"
         cancelLabel="나중에"
         onConfirm={() => {
-          if (reconnectSyncPrompt) {
-            void autoFlushOutbox(reconnectSyncPrompt.operations);
+          if (outboxSync.reconnectSyncPrompt) {
+            void outboxSync.autoFlushOutbox(
+              outboxSync.reconnectSyncPrompt.operations
+            );
           }
         }}
       />

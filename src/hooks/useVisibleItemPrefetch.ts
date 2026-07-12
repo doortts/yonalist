@@ -177,7 +177,7 @@ async function resolveThread(
  */
 export function useVisibleItemPrefetch(
   options: UseVisibleItemPrefetchOptions
-): VisibleItemPrefetchStats {
+): () => VisibleItemPrefetchStats {
   const refreshKey = options.refreshKey ?? 0;
 
   const latest = useRef<LatestOptions>({ ...options, refreshKey });

@@ -86,7 +86,7 @@ interface HarnessProps {
   maxConcurrentPrefetches?: number;
   onBodyPrefetched?: (path: string, body: string) => void;
   onBodyInvalidated?: (path: string) => void;
-  onStats?: (stats: VisibleItemPrefetchStats) => void;
+  onGetStats?: (getStats: () => VisibleItemPrefetchStats) => void;
 }
 
 function Harness({
@@ -95,9 +95,9 @@ function Harness({
   maxConcurrentPrefetches,
   onBodyPrefetched = vi.fn(),
   onBodyInvalidated = vi.fn(),
-  onStats
+  onGetStats
 }: HarnessProps) {
-  const stats = useVisibleItemPrefetch({
+  const getStats = useVisibleItemPrefetch({
     visibleItems,
     selectedPath,
     vaultRoot,
@@ -111,8 +111,8 @@ function Harness({
     onBodyInvalidated
   });
   useEffect(() => {
-    onStats?.(stats);
-  }, [onStats, stats]);
+    onGetStats?.(getStats);
+  }, [onGetStats, getStats]);
   return null;
 }
 
@@ -320,33 +320,45 @@ describe("useVisibleItemPrefetch", () => {
     vi.mocked(fetchItemThread).mockImplementation(
       () => new Promise<ItemThread>(() => undefined)
     );
-    const onStats = vi.fn();
+    let getStats: (() => VisibleItemPrefetchStats) | undefined;
 
-    render(<Harness visibleItems={items} onStats={onStats} />);
+    render(
+      <Harness
+        visibleItems={items}
+        onGetStats={(next) => {
+          getStats = next;
+        }}
+      />
+    );
 
     await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
     // Only the default cap fires immediately; the remaining rows queue behind them.
     expect(fetchItemThread).toHaveBeenCalledTimes(4);
-    expect(onStats).toHaveBeenCalledWith(
+    expect(getStats?.()).toEqual(
       expect.objectContaining({ active: 4, queued: 6 })
     );
   });
 
-  it("continues publishing stats after React StrictMode replays effects", async () => {
-    const onStats = vi.fn();
+  it("reports settled stats after React StrictMode replays effects", async () => {
+    let getStats: (() => VisibleItemPrefetchStats) | undefined;
 
     render(
       <StrictMode>
-        <Harness visibleItems={[baseItem]} onStats={onStats} />
+        <Harness
+          visibleItems={[baseItem]}
+          onGetStats={(next) => {
+            getStats = next;
+          }}
+        />
       </StrictMode>
     );
 
     await vi.advanceTimersByTimeAsync(1_000);
     await flushPromises();
 
-    expect(onStats).toHaveBeenCalledWith(
+    expect(getStats?.()).toEqual(
       expect.objectContaining({
         enabled: true,
         visible: 1,

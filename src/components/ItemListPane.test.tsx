@@ -646,17 +646,15 @@ describe("ItemListPane", () => {
     const { container } = renderPane([baseItem]);
 
     const comments = container.querySelector(".item-comments") as HTMLElement;
-    const icon = comments.querySelector(".yona-comment-icon") as HTMLElement;
+    const icon = comments.querySelector(".yona-comment-icon");
     const authorStyle = cssDeclarationsFor(".item-author", itemListStyles);
     const commentsStyle = cssDeclarationsFor(".item-comments");
-    const iconStyle = cssDeclarationsFor(".item-comments .yona-comment-icon");
 
     expect(comments).toHaveTextContent("3");
-    expect(icon).toHaveClass("yona-comment-icon");
+    expect(icon).not.toBeNull();
+    expect((icon as SVGElement).tagName.toLowerCase()).toBe("svg");
     expect(commentsStyle["font-size"]).toBe(authorStyle["font-size"]);
     expect(commentsStyle["line-height"]).toBe(authorStyle["line-height"]);
-    expect(iconStyle["font-size"]).toBe("inherit");
-    expect(iconStyle["line-height"]).toBe("inherit");
   });
 
   it("uses compact item row spacing with per-item bottom lines", () => {

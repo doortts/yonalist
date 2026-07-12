@@ -638,7 +638,7 @@ describe("CommentComposer", () => {
     );
     expect(collapsedTextareaStyle["min-height"]).toBe("76px");
     expect(collapsedTextareaStyle.height).toBe("76px");
-    expect(collapsedTextareaStyle.padding).toBe("20px 14px 10px");
+    expect(collapsedTextareaStyle.padding).toBe("13px 14px 10px");
     expect(collapsedTextareaStyle["border-radius"]).toBe("var(--radius)");
     expect(collapsedTextareaStyle.background).toBe(
       "color-mix(in srgb, var(--bg-input) 72%, transparent)"

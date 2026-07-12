@@ -4,7 +4,8 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
-  useState
+  useState,
+  useTransition
 } from "react";
 import {
   authorAssociationLabel,
@@ -269,10 +270,30 @@ function findReplyDraftAnchor(
   return null;
 }
 
+// Top-level comments mounted per batch. The first batch renders in the
+// selection's commit; the rest stream in one batch per frame inside a
+// transition, so a very long conversation never builds its entire comment DOM
+// in a single synchronous commit. Typical threads fit in the first batch and
+// mount exactly as before.
+const COMMENT_MOUNT_BATCH = 30;
+
+function requestMountFrame(callback: () => void): () => void {
+  if (typeof window !== "undefined" && window.requestAnimationFrame) {
+    const frame = window.requestAnimationFrame(() => callback());
+    return () => window.cancelAnimationFrame(frame);
+  }
+  const timer = window.setTimeout(callback, 0);
+  return () => window.clearTimeout(timer);
+}
+
 /**
  * Reply comments rendered as a GitHub-style timeline: each reply shows the
  * author's avatar in a left gutter beside a bordered speech bubble whose tail
  * points back at the avatar.
+ *
+ * Callers key this component by conversation (item path / notification id) so
+ * the incremental mount count resets when the user opens a different
+ * conversation but survives same-conversation refreshes.
  */
 export function CommentThread({
   comments,
@@ -282,6 +303,25 @@ export function CommentThread({
 }: CommentThreadProps) {
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
   const [activeReplyDraftBody, setActiveReplyDraftBody] = useState("");
+  const [, startMountTransition] = useTransition();
+  // Grow-only: revalidations that append comments schedule further batches;
+  // shrinking threads are simply capped by slice below.
+  const [mountedCount, setMountedCount] = useState(() =>
+    Math.min(COMMENT_MOUNT_BATCH, comments.length)
+  );
+
+  useEffect(() => {
+    if (mountedCount >= comments.length) {
+      return;
+    }
+    return requestMountFrame(() => {
+      startMountTransition(() => {
+        setMountedCount((current) =>
+          Math.min(current + COMMENT_MOUNT_BATCH, comments.length)
+        );
+      });
+    });
+  }, [mountedCount, comments.length, startMountTransition]);
 
   useEffect(() => {
     if (!replyDraft || !onReplySubmit) {
@@ -456,9 +496,11 @@ export function CommentThread({
       </article>
     );
   }
+  const visibleComments =
+    mountedCount >= comments.length ? comments : comments.slice(0, mountedCount);
   return (
     <section className="comment-thread" aria-label="Comments">
-      {comments.map((comment) => renderComment(comment))}
+      {visibleComments.map((comment) => renderComment(comment))}
     </section>
   );
 }

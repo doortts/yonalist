@@ -83,7 +83,7 @@ interface HarnessProps {
   online?: boolean;
   token?: string;
   maxConcurrentPrefetches?: number;
-  onStats?: (stats: VisibleNotificationPrefetchStats) => void;
+  onGetStats?: (getStats: () => VisibleNotificationPrefetchStats) => void;
 }
 
 function Harness({
@@ -93,9 +93,9 @@ function Harness({
   online = true,
   token = connection.token,
   maxConcurrentPrefetches,
-  onStats
+  onGetStats
 }: HarnessProps) {
-  const stats = useVisibleNotificationPrefetch({
+  const getStats = useVisibleNotificationPrefetch({
     visibleNotifications,
     selectedId,
     connection: { ...connection, token },
@@ -104,8 +104,8 @@ function Harness({
     maxConcurrentPrefetches
   });
   useEffect(() => {
-    onStats?.(stats);
-  }, [onStats, stats]);
+    onGetStats?.(getStats);
+  }, [onGetStats, getStats]);
   return null;
 }
 
@@ -327,13 +327,15 @@ describe("useVisibleNotificationPrefetch", () => {
     expect(fetchNotificationDetail).not.toHaveBeenCalled();
   });
 
-  it("publishes stats and survives React StrictMode double-invoked effects", async () => {
-    const onStats = vi.fn();
+  it("reports settled stats and survives React StrictMode double-invoked effects", async () => {
+    let getStats: (() => VisibleNotificationPrefetchStats) | undefined;
     render(
       <StrictMode>
         <Harness
           visibleNotifications={[makeNotification("1")]}
-          onStats={onStats}
+          onGetStats={(next) => {
+            getStats = next;
+          }}
         />
       </StrictMode>
     );
@@ -341,7 +343,7 @@ describe("useVisibleNotificationPrefetch", () => {
     await vi.advanceTimersByTimeAsync(2_000);
     await flushPromises();
 
-    expect(onStats).toHaveBeenCalledWith(
+    expect(getStats?.()).toEqual(
       expect.objectContaining({
         enabled: true,
         visible: 1,

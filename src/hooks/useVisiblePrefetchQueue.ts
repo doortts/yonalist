@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 export const DEFAULT_DWELL_MS = 1_000;
 export const DEFAULT_EVICTION_MS = 600_000;
@@ -66,9 +66,14 @@ interface LatestOptions<E> extends UseVisiblePrefetchQueueOptions<E> {
 /**
  * Shared machinery behind the visible-item and visible-notification prefetch
  * hooks: a dwell timer per visible entry, a concurrency-capped drain loop, an
- * off-screen eviction timer, and referentially-stable stats. The two callers
+ * off-screen eviction timer, and a pull-based stats getter. The two callers
  * are thin adapters that supply entry construction plus the per-entry prefetch
  * operation, protection rule, and eviction side effect.
+ *
+ * Returns a referentially-stable `getStats` function instead of stats state:
+ * prefetch progress is bookkeeping, not UI state, and publishing it through
+ * setState re-rendered the owning component (App) on every queue transition.
+ * Consumers that display stats (the status bar) poll the getter instead.
  *
  * All caller callbacks (prefetchEntry/shouldPrefetch/isProtected/onEvicted/
  * onError) are read through `latest.current` at FIRE time, never captured in a
@@ -77,24 +82,13 @@ interface LatestOptions<E> extends UseVisiblePrefetchQueueOptions<E> {
  */
 export function useVisiblePrefetchQueue<E>(
   options: UseVisiblePrefetchQueueOptions<E>
-): VisiblePrefetchQueueStats {
+): () => VisiblePrefetchQueueStats {
   const dwellMs = options.dwellMs ?? DEFAULT_DWELL_MS;
   const evictionMs = options.evictionMs ?? DEFAULT_EVICTION_MS;
   const maxConcurrentPrefetches = Math.max(
     1,
     options.maxConcurrentPrefetches ?? DEFAULT_MAX_CONCURRENT_PREFETCHES
   );
-
-  const [stats, setStats] = useState<VisiblePrefetchQueueStats>({
-    enabled: options.enabled,
-    visible: 0,
-    queued: 0,
-    active: 0,
-    cached: 0,
-    completed: 0,
-    totalDurationMs: 0,
-    lastDurationMs: null
-  });
 
   const entries = options.entries;
   const visibleSignature = useMemo(
@@ -125,7 +119,20 @@ export function useVisiblePrefetchQueue<E>(
   const lastDurationMs = useRef<number | null>(null);
   const completedCount = useRef(0);
   const totalDurationMs = useRef(0);
-  const mounted = useRef(true);
+
+  const getStats = useCallback(
+    (): VisiblePrefetchQueueStats => ({
+      enabled: latest.current.enabled,
+      visible: visibleKeys.current.size,
+      queued: pendingKeys.current.length,
+      active: inflightKeys.current.size,
+      cached: prefetchedKeys.current.size,
+      completed: completedCount.current,
+      totalDurationMs: totalDurationMs.current,
+      lastDurationMs: lastDurationMs.current
+    }),
+    []
+  );
 
   useEffect(() => {
     const nextVisibleKeys = new Set(entries.map((entry) => entry.key));
@@ -171,7 +178,6 @@ export function useVisiblePrefetchQueue<E>(
         scheduleEviction(key);
       }
     }
-    publishStats();
     // rescheduleSignature folds in caller state (online, selected row) that
     // gates dwell re-arming and eviction, so those transitions re-run this
     // effect without listing every raw dependency.
@@ -186,9 +192,7 @@ export function useVisiblePrefetchQueue<E>(
   ]);
 
   useEffect(() => {
-    mounted.current = true;
     return () => {
-      mounted.current = false;
       for (const timer of dwellTimers.current.values()) {
         clearTimeout(timer);
       }
@@ -201,7 +205,7 @@ export function useVisiblePrefetchQueue<E>(
     };
   }, []);
 
-  return stats;
+  return getStats;
 
   function clearDwell(key: string) {
     const timer = dwellTimers.current.get(key);
@@ -246,7 +250,6 @@ export function useVisiblePrefetchQueue<E>(
       // re-registers it if it ever comes back, so this is safe and avoids the
       // entriesByKey leak an evict-without-prune would cause.
       entriesByKey.current.delete(key);
-      publishStats();
     }, latest.current.evictionMs);
     evictionTimers.current.set(key, timer);
   }
@@ -260,7 +263,6 @@ export function useVisiblePrefetchQueue<E>(
       return;
     }
     pendingKeys.current.push(key);
-    publishStats();
     drainPrefetchQueue();
   }
 
@@ -268,7 +270,6 @@ export function useVisiblePrefetchQueue<E>(
     const next = pendingKeys.current.filter((candidate) => candidate !== key);
     if (next.length !== pendingKeys.current.length) {
       pendingKeys.current = next;
-      publishStats();
     }
   }
 
@@ -289,7 +290,6 @@ export function useVisiblePrefetchQueue<E>(
       inflightKeys.current.add(key);
       void runPrefetch(key);
     }
-    publishStats();
   }
 
   async function runPrefetch(key: string) {
@@ -322,36 +322,7 @@ export function useVisiblePrefetchQueue<E>(
       lastDurationMs.current = nowMs() - startedAt;
       completedCount.current += 1;
       totalDurationMs.current += lastDurationMs.current;
-      publishStats();
       drainPrefetchQueue();
     }
-  }
-
-  function publishStats() {
-    if (!mounted.current) {
-      return;
-    }
-    const next = {
-      enabled: latest.current.enabled,
-      visible: visibleKeys.current.size,
-      queued: pendingKeys.current.length,
-      active: inflightKeys.current.size,
-      cached: prefetchedKeys.current.size,
-      completed: completedCount.current,
-      totalDurationMs: totalDurationMs.current,
-      lastDurationMs: lastDurationMs.current
-    };
-    setStats((prev) =>
-      prev.enabled === next.enabled &&
-      prev.visible === next.visible &&
-      prev.queued === next.queued &&
-      prev.active === next.active &&
-      prev.cached === next.cached &&
-      prev.completed === next.completed &&
-      prev.totalDurationMs === next.totalDurationMs &&
-      prev.lastDurationMs === next.lastDurationMs
-        ? prev
-        : next
-    );
   }
 }

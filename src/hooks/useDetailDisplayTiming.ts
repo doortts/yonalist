@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 interface DetailDisplayTiming {
-  detailDisplayDurationMs: number | null;
+  /**
+   * Pull-based reader for the last completed click→paint measurement. Kept as
+   * a getter (not state) so completing a measurement never re-renders the
+   * owning component; the status bar polls this on its own cadence.
+   */
+  getDetailDisplayDurationMs: () => number | null;
   startDetailTransition: (startedAt?: number) => void;
 }
 
@@ -28,8 +33,7 @@ export function useDetailDisplayTiming(
   activeDetailKey: string | null,
   detailReady: boolean
 ): DetailDisplayTiming {
-  const [detailDisplayDurationMs, setDetailDisplayDurationMs] =
-    useState<number | null>(null);
+  const durationRef = useRef<number | null>(null);
   const startedAtRef = useRef<number | null>(null);
   const frameRef = useRef<number | null>(null);
   const activeDetailKeyRef = useRef(activeDetailKey);
@@ -63,7 +67,7 @@ export function useDetailDisplayTiming(
       if (startedAt === null) {
         return;
       }
-      setDetailDisplayDurationMs(now() - startedAt);
+      durationRef.current = now() - startedAt;
       startedAtRef.current = null;
     });
   }, [clearScheduledFrame]);
@@ -72,7 +76,7 @@ export function useDetailDisplayTiming(
     (startedAt = now()) => {
       clearScheduledFrame();
       startedAtRef.current = startedAt;
-      setDetailDisplayDurationMs(null);
+      durationRef.current = null;
       schedulePaintMeasurement();
     },
     [clearScheduledFrame, schedulePaintMeasurement]
@@ -82,13 +86,13 @@ export function useDetailDisplayTiming(
     clearScheduledFrame();
     if (!activeDetailKey) {
       startedAtRef.current = null;
-      setDetailDisplayDurationMs(null);
+      durationRef.current = null;
       return;
     }
     if (startedAtRef.current === null) {
       startedAtRef.current = now();
     }
-    setDetailDisplayDurationMs(null);
+    durationRef.current = null;
     schedulePaintMeasurement();
   }, [activeDetailKey, clearScheduledFrame, schedulePaintMeasurement]);
 
@@ -99,5 +103,7 @@ export function useDetailDisplayTiming(
 
   useEffect(() => clearScheduledFrame, [clearScheduledFrame]);
 
-  return { detailDisplayDurationMs, startDetailTransition };
+  const getDetailDisplayDurationMs = useCallback(() => durationRef.current, []);
+
+  return { getDetailDisplayDurationMs, startDetailTransition };
 }
