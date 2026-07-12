@@ -4060,6 +4060,25 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("uses a quiet non-line focus cue for the resting node title", () => {
+    const titlePresentationFocusRule = notesStyles.match(
+      /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
+    )?.[1];
+
+    expect(titlePresentationFocusRule).toMatch(/outline:\s*0;/);
+    expect(titlePresentationFocusRule).toMatch(/box-shadow:\s*none;/);
+    expect(titlePresentationFocusRule).toMatch(
+      /background:\s*var\(--bg-hover\);/
+    );
+    expect(titlePresentationFocusRule).toMatch(/border-radius:\s*2px;/);
+  });
+
+  it("keeps the resting supporting-note presentation focus underline", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-node-note-field > \.notes-token-text:focus-visible\s*{[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);[^}]*outline:\s*0;/s
+    );
+  });
+
   it("gives the library page menu trigger the standard visible focus ring", () => {
     expect(notesStyles).toMatch(
       /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/
