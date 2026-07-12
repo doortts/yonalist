@@ -23,10 +23,12 @@ vi.mock("./useNotesWorkspace", () => ({ useNotesWorkspace }));
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 type NativeEventHandler<T = unknown> = (event: { payload: T }) => void;
@@ -129,8 +131,8 @@ describe("notes attachment UI boundary", () => {
     scaleChangedHandler?.({ payload: { scaleFactor: 1.5 } });
     pendingScaleFactor.resolve(2);
     await expect(subscription).resolves.toEqual(expect.any(Function));
-    expect(listen.mock.calls.map(([eventName]) => eventName)).toEqual(
-      dragEventNames
+    expect(new Set(listen.mock.calls.map(([eventName]) => eventName))).toEqual(
+      new Set(dragEventNames)
     );
 
     handlers.get(TauriEvent.DRAG_ENTER)?.({
@@ -144,6 +146,117 @@ describe("notes attachment UI boundary", () => {
       paths: ["/incoming/one.png"],
       position: { x: 100, y: 60 }
     });
+  });
+
+  it("buffers setup events and flushes them once in observed source order", async () => {
+    enableTauri();
+    const handlers = new Map<string, NativeEventHandler>();
+    const pendingLeave = deferred<() => void>();
+    const dragUnlisteners = new Map(
+      dragEventNames.map((eventName) => [eventName, vi.fn()] as const)
+    );
+    listen.mockImplementation((eventName, handler) => {
+      handlers.set(eventName, handler);
+      if (eventName === TauriEvent.DRAG_LEAVE) return pendingLeave.promise;
+      return Promise.resolve(dragUnlisteners.get(eventName));
+    });
+    scaleFactor.mockResolvedValue(2);
+    const listener = vi.fn();
+
+    const subscription = nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    await vi.waitFor(() => expect(listen).toHaveBeenCalledTimes(4));
+    handlers.get(TauriEvent.DRAG_ENTER)?.({
+      payload: {
+        paths: ["/incoming/one.png"],
+        position: { x: 200, y: 100 }
+      }
+    });
+    handlers.get(TauriEvent.DRAG_OVER)?.({
+      payload: { position: { x: 220, y: 120 } }
+    });
+    handlers.get(TauriEvent.DRAG_DROP)?.({
+      payload: {
+        paths: ["/incoming/two.webp"],
+        position: { x: 240, y: 140 }
+      }
+    });
+    handlers.get(TauriEvent.DRAG_LEAVE)?.({ payload: undefined });
+
+    expect(listener).not.toHaveBeenCalled();
+    pendingLeave.resolve(dragUnlisteners.get(TauriEvent.DRAG_LEAVE)!);
+    const cleanup = await subscription;
+
+    expect(listener).toHaveBeenCalledTimes(4);
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      type: "enter",
+      paths: ["/incoming/one.png"],
+      position: { x: 100, y: 50 }
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      type: "over",
+      position: { x: 110, y: 60 }
+    });
+    expect(listener).toHaveBeenNthCalledWith(3, {
+      type: "drop",
+      paths: ["/incoming/two.webp"],
+      position: { x: 120, y: 70 }
+    });
+    expect(listener).toHaveBeenNthCalledWith(4, { type: "leave" });
+
+    handlers.get(TauriEvent.DRAG_OVER)?.({
+      payload: { position: { x: 260, y: 160 } }
+    });
+    expect(listener).toHaveBeenNthCalledWith(5, {
+      type: "over",
+      position: { x: 130, y: 80 }
+    });
+    expect(listener).toHaveBeenCalledTimes(5);
+    await cleanup();
+  });
+
+  it("discards setup events and rolls back every listener when registration fails", async () => {
+    enableTauri();
+    const handlers = new Map<string, NativeEventHandler>();
+    const pendingDrop = deferred<() => void>();
+    const setupFailure = new Error("drop registration failed");
+    const unlistenScale = vi.fn();
+    const dragUnlisteners = new Map([
+      [TauriEvent.DRAG_ENTER, vi.fn()],
+      [TauriEvent.DRAG_OVER, vi.fn()],
+      [TauriEvent.DRAG_LEAVE, vi.fn()]
+    ]);
+    listen.mockImplementation((eventName, handler) => {
+      handlers.set(eventName, handler);
+      if (eventName === TauriEvent.DRAG_DROP) return pendingDrop.promise;
+      return Promise.resolve(dragUnlisteners.get(eventName));
+    });
+    scaleFactor.mockResolvedValue(2);
+    onScaleChanged.mockResolvedValue(unlistenScale);
+    const listener = vi.fn();
+
+    const subscription = nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    await vi.waitFor(() => {
+      expect(handlers.has(TauriEvent.DRAG_ENTER)).toBe(true);
+      expect(handlers.has(TauriEvent.DRAG_DROP)).toBe(true);
+    });
+    handlers.get(TauriEvent.DRAG_ENTER)?.({
+      payload: {
+        paths: ["/incoming/stale.png"],
+        position: { x: 200, y: 100 }
+      }
+    });
+    expect(listener).not.toHaveBeenCalled();
+
+    const rejectedSetup = expect(subscription).rejects.toBe(setupFailure);
+    pendingDrop.reject(setupFailure);
+    await rejectedSetup;
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(listen).toHaveBeenCalledTimes(4);
+    for (const unlisten of dragUnlisteners.values()) {
+      expect(unlisten).toHaveBeenCalledOnce();
+    }
+    expect(unlistenScale).toHaveBeenCalledOnce();
   });
 
   it("forwards native events synchronously in source order after setup", async () => {
@@ -266,10 +379,13 @@ describe("notes attachment UI boundary", () => {
       );
       let registrationIndex = 0;
       listen.mockImplementation(async () => {
-        if (registrationIndex === successfulRegistrations) throw setupFailure;
-        const unlisten = dragUnlisteners[registrationIndex];
+        const currentRegistration = registrationIndex;
         registrationIndex += 1;
-        return unlisten;
+        if (currentRegistration === successfulRegistrations) throw setupFailure;
+        if (currentRegistration > successfulRegistrations) {
+          throw new Error(`later registration ${currentRegistration + 1} failed`);
+        }
+        return dragUnlisteners[currentRegistration];
       });
       scaleFactor.mockResolvedValue(2);
       onScaleChanged.mockResolvedValue(unlistenScale);
@@ -278,7 +394,7 @@ describe("notes attachment UI boundary", () => {
         nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn())
       ).rejects.toBe(setupFailure);
 
-      expect(listen).toHaveBeenCalledTimes(successfulRegistrations + 1);
+      expect(listen).toHaveBeenCalledTimes(4);
       for (const unlisten of dragUnlisteners) {
         expect(unlisten).toHaveBeenCalledOnce();
       }

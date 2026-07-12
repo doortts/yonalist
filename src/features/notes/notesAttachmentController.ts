@@ -128,6 +128,17 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
       currentScaleFactor = payload.scaleFactor;
     });
     const unlisteners: NotesNativeUnlisten[] = [unlistenScale];
+    let setupPhase: "pending" | "flushing" | "active" | "closed" = "pending";
+    const setupEvents: NotesNativeImageDropEvent[] = [];
+    const publishDropEvent = (event: NotesNativeImageDropEvent) => {
+      if (setupPhase === "active") {
+        listener(event);
+        return;
+      }
+      if (setupPhase === "pending" || setupPhase === "flushing") {
+        setupEvents.push(event);
+      }
+    };
     try {
       const baselineRevision = scaleRevision;
       const baselineScaleFactor = await currentWindow.scaleFactor();
@@ -142,48 +153,72 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
         return { x, y };
       };
       const currentWebview = getCurrentWebview();
-      unlisteners.push(
-        await currentWebview.listen<NotesNativeDragPathsPayload>(
-          TauriEvent.DRAG_ENTER,
-          ({ payload }) => {
-            listener({
-              type: "enter",
-              paths: payload.paths,
-              position: toLogicalPoint(payload.position)
-            });
-          }
+      const dragRegistrations = await Promise.allSettled([
+        Promise.resolve().then(() =>
+          currentWebview.listen<NotesNativeDragPathsPayload>(
+            TauriEvent.DRAG_ENTER,
+            ({ payload }) => {
+              publishDropEvent({
+                type: "enter",
+                paths: payload.paths,
+                position: toLogicalPoint(payload.position)
+              });
+            }
+          )
+        ),
+        Promise.resolve().then(() =>
+          currentWebview.listen<NotesNativeDragOverPayload>(
+            TauriEvent.DRAG_OVER,
+            ({ payload }) => {
+              publishDropEvent({
+                type: "over",
+                position: toLogicalPoint(payload.position)
+              });
+            }
+          )
+        ),
+        Promise.resolve().then(() =>
+          currentWebview.listen<NotesNativeDragPathsPayload>(
+            TauriEvent.DRAG_DROP,
+            ({ payload }) => {
+              publishDropEvent({
+                type: "drop",
+                paths: payload.paths,
+                position: toLogicalPoint(payload.position)
+              });
+            }
+          )
+        ),
+        Promise.resolve().then(() =>
+          currentWebview.listen(TauriEvent.DRAG_LEAVE, () => {
+            publishDropEvent({ type: "leave" });
+          })
         )
+      ]);
+      const registrationFailure = dragRegistrations.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected"
       );
-      unlisteners.push(
-        await currentWebview.listen<NotesNativeDragOverPayload>(
-          TauriEvent.DRAG_OVER,
-          ({ payload }) => {
-            listener({
-              type: "over",
-              position: toLogicalPoint(payload.position)
-            });
-          }
-        )
-      );
-      unlisteners.push(
-        await currentWebview.listen<NotesNativeDragPathsPayload>(
-          TauriEvent.DRAG_DROP,
-          ({ payload }) => {
-            listener({
-              type: "drop",
-              paths: payload.paths,
-              position: toLogicalPoint(payload.position)
-            });
-          }
-        )
-      );
-      unlisteners.push(
-        await currentWebview.listen(TauriEvent.DRAG_LEAVE, () => {
-          listener({ type: "leave" });
-        })
-      );
-      return createBestEffortCleanup(unlisteners);
+      for (const result of dragRegistrations) {
+        if (result.status === "fulfilled") unlisteners.push(result.value);
+      }
+      if (registrationFailure) throw registrationFailure.reason;
+
+      setupPhase = "flushing";
+      for (let index = 0; index < setupEvents.length; index += 1) {
+        listener(setupEvents[index]);
+      }
+      setupEvents.length = 0;
+      setupPhase = "active";
+      const cleanup = createBestEffortCleanup(unlisteners);
+      return () => {
+        setupPhase = "closed";
+        setupEvents.length = 0;
+        return cleanup();
+      };
     } catch (cause) {
+      setupPhase = "closed";
+      setupEvents.length = 0;
       await settleUnlisteners(unlisteners);
       throw cause;
     }
