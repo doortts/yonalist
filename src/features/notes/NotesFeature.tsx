@@ -5,8 +5,15 @@ import { notesStore } from "../../services/notesStore";
 import type { FeatureDefinition } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import {
+  NotesAttachmentUiContext,
+  useNotesAttachmentUi
+} from "./NotesAttachmentUiContext";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
-import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
+import {
+  nativeNotesAttachmentUi,
+  type NotesAttachmentUiBoundary
+} from "./notesAttachmentController";
 import { useNotesWorkspace } from "./useNotesWorkspace";
 import "./notes.css";
 
@@ -19,10 +26,11 @@ export function NotesWorkspaceProvider({
   attachmentUi
 }: NotesWorkspaceProviderProps) {
   const vaultRoot = useContext(VaultRootContext);
+  const contextAttachmentUi = useNotesAttachmentUi();
   const workspace = useNotesWorkspace({
     vaultRoot,
     repository: notesStore,
-    attachmentUi
+    attachmentUi: attachmentUi ?? contextAttachmentUi
   });
 
   return (
@@ -36,10 +44,11 @@ export function NotesFeatureProvider({
   children,
   attachmentUi
 }: NotesWorkspaceProviderProps) {
+  const resolvedAttachmentUi = attachmentUi ?? nativeNotesAttachmentUi;
   return (
-    <NotesWorkspaceProvider attachmentUi={attachmentUi}>
-      {children}
-    </NotesWorkspaceProvider>
+    <NotesAttachmentUiContext.Provider value={resolvedAttachmentUi}>
+      <NotesWorkspaceProvider>{children}</NotesWorkspaceProvider>
+    </NotesAttachmentUiContext.Provider>
   );
 }
 
