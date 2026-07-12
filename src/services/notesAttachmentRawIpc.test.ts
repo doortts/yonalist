@@ -300,7 +300,7 @@ describe("notes attachment raw IPC envelope", () => {
     ).rejects.toThrow(/history .+ ID must be a canonical UUID v4/i);
   });
 
-  it("trims history command kinds and enforces their length", async () => {
+  it("trims history command kinds and rejects empty values", async () => {
     const envelope = await encodeNotesAttachmentRawEnvelope(
       "/vault",
       input([item(FIRST_ID)]),
@@ -316,14 +316,45 @@ describe("notes attachment raw IPC envelope", () => {
         { ...HISTORY_CONTEXT, commandKind: " \t " }
       )
     ).rejects.toThrow(/command kind must contain 1 to 128 characters/i);
-    await expect(
-      encodeNotesAttachmentRawEnvelope(
+  });
+
+  it.each([
+    ["ASCII", "x".repeat(128)],
+    ["multibyte", `${"한".repeat(42)}ab`]
+  ])(
+    "accepts a %s history command kind at 128 UTF-8 bytes",
+    async (_label, commandKind) => {
+      expect(new TextEncoder().encode(commandKind).byteLength).toBe(128);
+
+      const envelope = await encodeNotesAttachmentRawEnvelope(
         "/vault",
         input([item(FIRST_ID)]),
-        { ...HISTORY_CONTEXT, commandKind: ` ${"x".repeat(129)} ` }
-      )
-    ).rejects.toThrow(/command kind must contain 1 to 128 characters/i);
-  });
+        { ...HISTORY_CONTEXT, commandKind: ` ${commandKind} ` }
+      );
+
+      expect(decodeMetadata(envelope).historyContext?.commandKind).toBe(
+        commandKind
+      );
+    }
+  );
+
+  it.each([
+    ["ASCII", "x".repeat(129)],
+    ["multibyte", "한".repeat(43)]
+  ])(
+    "rejects a %s history command kind at 129 UTF-8 bytes",
+    async (_label, commandKind) => {
+      expect(new TextEncoder().encode(commandKind).byteLength).toBe(129);
+
+      await expect(
+        encodeNotesAttachmentRawEnvelope(
+          "/vault",
+          input([item(FIRST_ID)]),
+          { ...HISTORY_CONTEXT, commandKind: ` ${commandKind} ` }
+        )
+      ).rejects.toThrow(/command kind must contain 1 to 128 characters/i);
+    }
+  );
 
   it("rejects extra own keys on structurally typed history contexts", async () => {
     const historyContext: NotesHistoryContext & { extra: string } = {
