@@ -27,6 +27,16 @@ pub(crate) const MAX_ATTACHMENT_CONTAINER_CHUNKS: u64 = 100_000;
 pub(crate) const MAX_ATTACHMENT_FRAMES: u64 = 256;
 pub(crate) const MAX_ATTACHMENT_DECODED_PIXEL_WORK: u64 = 160_000_000;
 const RECONCILIATION_MARKER: &str = ".notes-assets-reconcile-needed";
+/// Default ceiling on how long `AttachmentStorageLease::acquire` polls for the
+/// exclusive vault lock before giving up. Without a deadline, a second app
+/// instance holding the lease freezes every mutating command indefinitely.
+const ATTACHMENT_LEASE_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// Interval between `try_lock` attempts while waiting for the vault lock.
+const ATTACHMENT_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+/// User-facing error surfaced when the vault lock cannot be acquired before the
+/// deadline (typically because another Yonalist window holds it).
+pub(crate) const ATTACHMENT_LEASE_BUSY_MESSAGE: &str =
+    "Notes vault is busy in another window. Close other Yonalist windows and try again.";
 static IMPORT_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1028,6 +1038,13 @@ pub(crate) struct AttachmentStorageLease {
 
 impl AttachmentStorageLease {
     pub(crate) fn acquire(vault_path: &str) -> Result<Self, String> {
+        Self::acquire_with_deadline(vault_path, ATTACHMENT_LEASE_ACQUIRE_TIMEOUT)
+    }
+
+    fn acquire_with_deadline(
+        vault_path: &str,
+        deadline: std::time::Duration,
+    ) -> Result<Self, String> {
         let metadata_path = crate::metadata_dir(vault_path);
         fs::create_dir_all(&metadata_path)
             .map_err(|error| format!("Could not create the Notes metadata directory: {error}"))?;
@@ -1065,8 +1082,7 @@ impl AttachmentStorageLease {
         {
             return Err("The Notes attachment storage lock must be a regular file.".to_string());
         }
-        FileExt::lock(&lock_file)
-            .map_err(|error| format!("Could not lock the Notes attachment storage: {error}"))?;
+        Self::lock_with_deadline(&lock_file, deadline)?;
         let lock_identity = file_identity(&lock_file.metadata().map_err(|error| {
             format!("Could not inspect the Notes attachment lock identity: {error}")
         })?);
@@ -1111,6 +1127,36 @@ impl AttachmentStorageLease {
             lock_identity,
             assets_identity,
         })
+    }
+
+    /// Poll for the exclusive vault lock, sleeping between attempts, and give up
+    /// once `deadline` elapses. `fs4` names the non-blocking exclusive lock
+    /// `try_lock` (its shared counterpart is `try_lock_shared`) and reports
+    /// contention as `TryLockError::WouldBlock`; any other error is a real I/O
+    /// failure and is surfaced immediately.
+    fn lock_with_deadline(
+        lock_file: &File,
+        deadline: std::time::Duration,
+    ) -> Result<(), String> {
+        let started = std::time::Instant::now();
+        loop {
+            match FileExt::try_lock(lock_file) {
+                Ok(()) => return Ok(()),
+                Err(fs4::TryLockError::WouldBlock) => {
+                    let elapsed = started.elapsed();
+                    if elapsed >= deadline {
+                        return Err(ATTACHMENT_LEASE_BUSY_MESSAGE.to_string());
+                    }
+                    let remaining = deadline - elapsed;
+                    std::thread::sleep(ATTACHMENT_LEASE_POLL_INTERVAL.min(remaining));
+                }
+                Err(fs4::TryLockError::Error(error)) => {
+                    return Err(format!(
+                        "Could not lock the Notes attachment storage: {error}"
+                    ));
+                }
+            }
+        }
     }
 
     fn validate_core_identity(&self) -> Result<(), String> {
@@ -2323,6 +2369,56 @@ mod tests {
             asset_path.is_file(),
             "committed shared bytes were reconciled"
         );
+    }
+
+    #[test]
+    fn notes_attachment_lease_acquire_gives_up_when_vault_busy_in_another_window() {
+        use std::time::{Duration, Instant};
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+        // Hold the vault lock (a stand-in for a second Yonalist window). flock is
+        // per open-file-description, so a second acquire in this process opens a
+        // fresh handle and genuinely contends for the exclusive lock.
+        let held = AttachmentStorageLease::acquire(&vault_path).expect("first lease");
+
+        let started = Instant::now();
+        // `AttachmentStorageLease` is not `Debug`, so match rather than `expect_err`.
+        let error = match AttachmentStorageLease::acquire_with_deadline(
+            &vault_path,
+            Duration::from_millis(200),
+        ) {
+            Ok(_) => panic!("second lease must give up while the first is held"),
+            Err(error) => error,
+        };
+        let elapsed = started.elapsed();
+
+        assert!(
+            error.contains("busy in another window"),
+            "unexpected lease error: {error}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "bounded acquire blocked too long: {elapsed:?}"
+        );
+        drop(held);
+    }
+
+    #[test]
+    fn notes_attachment_lease_acquire_succeeds_after_prior_lease_is_dropped() {
+        use std::time::Duration;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = vault_path(&temp_dir);
+
+        let first = AttachmentStorageLease::acquire(&vault_path).expect("first lease");
+        drop(first);
+
+        // Dropping the lease closes the lock file descriptor, releasing the flock,
+        // so a fresh acquire succeeds well within the deadline.
+        let _second =
+            AttachmentStorageLease::acquire_with_deadline(&vault_path, Duration::from_millis(200))
+                .expect("lease reacquired after release");
     }
 
     #[cfg(unix)]
