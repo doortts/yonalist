@@ -48,6 +48,17 @@ const MAX_PDF_ATTACHMENT_WORKING_BYTES: u64 = 256 * 1024 * 1024;
 const PDF_DECODER_BYTES_PER_PIXEL: u64 = 16;
 const PDF_RETAINED_RGBA_BYTES_PER_PIXEL: u64 = 4;
 
+/// File written inside every Markdown export assets directory so that a later
+/// overwrite can tell one of our own asset directories apart from an unrelated
+/// user folder that merely happens to share the derived `{stem}_assets` name.
+pub(crate) const EXPORT_ASSET_MARKER_NAME: &str = ".yonalist-notes-export.json";
+pub(crate) const EXPORT_ASSET_MARKER_CREATED_BY: &str = "yonalist-notes-export";
+const EXPORT_ASSET_MARKER_VERSION: u32 = 1;
+/// Overwrite-refusal message. Kept deliberately distinct from
+/// "Destination already exists." so it never triggers the frontend overwrite
+/// prompt (see `src/domain/notesExport.ts`).
+const FOREIGN_EXPORT_ASSET_DIR_MESSAGE: &str = "Export assets folder already exists and was not created by a previous export. Move or rename it and retry.";
+
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
     root_node_id: &str,
@@ -928,6 +939,62 @@ fn maybe_fail_markdown_publish() -> Result<(), String> {
     Ok(())
 }
 
+/// Self-describing manifest written into each export assets directory. Only
+/// `created_by` gates the overwrite guard; `version`/`files` are advisory and
+/// tolerated-absent so older or newer markers still validate as our own.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportAssetMarker {
+    created_by: String,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+fn export_asset_marker_bytes(prepared: &PreparedMarkdownExport) -> Result<Vec<u8>, String> {
+    let marker = ExportAssetMarker {
+        created_by: EXPORT_ASSET_MARKER_CREATED_BY.to_string(),
+        version: EXPORT_ASSET_MARKER_VERSION,
+        files: prepared
+            .assets
+            .iter()
+            .map(|asset| asset.file_name.clone())
+            .collect(),
+    };
+    serde_json::to_vec(&marker)
+        .map_err(|error| format!("Could not serialize the Notes export asset marker: {error}"))
+}
+
+/// Guard for the overwrite path: an existing `{stem}_assets` directory may only
+/// be displaced when it carries our marker with a matching `createdBy`. Missing
+/// marker, unreadable/invalid marker, or a foreign `createdBy` all refuse with
+/// [`FOREIGN_EXPORT_ASSET_DIR_MESSAGE`]. Must run before any destructive rename
+/// so the destination `.md` and the foreign directory stay untouched on refusal.
+fn ensure_overwritable_export_asset_directory(asset_destination: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(asset_destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err("Notes export asset directory must not be a symlink.".to_string());
+        }
+        Ok(_) => {}
+    }
+    let marker_bytes = match fs::read(asset_destination.join(EXPORT_ASSET_MARKER_NAME)) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string());
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let marker = serde_json::from_slice::<ExportAssetMarker>(&marker_bytes)
+        .map_err(|_| FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string())?;
+    if marker.created_by != EXPORT_ASSET_MARKER_CREATED_BY {
+        return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn publish_markdown_export(
     destination: &Path,
     asset_destination: &Path,
@@ -965,6 +1032,16 @@ pub(crate) fn publish_markdown_export(
             .map_err(|error| error.to_string())?;
         file.sync_all().map_err(|error| error.to_string())?;
     }
+    let marker_bytes = export_asset_marker_bytes(prepared)?;
+    let mut marker = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(staged_assets.join(EXPORT_ASSET_MARKER_NAME))
+        .map_err(|error| error.to_string())?;
+    marker
+        .write_all(&marker_bytes)
+        .map_err(|error| error.to_string())?;
+    marker.sync_all().map_err(|error| error.to_string())?;
     let mut document = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1015,6 +1092,11 @@ pub(crate) fn publish_markdown_export(
         let _ = sync_export_parent(parent);
         return Ok(());
     }
+
+    // Refuse before touching anything: only displace an assets directory that a
+    // previous export created (see the marker guard). On refusal the existing
+    // `.md` and the foreign directory both stay byte-for-byte untouched.
+    ensure_overwritable_export_asset_directory(asset_destination)?;
 
     let old_document = stage.path().join("old-document");
     let old_assets = stage.path().join("old-assets");
@@ -1766,7 +1848,9 @@ mod tests {
         load_export_snapshot, prepare_markdown_export, publish_markdown_export, render_markdown,
         render_pdf, sync_export_directory, validate_pdf_attachment_working_budget,
         validate_serialized_pdf, windows_directory_move_flags, ExportAttachmentBudget,
-        PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
+        EXPORT_ASSET_MARKER_CREATED_BY, EXPORT_ASSET_MARKER_NAME, EXPORT_ASSET_MARKER_VERSION,
+        FOREIGN_EXPORT_ASSET_DIR_MESSAGE, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM,
+        PDF_PAGE_HEIGHT_MM,
     };
     use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
     use image::codecs::gif::GifEncoder;
@@ -1830,6 +1914,40 @@ mod tests {
             display_width: 1,
             bytes: bytes.map(Arc::<[u8]>::from),
         }
+    }
+
+    fn distinct_export_attachment(
+        id: &str,
+        original_name: &str,
+        content_hash: &str,
+        bytes: Vec<u8>,
+    ) -> ExportAttachment {
+        let byte_size = bytes.len() as i64;
+        ExportAttachment {
+            relative_path: format!("notes-assets/{content_hash}.png"),
+            content_hash: content_hash.to_string(),
+            byte_size,
+            ..export_attachment(id, original_name, Some(bytes))
+        }
+    }
+
+    fn read_export_asset_marker(assets: &std::path::Path) -> serde_json::Value {
+        let bytes =
+            std::fs::read(assets.join(EXPORT_ASSET_MARKER_NAME)).expect("read export asset marker");
+        serde_json::from_slice(&bytes).expect("parse export asset marker")
+    }
+
+    fn write_export_asset_marker(assets: &std::path::Path, files: &[&str], created_by: &str) {
+        let marker = serde_json::json!({
+            "createdBy": created_by,
+            "version": 1,
+            "files": files,
+        });
+        std::fs::write(
+            assets.join(EXPORT_ASSET_MARKER_NAME),
+            serde_json::to_vec(&marker).expect("serialize test marker"),
+        )
+        .expect("write test marker");
     }
 
     fn encoded_png(width: u32, height: u32) -> Vec<u8> {
@@ -2914,6 +3032,9 @@ mod tests {
         std::fs::write(&destination, b"old document").expect("old document");
         std::fs::create_dir(&assets).expect("old asset directory");
         std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        // A real prior export leaves our marker behind; the overwrite guard
+        // requires it before displacing the directory.
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
         let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
         root.attachments.push(export_attachment(
             FIRST_ID,
@@ -3049,6 +3170,172 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(private_artifacts.is_empty(), "{private_artifacts:?}");
+    }
+
+    #[test]
+    fn notes_export_writes_a_marker_listing_every_written_asset_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("marker.md");
+        let assets = temp_dir.path().join("marker_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(distinct_export_attachment(
+            FIRST_ID,
+            "first.png",
+            &"a".repeat(64),
+            vec![1, 2, 3],
+        ));
+        root.attachments.push(distinct_export_attachment(
+            SECOND_ID,
+            "second.png",
+            &"b".repeat(64),
+            vec![4, 5, 6, 7],
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "marker_assets").expect("prepare export");
+
+        publish_markdown_export(&destination, &assets, &prepared, false).expect("publish export");
+
+        assert!(assets.join("0001.png").is_file());
+        assert!(assets.join("0002.png").is_file());
+        let marker = read_export_asset_marker(&assets);
+        assert_eq!(
+            marker["createdBy"],
+            serde_json::json!(EXPORT_ASSET_MARKER_CREATED_BY)
+        );
+        assert_eq!(
+            marker["version"],
+            serde_json::json!(EXPORT_ASSET_MARKER_VERSION)
+        );
+        // The marker lists the written asset files only; it never lists itself.
+        assert_eq!(marker["files"], serde_json::json!(["0001.png", "0002.png"]));
+    }
+
+    #[test]
+    fn notes_export_overwrite_replaces_an_asset_directory_that_carries_our_marker() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("owned.md");
+        let assets = temp_dir.path().join("owned_assets");
+        std::fs::write(&destination, b"stale document").expect("stale document");
+        std::fs::create_dir(&assets).expect("prior asset directory");
+        std::fs::write(assets.join("0001.png"), b"stale asset").expect("stale asset");
+        std::fs::write(assets.join("0002.png"), b"stale extra").expect("stale extra");
+        write_export_asset_marker(
+            &assets,
+            &["0001.png", "0002.png"],
+            EXPORT_ASSET_MARKER_CREATED_BY,
+        );
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments
+            .push(export_attachment(FIRST_ID, "image.png", Some(vec![9, 8, 7])));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "owned_assets").expect("prepare export");
+
+        publish_markdown_export(&destination, &assets, &prepared, true).expect("overwrite export");
+
+        // The directory was replaced wholesale: the stale second asset is gone.
+        assert!(!assets.join("0002.png").exists());
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("new asset"),
+            [9, 8, 7]
+        );
+        let marker = read_export_asset_marker(&assets);
+        assert_eq!(marker["files"], serde_json::json!(["0001.png"]));
+        let document = std::fs::read(&destination).expect("new document");
+        assert_ne!(document, b"stale document");
+        assert!(String::from_utf8_lossy(&document).contains("kind: yonalist-notes-export"));
+    }
+
+    #[test]
+    fn notes_export_overwrite_refuses_an_asset_directory_without_our_marker() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("foreign.md");
+        let assets = temp_dir.path().join("foreign_assets");
+        std::fs::write(&destination, b"user document").expect("user document");
+        std::fs::create_dir(&assets).expect("user directory");
+        std::fs::write(assets.join("keepsake.txt"), b"precious").expect("user file");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments
+            .push(export_attachment(FIRST_ID, "image.png", Some(vec![1, 2, 3])));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "foreign_assets").expect("prepare export");
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("foreign asset directory must be refused");
+
+        assert_eq!(error, FOREIGN_EXPORT_ASSET_DIR_MESSAGE);
+        // The refusal must never masquerade as the frontend overwrite-prompt string.
+        assert_ne!(error, "Destination already exists.");
+        // The foreign directory and its lone file are untouched.
+        assert_eq!(
+            std::fs::read(assets.join("keepsake.txt")).expect("keepsake survives"),
+            b"precious"
+        );
+        assert_eq!(
+            std::fs::read_dir(&assets).expect("foreign directory").count(),
+            1
+        );
+        // The pre-existing destination document is byte-identical.
+        assert_eq!(
+            std::fs::read(&destination).expect("document survives"),
+            b"user document"
+        );
+        // Private staging must not leak on the refusal.
+        let leaked = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-")
+            })
+            .count();
+        assert_eq!(leaked, 0);
+    }
+
+    #[test]
+    fn notes_export_overwrite_refuses_a_marker_with_a_foreign_created_by() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("impostor.md");
+        let assets = temp_dir.path().join("impostor_assets");
+        std::fs::write(&destination, b"user document").expect("user document");
+        std::fs::create_dir(&assets).expect("user directory");
+        std::fs::write(assets.join("0001.png"), b"user asset").expect("user asset");
+        write_export_asset_marker(&assets, &["0001.png"], "some-other-tool");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments
+            .push(export_attachment(FIRST_ID, "image.png", Some(vec![1, 2, 3])));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "impostor_assets").expect("prepare export");
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("a foreign createdBy marker must be refused");
+
+        assert_eq!(error, FOREIGN_EXPORT_ASSET_DIR_MESSAGE);
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("user asset survives"),
+            b"user asset"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("document survives"),
+            b"user document"
+        );
+    }
+
+    #[test]
+    fn notes_export_without_attachments_writes_no_assets_directory_or_marker() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("plain.md");
+        let assets = temp_dir.path().join("plain_assets");
+        let root = export_node(ROOT_ID, "Project", "just text", false, Vec::new());
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "plain_assets").expect("prepare export");
+
+        publish_markdown_export(&destination, &assets, &prepared, false).expect("publish export");
+
+        assert!(destination.is_file());
+        assert!(!assets.exists());
+        assert!(!assets.join(EXPORT_ASSET_MARKER_NAME).exists());
     }
 
     #[test]
