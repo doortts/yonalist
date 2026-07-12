@@ -237,6 +237,12 @@
 
 ## Phase 4: Workflowy Parity (4~6주, 기능별 독립 브랜치 권장)
 
+> **2026-07-13 확정:** Phase 4의 4.1~4.5 전체 실행이 승인되었다. 미러/백링크·보드·
+> 타임라인(4.6)은 기존 로드맵의 "별도 product/design 승인" 방침을 유지한다.
+> 실행 체제: 오케스트레이터가 태스크별 실행계획·테스트 설계를 작성하고, 코더
+> 에이전트가 구현, 적대적 리뷰 후 재작업 루프를 거쳐 머지한다. 파일 겹침 때문에
+> 4.2와 4.3은 한 트랙으로 묶는다(둘 다 noteTokens.ts 확장).
+
 ### 4.1 다중 노드 선택 (1.5~2주) — 최우선 parity 공백
 - [ ] 선택 모델: reducer에 `selection: { anchorId, headId }` — visible rows 범위 기반. Shift+Click / Shift+↑↓ 확장, Esc 해제.
 - [ ] 렌더: `isSelected` prop (2.2의 memo 구조 유지).
