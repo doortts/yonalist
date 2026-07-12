@@ -86,6 +86,17 @@ describe("extractClipboardImages", () => {
     expect(result).not.toHaveProperty("items");
   });
 
+  it("treats image MIME items as candidates regardless of their kind", () => {
+    const image = clipboardItem("string", "image/png", null);
+    const items = clipboardItems([image]);
+
+    expect(extractClipboardImages(items)).toEqual({
+      kind: "error",
+      message: "An image could not be read from the clipboard."
+    });
+    expect(image.getAsFile).toHaveBeenCalledOnce();
+  });
+
   it("generates canonical names for unnamed supported image MIME types", () => {
     const files = [
       new File(["png"], "", { type: "image/png" }),

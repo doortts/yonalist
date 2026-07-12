@@ -24,7 +24,7 @@ export function extractClipboardImages(
 
   for (let index = 0; index < items.length; index += 1) {
     const item = items[index];
-    if (item.kind !== "file" || !item.type.startsWith("image/")) {
+    if (!item.type.startsWith("image/")) {
       continue;
     }
 
