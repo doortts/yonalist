@@ -207,6 +207,9 @@ export function NotesAttachmentList({
       );
       return next.length === current.length ? current : next;
     });
+    // boundedAttachments is a fresh slice of attachments each render; depend on
+    // the source prop so this prune runs on real changes, not every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attachments]);
 
   if (attachments.length === 0 && !uploadError && !showDropPlaceholder) {

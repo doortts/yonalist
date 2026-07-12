@@ -193,9 +193,12 @@ export function useVisiblePrefetchQueue<E>(
 
   useEffect(() => {
     return () => {
+      // ref timer maps are never reassigned; clearing whatever is pending at unmount is intended
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       for (const timer of dwellTimers.current.values()) {
         clearTimeout(timer);
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
       for (const timer of evictionTimers.current.values()) {
         clearTimeout(timer);
       }

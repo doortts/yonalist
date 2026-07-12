@@ -1804,9 +1804,14 @@ export function useNotesWorkspace({
       unsubscribeRecovery();
       if (sessionRef.current === session) {
         sessionRef.current = null;
+        // ref array is never reassigned; draining current buffered commands at teardown is intended
+        // eslint-disable-next-line react-hooks/exhaustive-deps
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       }
     };
+    // Session subscribe/teardown effect keyed on vault/repository; publishDraftState
+    // is invoked but omitted so a re-render does not tear down and re-open the session.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     beginRecordShutdown,
     discardAttachmentUploadAttempts,
@@ -1837,6 +1842,8 @@ export function useNotesWorkspace({
           sessionRef.current = null;
         }
         discardAttachmentUploadAttempts();
+        // ref array is never reassigned; draining current buffered commands at teardown is intended
+        // eslint-disable-next-line react-hooks/exhaustive-deps
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       });
     };
@@ -2631,7 +2638,7 @@ export function useNotesWorkspace({
         }
       }
     },
-    [closeTextBurst, enqueueDraftAttempt]
+    [enqueueDraftAttempt]
   );
 
   const flushDraftsThroughCutoff = useCallback(
@@ -2902,10 +2909,7 @@ export function useNotesWorkspace({
       }
     },
     [
-      closeTextBurst,
-      flushAllDraftsBeforeStructural,
       replaceLocalExpansions,
-      runCommand
     ]
   );
 
@@ -3363,13 +3367,10 @@ export function useNotesWorkspace({
       replaceLocalExpansions(new Set());
     }
   }, [
-    flushAllDraftsBeforeStructural,
-    beginStructuralEntry,
     runStructuralCommand,
     libraryView,
     rememberHistoryAfter,
     replaceLocalExpansions,
-    runCommand
   ]);
 
   const createChild = useCallback(
@@ -3411,11 +3412,8 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
-      runCommand
     ]
   );
 
@@ -3513,14 +3511,10 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
       beginTextEntry,
-      flushAllDraftsBeforeStructural,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
       settleInlineTextEntry,
-      runCommand
     ]
   );
 
@@ -3551,10 +3545,7 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
-      flushAllDraftsBeforeStructural,
       rememberHistoryAfter,
-      runCommand,
       runStructuralCommand
     ]
   );
@@ -3670,14 +3661,10 @@ export function useNotesWorkspace({
       return succeeded;
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushAllDraftsBeforeStructural,
       beginTextEntry,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
       settleInlineTextEntry,
-      runCommand
     ]
   );
 
@@ -3705,11 +3692,8 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
-      runCommand
     ]
   );
 
@@ -3744,13 +3728,10 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
       closeTextBurst,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
       replaceLocalExpansions,
-      runCommand
     ]
   );
 
@@ -3874,11 +3855,8 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
-      runCommand
     ]
   );
 
@@ -3917,11 +3895,8 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
-      runCommand
     ]
   );
 
@@ -4145,12 +4120,9 @@ export function useNotesWorkspace({
       }
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushAllDraftsBeforeStructural,
       rememberHistoryAfter,
       replaceLocalExpansions,
-      runCommand
     ]
   );
 
@@ -4240,14 +4212,10 @@ export function useNotesWorkspace({
       );
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
       beginTextEntry,
-      flushAllDraftsBeforeStructural,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
       settleInlineTextEntry,
-      runCommand
     ]
   );
 
@@ -4278,11 +4246,8 @@ export function useNotesWorkspace({
       });
     },
     [
-      beginStructuralEntry,
       runStructuralCommand,
-      flushDraftBeforeStructural,
       rememberHistoryAfter,
-      runCommand,
       runRootLifecycle
     ]
   );
@@ -4364,11 +4329,9 @@ export function useNotesWorkspace({
       replaceLocalExpansions(new Set());
     },
     [
-      beginStructuralEntry,
       closeTextBurst,
       rememberHistoryAfter,
       replaceLocalExpansions,
-      runCommand,
       runStructuralCommand
     ]
   );

@@ -61,7 +61,6 @@ export async function sendDesktopNotification(
   }
 
   if (typeof Notification !== "undefined") {
-    // eslint-disable-next-line no-new
     new Notification(notification.title, { body: notification.body });
   }
 }

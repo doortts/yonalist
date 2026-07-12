@@ -333,6 +333,9 @@ export function CommentThread({
     }
     setActiveReplyId(match.anchor.id);
     setActiveReplyDraftBody(replyDraft.body);
+    // replyDraft is rebuilt each render; depend on its fields (already listed)
+    // rather than the object so an identity churn does not clobber active edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     comments,
     onReplySubmit,

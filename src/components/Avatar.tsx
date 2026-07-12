@@ -124,6 +124,10 @@ export function Avatar({
         setErrored({ key: avatarKey });
       }
     });
+    // connection is decomposed into the specific fields this fetch effect uses
+    // (apiBaseUrl/webBaseUrl/token) to avoid redundant avatar fetches when the
+    // connection object identity churns.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     avatarKey,
     displayUrl,

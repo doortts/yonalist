@@ -80,6 +80,9 @@ export function useVisibleNotificationPrefetch(
             value: notification
           }))
         : [],
+    // connection is decomposed into apiBaseUrl/token (the fields entryKey reads)
+    // so the memo does not recompute on connection object identity churn.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       active,
       options.connection.apiBaseUrl,

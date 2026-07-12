@@ -460,6 +460,9 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
       cancelIdle();
     };
+    // One-shot idle vault rebuild keyed on vaultRoot (guarded above); outboxSync
+    // is a fresh object each render and adding it would cancel the pending rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authGate.state, inboxActive, vaultRoot]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
@@ -631,6 +634,9 @@ export default function App({ initialOnline }: AppProps) {
     setConversationRefreshKey((current) => current + 1);
     workItems.refresh();
     notifications.refresh();
+    // workItems/notifications objects are rebuilt each render; their .refresh
+    // callbacks (already listed) are stable, so depend on those, not the objects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workItems.refresh, notifications.refresh]);
   const outboxSync = useOutboxSync({
     vaultRoot,
@@ -821,6 +827,9 @@ export default function App({ initialOnline }: AppProps) {
     (operation: OutboxOperationDocument) => {
       outboxSync.setOutbox((current) => [...current, operation]);
     },
+    // outboxSync is rebuilt each render; setOutbox (a stable useState setter,
+    // already listed) is the only member used here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [outboxSync.setOutbox]
   );
   // The branch replaced boolean settings state with the feature registry, so
@@ -1182,6 +1191,7 @@ export default function App({ initialOnline }: AppProps) {
     // activeFeatureId gates the whole readout (neutral off Inbox), so a feature
     // switch must give the status bar a fresh getter to re-poll immediately
     // rather than waiting for the next interval tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     activeFeatureId,
     getDetailDisplayDurationMs,

@@ -337,6 +337,10 @@ export function useNotesDatePickerIntegration({
     currentElement.focus();
     currentElement.setSelectionRange(caretUtf16, caretUtf16);
     setPendingFocus(null);
+    // values is decomposed into note/title (the only fields read via
+    // values[pendingFocus.field]); depending on the whole object would re-run
+    // this focus restore on unrelated value changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFocus, refs, values.note, values.title]);
 
   const openTarget = (nextTarget: NotesDatePickerTarget) => {
