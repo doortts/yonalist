@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createNotesWriteQueue } from "./notesWriteQueue";
+import {
+  MAX_DEBOUNCE_LATENCY_MS,
+  createNotesWriteQueue
+} from "./notesWriteQueue";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -160,5 +163,154 @@ describe("createNotesWriteQueue", () => {
 
     firstVaultWrite.resolve();
     await blocked;
+  });
+
+  it("caps continuous typing at the max latency and flushes the latest payload", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const executed: string[] = [];
+    const makeOp = (label: string) =>
+      vi.fn(async () => {
+        executed.push(label);
+        return label;
+      });
+
+    // Type continuously every 250ms. Without a cap the timer would keep being
+    // re-armed and never fire; with the 2s ceiling it must flush by t=2000.
+    let lastCompletion: Promise<string> | undefined;
+    let lastLabel = "";
+    for (let t = 0; t < MAX_DEBOUNCE_LATENCY_MS; t += 250) {
+      lastLabel = `t=${t}`;
+      lastCompletion = queue.enqueueDebounced("node", makeOp(lastLabel));
+      // Assert nothing has fired yet on any tick strictly before the cap.
+      expect(executed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(250);
+    }
+
+    // We have advanced to exactly t=2000; the cap forced exactly one flush of
+    // the most recent operation (enqueued at t=1750).
+    expect(executed).toEqual(["t=1750"]);
+    expect(lastLabel).toBe("t=1750");
+    await expect(lastCompletion).resolves.toBe("t=1750");
+
+    // Continued typing keeps typing past the cap without a second flush at
+    // t=2000 itself (the window is fresh again).
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(executed).toEqual(["t=1750"]);
+  });
+
+  it("still fires a single debounced write at the default 300ms", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const operation = vi.fn(async () => "saved");
+
+    const completion = queue.enqueueDebounced("node", operation);
+
+    await vi.advanceTimersByTimeAsync(299);
+    expect(operation).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(operation).toHaveBeenCalledOnce();
+    await expect(completion).resolves.toBe("saved");
+  });
+
+  it("resolves every superseded waiter with the executed operation value", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+
+    const first = queue.enqueueDebounced("node", async () => "v1");
+    const second = queue.enqueueDebounced("node", async () => "v2");
+    const latest = queue.enqueueDebounced("node", async () => "v3");
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    await expect(first).resolves.toBe("v3");
+    await expect(second).resolves.toBe("v3");
+    await expect(latest).resolves.toBe("v3");
+  });
+
+  it("opens a fresh window and cap after a cap-triggered flush", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const executed: string[] = [];
+    const makeOp = (label: string) =>
+      vi.fn(async () => {
+        executed.push(label);
+        return label;
+      });
+
+    // First window: continuous typing hits the cap at t=2000.
+    for (let t = 0; t < MAX_DEBOUNCE_LATENCY_MS; t += 250) {
+      queue.enqueueDebounced("node", makeOp(`a-${t}`));
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    expect(executed).toEqual(["a-1750"]);
+    expect(queue.hasPending("node")).toBe(false);
+
+    // Continue typing without pause: a brand-new window must start (its first
+    // enqueue does NOT flush immediately even though 2s of wall time elapsed),
+    // and its own fresh cap fires exactly one more flush at t=4000.
+    for (let t = 0; t < MAX_DEBOUNCE_LATENCY_MS; t += 250) {
+      queue.enqueueDebounced("node", makeOp(`b-${t}`));
+      // No premature flush from a reused stale window.
+      expect(executed).toEqual(["a-1750"]);
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    expect(executed).toEqual(["a-1750", "b-1750"]);
+  });
+
+  it("force-drains a partially elapsed window immediately on flush(key)", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const operation = vi.fn(async () => "saved");
+
+    queue.enqueueDebounced("node", async () => "stale");
+    await vi.advanceTimersByTimeAsync(150);
+    const completion = queue.enqueueDebounced("node", operation);
+
+    await queue.flush("node");
+
+    expect(operation).toHaveBeenCalledOnce();
+    expect(queue.hasPending("node")).toBe(false);
+    await expect(completion).resolves.toBe("saved");
+
+    // No further work is scheduled after a forced drain.
+    await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS);
+    expect(operation).toHaveBeenCalledOnce();
+  });
+
+  it("force-drains every partially elapsed window on flush()", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const first = vi.fn(async () => "first saved");
+    const second = vi.fn(async () => "second saved");
+
+    const firstCompletion = queue.enqueueDebounced("first", first);
+    await vi.advanceTimersByTimeAsync(150);
+    const secondCompletion = queue.enqueueDebounced("second", second);
+
+    await queue.flush();
+
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    expect(queue.hasPending("first")).toBe(false);
+    expect(queue.hasPending("second")).toBe(false);
+    await expect(firstCompletion).resolves.toBe("first saved");
+    await expect(secondCompletion).resolves.toBe("second saved");
+  });
+
+  it("caps a custom delay longer than the max latency", async () => {
+    vi.useFakeTimers();
+    const queue = createNotesWriteQueue();
+    const operation = vi.fn(async () => "saved");
+
+    const completion = queue.enqueueDebounced("node", operation, 5000);
+
+    await vi.advanceTimersByTimeAsync(MAX_DEBOUNCE_LATENCY_MS - 1);
+    expect(operation).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(operation).toHaveBeenCalledOnce();
+    await expect(completion).resolves.toBe("saved");
   });
 });
