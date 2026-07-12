@@ -13,7 +13,7 @@
 - Apply click-position editing only to active outline bullet titles.
 - Keep page-library rename, page-header title, and supporting-note behavior unchanged.
 - Keep tag filtering, date editing, bullet Zoom, collapse, and action-menu behavior unchanged.
-- Keep keyboard Enter/Space editing entry and focus indication unchanged.
+- Keep keyboard Enter/Space editing entry unchanged, and retain focus indication on the resting title presentation and command controls.
 - Do not replace the editor with `contenteditable`.
 - Treat offsets as UTF-16 indices because textarea selection APIs use UTF-16.
 - Do not modify or stage `docs/superpowers/specs/2026-07-12-notes-trash-history-and-library-rename-design.md`.
