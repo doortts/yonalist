@@ -604,6 +604,7 @@ export function OutlineNodeRow({
         </button>
 
         <NoteTextField
+          placeCaretFromPointer
           className="notes-node-title"
           containerClassName="notes-node-title-field"
           ref={titleRef}

@@ -1426,7 +1426,7 @@ button.notes-date-token:hover {
 
 .notes-node-title:focus-visible {
   outline: 0;
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: none;
 }
 
 .notes-node-note:focus-visible {

@@ -455,6 +455,55 @@ describe("Notes workspace", () => {
     expect("__TAURI_INTERNALS__" in window).toBe(false);
   });
 
+  it("places the caret at the clicked title position without opting in supporting notes", async () => {
+    configureRepository([
+      node({
+        id: "alpha",
+        title: "Alpha 😀 omega",
+        note: "Supporting detail"
+      })
+    ]);
+    renderNotesWorkspace();
+
+    const originalCaretPositionFromPoint = document.caretPositionFromPoint;
+    try {
+      const presentation = await screen.findByRole("group", {
+        name: "Edit node title"
+      });
+      const textNode = presentation.firstChild!;
+      document.caretPositionFromPoint = vi.fn(() => ({
+        offsetNode: textNode,
+        offset: 8,
+        getClientRect: vi.fn()
+      } as CaretPosition));
+
+      fireEvent.pointerDown(presentation, { clientX: 80, clientY: 20 });
+
+      const title = screen.getByRole<HTMLTextAreaElement>("textbox", {
+        name: "Edit node title"
+      });
+      expect(title).toHaveFocus();
+      expect(title.selectionStart).toBe(8);
+      expect(title.selectionEnd).toBe(8);
+
+      const notePresentation = screen.getByRole("group", {
+        name: "Supporting note: Alpha 😀 omega"
+      });
+      const note = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Supporting note: Alpha 😀 omega"]'
+      )!;
+      const setNoteSelection = vi.spyOn(note, "setSelectionRange");
+
+      fireEvent.pointerDown(notePresentation, { clientX: 80, clientY: 20 });
+
+      expect(note).toHaveFocus();
+      expect(setNoteSelection).not.toHaveBeenCalled();
+      expect(document.caretPositionFromPoint).toHaveBeenCalledOnce();
+    } finally {
+      document.caretPositionFromPoint = originalCaretPositionFromPoint;
+    }
+  });
+
   it("renders ordered node images beneath the supporting note and loads bytes lazily", async () => {
     const user = userEvent.setup();
     const root = node({
@@ -3919,7 +3968,7 @@ describe("Notes workspace", () => {
     expect(notesStyles).not.toContain("--notes-actions-width: 149px");
     expect(notesStyles).not.toContain(".notes-node-actions");
     expect(notesStyles).toMatch(
-      /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/s
+      /\.notes-node-title:focus-visible\s*{[^}]*outline:\s*0;[^}]*box-shadow:\s*none;/s
     );
     expect(notesStyles).toMatch(
       /\.notes-node-note\s*{[^}]*width:\s*calc\(100% - var\(--notes-indent\) - var\(--notes-content-offset\)\);[^}]*margin:\s*2px 0 8px calc\(var\(--notes-indent\) \+ var\(--notes-content-offset\)\);/s
