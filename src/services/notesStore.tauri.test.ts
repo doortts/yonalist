@@ -405,6 +405,112 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["ASCII", "a".repeat(128)],
+    ["Korean", `${"한".repeat(42)}ab`]
+  ])(
+    "accepts and trims a %s 128-byte history command kind for path and raw batches",
+    async (_label, commandKind) => {
+      const paddedCommandKind = `  ${commandKind}  `;
+      const context = { ...historyContext, commandKind: paddedCommandKind };
+      const readBlob = vi.fn().mockResolvedValue(Uint8Array.of(1).buffer);
+      invokeMock.mockResolvedValue(mutationResult);
+
+      await expect(
+        notesImportAttachmentPaths(
+          vaultPath,
+          {
+            nodeId,
+            attachments: [
+              { id: attachmentId, sourcePath: "/tmp/first.png" }
+            ],
+            initialMaxDisplayWidth: 480
+          },
+          context
+        )
+      ).resolves.toEqual(normalizedMutationResult);
+      await expect(
+        notesImportAttachmentBytes(
+          vaultPath,
+          {
+            nodeId,
+            attachments: [
+              {
+                id: attachmentId,
+                originalName: "first.png",
+                mimeType: "image/png",
+                blob: { size: 1, arrayBuffer: readBlob } as unknown as Blob
+              }
+            ],
+            initialMaxDisplayWidth: 480
+          },
+          context
+        )
+      ).resolves.toEqual(normalizedMutationResult);
+
+      expect(invokeMock.mock.calls[0][1]).toMatchObject({
+        historyContext: { commandKind }
+      });
+      const rawBody = invokeMock.mock.calls[1][1] as Uint8Array;
+      const metadataLength = new DataView(
+        rawBody.buffer,
+        rawBody.byteOffset,
+        rawBody.byteLength
+      ).getUint32(5, true);
+      const metadata = JSON.parse(
+        new TextDecoder().decode(rawBody.subarray(9, 9 + metadataLength))
+      ) as { historyContext: NotesHistoryContext };
+      expect(metadata.historyContext.commandKind).toBe(commandKind);
+      expect(readBlob).toHaveBeenCalledOnce();
+    }
+  );
+
+  it.each([
+    ["ASCII", "a".repeat(129)],
+    ["Korean", "한".repeat(43)]
+  ])(
+    "rejects a %s 129-byte history command kind before path or raw native work",
+    async (_label, commandKind) => {
+      const context = { ...historyContext, commandKind: `  ${commandKind}  ` };
+      const readBlob = vi.fn().mockResolvedValue(Uint8Array.of(1).buffer);
+
+      await expect(
+        notesImportAttachmentPaths(
+          vaultPath,
+          {
+            nodeId,
+            attachments: [
+              { id: attachmentId, sourcePath: "/tmp/first.png" }
+            ],
+            initialMaxDisplayWidth: 480
+          },
+          context
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+      await expect(
+        notesImportAttachmentBytes(
+          vaultPath,
+          {
+            nodeId,
+            attachments: [
+              {
+                id: attachmentId,
+                originalName: "first.png",
+                mimeType: "image/png",
+                blob: { size: 1, arrayBuffer: readBlob } as unknown as Blob
+              }
+            ],
+            initialMaxDisplayWidth: 480
+          },
+          context
+        )
+      ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+      expect(invokeMock).not.toHaveBeenCalled();
+      expect(readBlob).not.toHaveBeenCalled();
+    }
+  );
+
   it("validates and sends the initial attachment max display width exactly", async () => {
     const input: ImportNoteAttachmentInput = {
       id: attachmentId,

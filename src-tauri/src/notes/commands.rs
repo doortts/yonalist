@@ -1666,6 +1666,61 @@ mod tests {
     }
 
     #[test]
+    fn notes_attachment_path_batch_reports_every_invalid_source_before_publish() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+        let valid_source = temp_dir.path().join("valid.png");
+        let empty_source = temp_dir.path().join("empty.png");
+        let missing_source = temp_dir.path().join("missing.png");
+        fs::write(&valid_source, encoded_png(4, 3)).expect("write valid image");
+        fs::write(&empty_source, []).expect("write empty image");
+
+        let error = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            ImportAttachmentPathBatchInput {
+                node_id: ROOT_ID.to_string(),
+                attachments: vec![
+                    ImportAttachmentPathItem {
+                        id: SPLIT_ID.to_string(),
+                        source_path: valid_source.to_string_lossy().into_owned(),
+                    },
+                    ImportAttachmentPathItem {
+                        id: EMPTY_ID.to_string(),
+                        source_path: empty_source.to_string_lossy().into_owned(),
+                    },
+                    ImportAttachmentPathItem {
+                        id: "44444444-4444-4444-8444-444444444444".to_string(),
+                        source_path: missing_source.to_string_lossy().into_owned(),
+                    },
+                ],
+                initial_max_display_width: 480,
+            },
+            Some(batch_history_context()),
+        )
+        .expect_err("invalid path batch");
+
+        assert!(
+            error.contains(
+                "empty.png: Notes attachment images must contain between 1 and 20971520 bytes."
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains("missing.png: Could not open the Notes attachment image:"),
+            "{error}"
+        );
+        let connection = connect_notes_db(&vault_path).expect("inspect invalid path batch");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachment rows");
+        assert_eq!(attachment_count, 0);
+        assert!(asset_directory_entries(&vault_path).is_empty());
+    }
+
+    #[test]
     fn notes_attachment_batch_crash_marker_recovers_every_publication_boundary() {
         for fault in [
             AttachmentBatchFault::CrashAfterPublished(1),

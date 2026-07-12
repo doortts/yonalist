@@ -151,6 +151,8 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     restoreNode: empty,
     archiveNode: empty,
     unarchiveNode: empty,
+    importAttachmentPaths: empty,
+    importAttachmentBytes: empty,
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),

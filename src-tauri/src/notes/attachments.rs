@@ -827,20 +827,36 @@ impl PreparedAttachmentBatch {
         let budget = acquire_import_budget()?;
         let mut aggregate_bytes = 0_u64;
         let mut attachments = Vec::with_capacity(source_paths.len());
+        let mut failures = Vec::new();
         for source_path in source_paths {
             let remaining = MAX_ATTACHMENT_BATCH_BYTES
                 .checked_sub(aggregate_bytes)
                 .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
-            let prepared = prepare_source_attachment_without_budget(source_path, remaining)?;
-            aggregate_bytes = aggregate_bytes
-                .checked_add(prepared.image.byte_size)
-                .ok_or_else(|| "The Notes attachment batch byte length overflowed.".to_string())?;
-            if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
-                return Err(format!(
-                    "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
-                ));
+            match prepare_source_attachment_without_budget(source_path, remaining) {
+                Ok(prepared) => {
+                    aggregate_bytes = aggregate_bytes
+                        .checked_add(prepared.image.byte_size)
+                        .ok_or_else(|| {
+                            "The Notes attachment batch byte length overflowed.".to_string()
+                        })?;
+                    if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+                        return Err(format!(
+                            "Notes attachment batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+                        ));
+                    }
+                    attachments.push(prepared);
+                }
+                Err(error) => {
+                    let file_name = Path::new(source_path)
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or(source_path);
+                    failures.push(format!("{file_name}: {error}"));
+                }
             }
-            attachments.push(prepared);
+        }
+        if !failures.is_empty() {
+            return Err(failures.join("; "));
         }
         Ok(Self {
             _budget: budget,

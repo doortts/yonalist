@@ -53,6 +53,8 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     restoreNode: empty,
     archiveNode: empty,
     unarchiveNode: empty,
+    importAttachmentPaths: empty,
+    importAttachmentBytes: empty,
     undo: vi.fn().mockResolvedValue({
       workspace: workspace([]),
       replayedEntryId: null,

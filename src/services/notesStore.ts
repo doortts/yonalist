@@ -98,7 +98,8 @@ function normalizeAttachmentHistoryContext(
     return undefined;
   }
   const commandKind = historyContext.commandKind.trim();
-  if (commandKind.length === 0 || commandKind.length > 128) {
+  const commandKindBytes = new TextEncoder().encode(commandKind).byteLength;
+  if (commandKindBytes === 0 || commandKindBytes > 128) {
     return undefined;
   }
   return {
