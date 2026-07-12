@@ -236,7 +236,6 @@ function normalizeImportAttachmentBytesBatchInput(
   }
 
   const ids = new Set<string>();
-  let aggregateBytes = 0;
   const attachments = [] as ImportNoteAttachmentBytesBatchInput["attachments"][number][];
   for (let index = 0; index < input.attachments.length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(input.attachments, index)) {
@@ -249,6 +248,8 @@ function normalizeImportAttachmentBytesBatchInput(
       !isCanonicalUuidV4(attachment.id) ||
       ids.has(attachment.id) ||
       typeof attachment.originalName !== "string" ||
+      attachment.originalName.trim().length === 0 ||
+      new TextEncoder().encode(attachment.originalName).byteLength > 1024 ||
       typeof attachment.mimeType !== "string" ||
       typeof attachment.blob !== "object" ||
       attachment.blob === null ||
@@ -258,19 +259,6 @@ function normalizeImportAttachmentBytesBatchInput(
     ) {
       return invalidImportAttachmentBytesBatch;
     }
-    if ((attachment.blob as Blob).size > MAX_NOTE_ATTACHMENT_BYTES) {
-      return {
-        input: null,
-        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} exceeds the 20 MiB per-file limit.`
-      };
-    }
-    aggregateBytes += (attachment.blob as Blob).size;
-    if (aggregateBytes > MAX_NOTE_ATTACHMENT_BATCH_BYTES) {
-      return {
-        input: null,
-        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} causes the batch to exceed the 64 MiB total limit.`
-      };
-    }
     ids.add(attachment.id);
     attachments.push({
       id: attachment.id,
@@ -278,6 +266,23 @@ function normalizeImportAttachmentBytesBatchInput(
       mimeType: attachment.mimeType,
       blob: attachment.blob as Blob
     });
+  }
+
+  let aggregateBytes = 0;
+  for (const attachment of attachments) {
+    if (attachment.blob.size > MAX_NOTE_ATTACHMENT_BYTES) {
+      return {
+        input: null,
+        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} exceeds the 20 MiB per-file limit.`
+      };
+    }
+    aggregateBytes += attachment.blob.size;
+    if (aggregateBytes > MAX_NOTE_ATTACHMENT_BATCH_BYTES) {
+      return {
+        input: null,
+        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} causes the batch to exceed the 64 MiB total limit.`
+      };
+    }
   }
 
   return {

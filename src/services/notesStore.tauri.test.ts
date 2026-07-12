@@ -466,6 +466,121 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("keeps the generic message when a malformed item follows an oversized attachment", async () => {
+    const readBlob = vi.fn();
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "oversized-photo.png",
+            mimeType: "image/png",
+            blob: {
+              size: MAX_NOTE_ATTACHMENT_BYTES + 1,
+              arrayBuffer: readBlob
+            }
+          },
+          {
+            id: secondAttachmentId,
+            originalName: 42,
+            mimeType: "image/png",
+            blob: { size: 1, arrayBuffer: readBlob }
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      } as unknown as ImportNoteAttachmentBytesBatchInput)
+    ).rejects.toMatchObject({
+      message: "Notes attachment byte batch input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the generic message when a malformed item follows the aggregate crossing", async () => {
+    const readBlob = vi.fn();
+    const chunkBytes = MAX_NOTE_ATTACHMENT_BATCH_BYTES / 4;
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "first.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob }
+          },
+          {
+            id: secondAttachmentId,
+            originalName: "second.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob }
+          },
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            originalName: "third.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob }
+          },
+          {
+            id: "66666666-6666-4666-8666-666666666666",
+            originalName: "crossing-file.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes + 1, arrayBuffer: readBlob }
+          },
+          {
+            id: "77777777-7777-4777-8777-777777777777",
+            originalName: 42,
+            mimeType: "image/png",
+            blob: { size: 1, arrayBuffer: readBlob }
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      } as unknown as ImportNoteAttachmentBytesBatchInput)
+    ).rejects.toMatchObject({
+      message: "Notes attachment byte batch input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["whitespace-only", " \t\n"],
+    ["over-1024-byte UTF-8", "한".repeat(342)]
+  ])("rejects a %s attachment name as generic input", async (_label, name) => {
+    const readBlob = vi.fn();
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: name,
+            mimeType: "image/png",
+            blob: { size: 1, arrayBuffer: readBlob } as unknown as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({
+      message: "Notes attachment byte batch input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("keeps the generic byte batch message without a trustworthy filename", async () => {
     await expect(
       notesImportAttachmentBytes(vaultPath, {
