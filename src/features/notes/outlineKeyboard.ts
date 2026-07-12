@@ -170,6 +170,10 @@ export function resolveOutlineKey(
     return null;
   }
 
+  const visibleIds =
+    input.visibleNodeIds ??
+    visibleNodeIds(input.workspace, input.workspace.zoomRootId);
+
   if (input.key === "Enter") {
     return {
       type: "split",
@@ -180,7 +184,10 @@ export function resolveOutlineKey(
 
   if (input.key === "Tab") {
     if (input.shiftKey) {
-      if (node.parentId === null) {
+      if (
+        node.parentId === null ||
+        node.parentId === input.workspace.zoomRootId
+      ) {
         return null;
       }
       const parent = input.workspace.nodesById[node.parentId];
@@ -206,7 +213,16 @@ export function resolveOutlineKey(
     if (index <= 0) {
       return null;
     }
-    const priorId = siblings[index - 1];
+    let priorId: NoteId | null = null;
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (visibleIds.includes(siblings[cursor])) {
+        priorId = siblings[cursor];
+        break;
+      }
+    }
+    if (priorId === null) {
+      return null;
+    }
     const prior = input.workspace.nodesById[priorId];
     if (!prior) {
       return null;
@@ -223,9 +239,6 @@ export function resolveOutlineKey(
     };
   }
 
-  const visibleIds =
-    input.visibleNodeIds ??
-    visibleNodeIds(input.workspace, input.workspace.zoomRootId);
   const visibleIndex = visibleIds.indexOf(input.nodeId);
 
   if (input.key === "ArrowUp" || input.key === "ArrowDown") {
