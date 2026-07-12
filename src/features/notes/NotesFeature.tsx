@@ -14,6 +14,7 @@ import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
 } from "./notesAttachmentController";
+import { useFlushDraftsOnWindowClose } from "./useFlushDraftsOnWindowClose";
 import { useNotesWorkspace } from "./useNotesWorkspace";
 import "./notes.css";
 
@@ -32,6 +33,8 @@ export function NotesWorkspaceProvider({
     repository: notesStore,
     attachmentUi: attachmentUi ?? contextAttachmentUi
   });
+
+  useFlushDraftsOnWindowClose(workspace.actions.flushAllDrafts);
 
   return (
     <NotesWorkspaceContext.Provider value={workspace}>
