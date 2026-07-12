@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TauriEvent } from "@tauri-apps/api/event";
 import {
   isSupportedImageFile,
   isSupportedImagePath,
@@ -8,12 +9,12 @@ import {
 const open = vi.hoisted(() => vi.fn());
 const scaleFactor = vi.hoisted(() => vi.fn());
 const onScaleChanged = vi.hoisted(() => vi.fn());
-const onDragDropEvent = vi.hoisted(() => vi.fn());
+const listen = vi.hoisted(() => vi.fn());
 const useNotesWorkspace = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open }));
 vi.mock("@tauri-apps/api/webview", () => ({
-  getCurrentWebview: () => ({ onDragDropEvent })
+  getCurrentWebview: () => ({ listen })
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ onScaleChanged, scaleFactor })
@@ -28,6 +29,39 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+type NativeEventHandler<T = unknown> = (event: { payload: T }) => void;
+
+const dragEventNames = [
+  TauriEvent.DRAG_ENTER,
+  TauriEvent.DRAG_OVER,
+  TauriEvent.DRAG_DROP,
+  TauriEvent.DRAG_LEAVE
+] as const;
+
+function enableTauri() {
+  Object.defineProperty(window, "__TAURI_INTERNALS__", {
+    configurable: true,
+    value: {}
+  });
+}
+
+function captureDragHandlers(
+  unlisteners: readonly (() => void | Promise<void>)[] = dragEventNames.map(() =>
+    vi.fn()
+  )
+) {
+  const handlers = new Map<string, NativeEventHandler>();
+  let registrationIndex = 0;
+  listen.mockImplementation(async (eventName, handler) => {
+    handlers.set(eventName, handler);
+    const unlisten = unlisteners[registrationIndex];
+    registrationIndex += 1;
+    if (!unlisten) throw new Error(`Missing unlisten for ${eventName}`);
+    return unlisten;
+  });
+  return handlers;
+}
+
 beforeEach(() => {
   onScaleChanged.mockResolvedValue(vi.fn());
 });
@@ -36,7 +70,7 @@ afterEach(() => {
   open.mockReset();
   scaleFactor.mockReset();
   onScaleChanged.mockReset();
-  onDragDropEvent.mockReset();
+  listen.mockReset();
   useNotesWorkspace.mockReset();
   Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
 });
@@ -72,76 +106,76 @@ describe("notes attachment UI boundary", () => {
     await expect(nativeNotesAttachmentUi.openImageFiles()).resolves.toBeNull();
   });
 
-  it("resolves the scale factor before registering the native listener", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {}
-    });
-    const unlisten = vi.fn();
+  it("keeps a scale change that arrives while the baseline query is pending", async () => {
+    enableTauri();
+    const handlers = captureDragHandlers();
     const listener = vi.fn();
     const pendingScaleFactor = deferred<number>();
+    let scaleChangedHandler: NativeEventHandler<{ scaleFactor: number }> | undefined;
+    onScaleChanged.mockImplementation(async (handler) => {
+      scaleChangedHandler = handler;
+      return vi.fn();
+    });
     scaleFactor.mockReturnValue(pendingScaleFactor.promise);
-    onDragDropEvent.mockResolvedValue(unlisten);
 
     const subscription = nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    await vi.waitFor(() => expect(onScaleChanged).toHaveBeenCalledOnce());
     await vi.waitFor(() => expect(scaleFactor).toHaveBeenCalledOnce());
 
-    expect(onDragDropEvent).not.toHaveBeenCalled();
+    expect(onScaleChanged.mock.invocationCallOrder[0]).toBeLessThan(
+      scaleFactor.mock.invocationCallOrder[0]
+    );
+    expect(listen).not.toHaveBeenCalled();
+    scaleChangedHandler?.({ payload: { scaleFactor: 1.5 } });
     pendingScaleFactor.resolve(2);
     await expect(subscription).resolves.toEqual(expect.any(Function));
-    expect(onScaleChanged).toHaveBeenCalledOnce();
-    expect(onDragDropEvent).toHaveBeenCalledOnce();
+    expect(listen.mock.calls.map(([eventName]) => eventName)).toEqual(
+      dragEventNames
+    );
+
+    handlers.get(TauriEvent.DRAG_ENTER)?.({
+      payload: {
+        paths: ["/incoming/one.png"],
+        position: { x: 150, y: 90 }
+      }
+    });
+    expect(listener).toHaveBeenCalledWith({
+      type: "enter",
+      paths: ["/incoming/one.png"],
+      position: { x: 100, y: 60 }
+    });
   });
 
   it("forwards native events synchronously in source order after setup", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {}
-    });
-    const unlisten = vi.fn();
+    enableTauri();
+    const handlers = captureDragHandlers();
     const listener = vi.fn();
-    let nativeDropHandler:
-      | ((event: { payload: unknown }) => void | Promise<void>)
-      | undefined;
-    onDragDropEvent.mockImplementation(async (handler) => {
-      nativeDropHandler = handler;
-      return unlisten;
-    });
     scaleFactor
       .mockResolvedValueOnce(2)
       .mockReturnValue(new Promise<number>(() => {}));
-    const enterToLogical = vi.fn(() => ({ x: 120, y: 80 }));
-    const overToLogical = vi.fn(() => ({ x: 180, y: 120 }));
-    const dropToLogical = vi.fn(() => ({ x: 240, y: 160 }));
 
     await expect(
       nativeNotesAttachmentUi.subscribeToImageDrop(listener)
     ).resolves.toEqual(expect.any(Function));
-    nativeDropHandler?.({
+    handlers.get(TauriEvent.DRAG_ENTER)?.({
       payload: {
-        type: "enter",
         paths: ["/incoming/one.png"],
-        position: { toLogical: enterToLogical }
+        position: { x: 240, y: 160 }
       }
     });
-    nativeDropHandler?.({
+    handlers.get(TauriEvent.DRAG_OVER)?.({
       payload: {
-        type: "over",
-        position: { toLogical: overToLogical }
+        position: { x: 360, y: 240 }
       }
     });
-    nativeDropHandler?.({ payload: { type: "leave" } });
-    nativeDropHandler?.({
+    handlers.get(TauriEvent.DRAG_LEAVE)?.({ payload: undefined });
+    handlers.get(TauriEvent.DRAG_DROP)?.({
       payload: {
-        type: "drop",
         paths: ["/incoming/two.webp"],
-        position: { toLogical: dropToLogical }
+        position: { x: 480, y: 320 }
       }
     });
 
-    expect(enterToLogical).toHaveBeenCalledWith(2);
-    expect(overToLogical).toHaveBeenCalledWith(2);
-    expect(dropToLogical).toHaveBeenCalledWith(2);
     expect(scaleFactor).toHaveBeenCalledOnce();
     expect(listener).toHaveBeenNthCalledWith(1, {
       type: "enter",
@@ -161,85 +195,146 @@ describe("notes attachment UI boundary", () => {
   });
 
   it("uses scale-change events for later mixed-DPI coordinates", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {}
-    });
-    let nativeDropHandler:
-      | ((event: { payload: unknown }) => void | Promise<void>)
-      | undefined;
-    let scaleChangedHandler:
-      | ((event: { payload: { scaleFactor: number } }) => void)
-      | undefined;
-    onDragDropEvent.mockImplementation(async (handler) => {
-      nativeDropHandler = handler;
-      return vi.fn();
-    });
+    enableTauri();
+    const handlers = captureDragHandlers();
+    let scaleChangedHandler: NativeEventHandler<{ scaleFactor: number }> | undefined;
     onScaleChanged.mockImplementation(async (handler) => {
       scaleChangedHandler = handler;
       return vi.fn();
     });
     scaleFactor.mockResolvedValue(2);
-    const beforeMove = vi.fn(() => ({ x: 100, y: 80 }));
-    const afterMove = vi.fn(() => ({ x: 200, y: 160 }));
     const listener = vi.fn();
 
     await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
-    nativeDropHandler?.({
+    handlers.get(TauriEvent.DRAG_ENTER)?.({
       payload: {
-        type: "enter",
         paths: ["/incoming/one.png"],
-        position: { toLogical: beforeMove }
+        position: { x: 200, y: 160 }
       }
     });
     scaleChangedHandler?.({ payload: { scaleFactor: 1.5 } });
-    nativeDropHandler?.({
+    handlers.get(TauriEvent.DRAG_DROP)?.({
       payload: {
-        type: "drop",
         paths: ["/incoming/two.webp"],
-        position: { toLogical: afterMove }
+        position: { x: 300, y: 240 }
       }
     });
 
-    expect(beforeMove).toHaveBeenCalledWith(2);
-    expect(afterMove).toHaveBeenCalledWith(1.5);
-    expect(listener.mock.calls.map(([event]) => event.type)).toEqual([
-      "enter",
-      "drop"
-    ]);
+    expect(listener).toHaveBeenNthCalledWith(1, {
+      type: "enter",
+      paths: ["/incoming/one.png"],
+      position: { x: 100, y: 80 }
+    });
+    expect(listener).toHaveBeenNthCalledWith(2, {
+      type: "drop",
+      paths: ["/incoming/two.webp"],
+      position: { x: 200, y: 160 }
+    });
   });
 
-  it("unlistens both native subscriptions", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {}
-    });
+  it("rolls back the scale listener when the baseline query fails", async () => {
+    enableTauri();
+    const queryFailure = new Error("scale query failed");
     const unlistenScale = vi.fn();
-    const unlistenDrag = vi.fn();
-    scaleFactor.mockResolvedValue(2);
     onScaleChanged.mockResolvedValue(unlistenScale);
-    onDragDropEvent.mockResolvedValue(unlistenDrag);
-
-    const unlisten = await nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn());
-    await unlisten();
-
-    expect(unlistenDrag).toHaveBeenCalledOnce();
-    expect(unlistenScale).toHaveBeenCalledOnce();
-  });
-
-  it("cleans up a scale listener when drag setup fails", async () => {
-    Object.defineProperty(window, "__TAURI_INTERNALS__", {
-      configurable: true,
-      value: {}
-    });
-    const unlistenScale = vi.fn();
-    scaleFactor.mockResolvedValue(2);
-    onScaleChanged.mockResolvedValue(unlistenScale);
-    onDragDropEvent.mockRejectedValue(new Error("drag setup failed"));
+    scaleFactor.mockRejectedValue(queryFailure);
 
     await expect(
       nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn())
-    ).rejects.toThrow("drag setup failed");
+    ).rejects.toBe(queryFailure);
+
+    expect(listen).not.toHaveBeenCalled();
+    expect(unlistenScale).toHaveBeenCalledOnce();
+  });
+
+  it.each([1, 2, 3])(
+    "rolls back all listeners after %i successful drag registrations",
+    async (successfulRegistrations) => {
+      enableTauri();
+      const setupFailure = new Error(
+        `drag registration ${successfulRegistrations + 1} failed`
+      );
+      const unlistenScale = vi
+        .fn()
+        .mockRejectedValue(new Error("scale cleanup failed"));
+      const dragUnlisteners = Array.from(
+        { length: successfulRegistrations },
+        (_, index) =>
+          index === 0
+            ? vi.fn().mockRejectedValue(new Error("drag cleanup failed"))
+            : vi.fn()
+      );
+      let registrationIndex = 0;
+      listen.mockImplementation(async () => {
+        if (registrationIndex === successfulRegistrations) throw setupFailure;
+        const unlisten = dragUnlisteners[registrationIndex];
+        registrationIndex += 1;
+        return unlisten;
+      });
+      scaleFactor.mockResolvedValue(2);
+      onScaleChanged.mockResolvedValue(unlistenScale);
+
+      await expect(
+        nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn())
+      ).rejects.toBe(setupFailure);
+
+      expect(listen).toHaveBeenCalledTimes(successfulRegistrations + 1);
+      for (const unlisten of dragUnlisteners) {
+        expect(unlisten).toHaveBeenCalledOnce();
+      }
+      expect(unlistenScale).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("absorbs teardown failures while attempting every cleanup", async () => {
+    enableTauri();
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+    const unlistenScale = vi
+      .fn()
+      .mockRejectedValue(new Error("scale cleanup failed"));
+    const dragUnlisteners = [
+      vi.fn(() => {
+        throw new Error("enter cleanup failed");
+      }),
+      vi.fn().mockRejectedValue(new Error("over cleanup failed")),
+      vi.fn(),
+      vi.fn().mockResolvedValue(undefined)
+    ];
+    captureDragHandlers(dragUnlisteners);
+    scaleFactor.mockResolvedValue(2);
+    onScaleChanged.mockResolvedValue(unlistenScale);
+
+    try {
+      const cleanup = await nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn());
+      await expect(cleanup()).resolves.toBeUndefined();
+      await Promise.resolve();
+
+      for (const unlisten of dragUnlisteners) {
+        expect(unlisten).toHaveBeenCalledOnce();
+      }
+      expect(unlistenScale).toHaveBeenCalledOnce();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandled);
+    }
+  });
+
+  it("runs successful cleanup only once", async () => {
+    enableTauri();
+    const unlistenScale = vi.fn();
+    const dragUnlisteners = dragEventNames.map(() => vi.fn());
+    captureDragHandlers(dragUnlisteners);
+    scaleFactor.mockResolvedValue(2);
+    onScaleChanged.mockResolvedValue(unlistenScale);
+
+    const cleanup = await nativeNotesAttachmentUi.subscribeToImageDrop(vi.fn());
+    await Promise.all([cleanup(), cleanup()]);
+    await cleanup();
+
+    for (const unlisten of dragUnlisteners) {
+      expect(unlisten).toHaveBeenCalledOnce();
+    }
     expect(unlistenScale).toHaveBeenCalledOnce();
   });
 
@@ -248,7 +343,7 @@ describe("notes attachment UI boundary", () => {
 
     const unlisten = await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
     await expect(unlisten()).resolves.toBeUndefined();
-    expect(onDragDropEvent).not.toHaveBeenCalled();
+    expect(listen).not.toHaveBeenCalled();
     expect(listener).not.toHaveBeenCalled();
   });
 

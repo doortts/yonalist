@@ -238,6 +238,13 @@ export function NotesOutlinePane() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void | Promise<void>) | undefined;
+    const disposeSubscription = (nextUnlisten: () => void | Promise<void>) => {
+      try {
+        void Promise.resolve(nextUnlisten()).catch(() => {});
+      } catch {
+        // Native subscription teardown is best-effort during React cleanup.
+      }
+    };
     const clearPreview = () => {
       imageDropPathsRef.current = [];
       setImageDropTargetId(null);
@@ -294,7 +301,7 @@ export function NotesOutlinePane() {
     void attachmentUi.subscribeToImageDrop(listener).then(
       (nextUnlisten) => {
         if (disposed) {
-          void nextUnlisten();
+          disposeSubscription(nextUnlisten);
           return;
         }
         unlisten = nextUnlisten;
@@ -309,7 +316,7 @@ export function NotesOutlinePane() {
     return () => {
       disposed = true;
       imageDropPathsRef.current = [];
-      if (unlisten) void unlisten();
+      if (unlisten) disposeSubscription(unlisten);
     };
   }, [attachmentUi]);
 

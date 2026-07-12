@@ -357,6 +357,56 @@ describe("native Notes image drop ingest", () => {
     expect(lateUnlisten).toHaveBeenCalledOnce();
   });
 
+  it("absorbs rejected cleanup on unmount and late subscription disposal", async () => {
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+    const immediateRejectionObserved = vi.fn();
+    const lateRejectionObserved = vi.fn();
+    const rejectingCleanup = (message: string, observed: () => void) =>
+      ({
+        then: (
+          _resolve: (value: void) => void,
+          reject: (reason: unknown) => void
+        ) => {
+          observed();
+          reject(new Error(message));
+        }
+      }) as Promise<void>;
+    const immediateUnlisten = vi.fn(() =>
+      rejectingCleanup("immediate cleanup failed", immediateRejectionObserved)
+    );
+    const immediate = renderPane(
+      workspaceValue(),
+      vi.fn().mockResolvedValue(immediateUnlisten)
+    );
+
+    try {
+      await waitFor(() => expect(immediateUnlisten).not.toHaveBeenCalled());
+      immediate.unmount();
+      await act(async () => Promise.resolve());
+
+      const pending = deferred<() => Promise<void>>();
+      const lateUnlisten = vi.fn(() =>
+        rejectingCleanup("late cleanup failed", lateRejectionObserved)
+      );
+      const late = renderPane(
+        workspaceValue(),
+        vi.fn().mockReturnValue(pending.promise)
+      );
+      late.unmount();
+      await act(async () => pending.resolve(lateUnlisten));
+      await act(async () => Promise.resolve());
+
+      expect(immediateUnlisten).toHaveBeenCalledOnce();
+      expect(lateUnlisten).toHaveBeenCalledOnce();
+      expect(immediateRejectionObserved).toHaveBeenCalledOnce();
+      expect(lateRejectionObserved).toHaveBeenCalledOnce();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandled);
+    }
+  });
+
   it("exposes targets only for active writable rows and a writable page header", async () => {
     let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
     const subscribe = vi.fn().mockImplementation(async (listener) => {
