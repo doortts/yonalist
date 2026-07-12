@@ -331,6 +331,107 @@ describe("resolveOutlineKey", () => {
     ).toBeNull();
   });
 
+  it("refuses to outdent a zoom root's direct child out of the zoomed subtree", () => {
+    const zoomedAtRootA = { ...tree, zoomRootId: "root-a" };
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "child-a",
+          title: "child-a",
+          workspace: zoomedAtRootA
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("still outdents a deeper descendant while confined to the zoomed subtree", () => {
+    const zoomedAtRootA = { ...tree, zoomRootId: "root-a" };
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "grandchild",
+          title: "grandchild",
+          workspace: zoomedAtRootA
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "grandchild", parentId: "root-a", afterId: "child-a" },
+      focusNodeId: "grandchild"
+    });
+  });
+
+  it("keeps unzoomed root-level outdent behavior unchanged", () => {
+    expect(
+      resolveOutlineKey(
+        input({ key: "Tab", shiftKey: true, nodeId: "child-a", title: "child-a" })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "child-a", parentId: null, afterId: "root-a" },
+      focusNodeId: "child-a"
+    });
+  });
+
+  it("refuses to indent under a hidden completed prior sibling", () => {
+    const hiddenCompleted = normalizeWorkspace(
+      workspace([
+        node({
+          id: "done",
+          sortKey: 1,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({ id: "task", sortKey: 2 })
+      ])
+    );
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          nodeId: "task",
+          title: "task",
+          workspace: hiddenCompleted,
+          visibleNodeIds: ["task"]
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("indents under the nearest visible prior sibling and expands it when collapsed", () => {
+    const hiddenBetween = normalizeWorkspace(
+      workspace([
+        node({ id: "a", sortKey: 1, isCollapsed: true }),
+        node({ id: "a-child", parentId: "a", sortKey: 1 }),
+        node({
+          id: "done",
+          sortKey: 2,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({ id: "task", sortKey: 3 })
+      ])
+    );
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Tab",
+          nodeId: "task",
+          title: "task",
+          workspace: hiddenBetween,
+          visibleNodeIds: ["a", "task"]
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "task", parentId: "a", afterId: "a-child" },
+      focusNodeId: "task",
+      expandNodeId: "a"
+    });
+  });
+
   it("moves Up and Down through visible rows with zoom and bounds", () => {
     expect(
       resolveOutlineKey(
@@ -528,6 +629,59 @@ describe("resolveOutlineKey", () => {
         })
       )
     ).toEqual({ type: "remove", focusNodeId: "lifted-a" });
+  });
+
+  it("keeps Backspace native for an empty row that still has image attachments", () => {
+    const attachment = {
+      id: "att-1",
+      nodeId: "with-att",
+      sortKey: 1,
+      relativePath: "assets/att-1.png",
+      contentHash: "hash",
+      originalName: "att-1.png",
+      mimeType: "image/png" as const,
+      byteSize: 10,
+      intrinsicWidth: 1,
+      intrinsicHeight: 1,
+      displayWidth: 1,
+      createdAt: "2026-07-10T00:00:00Z",
+      updatedAt: "2026-07-10T00:00:00Z"
+    };
+    const withAttachment = normalizeWorkspace({
+      nodes: [
+        node({ id: "keep", sortKey: 1, title: "" }),
+        node({ id: "with-att", sortKey: 2, title: "" })
+      ],
+      attachmentsByNodeId: { "with-att": [attachment] }
+    });
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "with-att",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toBeNull();
+
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Backspace",
+          nodeId: "keep",
+          title: "",
+          note: "",
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: withAttachment
+        })
+      )
+    ).toEqual({ type: "remove", focusNodeId: "with-att" });
   });
 
   it("keeps Backspace native for nonempty notes, repeats, and non-start carets", () => {
