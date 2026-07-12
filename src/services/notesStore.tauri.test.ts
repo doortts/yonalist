@@ -1,5 +1,9 @@
 import { Blob as NodeBlob } from "node:buffer";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  MAX_NOTE_ATTACHMENT_BATCH_BYTES,
+  MAX_NOTE_ATTACHMENT_BYTES
+} from "../domain/notes";
 import type {
   CreateNoteNodeInput,
   ImportNoteAttachmentBytesBatchInput,
@@ -379,6 +383,111 @@ describe("notesStore in Tauri", () => {
         initialMaxDisplayWidth: 480
       })
     ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("names the attachment that exceeds the per-file byte limit", async () => {
+    const readBlob = vi.fn();
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "oversized-photo.png",
+            mimeType: "image/png",
+            blob: {
+              size: MAX_NOTE_ATTACHMENT_BYTES + 1,
+              arrayBuffer: readBlob
+            } as unknown as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({
+      message:
+        'Attachment "oversized-photo.png" exceeds the 20 MiB per-file limit.',
+      operation: "write",
+      retryable: false
+    });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("names the attachment that crosses the aggregate byte limit", async () => {
+    const readBlob = vi.fn();
+    const chunkBytes = MAX_NOTE_ATTACHMENT_BATCH_BYTES / 4;
+
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: "first.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob } as unknown as Blob
+          },
+          {
+            id: secondAttachmentId,
+            originalName: "second.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob } as unknown as Blob
+          },
+          {
+            id: "55555555-5555-4555-8555-555555555555",
+            originalName: "third.png",
+            mimeType: "image/png",
+            blob: { size: chunkBytes, arrayBuffer: readBlob } as unknown as Blob
+          },
+          {
+            id: "66666666-6666-4666-8666-666666666666",
+            originalName: "crossing-file.png",
+            mimeType: "image/png",
+            blob: {
+              size: chunkBytes + 1,
+              arrayBuffer: readBlob
+            } as unknown as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({
+      message:
+        'Attachment "crossing-file.png" causes the batch to exceed the 64 MiB total limit.',
+      operation: "write",
+      retryable: false
+    });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the generic byte batch message without a trustworthy filename", async () => {
+    await expect(
+      notesImportAttachmentBytes(vaultPath, {
+        nodeId,
+        attachments: [
+          {
+            id: attachmentId,
+            originalName: 42,
+            mimeType: "image/png",
+            blob: {
+              size: MAX_NOTE_ATTACHMENT_BYTES + 1,
+              arrayBuffer: vi.fn()
+            }
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      } as unknown as ImportNoteAttachmentBytesBatchInput)
+    ).rejects.toMatchObject({
+      message: "Notes attachment byte batch input is invalid.",
+      operation: "write",
+      retryable: false
+    });
 
     expect(invokeMock).not.toHaveBeenCalled();
   });

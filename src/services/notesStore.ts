@@ -204,9 +204,19 @@ function normalizeImportAttachmentPathBatchInput(
   };
 }
 
+type ImportAttachmentBytesBatchNormalization =
+  | { input: ImportNoteAttachmentBytesBatchInput; errorMessage: null }
+  | { input: null; errorMessage: string };
+
+const invalidImportAttachmentBytesBatch: ImportAttachmentBytesBatchNormalization =
+  {
+    input: null,
+    errorMessage: "Notes attachment byte batch input is invalid."
+  };
+
 function normalizeImportAttachmentBytesBatchInput(
   input: unknown
-): ImportNoteAttachmentBytesBatchInput | null {
+): ImportAttachmentBytesBatchNormalization {
   if (
     !isPlainRecord(input) ||
     !hasExactKeys(input, [
@@ -222,7 +232,7 @@ function normalizeImportAttachmentBytesBatchInput(
     !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
     (input.initialMaxDisplayWidth as number) <= 0
   ) {
-    return null;
+    return invalidImportAttachmentBytesBatch;
   }
 
   const ids = new Set<string>();
@@ -230,7 +240,7 @@ function normalizeImportAttachmentBytesBatchInput(
   const attachments = [] as ImportNoteAttachmentBytesBatchInput["attachments"][number][];
   for (let index = 0; index < input.attachments.length; index += 1) {
     if (!Object.prototype.hasOwnProperty.call(input.attachments, index)) {
-      return null;
+      return invalidImportAttachmentBytesBatch;
     }
     const attachment = input.attachments[index];
     if (
@@ -244,14 +254,22 @@ function normalizeImportAttachmentBytesBatchInput(
       attachment.blob === null ||
       !Number.isSafeInteger((attachment.blob as Blob).size) ||
       (attachment.blob as Blob).size <= 0 ||
-      (attachment.blob as Blob).size > MAX_NOTE_ATTACHMENT_BYTES ||
       typeof (attachment.blob as Blob).arrayBuffer !== "function"
     ) {
-      return null;
+      return invalidImportAttachmentBytesBatch;
+    }
+    if ((attachment.blob as Blob).size > MAX_NOTE_ATTACHMENT_BYTES) {
+      return {
+        input: null,
+        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} exceeds the 20 MiB per-file limit.`
+      };
     }
     aggregateBytes += (attachment.blob as Blob).size;
     if (aggregateBytes > MAX_NOTE_ATTACHMENT_BATCH_BYTES) {
-      return null;
+      return {
+        input: null,
+        errorMessage: `Attachment ${JSON.stringify(attachment.originalName)} causes the batch to exceed the 64 MiB total limit.`
+      };
     }
     ids.add(attachment.id);
     attachments.push({
@@ -263,9 +281,12 @@ function normalizeImportAttachmentBytesBatchInput(
   }
 
   return {
-    nodeId: input.nodeId,
-    attachments,
-    initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+    input: {
+      nodeId: input.nodeId,
+      attachments,
+      initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+    },
+    errorMessage: null
   };
 }
 
@@ -638,16 +659,19 @@ export async function notesImportAttachmentBytes(
   input: ImportNoteAttachmentBytesBatchInput,
   historyContext: NotesHistoryContext | null = null
 ): Promise<NotesMutationResult> {
-  const normalizedInput = normalizeImportAttachmentBytesBatchInput(input);
+  const normalization = normalizeImportAttachmentBytesBatchInput(input);
   const normalizedHistoryContext =
     normalizeAttachmentHistoryContext(historyContext);
-  if (normalizedInput === null || normalizedHistoryContext === undefined) {
+  if (normalization.input === null || normalizedHistoryContext === undefined) {
     throw notesStoreError(
       "write",
-      "Notes attachment byte batch input is invalid.",
+      normalizedHistoryContext === undefined
+        ? "Notes attachment byte batch input is invalid."
+        : normalization.errorMessage,
       false
     );
   }
+  const normalizedInput = normalization.input;
 
   let result: unknown;
   try {
