@@ -1,6 +1,7 @@
 import {
   forwardRef,
   type ChangeEvent,
+  type ClipboardEventHandler,
   type CSSProperties,
   type FocusEvent,
   type ForwardedRef,
@@ -34,6 +35,7 @@ export interface NoteTextFieldProps
   containerClassName?: string;
   presentationAriaLabel?: string;
   placeCaretFromPointer?: boolean;
+  onPaste?: ClipboardEventHandler<HTMLTextAreaElement>;
 }
 
 function setForwardedRef<T>(ref: ForwardedRef<T>, value: T | null) {
@@ -115,6 +117,7 @@ export const NoteTextField = forwardRef<
     onChange,
     onCompositionStart,
     onCompositionEnd,
+    onPaste,
     tabIndex,
     "aria-hidden": ariaHidden,
     "aria-label": ariaLabel,
@@ -313,6 +316,7 @@ export const NoteTextField = forwardRef<
         onChange={handleChange}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
+        onPaste={onPaste}
       />
     </span>
   );
