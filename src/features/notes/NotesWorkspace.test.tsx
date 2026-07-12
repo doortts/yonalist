@@ -465,7 +465,10 @@ describe("Notes workspace", () => {
     ]);
     renderNotesWorkspace();
 
-    const originalCaretPositionFromPoint = document.caretPositionFromPoint;
+    const originalCaretPositionFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "caretPositionFromPoint"
+    );
     try {
       const presentation = await screen.findByRole("group", {
         name: "Edit node title"
@@ -500,7 +503,17 @@ describe("Notes workspace", () => {
       expect(setNoteSelection).not.toHaveBeenCalled();
       expect(document.caretPositionFromPoint).toHaveBeenCalledOnce();
     } finally {
-      document.caretPositionFromPoint = originalCaretPositionFromPoint;
+      if (originalCaretPositionFromPoint) {
+        Object.defineProperty(
+          document,
+          "caretPositionFromPoint",
+          originalCaretPositionFromPoint
+        );
+      } else {
+        delete (document as unknown as {
+          caretPositionFromPoint?: Document["caretPositionFromPoint"];
+        }).caretPositionFromPoint;
+      }
     }
   });
 
@@ -4060,17 +4073,41 @@ describe("Notes workspace", () => {
     );
   });
 
-  it("uses a quiet non-line focus cue for the resting node title", () => {
-    const titlePresentationFocusRule = notesStyles.match(
-      /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/s
-    )?.[1];
-
-    expect(titlePresentationFocusRule).toMatch(/outline:\s*0;/);
-    expect(titlePresentationFocusRule).toMatch(/box-shadow:\s*none;/);
-    expect(titlePresentationFocusRule).toMatch(
-      /background:\s*var\(--bg-hover\);/
+  it("uses one accessible non-underline focus rule for the resting node title", () => {
+    const titlePresentationFocusRules = Array.from(
+      notesStyles.matchAll(
+        /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/gs
+      ),
+      (match) => match[1]
     );
-    expect(titlePresentationFocusRule).toMatch(/border-radius:\s*2px;/);
+
+    expect(titlePresentationFocusRules).toHaveLength(1);
+    const [titlePresentationFocusRule] = titlePresentationFocusRules;
+    expect(titlePresentationFocusRule).toMatch(
+      /outline:\s*2px solid var\(--accent\);/
+    );
+    expect(titlePresentationFocusRule).toMatch(/outline-offset:\s*2px;/);
+    expect(titlePresentationFocusRule).toMatch(/box-shadow:\s*none;/);
+    expect(titlePresentationFocusRule).not.toMatch(
+      /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+    );
+  });
+
+  it("keeps the editing title textarea free of a focus line", () => {
+    const titleEditorFocusRules = Array.from(
+      notesStyles.matchAll(
+        /\.notes-node-title:focus-visible\s*{([^}]*)}/gs
+      ),
+      (match) => match[1]
+    );
+
+    expect(titleEditorFocusRules).toHaveLength(1);
+    const [titleEditorFocusRule] = titleEditorFocusRules;
+    expect(titleEditorFocusRule).toMatch(/outline:\s*0;/);
+    expect(titleEditorFocusRule).toMatch(/box-shadow:\s*none;/);
+    expect(titleEditorFocusRule).not.toMatch(
+      /border-bottom|text-decoration|inset\s+0\s+-\d+px/
+    );
   });
 
   it("keeps the resting supporting-note presentation focus underline", () => {

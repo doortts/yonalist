@@ -9,6 +9,63 @@ import { createRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { NoteTextField } from "./NoteTextField";
 
+type CaretDocument = {
+  caretPositionFromPoint?: Document["caretPositionFromPoint"];
+  caretRangeFromPoint?: Document["caretRangeFromPoint"];
+};
+
+async function withCaretHitTestApis(
+  overrides: Partial<CaretDocument>,
+  run: () => void | Promise<void>
+) {
+  const documentWithCaret = document as unknown as CaretDocument;
+  const originalPosition = Object.getOwnPropertyDescriptor(
+    documentWithCaret,
+    "caretPositionFromPoint"
+  );
+  const originalRange = Object.getOwnPropertyDescriptor(
+    documentWithCaret,
+    "caretRangeFromPoint"
+  );
+
+  try {
+    if (
+      Object.prototype.hasOwnProperty.call(
+        overrides,
+        "caretPositionFromPoint"
+      )
+    ) {
+      documentWithCaret.caretPositionFromPoint =
+        overrides.caretPositionFromPoint;
+    }
+    if (
+      Object.prototype.hasOwnProperty.call(overrides, "caretRangeFromPoint")
+    ) {
+      documentWithCaret.caretRangeFromPoint = overrides.caretRangeFromPoint;
+    }
+    await run();
+  } finally {
+    if (originalPosition) {
+      Object.defineProperty(
+        documentWithCaret,
+        "caretPositionFromPoint",
+        originalPosition
+      );
+    } else {
+      delete documentWithCaret.caretPositionFromPoint;
+    }
+    if (originalRange) {
+      Object.defineProperty(
+        documentWithCaret,
+        "caretRangeFromPoint",
+        originalRange
+      );
+    } else {
+      delete documentWithCaret.caretRangeFromPoint;
+    }
+  }
+}
+
 describe("NoteTextField", () => {
   const today = { year: 2026, month: 7, day: 11 } as const;
 
@@ -163,8 +220,7 @@ describe("NoteTextField", () => {
     });
   });
 
-  it("places the editing caret at the clicked UTF-16 text position", () => {
-    const original = document.caretPositionFromPoint;
+  it("places the editing caret at the clicked UTF-16 text position", async () => {
     const { container } = render(
       <NoteTextField
         placeCaretFromPointer
@@ -176,28 +232,26 @@ describe("NoteTextField", () => {
     );
     const presentation = container.querySelector(".notes-token-text")!;
     const textNode = presentation.firstChild!;
-    document.caretPositionFromPoint = vi.fn(() => ({
-      offsetNode: textNode,
-      offset: 3,
-      getClientRect: vi.fn()
-    } as CaretPosition));
+    await withCaretHitTestApis(
+      {
+        caretPositionFromPoint: vi.fn(() => ({
+          offsetNode: textNode,
+          offset: 3,
+          getClientRect: vi.fn()
+        } as CaretPosition))
+      },
+      () => {
+        fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
 
-    fireEvent.pointerDown(presentation, { clientX: 32, clientY: 12 });
-
-    const textarea = screen.getByRole("textbox", { name: "Edit title" });
-    expect(textarea).toHaveFocus();
-    expect(textarea).toHaveProperty("selectionStart", 3);
-    expect(textarea).toHaveProperty("selectionEnd", 3);
-    document.caretPositionFromPoint = original;
+        const textarea = screen.getByRole("textbox", { name: "Edit title" });
+        expect(textarea).toHaveFocus();
+        expect(textarea).toHaveProperty("selectionStart", 3);
+        expect(textarea).toHaveProperty("selectionEnd", 3);
+      }
+    );
   });
 
-  it("places the editing caret from the WebKit range fallback", () => {
-    const documentWithCaret = document as unknown as {
-      caretPositionFromPoint?: Document["caretPositionFromPoint"];
-      caretRangeFromPoint?: Document["caretRangeFromPoint"];
-    };
-    const originalPosition = documentWithCaret.caretPositionFromPoint;
-    const originalRange = documentWithCaret.caretRangeFromPoint;
+  it("places the editing caret from the WebKit range fallback", async () => {
     const { container } = render(
       <NoteTextField
         placeCaretFromPointer
@@ -211,21 +265,23 @@ describe("NoteTextField", () => {
     const textNode = presentation.firstChild!;
     const range = document.createRange();
     range.setStart(textNode, 2);
-    documentWithCaret.caretPositionFromPoint = undefined;
-    documentWithCaret.caretRangeFromPoint = vi.fn(() => range);
+    await withCaretHitTestApis(
+      {
+        caretPositionFromPoint: undefined,
+        caretRangeFromPoint: vi.fn(() => range)
+      },
+      () => {
+        fireEvent.pointerDown(presentation, { clientX: 24, clientY: 12 });
 
-    fireEvent.pointerDown(presentation, { clientX: 24, clientY: 12 });
-
-    const textarea = screen.getByRole("textbox", { name: "Edit title" });
-    expect(textarea).toHaveFocus();
-    expect(textarea).toHaveProperty("selectionStart", 2);
-    expect(textarea).toHaveProperty("selectionEnd", 2);
-    documentWithCaret.caretPositionFromPoint = originalPosition;
-    documentWithCaret.caretRangeFromPoint = originalRange;
+        const textarea = screen.getByRole("textbox", { name: "Edit title" });
+        expect(textarea).toHaveFocus();
+        expect(textarea).toHaveProperty("selectionStart", 2);
+        expect(textarea).toHaveProperty("selectionEnd", 2);
+      }
+    );
   });
 
-  it("places the editing caret at the end when hit testing is outside", () => {
-    const original = document.caretPositionFromPoint;
+  it("places the editing caret at the end when hit testing is outside", async () => {
     const { container } = render(
       <NoteTextField
         placeCaretFromPointer
@@ -235,23 +291,112 @@ describe("NoteTextField", () => {
         onTagClick={vi.fn()}
       />
     );
-    document.caretPositionFromPoint = vi.fn(() => ({
-      offsetNode: document.body,
-      offset: 0,
-      getClientRect: vi.fn()
-    } as CaretPosition));
+    await withCaretHitTestApis(
+      {
+        caretPositionFromPoint: vi.fn(() => ({
+          offsetNode: document.body,
+          offset: 0,
+          getClientRect: vi.fn()
+        } as CaretPosition))
+      },
+      () => {
+        fireEvent.pointerDown(container.querySelector(".notes-token-text")!, {
+          clientX: 80,
+          clientY: 12
+        });
 
-    fireEvent.pointerDown(container.querySelector(".notes-token-text")!, {
-      clientX: 80,
-      clientY: 12
-    });
-
-    const textarea = screen.getByRole("textbox", { name: "Edit title" });
-    expect(textarea).toHaveFocus();
-    expect(textarea).toHaveProperty("selectionStart", 4);
-    expect(textarea).toHaveProperty("selectionEnd", 4);
-    document.caretPositionFromPoint = original;
+        const textarea = screen.getByRole("textbox", { name: "Edit title" });
+        expect(textarea).toHaveFocus();
+        expect(textarea).toHaveProperty("selectionStart", 4);
+        expect(textarea).toHaveProperty("selectionEnd", 4);
+      }
+    );
   });
+
+  it("converts a later rendered text-node hit to a whole-string UTF-16 offset", async () => {
+    const source = "😀 before #tag after";
+    const expectedCaretOffset = 18;
+    const { container } = render(
+      <NoteTextField
+        placeCaretFromPointer
+        value={source}
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+      />
+    );
+    const presentation = container.querySelector(".notes-token-text")!;
+    const laterTextNode = presentation.childNodes.item(2);
+    expect(laterTextNode.textContent).toBe(" after");
+    expect(source.slice(0, expectedCaretOffset)).toBe("😀 before #tag aft");
+
+    await withCaretHitTestApis(
+      {
+        caretPositionFromPoint: vi.fn(() => ({
+          offsetNode: laterTextNode,
+          offset: 4,
+          getClientRect: vi.fn()
+        } as CaretPosition))
+      },
+      () => {
+        fireEvent.pointerDown(presentation, { clientX: 96, clientY: 12 });
+
+        const textarea = screen.getByRole("textbox", { name: "Edit title" });
+        expect(textarea).toHaveFocus();
+        expect(textarea).toHaveProperty(
+          "selectionStart",
+          expectedCaretOffset
+        );
+        expect(textarea).toHaveProperty("selectionEnd", expectedCaretOffset);
+      }
+    );
+  });
+
+  it.each([
+    ["tag", "Ship #today", "#today tag filter is inactive"],
+    ["date", "Due 07/13/2026", "Edit date 07/13/2026"]
+  ] as const)(
+    "keeps an opted-in %s token click out of caret placement and editing",
+    async (tokenKind, value, accessibleName) => {
+      const user = userEvent.setup();
+      const onTagClick = vi.fn();
+      const onDateClick = vi.fn();
+      const caretPositionFromPoint = vi.fn(() => null);
+      const caretRangeFromPoint = vi.fn(() => null);
+      const { container } = render(
+        <NoteTextField
+          placeCaretFromPointer
+          value={value}
+          today={today}
+          aria-label="Edit title"
+          onChange={vi.fn()}
+          onTagClick={onTagClick}
+          onDateClick={onDateClick}
+        />
+      );
+      const textarea = container.querySelector("textarea")!;
+      const field = textarea.closest(".notes-text-field");
+      const token = screen.getByRole("button", { name: accessibleName });
+
+      await withCaretHitTestApis(
+        { caretPositionFromPoint, caretRangeFromPoint },
+        async () => {
+          await user.click(token);
+
+          expect(caretPositionFromPoint).not.toHaveBeenCalled();
+          expect(caretRangeFromPoint).not.toHaveBeenCalled();
+          expect(textarea).not.toHaveFocus();
+          expect(field).toHaveAttribute("data-editing", "false");
+          expect(
+            tokenKind === "tag" ? onTagClick : onDateClick
+          ).toHaveBeenCalledOnce();
+          expect(
+            tokenKind === "tag" ? onDateClick : onTagClick
+          ).not.toHaveBeenCalled();
+        }
+      );
+    }
+  );
 
   it("does not assign pointer-derived selection without opting in", () => {
     const { container } = render(
