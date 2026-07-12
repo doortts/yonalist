@@ -2,6 +2,8 @@ export type NoteId = string;
 export type NoteLayoutMode = "bullets";
 
 export const MAX_NOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_NOTE_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
+export const MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES = 256 * 1024;
 export const MAX_NOTE_ATTACHMENT_PIXELS = 40_000_000;
 export const MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH = 160;
 export const MAX_NOTE_ATTACHMENTS_PER_NODE = 128;
@@ -159,6 +161,33 @@ export interface ImportNoteAttachmentInput {
   initialMaxDisplayWidth: number;
 }
 
+export interface ImportNoteAttachmentPathBatchInput {
+  readonly nodeId: NoteId;
+  readonly attachments: readonly {
+    readonly id: string;
+    readonly sourcePath: string;
+  }[];
+  readonly initialMaxDisplayWidth: number;
+}
+
+export interface ImportNoteAttachmentByteItem {
+  readonly id: string;
+  readonly originalName: string;
+  readonly mimeType: string;
+  readonly blob: Blob;
+}
+
+export type PendingNoteAttachmentByteItem = Omit<
+  ImportNoteAttachmentByteItem,
+  "id"
+>;
+
+export interface ImportNoteAttachmentBytesBatchInput {
+  readonly nodeId: NoteId;
+  readonly attachments: readonly ImportNoteAttachmentByteItem[];
+  readonly initialMaxDisplayWidth: number;
+}
+
 export interface ResizeNoteAttachmentInput {
   id: string;
   displayWidth: number;
@@ -191,6 +220,16 @@ export interface NotesStore {
   importAttachment?(
     vaultPath: string,
     input: ImportNoteAttachmentInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  importAttachmentPaths?(
+    vaultPath: string,
+    input: ImportNoteAttachmentPathBatchInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  importAttachmentBytes?(
+    vaultPath: string,
+    input: ImportNoteAttachmentBytesBatchInput,
     historyContext?: NotesHistoryContext | null
   ): Promise<NotesMutationResponse>;
   readAttachmentBytes?(

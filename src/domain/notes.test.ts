@@ -13,7 +13,10 @@ import {
 } from "./notes";
 import type {
   NoteAttachment,
+  ImportNoteAttachmentByteItem,
+  ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
+  ImportNoteAttachmentPathBatchInput,
   NoteNode,
   NoteSearchScope,
   NoteStructuredSearchQuery,
@@ -22,6 +25,7 @@ import type {
   NotesMutationResponse,
   NotesStore,
   NotesWorkspaceScope,
+  PendingNoteAttachmentByteItem,
   ResizeNoteAttachmentInput
 } from "./notes";
 
@@ -551,6 +555,32 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         attachmentId: string,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<keyof ImportNoteAttachmentPathBatchInput>().toEqualTypeOf<
+      "nodeId" | "attachments" | "initialMaxDisplayWidth"
+    >();
+    expectTypeOf<keyof ImportNoteAttachmentByteItem>().toEqualTypeOf<
+      "id" | "originalName" | "mimeType" | "blob"
+    >();
+    expectTypeOf<keyof PendingNoteAttachmentByteItem>().toEqualTypeOf<
+      "originalName" | "mimeType" | "blob"
+    >();
+    expectTypeOf<keyof ImportNoteAttachmentBytesBatchInput>().toEqualTypeOf<
+      "nodeId" | "attachments" | "initialMaxDisplayWidth"
+    >();
+    expectTypeOf<NonNullable<NotesStore["importAttachmentPaths"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ImportNoteAttachmentPathBatchInput,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<NonNullable<NotesStore["importAttachmentBytes"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ImportNoteAttachmentBytesBatchInput,
         historyContext?: import("./notes").NotesHistoryContext | null
       ) => Promise<NotesMutationResponse>
     >();
