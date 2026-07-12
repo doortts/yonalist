@@ -109,10 +109,9 @@ export function isNotesDraftsFlushFailedError(
 }
 
 /**
- * Narrows the value resolved by `NotesStore.deleteDatabase`. The store's
- * interface (src/domain/notes.ts) types the result as `void`, but the Tauri
- * command reports whether some attachment files could not be cleaned up. We
- * validate the shape structurally rather than trusting the interface type.
+ * Narrows the value resolved by `NotesStore.deleteDatabase`. Injected test
+ * repositories may still resolve `undefined`, so the cleanup flag is read
+ * structurally instead of trusting the interface type.
  */
 function hasAttachmentCleanupFlag(
   value: unknown

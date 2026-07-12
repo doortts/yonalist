@@ -256,7 +256,16 @@ export interface NotesStore {
   searchStructured?(vaultPath: string, query: NoteStructuredSearchQuery): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
   listTagsWithCounts(vaultPath: string): Promise<NoteTagSummary[]>;
-  deleteDatabase(vaultPath: string): Promise<void>;
+  deleteDatabase(vaultPath: string): Promise<NotesDeleteDatabaseResult>;
+}
+
+export interface NotesDeleteDatabaseResult {
+  /**
+   * True when the database was removed but one or more attachment files could
+   * not be deleted from disk. The deletion still succeeded; this only signals
+   * that some orphaned files were left behind.
+   */
+  attachmentCleanupFailed: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

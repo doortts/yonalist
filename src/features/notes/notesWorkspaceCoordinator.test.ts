@@ -71,7 +71,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue(undefined),
+    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
     ...overrides
   };
 }
