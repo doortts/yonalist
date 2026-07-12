@@ -118,6 +118,23 @@ fn decoder_limits(dimensions: (u32, u32), limits: ValidationLimits) -> Limits {
     decode_limits
 }
 
+fn validate_decoded_dimensions(
+    dimensions: (u64, u64),
+    limits: ValidationLimits,
+) -> Result<u64, String> {
+    let pixels = dimensions
+        .0
+        .checked_mul(dimensions.1)
+        .ok_or_else(|| "The Notes attachment decoded pixel count is too large.".to_string())?;
+    if dimensions.0 == 0 || dimensions.1 == 0 || pixels > limits.max_pixels {
+        return Err(format!(
+            "Notes attachment images must contain between 1 and {} decoded pixels.",
+            limits.max_pixels
+        ));
+    }
+    Ok(pixels)
+}
+
 fn count_container_chunk(count: &mut u64, limits: ValidationLimits) -> Result<(), String> {
     *count = count
         .checked_add(1)
@@ -203,15 +220,8 @@ fn inspect_gif(bytes: &[u8], limits: ValidationLimits) -> Result<ContainerInspec
     }
     let canvas_width = u32::from(u16::from_le_bytes(bytes[6..8].try_into().unwrap()));
     let canvas_height = u32::from(u16::from_le_bytes(bytes[8..10].try_into().unwrap()));
-    let canvas_pixels = u64::from(canvas_width)
-        .checked_mul(u64::from(canvas_height))
-        .ok_or_else(|| "The Notes attachment decoded pixel count is too large.".to_string())?;
-    if canvas_width == 0 || canvas_height == 0 || canvas_pixels > limits.max_pixels {
-        return Err(format!(
-            "Notes attachment images must contain between 1 and {} decoded pixels.",
-            limits.max_pixels
-        ));
-    }
+    let canvas_pixels =
+        validate_decoded_dimensions((u64::from(canvas_width), u64::from(canvas_height)), limits)?;
     let packed = bytes[10];
     let mut offset = 13_usize;
     if packed & 0x80 != 0 {
@@ -598,15 +608,7 @@ fn validate_image_bytes_with_extension_policy(
     let dimensions = ImageReader::with_format(Cursor::new(bytes), format)
         .into_dimensions()
         .map_err(|error| format!("Could not decode the Notes attachment dimensions: {error}"))?;
-    let pixels = u64::from(dimensions.0)
-        .checked_mul(u64::from(dimensions.1))
-        .ok_or_else(|| "The Notes attachment decoded pixel count is too large.".to_string())?;
-    if dimensions.0 == 0 || dimensions.1 == 0 || pixels > limits.max_pixels {
-        return Err(format!(
-            "Notes attachment images must contain between 1 and {} decoded pixels.",
-            limits.max_pixels
-        ));
-    }
+    validate_decoded_dimensions((u64::from(dimensions.0), u64::from(dimensions.1)), limits)?;
 
     fully_decode_image(format, bytes, dimensions, inspection, limits)?;
 
@@ -1701,8 +1703,8 @@ mod tests {
     use super::{
         canonical_relative_path, inject_cleanup_failure, inject_source_growth,
         prepare_source_attachment, prepare_source_attachment_without_budget,
-        publish_attachment_bytes, resolve_owned_asset_path, validate_image_bytes,
-        AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
+        publish_attachment_bytes, resolve_owned_asset_path, validate_decoded_dimensions,
+        validate_image_bytes, AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
     };
     use crate::notes::commands::{
         notes_clear_history, notes_delete_database, notes_empty_trash, notes_import_attachment,
@@ -2155,6 +2157,41 @@ mod tests {
                 "{name}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn notes_attachment_default_pixel_ceiling_accepts_40m_and_rejects_40m_plus_one() {
+        assert_eq!(
+            validate_decoded_dimensions((8_000, 5_000), ValidationLimits::DEFAULT),
+            Ok(40_000_000)
+        );
+
+        let error = validate_decoded_dimensions((40_000_001, 1), ValidationLimits::DEFAULT)
+            .expect_err("40,000,001 decoded pixels must exceed the default ceiling");
+
+        assert_eq!(
+            error,
+            "Notes attachment images must contain between 1 and 40000000 decoded pixels."
+        );
+    }
+
+    #[test]
+    fn notes_attachment_dimension_limit_rejects_zero_and_overflow() {
+        for dimensions in [(0, 1), (1, 0)] {
+            let error = validate_decoded_dimensions(dimensions, ValidationLimits::DEFAULT)
+                .expect_err("zero dimensions must fail");
+            assert_eq!(
+                error,
+                "Notes attachment images must contain between 1 and 40000000 decoded pixels."
+            );
+        }
+
+        let error = validate_decoded_dimensions((u64::MAX, 2), ValidationLimits::DEFAULT)
+            .expect_err("dimension multiplication overflow must fail");
+        assert_eq!(
+            error,
+            "The Notes attachment decoded pixel count is too large."
+        );
     }
 
     #[test]
