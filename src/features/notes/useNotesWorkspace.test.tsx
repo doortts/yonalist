@@ -20,6 +20,7 @@ import {
   type NotesWorkspaceActions,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 
@@ -79,6 +80,15 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function mockAttachmentUi(
+  openImageFiles = vi.fn().mockResolvedValue(null)
+): NotesAttachmentUiBoundary {
+  return {
+    openImageFiles,
+    subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+  };
 }
 
 function strictMode({ children }: PropsWithChildren) {
@@ -219,7 +229,6 @@ describe("useNotesWorkspace", () => {
         mimeType: "image/webp"
       })
     ];
-    const openImageFile = vi.fn();
     const openImageFiles = vi
       .fn()
       .mockResolvedValue(["/incoming/one.png", "/incoming/two.webp"]);
@@ -248,11 +257,7 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
+        attachmentUi: mockAttachmentUi(openImageFiles)
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -260,7 +265,6 @@ describe("useNotesWorkspace", () => {
     act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     await act(async () => result.current.actions.uploadImage!(root.id));
 
-    expect(openImageFile).not.toHaveBeenCalled();
     expect(openImageFiles).toHaveBeenCalledOnce();
     expect(importAttachmentPaths).toHaveBeenCalledWith(
       "/vault",
@@ -320,6 +324,51 @@ describe("useNotesWorkspace", () => {
     );
     expect(importAttachmentPaths).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["unsupported-only", ["/incoming/vector.svg"]],
+    ["mixed", ["/incoming/photo.png", "/incoming/vector.svg"]]
+  ] as const)(
+    "keeps an atomic %s native path failure to one repository call and one UI error",
+    async (_name, paths) => {
+      const root = node({ id: "root", isCollapsed: true });
+      createNoteIdMock.mockImplementation(
+        () => `drop-${createNoteIdMock.mock.calls.length}`
+      );
+      const importAttachmentPaths = vi
+        .fn()
+        .mockRejectedValue(new Error("vector.svg is unsupported"));
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(workspace([root])),
+        importAttachmentPaths
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      );
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
+      const input = document.createElement("textarea");
+      input.value = "abcdef";
+      document.body.append(input);
+      input.focus();
+      input.setSelectionRange(2, 5);
+
+      await act(async () =>
+        result.current.actions.importDroppedImagePaths!(root.id, paths)
+      );
+
+      expect(importAttachmentPaths).toHaveBeenCalledTimes(1);
+      expect(result.current.attachmentUploadErrorsByNodeId).toEqual({
+        [root.id]: "Image upload failed: vector.svg is unsupported"
+      });
+      expect(result.current.state.attachmentsByNodeId[root.id] ?? []).toEqual([]);
+      expect(result.current.state.nodesById[root.id].isCollapsed).toBe(true);
+      expect(document.activeElement).toBe(input);
+      expect(input.selectionStart).toBe(2);
+      expect(input.selectionEnd).toBe(5);
+      input.remove();
+    }
+  );
 
   it("imports clipboard blobs in order through one byte batch call", async () => {
     const ids = [
@@ -576,11 +625,7 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile: vi.fn(),
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
+        attachmentUi: mockAttachmentUi(openImageFiles)
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -659,14 +704,11 @@ describe("useNotesWorkspace", () => {
         useNotesWorkspace({
           vaultRoot: "/vault",
           repository: store,
-          attachmentUi: {
-            openImageFile: vi.fn(),
-            openImageFiles:
-              source === "picker"
-                ? vi.fn().mockRejectedValue(new Error("picker failed"))
-                : vi.fn().mockResolvedValue(null),
-            pathForDroppedFile: vi.fn()
-          }
+          attachmentUi: mockAttachmentUi(
+            source === "picker"
+              ? vi.fn().mockRejectedValue(new Error("picker failed"))
+              : vi.fn().mockResolvedValue(null)
+          )
         })
       );
       await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -714,9 +756,8 @@ describe("useNotesWorkspace", () => {
     });
     createNoteIdMock.mockReturnValue(imported.id);
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
-      pathForDroppedFile: vi.fn()
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue({
@@ -748,7 +789,6 @@ describe("useNotesWorkspace", () => {
     act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
     await act(async () => result.current.actions.uploadImage!(root.id));
 
-    expect(attachmentUi.openImageFile).not.toHaveBeenCalled();
     expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce();
     expect(store.importAttachmentPaths).toHaveBeenCalledWith(
       "/vault",
@@ -799,13 +839,11 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile: vi.fn().mockReturnValue(picker.promise),
-          openImageFiles: vi.fn().mockReturnValue(
+        attachmentUi: mockAttachmentUi(
+          vi.fn().mockReturnValue(
             picker.promise.then((path) => (path === null ? null : [path]))
-          ),
-          pathForDroppedFile: vi.fn()
-        }
+          )
+        )
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -823,7 +861,7 @@ describe("useNotesWorkspace", () => {
     );
   });
 
-  it("retries the failed path when an earlier same-node upload succeeds", async () => {
+  it("serializes same-node batches before retrying the failed next path", async () => {
     const root = node({ id: "root" });
     let idCounter = 0;
     createNoteIdMock.mockImplementation(
@@ -832,11 +870,6 @@ describe("useNotesWorkspace", () => {
     );
     const firstImport = deferred<NotesMutationResult>();
     const secondImport = deferred<NotesMutationResult>();
-    const openImageFile = vi
-      .fn()
-      .mockResolvedValueOnce("/incoming/first.png")
-      .mockResolvedValueOnce("/incoming/second.png")
-      .mockResolvedValue(null);
     const openImageFiles = vi
       .fn()
       .mockResolvedValueOnce(["/incoming/first.png"])
@@ -852,16 +885,15 @@ describe("useNotesWorkspace", () => {
         canUndo: true,
         canRedo: false
       }));
-    const store = repository({ importAttachmentPaths });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([root])),
+      importAttachmentPaths
+    });
     const { result } = renderHook(() =>
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
+        attachmentUi: mockAttachmentUi(openImageFiles)
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -870,6 +902,8 @@ describe("useNotesWorkspace", () => {
     const first = result.current.actions.uploadImage!(root.id);
     const second = result.current.actions.uploadImage!(root.id);
     await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(1));
+    await act(async () => Promise.resolve());
+    expect(importAttachmentPaths).toHaveBeenCalledTimes(1);
     firstImport.resolve({
       workspace: { nodes: [root], attachmentsByNodeId: {} },
       historyEntryId: null,
@@ -877,6 +911,13 @@ describe("useNotesWorkspace", () => {
       canRedo: false
     });
     await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(2));
+    expect(importAttachmentPaths.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({ sourcePath: "/incoming/second.png" })
+        ]
+      })
+    );
     secondImport.reject(new Error("second failed"));
     await act(async () => Promise.all([first, second]));
 
@@ -887,7 +928,6 @@ describe("useNotesWorkspace", () => {
       result.current.actions.retryImageUpload!(root.id, visibleAttemptId)
     );
 
-    expect(openImageFile).not.toHaveBeenCalled();
     expect(importAttachmentPaths).toHaveBeenCalledTimes(3);
     expect(importAttachmentPaths.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({
@@ -901,8 +941,12 @@ describe("useNotesWorkspace", () => {
     );
   });
 
-  it("keeps an earlier failed same-node upload retryable after a later success", async () => {
-    const root = node({ id: "root" });
+  it("starts and applies exactly the next batch after the first settles", async () => {
+    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
+    const secondAttachment = attachment({
+      id: "8f257d31-d255-4fc8-89dc-4e3b30f24a6e",
+      nodeId: root.id
+    });
     let idCounter = 0;
     createNoteIdMock.mockImplementation(
       () =>
@@ -910,11 +954,6 @@ describe("useNotesWorkspace", () => {
     );
     const firstImport = deferred<NotesMutationResult>();
     const secondImport = deferred<NotesMutationResult>();
-    const openImageFile = vi
-      .fn()
-      .mockResolvedValueOnce("/incoming/first.png")
-      .mockResolvedValueOnce("/incoming/second.png")
-      .mockResolvedValue(null);
     const openImageFiles = vi
       .fn()
       .mockResolvedValueOnce(["/incoming/first.png"])
@@ -930,16 +969,15 @@ describe("useNotesWorkspace", () => {
         canUndo: true,
         canRedo: false
       }));
-    const store = repository({ importAttachmentPaths });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([root])),
+      importAttachmentPaths
+    });
     const { result } = renderHook(() =>
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
+        attachmentUi: mockAttachmentUi(openImageFiles)
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -948,15 +986,33 @@ describe("useNotesWorkspace", () => {
     const first = result.current.actions.uploadImage!(root.id);
     const second = result.current.actions.uploadImage!(root.id);
     await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(1));
+    await act(async () => Promise.resolve());
+    expect(importAttachmentPaths).toHaveBeenCalledTimes(1);
     firstImport.reject(new Error("first failed"));
     await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledTimes(2));
+    expect(importAttachmentPaths.mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({ sourcePath: "/incoming/second.png" })
+        ]
+      })
+    );
     secondImport.resolve({
-      workspace: { nodes: [root], attachmentsByNodeId: {} },
-      historyEntryId: null,
+      workspace: {
+        nodes: [root],
+        attachmentsByNodeId: { [root.id]: [secondAttachment] }
+      },
+      historyEntryId:
+        importAttachmentPaths.mock.calls[1]?.[2]?.entryId ?? null,
       canUndo: true,
       canRedo: false
     });
     await act(async () => Promise.all([first, second]));
+    await waitFor(() =>
+      expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([
+        secondAttachment
+      ])
+    );
 
     const visibleAttemptId =
       result.current.attachmentUploadRetryAttemptIdsByNodeId?.[root.id];
@@ -965,7 +1021,6 @@ describe("useNotesWorkspace", () => {
       result.current.actions.retryImageUpload!(root.id, visibleAttemptId)
     );
 
-    expect(openImageFile).not.toHaveBeenCalled();
     expect(importAttachmentPaths).toHaveBeenCalledTimes(3);
     expect(importAttachmentPaths.mock.calls[2]?.[1]).toEqual(
       expect.objectContaining({
@@ -979,116 +1034,7 @@ describe("useNotesWorkspace", () => {
     );
   });
 
-  it("imports one dropped local image through the same validated path", async () => {
-    const root = node({ id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306" });
-    const imported = attachment({
-      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
-      nodeId: root.id
-    });
-    createNoteIdMock.mockReturnValue(imported.id);
-    const droppedFile = new File([new Uint8Array([1])], "diagram.webp", {
-      type: "image/webp"
-    });
-    const attachmentUi = {
-      openImageFile: vi.fn(),
-      openImageFiles: vi.fn().mockResolvedValue(null),
-      pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
-    };
-    const store = repository({
-      loadWorkspace: vi.fn().mockResolvedValue({
-        nodes: [root],
-        attachmentsByNodeId: {}
-      }),
-      importAttachmentPaths: vi.fn().mockImplementation(
-        async (_vaultRoot, _input, context) => ({
-          workspace: {
-            nodes: [root],
-            attachmentsByNodeId: { [root.id]: [imported] }
-          },
-          historyEntryId: context?.entryId ?? null,
-          canUndo: true,
-          canRedo: false
-        })
-      )
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/vault",
-        repository: store,
-        attachmentUi
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-
-    expect(result.current.actions.importDroppedImages).toBeTypeOf("function");
-    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
-    await act(async () =>
-      result.current.actions.importDroppedImages!(root.id, [droppedFile])
-    );
-
-    expect(attachmentUi.pathForDroppedFile).toHaveBeenCalledWith(droppedFile);
-    expect(store.importAttachmentPaths).toHaveBeenCalledWith(
-      "/vault",
-      {
-        nodeId: root.id,
-        attachments: [
-          { id: imported.id, sourcePath: "/incoming/diagram.webp" }
-        ],
-        initialMaxDisplayWidth: 480
-      },
-      historyContext("attachment-import")
-    );
-    expect(result.current.state.attachmentsByNodeId[root.id]).toEqual([
-      imported
-    ]);
-  });
-
-  it.each([
-    {
-      name: "an unsupported file",
-      files: [new File(["x"], "vector.svg", { type: "image/svg+xml" })],
-      message: "Choose a PNG, JPEG, WebP, or GIF image."
-    },
-    {
-      name: "a remote file without a local path",
-      files: [new File(["x"], "remote.png", { type: "image/png" })],
-      message: "Only local image files can be added."
-    }
-  ])("rejects $name before import", async ({ files, message }) => {
-    const pathForDroppedFile = vi.fn().mockReturnValue(null);
-    const openImageFile = vi.fn();
-    const store = repository();
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/vault",
-        repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles: vi.fn().mockResolvedValue(null),
-          pathForDroppedFile
-        }
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-
-    await act(async () =>
-      result.current.actions.importDroppedImages!("root", files)
-    );
-
-    expect(result.current.attachmentUploadErrorsByNodeId?.root).toBe(message);
-    expect(
-      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
-    ).toBeUndefined();
-    expect(store.importAttachmentPaths).not.toHaveBeenCalled();
-
-    await act(async () =>
-      result.current.actions.retryImageUpload!("root", "stale-attempt")
-    );
-    expect(openImageFile).not.toHaveBeenCalled();
-  });
-
   it("does not expose a stale retry target for picker failures", async () => {
-    const openImageFile = vi.fn().mockRejectedValue(new Error("dialog failed"));
     const openImageFiles = vi
       .fn()
       .mockRejectedValue(new Error("dialog failed"));
@@ -1097,11 +1043,7 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({
         vaultRoot: "/vault",
         repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
+        attachmentUi: mockAttachmentUi(openImageFiles)
       })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
@@ -1114,84 +1056,6 @@ describe("useNotesWorkspace", () => {
     expect(
       result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
     ).toBeUndefined();
-    expect(store.importAttachmentPaths).not.toHaveBeenCalled();
-  });
-
-  it("preserves a pending import retry identity across a newer validation error", async () => {
-    const pendingImport = deferred<NotesMutationResult>();
-    let idCounter = 0;
-    createNoteIdMock.mockImplementation(
-      () =>
-        `20000000-0000-4000-8000-${String(++idCounter).padStart(12, "0")}`
-    );
-    const openImageFile = vi.fn().mockResolvedValue("/incoming/pending.png");
-    const openImageFiles = vi
-      .fn()
-      .mockResolvedValue(["/incoming/pending.png"]);
-    const importAttachmentPaths = vi
-      .fn()
-      .mockReturnValueOnce(pendingImport.promise)
-      .mockResolvedValue(workspace([node({ id: "root" })]));
-    const store = repository({ importAttachmentPaths });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({
-        vaultRoot: "/vault",
-        repository: store,
-        attachmentUi: {
-          openImageFile,
-          openImageFiles,
-          pathForDroppedFile: vi.fn()
-        }
-      })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-
-    act(() => result.current.actions.setImageImportMaxDisplayWidth(480));
-    const upload = result.current.actions.uploadImage!("root");
-    await waitFor(() => expect(importAttachmentPaths).toHaveBeenCalledOnce());
-    await act(async () =>
-      result.current.actions.importDroppedImages!("root", [
-        new File(["x"], "vector.svg", { type: "image/svg+xml" })
-      ])
-    );
-    expect(result.current.attachmentUploadErrorsByNodeId?.root).toContain(
-      "PNG, JPEG, WebP, or GIF"
-    );
-    expect(
-      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root
-    ).toBeUndefined();
-
-    pendingImport.reject(new Error("pending failed"));
-    await act(async () => upload);
-    const visibleAttemptId =
-      result.current.attachmentUploadRetryAttemptIdsByNodeId?.root;
-    expect(result.current.attachmentUploadErrorsByNodeId?.root).toContain(
-      "pending failed"
-    );
-    expect(visibleAttemptId).toBeDefined();
-
-    await act(async () =>
-      result.current.actions.retryImageUpload!("root", visibleAttemptId)
-    );
-    expect(importAttachmentPaths.mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({
-        attachments: [
-          expect.objectContaining({ sourcePath: "/incoming/pending.png" })
-        ]
-      })
-    );
-  });
-
-  it("ignores a non-file drop without creating an error or import", async () => {
-    const store = repository();
-    const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-
-    await act(async () => result.current.actions.importDroppedImages!("root", []));
-
-    expect(result.current.attachmentUploadErrorsByNodeId?.root).toBeUndefined();
     expect(store.importAttachmentPaths).not.toHaveBeenCalled();
   });
 
@@ -1345,9 +1209,8 @@ describe("useNotesWorkspace", () => {
       attachmentsByNodeId: { [root.id]: [imported] }
     };
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
-      pathForDroppedFile: vi.fn()
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
@@ -1392,10 +1255,6 @@ describe("useNotesWorkspace", () => {
 
   it("discards a picker result that resolves after switching vaults", async () => {
     const oldSelection = deferred<string | null>();
-    const openImageFile = vi
-      .fn()
-      .mockReturnValueOnce(oldSelection.promise)
-      .mockResolvedValueOnce("/new/fresh.png");
     const openImageFiles = vi
       .fn()
       .mockReturnValueOnce(
@@ -1414,11 +1273,7 @@ describe("useNotesWorkspace", () => {
         useNotesWorkspace({
           vaultRoot,
           repository: store,
-          attachmentUi: {
-            openImageFile,
-            openImageFiles,
-            pathForDroppedFile: vi.fn()
-          }
+          attachmentUi: mockAttachmentUi(openImageFiles)
         }),
       { initialProps: { vaultRoot: "/old" } }
     );
@@ -1438,7 +1293,6 @@ describe("useNotesWorkspace", () => {
 
     await act(async () => result.current.actions.retryImageUpload!("root"));
 
-    expect(openImageFile).not.toHaveBeenCalled();
     expect(openImageFiles).toHaveBeenCalledTimes(2);
     expect(store.importAttachmentPaths).toHaveBeenCalledWith(
       "/new",

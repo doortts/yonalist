@@ -51,7 +51,6 @@ import {
 } from "./notesWorkspaceReducer";
 import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
-  isSupportedImageFile,
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
 } from "./notesAttachmentController";
@@ -121,7 +120,6 @@ export interface NotesWorkspaceActions {
     nodeId: NoteId,
     items: readonly PendingNoteAttachmentByteItem[]
   ): Promise<void>;
-  importDroppedImages?(nodeId: NoteId, files: readonly File[]): Promise<void>;
   retryImageUpload?(nodeId: NoteId, attemptId?: string): Promise<void>;
   loadAttachmentBytes?(attachmentId: string): Promise<Uint8Array>;
   resizeImage?(attachmentId: string, displayWidth: number): Promise<void>;
@@ -4826,32 +4824,6 @@ export function useNotesWorkspace({
     [discardHistoryEntry, executeAttachmentUploadAttempt, uploadImage]
   );
 
-  const importDroppedImages = useCallback(
-    async (nodeId: NoteId, files: readonly File[]): Promise<void> => {
-      if (files.length === 0) return;
-      if (files.some((file) => !isSupportedImageFile(file))) {
-        setAttachmentUploadError(
-          nodeId,
-          "Choose a PNG, JPEG, WebP, or GIF image."
-        );
-        return;
-      }
-      const sourcePaths = files.map((file) =>
-        attachmentUi.pathForDroppedFile(file)
-      );
-      if (sourcePaths.some((sourcePath) => sourcePath === null)) {
-        setAttachmentUploadError(nodeId, "Only local image files can be added.");
-        return;
-      }
-      await importImagePaths(
-        nodeId,
-        sourcePaths as string[],
-        imageImportMaxDisplayWidthRef.current ?? 0
-      );
-    },
-    [attachmentUi, importImagePaths, setAttachmentUploadError]
-  );
-
   const loadAttachmentBytes = useCallback(
     async (attachmentId: string): Promise<Uint8Array> => {
       if (!repository.readAttachmentBytes) {
@@ -4988,7 +4960,6 @@ export function useNotesWorkspace({
       uploadImage: gate(uploadImage),
       importDroppedImagePaths: gate(importDroppedImagePaths),
       importClipboardImages: gate(importClipboardImages),
-      importDroppedImages: gate(importDroppedImages),
       retryImageUpload: gate(retryImageUpload),
       setImageImportMaxDisplayWidth,
       loadAttachmentBytes,
@@ -5031,7 +5002,6 @@ export function useNotesWorkspace({
     uploadImage,
     importDroppedImagePaths,
     importClipboardImages,
-    importDroppedImages,
     retryImageUpload,
     setImageImportMaxDisplayWidth,
     loadAttachmentBytes,

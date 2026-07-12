@@ -24,6 +24,7 @@ afterEach(() => {
   scaleFactor.mockReset();
   onDragDropEvent.mockReset();
   useNotesWorkspace.mockReset();
+  Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
 });
 
 describe("notes attachment UI boundary", () => {
@@ -57,15 +58,11 @@ describe("notes attachment UI boundary", () => {
     await expect(nativeNotesAttachmentUi.openImageFiles()).resolves.toBeNull();
   });
 
-  it("keeps the single-file picker as a first-result delegate", async () => {
-    open.mockResolvedValueOnce(["/incoming/one.png", "/incoming/two.webp"]);
-
-    await expect(nativeNotesAttachmentUi.openImageFile()).resolves.toBe(
-      "/incoming/one.png"
-    );
-  });
-
   it("normalizes native drop positions with the current scale factor", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {}
+    });
     const unlisten = vi.fn();
     const listener = vi.fn();
     let nativeDropHandler:
@@ -80,7 +77,7 @@ describe("notes attachment UI boundary", () => {
     const dropToLogical = vi.fn(() => ({ x: 240, y: 160 }));
 
     await expect(
-      nativeNotesAttachmentUi.subscribeToImageDrop?.(listener)
+      nativeNotesAttachmentUi.subscribeToImageDrop(listener)
     ).resolves.toBe(unlisten);
     await nativeDropHandler?.({
       payload: {
@@ -112,6 +109,15 @@ describe("notes attachment UI boundary", () => {
     });
   });
 
+  it("provides an async no-op unlisten in the browser fallback", async () => {
+    const listener = vi.fn();
+
+    const unlisten = await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    await expect(unlisten()).resolves.toBeUndefined();
+    expect(onDragDropEvent).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it("exposes the native boundary through the attachment UI context by default", async () => {
     const [{ renderHook }, { useNotesAttachmentUi }] = await Promise.all([
       import("@testing-library/react"),
@@ -132,9 +138,8 @@ describe("notes attachment UI boundary", () => {
         import("./NotesAttachmentUiContext")
       ]);
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue(null),
       openImageFiles: vi.fn().mockResolvedValue(null),
-      pathForDroppedFile: vi.fn().mockReturnValue(null)
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     let providedAttachmentUi: unknown;
     useNotesWorkspace.mockReturnValue({});
@@ -158,22 +163,15 @@ describe("notes attachment UI boundary", () => {
     );
   });
 
-  it("validates supported image paths, MIME types, and local dropped paths", () => {
+  it("validates supported image paths and MIME types without reading File.path", () => {
     const image = new File(["x"], "photo.jpeg", { type: "image/jpeg" });
-    Object.defineProperty(image, "path", { value: "/incoming/photo.jpeg" });
     const spoofed = new File(["x"], "photo.svg", { type: "image/png" });
 
     expect(isSupportedImagePath("/incoming/photo.WEBP")).toBe(true);
     expect(isSupportedImagePath("https://example.com/photo.png")).toBe(false);
     expect(isSupportedImageFile(image)).toBe(true);
     expect(isSupportedImageFile(spoofed)).toBe(false);
-    expect(nativeNotesAttachmentUi.pathForDroppedFile(image)).toBe(
-      "/incoming/photo.jpeg"
-    );
-    expect(
-      nativeNotesAttachmentUi.pathForDroppedFile(
-        new File(["x"], "photo.png", { type: "image/png" })
-      )
-    ).toBeNull();
+    expect("openImageFile" in nativeNotesAttachmentUi).toBe(false);
+    expect("pathForDroppedFile" in nativeNotesAttachmentUi).toBe(false);
   });
 });

@@ -34,6 +34,9 @@ import type { NoteId } from "../../domain/notes";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
+import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
+import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
+import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import {
@@ -185,6 +188,7 @@ function useOutlineIndentPx(): number {
 
 export function NotesOutlinePane() {
   const workspace = useNotesWorkspaceContext();
+  const attachmentUi = useNotesAttachmentUi();
   const {
     actions,
     deletingNotesData,
@@ -197,7 +201,13 @@ export function NotesOutlinePane() {
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
+  const [imageDropTargetId, setImageDropTargetId] =
+    useState<NoteId | null>(null);
+  const [imageDropError, setImageDropError] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const imageDropPathsRef = useRef<readonly string[]>([]);
+  const imageDropAvailableRef = useRef(false);
+  const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
   const outlineIndentPx = useOutlineIndentPx();
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
@@ -207,6 +217,13 @@ export function NotesOutlinePane() {
       : trashView
         ? "trash"
         : "standard";
+  const imageDropAvailable =
+    !deletingNotesData &&
+    !lifecycleReadOnly &&
+    state.status !== "loading" &&
+    actions.importDroppedImagePaths !== undefined;
+  imageDropAvailableRef.current = imageDropAvailable;
+  importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -217,6 +234,90 @@ export function NotesOutlinePane() {
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void | Promise<void>) | undefined;
+    const clearPreview = () => {
+      imageDropPathsRef.current = [];
+      setImageDropTargetId(null);
+    };
+    const targetFromEvent = (
+      event: Extract<NotesNativeImageDropEvent, { position: unknown }>
+    ) => {
+      const root = contentRef.current;
+      return root ? attachmentTargetFromPoint(root, event.position) : null;
+    };
+    const reportDropError = (cause: unknown) => {
+      if (disposed) return;
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setImageDropError(`Image drop failed: ${detail}`);
+    };
+    const listener = (event: NotesNativeImageDropEvent) => {
+      if (disposed) return;
+      if (!imageDropAvailableRef.current) {
+        clearPreview();
+        return;
+      }
+      if (event.type === "leave") {
+        clearPreview();
+        return;
+      }
+      if (event.type === "enter") {
+        imageDropPathsRef.current = event.paths;
+        setImageDropError(null);
+        setImageDropTargetId(
+          event.paths.length > 0 ? targetFromEvent(event) : null
+        );
+        return;
+      }
+      if (event.type === "over") {
+        setImageDropTargetId(
+          imageDropPathsRef.current.length > 0 ? targetFromEvent(event) : null
+        );
+        return;
+      }
+
+      const targetId =
+        event.paths.length > 0 ? targetFromEvent(event) : null;
+      clearPreview();
+      setImageDropError(null);
+      const importDroppedImagePaths = importDroppedImagePathsRef.current;
+      if (!targetId || !importDroppedImagePaths) return;
+      try {
+        void importDroppedImagePaths(targetId, event.paths).catch(reportDropError);
+      } catch (cause) {
+        reportDropError(cause);
+      }
+    };
+
+    void attachmentUi.subscribeToImageDrop(listener).then(
+      (nextUnlisten) => {
+        if (disposed) {
+          void nextUnlisten();
+          return;
+        }
+        unlisten = nextUnlisten;
+      },
+      (cause) => {
+        if (disposed) return;
+        clearPreview();
+        reportDropError(cause);
+      }
+    );
+
+    return () => {
+      disposed = true;
+      imageDropPathsRef.current = [];
+      if (unlisten) void unlisten();
+    };
+  }, [attachmentUi]);
+
+  useEffect(() => {
+    if (imageDropAvailable) return;
+    imageDropPathsRef.current = [];
+    setImageDropTargetId(null);
+  }, [imageDropAvailable]);
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -480,12 +581,23 @@ export function NotesOutlinePane() {
               {state.error}
             </p>
           )}
+          {imageDropError && (
+            <p
+              className="notes-inline-error"
+              role="alert"
+              aria-label="Image drop failed"
+            >
+              {imageDropError}
+            </p>
+          )}
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesPageHeader
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
               disabled={deletingNotesData}
               mode={lifecycleMode}
+              imageDropActive={imageDropTargetId === state.zoomRootId}
+              showDropPlaceholder={imageDropTargetId === state.zoomRootId}
             />
           )}
           <DndContext
@@ -541,6 +653,8 @@ export function NotesOutlinePane() {
                       dragDisabled={
                         dragUnavailable || row.id === state.zoomRootId
                       }
+                      imageDropActive={imageDropTargetId === row.id}
+                      showDropPlaceholder={imageDropTargetId === row.id}
                     />
                   </li>
                 ))}

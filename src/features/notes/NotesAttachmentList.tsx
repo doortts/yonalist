@@ -5,6 +5,7 @@ import {
   useRef,
   useState
 } from "react";
+import { ImagePlus } from "lucide-react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   MAX_NOTE_ATTACHMENTS_PER_NODE,
@@ -21,6 +22,7 @@ interface NotesAttachmentListProps {
   readonly uploadRetryAttemptId?: string;
   readonly className?: string;
   readonly readOnly?: boolean;
+  readonly showDropPlaceholder?: boolean;
 }
 
 const maxResidentImages = 8;
@@ -164,7 +166,8 @@ export function NotesAttachmentList({
   uploadError,
   uploadRetryAttemptId,
   className,
-  readOnly = false
+  readOnly = false,
+  showDropPlaceholder = false
 }: NotesAttachmentListProps) {
   const { actions } = useNotesWorkspaceContext();
   const [pendingRemoval, setPendingRemoval] =
@@ -206,13 +209,13 @@ export function NotesAttachmentList({
     });
   }, [attachments]);
 
-  if (attachments.length === 0 && !uploadError) {
+  if (attachments.length === 0 && !uploadError && !showDropPlaceholder) {
     return null;
   }
 
   return (
     <>
-      {boundedAttachments.length > 0 && (
+      {(boundedAttachments.length > 0 || showDropPlaceholder) && (
         <div className={classes}>
           {boundedAttachments.map((attachment) => (
             <DeferredNotesImage
@@ -227,6 +230,15 @@ export function NotesAttachmentList({
               }
             />
           ))}
+          {showDropPlaceholder && (
+            <div
+              className="notes-image-drop-placeholder"
+              data-testid="notes-image-drop-placeholder"
+              aria-hidden="true"
+            >
+              <ImagePlus size={20} aria-hidden="true" />
+            </div>
+          )}
         </div>
       )}
       {uploadError && (

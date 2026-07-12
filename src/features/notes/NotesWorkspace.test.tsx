@@ -38,7 +38,7 @@ const notesStoreMock = vi.hoisted(() => ({
   restoreNode: vi.fn(),
   archiveNode: vi.fn(),
   unarchiveNode: vi.fn(),
-  importAttachment: vi.fn(),
+  importAttachmentPaths: vi.fn(),
   readAttachmentBytes: vi.fn(),
   resizeAttachment: vi.fn(),
   removeAttachment: vi.fn(),
@@ -53,6 +53,7 @@ const notesStoreMock = vi.hoisted(() => ({
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 
 import { NotesFeatureProvider } from "./NotesFeature";
+import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 
@@ -282,7 +283,7 @@ function configureRepository(
   notesStoreMock.unarchiveNode.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
-  notesStoreMock.importAttachment.mockImplementation(async () =>
+  notesStoreMock.importAttachmentPaths.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
   notesStoreMock.readAttachmentBytes.mockRejectedValue(
@@ -310,13 +311,7 @@ function configureRepository(
   notesStoreMock.deleteDatabase.mockResolvedValue(undefined);
 }
 
-function renderNotesWorkspace(
-  attachmentUi?: {
-    openImageFile(): Promise<string | null>;
-    openImageFiles(): Promise<readonly string[] | null>;
-    pathForDroppedFile(file: File): string | null;
-  }
-) {
+function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {
   return render(
     <StrictMode>
       <VaultRootContext.Provider value="/vault">
@@ -602,14 +597,13 @@ describe("Notes workspace", () => {
       imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
     );
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
-      pathForDroppedFile: vi.fn()
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     mockNotesContentWidth(700, 480);
-    notesStoreMock.importAttachment.mockImplementation(
+    notesStoreMock.importAttachmentPaths.mockImplementation(
       async (_vaultRoot, input) => {
-        expect(input.id).toBe(imported.id);
+        expect(input.attachments[0]?.id).toBe(imported.id);
         confirmedAttachmentsByNodeId = { [root.id]: [imported] };
         return workspace(confirmedNodes);
       }
@@ -640,14 +634,20 @@ describe("Notes workspace", () => {
       within(menu).getByRole("menuitem", { name: "Upload image" })
     );
 
-    await waitFor(() => expect(attachmentUi.openImageFile).toHaveBeenCalledOnce());
-    await waitFor(() => expect(notesStoreMock.importAttachment).toHaveBeenCalledOnce());
-    expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
-      id: imported.id,
-      nodeId: root.id,
-      sourcePath: "/incoming/diagram.png",
-      initialMaxDisplayWidth: 480
-    });
+    await waitFor(() => expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledOnce()
+    );
+    expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledWith(
+      "/vault",
+      {
+        nodeId: root.id,
+        attachments: [
+          { id: imported.id, sourcePath: "/incoming/diagram.png" }
+        ],
+        initialMaxDisplayWidth: 480
+      }
+    );
     expect(
       await screen.findByRole("group", { name: "Image: diagram.png" })
     ).toBeVisible();
@@ -657,9 +657,8 @@ describe("Notes workspace", () => {
     const user = userEvent.setup();
     configureRepository([node({ id: "project", title: "Project" })]);
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue(null),
       openImageFiles: vi.fn().mockResolvedValue(null),
-      pathForDroppedFile: vi.fn()
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     renderNotesWorkspace(attachmentUi);
 
@@ -668,8 +667,8 @@ describe("Notes workspace", () => {
       within(menu).getByRole("menuitem", { name: "Upload image" })
     );
 
-    await waitFor(() => expect(attachmentUi.openImageFile).toHaveBeenCalledOnce());
-    expect(notesStoreMock.importAttachment).not.toHaveBeenCalled();
+    await waitFor(() => expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce());
+    expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(screen.queryByText(/image upload failed/i)).toBeNull();
   });
 
@@ -689,12 +688,11 @@ describe("Notes workspace", () => {
       imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
     );
     const attachmentUi = {
-      openImageFile: vi.fn().mockResolvedValue("/incoming/diagram.png"),
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
-      pathForDroppedFile: vi.fn()
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     mockNotesContentWidth(480);
-    notesStoreMock.importAttachment
+    notesStoreMock.importAttachmentPaths
       .mockRejectedValueOnce(new Error("disk full"))
       .mockImplementation(async () => {
         confirmedAttachmentsByNodeId = { [root.id]: [imported] };
@@ -739,53 +737,11 @@ describe("Notes workspace", () => {
     expect(
       await screen.findByRole("group", { name: "Image: diagram.png" })
     ).toBeVisible();
-    expect(attachmentUi.openImageFile).toHaveBeenCalledOnce();
-    expect(notesStoreMock.importAttachment).toHaveBeenCalledTimes(2);
+    expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce();
+    expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledTimes(2);
     expect(
       screen.queryByRole("alert", { name: "Image upload failed" })
     ).toBeNull();
-  });
-
-  it("imports a single local image dropped onto a writable row", async () => {
-    const root = node({
-      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
-      title: "Project"
-    });
-    const attachmentId = "1c17ba74-a617-45e7-9e21-74068b63befe";
-    const dropped = new File([new Uint8Array([1])], "diagram.webp", {
-      type: "image/webp"
-    });
-    configureRepository([root]);
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(attachmentId);
-    const attachmentUi = {
-      openImageFile: vi.fn(),
-      openImageFiles: vi.fn().mockResolvedValue(null),
-      pathForDroppedFile: vi.fn().mockReturnValue("/incoming/diagram.webp")
-    };
-    mockNotesContentWidth(480);
-    renderNotesWorkspace(attachmentUi);
-    await findTitleInput("Project");
-    const row = document.querySelector<HTMLElement>(
-      `[data-outline-id="${root.id}"]`
-    );
-    expect(row).not.toBeNull();
-
-    fireEvent.dragOver(row!, {
-      dataTransfer: { files: [dropped], types: ["Files"] }
-    });
-    fireEvent.drop(row!, {
-      dataTransfer: { files: [dropped], types: ["Files"] }
-    });
-
-    await waitFor(() =>
-      expect(attachmentUi.pathForDroppedFile).toHaveBeenCalledWith(dropped)
-    );
-    expect(notesStoreMock.importAttachment).toHaveBeenCalledWith("/vault", {
-      id: attachmentId,
-      nodeId: root.id,
-      sourcePath: "/incoming/diagram.webp",
-      initialMaxDisplayWidth: 480
-    });
   });
 
   it("requires accessible confirmation before removing an image", async () => {
@@ -900,13 +856,8 @@ describe("Notes workspace", () => {
       const row = document.querySelector<HTMLElement>(
         `[data-outline-id="${root.id}"]`
       );
-      fireEvent.drop(row!, {
-        dataTransfer: {
-          files: [new File(["x"], "drop.png", { type: "image/png" })],
-          types: ["Files"]
-        }
-      });
-      expect(notesStoreMock.importAttachment).not.toHaveBeenCalled();
+      expect(row).not.toHaveAttribute("data-notes-attachment-target");
+      expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
       expect(notesStoreMock.resizeAttachment).not.toHaveBeenCalled();
       expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
     }

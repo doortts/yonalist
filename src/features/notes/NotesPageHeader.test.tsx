@@ -137,6 +137,7 @@ function workspaceValue(options: {
     zoomTo: resolved(),
     setImageImportMaxDisplayWidth: vi.fn(),
     uploadImage: resolved(),
+    importDroppedImagePaths: resolved(),
     retryImageUpload: resolved(),
     loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),
     resizeImage: resolved(),
@@ -269,6 +270,26 @@ describe("NotesPageHeader", () => {
         .getAllByRole("listitem")
         .map((item) => item.getAttribute("aria-level"))
     ).toEqual(["1", "2"]);
+  });
+
+  it("exposes an attachment target only for a writable page header", () => {
+    const view = render(zoomedOutline(workspaceValue()));
+    const header = screen
+      .getByRole("heading", { name: "Project", level: 1 })
+      .closest("header");
+    expect(header).toHaveAttribute("data-notes-attachment-target", "project");
+
+    view.rerender(
+      zoomedOutline(workspaceValue({ deletingNotesData: true }))
+    );
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 }).closest("header")
+    ).not.toHaveAttribute("data-notes-attachment-target");
+
+    view.rerender(zoomedOutline(workspaceValue({ libraryView: "archive" })));
+    expect(
+      screen.getByRole("heading", { name: "Project", level: 1 }).closest("header")
+    ).not.toHaveAttribute("data-notes-attachment-target");
   });
 
   it("renders page-root attachments and retry UI immediately below the header note", async () => {

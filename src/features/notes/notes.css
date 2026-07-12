@@ -656,6 +656,13 @@
   margin: 0 0 20px;
 }
 
+.notes-page-header[data-image-drop-active="true"],
+.notes-node[data-image-drop-active="true"] {
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
 .notes-page-title-row {
   display: grid;
   grid-template-columns: var(--notes-content-offset) minmax(0, 1fr);
@@ -1363,6 +1370,21 @@ button.notes-date-token:hover {
   width: calc(100% - var(--notes-content-offset));
   gap: 8px;
   margin: 12px 0 0 var(--notes-content-offset);
+}
+
+.notes-image-drop-placeholder {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  height: 72px;
+  overflow: hidden;
+  border: 1px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .notes-image-attachment-slot {

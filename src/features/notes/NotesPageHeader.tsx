@@ -29,6 +29,8 @@ interface NotesPageHeaderProps {
   nodeId: NoteId;
   disabled?: boolean;
   mode?: "standard" | "archive" | "trash";
+  imageDropActive?: boolean;
+  showDropPlaceholder?: boolean;
 }
 
 function pageLabel(title: string): string {
@@ -38,7 +40,9 @@ function pageLabel(title: string): string {
 export function NotesPageHeader({
   nodeId,
   disabled = false,
-  mode = "standard"
+  mode = "standard",
+  imageDropActive = false,
+  showDropPlaceholder = false
 }: NotesPageHeaderProps) {
   const {
     actions,
@@ -74,6 +78,11 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
+  const imageDropEnabled =
+    !disabled &&
+    !readOnly &&
+    state.status !== "loading" &&
+    actions.importDroppedImagePaths !== undefined;
   const titlePresentationLabel =
     readOnly || disabled ? "Page title" : undefined;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
@@ -231,6 +240,10 @@ export function NotesPageHeader({
         className="notes-page-header"
         data-completed={node.completedAt !== null ? "true" : undefined}
         data-selected={state.selectedId === nodeId ? "true" : undefined}
+        data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
+        data-image-drop-active={
+          imageDropEnabled && imageDropActive ? "true" : undefined
+        }
       >
         <div className="notes-page-title-row">
           <div className="notes-page-menu-slot">
@@ -491,6 +504,7 @@ export function NotesPageHeader({
           }
           className="notes-page-attachments"
           readOnly={readOnly || disabled}
+          showDropPlaceholder={imageDropEnabled && showDropPlaceholder}
         />
       </header>
       {datePicker.picker}

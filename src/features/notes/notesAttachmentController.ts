@@ -7,14 +7,10 @@ const supportedMimeTypes = new Set([
 ]);
 
 export interface NotesAttachmentUiBoundary {
-  /** Temporary compatibility seam removed in Task 6 after all callers switch. */
-  openImageFile(): Promise<string | null>;
-  /** Temporary browser-test seam removed with the old DOM drop path in Task 7. */
-  pathForDroppedFile(file: File): string | null;
   openImageFiles(): Promise<readonly string[] | null>;
-  subscribeToImageDrop?(
+  subscribeToImageDrop(
     listener: (event: NotesNativeImageDropEvent) => void
-  ): Promise<() => void>;
+  ): Promise<() => void | Promise<void>>;
 }
 
 export interface NotesLogicalPoint {
@@ -51,11 +47,6 @@ export function isSupportedImageFile(file: File): boolean {
 }
 
 export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
-  async openImageFile(): Promise<string | null> {
-    const selected = await this.openImageFiles();
-    return selected?.[0] ?? null;
-  },
-
   async openImageFiles(): Promise<readonly string[] | null> {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
@@ -74,7 +65,15 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
     return typeof selected === "string" ? [selected] : null;
   },
 
-  async subscribeToImageDrop(listener): Promise<() => void> {
+  async subscribeToImageDrop(
+    listener
+  ): Promise<() => void | Promise<void>> {
+    if (
+      typeof window === "undefined" ||
+      !("__TAURI_INTERNALS__" in window)
+    ) {
+      return async () => {};
+    }
     const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
       import("@tauri-apps/api/webview"),
       import("@tauri-apps/api/window")
@@ -97,10 +96,5 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
         position: { x, y }
       });
     });
-  },
-
-  pathForDroppedFile(file: File): string | null {
-    const path = (file as File & { path?: unknown }).path;
-    return typeof path === "string" && path.length > 0 ? path : null;
   }
 };

@@ -5,7 +5,6 @@ import {
 } from "lucide-react";
 import {
   type CSSProperties,
-  type DragEvent,
   type KeyboardEvent,
   useEffect,
   useLayoutEffect,
@@ -45,6 +44,8 @@ interface OutlineNodeRowProps {
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
   locallyExpanded?: boolean;
+  imageDropActive?: boolean;
+  showDropPlaceholder?: boolean;
 }
 
 function controlLabel(title: string): string {
@@ -60,7 +61,9 @@ export function OutlineNodeRow({
   dragDisabled,
   disabled = false,
   readOnlyMode,
-  locallyExpanded = false
+  locallyExpanded = false,
+  imageDropActive = false,
+  showDropPlaceholder = false
 }: OutlineNodeRowProps) {
   const {
     actions,
@@ -78,6 +81,11 @@ export function OutlineNodeRow({
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
   const readOnly = readOnlyMode !== undefined;
+  const imageDropEnabled =
+    !disabled &&
+    !readOnly &&
+    state.status !== "loading" &&
+    actions.importDroppedImagePaths !== undefined;
   const {
     attributes,
     isDragging,
@@ -429,23 +437,6 @@ export function OutlineNodeRow({
     }
   };
 
-  const handleImageDragOver = (event: DragEvent<HTMLDivElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.dataTransfer.dropEffect = "copy";
-  };
-
-  const handleImageDrop = (event: DragEvent<HTMLDivElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes("Files")) return;
-    event.preventDefault();
-    event.stopPropagation();
-    void actions.importDroppedImages?.(
-      nodeId,
-      Array.from(event.dataTransfer.files)
-    );
-  };
-
   return (
     <div
       ref={setNodeRef}
@@ -455,9 +446,11 @@ export function OutlineNodeRow({
       data-dragging={isDragging ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
+      data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
+      data-image-drop-active={
+        imageDropEnabled && imageDropActive ? "true" : undefined
+      }
       style={rowStyle}
-      onDragOver={handleImageDragOver}
-      onDrop={handleImageDrop}
     >
       {guides}
       <div className="notes-node-main">
@@ -737,6 +730,7 @@ export function OutlineNodeRow({
         uploadRetryAttemptId={attachmentUploadRetryAttemptId}
         className="notes-node-attachments"
         readOnly={disabled}
+        showDropPlaceholder={imageDropEnabled && showDropPlaceholder}
       />
       {datePicker.picker}
     </div>
