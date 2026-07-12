@@ -1,5 +1,6 @@
 import {
   act,
+  fireEvent,
   render,
   screen,
   waitFor,
@@ -8,7 +9,10 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteNode } from "../../domain/notes";
+import type {
+  NoteNode,
+  PendingNoteAttachmentByteItem
+} from "../../domain/notes";
 import { NotesAttachmentUiContext } from "./NotesAttachmentUiContext";
 import type {
   NotesAttachmentUiBoundary,
@@ -58,11 +62,23 @@ function workspaceValue(options: {
     nodeId: string,
     paths: readonly string[]
   ) => Promise<void>;
+  importClipboardImages?:
+    | ((
+        nodeId: string,
+        items: readonly PendingNoteAttachmentByteItem[]
+      ) => Promise<void>)
+    | undefined;
+  secondNoteText?: string;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
       node({ id: "first", title: "First", isCollapsed: true }),
-      node({ id: "second", sortKey: 2, title: "Second" }),
+      node({
+        id: "second",
+        sortKey: 2,
+        title: "Second",
+        note: options.secondNoteText ?? ""
+      }),
       node({ id: "child", parentId: "first", title: "Child" })
     ],
     attachmentsByNodeId: {}
@@ -104,7 +120,10 @@ function workspaceValue(options: {
     uploadImage: resolved(),
     importDroppedImagePaths:
       options.importDroppedImagePaths ?? vi.fn().mockResolvedValue(undefined),
-    importClipboardImages: resolved(),
+    importClipboardImages:
+      "importClipboardImages" in options
+        ? options.importClipboardImages
+        : resolved(),
     retryImageUpload: resolved(),
     loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),
     resizeImage: resolved(),
@@ -453,5 +472,180 @@ describe("native Notes image drop ingest", () => {
       ).toBeNull();
       blockedPane.unmount();
     }
+  });
+});
+
+type ClipboardEntry = {
+  kind: "file" | "string";
+  type: string;
+  getAsFile: () => File | null;
+};
+
+function pngFile(name: string): File {
+  return new File(["png-bytes"], name, { type: "image/png" });
+}
+
+function pasteEventInit(entries: readonly ClipboardEntry[]) {
+  const items = Object.assign(
+    entries.map((entry) => ({
+      kind: entry.kind,
+      type: entry.type,
+      getAsFile: entry.getAsFile,
+      getAsString: vi.fn(),
+      webkitGetAsEntry: vi.fn()
+    })),
+    { add: vi.fn(), clear: vi.fn(), remove: vi.fn() }
+  );
+  return { clipboardData: { items } };
+}
+
+function titleTextarea(id: string): HTMLTextAreaElement {
+  return document
+    .querySelector(`[data-outline-id="${id}"]`)!
+    .querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Edit node title"]'
+    )!;
+}
+
+function idleSubscribe() {
+  return vi.fn().mockResolvedValue(vi.fn());
+}
+
+describe("clipboard Notes image paste ingest", () => {
+  it("imports pasted image files on the title field and prevents the default paste", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
+    const file = pngFile("title-shot.png");
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        { kind: "file", type: "image/png", getAsFile: () => file }
+      ])
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importClipboardImages).toHaveBeenCalledOnce();
+    expect(importClipboardImages).toHaveBeenCalledWith("first", [
+      { blob: file, originalName: "title-shot.png", mimeType: "image/png" }
+    ]);
+  });
+
+  it("imports pasted image files on the note field and prevents the default paste", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    renderPane(
+      workspaceValue({ importClipboardImages, secondNoteText: "existing" }),
+      idleSubscribe()
+    );
+    const file = pngFile("note-shot.png");
+    const noteTextarea = document
+      .querySelector('[data-outline-id="second"]')!
+      .querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Supporting note: Second"]'
+      )!;
+
+    const notPrevented = fireEvent.paste(
+      noteTextarea,
+      pasteEventInit([
+        { kind: "file", type: "image/png", getAsFile: () => file }
+      ])
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importClipboardImages).toHaveBeenCalledOnce();
+    expect(importClipboardImages).toHaveBeenCalledWith("second", [
+      { blob: file, originalName: "note-shot.png", mimeType: "image/png" }
+    ]);
+  });
+
+  it("leaves a text-only paste to the browser without importing", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        { kind: "string", type: "text/plain", getAsFile: () => null }
+      ])
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the browser when clipboard extraction reports a hard error", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        { kind: "string", type: "image/png", getAsFile: () => null }
+      ])
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("recovers when reading a clipboard image throws", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    renderPane(workspaceValue({ importClipboardImages }), idleSubscribe());
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => {
+            throw new Error("clipboard unreadable");
+          }
+        }
+      ])
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("does not import while the workspace is gated by a busy load", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    renderPane(
+      workspaceValue({ importClipboardImages, status: "loading" }),
+      idleSubscribe()
+    );
+    const file = pngFile("blocked.png");
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        { kind: "file", type: "image/png", getAsFile: () => file }
+      ])
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("does not import when the clipboard capability is absent", () => {
+    renderPane(
+      workspaceValue({ importClipboardImages: undefined }),
+      idleSubscribe()
+    );
+    const file = pngFile("no-capability.png");
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      pasteEventInit([
+        { kind: "file", type: "image/png", getAsFile: () => file }
+      ])
+    );
+
+    expect(notPrevented).toBe(true);
   });
 });

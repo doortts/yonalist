@@ -4,6 +4,7 @@ import {
   ChevronRight
 } from "lucide-react";
 import {
+  type ClipboardEvent,
   type CSSProperties,
   type KeyboardEvent,
   useEffect,
@@ -24,6 +25,10 @@ import {
 } from "./NotesBulletMenu";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
+import {
+  extractClipboardImages,
+  type ClipboardImageExtraction
+} from "./notesClipboardImages";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesPreparedMove } from "./useNotesWorkspace";
@@ -86,6 +91,11 @@ export function OutlineNodeRow({
     !readOnly &&
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
+  const clipboardImportEnabled =
+    !disabled &&
+    !readOnly &&
+    state.status !== "loading" &&
+    actions.importClipboardImages !== undefined;
   const {
     attributes,
     isDragging,
@@ -322,6 +332,31 @@ export function OutlineNodeRow({
     setNoteOpen(false);
     actions.updateNodeDraft(nodeId, { title: titleValue, note: "" }, "note");
     void actions.flushNodeDraft(nodeId);
+  };
+
+  const handleImagePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (!clipboardImportEnabled) {
+      return;
+    }
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      return;
+    }
+    let extraction: ClipboardImageExtraction;
+    try {
+      extraction = extractClipboardImages(clipboardData.items);
+    } catch (cause) {
+      console.error("Failed to read pasted clipboard images", cause);
+      return;
+    }
+    if (extraction.kind !== "images" || extraction.items.length === 0) {
+      if (extraction.kind === "error") {
+        console.error(extraction.message);
+      }
+      return;
+    }
+    event.preventDefault();
+    void actions.importClipboardImages?.(nodeId, extraction.items);
   };
 
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -641,6 +676,7 @@ export function OutlineNodeRow({
             }, "title")
           }}
           onKeyDown={handleTitleKeyDown}
+          onPaste={handleImagePaste}
           onSelect={(event) => {
             titleSelectionRef.current = {
               startUtf16: event.currentTarget.selectionStart,
@@ -716,6 +752,7 @@ export function OutlineNodeRow({
               note: event.target.value
             }, "note");
           }}
+          onPaste={handleImagePaste}
           onBlur={() => {
             if (!datePicker.shouldSuppressBlur()) {
               commitDrafts();

@@ -770,4 +770,23 @@ describe("NoteTextField", () => {
     expect(screen.getByRole("textbox", { name: "Title" })).toBe(textarea);
     expect(onBlur).not.toHaveBeenCalled();
   });
+
+  it("forwards paste events to the onPaste handler on the mounted textarea", () => {
+    const onPaste = vi.fn();
+    const { container } = render(
+      <NoteTextField
+        value="Plan"
+        aria-label="Edit title"
+        onChange={vi.fn()}
+        onTagClick={vi.fn()}
+        onPaste={onPaste}
+      />
+    );
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+
+    fireEvent.paste(textarea, { clipboardData: { items: [] } });
+
+    expect(onPaste).toHaveBeenCalledOnce();
+    expect(onPaste.mock.calls[0][0].target).toBe(textarea);
+  });
 });
