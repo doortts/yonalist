@@ -632,9 +632,9 @@ describe("CommentComposer", () => {
     );
     expect(maximizedDockStyle.left).toBe("0");
     expect(collapsedDockStyle.overflow).toBe("hidden");
-    expect(collapsedDockStyle["max-height"]).toBe("67px");
+    expect(collapsedDockStyle["max-height"]).toBe("55px");
     expect(collapsedDockStyle.padding).toBe(
-      "18px 12px calc(0px + env(safe-area-inset-bottom, 0px))"
+      "10px 10px calc(0px + env(safe-area-inset-bottom, 0px))"
     );
     expect(collapsedTextareaStyle["min-height"]).toBe("76px");
     expect(collapsedTextareaStyle.height).toBe("76px");
