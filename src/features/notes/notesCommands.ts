@@ -70,7 +70,9 @@ export interface NotesCommandContext {
   readonly activeScopeRef: MutableRefObject<NotesWorkspaceScope>;
   readonly sessionRecordRef: MutableRefObject<NotesWorkspaceSessionRecord | null>;
   readonly sessionRef: MutableRefObject<NotesWorkspaceCoordinatorSession | null>;
-  readonly liveNavigationRef: MutableRefObject<LiveNotesNavigation>;
+  // The reducer-owned navigation, derived on demand (settled state plus the live
+  // editing caret). Commands read this instead of a parallel navigation ref.
+  readonly currentNavigation: () => LiveNotesNavigation;
   readonly navigationVersionRef: MutableRefObject<number>;
   readonly locallyExpandedNodeIdsRef: MutableRefObject<ReadonlySet<NoteId>>;
   readonly tagFilterRequestRef: MutableRefObject<number>;
@@ -129,6 +131,21 @@ export function ownerStillActive(
     ctx.sessionRecordRef.current === record &&
     ctx.sessionRef.current === record.session
   );
+}
+
+/**
+ * Return the library projection to the Active view and clear every tag-filter
+ * tracker in one step. Scope is single-sourced (activeScopeRef, set by the
+ * caller alongside the mutation), and the rendered library view + tag filters
+ * are derived from it here — the three trackers move together instead of being
+ * poked independently at each call site, which is where they used to drift.
+ */
+function activateAllLibraryView(ctx: NotesCommandContext): void {
+  ctx.setLibraryView("all");
+  ctx.requestedTagFiltersRef.current = [];
+  ctx.tagFilterOriginRef.current = null;
+  ctx.tagFilterRequestRef.current += 1;
+  ctx.setActiveTagFilters([]);
 }
 
 export async function createRootCommand(ctx: NotesCommandContext): Promise<void> {
@@ -200,11 +217,7 @@ export async function createRootCommand(ctx: NotesCommandContext): Promise<void>
     ownerStillActive(ctx, creation.record) &&
     transitionToAll
   ) {
-    ctx.setLibraryView("all");
-    ctx.requestedTagFiltersRef.current = [];
-    ctx.tagFilterOriginRef.current = null;
-    ctx.tagFilterRequestRef.current += 1;
-    ctx.setActiveTagFilters([]);
+    activateAllLibraryView(ctx);
     ctx.replaceLocalExpansions(new Set());
   }
 }
@@ -681,7 +694,7 @@ export async function runRootLifecycle(
     return;
   }
 
-  const liveNavigation = ctx.liveNavigationRef.current;
+  const liveNavigation = ctx.currentNavigation();
   const beforeNavigation: NotesLifecycleNavigationSnapshot = {
     selectedId: liveNavigation.selectedId,
     zoomRootId: liveNavigation.zoomRootId,
@@ -796,16 +809,16 @@ export async function runRootLifecycle(
         );
       }
       const navigationVersion = ctx.navigationVersionRef.current;
+      const latestNavigation = ctx.currentNavigation();
       const navigation =
         navigationVersion === beforeNavigationVersion
           ? beforeNavigation
           : {
-              selectedId: ctx.liveNavigationRef.current.selectedId,
-              zoomRootId: ctx.liveNavigationRef.current.zoomRootId,
-              editingNoteId: ctx.liveNavigationRef.current.editingNoteId,
-              pendingFocusId: ctx.liveNavigationRef.current.pendingFocusId,
-              pendingFocusField:
-                ctx.liveNavigationRef.current.pendingFocusField,
+              selectedId: latestNavigation.selectedId,
+              zoomRootId: latestNavigation.zoomRootId,
+              editingNoteId: latestNavigation.editingNoteId,
+              pendingFocusId: latestNavigation.pendingFocusId,
+              pendingFocusField: latestNavigation.pendingFocusField,
               locallyExpandedNodeIds: new Set(
                 ctx.locallyExpandedNodeIdsRef.current
               ),
@@ -869,11 +882,7 @@ export async function runRootLifecycle(
     }
   }
   if (lifecycleResult.recoveredToActive) {
-    ctx.setLibraryView("all");
-    ctx.requestedTagFiltersRef.current = [];
-    ctx.tagFilterOriginRef.current = null;
-    ctx.tagFilterRequestRef.current += 1;
-    ctx.setActiveTagFilters([]);
+    activateAllLibraryView(ctx);
   }
 }
 
@@ -993,7 +1002,7 @@ export async function restoreNodeCommand(
     ctx.activeScopeRef.current.kind === "trash" &&
     rootIdForNode(
       ctx.stateRef.current,
-      ctx.liveNavigationRef.current.zoomRootId
+      ctx.currentNavigation().zoomRootId
     ) === nodeId;
   let followedIntoActive = false;
   await ctx.runStructuralCommand("restore", async (context, historyContext) => {
@@ -1049,11 +1058,7 @@ export async function restoreNodeCommand(
   ) {
     return;
   }
-  ctx.setLibraryView("all");
-  ctx.requestedTagFiltersRef.current = [];
-  ctx.tagFilterOriginRef.current = null;
-  ctx.tagFilterRequestRef.current += 1;
-  ctx.setActiveTagFilters([]);
+  activateAllLibraryView(ctx);
   ctx.replaceLocalExpansions(new Set());
 }
 

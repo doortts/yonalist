@@ -20,7 +20,7 @@ export interface NormalizedNotesWorkspace {
   error: string | null;
 }
 
-type UiState = Pick<
+export type UiState = Pick<
   NormalizedNotesWorkspace,
   | "selectedId"
   | "zoomRootId"
@@ -80,7 +80,15 @@ function normalizedUiState(
   };
 }
 
-function settledUiState(
+/**
+ * The single UI-state reconciler. Given the authoritative workspace, the
+ * current navigation, and an optional update, it drops ids that no longer
+ * exist, applies the update field-by-field (undefined = retain), and normalizes
+ * the pending-focus pairing. The reducer settles navigation through this on
+ * every mutation; the hook reuses it (via {@link reconcileUiState}) to compute
+ * the "after" snapshot for history, so both agree on exactly one settled shape.
+ */
+export function settledUiState(
   workspace: NormalizedNotesWorkspace,
   current: UiState,
   uiUpdate?: Partial<UiState>
@@ -108,6 +116,19 @@ function settledUiState(
         ? retainedUi.pendingFocusField
         : uiUpdate.pendingFocusField
   });
+}
+
+/**
+ * {@link settledUiState} against a not-yet-normalized workspace. The hook holds
+ * navigation results as raw {@link NotesWorkspace}s (mutation projections), so
+ * this normalizes then delegates — one reconciler, two entry points.
+ */
+export function reconcileUiState(
+  workspace: NotesWorkspace,
+  current: UiState,
+  uiUpdate?: Partial<UiState>
+): UiState {
+  return settledUiState(normalizeWorkspace(workspace), current, uiUpdate);
 }
 
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {

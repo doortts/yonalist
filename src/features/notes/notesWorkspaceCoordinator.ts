@@ -10,6 +10,7 @@ import {
   type NotesHistoryFocusField,
   type NotesHistorySession
 } from "./notesHistory";
+import { scopeKey } from "./notesWorkspaceScope";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -347,7 +348,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             if (
               sourceScope !== null &&
               session.getScope &&
-              JSON.stringify(session.getScope()) === JSON.stringify(sourceScope)
+              scopeKey(session.getScope()) === scopeKey(sourceScope)
             ) {
               session.confirmedWorkspace = authoritativeWorkspace;
             }

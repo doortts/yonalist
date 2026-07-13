@@ -48,8 +48,15 @@ import {
 import {
   normalizeWorkspace,
   notesWorkspaceReducer,
-  type NormalizedNotesWorkspace
+  reconcileUiState,
+  type NormalizedNotesWorkspace,
+  type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
+import {
+  canonicalizeTagFilters,
+  sameScope,
+  tagFilterKey
+} from "./notesWorkspaceScope";
 import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
   nativeNotesAttachmentUi,
@@ -569,52 +576,6 @@ interface TagSummaryRefreshWaiter {
   resolve(summaries: readonly NoteTagSummary[] | null): void;
 }
 
-const emptyLiveNavigation = (): LiveNotesNavigation => ({
-  selectedId: null,
-  zoomRootId: null,
-  editingNoteId: null,
-  pendingFocusId: null,
-  pendingFocusField: null
-});
-
-function reconcileLiveNavigation(
-  current: LiveNotesNavigation,
-  workspace: NotesWorkspace,
-  update?: NotesWorkspaceUiUpdate
-): LiveNotesNavigation {
-  const existingIds = new Set(workspace.nodes.map((item) => item.id));
-  const existing = (nodeId: NoteId | null): NoteId | null =>
-    nodeId !== null && existingIds.has(nodeId) ? nodeId : null;
-  const selectedId = existing(
-    update?.selectedId === undefined ? current.selectedId : update.selectedId
-  );
-  const zoomRootId = existing(
-    update?.zoomRootId === undefined ? current.zoomRootId : update.zoomRootId
-  );
-  const editingNoteId = existing(
-    update?.editingNoteId === undefined
-      ? current.editingNoteId
-      : update.editingNoteId
-  );
-  const pendingFocusId = existing(
-    update?.pendingFocusId === undefined
-      ? current.pendingFocusId
-      : update.pendingFocusId
-  );
-  return {
-    selectedId,
-    zoomRootId,
-    editingNoteId,
-    pendingFocusId,
-    pendingFocusField:
-      pendingFocusId === null
-        ? null
-        : update?.pendingFocusField === undefined
-          ? (current.pendingFocusField ?? "title")
-          : update.pendingFocusField
-  };
-}
-
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
     command.resolve();
@@ -660,35 +621,11 @@ function scopeForLibraryView(
   }
 }
 
-export function sameScope(
-  left: NotesWorkspaceScope,
-  right: NotesWorkspaceScope
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function tagFilterKey(filter: NoteTagFilter): string {
-  return `${filter.prefix}\u0000${filter.normalizedTag}`;
-}
-
-export function canonicalizeTagFilters(
-  filters: readonly NoteTagFilter[]
-): NoteTagFilter[] {
-  const uniqueFilters = new Map(
-    filters.map((filter) => [
-      tagFilterKey(filter),
-      {
-        prefix: filter.prefix,
-        normalizedTag: filter.normalizedTag
-      }
-    ])
-  );
-  return [...uniqueFilters.values()].sort(
-    (left, right) =>
-      (left.prefix === right.prefix ? 0 : left.prefix === "#" ? -1 : 1) ||
-      left.normalizedTag.localeCompare(right.normalizedTag)
-  );
-}
+// Scope equality and tag-filter canonicalization live in one module so the
+// coordinator and this hook compare scopes the same, key-order-independent way.
+// Re-exported (below) because existing consumers (notesCommands, tests) import
+// these names from the hook module.
+export { canonicalizeTagFilters, sameScope, tagFilterKey };
 
 function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   return scope.kind === "tags"
@@ -1077,7 +1014,6 @@ export function useNotesWorkspace({
     canUndo: false,
     canRedo: false
   });
-  const historyVersionRef = useRef(0);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const activeWorkspaceGenerationRef = useRef(0);
   const movePreparationTokenRef = useRef(0);
@@ -1087,9 +1023,22 @@ export function useNotesWorkspace({
   const tagFilterOriginRef = useRef<TagFilterOrigin | null>(null);
   const tagFilterRequestRef = useRef(0);
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
+  // The reducer is the sole owner of settled navigation (selection, zoom root,
+  // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
+  // is wrapped by `applyAction` (below), which runs the reducer against this ref
+  // before scheduling React, so callbacks and in-flight commands read the same
+  // "settled + just-committed" navigation the render will show — no separate
+  // live-navigation owner. The render-phase resync keeps the two in lockstep
+  // across renders triggered by unrelated state (drafts, tag summaries, …).
   const stateRef = useRef(state);
   stateRef.current = state;
-  const liveNavigationRef = useRef<LiveNotesNavigation>(emptyLiveNavigation());
+  // The one piece of navigation the reducer cannot own: which field of the
+  // node currently being edited holds the caret. Tracking it in the reducer
+  // would dispatch (and re-render every row) on each keystroke, so it lives in
+  // this single-purpose ref, written only by `setDraftEditingNavigation` and
+  // read only when capturing a history "before" snapshot. It overlays the
+  // settled focus field while its node is still the editing node.
+  const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
   const navigationVersionRef = useRef(0);
   const deletingNotesDataRef = useRef(false);
   const deletionTokenRef = useRef<object | null>(null);
@@ -1104,6 +1053,51 @@ export function useNotesWorkspace({
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
   const closedRef = useRef(false);
+
+  // Every reducer action flows through here. Running the reducer against the
+  // synchronous mirror first (with the same pure reducer React will run on
+  // commit) keeps `stateRef` ahead of the render, so navigation reads never
+  // observe a stale value even before React re-renders. It also retires the
+  // live editing caret whenever the reducer authoritatively moves editing (a
+  // settle carrying a focus update, focusNode, focus acknowledgement, load);
+  // a pure zoom or a silent draft settle leaves selection/editing untouched, so
+  // the caret survives to feed the next history "before" snapshot.
+  const applyAction = useCallback(
+    (action: NotesWorkspaceReducerAction): void => {
+      const previous = stateRef.current;
+      const next = notesWorkspaceReducer(previous, action);
+      stateRef.current = next;
+      if (
+        next.selectedId !== previous.selectedId ||
+        next.editingNoteId !== previous.editingNoteId ||
+        next.pendingFocusField !== previous.pendingFocusField
+      ) {
+        editingFocusRef.current = null;
+      }
+      dispatch(action);
+    },
+    []
+  );
+
+  // The single derivation of "current navigation": settled reducer state, with
+  // the live editing caret overlaid. The caret can lead the reducer — a node is
+  // editable (and typed into) before any focus/command settles a selection for
+  // it — so while the overlay is live it owns selection/editing-node/field;
+  // zoom root and pending focus stay with the reducer. `applyAction` drops the
+  // overlay the moment the reducer authoritatively moves editing, so a stale
+  // caret never leaks in. This is the one place the caret ref and the reducer
+  // are combined; every former `liveNavigationRef.current` read routes here.
+  const currentNavigation = useCallback((): LiveNotesNavigation => {
+    const settled = stateRef.current;
+    const editing = editingFocusRef.current;
+    return {
+      selectedId: editing ? editing.nodeId : settled.selectedId,
+      zoomRootId: settled.zoomRootId,
+      editingNoteId: editing ? editing.nodeId : settled.editingNoteId,
+      pendingFocusId: settled.pendingFocusId,
+      pendingFocusField: editing ? editing.field : settled.pendingFocusField
+    };
+  }, []);
 
   // The draft engine is the external store behind the drafts slice. A stable
   // subscribe/getSnapshot pair reads whichever engine is currently active so
@@ -1259,7 +1253,7 @@ export function useNotesWorkspace({
     if (previousEngine) {
       void previousEngine.beginShutdown();
     }
-    dispatch({ type: "startWorkspaceLoad" });
+    applyAction({ type: "startWorkspaceLoad" });
     setAttachmentUploadErrorsByNodeId({});
     setAttachmentUploadRetryAttemptIdsByNodeId({});
     discardAttachmentUploadAttempts();
@@ -1267,7 +1261,6 @@ export function useNotesWorkspace({
     deletionTokenRef.current = null;
     setDeletingNotesData(false);
     setHistoryStatus({ canUndo: false, canRedo: false });
-    historyVersionRef.current = 0;
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -1275,7 +1268,7 @@ export function useNotesWorkspace({
     tagFilterOriginRef.current = null;
     tagFilterRequestRef.current += 1;
     locallyExpandedNodeIdsRef.current = new Set();
-    liveNavigationRef.current = emptyLiveNavigation();
+    editingFocusRef.current = null;
     setLibraryView("all");
     setActiveTagFilters([]);
     const invalidatedTagSummaryVersion =
@@ -1296,7 +1289,7 @@ export function useNotesWorkspace({
           return;
         }
         if (event.type === "pending") {
-          dispatch({ type: "setLoading" });
+          applyAction({ type: "setLoading" });
           return;
         }
         if (
@@ -1305,15 +1298,15 @@ export function useNotesWorkspace({
         ) {
           activeWorkspaceGenerationRef.current += 1;
         }
+        // The coordinator is the single owner of undo/redo availability: it
+        // stamps every settled result with the authoritative historyStatus in
+        // queue order, so the hook just adopts whatever the latest event
+        // carries. No hook-side version comparison — settled/synchronized
+        // events already arrive in the coordinator's monotonic order.
         if (
           event.result.kind !== "skipped" &&
-          event.result.historyStatus &&
-          (event.result.historyVersion === undefined ||
-            event.result.historyVersion >= historyVersionRef.current)
+          event.result.historyStatus
         ) {
-          if (event.result.historyVersion !== undefined) {
-            historyVersionRef.current = event.result.historyVersion;
-          }
           setHistoryStatus(event.result.historyStatus);
         }
         if (
@@ -1368,20 +1361,11 @@ export function useNotesWorkspace({
           });
           return;
         }
-        const authoritativeWorkspace =
-          event.result.kind === "authoritative"
-            ? event.result.workspace
-            : event.result.kind === "failure"
-              ? event.result.workspace
-              : undefined;
-        if (authoritativeWorkspace) {
-          liveNavigationRef.current = reconcileLiveNavigation(
-            liveNavigationRef.current,
-            authoritativeWorkspace,
-            event.result.kind === "skipped" ? undefined : event.result.uiUpdate
-          );
-        }
-        dispatch({
+        // The reducer settles navigation from this same result via its one
+        // reconciler; a stale editing caret is naturally ignored once the
+        // reducer moves the editing node (see currentNavigation's guard), so
+        // there is no parallel navigation ref to reconcile here anymore.
+        applyAction({
           type: "settleQueueWork",
           result: event.result,
           hasPendingWork: event.hasPendingWork
@@ -1502,9 +1486,27 @@ export function useNotesWorkspace({
     []
   );
 
-  const captureHistorySnapshot = useCallback(
-    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot => {
-      const navigation = liveNavigationRef.current;
+  // Clear every tag-filter tracker together: the requested (optimistic) filters,
+  // the return-here origin, the request generation, and the rendered active
+  // filters. One code path so the trackers cannot drift apart across the
+  // scope-changing actions that each used to reset them inline.
+  const resetTagFilterTracking = useCallback((): void => {
+    requestedTagFiltersRef.current = [];
+    tagFilterOriginRef.current = null;
+    tagFilterRequestRef.current += 1;
+    setActiveTagFilters([]);
+  }, []);
+
+  // Build a history snapshot from an explicit navigation + expansion set. The
+  // "before" capture passes the current navigation; the "after" capture (in
+  // rememberHistoryAfter) passes the reducer-reconciled post-mutation
+  // navigation, so both share this one shape.
+  const buildHistorySnapshot = useCallback(
+    (
+      navigation: LiveNotesNavigation,
+      expandedNodeIds: ReadonlySet<NoteId>,
+      focus?: NotesHistoryFocus | null
+    ): NotesHistorySnapshot => {
       const resolvedFocus =
         focus === undefined
           ? navigation.editingNoteId
@@ -1533,12 +1535,22 @@ export function useNotesWorkspace({
         scope: activeScopeRef.current,
         selectedId: navigation.selectedId,
         zoomRootId: navigation.zoomRootId,
-        locallyExpandedNodeIds: [...locallyExpandedNodeIdsRef.current],
+        locallyExpandedNodeIds: [...expandedNodeIds],
         focus: resolvedFocus,
         tagFilterOrigin
       };
     },
     []
+  );
+
+  const captureHistorySnapshot = useCallback(
+    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot =>
+      buildHistorySnapshot(
+        currentNavigation(),
+        locallyExpandedNodeIdsRef.current,
+        focus
+      ),
+    [buildHistorySnapshot, currentNavigation]
   );
 
   const registerHistoryOwner = useCallback(
@@ -1640,24 +1652,26 @@ export function useNotesWorkspace({
         historyOwnerByEntryIdRef.current.discard(context.entryId);
         return;
       }
-      liveNavigationRef.current = reconcileLiveNavigation(
-        liveNavigationRef.current,
+      // The post-mutation navigation is computed with the reducer's own
+      // reconciler against the settled navigation — the exact value the reducer
+      // will settle to when this result flows through settleQueueWork. No
+      // parallel navigation ref is advanced; the snapshot is a pure derivation.
+      const afterNavigation = reconcileUiState(
         workspace,
+        currentNavigation(),
         uiUpdate
       );
-      const after = captureHistorySnapshot(focus);
-      owner.history.rememberAfter(context.entryId, {
-        ...after,
-        locallyExpandedNodeIds:
-          expandedNodeIds === undefined
-            ? after.locallyExpandedNodeIds
-            : [...expandedNodeIds]
-      });
+      const after = buildHistorySnapshot(
+        afterNavigation,
+        expandedNodeIds ?? locallyExpandedNodeIdsRef.current,
+        focus
+      );
+      owner.history.rememberAfter(context.entryId, after);
       if (context.commandKind !== "text") {
         completeHistoryOwner(context.entryId);
       }
     },
-    [captureHistorySnapshot, completeHistoryOwner]
+    [buildHistorySnapshot, completeHistoryOwner, currentNavigation]
   );
 
   const discardHistoryEntry = useCallback(
@@ -1793,7 +1807,7 @@ export function useNotesWorkspace({
       activeScopeRef,
       sessionRecordRef,
       sessionRef,
-      liveNavigationRef,
+      currentNavigation,
       navigationVersionRef,
       locallyExpandedNodeIdsRef,
       tagFilterRequestRef,
@@ -1814,6 +1828,7 @@ export function useNotesWorkspace({
       closeTextBurst
     }),
     [
+      currentNavigation,
       runStructuralCommand,
       rememberHistoryAfter,
       replaceLocalExpansions,
@@ -1869,12 +1884,11 @@ export function useNotesWorkspace({
 
   const setDraftEditingNavigation = useCallback(
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
-      liveNavigationRef.current = {
-        ...liveNavigationRef.current,
-        selectedId: nodeId,
-        editingNoteId: nodeId,
-        pendingFocusField: field
-      };
+      // Record the live caret without dispatching: a reducer update here would
+      // re-render every row on each keystroke. currentNavigation() overlays this
+      // field onto the settled navigation while nodeId is still the editing
+      // node, so history "before" snapshots see the field being typed into.
+      editingFocusRef.current = { nodeId, field };
     },
     []
   );
@@ -2116,13 +2130,15 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView(view);
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
+      resetTagFilterTracking();
       replaceLocalExpansions(new Set());
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      resetTagFilterTracking,
+      runCommand
+    ]
   );
 
   const selectLibraryView = useCallback(
@@ -2149,7 +2165,7 @@ export function useNotesWorkspace({
         scope: cloneWorkspaceScope(activeScopeRef.current),
         libraryView:
           originLibrary.view === "tags" ? "all" : originLibrary.view,
-        navigation: { ...liveNavigationRef.current },
+        navigation: currentNavigation(),
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
       };
       let listedTags: readonly NoteTagSummary[] | null = null;
@@ -2184,6 +2200,7 @@ export function useNotesWorkspace({
       setLibraryView("tags");
       replaceLocalExpansions(new Set());
     }, [
+      currentNavigation,
       flushAllDraftsBeforeStructural,
       loadLibraryScope,
       replaceLocalExpansions,
@@ -2227,7 +2244,7 @@ export function useNotesWorkspace({
           scope: cloneWorkspaceScope(activeScopeRef.current),
           libraryView:
             originLibrary.view === "tags" ? "all" : originLibrary.view,
-          navigation: { ...liveNavigationRef.current },
+          navigation: currentNavigation(),
           locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
         };
         capturedOrigin = true;
@@ -2319,6 +2336,7 @@ export function useNotesWorkspace({
       tagFilterOriginRef.current = null;
     },
     [
+      currentNavigation,
       flushAllDraftsBeforeStructural,
       replaceLocalExpansions,
       requestTagSummaryRefresh,
@@ -2402,38 +2420,34 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView("all");
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
+      resetTagFilterTracking();
       replaceLocalExpansions(expandedNodeIds);
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      resetTagFilterTracking,
+      runCommand
+    ]
   );
 
-  const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
-    if (liveNavigationRef.current.pendingFocusId === nodeId) {
-      liveNavigationRef.current = {
-        ...liveNavigationRef.current,
-        pendingFocusId: null,
-        pendingFocusField: null
-      };
-    }
-    dispatch({ type: "acknowledgePendingFocus", nodeId });
-  }, []);
+  const acknowledgeFocus = useCallback(
+    async (nodeId: NoteId) => {
+      // applyAction retires the live caret when this clears pendingFocusField.
+      applyAction({ type: "acknowledgePendingFocus", nodeId });
+    },
+    [applyAction]
+  );
 
-  const focusNode = useCallback(async (nodeId: NoteId) => {
-    void flushNodeDraft(nodeId);
-    navigationVersionRef.current += 1;
-    liveNavigationRef.current = {
-      ...liveNavigationRef.current,
-      selectedId: nodeId,
-      editingNoteId: nodeId,
-      pendingFocusId: nodeId,
-      pendingFocusField: "title"
-    };
-    dispatch({ type: "focusNode", nodeId });
-  }, [flushNodeDraft]);
+  const focusNode = useCallback(
+    async (nodeId: NoteId) => {
+      void flushNodeDraft(nodeId);
+      navigationVersionRef.current += 1;
+      // applyAction retires the live caret; the reducer owns the new position.
+      applyAction({ type: "focusNode", nodeId });
+    },
+    [applyAction, flushNodeDraft]
+  );
 
   const createRoot = useCallback(
     () => createRootCommand(commandCtx),
@@ -2638,10 +2652,7 @@ export function useNotesWorkspace({
         ) {
           activeScopeRef.current = { kind: "active" };
           setLibraryView("all");
-          requestedTagFiltersRef.current = [];
-          tagFilterOriginRef.current = null;
-          tagFilterRequestRef.current += 1;
-          setActiveTagFilters([]);
+          resetTagFilterTracking();
           setTagSummaries([]);
           replaceLocalExpansions(new Set());
         }
@@ -2654,17 +2665,20 @@ export function useNotesWorkspace({
         }
       }
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions]
+    [
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      resetTagFilterTracking
+    ]
   );
 
-  const zoomTo = useCallback(async (nodeId: NoteId | null) => {
-    navigationVersionRef.current += 1;
-    liveNavigationRef.current = {
-      ...liveNavigationRef.current,
-      zoomRootId: nodeId
-    };
-    dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
-  }, []);
+  const zoomTo = useCallback(
+    async (nodeId: NoteId | null) => {
+      navigationVersionRef.current += 1;
+      applyAction({ type: "setZoomRoot", zoomRootId: nodeId });
+    },
+    [applyAction]
+  );
 
   const setAttachmentUploadError = useCallback(
     (
