@@ -4443,9 +4443,21 @@ mod tests {
             fs::read(assets.join("0001.png")).expect("first exported attachment"),
             expected_bytes
         );
-        let exported_images = fs::read_dir(assets)
+        let entries = fs::read_dir(&assets)
             .expect("list assets")
             .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        // The published directory holds exactly the one deduplicated image plus
+        // the export marker (`.yonalist-notes-export.json`) — nothing stray leaks
+        // in. Counting only `.png` entries alone would not catch an extra file.
+        assert_eq!(
+            entries.len(),
+            2,
+            "assets dir must contain only the shared image and the export marker: {:?}",
+            entries.iter().map(|entry| entry.path()).collect::<Vec<_>>()
+        );
+        let exported_images = entries
+            .iter()
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count();
         assert_eq!(
