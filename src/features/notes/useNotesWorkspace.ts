@@ -33,6 +33,7 @@ import {
 } from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
+  type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
   type NotesWorkspaceQueueContext,
   type NotesWorkspaceQueueResult,
@@ -162,19 +163,19 @@ function hasAttachmentCleanupFlag(
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
   focusNode(nodeId: NoteId): Promise<void>;
-  createRoot(): Promise<void>;
+  createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
     nodeId: NoteId,
     newNodeId: NoteId,
     prefix: string,
     suffix: string,
     options?: NotesWorkspaceCompoundOptions
-  ): Promise<void>;
-  createChild(nodeId: NoteId): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  createChild(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   updateNode(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">
-  ): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
   updateNodeDraft(
     nodeId: NoteId,
     patch: Pick<NoteNode, "title" | "note">,
@@ -186,25 +187,25 @@ export interface NotesWorkspaceActions {
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
     options?: NotesWorkspaceCompoundOptions
-  ): Promise<void>;
-  toggleComplete(nodeId: NoteId): Promise<void>;
-  toggleCollapsed(nodeId: NoteId): Promise<void>;
-  expandAll(nodeId: NoteId): Promise<void>;
-  collapseAll(nodeId: NoteId): Promise<void>;
-  sortSubtreeAscending(nodeId: NoteId): Promise<void>;
-  sortSubtreeDescending(nodeId: NoteId): Promise<void>;
-  toggleStar(nodeId: NoteId): Promise<void>;
-  duplicateNode(nodeId: NoteId): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  toggleComplete(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  toggleCollapsed(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  expandAll(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  collapseAll(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  sortSubtreeAscending(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  sortSubtreeDescending(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  toggleStar(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  duplicateNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   removeEmptyNode(
     nodeId: NoteId,
     focusNodeId?: NoteId | null,
     options?: NotesWorkspaceCompoundOptions
-  ): Promise<void>;
-  deleteNode(nodeId: NoteId): Promise<void>;
-  restoreNode(nodeId: NoteId): Promise<void>;
-  archiveNode(nodeId: NoteId): Promise<void>;
-  unarchiveNode(nodeId: NoteId): Promise<void>;
-  emptyTrash(): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  deleteNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  restoreNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  archiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  unarchiveNode(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
+  emptyTrash(): Promise<NotesWorkspaceCommandOutcome>;
   selectLibraryView(view: NotesLibraryView): Promise<void>;
   toggleTagFilter(filter: NoteTagFilter): Promise<void>;
   searchNotes(query: string): Promise<NoteSearchResult[]>;
@@ -645,7 +646,7 @@ export interface NotesWorkspaceQueueStep {
 interface BufferedWorkspaceCommand {
   work: NotesWorkspaceQueueWork;
   structural?: boolean;
-  resolve(): void;
+  resolve(outcome: NotesWorkspaceCommandOutcome): void;
 }
 
 interface SearchNavigation {
@@ -675,7 +676,9 @@ interface TagSummaryRefreshWaiter {
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
-    command.resolve();
+    // Draining without a live session drops the command, so its caller learns
+    // the work was skipped rather than committed.
+    command.resolve("skipped");
   }
 }
 
@@ -684,16 +687,16 @@ function enqueueBufferedCommands(
   commands: BufferedWorkspaceCommand[]
 ): void {
   for (const command of commands) {
-    let completion: Promise<void>;
+    let completion: Promise<NotesWorkspaceCommandOutcome>;
     try {
       completion = command.structural
         ? session.enqueueStructural(command.work)
         : session.enqueue(command.work);
     } catch {
-      command.resolve();
+      command.resolve("skipped");
       continue;
     }
-    void completion.then(command.resolve, command.resolve);
+    void completion.then(command.resolve, () => command.resolve("failed"));
   }
 }
 
@@ -1578,13 +1581,14 @@ export function useNotesWorkspace({
     }
     const session = sessionRef.current;
     if (session) {
-      return session.enqueue(work);
+      // Navigation/refresh work does not report a settlement to its caller.
+      return session.enqueue(work).then(() => undefined);
     }
     if (closedRef.current) {
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
-      bufferedCommandsRef.current.push({ work, resolve });
+      bufferedCommandsRef.current.push({ work, resolve: () => resolve() });
     });
   }, []);
 
@@ -1831,10 +1835,10 @@ export function useNotesWorkspace({
         record: NotesWorkspaceSessionRecord
       ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
       options?: StructuralCommandOptions
-    ): Promise<void> => {
+    ): Promise<NotesWorkspaceCommandOutcome> => {
       if (deletingNotesDataRef.current || closedRef.current) {
         discardHistoryEntry(options?.historyContext);
-        return Promise.resolve();
+        return Promise.resolve("skipped");
       }
       const currentRecord = sessionRecordRef.current;
       const invocationRecord =
@@ -1898,7 +1902,7 @@ export function useNotesWorkspace({
       ) {
         return record.session.enqueueStructural(queueWork);
       }
-      return new Promise<void>((resolve) => {
+      return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
         bufferedCommandsRef.current.push({
           work: queueWork,
           structural: true,
@@ -2924,7 +2928,7 @@ export function useNotesWorkspace({
       attempt.error = null;
       publishLatestAttachmentAttemptError(attempt.nodeId);
 
-      return runStructuralCommand(
+      await runStructuralCommand(
         "attachment-import",
         async (context, historyContext, record) => {
           if (
@@ -3212,7 +3216,7 @@ export function useNotesWorkspace({
           );
           return directMutationResult(mutation, projection);
         }
-      ),
+      ).then(() => undefined),
     [rememberHistoryAfter, runStructuralCommand]
   );
 
@@ -3247,7 +3251,7 @@ export function useNotesWorkspace({
           );
           return directMutationResult(mutation, projection);
         }
-      ),
+      ).then(() => undefined),
     [rememberHistoryAfter, runStructuralCommand]
   );
 
@@ -3258,13 +3262,23 @@ export function useNotesWorkspace({
       (...args: Args): Promise<void> =>
         deletingNotesDataRef.current ? Promise.resolve() : action(...args);
 
+    // Structural actions report their settlement, so the data-deletion
+    // short-circuit resolves to "skipped" (the command never reached the queue).
+    const gateOutcome = <Args extends unknown[]>(
+      action: (...args: Args) => Promise<NotesWorkspaceCommandOutcome>
+    ) =>
+      (...args: Args): Promise<NotesWorkspaceCommandOutcome> =>
+        deletingNotesDataRef.current
+          ? Promise.resolve("skipped")
+          : action(...args);
+
     return {
       acknowledgeFocus: gate(acknowledgeFocus),
       focusNode: gate(focusNode),
-      createRoot: gate(createRoot),
-      splitNode: gate(splitNode),
-      createChild: gate(createChild),
-      updateNode: gate(updateNode),
+      createRoot: gateOutcome(createRoot),
+      splitNode: gateOutcome(splitNode),
+      createChild: gateOutcome(createChild),
+      updateNode: gateOutcome(updateNode),
       updateNodeDraft: (nodeId, patch, field) => {
         if (!deletingNotesDataRef.current) {
           updateNodeDraft(nodeId, patch, field);
@@ -3278,23 +3292,21 @@ export function useNotesWorkspace({
         deletingNotesDataRef.current
           ? Promise.resolve(false)
           : flushAllDraftsBeforeStructural(),
-      moveNode: gate(async (...args) => {
-        await moveNode(...args);
-      }),
-      toggleComplete: gate(toggleComplete),
-      toggleCollapsed: gate(toggleCollapsed),
-      expandAll: gate(expandAll),
-      collapseAll: gate(collapseAll),
-      sortSubtreeAscending: gate(sortSubtreeAscending),
-      sortSubtreeDescending: gate(sortSubtreeDescending),
-      toggleStar: gate(toggleStar),
-      duplicateNode: gate(duplicateNode),
-      removeEmptyNode: gate(removeEmptyNode),
-      deleteNode: gate(deleteNode),
-      restoreNode: gate(restoreNode),
-      archiveNode: gate(archiveNode),
-      unarchiveNode: gate(unarchiveNode),
-      emptyTrash: gate(emptyTrash),
+      moveNode: gateOutcome(moveNode),
+      toggleComplete: gateOutcome(toggleComplete),
+      toggleCollapsed: gateOutcome(toggleCollapsed),
+      expandAll: gateOutcome(expandAll),
+      collapseAll: gateOutcome(collapseAll),
+      sortSubtreeAscending: gateOutcome(sortSubtreeAscending),
+      sortSubtreeDescending: gateOutcome(sortSubtreeDescending),
+      toggleStar: gateOutcome(toggleStar),
+      duplicateNode: gateOutcome(duplicateNode),
+      removeEmptyNode: gateOutcome(removeEmptyNode),
+      deleteNode: gateOutcome(deleteNode),
+      restoreNode: gateOutcome(restoreNode),
+      archiveNode: gateOutcome(archiveNode),
+      unarchiveNode: gateOutcome(unarchiveNode),
+      emptyTrash: gateOutcome(emptyTrash),
       selectLibraryView: gate(selectLibraryView),
       toggleTagFilter: gate(toggleTagFilter),
       searchNotes: (query) =>

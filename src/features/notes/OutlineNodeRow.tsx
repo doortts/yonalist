@@ -35,6 +35,7 @@ import {
   useNotesActions,
   useNotesState
 } from "./NotesWorkspaceContext";
+import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import type {
   NotesNodeDraft,
   NotesPreparedMove
@@ -72,6 +73,12 @@ interface OutlineNodeRowProps {
 function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
 }
+
+// Shown on the row when a structural command settles as "skipped" (a paused
+// write, or a stale/closed session) so an Enter/Tab/Backspace does not vanish
+// without explanation. Worded to match the pane's writeError banner (0.8).
+const STRUCTURAL_COMMAND_SKIPPED_NOTICE =
+  "Command paused — a recent change could not be saved. Retry the save to continue.";
 
 function OutlineNodeRowComponent({
   nodeId,
@@ -131,6 +138,7 @@ function OutlineNodeRowComponent({
     Boolean((draft?.note ?? node?.note ?? "").trim())
   );
   const [structuralCommandBusy, setStructuralCommandBusy] = useState(false);
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const titleSelectionRef = useRef<{
@@ -324,22 +332,40 @@ function OutlineNodeRowComponent({
     saveDrafts();
   };
 
-  const runStructuralCommand = (command: () => Promise<void>) => {
+  const runStructuralCommand = (
+    command: () => Promise<NotesWorkspaceCommandOutcome | void>
+  ) => {
     if (structuralCommandInFlightRef.current) {
       return;
     }
     structuralCommandInFlightRef.current = true;
     setStructuralCommandBusy(true);
-    let completion: Promise<void>;
+    setCommandNotice(null);
+    // Remember the caret so a dropped command can hand focus back rather than
+    // stranding it, e.g. after Enter blurs the title on the way to a split.
+    const focusedBeforeCommand =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    let completion: Promise<NotesWorkspaceCommandOutcome | void>;
     try {
       completion = command();
     } catch {
       structuralCommandInFlightRef.current = false;
+      setStructuralCommandBusy(false);
       return;
     }
-    const settle = () => {
+    const settle = (outcome: NotesWorkspaceCommandOutcome | void) => {
       structuralCommandInFlightRef.current = false;
       setStructuralCommandBusy(false);
+      if (outcome === "skipped") {
+        const restoreTarget =
+          focusedBeforeCommand?.isConnected === true
+            ? focusedBeforeCommand
+            : titleRef.current;
+        restoreTarget?.focus();
+        setCommandNotice(STRUCTURAL_COMMAND_SKIPPED_NOTICE);
+      }
     };
     void completion.then(settle, settle);
   };
@@ -719,6 +745,12 @@ function OutlineNodeRowComponent({
           }}
         />
       </div>
+
+      {commandNotice && (
+        <p className="notes-node-command-notice" role="alert">
+          {commandNotice}
+        </p>
+      )}
 
       {noteOpen && (
         <NoteTextField

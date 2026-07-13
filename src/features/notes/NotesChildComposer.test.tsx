@@ -8,6 +8,7 @@ import type { NoteNode } from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
+import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 
 const notesStyles = readFileSync(
@@ -170,7 +171,7 @@ describe("NotesChildComposer", () => {
 
   it("keeps keyboard focus through a rejected create and ignores repeated activation", async () => {
     const user = userEvent.setup();
-    const pendingCreate = deferred<void>();
+    const pendingCreate = deferred<NotesWorkspaceCommandOutcome>();
     const workspace = workspaceValue();
     workspace.actions.createChild = vi.fn(() => pendingCreate.promise);
     renderComposer(workspace);

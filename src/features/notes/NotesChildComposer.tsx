@@ -25,7 +25,7 @@ export function NotesChildComposer({
     }
     createInFlightRef.current = true;
     setCreating(true);
-    let completion: Promise<void>;
+    let completion: Promise<unknown>;
     try {
       completion = actions.createChild(parentId);
     } catch {

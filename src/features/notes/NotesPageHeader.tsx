@@ -150,13 +150,13 @@ export function NotesPageHeader({
     return null;
   }
 
-  const runCommand = (command: () => Promise<void>) => {
+  const runCommand = (command: () => Promise<unknown>) => {
     if (commandInFlightRef.current) {
       return;
     }
     commandInFlightRef.current = true;
     setCommandBusy(true);
-    let completion: Promise<void>;
+    let completion: Promise<unknown>;
     try {
       completion = command();
     } catch {

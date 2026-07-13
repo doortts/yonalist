@@ -10,6 +10,7 @@ import {
   MAX_DEBOUNCE_LATENCY_MS
 } from "../../services/notesWriteQueue";
 import type {
+  NotesWorkspaceCommandOutcome,
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult
@@ -134,15 +135,15 @@ function createSession(options: {
   };
   const runSerialized = (
     work: (context: NotesWorkspaceQueueContext) => unknown
-  ): Promise<void> => {
+  ): Promise<NotesWorkspaceCommandOutcome> => {
     const run = tail.then(() => work(context));
     tail = run.then(
       () => undefined,
       () => undefined
     );
     return run.then(
-      () => undefined,
-      () => undefined
+      () => "committed" as const,
+      () => "failed" as const
     );
   };
   const history = {

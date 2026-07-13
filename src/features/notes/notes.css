@@ -898,6 +898,16 @@ button.notes-date-token:hover {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
+.notes-node-command-notice {
+  margin: 4px 0 0;
+  padding: 6px 9px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+}
+
 .notes-inline-warning {
   display: flex;
   align-items: center;

@@ -15,6 +15,7 @@ import {
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
 import type {
+  NotesWorkspaceCommandOutcome,
   NotesWorkspaceCoordinatorSession,
   NotesWorkspaceQueueContext,
   NotesWorkspaceQueueResult,
@@ -93,7 +94,7 @@ export interface NotesCommandContext {
       record: NotesWorkspaceSessionRecord
     ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
     options?: StructuralCommandOptions
-  ) => Promise<void>;
+  ) => Promise<NotesWorkspaceCommandOutcome>;
   readonly rememberHistoryAfter: (
     context: NotesHistoryContext | null | undefined,
     workspace: NotesWorkspace,
@@ -148,11 +149,15 @@ function activateAllLibraryView(ctx: NotesCommandContext): void {
   ctx.setActiveTagFilters([]);
 }
 
-export async function createRootCommand(ctx: NotesCommandContext): Promise<void> {
+export async function createRootCommand(
+  ctx: NotesCommandContext
+): Promise<NotesWorkspaceCommandOutcome> {
   const transitionToAll = ctx.libraryViewRef.current !== "all";
   let created = false;
   const creation = { record: null as NotesWorkspaceSessionRecord | null };
-  await ctx.runStructuralCommand("create", async (context, historyContext) => {
+  const outcome = await ctx.runStructuralCommand(
+    "create",
+    async (context, historyContext) => {
     const ownerRecord = ctx.sessionRecordRef.current;
     if (!ownerRecord) {
       return { kind: "skipped" };
@@ -220,12 +225,13 @@ export async function createRootCommand(ctx: NotesCommandContext): Promise<void>
     activateAllLibraryView(ctx);
     ctx.replaceLocalExpansions(new Set());
   }
+  return outcome;
 }
 
 export async function createChildCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("create", async (context, historyContext) => {
     const before = confirmedState(context);
     if (!before.nodesById[nodeId]) {
@@ -270,7 +276,7 @@ export async function splitNodeCommand(
   prefix: string,
   suffix: string,
   options?: NotesWorkspaceCompoundOptions
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
   const record = ctx.sessionRecordRef.current;
@@ -350,10 +356,11 @@ export async function splitNodeCommand(
       return result;
     }
   );
-  return completion.then(() => {
+  return completion.then((outcome) => {
     if (succeeded) {
       notifySuccess(options?.onSuccess);
     }
+    return outcome;
   });
 }
 
@@ -361,7 +368,7 @@ export async function updateNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   patch: Pick<NoteNode, "title" | "note">
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("update", async (context, historyContext) => {
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
@@ -392,7 +399,7 @@ export async function moveNodeCommand(
   input: MoveNoteNodeInput,
   focusNodeId?: NoteId | null,
   options?: NotesWorkspaceCompoundOptions
-): Promise<boolean> {
+): Promise<NotesWorkspaceCommandOutcome> {
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(input.id) ?? false;
   const record = ctx.sessionRecordRef.current;
@@ -400,8 +407,7 @@ export async function moveNodeCommand(
   const hasCentralDraft = centralDraft !== undefined;
   const inlineDraft =
     hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-  let succeeded = false;
-  await ctx.runStructuralCommand("move", async (context, historyContext, executionRecord) => {
+  return ctx.runStructuralCommand("move", async (context, historyContext, executionRecord) => {
     const before = confirmedState(context);
     const expandNodeId = options?.expandNodeId;
     if (
@@ -485,23 +491,14 @@ export async function moveNodeCommand(
         result.workspace
       );
     }
-    succeeded =
-      result.kind === "authoritative" &&
-      (!historyContext ||
-        Boolean(
-          result.committedHistoryEntryIds?.includes(
-            historyContext.entryId
-          )
-        ));
     return result;
   });
-  return succeeded;
 }
 
 export async function toggleCompleteCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("complete", async (context, historyContext) => {
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
@@ -527,13 +524,15 @@ export async function toggleCompleteCommand(
 export async function toggleCollapsedCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   if (ctx.locallyExpandedNodeIdsRef.current.has(nodeId)) {
     const next = new Set(ctx.locallyExpandedNodeIdsRef.current);
     next.delete(nodeId);
     ctx.replaceLocalExpansions(next);
-    return;
+    // Collapsing a locally expanded subtree is a client-only navigation change;
+    // it commits immediately without touching the write queue.
+    return "committed";
   }
   return ctx.runStructuralCommand("collapse", async (context, historyContext) => {
     if (!confirmedState(context).nodesById[nodeId]) {
@@ -567,7 +566,7 @@ export async function runAtomicSubtreeCommand(
     | "sortSubtreeDescending",
   nodeId: NoteId,
   reconcileExpansions: boolean
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand(
     commandKind,
     async (context, historyContext) => {
@@ -620,7 +619,7 @@ export async function runAtomicSubtreeCommand(
 export async function toggleStarCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("star", async (context, historyContext) => {
     if (!confirmedState(context).nodesById[nodeId]) {
       return { kind: "skipped" };
@@ -646,7 +645,7 @@ export async function toggleStarCommand(
 export async function duplicateNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   return ctx.runStructuralCommand("duplicate", async (context, historyContext) => {
     const before = confirmedState(context);
     if (!before.nodesById[nodeId]) {
@@ -684,14 +683,14 @@ export async function runRootLifecycle(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   mutation: "archive" | "unarchive" | "trash"
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   const ownerRecord = ctx.sessionRecordRef.current;
   if (!ownerRecord) {
-    return;
+    return "skipped";
   }
   const visibleNode = ctx.stateRef.current.nodesById[nodeId];
   if (!visibleNode || visibleNode.parentId !== null) {
-    return;
+    return "skipped";
   }
 
   const liveNavigation = ctx.currentNavigation();
@@ -717,7 +716,7 @@ export async function runRootLifecycle(
     resolvedNavigationVersion: null
   };
 
-  await ctx.runStructuralCommand(
+  const outcome = await ctx.runStructuralCommand(
     mutation,
     async (context, historyContext) => {
       const beforeWorkspace = confirmedState(context);
@@ -868,7 +867,7 @@ export async function runRootLifecycle(
   );
 
   if (!ownerStillActive(ctx, ownerRecord)) {
-    return;
+    return outcome;
   }
 
   if (lifecycleResult.transition) {
@@ -884,6 +883,7 @@ export async function runRootLifecycle(
   if (lifecycleResult.recoveredToActive) {
     activateAllLibraryView(ctx);
   }
+  return outcome;
 }
 
 export async function removeEmptyNodeCommand(
@@ -891,7 +891,7 @@ export async function removeEmptyNodeCommand(
   nodeId: NoteId,
   focusNodeId?: NoteId | null,
   options?: NotesWorkspaceCompoundOptions
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   const hadCentralDraft =
     ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
   const record = ctx.sessionRecordRef.current;
@@ -965,7 +965,7 @@ export async function removeEmptyNodeCommand(
 export async function deleteNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   if (ctx.stateRef.current.nodesById[nodeId]?.parentId === null) {
     return runRootLifecycle(ctx, nodeId, "trash");
   }
@@ -994,7 +994,7 @@ export async function deleteNodeCommand(
 export async function restoreNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId
-): Promise<void> {
+): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   const ownerRecord = ctx.sessionRecordRef.current;
   const beforeNavigationVersion = ctx.navigationVersionRef.current;
@@ -1005,7 +1005,7 @@ export async function restoreNodeCommand(
       ctx.currentNavigation().zoomRootId
     ) === nodeId;
   let followedIntoActive = false;
-  await ctx.runStructuralCommand("restore", async (context, historyContext) => {
+  const outcome = await ctx.runStructuralCommand("restore", async (context, historyContext) => {
     const mutation = unwrapNotesMutation(await context.repository.restoreNode(
       context.vaultRoot,
       nodeId,
@@ -1056,17 +1056,20 @@ export async function restoreNodeCommand(
     !ownerStillActive(ctx, ownerRecord) ||
     ctx.navigationVersionRef.current !== beforeNavigationVersion
   ) {
-    return;
+    return outcome;
   }
   activateAllLibraryView(ctx);
   ctx.replaceLocalExpansions(new Set());
+  return outcome;
 }
 
-export function emptyTrashCommand(ctx: NotesCommandContext): Promise<void> {
+export function emptyTrashCommand(
+  ctx: NotesCommandContext
+): Promise<NotesWorkspaceCommandOutcome> {
   ctx.closeTextBurst();
   const record = ctx.sessionRecordRef.current;
   if (!record) {
-    return Promise.resolve();
+    return Promise.resolve("skipped");
   }
   const scope = ctx.activeScopeRef.current;
   return record.session.enqueueStructural(async (context) => {
@@ -1100,12 +1103,14 @@ export async function commitPreparedMoveCommand(
   prepared: NotesPreparedMove,
   destinationId: NoteId | null
 ): Promise<NotesPreparedMoveCommitResult> {
-  const staleError: NotesPreparedMoveCommitResult = {
-    ok: false,
-    error: "Notes changed while Move To was open. Refresh Move To and try again."
-  };
-  let outcome: NotesPreparedMoveCommitResult = staleError;
-  await ctx.runStructuralCommand(
+  const staleError =
+    "Notes changed while Move To was open. Refresh Move To and try again.";
+  // The structural settlement (below) tells us whether the queued move reached
+  // the backend; this closure variable only carries the *more specific* failure
+  // reason for the two cases the three-value outcome cannot express. It no
+  // longer smuggles the ok/failed verdict — that comes from the return value.
+  let specificError: string | null = null;
+  const settlement = await ctx.runStructuralCommand(
     "move",
     async (context, historyContext) => {
       const stale = () =>
@@ -1125,10 +1130,7 @@ export async function commitPreparedMoveCommand(
           { kind: "active" }
         );
       } catch {
-        outcome = {
-          ok: false,
-          error: "Could not refresh move destinations. Try again."
-        };
+        specificError = "Could not refresh move destinations. Try again.";
         return { kind: "skipped" };
       }
       if (stale()) {
@@ -1174,10 +1176,8 @@ export async function commitPreparedMoveCommand(
           )
         );
       } catch (cause) {
-        outcome = {
-          ok: false,
-          error: "Move could not be completed. Refresh Move To and try again."
-        };
+        specificError =
+          "Move could not be completed. Refresh Move To and try again.";
         throw cause;
       }
       const projection = await projectNotesMutation(
@@ -1196,7 +1196,6 @@ export async function commitPreparedMoveCommand(
       );
       if (!historyContext || appliedContext) {
         ctx.movePreparationTokenRef.current += 1;
-        outcome = { ok: true };
       }
       return directMutationResult(
         mutation,
@@ -1205,5 +1204,13 @@ export async function commitPreparedMoveCommand(
       );
     }
   );
-  return outcome;
+  if (specificError !== null) {
+    return { ok: false, error: specificError };
+  }
+  if (settlement === "skipped") {
+    return { ok: false, error: staleError };
+  }
+  // "committed" — or "failed" from a projection error after the backend already
+  // committed the move — means the move reached the backend.
+  return { ok: true };
 }

@@ -2422,6 +2422,31 @@ describe("Notes workspace", () => {
     randomUUID.mockRestore();
   });
 
+  it("restores focus and surfaces a notice when a skipped split drops Enter", async () => {
+    configureRepository([
+      node({ id: "source", sortKey: 1, title: "alphaXYZomega" })
+    ]);
+    // Every draft flush fails, so the split's draft-flush barrier drops the
+    // structural command: the coordinator settles it as "skipped".
+    notesStoreMock.updateNode.mockRejectedValue(new Error("save failed"));
+    renderNotesWorkspace();
+    const title = await findTitleInput("alphaXYZomega");
+    fireEvent.change(title, { target: { value: "alphaXYZomega!" } });
+    title.focus();
+    title.setSelectionRange(5, 8);
+
+    expect(fireEvent.keyDown(title, { key: "Enter" })).toBe(false);
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledOnce()
+    );
+    // The split never reached the backend...
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    // ...and instead of Enter vanishing silently the row explains the pause...
+    await screen.findByText(/Command paused/i);
+    // ...and hands focus back to the title so the caret is not stranded.
+    await waitFor(() => expect(title).toHaveFocus());
+  });
+
   it("saves a dirty draft before Tab move and focuses after the move response", async () => {
     const before = [
       node({ id: "project", sortKey: 1, title: "Project" }),

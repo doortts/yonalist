@@ -55,6 +55,26 @@ export type NotesWorkspaceQueueResult =
 
 export type NotesWorkspaceQueueSettlement = NotesWorkspaceQueueResult;
 
+// The settlement verdict a caller gets back from enqueue/enqueueStructural.
+// - "committed": the work ran and produced an authoritative workspace.
+// - "skipped":   the work never ran (dropped draft-flush barrier, stale/closed
+//                session, canceled item) or returned `{ kind: "skipped" }`.
+// - "failed":    the work threw or returned `{ kind: "failure" }`.
+export type NotesWorkspaceCommandOutcome = "committed" | "skipped" | "failed";
+
+function settlementOutcome(
+  result: NotesWorkspaceQueueSettlement
+): NotesWorkspaceCommandOutcome {
+  switch (result.kind) {
+    case "authoritative":
+      return "committed";
+    case "failure":
+      return "failed";
+    default:
+      return "skipped";
+  }
+}
+
 export interface NotesWorkspaceQueueContext {
   repository: NotesStore;
   vaultRoot: string;
@@ -96,8 +116,10 @@ export interface NotesWorkspaceCoordinatorSession {
   enqueue(
     work: NotesWorkspaceQueueWork,
     options?: { silent?: boolean }
-  ): Promise<void>;
-  enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void>;
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  enqueueStructural(
+    work: NotesWorkspaceQueueWork
+  ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
 }
 
@@ -142,8 +164,8 @@ interface SessionState {
 
 interface QueueItemBase {
   entry: CoordinatorEntry;
-  completion: Promise<void>;
-  resolveCompletion: (() => void) | null;
+  completion: Promise<NotesWorkspaceCommandOutcome>;
+  resolveCompletion: ((outcome: NotesWorkspaceCommandOutcome) => void) | null;
   canceled: boolean;
 }
 
@@ -171,12 +193,12 @@ function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function completionParts(): {
-  completion: Promise<void>;
-  resolveCompletion: () => void;
+function completionParts<T>(): {
+  completion: Promise<T>;
+  resolveCompletion: (value: T) => void;
 } {
-  let resolveCompletion!: () => void;
-  const completion = new Promise<void>((resolve) => {
+  let resolveCompletion!: (value: T) => void;
+  const completion = new Promise<T>((resolve) => {
     resolveCompletion = resolve;
   });
   return { completion, resolveCompletion };
@@ -225,10 +247,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }
   };
 
-  const finishCompletion = (item: QueueItem): void => {
+  const finishCompletion = (
+    item: QueueItem,
+    outcome: NotesWorkspaceCommandOutcome
+  ): void => {
     const resolve = item.resolveCompletion;
     item.resolveCompletion = null;
-    resolve?.();
+    resolve?.(outcome);
   };
 
   const cancelItem = (item: QueueItem): void => {
@@ -242,7 +267,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.owner = null;
       item.work = null;
     }
-    finishCompletion(item);
+    // A canceled item never ran, so its caller learns the command was dropped.
+    finishCompletion(item, "skipped");
   };
 
   const removeQueuedItem = (item: QueueItem): void => {
@@ -371,7 +397,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       item.owner = null;
     }
 
-    finishCompletion(item);
+    finishCompletion(item, settlementOutcome(result));
     pump(entry);
   };
 
@@ -556,7 +582,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const entry = getOrCreateEntry(repository, vaultRoot);
       const session: SessionState = {
         ...(() => {
-          const close = completionParts();
+          const close = completionParts<void>();
           return {
             closeCompletion: close.completion,
             resolveClose: close.resolveCompletion
@@ -578,7 +604,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
 
       let activation = entry.pendingActivation;
       if (!activation) {
-        const completion = completionParts();
+        const completion = completionParts<NotesWorkspaceCommandOutcome>();
         activation = {
           kind: "activation",
           entry,
@@ -593,15 +619,16 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       session.activationItem = activation;
       pump(entry);
 
-      const activationCompletion = activation.completion;
+      // Activation callers only await readiness, not the settlement verdict.
+      const activationCompletion = activation.completion.then(() => undefined);
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
         silent = false
-      ): Promise<void> => {
+      ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active) {
-          return Promise.resolve();
+          return Promise.resolve("skipped");
         }
-        const completion = completionParts();
+        const completion = completionParts<NotesWorkspaceCommandOutcome>();
         const item: CommandItem = {
           kind: "command",
           entry,
@@ -632,10 +659,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         enqueue(
           work: NotesWorkspaceQueueWork,
           options?: { silent?: boolean }
-        ): Promise<void> {
+        ): Promise<NotesWorkspaceCommandOutcome> {
           return enqueueCommand(work, options?.silent ?? false);
         },
-        enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void> {
+        enqueueStructural(
+          work: NotesWorkspaceQueueWork
+        ): Promise<NotesWorkspaceCommandOutcome> {
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
             .map((participant) => {
@@ -664,41 +693,48 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             }
           };
           entry.pendingStructuralBarriers += 1;
-          const runStructuralIntent = async (): Promise<void> => {
-            try {
-              if (!session.active) {
-                return;
-              }
-              for (const intent of participants) {
-                const participant = intent.participant;
-                if (!participant.active) {
-                  continue;
+          const runStructuralIntent =
+            async (): Promise<NotesWorkspaceCommandOutcome> => {
+              try {
+                if (!session.active) {
+                  return "skipped";
                 }
-                if (
-                  participant.beforeStructural &&
-                  !(await participant.beforeStructural(intent.cutoff))
-                ) {
+                for (const intent of participants) {
+                  const participant = intent.participant;
+                  if (!participant.active) {
+                    continue;
+                  }
                   if (
-                    participant.active &&
-                    (participant.isCurrent?.() ?? true)
+                    participant.beforeStructural &&
+                    !(await participant.beforeStructural(intent.cutoff))
                   ) {
-                    return;
+                    if (
+                      participant.active &&
+                      (participant.isCurrent?.() ?? true)
+                    ) {
+                      // The draft-flush barrier failed for a still-current
+                      // participant: drop the structural command rather than
+                      // commit it over an unsaved draft.
+                      return "skipped";
+                    }
                   }
                 }
+                const structural = enqueueCommand(work);
+                finalizeParticipants();
+                return await structural;
+              } finally {
+                finalizeParticipants();
               }
-              const structural = enqueueCommand(work);
-              finalizeParticipants();
-              await structural;
-            } finally {
-              finalizeParticipants();
-            }
-          };
+            };
           const completion =
             entry.pendingStructuralBarriers === 1
               ? runStructuralIntent()
               : entry.structuralTail.then(runStructuralIntent);
           entry.structuralTail = completion
-            .catch(() => undefined)
+            .then(
+              () => undefined,
+              () => undefined
+            )
             .finally(() => {
               entry.pendingStructuralBarriers = Math.max(
                 0,
@@ -706,7 +742,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               );
               maybeDeleteEntry(entry);
             });
-          return Promise.race([completion, session.closeCompletion]);
+          // If the session closes before the structural intent settles, the
+          // command was effectively dropped for this caller.
+          return Promise.race([
+            completion,
+            session.closeCompletion.then(
+              (): NotesWorkspaceCommandOutcome => "skipped"
+            )
+          ]);
         },
         close(): void {
           closeSession(session);

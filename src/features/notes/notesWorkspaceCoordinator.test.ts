@@ -733,4 +733,79 @@ describe("notesWorkspaceCoordinator registry", () => {
     });
     session.close();
   });
+
+  it("reports enqueueStructural settlement as committed, skipped, or failed", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const drain = deferred<boolean>();
+    let allowDrain = true;
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/settlement",
+      onEvent: vi.fn(),
+      beforeStructural: () => (allowDrain ? Promise.resolve(true) : drain.promise),
+      isCurrent: () => true
+    });
+    await session.activation;
+
+    // Normal path: the work runs and returns authoritative -> "committed".
+    const committed = await session.enqueueStructural(() => ({
+      kind: "authoritative" as const,
+      workspace: workspace([node({ id: "committed" })])
+    }));
+    expect(committed).toBe("committed");
+
+    // The work throws -> "failed".
+    const failed = await session.enqueueStructural(() => {
+      throw new Error("boom");
+    });
+    expect(failed).toBe("failed");
+
+    // The draft-flush barrier fails for a still-current session -> the command
+    // is dropped before it runs -> "skipped".
+    allowDrain = false;
+    const droppedWork = vi.fn(() => ({ kind: "authoritative" as const, workspace: workspace([]) }));
+    const skipped = session.enqueueStructural(droppedWork);
+    await Promise.resolve();
+    drain.resolve(false);
+    expect(await skipped).toBe("skipped");
+    expect(droppedWork).not.toHaveBeenCalled();
+
+    session.close();
+  });
+
+  it("reports work that returns kind:'skipped' as a skipped settlement", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/settlement-skip",
+      onEvent: vi.fn()
+    });
+    await session.activation;
+
+    const outcome = await session.enqueue(() => ({ kind: "skipped" as const }));
+    expect(outcome).toBe("skipped");
+
+    session.close();
+  });
+
+  it("reports enqueue on a closed session as skipped without running the work", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/settlement-closed",
+      onEvent: vi.fn()
+    });
+    await session.activation;
+    session.close();
+
+    const work = vi.fn(() => ({
+      kind: "authoritative" as const,
+      workspace: workspace([])
+    }));
+    expect(await session.enqueue(work)).toBe("skipped");
+    expect(work).not.toHaveBeenCalled();
+  });
 });

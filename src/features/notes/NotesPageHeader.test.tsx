@@ -17,6 +17,7 @@ import type {
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type {
   NotesNodeDraft,
@@ -654,10 +655,13 @@ describe("NotesPageHeader", () => {
   });
 
   it("disables subtree command re-entry while a page action is pending", async () => {
-    let resolveExpand!: () => void;
+    let resolveExpand!: (outcome: NotesWorkspaceCommandOutcome) => void;
     const workspace = workspaceValue();
     workspace.actions.expandAll = vi.fn(
-      () => new Promise<void>((resolve) => { resolveExpand = resolve; })
+      () =>
+        new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
+          resolveExpand = resolve;
+        })
     );
     const user = userEvent.setup();
     renderZoomedOutline(workspace);
@@ -683,7 +687,7 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.expandAll).toHaveBeenCalledOnce();
 
     await act(async () => {
-      resolveExpand();
+      resolveExpand("committed");
       await Promise.resolve();
     });
   });

@@ -155,7 +155,7 @@ function historyContext(commandKind: string) {
 interface StartupCommandProps {
   actions: NotesWorkspaceActions;
   identity: string;
-  onCompletion(completion: Promise<void>): void;
+  onCompletion(completion: Promise<unknown>): void;
 }
 
 function LayoutStartupCommand({
@@ -184,7 +184,7 @@ interface StartupHarnessProps {
   effect: "layout" | "passive";
   repository: NotesStore;
   vaultRoot: string;
-  onCompletion(completion: Promise<void>): void;
+  onCompletion(completion: Promise<unknown>): void;
   onWorkspace(workspace: UseNotesWorkspaceResult): void;
 }
 
@@ -1342,7 +1342,7 @@ describe("useNotesWorkspace", () => {
           .fn()
           .mockResolvedValue(workspace([node({ id: "pre-session-root" })]))
       });
-      const completions: Promise<void>[] = [];
+      const completions: Promise<unknown>[] = [];
       let latestWorkspace: UseNotesWorkspaceResult | undefined;
       render(
         <StartupHarness
@@ -1390,7 +1390,7 @@ describe("useNotesWorkspace", () => {
         .fn()
         .mockResolvedValue(workspace([node({ id: "strict-root" })]))
     });
-    const completions: Promise<void>[] = [];
+    const completions: Promise<unknown>[] = [];
 
     render(
       <StrictMode>
@@ -1425,7 +1425,7 @@ describe("useNotesWorkspace", () => {
         .fn()
         .mockResolvedValue(workspace([node({ id: "new-vault-root" })]))
     });
-    const completions: Promise<void>[] = [];
+    const completions: Promise<unknown>[] = [];
     const view = render(
       <StartupHarness
         effect="layout"
@@ -1536,7 +1536,7 @@ describe("useNotesWorkspace", () => {
     expect(store.initialize).toHaveBeenCalledOnce();
     expect(store.loadWorkspace).not.toHaveBeenCalled();
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.updateNode("loaded", {
         title: "new",
@@ -1589,8 +1589,8 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("initial", {
         title: "first",
@@ -1656,8 +1656,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("initial", {
         title: "first",
@@ -1698,7 +1698,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.splitNode(
         "root",
@@ -1709,7 +1709,7 @@ describe("useNotesWorkspace", () => {
       );
     });
     await act(async () => {
-      await expect(completion).resolves.toBeUndefined();
+      await expect(completion).resolves.toBe("failed");
     });
 
     expect(store.updateNode).toHaveBeenCalledWith(
@@ -2017,7 +2017,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.moveNode(
         { id: "second", parentId: "first", afterId: "hidden" },
@@ -2093,7 +2093,7 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.updateNode("root", {
         title: "late",
@@ -2194,7 +2194,7 @@ describe("useNotesWorkspace", () => {
     expect(result.current.actions.acknowledgeFocus).toEqual(
       expect.any(Function)
     );
-    let acknowledgement!: Promise<void>;
+    let acknowledgement!: Promise<unknown>;
     act(() => {
       acknowledgement = result.current.actions.acknowledgeFocus("created");
     });
@@ -2240,7 +2240,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.moveNode(
         { id: "child", parentId: null, afterId: "root" },
@@ -2358,7 +2358,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.removeEmptyNode("empty", "first");
     });
@@ -2415,8 +2415,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("root", {
         title: "first",
@@ -2461,8 +2461,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("root", {
         title: "first",
@@ -2514,8 +2514,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.createRoot();
       secondCompletion = result.current.actions.createRoot();
@@ -2647,8 +2647,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let parentCompletion!: Promise<void>;
-    let childCompletion!: Promise<void>;
+    let parentCompletion!: Promise<unknown>;
+    let childCompletion!: Promise<unknown>;
     act(() => {
       parentCompletion = result.current.actions.createRoot();
       childCompletion = result.current.actions.createChild("new-parent");
@@ -2696,8 +2696,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let createCompletion!: Promise<void>;
-    let duplicateCompletion!: Promise<void>;
+    let createCompletion!: Promise<unknown>;
+    let duplicateCompletion!: Promise<unknown>;
     act(() => {
       createCompletion = result.current.actions.createRoot();
       duplicateCompletion = result.current.actions.duplicateNode("source");
@@ -2746,9 +2746,9 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
-    let zoomCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
+    let zoomCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("root", {
         title: "first",
@@ -2765,8 +2765,10 @@ describe("useNotesWorkspace", () => {
     expect(secondCompletion).toBeInstanceOf(Promise);
     expect(zoomCompletion).toBeInstanceOf(Promise);
     await act(async () => {
-      expect(await firstCompletion).toBeUndefined();
-      expect(await secondCompletion).toBeUndefined();
+      // The first update's synchronous throw settles as "failed"; the second
+      // commits; zoom is navigation-only and reports no settlement.
+      expect(await firstCompletion).toBe("failed");
+      expect(await secondCompletion).toBe("committed");
       expect(await zoomCompletion).toBeUndefined();
     });
     expect(store.updateNode).toHaveBeenCalledTimes(2);
@@ -3195,7 +3197,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const prepared = await result.current.prepareMoveNode!("source");
 
-    let earlierCompletion!: Promise<void>;
+    let earlierCompletion!: Promise<unknown>;
     act(() => {
       earlierCompletion = result.current.actions.moveNode({
         id: "source",
@@ -3268,7 +3270,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const prepared = await result.current.prepareMoveNode!("source");
 
-    let earlierCompletion!: Promise<void>;
+    let earlierCompletion!: Promise<unknown>;
     act(() => {
       earlierCompletion = result.current.actions.moveNode({
         id: "target",
@@ -4532,7 +4534,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.loading).toBe(false);
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.updateNode("root", {
         title: "structural",
@@ -4635,8 +4637,8 @@ describe("useNotesWorkspace", () => {
         note: ""
       });
     });
-    let splitCompletion!: Promise<void>;
-    let otherCompletion!: Promise<void>;
+    let splitCompletion!: Promise<unknown>;
+    let otherCompletion!: Promise<unknown>;
     act(() => {
       splitCompletion = result.current.actions.splitNode(
         "source",
@@ -4744,7 +4746,7 @@ describe("useNotesWorkspace", () => {
         "title"
       );
     });
-    let structural!: Promise<void>;
+    let structural!: Promise<unknown>;
     act(() => {
       structural = result.current.actions.splitNode(
         "target",
@@ -4816,7 +4818,7 @@ describe("useNotesWorkspace", () => {
         "title"
       );
     });
-    let structural!: Promise<void>;
+    let structural!: Promise<unknown>;
     act(() => {
       structural = second.result.current.actions.toggleStar("target");
     });
@@ -5025,7 +5027,7 @@ describe("useNotesWorkspace", () => {
         "title"
       );
     });
-    let structural!: Promise<void>;
+    let structural!: Promise<unknown>;
     act(() => {
       structural = result.current.actions.toggleStar("target");
     });
@@ -5141,7 +5143,7 @@ describe("useNotesWorkspace", () => {
           "title"
         );
       });
-      let removal!: Promise<void>;
+      let removal!: Promise<unknown>;
       act(() => {
         removal = result.current.actions.removeEmptyNode("root", "other");
       });
@@ -5540,7 +5542,7 @@ describe("useNotesWorkspace", () => {
         "note"
       );
     });
-    let replay!: Promise<void>;
+    let replay!: Promise<unknown>;
     act(() => {
       replay = result.current.actions.undo!();
     });
@@ -6488,7 +6490,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(oldStore.loadWorkspace).toHaveBeenCalledOnce());
 
-    let oldCompletion!: Promise<void>;
+    let oldCompletion!: Promise<unknown>;
     act(() => {
       oldCompletion = result.current.actions.updateNode("old", {
         title: "stale",
@@ -6540,8 +6542,8 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/command", repository: commandStore })
     );
     await waitFor(() => expect(commandHook.result.current.status).toBe("ready"));
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = commandHook.result.current.actions.updateNode("root", {
         title: "first",
@@ -6593,8 +6595,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(firstMount.result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let oldQueuedCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let oldQueuedCompletion!: Promise<unknown>;
     let oldQueuedSettled = false;
     act(() => {
       firstCompletion = firstMount.result.current.actions.updateNode("before-a1", {
@@ -6618,7 +6620,7 @@ describe("useNotesWorkspace", () => {
     const secondMount = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault-a", repository: store })
     );
-    let newCompletion!: Promise<void>;
+    let newCompletion!: Promise<unknown>;
     act(() => {
       newCompletion = secondMount.result.current.actions.updateNode("after-a1", {
         title: "A3",
@@ -6702,8 +6704,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.state.nodesById["a-before"]).toBeDefined());
 
-    let a1Completion!: Promise<void>;
-    let oldA2Completion!: Promise<void>;
+    let a1Completion!: Promise<unknown>;
+    let oldA2Completion!: Promise<unknown>;
     act(() => {
       a1Completion = result.current.actions.updateNode("a-before", {
         title: "A1",
@@ -6729,7 +6731,7 @@ describe("useNotesWorkspace", () => {
     );
 
     rerender({ vaultRoot: "/vault-a" });
-    let a3Completion!: Promise<void>;
+    let a3Completion!: Promise<unknown>;
     act(() => {
       a3Completion = result.current.actions.updateNode("after-a1", {
         title: "A3",
@@ -6789,8 +6791,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
-    let secondCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
+    let secondCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("root", {
         title: "committed-A1",
@@ -6836,8 +6838,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let rootCompletion!: Promise<void>;
-    let childCompletion!: Promise<void>;
+    let rootCompletion!: Promise<unknown>;
+    let childCompletion!: Promise<unknown>;
     act(() => {
       rootCompletion = result.current.actions.createRoot();
       childCompletion = result.current.actions.createChild("new-parent");
@@ -6861,8 +6863,8 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let splitCompletion!: Promise<void>;
-    let duplicateCompletion!: Promise<void>;
+    let splitCompletion!: Promise<unknown>;
+    let duplicateCompletion!: Promise<unknown>;
     act(() => {
       splitCompletion = result.current.actions.splitNode(
         "root",
@@ -6898,12 +6900,12 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let failedCompletion!: Promise<void>;
+    let failedCompletion!: Promise<unknown>;
     act(() => {
       failedCompletion = result.current.actions.createRoot();
     });
     await act(async () => {
-      await expect(failedCompletion).resolves.toBeUndefined();
+      await expect(failedCompletion).resolves.toBe("failed");
     });
     expect(store.createNode).not.toHaveBeenCalled();
     expect(result.current).toMatchObject({
@@ -6947,7 +6949,7 @@ describe("useNotesWorkspace", () => {
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
-    let firstCompletion!: Promise<void>;
+    let firstCompletion!: Promise<unknown>;
     act(() => {
       firstCompletion = result.current.actions.updateNode("root", {
         title: "first repository",
@@ -7194,7 +7196,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
     await act(async () => result.current.actions.zoomTo("second"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.archiveNode("second");
     });
@@ -7248,7 +7250,7 @@ describe("useNotesWorkspace", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
     await act(async () => result.current.actions.zoomTo("second"));
 
-    let completion!: Promise<void>;
+    let completion!: Promise<unknown>;
     act(() => {
       completion = result.current.actions.archiveNode("second");
     });
