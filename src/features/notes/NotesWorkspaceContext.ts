@@ -68,22 +68,3 @@ export function useNotesActions(): NotesActionsSlice {
   }
   return missing();
 }
-
-/**
- * Compatibility hook returning the merged workspace shape. Prefers the legacy
- * merged context (used by tests that provide a single value) and otherwise
- * stitches the three narrow contexts back together.
- */
-export function useNotesWorkspaceContext(): UseNotesWorkspaceResult {
-  const merged = useContext(NotesWorkspaceContext);
-  const state = useContext(NotesStateContext);
-  const drafts = useContext(NotesDraftsContext);
-  const actions = useContext(NotesActionsContext);
-  if (merged) {
-    return merged;
-  }
-  if (state && drafts && actions) {
-    return { ...state, ...drafts, ...actions };
-  }
-  return missing();
-}
