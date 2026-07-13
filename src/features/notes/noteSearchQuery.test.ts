@@ -86,10 +86,24 @@ describe("parseNoteSearchQuery", () => {
 
   it("uses Unicode lowercase normalization for Korean, astral, and combining tags", () => {
     expect(parseNoteSearchQuery("#프로젝트 @𐐏 #CAFE\u0301").requiredTags).toEqual([
-      { prefix: "#", normalizedTag: "cafe\u0301", displayTag: "CAFE\u0301" },
+      { prefix: "#", normalizedTag: "caf\u00e9", displayTag: "CAF\u00c9" },
       { prefix: "#", normalizedTag: "프로젝트", displayTag: "프로젝트" },
       { prefix: "@", normalizedTag: "𐐷", displayTag: "𐐏" }
     ]);
+  });
+
+  it("matches a decomposed stored tag when searching by its composed spelling", () => {
+    // A composed (NFC) query and a decomposed (NFD) stored note derive the same
+    // normalized tag, so searching by the composed spelling finds the decomposed node.
+    const composedQuery = parseNoteSearchQuery(`#${"café".normalize("NFC")}`)
+      .requiredTags.map((tag) => tag.normalizedTag);
+    const decomposedStored = tokenizeNoteText(`memo #${"café".normalize("NFD")}`)
+      .filter((token) => token.kind === "tag")
+      .map((token) => token.normalized);
+
+    expect(composedQuery).toHaveLength(1);
+    expect(composedQuery[0].normalize("NFC")).toBe(composedQuery[0]);
+    expect(decomposedStored).toEqual(composedQuery);
   });
 
   it("consumes exactly one syntactic marker and leaves mixed markers as text", () => {

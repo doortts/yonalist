@@ -28,7 +28,7 @@ use std::cell::RefCell;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-const NOTES_SCHEMA_VERSION: i64 = 3;
+const NOTES_SCHEMA_VERSION: i64 = 4;
 const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
 const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
 const NOTE_DATE_PARSER_VERSION: i64 = 3;
@@ -259,6 +259,10 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
             migrate_version_two_to_three(&transaction)?;
             transaction
+                .pragma_update(None, "user_version", 3)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_three_to_four(&transaction)?;
+            transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
         }
@@ -269,11 +273,25 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
             migrate_version_two_to_three(&transaction)?;
             transaction
+                .pragma_update(None, "user_version", 3)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_three_to_four(&transaction)?;
+            transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
         }
         2 => {
             migrate_version_two_to_three(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", 3)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+            migrate_version_three_to_four(&transaction)?;
+            transaction
+                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
+                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
+        }
+        3 => {
+            migrate_version_three_to_four(&transaction)?;
             transaction
                 .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
                 .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
@@ -869,6 +887,23 @@ fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), Str
         return Ok(());
     }
 
+    rebuild_all_note_tags(transaction)?;
+    transaction
+        .execute(
+            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![
+                NOTE_TAG_TOKENIZER_VERSION_KEY,
+                NOTE_TAG_TOKENIZER_VERSION.to_string()
+            ],
+        )
+        .map_err(|error| format!("Could not record the Notes tag tokenizer version: {error}"))?;
+    Ok(())
+}
+
+// Re-derives the tag index for every node from its current title/note. Callers own
+// the version gating; this only rewrites `notes_tags` rows through `replace_tags`.
+fn rebuild_all_note_tags(transaction: &Transaction<'_>) -> Result<(), String> {
     let nodes = transaction
         .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
         .map_err(|error| format!("Could not prepare the Notes tag index rebuild: {error}"))?
@@ -885,16 +920,6 @@ fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), Str
     for (node_id, title, note) in nodes {
         replace_tags(transaction, &node_id, &title, &note)?;
     }
-    transaction
-        .execute(
-            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            params![
-                NOTE_TAG_TOKENIZER_VERSION_KEY,
-                NOTE_TAG_TOKENIZER_VERSION.to_string()
-            ],
-        )
-        .map_err(|error| format!("Could not record the Notes tag tokenizer version: {error}"))?;
     Ok(())
 }
 
@@ -1168,6 +1193,15 @@ fn migrate_version_two_to_three(transaction: &Transaction<'_>) -> Result<(), Str
             "#,
         )
         .map_err(|error| format!("Could not migrate Notes storage to version three: {error}"))
+}
+
+// Version four re-derives every node's tags under the NFC-normalizing tokenizer and
+// rebuilds the tag index, unifying tags whose stored text was decomposed (NFD) — a
+// common macOS spelling — with their composed (NFC) equivalents. No table shape
+// changes; only `notes_tags` rows are rewritten.
+fn migrate_version_three_to_four(transaction: &Transaction<'_>) -> Result<(), String> {
+    rebuild_all_note_tags(transaction)
+        .map_err(|error| format!("Could not migrate Notes storage to version four: {error}"))
 }
 
 #[derive(Clone)]
@@ -4415,7 +4449,7 @@ mod tests {
             .expect("create metadata fixture");
         let connection = Connection::open(&database_path).expect("create database fixture");
         connection
-            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 4;")
+            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 5;")
             .expect("seed future schema");
         drop(connection);
         let bytes_before = std::fs::read(&database_path).expect("read database before export open");
@@ -4425,7 +4459,7 @@ mod tests {
 
         assert_eq!(
             error,
-            "This Notes database uses unsupported schema version 4."
+            "This Notes database uses unsupported schema version 5."
         );
         assert_eq!(
             std::fs::read(&database_path).expect("read database after export open"),
@@ -6068,7 +6102,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_connection_is_configured_and_migrated_to_version_three() {
+    fn notes_connection_is_configured_and_migrated_to_version_four() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect notes");
@@ -6089,7 +6123,7 @@ mod tests {
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy_timeout, 5_000);
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
         assert!(column_exists(
             &connection,
             "notes_nodes",
@@ -6997,8 +7031,8 @@ mod tests {
                 (
                     NODE_ID.to_string(),
                     "#".to_string(),
-                    "café".to_string(),
-                    "café".to_string(),
+                    "caf\u{e9}".to_string(),
+                    "caf\u{e9}".to_string(),
                 ),
                 (
                     CHILD_ID.to_string(),
@@ -7411,7 +7445,7 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("migrated user version");
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
         let live_batch: Option<String> = connection
             .query_row(
                 "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
@@ -7467,7 +7501,7 @@ mod tests {
     }
 
     #[test]
-    fn version_two_rows_and_hashtags_migrate_to_version_three() {
+    fn version_two_rows_and_hashtags_migrate_to_version_four() {
         let mut connection = Connection::open_in_memory().expect("in-memory database");
         seed_version_two_database(&mut connection);
         connection
@@ -7490,7 +7524,7 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("migrated user version");
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
         let migrated: (String, String, String, Option<String>, Option<String>) = connection
             .query_row(
                 "SELECT prefix, tag, normalized_tag, node.archived_at, node.archive_root_id \
@@ -7518,6 +7552,87 @@ mod tests {
                 None
             )
         );
+    }
+
+    #[test]
+    fn version_three_nfd_tags_migrate_to_nfc_on_version_four_upgrade() {
+        let mut connection = test_connection();
+
+        // A node whose title was entered decomposed (NFD) — the macOS default for
+        // dragged/pasted/IME text — together with the tag rows a pre-NFC tokenizer
+        // would have stored for it.
+        let decomposed_cafe = "cafe\u{0301}";
+        let decomposed_hangul = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
+                 VALUES (?1, 1024, ?2, '', '2026-07-10T00:00:00.000Z', \
+                         '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, format!("#{decomposed_cafe} #{decomposed_hangul}")],
+            )
+            .expect("insert decomposed node");
+        connection
+            .execute("DELETE FROM notes_tags", [])
+            .expect("clear derived tags");
+        connection
+            .execute(
+                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) VALUES \
+                   (?1, '#', ?2, ?2), (?1, '#', ?3, ?3)",
+                params![NODE_ID, decomposed_cafe, decomposed_hangul],
+            )
+            .expect("seed decomposed tags");
+        connection
+            .pragma_update(None, "user_version", 3)
+            .expect("pin database to version three");
+
+        initialize_notes_db(&mut connection).expect("upgrade version three database to four");
+
+        let user_version: i64 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("upgraded user version");
+        assert_eq!(user_version, 4);
+
+        let composed_cafe = "caf\u{e9}";
+        let composed_hangul = "\u{d55c}\u{ae00}";
+        let stored: Vec<(String, String)> = connection
+            .prepare(
+                "SELECT tag, normalized_tag FROM notes_tags \
+                 WHERE node_id = ?1 ORDER BY normalized_tag",
+            )
+            .expect("prepare rebuilt tags")
+            .query_map([NODE_ID], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query rebuilt tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect rebuilt tags");
+        assert_eq!(
+            stored,
+            vec![
+                (composed_cafe.to_string(), composed_cafe.to_string()),
+                (composed_hangul.to_string(), composed_hangul.to_string()),
+            ]
+        );
+
+        // Searching by the composed spelling finds the node whose text was decomposed.
+        for composed in [composed_cafe, composed_hangul] {
+            let matches = search_nodes_structured(
+                &connection,
+                &structured_query(
+                    "",
+                    vec![search_tag(NoteTagPrefix::Hash, composed)],
+                    vec![],
+                    vec![],
+                ),
+            )
+            .expect("composed tag search");
+            assert_eq!(
+                matches
+                    .iter()
+                    .map(|result| result.node_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![NODE_ID],
+                "composed tag {composed:?} must find the node stored under NFD",
+            );
+        }
     }
 
     #[test]
@@ -7612,7 +7727,7 @@ mod tests {
         let user_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("user version");
-        assert_eq!(user_version, 3);
+        assert_eq!(user_version, 4);
         assert!(column_exists(
             &connection,
             "notes_nodes",
@@ -7699,7 +7814,7 @@ mod tests {
             .execute_batch(
                 "PRAGMA journal_mode = WAL; \
                  PRAGMA wal_autocheckpoint = 0; \
-                 PRAGMA user_version = 4; \
+                 PRAGMA user_version = 5; \
                  PRAGMA wal_checkpoint(TRUNCATE);",
             )
             .expect("checkpoint future WAL schema");
@@ -7707,7 +7822,7 @@ mod tests {
         let bytes_before = std::fs::read(&path).expect("future database bytes before connect");
         assert_eq!(
             u32::from_be_bytes(bytes_before[60..64].try_into().expect("user version bytes")),
-            4
+            5
         );
         let wal_path = sqlite_companion_path(&path, "-wal");
         let shm_path = sqlite_companion_path(&path, "-shm");
@@ -7716,7 +7831,7 @@ mod tests {
 
         let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
             .expect_err("future schema must be rejected");
-        assert!(error.contains("unsupported schema version 4"));
+        assert!(error.contains("unsupported schema version 5"));
         assert_eq!(
             std::fs::read(&path).expect("future database bytes after connect"),
             bytes_before
@@ -7738,13 +7853,13 @@ mod tests {
                  PRAGMA wal_autocheckpoint = 0; \
                  PRAGMA user_version = 3; \
                  PRAGMA wal_checkpoint(TRUNCATE); \
-                 PRAGMA user_version = 4;",
+                 PRAGMA user_version = 5;",
             )
             .expect("seed live future WAL schema");
         let visible_version: i64 = writer
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .expect("live WAL user version");
-        assert_eq!(visible_version, 4);
+        assert_eq!(visible_version, 5);
 
         let wal_path = sqlite_companion_path(&path, "-wal");
         let shm_path = sqlite_companion_path(&path, "-shm");
@@ -7756,16 +7871,16 @@ mod tests {
         assert_eq!(
             u32::from_be_bytes(main_before[60..64].try_into().expect("user version bytes")),
             3,
-            "version 4 must remain uncheckpointed in the WAL"
+            "version 5 must remain uncheckpointed in the WAL"
         );
 
         let preflight_error = preflight_existing_notes_schema(&path)
             .expect_err("read-only preflight must reject the future WAL schema");
-        assert!(preflight_error.contains("unsupported schema version 4"));
+        assert!(preflight_error.contains("unsupported schema version 5"));
 
         let error = connect_notes_db(vault_path).expect_err("future WAL schema must be rejected");
 
-        assert!(error.contains("unsupported schema version 4"));
+        assert!(error.contains("unsupported schema version 5"));
         assert_eq!(
             std::fs::read(&path).expect("main bytes after connect"),
             main_before
@@ -9055,7 +9170,7 @@ mod tests {
         assert_eq!(
             tags,
             vec![
-                ("#".to_string(), "café".to_string(), "café".to_string()),
+                ("#".to_string(), "caf\u{e9}".to_string(), "caf\u{e9}".to_string()),
                 ("#".to_string(), "Tag".to_string(), "tag".to_string()),
                 ("#".to_string(), "नमस्ते".to_string(), "नमस्ते".to_string()),
                 ("#".to_string(), "𐐷".to_string(), "𐐷".to_string()),

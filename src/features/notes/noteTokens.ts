@@ -330,7 +330,11 @@ export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
       });
     }
 
-    const display = source.slice(bodyStartUtf16, bodyEndUtf16);
+    // Normalize the derived tag VALUE to NFC so decomposed (NFD) and composed
+    // spellings of the same tag unify. macOS routinely emits NFD Hangul/accented
+    // text via drag, paste, and some IMEs. The UTF-16 offsets and `raw` below still
+    // index the ORIGINAL source, whose length may differ from the normalized value.
+    const display = source.slice(bodyStartUtf16, bodyEndUtf16).normalize("NFC");
     tokens.push({
       kind: "tag",
       prefix,
