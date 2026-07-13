@@ -1239,6 +1239,54 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     })
 }
 
+/// Column projection of a `notes_nodes` row as it is captured in the history
+/// audit `after_json`/`before_json` payloads (snake_case keys, integer booleans).
+#[derive(Deserialize)]
+struct AuditNodeRow {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    layout_mode: String,
+    is_collapsed: i64,
+    is_starred: i64,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+    archived_at: Option<String>,
+    archive_root_id: Option<String>,
+}
+
+/// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
+/// `NoteNode`. Unknown columns such as `deleted_batch_id` are ignored so the
+/// audit trail can carry storage-only fields the workspace projection omits.
+pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, String> {
+    let row: AuditNodeRow = serde_json::from_str(after_json)
+        .map_err(|error| format!("Could not decode an audited Notes node: {error}"))?;
+    let layout_mode = match row.layout_mode.as_str() {
+        "bullets" => NoteLayoutMode::Bullets,
+        value => return Err(format!("Unsupported Notes layout mode: {value}")),
+    };
+    Ok(NoteNode {
+        id: row.id,
+        parent_id: row.parent_id,
+        sort_key: row.sort_key,
+        title: row.title,
+        note: row.note,
+        layout_mode,
+        is_collapsed: row.is_collapsed != 0,
+        is_starred: row.is_starred != 0,
+        completed_at: row.completed_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        deleted_at: row.deleted_at,
+        archived_at: row.archived_at,
+        archive_root_id: row.archive_root_id,
+    })
+}
+
 fn note_attachment_from_row(row: &Row<'_>) -> rusqlite::Result<NoteAttachment> {
     Ok(NoteAttachment {
         id: row.get(0)?,

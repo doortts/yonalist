@@ -947,11 +947,21 @@ fn committed_attachment_batch_retry(
         Some(context) => history_status(connection, &context.session_id)?,
         None => NotesHistoryStatus::default(),
     };
+    // This retry recognizes a batch a previous call already committed. To stay
+    // idempotent with that original mutation it must report the same deltas.
+    // The validation above proved the entry's only changes are these attachment
+    // inserts (no node changes, nothing removed), so the delta is exactly the
+    // committed attachments. Deltas are only exposed for the audited path; an
+    // uncontexted original produced no audit rows and stays workspace-only.
+    let deltas_available = history_context.is_some();
     Ok(Some(NotesMutationResult {
         workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
         history_entry_id,
         can_undo: status.can_undo,
         can_redo: status.can_redo,
+        changed_nodes: deltas_available.then(Vec::new),
+        removed_node_ids: deltas_available.then(Vec::new),
+        changed_attachments: deltas_available.then(|| existing.clone()),
     }))
 }
 

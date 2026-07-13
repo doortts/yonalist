@@ -1,10 +1,10 @@
 use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::date_index::{LocalDate, LocalTodayProvider, SystemLocalTodayProvider};
-use crate::notes::repository::{load_workspace, rebuild_derived_for_nodes_at};
+use crate::notes::repository::{load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at};
 use crate::notes::types::{
-    validate_note_id, NoteAttachment, NotesHistoryContext, NotesHistoryReplayResult,
-    NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
-    MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    validate_note_id, NoteAttachment, NoteId, NoteNode, NotesHistoryContext,
+    NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
+    NotesWorkspaceScope, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
@@ -185,23 +185,94 @@ fn end_audit(connection: &Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish Notes history auditing: {error}"))
 }
 
+/// Incremental view of exactly the rows a single audited mutation touched,
+/// read from the TEMP `notes_history_audit` table before it is cleared.
+#[derive(Default)]
+pub(crate) struct MutationDelta {
+    pub(crate) changed_nodes: Vec<NoteNode>,
+    pub(crate) removed_node_ids: Vec<NoteId>,
+    pub(crate) changed_attachments: Vec<NoteAttachment>,
+}
+
 pub(crate) struct HistoryTransactionResult {
     pub(crate) workspace: NotesWorkspace,
     pub(crate) history_entry_id: Option<String>,
     pub(crate) can_undo: bool,
     pub(crate) can_redo: bool,
     pub(crate) pruned_attachment_paths: Vec<String>,
+    /// `Some` only when the mutation ran under a history context; `None`
+    /// mutations expose no audit rows, so the full workspace stays authoritative.
+    pub(crate) delta: Option<MutationDelta>,
 }
 
 impl HistoryTransactionResult {
     pub(crate) fn into_mutation_result(self) -> NotesMutationResult {
+        let (changed_nodes, removed_node_ids, changed_attachments) = match self.delta {
+            Some(delta) => (
+                Some(delta.changed_nodes),
+                Some(delta.removed_node_ids),
+                Some(delta.changed_attachments),
+            ),
+            None => (None, None, None),
+        };
         NotesMutationResult {
             workspace: self.workspace,
             history_entry_id: self.history_entry_id,
             can_undo: self.can_undo,
             can_redo: self.can_redo,
+            changed_nodes,
+            removed_node_ids,
+            changed_attachments,
         }
     }
+}
+
+/// Read the delta rows the audit triggers captured for the mutation that just
+/// committed. The TEMP audit table coalesces per (table, row) with the latest
+/// `after_json`, so a created-then-deleted row nets out (`before IS after`) and
+/// is skipped, matching how `finalize_transaction` compacts persisted changes.
+///
+/// Removed attachments are intentionally not surfaced: the delta contract only
+/// carries created/updated attachments, and the full workspace still covers the
+/// rest.
+fn read_mutation_delta(connection: &Connection) -> Result<MutationDelta, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT table_name, row_id, after_json \
+             FROM notes_history_audit \
+             WHERE before_json IS NOT after_json \
+             ORDER BY ordinal",
+        )
+        .map_err(|error| format!("Could not prepare the Notes mutation delta: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|error| format!("Could not read the Notes mutation delta: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect the Notes mutation delta: {error}"))?;
+
+    let mut delta = MutationDelta::default();
+    for (table_name, row_id, after_json) in rows {
+        match (table_name.as_str(), after_json) {
+            ("notes_nodes", Some(after)) => {
+                delta.changed_nodes.push(note_node_from_audit_json(&after)?);
+            }
+            ("notes_nodes", None) => delta.removed_node_ids.push(row_id),
+            ("notes_attachments", Some(after)) => {
+                let attachment = serde_json::from_str::<NoteAttachment>(&after).map_err(|error| {
+                    format!("Could not decode an audited Notes attachment: {error}")
+                })?;
+                delta.changed_attachments.push(attachment);
+            }
+            _ => {}
+        }
+    }
+    Ok(delta)
 }
 
 pub(crate) fn with_history_transaction_and_prunes(
@@ -216,6 +287,7 @@ pub(crate) fn with_history_transaction_and_prunes(
             can_undo: false,
             can_redo: false,
             pruned_attachment_paths: Vec::new(),
+            delta: None,
         });
     };
     validate_context(context)?;
@@ -257,10 +329,11 @@ pub(crate) fn with_history_transaction_and_prunes(
                 .map_err(|error| {
                     format!("Could not read the committed Notes mutation result: {error}")
                 })?;
-            Ok((paths, mutation))
+            let delta = read_mutation_delta(connection)?;
+            Ok((paths, mutation, delta))
         })()
     } else {
-        Ok((Vec::new(), (None, false, false)))
+        Ok((Vec::new(), (None, false, false), MutationDelta::default()))
     };
     let cleanup = end_audit(connection);
     match (result, committed_result, cleanup) {
@@ -268,7 +341,7 @@ pub(crate) fn with_history_transaction_and_prunes(
         (Ok(_), Err(error), _) | (Ok(_), Ok(_), Err(error)) => Err(error),
         (
             Ok(workspace),
-            Ok((pruned_attachment_paths, (history_entry_id, can_undo, can_redo))),
+            Ok((pruned_attachment_paths, (history_entry_id, can_undo, can_redo), delta)),
             Ok(()),
         ) => Ok(HistoryTransactionResult {
             workspace,
@@ -276,6 +349,7 @@ pub(crate) fn with_history_transaction_and_prunes(
             can_undo,
             can_redo,
             pruned_attachment_paths,
+            delta: Some(delta),
         }),
     }
 }
@@ -1205,8 +1279,9 @@ mod tests {
     };
     use crate::notes::types::{
         CreateNodeInput, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix,
-        NotesHistoryContext, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        NotesHistoryContext, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+        SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
 
@@ -2468,5 +2543,401 @@ mod tests {
         drop(connection);
         delete_database(vault_path).expect("delete database");
         assert!(!crate::notes::repository::notes_db_path(vault_path).exists());
+    }
+
+    fn run_delta_mutation(
+        connection: &mut Connection,
+        context: &NotesHistoryContext,
+        operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
+    ) -> NotesMutationResult {
+        with_history_transaction_and_prunes(connection, Some(context), operation)
+            .expect("delta mutation")
+            .into_mutation_result()
+    }
+
+    fn sorted<T: Clone + Ord>(values: &[T]) -> Vec<T> {
+        let mut owned = values.to_vec();
+        owned.sort();
+        owned
+    }
+
+    /// The persisted `notes_history_changes` rows for an entry are exactly the
+    /// compacted audit rows the delta is derived from, so they are the ground
+    /// truth for the equivalence assertions below.
+    fn persisted_change_ids(
+        connection: &Connection,
+        entry_id: &str,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let mut statement = connection
+            .prepare(
+                "SELECT table_name, row_id, after_json FROM notes_history_changes \
+                 WHERE entry_id = ?1",
+            )
+            .expect("prepare persisted changes");
+        let rows = statement
+            .query_map([entry_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .expect("query persisted changes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect persisted changes");
+        let mut changed_nodes = Vec::new();
+        let mut removed_nodes = Vec::new();
+        let mut changed_attachments = Vec::new();
+        for (table_name, row_id, after_json) in rows {
+            match (table_name.as_str(), after_json.is_some()) {
+                ("notes_nodes", true) => changed_nodes.push(row_id),
+                ("notes_nodes", false) => removed_nodes.push(row_id),
+                ("notes_attachments", true) => changed_attachments.push(row_id),
+                _ => {}
+            }
+        }
+        (sorted(&changed_nodes), sorted(&removed_nodes), sorted(&changed_attachments))
+    }
+
+    fn assert_delta_matches_persisted_audit(
+        connection: &Connection,
+        entry_id: &str,
+        result: &NotesMutationResult,
+    ) {
+        let changed_node_ids = sorted(
+            &result
+                .changed_nodes
+                .as_ref()
+                .expect("changed nodes present")
+                .iter()
+                .map(|node| node.id.clone())
+                .collect::<Vec<_>>(),
+        );
+        let removed_node_ids = sorted(result.removed_node_ids.as_ref().expect("removed node ids"));
+        let changed_attachment_ids = sorted(
+            &result
+                .changed_attachments
+                .as_ref()
+                .expect("changed attachments present")
+                .iter()
+                .map(|attachment| attachment.id.clone())
+                .collect::<Vec<_>>(),
+        );
+        let (expected_changed, expected_removed, expected_attachments) =
+            persisted_change_ids(connection, entry_id);
+        assert_eq!(changed_node_ids, expected_changed);
+        assert_eq!(removed_node_ids, expected_removed);
+        assert_eq!(changed_attachment_ids, expected_attachments);
+    }
+
+    #[test]
+    fn mutation_deltas_match_the_audit_rows_for_each_command_kind() {
+        const SPLIT_ID: &str = "44444444-4444-4444-8444-444444444444";
+        const MOVE_PARENT: &str = "55555555-5555-4555-8555-555555555555";
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+
+        let create_root = history_context(1, "createNode");
+        let result = run_delta_mutation(&mut connection, &create_root, |connection| {
+            create_node(connection, create_input(NODE_ID, None, None, "Root"))
+        });
+        assert_delta_matches_persisted_audit(&connection, &create_root.entry_id, &result);
+        assert!(result
+            .changed_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|node| node.id == NODE_ID && node.title == "Root"));
+        assert!(result.removed_node_ids.as_ref().unwrap().is_empty());
+        assert!(result.changed_attachments.as_ref().unwrap().is_empty());
+
+        let create_child = history_context(2, "createNode");
+        let result = run_delta_mutation(&mut connection, &create_child, |connection| {
+            create_node(connection, create_input(CHILD_ID, Some(NODE_ID), None, "Child"))
+        });
+        assert_delta_matches_persisted_audit(&connection, &create_child.entry_id, &result);
+
+        let update_child = history_context(3, "updateNode");
+        let result = run_delta_mutation(&mut connection, &update_child, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: CHILD_ID.to_string(),
+                    title: "Renamed".to_string(),
+                    note: String::new(),
+                },
+            )
+        });
+        assert_delta_matches_persisted_audit(&connection, &update_child.entry_id, &result);
+        assert_eq!(
+            result
+                .changed_nodes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("updated child in delta")
+                .title,
+            "Renamed"
+        );
+
+        let toggle = history_context(4, "toggleComplete");
+        let result = run_delta_mutation(&mut connection, &toggle, |connection| {
+            toggle_complete(connection, CHILD_ID)
+        });
+        assert_delta_matches_persisted_audit(&connection, &toggle.entry_id, &result);
+        assert!(result
+            .changed_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|node| node.id == CHILD_ID)
+            .expect("completed child in delta")
+            .completed_at
+            .is_some());
+
+        let split = history_context(5, "splitNode");
+        let result = run_delta_mutation(&mut connection, &split, |connection| {
+            split_node(
+                connection,
+                SplitNodeInput {
+                    id: CHILD_ID.to_string(),
+                    new_node_id: SPLIT_ID.to_string(),
+                    prefix: "Re".to_string(),
+                    suffix: "named".to_string(),
+                },
+            )
+        });
+        assert_delta_matches_persisted_audit(&connection, &split.entry_id, &result);
+        assert!(result
+            .changed_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|node| node.id == SPLIT_ID));
+
+        let create_parent = history_context(6, "createNode");
+        run_delta_mutation(&mut connection, &create_parent, |connection| {
+            create_node(
+                connection,
+                create_input(MOVE_PARENT, None, Some(NODE_ID), "Second root"),
+            )
+        });
+        let move_child = history_context(7, "moveNode");
+        let result = run_delta_mutation(&mut connection, &move_child, |connection| {
+            move_node(
+                connection,
+                MoveNodeInput {
+                    id: CHILD_ID.to_string(),
+                    parent_id: Some(MOVE_PARENT.to_string()),
+                    after_id: None,
+                    before_id: None,
+                },
+            )
+        });
+        assert_delta_matches_persisted_audit(&connection, &move_child.entry_id, &result);
+        assert_eq!(
+            result
+                .changed_nodes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("moved child in delta")
+                .parent_id
+                .as_deref(),
+            Some(MOVE_PARENT)
+        );
+
+        let trash = history_context(8, "softDelete");
+        let result = run_delta_mutation(&mut connection, &trash, |connection| {
+            soft_delete_node(connection, CHILD_ID)
+        });
+        assert_delta_matches_persisted_audit(&connection, &trash.entry_id, &result);
+        assert!(
+            result
+                .changed_nodes
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|node| node.id == CHILD_ID)
+                .expect("soft-deleted child appears as an update, not a removal")
+                .deleted_at
+                .is_some(),
+            "a soft delete is an UPDATE, so the row belongs in changedNodes"
+        );
+        assert!(result.removed_node_ids.as_ref().unwrap().is_empty());
+
+        let restore = history_context(9, "restore");
+        let result = run_delta_mutation(&mut connection, &restore, |connection| {
+            restore_node(connection, CHILD_ID)
+        });
+        assert_delta_matches_persisted_audit(&connection, &restore.entry_id, &result);
+        assert!(result
+            .changed_nodes
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|node| node.id == CHILD_ID)
+            .expect("restored child in delta")
+            .deleted_at
+            .is_none());
+    }
+
+    #[test]
+    fn attachment_mutation_delta_reports_created_attachments() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+
+        let import = history_context(1, "importAttachment");
+        let attachment = history_new_attachment(70_000, NODE_ID);
+        let attachment_id = attachment.id.clone();
+        let result = run_delta_mutation(&mut connection, &import, |connection| {
+            create_attachment(connection, attachment)
+        });
+        assert_delta_matches_persisted_audit(&connection, &import.entry_id, &result);
+        assert_eq!(
+            result
+                .changed_attachments
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|attachment| attachment.id.clone())
+                .collect::<Vec<_>>(),
+            vec![attachment_id]
+        );
+        assert!(result.changed_nodes.as_ref().unwrap().is_empty());
+        assert!(result.removed_node_ids.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn mutations_without_a_history_context_omit_deltas() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let result = with_history_transaction_and_prunes(&mut connection, None, |connection| {
+            create_node(connection, create_input(NODE_ID, None, None, "Root"))
+        })
+        .expect("uncontexted mutation")
+        .into_mutation_result();
+        assert!(result.changed_nodes.is_none());
+        assert!(result.removed_node_ids.is_none());
+        assert!(result.changed_attachments.is_none());
+        assert!(
+            !result.workspace.nodes.is_empty(),
+            "without audit rows the full workspace stays authoritative"
+        );
+    }
+
+    fn node_audit_json(id: &str, title: &str, is_collapsed: i64, is_starred: i64) -> String {
+        format!(
+            "{{\"id\":\"{id}\",\"parent_id\":null,\"sort_key\":1024,\"title\":\"{title}\",\
+              \"note\":\"\",\"layout_mode\":\"bullets\",\"is_collapsed\":{is_collapsed},\
+              \"is_starred\":{is_starred},\"completed_at\":null,\
+              \"created_at\":\"2026-07-10T00:00:00.000Z\",\
+              \"updated_at\":\"2026-07-10T00:00:00.000Z\",\"deleted_at\":null,\
+              \"deleted_batch_id\":null,\"archived_at\":null,\"archive_root_id\":null}}"
+        )
+    }
+
+    fn attachment_audit_json(id: &str, node_id: &str) -> String {
+        let hash = "a".repeat(64);
+        format!(
+            "{{\"id\":\"{id}\",\"node_id\":\"{node_id}\",\"sort_key\":1024,\
+              \"relative_path\":\"notes-assets/{hash}.png\",\"content_hash\":\"{hash}\",\
+              \"original_name\":\"image.png\",\"mime_type\":\"image/png\",\"byte_size\":1,\
+              \"intrinsic_width\":1,\"intrinsic_height\":1,\"display_width\":1,\
+              \"created_at\":\"2026-07-10T00:00:00.000Z\",\
+              \"updated_at\":\"2026-07-10T00:00:00.000Z\"}}"
+        )
+    }
+
+    fn insert_audit_row(
+        connection: &Connection,
+        table_name: &str,
+        row_id: &str,
+        ordinal: i64,
+        before_json: Option<&str>,
+        after_json: Option<&str>,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO notes_history_audit(table_name, row_id, ordinal, before_json, after_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![table_name, row_id, ordinal, before_json, after_json],
+            )
+            .expect("insert audit row");
+    }
+
+    #[test]
+    fn read_mutation_delta_classifies_audit_rows_and_skips_no_ops() {
+        const FOURTH_ID: &str = "44444444-4444-4444-8444-444444444444";
+        let connection = Connection::open_in_memory().expect("memory db");
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE notes_history_audit (\
+                   table_name TEXT NOT NULL, row_id TEXT NOT NULL, ordinal INTEGER NOT NULL, \
+                   before_json TEXT, after_json TEXT, \
+                   PRIMARY KEY (table_name, row_id));",
+            )
+            .expect("audit table");
+
+        let changed_node = node_audit_json(NODE_ID, "Root", 0, 1);
+        let removed_before = node_audit_json(CHILD_ID, "Gone", 0, 0);
+        let noop = node_audit_json(THIRD_ID, "Same", 0, 0);
+        let changed_attachment = attachment_audit_json("attachment-changed", NODE_ID);
+        let removed_attachment = attachment_audit_json("attachment-removed", NODE_ID);
+
+        // Created/updated node: keeps its full payload.
+        insert_audit_row(&connection, "notes_nodes", NODE_ID, 1, None, Some(&changed_node));
+        // Hard-deleted node: surfaced as a removed id.
+        insert_audit_row(&connection, "notes_nodes", CHILD_ID, 2, Some(&removed_before), None);
+        // No-op update (before == after): skipped.
+        insert_audit_row(&connection, "notes_nodes", THIRD_ID, 3, Some(&noop), Some(&noop));
+        // Created-then-deleted within the mutation (before == after == NULL): skipped.
+        insert_audit_row(&connection, "notes_nodes", FOURTH_ID, 4, None, None);
+        // Created/updated attachment: surfaced.
+        insert_audit_row(
+            &connection,
+            "notes_attachments",
+            "attachment-changed",
+            5,
+            None,
+            Some(&changed_attachment),
+        );
+        // Removed attachment: intentionally not surfaced by the delta contract.
+        insert_audit_row(
+            &connection,
+            "notes_attachments",
+            "attachment-removed",
+            6,
+            Some(&removed_attachment),
+            None,
+        );
+
+        let delta = super::read_mutation_delta(&connection).expect("mutation delta");
+        assert_eq!(
+            delta
+                .changed_nodes
+                .iter()
+                .map(|node| node.id.clone())
+                .collect::<Vec<_>>(),
+            vec![NODE_ID.to_string()]
+        );
+        assert_eq!(delta.removed_node_ids, vec![CHILD_ID.to_string()]);
+        assert_eq!(
+            delta
+                .changed_attachments
+                .iter()
+                .map(|attachment| attachment.id.clone())
+                .collect::<Vec<_>>(),
+            vec!["attachment-changed".to_string()]
+        );
+        assert_eq!(delta.changed_nodes[0].title, "Root");
+        assert!(delta.changed_nodes[0].is_starred);
+        assert_eq!(delta.changed_attachments[0].node_id, NODE_ID);
     }
 }

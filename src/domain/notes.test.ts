@@ -341,6 +341,40 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("accepts and passes through the optional mutation delta fields", () => {
+    const result: NotesMutationResult = {
+      workspace: { nodes: [makeNoteNode()] },
+      historyEntryId: UUID,
+      canUndo: true,
+      canRedo: false
+    };
+
+    expect(
+      isNotesMutationResult({
+        ...result,
+        changedNodes: [makeNoteNode()],
+        removedNodeIds: [ATTACHMENT_UUID],
+        changedAttachments: [makeNoteAttachment()]
+      })
+    ).toBe(true);
+    // A subset of the delta fields is still valid; they are individually optional.
+    expect(isNotesMutationResult({ ...result, changedNodes: [] })).toBe(true);
+    expect(
+      isNotesMutationResult({ ...result, removedNodeIds: [ATTACHMENT_UUID] })
+    ).toBe(true);
+    // Present-but-malformed delta fields are rejected.
+    expect(isNotesMutationResult({ ...result, changedNodes: [{}] })).toBe(false);
+    expect(isNotesMutationResult({ ...result, removedNodeIds: [42] })).toBe(false);
+    expect(
+      isNotesMutationResult({
+        ...result,
+        changedAttachments: [{ ...makeNoteAttachment(), byteSize: -1 }]
+      })
+    ).toBe(false);
+    // Unknown keys outside the additive delta contract remain rejected.
+    expect(isNotesMutationResult({ ...result, bogus: 1 })).toBe(false);
+  });
+
   it("recognizes only strict history replay result payloads", () => {
     const replay = {
       workspace: { nodes: [makeNoteNode()] },

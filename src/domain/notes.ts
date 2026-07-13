@@ -68,6 +68,15 @@ export interface NotesHistoryStatus {
 export interface NotesMutationResult extends NotesHistoryStatus {
   workspace: NotesWorkspace;
   historyEntryId: string | null;
+  /**
+   * Incremental deltas derived from the mutation's history audit rows. Present
+   * only when the backend ran the mutation with a history context; otherwise
+   * the full {@link NotesMutationResult.workspace} remains authoritative. These
+   * are additive and not yet consumed (frontend consumption is a later phase).
+   */
+  changedNodes?: NoteNode[];
+  removedNodeIds?: NoteId[];
+  changedAttachments?: NoteAttachment[];
 }
 
 export type NotesMutationResponse = NotesWorkspace | NotesMutationResult;
@@ -522,21 +531,68 @@ export function isNotesWorkspace(value: unknown): value is NotesWorkspace {
   return normalizeNotesWorkspace(value) !== null;
 }
 
+const NOTES_MUTATION_RESULT_REQUIRED_KEYS = [
+  "workspace",
+  "historyEntryId",
+  "canUndo",
+  "canRedo"
+] as const;
+
+const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
+  "changedNodes",
+  "removedNodeIds",
+  "changedAttachments"
+] as const;
+
+const NOTES_MUTATION_RESULT_ALLOWED_KEYS = new Set<string>([
+  ...NOTES_MUTATION_RESULT_REQUIRED_KEYS,
+  ...NOTES_MUTATION_RESULT_OPTIONAL_KEYS
+]);
+
 export function isNotesMutationResult(value: unknown): value is NotesMutationResult {
   if (!isRecord(value)) {
     return false;
   }
   const keys = Object.keys(value);
-  return (
-    keys.length === 4 &&
-    keys.every((key) =>
-      ["workspace", "historyEntryId", "canUndo", "canRedo"].includes(key)
-    ) &&
-    isNotesWorkspace(value.workspace) &&
-    isNullableString(value.historyEntryId) &&
-    typeof value.canUndo === "boolean" &&
-    typeof value.canRedo === "boolean"
-  );
+  if (
+    !NOTES_MUTATION_RESULT_REQUIRED_KEYS.every((key) =>
+      Object.prototype.hasOwnProperty.call(value, key)
+    ) ||
+    !keys.every((key) => NOTES_MUTATION_RESULT_ALLOWED_KEYS.has(key)) ||
+    !isNotesWorkspace(value.workspace) ||
+    !isNullableString(value.historyEntryId) ||
+    typeof value.canUndo !== "boolean" ||
+    typeof value.canRedo !== "boolean"
+  ) {
+    return false;
+  }
+  // The delta fields are optional and additive: reject them only when present
+  // with the wrong shape, so payloads that omit them keep validating.
+  if (
+    Object.prototype.hasOwnProperty.call(value, "changedNodes") &&
+    !(isDenseArray(value.changedNodes) && value.changedNodes.every(isNoteNode))
+  ) {
+    return false;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "removedNodeIds") &&
+    !(
+      isDenseArray(value.removedNodeIds) &&
+      value.removedNodeIds.every((id) => typeof id === "string")
+    )
+  ) {
+    return false;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "changedAttachments") &&
+    !(
+      isDenseArray(value.changedAttachments) &&
+      value.changedAttachments.every(isNoteAttachment)
+    )
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function isNotesHistoryReplayResult(
