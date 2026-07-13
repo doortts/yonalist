@@ -37,6 +37,14 @@ const ATTACHMENT_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration:
 /// deadline (typically because another Yonalist window holds it).
 pub(crate) const ATTACHMENT_LEASE_BUSY_MESSAGE: &str =
     "Notes vault is busy in another window. Close other Yonalist windows and try again.";
+/// Name of the vault-level application lock inside `.yonalist`. Held for the
+/// connection manager's (process) lifetime so only one app instance opens a
+/// vault at a time; distinct from the short-lived attachment storage lease.
+pub(crate) const VAULT_APP_LOCK_NAME: &str = "notes.app.lock";
+/// User-facing error when another OS-level app instance already holds the
+/// vault application lock.
+pub(crate) const VAULT_APP_LOCK_BUSY_MESSAGE: &str =
+    "Notes vault is already open in another window.";
 static IMPORT_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1025,6 +1033,54 @@ fn mark_reconciliation_needed_in(metadata: &Dir) -> Result<(), String> {
     sync_capability_directory(metadata)
 }
 
+/// Opens `.yonalist/notes.app.lock` symlink-safely (the same directory
+/// discipline the attachment lease uses) and takes the exclusive `flock` for
+/// this process without blocking. On success the returned `File` owns the lock
+/// for as long as it lives; callers keep it alive for the connection manager's
+/// lifetime. A second OS-level process that already holds the lock yields
+/// [`VAULT_APP_LOCK_BUSY_MESSAGE`]. Reentrancy within one process is the
+/// caller's responsibility — a same-process second `flock` on a fresh descriptor
+/// would contend with our own held lock, so the manager caches one handle per
+/// vault instead of re-opening here.
+pub(crate) fn acquire_vault_app_lock_file(vault_path: &str) -> Result<File, String> {
+    let metadata_path = crate::metadata_dir(vault_path);
+    fs::create_dir_all(&metadata_path)
+        .map_err(|error| format!("Could not create the Notes metadata directory: {error}"))?;
+    let vault_dir = metadata_path
+        .parent()
+        .ok_or_else(|| "Could not resolve the Notes vault directory.".to_string())?;
+    let vault = Dir::open_ambient_dir(vault_dir, ambient_authority())
+        .map_err(|error| format!("Could not open the Notes vault directory: {error}"))?;
+    let metadata = vault.open_dir_nofollow(".yonalist").map_err(|error| {
+        format!("The Notes metadata directory must be an owned directory, not a symlink: {error}")
+    })?;
+
+    let mut lock_options = OpenOptions::new();
+    lock_options
+        .read(true)
+        .write(true)
+        .create(true)
+        .follow(FollowSymlinks::No);
+    let lock_file = metadata
+        .open_with(VAULT_APP_LOCK_NAME, &lock_options)
+        .map_err(|error| format!("Could not open the Notes vault application lock: {error}"))?
+        .into_std();
+    if !lock_file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the Notes vault application lock: {error}"))?
+        .is_file()
+    {
+        return Err("The Notes vault application lock must be a regular file.".to_string());
+    }
+    match FileExt::try_lock(&lock_file) {
+        Ok(()) => Ok(lock_file),
+        Err(fs4::TryLockError::WouldBlock) => Err(VAULT_APP_LOCK_BUSY_MESSAGE.to_string()),
+        Err(fs4::TryLockError::Error(error)) => {
+            Err(format!("Could not lock the Notes vault: {error}"))
+        }
+    }
+}
+
 pub(crate) struct AttachmentStorageLease {
     _lock_file: File,
     vault: Dir,
@@ -1417,9 +1473,6 @@ impl AttachmentStorageLease {
             &attachment.relative_path,
             &attachment.content_hash,
             &attachment.mime_type,
-            attachment.byte_size,
-            attachment.intrinsic_width,
-            attachment.intrinsic_height,
         )
     }
 
@@ -1431,9 +1484,6 @@ impl AttachmentStorageLease {
             &attachment.relative_path,
             &attachment.content_hash,
             &attachment.mime_type,
-            attachment.byte_size,
-            attachment.intrinsic_width,
-            attachment.intrinsic_height,
         )
     }
 
@@ -1442,9 +1492,6 @@ impl AttachmentStorageLease {
         relative_path: &str,
         content_hash: &str,
         mime_type: &str,
-        byte_size: i64,
-        intrinsic_width: i64,
-        intrinsic_height: i64,
     ) -> Result<Vec<u8>, String> {
         resolve_owned_asset_path(Path::new("."), relative_path, content_hash, mime_type)?;
         let file_name = safe_owned_file_name(relative_path)?;
@@ -1457,16 +1504,14 @@ impl AttachmentStorageLease {
             return Err("A Notes attachment owned path must contain a regular file.".to_string());
         }
         let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
-        let validated =
-            validate_image_bytes(Path::new(relative_path), &bytes, ValidationLimits::DEFAULT)?;
-        if validated.content_hash != content_hash
-            || validated.mime_type != mime_type
-            || validated.byte_size != byte_size as u64
-            || i64::from(validated.width) != intrinsic_width
-            || i64::from(validated.height) != intrinsic_height
-        {
+        // The image was fully decoded and validated at ingest, so on read we only
+        // recompute the SHA-256 digest to detect on-disk corruption or tampering.
+        // Skipping the per-read decode keeps multi-megabyte reads cheap. The
+        // canonical `notes-assets/{hash}.{ext}` path was already checked by
+        // `resolve_owned_asset_path`, so a matching digest confirms the bytes.
+        if format!("{:x}", Sha256::digest(&bytes)) != content_hash {
             return Err(
-                "The Notes attachment file no longer matches its stored metadata.".to_string(),
+                "The Notes attachment file no longer matches its stored content hash.".to_string(),
             );
         }
         Ok(bytes)
@@ -1750,10 +1795,22 @@ mod tests {
         publish_attachment_bytes, resolve_owned_asset_path, validate_image_bytes,
         AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
     };
+    // Alias each command to its synchronous `_inner` body so these tests keep
+    // running the note logic inline (the public commands are now async wrappers
+    // that dispatch onto the blocking thread pool). Call sites stay unchanged.
     use crate::notes::commands::{
-        notes_clear_history, notes_delete_database, notes_empty_trash, notes_import_attachment,
-        notes_initialize, notes_read_attachment_bytes, notes_redo, notes_remove_attachment,
-        notes_resize_attachment, notes_restore_attachment, notes_undo, notes_update_node,
+        notes_clear_history_inner as notes_clear_history,
+        notes_delete_database_inner as notes_delete_database,
+        notes_empty_trash_inner as notes_empty_trash,
+        notes_import_attachment_inner as notes_import_attachment,
+        notes_initialize_inner as notes_initialize,
+        notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
+        notes_redo_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
+        notes_resize_attachment_inner as notes_resize_attachment,
+        notes_restore_attachment_inner as notes_restore_attachment,
+        notes_undo_inner as notes_undo,
+        notes_update_node_inner as notes_update_node,
     };
     use crate::notes::history::HISTORY_MAX_ENTRIES;
     use crate::notes::history::{redo, undo};
@@ -2280,7 +2337,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_attachment_storage_and_sqlite_locks_cover_publication_through_metadata_commit() {
+    fn notes_attachment_storage_lease_covers_publication_through_metadata_commit() {
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -2317,10 +2374,19 @@ mod tests {
                 sqlite_contender
                     .busy_timeout(Duration::from_millis(50))
                     .expect("short busy timeout");
-                assert!(
-                    sqlite_contender.execute_batch("BEGIN IMMEDIATE").is_err(),
-                    "publication occurred without the SQLite write lock"
-                );
+                // Remediation 1.3 moved file publication *outside* the metadata
+                // write transaction (file-before-commit) so the slow temp-write +
+                // fsync + rename no longer holds the single SQLite writer slot.
+                // This assertion previously required the write lock to be held
+                // during publication; it now verifies the opposite — an
+                // independent connection can take and release the writer slot
+                // mid-publication, and the metadata commit runs afterward in its
+                // own IMMEDIATE transaction. The vault storage lease (flock),
+                // asserted just below, is what actually covers the whole
+                // publication-through-commit window.
+                sqlite_contender
+                    .execute_batch("BEGIN IMMEDIATE; COMMIT")
+                    .expect("publication must not hold the SQLite write lock");
 
                 let second_vault = vault_path.clone();
                 second_thread = Some(std::thread::spawn(move || {

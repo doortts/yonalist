@@ -243,7 +243,7 @@ describe("notesStore in Tauri", () => {
     };
     invokeMock
       .mockResolvedValueOnce(attachmentMutation)
-      .mockResolvedValueOnce([0, 1, 127, 128, 255])
+      .mockResolvedValueOnce(new Uint8Array([0, 1, 127, 128, 255]))
       .mockResolvedValueOnce(attachmentMutation)
       .mockResolvedValueOnce(attachmentMutation)
       .mockResolvedValueOnce(attachmentMutation);
@@ -693,6 +693,87 @@ describe("notesStore in Tauri", () => {
       notesReadAttachmentBytes(vaultPath, attachmentId)
     ).rejects.toMatchObject({ operation: "load", retryable: false });
   });
+
+  it("copies ArrayBuffer attachment bytes from the raw IPC body", async () => {
+    // The raw-bytes command hands the desktop transport an ArrayBuffer.
+    const backing = new Uint8Array([9, 8, 7, 6]);
+    invokeMock.mockResolvedValue(backing.buffer);
+
+    const result = await notesReadAttachmentBytes(vaultPath, attachmentId);
+
+    expect(result).toBeInstanceOf(Uint8Array);
+    expect([...result]).toEqual([9, 8, 7, 6]);
+    // The returned view must be an owned copy, not a window onto the transport
+    // buffer, so mutating the source cannot bleed into it.
+    backing[0] = 0;
+    expect(result[0]).toBe(9);
+  });
+
+  // The two tests below allocate multi-megabyte byte buffers. The work itself
+  // is a native bulk copy (sub-millisecond), but vitest's per-test timeout is
+  // wall-clock, so a cold-start GC/transform stall in the shared worker can
+  // otherwise trip the default 5s budget for an otherwise-trivial test.
+  it(
+    "round-trips a multi-megabyte payload without an element-wise scan",
+    async () => {
+      // A 20MB image used to arrive as an ~80MB JSON number array that was
+      // validated byte by byte. It now streams as raw bytes and is copied in
+      // bulk. Structural proof that the numeric-array branch is gone: a
+      // standard numeric array of the same shape is rejected below.
+      const size = 6 * 1024 * 1024;
+      const payload = new Uint8Array(size);
+      payload[0] = 1;
+      payload[size - 1] = 254;
+      invokeMock.mockResolvedValue(payload);
+
+      const result = await notesReadAttachmentBytes(vaultPath, attachmentId);
+
+      expect(result).not.toBe(payload);
+      expect(result.length).toBe(size);
+      expect(result[0]).toBe(1);
+      expect(result[size - 1]).toBe(254);
+    },
+    30_000
+  );
+
+  it("no longer accepts a standard JSON numeric array of valid bytes", async () => {
+    // Every element is a valid byte, so the deleted element-wise loop would have
+    // accepted it. The raw-bytes path only accepts Uint8Array/ArrayBuffer.
+    invokeMock.mockResolvedValue([0, 1, 127, 128, 255]);
+
+    await expect(
+      notesReadAttachmentBytes(vaultPath, attachmentId)
+    ).rejects.toMatchObject({
+      message: "Notes attachment bytes returned an invalid result.",
+      operation: "load",
+      retryable: false
+    });
+  });
+
+  it(
+    "rejects empty and oversized raw byte payloads",
+    async () => {
+      invokeMock
+        .mockResolvedValueOnce(new Uint8Array(0))
+        .mockResolvedValueOnce(new Uint8Array(20 * 1024 * 1024 + 1));
+
+      await expect(
+        notesReadAttachmentBytes(vaultPath, attachmentId)
+      ).rejects.toMatchObject({
+        message: "Notes attachment bytes returned an invalid result.",
+        operation: "load",
+        retryable: false
+      });
+      await expect(
+        notesReadAttachmentBytes(vaultPath, attachmentId)
+      ).rejects.toMatchObject({
+        message: "Notes attachment bytes returned an invalid result.",
+        operation: "load",
+        retryable: false
+      });
+    },
+    30_000
+  );
 
   it("rejects malformed attachment metadata returned by mutations", async () => {
     invokeMock.mockResolvedValue({

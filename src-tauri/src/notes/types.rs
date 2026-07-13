@@ -132,6 +132,18 @@ pub struct NotesMutationResult {
     pub history_entry_id: Option<String>,
     pub can_undo: bool,
     pub can_redo: bool,
+    /// Incremental deltas derived from the mutation's history audit rows.
+    ///
+    /// These are populated only when the mutation ran with a history context
+    /// (the audit triggers are the source). When they are `None` the full
+    /// `workspace` above remains authoritative, so the fields are optional and
+    /// omitted from the wire payload to keep the contract additive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_nodes: Option<Vec<NoteNode>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub removed_node_ids: Option<Vec<NoteId>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_attachments: Option<Vec<NoteAttachment>>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -395,10 +407,10 @@ impl SplitNodeInput {
 mod tests {
     use super::{
         validate_note_id, ImportAttachmentPathBatchInput, MoveNodeInput, NoteAttachment,
-        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
-        NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat, NotesExportResult,
-        NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult,
-        NotesWorkspace, NotesWorkspaceScope,
+        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchScope, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
+        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -641,6 +653,9 @@ mod tests {
             history_entry_id: Some(SECOND_ID.to_string()),
             can_undo: true,
             can_redo: false,
+            changed_nodes: None,
+            removed_node_ids: None,
+            changed_attachments: None,
         };
         assert_eq!(
             serde_json::to_value(mutation).expect("mutation result"),
@@ -649,6 +664,115 @@ mod tests {
                 "historyEntryId": SECOND_ID,
                 "canUndo": true,
                 "canRedo": false
+            })
+        );
+    }
+
+    #[test]
+    fn mutation_delta_fields_use_the_exact_optional_camel_case_wire_shape() {
+        let node = NoteNode {
+            id: NODE_ID.to_string(),
+            parent_id: None,
+            sort_key: 1024,
+            title: "Root".to_string(),
+            note: String::new(),
+            layout_mode: NoteLayoutMode::Bullets,
+            is_collapsed: false,
+            is_starred: true,
+            completed_at: None,
+            created_at: "2026-07-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-11T00:00:01.000Z".to_string(),
+            deleted_at: None,
+            archived_at: None,
+            archive_root_id: None,
+        };
+        let attachment = NoteAttachment {
+            id: SECOND_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            sort_key: 1024,
+            relative_path:
+                "notes-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png"
+                    .to_string(),
+            content_hash: "a".repeat(64),
+            original_name: "image.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 123,
+            intrinsic_width: 320,
+            intrinsic_height: 200,
+            display_width: 240,
+            created_at: "2026-07-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-11T00:00:01.000Z".to_string(),
+        };
+        let mutation = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: vec![node.clone()],
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            history_entry_id: None,
+            can_undo: true,
+            can_redo: false,
+            changed_nodes: Some(vec![node]),
+            removed_node_ids: Some(vec![THIRD_ID.to_string()]),
+            changed_attachments: Some(vec![attachment]),
+        };
+
+        assert_eq!(
+            serde_json::to_value(mutation).expect("mutation delta result"),
+            json!({
+                "workspace": {
+                    "nodes": [{
+                        "id": NODE_ID,
+                        "parentId": null,
+                        "sortKey": 1024,
+                        "title": "Root",
+                        "note": "",
+                        "layoutMode": "bullets",
+                        "isCollapsed": false,
+                        "isStarred": true,
+                        "completedAt": null,
+                        "createdAt": "2026-07-11T00:00:00.000Z",
+                        "updatedAt": "2026-07-11T00:00:01.000Z",
+                        "deletedAt": null,
+                        "archivedAt": null,
+                        "archiveRootId": null
+                    }],
+                    "attachmentsByNodeId": {}
+                },
+                "historyEntryId": null,
+                "canUndo": true,
+                "canRedo": false,
+                "changedNodes": [{
+                    "id": NODE_ID,
+                    "parentId": null,
+                    "sortKey": 1024,
+                    "title": "Root",
+                    "note": "",
+                    "layoutMode": "bullets",
+                    "isCollapsed": false,
+                    "isStarred": true,
+                    "completedAt": null,
+                    "createdAt": "2026-07-11T00:00:00.000Z",
+                    "updatedAt": "2026-07-11T00:00:01.000Z",
+                    "deletedAt": null,
+                    "archivedAt": null,
+                    "archiveRootId": null
+                }],
+                "removedNodeIds": [THIRD_ID],
+                "changedAttachments": [{
+                    "id": SECOND_ID,
+                    "nodeId": NODE_ID,
+                    "sortKey": 1024,
+                    "relativePath": "notes-assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+                    "contentHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "originalName": "image.png",
+                    "mimeType": "image/png",
+                    "byteSize": 123,
+                    "intrinsicWidth": 320,
+                    "intrinsicHeight": 200,
+                    "displayWidth": 240,
+                    "createdAt": "2026-07-11T00:00:00.000Z",
+                    "updatedAt": "2026-07-11T00:00:01.000Z"
+                }]
             })
         );
     }

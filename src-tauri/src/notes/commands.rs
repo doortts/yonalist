@@ -1,6 +1,10 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::attachment_ingest::decode_raw_attachment_envelope;
 use crate::notes::attachments::{AttachmentStorageLease, PreparedAttachmentBatch};
+use crate::notes::connection::{
+    acquire_notes_connection, acquire_vault_app_lock, evict_notes_connection,
+    lock_notes_connection, reinitialize_notes_connection,
+};
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{
     hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
@@ -12,14 +16,14 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, collapse_all, connect_notes_db,
-    create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
-    empty_trash, expand_all, list_tags, list_tags_with_counts, load_workspace, move_node,
-    open_notes_export_db, remove_attachment, remove_empty_node, removed_attachment_snapshot,
-    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
-    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    validate_note_tag_filters, validate_structured_search_query_input, NewAttachment,
+    archive_node, attachment_by_id, collapse_all, create_attachments_coordinated_for_node,
+    create_node_at, delete_database, duplicate_node_at, empty_trash, expand_all, list_tags,
+    list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
+    remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
+    restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node,
+    sort_subtree_ascending, sort_subtree_descending, split_node_at, toggle_collapsed,
+    toggle_complete, toggle_star, unarchive_node, update_node_at, validate_note_tag_filters,
+    validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, ImportAttachmentPathBatchInput,
@@ -33,6 +37,27 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+
+// Tests exercise the schema/migration pipeline directly through owned
+// connections; production command bodies go through the connection manager.
+#[cfg(test)]
+use crate::notes::repository::connect_notes_db;
+
+/// Runs a synchronous note operation on Tauri's blocking thread pool so the
+/// per-command SQLite/file work never occupies the main (UI) thread. Each
+/// `notes_*` command is a thin async wrapper over its `_inner` sync body; the
+/// inner functions remain directly callable from tests.
+async fn run_blocking<T>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(join_error) => Err(format!("Notes background task failed: {join_error}")),
+    }
+}
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,10 +132,68 @@ fn take_attachment_batch_crash_interruption() -> bool {
     false
 }
 
+#[cfg(test)]
+thread_local! {
+    /// When armed, `notes_delete_database_inner` acquires a connection in the
+    /// window between evicting the cache and unlinking the files — simulating a
+    /// read-only command (search, tag counts, …) that raced into that window and
+    /// cached a handle to the inode deletion is about to unlink. The acquired
+    /// connection is stashed so the test can assert the post-delete acquisition
+    /// does not hand it back.
+    static DELETE_DATABASE_RACE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELETE_DATABASE_RACED_CONNECTION: std::cell::RefCell<
+        Option<crate::notes::connection::SharedNotesConnection>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn arm_delete_database_race() {
+    DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = None);
+    DELETE_DATABASE_RACE_ARMED.with(|armed| armed.set(true));
+}
+
+#[cfg(test)]
+fn take_delete_database_raced_connection(
+) -> Option<crate::notes::connection::SharedNotesConnection> {
+    DELETE_DATABASE_RACED_CONNECTION.with(|slot| slot.borrow_mut().take())
+}
+
+fn maybe_inject_delete_database_race(vault_path: &str) {
+    #[cfg(not(test))]
+    let _ = vault_path;
+    #[cfg(test)]
+    if DELETE_DATABASE_RACE_ARMED.with(|armed| {
+        let value = armed.get();
+        armed.set(false);
+        value
+    }) {
+        // Reopen and cache the vault's connection the way a raced read command
+        // would, then stash it so the test can verify the post-delete evict
+        // drops it instead of leaving it bound to the unlinked inode.
+        if let Ok(raced) = acquire_notes_connection(vault_path) {
+            DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = Some(raced));
+        }
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
+pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), String> {
+    run_blocking(move || notes_initialize_inner(vault_path)).await
+}
+
+pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
+    // Take the process-wide vault lock before anything else so a second window
+    // is rejected up front (with a clear message) rather than after waiting on
+    // the attachment lease. Holding it for the connection manager's lifetime is
+    // what stops a second instance's `clear_all_history` below from destroying
+    // this instance's undo history. Reentrant within one process.
+    acquire_vault_app_lock(&vault_path)?;
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    // Opening a vault must run the schema/migration pipeline exactly once, so
+    // force a fresh connection here even if an earlier command already cached
+    // one. Every subsequent command reuses this connection without re-migrating.
+    let shared = reinitialize_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     clear_all_history(&mut connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(())
@@ -122,7 +205,8 @@ fn run_mutation(
     operation: impl FnOnce(&mut rusqlite::Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(vault_path)?;
-    let mut connection = connect_notes_db(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result =
         with_history_transaction_and_prunes(&mut connection, history_context.as_ref(), operation)?;
     reconcile_candidates_after_committed_change(
@@ -143,7 +227,8 @@ fn run_dated_mutation(
     ) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(vault_path)?;
-    let mut connection = connect_notes_db(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result = with_history_transaction_and_prunes(
         &mut connection,
@@ -159,19 +244,35 @@ fn run_dated_mutation(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_load_workspace(
+pub(crate) async fn notes_load_workspace(
+    vault_path: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesWorkspace, String> {
+    run_blocking(move || notes_load_workspace_inner(vault_path, scope)).await
+}
+
+pub(crate) fn notes_load_workspace_inner(
     vault_path: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
     if let NotesWorkspaceScope::Tags { tags } = &scope {
         validate_note_tag_filters(tags)?;
     }
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     load_workspace(&connection, scope)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_create_node(
+pub(crate) async fn notes_create_node(
+    vault_path: String,
+    input: CreateNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_create_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_create_node_inner(
     vault_path: String,
     input: CreateNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -185,7 +286,15 @@ pub(crate) fn notes_create_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_update_node(
+pub(crate) async fn notes_update_node(
+    vault_path: String,
+    input: UpdateNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_update_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_update_node_inner(
     vault_path: String,
     input: UpdateNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -199,7 +308,15 @@ pub(crate) fn notes_update_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_split_node(
+pub(crate) async fn notes_split_node(
+    vault_path: String,
+    input: SplitNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_split_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_split_node_inner(
     vault_path: String,
     input: SplitNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -213,7 +330,15 @@ pub(crate) fn notes_split_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_move_node(
+pub(crate) async fn notes_move_node(
+    vault_path: String,
+    input: MoveNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_move_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_move_node_inner(
     vault_path: String,
     input: MoveNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -224,7 +349,15 @@ pub(crate) fn notes_move_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_complete(
+pub(crate) async fn notes_toggle_complete(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_complete_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_complete_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -235,7 +368,15 @@ pub(crate) fn notes_toggle_complete(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_collapsed(
+pub(crate) async fn notes_toggle_collapsed(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_collapsed_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_collapsed_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -246,7 +387,15 @@ pub(crate) fn notes_toggle_collapsed(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_collapse_all(
+pub(crate) async fn notes_collapse_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_collapse_all_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_collapse_all_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -257,7 +406,15 @@ pub(crate) fn notes_collapse_all(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_expand_all(
+pub(crate) async fn notes_expand_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_expand_all_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_expand_all_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -268,7 +425,16 @@ pub(crate) fn notes_expand_all(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_sort_subtree_ascending(
+pub(crate) async fn notes_sort_subtree_ascending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_sort_subtree_ascending_inner(vault_path, node_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_sort_subtree_ascending_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -279,7 +445,16 @@ pub(crate) fn notes_sort_subtree_ascending(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_sort_subtree_descending(
+pub(crate) async fn notes_sort_subtree_descending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_sort_subtree_descending_inner(vault_path, node_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_sort_subtree_descending_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -290,7 +465,15 @@ pub(crate) fn notes_sort_subtree_descending(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_star(
+pub(crate) async fn notes_toggle_star(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_star_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_star_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -301,7 +484,15 @@ pub(crate) fn notes_toggle_star(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_duplicate_node(
+pub(crate) async fn notes_duplicate_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_duplicate_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_duplicate_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -315,7 +506,15 @@ pub(crate) fn notes_duplicate_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_remove_empty_node(
+pub(crate) async fn notes_remove_empty_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_remove_empty_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_remove_empty_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -326,7 +525,15 @@ pub(crate) fn notes_remove_empty_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_soft_delete_node(
+pub(crate) async fn notes_soft_delete_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_soft_delete_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_soft_delete_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -337,7 +544,15 @@ pub(crate) fn notes_soft_delete_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_restore_node(
+pub(crate) async fn notes_restore_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_restore_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_restore_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -351,7 +566,15 @@ pub(crate) fn notes_restore_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_archive_node(
+pub(crate) async fn notes_archive_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_archive_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_archive_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -362,7 +585,15 @@ pub(crate) fn notes_archive_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_unarchive_node(
+pub(crate) async fn notes_unarchive_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_unarchive_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_unarchive_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -373,7 +604,15 @@ pub(crate) fn notes_unarchive_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_undo(
+pub(crate) async fn notes_undo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    run_blocking(move || notes_undo_inner(vault_path, session_id, scope)).await
+}
+
+pub(crate) fn notes_undo_inner(
     vault_path: String,
     session_id: String,
     scope: NotesWorkspaceScope,
@@ -388,7 +627,8 @@ fn notes_undo_with_provider(
     today_provider: &impl LocalTodayProvider,
 ) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result =
         undo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
@@ -397,7 +637,15 @@ fn notes_undo_with_provider(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_redo(
+pub(crate) async fn notes_redo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    run_blocking(move || notes_redo_inner(vault_path, session_id, scope)).await
+}
+
+pub(crate) fn notes_redo_inner(
     vault_path: String,
     session_id: String,
     scope: NotesWorkspaceScope,
@@ -412,7 +660,8 @@ fn notes_redo_with_provider(
     today_provider: &impl LocalTodayProvider,
 ) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result =
         redo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
@@ -421,30 +670,51 @@ fn notes_redo_with_provider(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_history_status(
+pub(crate) async fn notes_history_status(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    run_blocking(move || notes_history_status_inner(vault_path, session_id)).await
+}
+
+pub(crate) fn notes_history_status_inner(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     history_status(&connection, &session_id)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_clear_history(
+pub(crate) async fn notes_clear_history(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    run_blocking(move || notes_clear_history_inner(vault_path, session_id)).await
+}
+
+pub(crate) fn notes_clear_history_inner(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let status = clear_history(&mut connection, &session_id)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(status)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
+pub(crate) async fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
+    run_blocking(move || notes_empty_trash_inner(vault_path)).await
+}
+
+pub(crate) fn notes_empty_trash_inner(vault_path: String) -> Result<NotesWorkspace, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let workspace = empty_trash(&mut connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(workspace)
@@ -683,11 +953,21 @@ fn committed_attachment_batch_retry(
         Some(context) => history_status(connection, &context.session_id)?,
         None => NotesHistoryStatus::default(),
     };
+    // This retry recognizes a batch a previous call already committed. To stay
+    // idempotent with that original mutation it must report the same deltas.
+    // The validation above proved the entry's only changes are these attachment
+    // inserts (no node changes, nothing removed), so the delta is exactly the
+    // committed attachments. Deltas are only exposed for the audited path; an
+    // uncontexted original produced no audit rows and stays workspace-only.
+    let deltas_available = history_context.is_some();
     Ok(Some(NotesMutationResult {
         workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
         history_entry_id,
         can_undo: status.can_undo,
         can_redo: status.can_redo,
+        changed_nodes: deltas_available.then(Vec::new),
+        removed_node_ids: deltas_available.then(Vec::new),
+        changed_attachments: deltas_available.then(|| existing.clone()),
     }))
 }
 
@@ -698,7 +978,7 @@ fn import_prepared_attachment_batch(
     history_context: Option<NotesHistoryContext>,
     prepared_batch: PreparedAttachmentBatch,
     storage: AttachmentStorageLease,
-    mut connection: rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
 ) -> Result<NotesMutationResult, String> {
     validate_attachment_batch_ids(&node_id, &ids)?;
     if initial_max_display_width <= 0 {
@@ -710,7 +990,7 @@ fn import_prepared_attachment_batch(
         return Err("Notes attachment metadata does not match the prepared batch.".to_string());
     }
 
-    let identity = storage.capture_database_identity(&connection)?;
+    let identity = storage.capture_database_identity(&*connection)?;
     let mut attachments = Vec::with_capacity(ids.len());
     for (id, prepared) in ids.into_iter().zip(prepared_batch.attachments()) {
         let byte_size = i64::try_from(prepared.image.byte_size)
@@ -737,14 +1017,14 @@ fn import_prepared_attachment_batch(
         .collect::<Vec<_>>();
 
     if let Some(result) =
-        committed_attachment_batch_retry(&connection, &attachments, history_context.as_ref())?
+        committed_attachment_batch_retry(&*connection, &attachments, history_context.as_ref())?
     {
         return Ok(result);
     }
 
     storage.mark_reconciliation_needed()?;
     let result = with_history_transaction_and_prunes(
-        &mut connection,
+        &mut *connection,
         history_context.as_ref(),
         |connection| {
             create_attachments_coordinated_for_node(
@@ -780,7 +1060,7 @@ fn import_prepared_attachment_batch(
 
     match result {
         Ok(result) => {
-            reconcile_after_committed_attachment_change(&storage, &connection);
+            reconcile_after_committed_attachment_change(&storage, &*connection);
             Ok(result.into_mutation_result())
         }
         Err(error) => {
@@ -789,7 +1069,7 @@ fn import_prepared_attachment_batch(
             } else {
                 Err(reconcile_failed_attachment_batch(
                     &storage,
-                    &connection,
+                    &*connection,
                     &candidates,
                     error,
                 ))
@@ -799,7 +1079,18 @@ fn import_prepared_attachment_batch(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_import_attachment_paths_batch(
+pub(crate) async fn notes_import_attachment_paths_batch(
+    vault_path: String,
+    input: ImportAttachmentPathBatchInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || {
+        notes_import_attachment_paths_batch_inner(vault_path, input, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_import_attachment_paths_batch_inner(
     vault_path: String,
     input: ImportAttachmentPathBatchInput,
     history_context: Option<NotesHistoryContext>,
@@ -821,8 +1112,11 @@ pub(crate) fn notes_import_attachment_paths_batch(
         .map(|attachment| attachment.source_path.as_str())
         .collect::<Vec<_>>();
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let connection = connect_notes_db(&vault_path)?;
-    reconcile_before_attachment_batch(&storage, &connection)?;
+    // Decode the sources and read their files BEFORE taking the connection lock.
+    // The prepare step is pure file I/O with no database dependency, and holding
+    // the per-vault `Mutex` across it would block every read on this vault (e.g.
+    // search keystrokes) for the whole import — the exact cross-command blocking
+    // task 1.2 aims to avoid ("hold the lock only around the DB work").
     let prepared_batch =
         PreparedAttachmentBatch::from_source_paths(&source_paths).map_err(|error| {
             let names = input
@@ -833,6 +1127,9 @@ pub(crate) fn notes_import_attachment_paths_batch(
                 .join(", ");
             format!("Could not prepare Notes attachment batch [{names}]: {error}")
         })?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
+    reconcile_before_attachment_batch(&storage, &connection)?;
     import_prepared_attachment_batch(
         input.node_id,
         ids,
@@ -840,7 +1137,7 @@ pub(crate) fn notes_import_attachment_paths_batch(
         history_context,
         prepared_batch,
         storage,
-        connection,
+        &mut connection,
     )
 }
 
@@ -854,7 +1151,8 @@ fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult
         .collect::<Vec<_>>();
     validate_attachment_batch_ids(&decoded.metadata.node_id, &ids)?;
     let storage = AttachmentStorageLease::acquire(&decoded.metadata.vault_path)?;
-    let connection = connect_notes_db(&decoded.metadata.vault_path)?;
+    let shared = acquire_notes_connection(&decoded.metadata.vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     reconcile_before_attachment_batch(&storage, &connection)?;
     let prepared_batch = PreparedAttachmentBatch::from_bytes(decoded.sources)?;
     import_prepared_attachment_batch(
@@ -864,29 +1162,40 @@ fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult
         decoded.metadata.history_context,
         prepared_batch,
         storage,
-        connection,
+        &mut connection,
     )
 }
 
 #[tauri::command]
-pub(crate) fn notes_import_attachment_bytes(
+pub(crate) async fn notes_import_attachment_bytes(
     request: tauri::ipc::Request<'_>,
 ) -> Result<NotesMutationResult, String> {
-    match request.body() {
-        tauri::ipc::InvokeBody::Raw(body) => notes_import_attachment_bytes_body(body),
+    // `Request` borrows the IPC buffer, which is not `'static`, so copy the raw
+    // body out before handing ownership to the blocking pool.
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(body) => body.to_vec(),
         tauri::ipc::InvokeBody::Json(_) => {
-            Err("Notes attachment byte imports require a raw IPC body.".to_string())
+            return Err("Notes attachment byte imports require a raw IPC body.".to_string());
         }
-    }
+    };
+    run_blocking(move || notes_import_attachment_bytes_body(&body)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_import_attachment(
+pub(crate) async fn notes_import_attachment(
     vault_path: String,
     input: ImportAttachmentInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    notes_import_attachment_paths_batch(
+    run_blocking(move || notes_import_attachment_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_import_attachment_inner(
+    vault_path: String,
+    input: ImportAttachmentInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    notes_import_attachment_paths_batch_inner(
         vault_path,
         ImportAttachmentPathBatchInput {
             node_id: input.node_id,
@@ -901,69 +1210,127 @@ pub(crate) fn notes_import_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_read_attachment_bytes(
+pub(crate) async fn notes_read_attachment_bytes(
+    vault_path: String,
+    attachment_id: String,
+) -> Result<tauri::ipc::Response, String> {
+    // Return the attachment as a raw IPC body so Tauri streams the bytes instead
+    // of serializing a multi-megabyte image into a JSON number array (which the
+    // webview would then re-parse element by element).
+    let bytes =
+        run_blocking(move || notes_read_attachment_bytes_inner(vault_path, attachment_id)).await?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+pub(crate) fn notes_read_attachment_bytes_inner(
     vault_path: String,
     attachment_id: String,
 ) -> Result<Vec<u8>, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let connection = connect_notes_db(&vault_path)?;
-    let attachment = attachment_by_id(&connection, &attachment_id)?
-        .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    // Hold the connection lock only for the metadata lookup; the (potentially
+    // large) attachment file read and hash verification runs without it so
+    // concurrent reads on the same vault do not serialize on the byte copy.
+    let attachment = {
+        let connection = lock_notes_connection(&shared);
+        attachment_by_id(&connection, &attachment_id)?
+            .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?
+    };
     storage.read_validated_attachment_bytes(&attachment)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_resize_attachment(
+pub(crate) async fn notes_resize_attachment(
+    vault_path: String,
+    input: ResizeAttachmentInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_resize_attachment_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_resize_attachment_inner(
     vault_path: String,
     input: ResizeAttachmentInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result = with_history_transaction_and_prunes(
         &mut connection,
         history_context.as_ref(),
         |connection| resize_attachment(connection, &input.id, input.display_width),
     )?;
+    // Candidates-only, mirroring `run_mutation`: the pruned-path set is the
+    // complete candidate list (a resize touches no attachment files at all), and
+    // `reconcile_candidates_after_committed_change` still escalates to a full
+    // reachable-set scan whenever the reconciliation marker is set. The extra
+    // unconditional full pass was pure redundancy.
     reconcile_candidates_after_committed_change(
         &storage,
         &connection,
         &result.pruned_attachment_paths,
     );
-    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.into_mutation_result())
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_remove_attachment(
+pub(crate) async fn notes_remove_attachment(
+    vault_path: String,
+    attachment_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_remove_attachment_inner(vault_path, attachment_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_remove_attachment_inner(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result = with_history_transaction_and_prunes(
         &mut connection,
         history_context.as_ref(),
         |connection| remove_attachment(connection, &attachment_id),
     )?;
+    // Candidates-only, mirroring `run_mutation`. A removed attachment's file
+    // stays reachable through its history rows and is only pruned when that
+    // history is trimmed, at which point the trimmed path is recorded in
+    // `pruned_attachment_paths`; the candidates pass escalates to a full scan
+    // whenever the reconciliation marker is set, so the former unconditional
+    // full pass added nothing.
     reconcile_candidates_after_committed_change(
         &storage,
         &connection,
         &result.pruned_attachment_paths,
     );
-    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.into_mutation_result())
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_restore_attachment(
+pub(crate) async fn notes_restore_attachment(
+    vault_path: String,
+    attachment_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || {
+        notes_restore_attachment_inner(vault_path, attachment_id, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_restore_attachment_inner(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let attachment = removed_attachment_snapshot(&connection, &attachment_id)?;
     storage.read_validated_attachment_bytes(&attachment)?;
     match with_history_transaction_and_prunes(
@@ -980,7 +1347,15 @@ pub(crate) fn notes_restore_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_search(
+pub(crate) async fn notes_search(
+    vault_path: String,
+    query: String,
+    scope: NoteSearchScope,
+) -> Result<Vec<NoteSearchResult>, String> {
+    run_blocking(move || notes_search_inner(vault_path, query, scope)).await
+}
+
+pub(crate) fn notes_search_inner(
     vault_path: String,
     query: String,
     scope: NoteSearchScope,
@@ -994,32 +1369,53 @@ fn notes_search_with_provider(
     scope: NoteSearchScope,
     today_provider: &impl LocalTodayProvider,
 ) -> Result<Vec<NoteSearchResult>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     search_nodes_at(&connection, &query, scope, today)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_search_structured(
+pub(crate) async fn notes_search_structured(
+    vault_path: String,
+    query: NoteStructuredSearchQuery,
+) -> Result<Vec<NoteSearchResult>, String> {
+    run_blocking(move || notes_search_structured_inner(vault_path, query)).await
+}
+
+pub(crate) fn notes_search_structured_inner(
     vault_path: String,
     query: NoteStructuredSearchQuery,
 ) -> Result<Vec<NoteSearchResult>, String> {
     validate_structured_search_query_input(&query)?;
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     search_nodes_structured(&connection, &query)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+pub(crate) async fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
+    run_blocking(move || notes_list_tags_inner(vault_path)).await
+}
+
+pub(crate) fn notes_list_tags_inner(vault_path: String) -> Result<Vec<String>, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     list_tags(&connection)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_list_tags_with_counts(
+pub(crate) async fn notes_list_tags_with_counts(
     vault_path: String,
 ) -> Result<Vec<NoteTagSummary>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    run_blocking(move || notes_list_tags_with_counts_inner(vault_path)).await
+}
+
+pub(crate) fn notes_list_tags_with_counts_inner(
+    vault_path: String,
+) -> Result<Vec<NoteTagSummary>, String> {
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     list_tags_with_counts(&connection)
 }
 
@@ -1030,9 +1426,30 @@ pub(crate) struct DeleteDatabaseOutcome {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_delete_database(vault_path: String) -> Result<DeleteDatabaseOutcome, String> {
+pub(crate) async fn notes_delete_database(
+    vault_path: String,
+) -> Result<DeleteDatabaseOutcome, String> {
+    run_blocking(move || notes_delete_database_inner(vault_path)).await
+}
+
+pub(crate) fn notes_delete_database_inner(
+    vault_path: String,
+) -> Result<DeleteDatabaseOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    delete_database(&vault_path)?;
+    // Close and forget the cached connection before removing the files so no
+    // open handle survives the deletion and the next acquisition reconnects.
+    evict_notes_connection(&vault_path);
+    // Read-only commands (search, tag counts, …) take no attachment lease and
+    // run outside the structural queue, so one can slip into the window between
+    // the evict above and the file removal below, reopen the old file, and cache
+    // a connection to the now-unlinked inode — leaving reads showing deleted
+    // data and writes silently lost on restart. Evict again after deletion so
+    // any such raced connection is dropped; a later reader then reconnects
+    // against a fresh empty database, matching the pre-manager behavior.
+    maybe_inject_delete_database_race(&vault_path);
+    let deletion = delete_database(&vault_path);
+    evict_notes_connection(&vault_path);
+    deletion?;
     let attachment_cleanup_failed = match storage.delete_attachment_files() {
         Ok(()) => false,
         Err(error) => {
@@ -1097,7 +1514,19 @@ fn hydrate_export_snapshot_if_needed(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_export_markdown(
+pub(crate) async fn notes_export_markdown(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    run_blocking(move || {
+        notes_export_markdown_inner(vault_path, root_node_id, destination, overwrite)
+    })
+    .await
+}
+
+pub(crate) fn notes_export_markdown_inner(
     vault_path: String,
     root_node_id: String,
     destination: String,
@@ -1140,7 +1569,17 @@ pub(crate) fn notes_export_markdown(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_export_pdf(
+pub(crate) async fn notes_export_pdf(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    run_blocking(move || notes_export_pdf_inner(vault_path, root_node_id, destination, overwrite))
+        .await
+}
+
+pub(crate) fn notes_export_pdf_inner(
     vault_path: String,
     root_node_id: String,
     destination: String,
@@ -1187,6 +1626,46 @@ fn export_notes_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The public `notes_*` commands are now async wrappers that dispatch onto the
+    // blocking thread pool. These tests (and the thread-local fault injectors
+    // above) must run the note logic inline on the test thread, so alias each
+    // command name to its synchronous `_inner` body. Every existing call site
+    // stays byte-for-byte identical.
+    use super::{
+        notes_archive_node_inner as notes_archive_node,
+        notes_collapse_all_inner as notes_collapse_all,
+        notes_create_node_inner as notes_create_node,
+        notes_delete_database_inner as notes_delete_database,
+        notes_duplicate_node_inner as notes_duplicate_node,
+        notes_empty_trash_inner as notes_empty_trash,
+        notes_expand_all_inner as notes_expand_all,
+        notes_export_markdown_inner as notes_export_markdown,
+        notes_export_pdf_inner as notes_export_pdf,
+        notes_history_status_inner as notes_history_status,
+        notes_import_attachment_inner as notes_import_attachment,
+        notes_import_attachment_paths_batch_inner as notes_import_attachment_paths_batch,
+        notes_initialize_inner as notes_initialize,
+        notes_list_tags_inner as notes_list_tags,
+        notes_list_tags_with_counts_inner as notes_list_tags_with_counts,
+        notes_load_workspace_inner as notes_load_workspace,
+        notes_move_node_inner as notes_move_node,
+        notes_redo_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
+        notes_remove_empty_node_inner as notes_remove_empty_node,
+        notes_restore_node_inner as notes_restore_node,
+        notes_search_inner as notes_search,
+        notes_search_structured_inner as notes_search_structured,
+        notes_soft_delete_node_inner as notes_soft_delete_node,
+        notes_sort_subtree_ascending_inner as notes_sort_subtree_ascending,
+        notes_sort_subtree_descending_inner as notes_sort_subtree_descending,
+        notes_split_node_inner as notes_split_node,
+        notes_toggle_collapsed_inner as notes_toggle_collapsed,
+        notes_toggle_complete_inner as notes_toggle_complete,
+        notes_toggle_star_inner as notes_toggle_star,
+        notes_unarchive_node_inner as notes_unarchive_node,
+        notes_undo_inner as notes_undo,
+        notes_update_node_inner as notes_update_node,
+    };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
         ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportAttachmentPathItem,
@@ -1774,6 +2253,53 @@ mod tests {
             let storage = AttachmentStorageLease::acquire(&vault_path).expect("cleared marker");
             assert!(!storage.reconciliation_needed().expect("marker state"));
         }
+    }
+
+    #[test]
+    fn notes_initialize_reopens_the_same_vault_within_one_process() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        // The vault lock is reentrant within one process: opening, then reopening
+        // the same vault (as a webview reload or a repeated command would) must
+        // reuse the already-held lock instead of deadlocking against it.
+        notes_initialize(vault_path.clone()).expect("first initialize");
+        notes_initialize(vault_path.clone()).expect("reinitialize in the same process");
+        notes_initialize(vault_path).expect("reinitialize again");
+    }
+
+    #[test]
+    fn notes_initialize_rejects_a_second_instance_holding_the_vault_lock() {
+        use fs4::FileExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        // Simulate another OS-level app instance holding the vault: open the lock
+        // file directly and take the exclusive flock. A fresh descriptor from
+        // this same process contends with that lock exactly as a second process
+        // would, so `notes_initialize` (which has never cached a handle for this
+        // vault) must be refused with the single-writer message rather than
+        // running `clear_all_history` and wiping the other instance's undo stack.
+        let metadata = crate::metadata_dir(&vault_path);
+        fs::create_dir_all(&metadata).expect("create metadata directory");
+        let lock_path = metadata.join("notes.app.lock");
+        let foreign = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .expect("open the vault lock as another instance");
+        FileExt::try_lock(&foreign).expect("another instance takes the vault lock");
+
+        let error =
+            notes_initialize(vault_path.clone()).expect_err("a second instance must be rejected");
+        assert_eq!(error, "Notes vault is already open in another window.");
+
+        // Once the other instance closes (releases the lock), this instance can
+        // open the vault normally.
+        FileExt::unlock(&foreign).expect("the other instance releases the vault lock");
+        notes_initialize(vault_path).expect("initialize after the other instance closes");
     }
 
     #[test]
@@ -2992,6 +3518,82 @@ mod tests {
     }
 
     #[test]
+    fn notes_delete_database_evicts_a_connection_raced_into_the_unlink_window() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Doomed".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create node before deletion");
+
+        // Arm the hook so a read-only command "slips" into the window between the
+        // pre-delete evict and the file removal, reopening the vault and caching a
+        // connection to the inode deletion is about to unlink.
+        arm_delete_database_race();
+        let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
+        assert!(!deletion.attachment_cleanup_failed);
+        assert!(
+            !crate::notes::repository::notes_db_path(&vault_path).exists(),
+            "deletion must unlink the database file"
+        );
+
+        let raced = take_delete_database_raced_connection()
+            .expect("the armed hook must have acquired a connection in the unlink window");
+
+        // Without the post-delete evict this raced connection to the unlinked
+        // inode would stay cached and every later command would reuse it: reads
+        // would see deleted data and writes would vanish because they never reach
+        // a file at `notes_db_path`. The fix drops it, so the next acquisition
+        // reconnects against a fresh on-disk database instead.
+        let reacquired =
+            acquire_notes_connection(&vault_path).expect("reacquire after deletion");
+        assert!(
+            !std::sync::Arc::ptr_eq(&raced, &reacquired),
+            "the raced connection to the unlinked inode must not be handed back after deletion"
+        );
+
+        // The fresh connection must reconnect against a real on-disk database, so
+        // a write persists and is readable through a later acquisition.
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: SPLIT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Reborn".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create node after deletion");
+        // File existence alone is a weak check: the acquire above already recreated
+        // the file and schema via `connect_notes_db`, so it would hold even if the
+        // write had vanished into the unlinked inode. Read the node back through a
+        // fresh acquisition to prove the write actually reached the live database.
+        let reborn = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+            .expect("load workspace after the reborn write");
+        assert!(
+            reborn
+                .nodes
+                .iter()
+                .any(|node| node.id == SPLIT_ID && node.title == "Reborn"),
+            "the write after deletion must persist and be readable through a fresh acquisition"
+        );
+        assert!(
+            crate::notes::repository::notes_db_path(&vault_path).exists(),
+            "a write after deletion must recreate the database file on disk"
+        );
+    }
+
+    #[test]
     fn notes_date_search_command_uses_the_injected_local_today_provider() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -3719,8 +4321,11 @@ mod tests {
         )
         .expect_err("corrupt attachment must fail export");
 
+        // Reads now SHA-256-verify against the stored content hash instead of
+        // re-decoding the image, so corrupt bytes fail the digest check before
+        // any assets are published.
         assert!(
-            error.contains("Could not decode the Notes attachment image format"),
+            error.contains("no longer matches its stored content hash"),
             "{error}"
         );
         assert!(!destination.exists());
@@ -3838,9 +4443,21 @@ mod tests {
             fs::read(assets.join("0001.png")).expect("first exported attachment"),
             expected_bytes
         );
-        let exported_images = fs::read_dir(assets)
+        let entries = fs::read_dir(&assets)
             .expect("list assets")
             .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        // The published directory holds exactly the one deduplicated image plus
+        // the export marker (`.yonalist-notes-export.json`) — nothing stray leaks
+        // in. Counting only `.png` entries alone would not catch an extra file.
+        assert_eq!(
+            entries.len(),
+            2,
+            "assets dir must contain only the shared image and the export marker: {:?}",
+            entries.iter().map(|entry| entry.path()).collect::<Vec<_>>()
+        );
+        let exported_images = entries
+            .iter()
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "png"))
             .count();
         assert_eq!(

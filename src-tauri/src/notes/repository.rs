@@ -1239,6 +1239,54 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
     })
 }
 
+/// Column projection of a `notes_nodes` row as it is captured in the history
+/// audit `after_json`/`before_json` payloads (snake_case keys, integer booleans).
+#[derive(Deserialize)]
+struct AuditNodeRow {
+    id: String,
+    parent_id: Option<String>,
+    sort_key: i64,
+    title: String,
+    note: String,
+    layout_mode: String,
+    is_collapsed: i64,
+    is_starred: i64,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+    deleted_at: Option<String>,
+    archived_at: Option<String>,
+    archive_root_id: Option<String>,
+}
+
+/// Decode a history-audit node payload (see `history::NODE_JSON_NEW`) into a
+/// `NoteNode`. Unknown columns such as `deleted_batch_id` are ignored so the
+/// audit trail can carry storage-only fields the workspace projection omits.
+pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, String> {
+    let row: AuditNodeRow = serde_json::from_str(after_json)
+        .map_err(|error| format!("Could not decode an audited Notes node: {error}"))?;
+    let layout_mode = match row.layout_mode.as_str() {
+        "bullets" => NoteLayoutMode::Bullets,
+        value => return Err(format!("Unsupported Notes layout mode: {value}")),
+    };
+    Ok(NoteNode {
+        id: row.id,
+        parent_id: row.parent_id,
+        sort_key: row.sort_key,
+        title: row.title,
+        note: row.note,
+        layout_mode,
+        is_collapsed: row.is_collapsed != 0,
+        is_starred: row.is_starred != 0,
+        completed_at: row.completed_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        deleted_at: row.deleted_at,
+        archived_at: row.archived_at,
+        archive_root_id: row.archive_root_id,
+    })
+}
+
 fn note_attachment_from_row(row: &Row<'_>) -> rusqlite::Result<NoteAttachment> {
     Ok(NoteAttachment {
         id: row.get(0)?,
@@ -1295,6 +1343,28 @@ fn attachments_for_nodes(
         }
     }
     Ok(by_node_id)
+}
+
+/// Loads a single node's attachment metadata rows in stored order. Used by
+/// `duplicate_node_at` to clone attachment rows onto the copied nodes.
+fn node_attachments(
+    connection: &Connection,
+    node_id: &str,
+) -> Result<Vec<NoteAttachment>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, node_id, sort_key, relative_path, content_hash, original_name, \
+                    mime_type, byte_size, intrinsic_width, intrinsic_height, display_width, \
+                    created_at, updated_at \
+             FROM notes_attachments WHERE node_id = ?1 ORDER BY sort_key, id",
+        )
+        .map_err(|error| format!("Could not prepare a node's Notes attachments: {error}"))?;
+    let attachments = statement
+        .query_map([node_id], note_attachment_from_row)
+        .map_err(|error| format!("Could not load a node's Notes attachments: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read a node's Notes attachments: {error}"))?;
+    Ok(attachments)
 }
 
 fn query_workspace<P: Params>(
@@ -1970,58 +2040,68 @@ fn fts_match_expression(query: &str) -> Option<String> {
     )
 }
 
-fn search_parent_map(
+/// Resolve the ancestor title trail for each search hit with a recursive CTE
+/// scoped to the LIMITed result set, instead of loading every
+/// `(id, parent_id, title)` row in the vault into a map on every search.
+///
+/// The walk only follows ancestors that satisfy the same scope predicate as the
+/// match set, so an out-of-scope ancestor (for example a live parent above a
+/// trashed node) terminates the trail exactly like the previous map lookup did.
+/// Each returned trail is ordered root-first. Node trees are acyclic by
+/// construction; the depth bound is a defensive guard against a corrupt cycle.
+fn search_parent_trails(
     connection: &Connection,
     scope: NoteSearchScope,
-) -> Result<HashMap<String, (Option<String>, String)>, String> {
-    let sql = format!(
-        "SELECT node.id, node.parent_id, node.title FROM notes_nodes node WHERE {}",
-        search_scope_predicate(scope)
-    );
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
-    let mut parents = HashMap::new();
-    for row in rows {
-        let (id, parent_id, title) =
-            row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
-        parents.insert(id, (parent_id, title));
+    node_ids: &[&str],
+) -> Result<HashMap<String, Vec<String>>, String> {
+    const MAX_TRAIL_DEPTH: i64 = 10_000;
+    let mut trails: HashMap<String, Vec<String>> = HashMap::new();
+    if node_ids.is_empty() {
+        return Ok(trails);
     }
-    Ok(parents)
-}
-
-fn parent_trail(
-    node_id: &str,
-    parents: &HashMap<String, (Option<String>, String)>,
-) -> Result<Vec<String>, String> {
-    let mut trail = Vec::new();
-    let mut seen = HashSet::new();
-    let mut parent_id = parents
-        .get(node_id)
-        .and_then(|(parent_id, _)| parent_id.clone());
-    while let Some(id) = parent_id {
-        if !seen.insert(id.clone()) {
-            return Err(format!(
-                "Could not assemble the Notes search parent trail for {node_id}: cycle detected."
-            ));
+    let scope_predicate = search_scope_predicate(scope);
+    let unique_ids = node_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    for chunk in unique_ids.chunks(500) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, depth) AS (\
+               SELECT child.id, node.id, node.parent_id, node.title, 0 \
+               FROM notes_nodes child \
+               JOIN notes_nodes node ON node.id = child.parent_id \
+               WHERE child.id IN ({placeholders}) AND {scope_predicate} \
+               UNION ALL \
+               SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, \
+                      ancestor_trail.depth + 1 \
+               FROM ancestor_trail \
+               JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
+               WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
+             ) \
+             SELECT match_id, title, depth FROM ancestor_trail \
+             ORDER BY match_id, depth DESC"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter().copied()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
+        for row in rows {
+            let (match_id, title) =
+                row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
+            trails.entry(match_id).or_default().push(title);
         }
-        let Some((next_parent_id, title)) = parents.get(&id) else {
-            break;
-        };
-        trail.push(title.clone());
-        parent_id = next_parent_id.clone();
     }
-    trail.reverse();
-    Ok(trail)
+    Ok(trails)
 }
 
 pub(crate) fn search_nodes(
@@ -2063,18 +2143,20 @@ fn search_nodes_by_date(
         .map_err(|error| format!("Could not search Note dates: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let parents = search_parent_map(connection, scope)?;
-    matches
+    let node_ids = matches.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, scope, &node_ids)?;
+    Ok(matches
         .into_iter()
         .map(|(node_id, title)| {
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field: NoteSearchMatchedField::Date,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 fn search_nodes_fts(
@@ -2114,13 +2196,15 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not search Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let parents = search_parent_map(connection, scope)?;
+    let node_ids = matches.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, scope, &node_ids)?;
 
-    matches
+    Ok(matches
         .into_iter()
         .map(|(node_id, title, matched_title)| {
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field: if matched_title {
@@ -2128,9 +2212,9 @@ fn search_nodes_fts(
                 } else {
                     NoteSearchMatchedField::Note
                 },
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 pub(crate) fn search_nodes_at(
@@ -2355,9 +2439,10 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let parents = search_parent_map(connection, NoteSearchScope::Active)?;
+    let node_ids = matches.iter().map(|(id, _, _, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
 
-    matches
+    Ok(matches
         .into_iter()
         .map(|(node_id, title, _note, matched_title)| {
             let matched_field = if match_expression.is_some() {
@@ -2375,14 +2460,15 @@ pub(crate) fn search_nodes_structured(
             } else {
                 NoteSearchMatchedField::Note
             };
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 fn with_workspace_transaction(
@@ -2390,12 +2476,14 @@ fn with_workspace_transaction(
     operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
     let journaled = history::has_active_context(connection)?;
-    let transaction = if journaled {
-        connection.transaction_with_behavior(TransactionBehavior::Immediate)
-    } else {
-        connection.transaction()
-    }
-    .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
+    // Every workspace mutation runs in an IMMEDIATE transaction, including the
+    // non-journaled branch. A DEFERRED transaction starts read-only and only
+    // upgrades to a write lock on its first mutation; under WAL that deferred
+    // read->write upgrade can fail with SQLITE_BUSY_SNAPSHOT, which our busy
+    // handler does not retry. Taking the write lock up front avoids that race.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
     operation(&transaction)?;
     let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
     if journaled {
@@ -3256,29 +3344,56 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
     Ok(ordered)
 }
 
+fn generate_uuid_v4(transaction: &Transaction<'_>) -> Result<String, String> {
+    let id: String = transaction
+        .query_row(
+            "SELECT lower(\
+               hex(randomblob(4)) || '-' || hex(randomblob(2)) || \
+               '-4' || substr(hex(randomblob(2)), 2) || '-' || \
+               substr('89ab', (random() & 3) + 1, 1) || \
+               substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not generate a Note ID: {error}"))?;
+    validate_note_id(&id)?;
+    Ok(id)
+}
+
 fn fresh_uuid_v4(
     transaction: &Transaction<'_>,
     reserved: &HashSet<String>,
 ) -> Result<String, String> {
     for _ in 0..16 {
-        let id: String = transaction
-            .query_row(
-                "SELECT lower(\
-                   hex(randomblob(4)) || '-' || hex(randomblob(2)) || \
-                   '-4' || substr(hex(randomblob(2)), 2) || '-' || \
-                   substr('89ab', (random() & 3) + 1, 1) || \
-                   substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))\
-                 )",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not generate a Note ID: {error}"))?;
-        validate_note_id(&id)?;
+        let id = generate_uuid_v4(transaction)?;
         if !reserved.contains(&id) && node_by_id(transaction, &id)?.is_none() {
             return Ok(id);
         }
     }
     Err("Could not generate a unique Note ID.".to_string())
+}
+
+fn fresh_attachment_id(
+    transaction: &Transaction<'_>,
+    reserved: &HashSet<String>,
+) -> Result<String, String> {
+    for _ in 0..16 {
+        let id = generate_uuid_v4(transaction)?;
+        let in_use: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                [&id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                format!("Could not validate a duplicated Notes attachment ID: {error}")
+            })?;
+        if !reserved.contains(&id) && !in_use {
+            return Ok(id);
+        }
+    }
+    Err("Could not generate a unique Notes attachment ID.".to_string())
 }
 
 pub(crate) fn duplicate_node(
@@ -3360,6 +3475,46 @@ pub(crate) fn duplicate_node_at(
                 &original.note,
                 today,
             )?;
+        }
+
+        // Clone attachment metadata onto the copied nodes. Attachment files are
+        // content-addressed, so the copies keep the source's relative_path /
+        // content_hash and no bytes are written: the reconcile contract treats a
+        // path as reachable while any active row (or history entry) references
+        // it, so the shared file stays live and nothing is orphaned. Fresh ids
+        // and current timestamps keep each copy independent from its source under
+        // history/undo. Sort keys are preserved so the copies list in source
+        // order (each copied node starts empty, so there is no collision).
+        for original in &subtree {
+            let source_attachments = node_attachments(transaction, &original.id)?;
+            if source_attachments.is_empty() {
+                continue;
+            }
+            let copied_node_id = copied_ids
+                .get(&original.id)
+                .expect("every duplicated node has a generated ID")
+                .clone();
+            for source in source_attachments {
+                let attachment_id = fresh_attachment_id(transaction, &reserved)?;
+                reserved.insert(attachment_id.clone());
+                let sort_key = source.sort_key;
+                insert_new_attachment_at_sort_key(
+                    transaction,
+                    NewAttachment {
+                        id: attachment_id,
+                        node_id: copied_node_id.clone(),
+                        relative_path: source.relative_path,
+                        content_hash: source.content_hash,
+                        original_name: source.original_name,
+                        mime_type: source.mime_type,
+                        byte_size: source.byte_size,
+                        intrinsic_width: source.intrinsic_width,
+                        intrinsic_height: source.intrinsic_height,
+                        display_width: source.display_width,
+                    },
+                    sort_key,
+                )?;
+            }
         }
 
         if copied_ids.contains_key(node_id) {
@@ -3868,58 +4023,87 @@ fn create_attachment_coordinated_inner(
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
     let journaled = history::has_active_context(connection)?;
+
+    // Phase 1 — validate the batch and reserve its ordering inside a short
+    // read-only transaction. Every check here only reads the DB (node/vault
+    // capacity, ID uniqueness, sort keys) and the transaction is rolled back
+    // when this block ends. Publication MUST come after these checks so a
+    // rejected batch never touches the filesystem (the `*_before_publication`
+    // contract tests pin this).
+    let (attachments, sort_keys) = {
+        let transaction = connection.transaction().map_err(|error| {
+            format!("Could not start the Notes attachment validation: {error}")
+        })?;
+        if let Some((node_id, batch_len)) = capacity_preflight {
+            validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
+        }
+        let (node_id, attachments) = prepare()?;
+        validate_attachment_batch_capacity(&transaction, &node_id, attachments.len())?;
+
+        let mut ids = HashSet::with_capacity(attachments.len());
+        for attachment in &attachments {
+            validate_new_attachment(attachment)?;
+            if attachment.node_id != node_id {
+                return Err("Prepared Notes attachment targets an unexpected node.".to_string());
+            }
+            if !ids.insert(attachment.id.as_str()) {
+                return Err(format!(
+                    "Notes attachment ID {} is already in use.",
+                    attachment.id
+                ));
+            }
+            let id_exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                    [&attachment.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    format!("Could not validate the new Notes attachment ID: {error}")
+                })?;
+            if id_exists {
+                return Err(format!(
+                    "Notes attachment ID {} is already in use.",
+                    attachment.id
+                ));
+            }
+        }
+
+        let mut sort_key: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
+                [&node_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?;
+        let mut sort_keys = Vec::with_capacity(attachments.len());
+        for _ in &attachments {
+            sort_key = sort_key
+                .checked_add(SORT_KEY_STEP)
+                .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
+            sort_keys.push(sort_key);
+        }
+        (attachments, sort_keys)
+    };
+
+    // Phase 2 — publish the files with NO transaction (and so no write lock)
+    // held, keeping the slow temp-write + fsync + rename + dir-fsync out of the
+    // metadata transaction. We publish *before* committing the metadata
+    // (file-before-commit): `reconcile_attachment_files`/`reconcile_attachment_candidates`
+    // only *remove* files that no DB row references — they can never restore a
+    // missing one — so a committed row must never outlive its bytes. If the
+    // phase 3 transaction fails, the freshly published files are unreferenced
+    // orphans that the caller's marker/reconcile path (e.g.
+    // `reconcile_failed_attachment_batch`) sweeps.
+    publish()?;
+
+    // Phase 3 — insert the metadata rows and commit inside an IMMEDIATE write
+    // transaction. Note commands are serialized per vault on a single managed
+    // connection behind the attachment storage lease, so no other writer slips
+    // between phase 1's validation snapshot and this commit.
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes attachment transaction: {error}"))?;
-    if let Some((node_id, batch_len)) = capacity_preflight {
-        validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
-    }
-    let (node_id, attachments) = prepare()?;
-    validate_attachment_batch_capacity(&transaction, &node_id, attachments.len())?;
-
-    let mut ids = HashSet::with_capacity(attachments.len());
-    for attachment in &attachments {
-        validate_new_attachment(attachment)?;
-        if attachment.node_id != node_id {
-            return Err("Prepared Notes attachment targets an unexpected node.".to_string());
-        }
-        if !ids.insert(attachment.id.as_str()) {
-            return Err(format!(
-                "Notes attachment ID {} is already in use.",
-                attachment.id
-            ));
-        }
-        let id_exists: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-                [&attachment.id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
-        if id_exists {
-            return Err(format!(
-                "Notes attachment ID {} is already in use.",
-                attachment.id
-            ));
-        }
-    }
-
-    let mut sort_key: i64 = transaction
-        .query_row(
-            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
-            [&node_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?;
-    let mut sort_keys = Vec::with_capacity(attachments.len());
-    for _ in &attachments {
-        sort_key = sort_key
-            .checked_add(SORT_KEY_STEP)
-            .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
-        sort_keys.push(sort_key);
-    }
-
-    publish()?;
     for (attachment, sort_key) in attachments.into_iter().zip(sort_keys) {
         insert_new_attachment_at_sort_key(&transaction, attachment, sort_key)?;
     }
@@ -4128,7 +4312,8 @@ mod tests {
         create_attachments_coordinated_for_node, create_node, create_node_at,
         create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
         expand_all, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
-        migrate_version_one_to_two, move_node, notes_db_path, observe_next_migration_busy,
+        migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
+        observe_next_migration_busy,
         open_notes_export_db, preflight_existing_notes_schema, remove_empty_node,
         restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
         search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
@@ -5123,6 +5308,55 @@ mod tests {
             })
             .expect("count history entries");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_publishes_before_the_write_transaction() {
+        // Pins the file-before-commit ordering from remediation 1.3: `publish`
+        // (the file I/O) runs *before* the metadata write transaction opens, so
+        // no write lock is held while attachment bytes are written. A second
+        // connection must be able to take the single WAL writer slot during
+        // `publish`; if a future change moved publication back inside the
+        // IMMEDIATE metadata transaction, that probe would see SQLITE_BUSY and
+        // this test would fail.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let mut connection = connect_notes_db(&vault_path).expect("open notes database");
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let database_path = notes_db_path(&vault_path);
+
+        let observed_writer_slot_free = std::cell::Cell::new(false);
+        let workspace = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![
+                test_new_attachment(38_000, NODE_ID),
+                test_new_attachment(38_001, NODE_ID),
+            ],
+            || {
+                let probe = Connection::open(&database_path).expect("second connection");
+                probe
+                    .busy_timeout(Duration::from_millis(0))
+                    .expect("disable probe busy wait");
+                probe
+                    .execute_batch("BEGIN IMMEDIATE; COMMIT;")
+                    .expect("publish must not hold the metadata write transaction");
+                observed_writer_slot_free.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect("coordinated attachment batch");
+
+        assert!(
+            observed_writer_slot_free.get(),
+            "publish closure must have run and observed a free writer slot"
+        );
+        assert_eq!(
+            workspace.attachments_by_node_id[NODE_ID].len(),
+            2,
+            "the metadata rows must still commit after publication"
+        );
     }
 
     #[test]
@@ -8183,6 +8417,85 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_node_copies_attachment_metadata_onto_the_copy() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        let first_id = insert_test_attachment(&connection, 1, NODE_ID);
+        let second_id = insert_test_attachment(&connection, 2, NODE_ID);
+
+        let source_before = node_attachments(&connection, NODE_ID).expect("source attachments");
+        assert_eq!(
+            source_before
+                .iter()
+                .map(|attachment| attachment.id.clone())
+                .collect::<Vec<_>>(),
+            vec![first_id.clone(), second_id.clone()]
+        );
+        let total_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .expect("count attachments before");
+        assert_eq!(total_before, 2);
+
+        let workspace = duplicate_node(&mut connection, NODE_ID).expect("duplicate subtree");
+        let copied_root = workspace
+            .nodes
+            .iter()
+            .find(|node| node.parent_id.is_none() && node.id != NODE_ID)
+            .expect("copied root in returned workspace")
+            .id
+            .clone();
+        assert_ne!(copied_root, NODE_ID);
+
+        // Both attachments land on the copy, in source order, with fresh ids but
+        // the same content-addressed file (relative_path / content_hash) and
+        // every other field preserved.
+        let copied = node_attachments(&connection, &copied_root).expect("copied attachments");
+        assert_eq!(copied.len(), 2);
+        for (source, copy) in source_before.iter().zip(&copied) {
+            assert_ne!(copy.id, first_id, "a copy must not reuse a source id");
+            assert_ne!(copy.id, second_id, "a copy must not reuse a source id");
+            assert_ne!(copy.id, source.id, "each copy gets a fresh attachment id");
+            validate_note_id(&copy.id).expect("copied attachment UUID");
+            assert_eq!(copy.node_id, copied_root);
+            assert_eq!(copy.relative_path, source.relative_path);
+            assert_eq!(copy.content_hash, source.content_hash);
+            assert_eq!(copy.original_name, source.original_name);
+            assert_eq!(copy.mime_type, source.mime_type);
+            assert_eq!(copy.byte_size, source.byte_size);
+            assert_eq!(copy.intrinsic_width, source.intrinsic_width);
+            assert_eq!(copy.intrinsic_height, source.intrinsic_height);
+            assert_eq!(copy.display_width, source.display_width);
+            assert_eq!(copy.sort_key, source.sort_key);
+        }
+
+        // The originals are untouched and the only new rows are the two copies:
+        // because the copies share the source's content-addressed paths, no new
+        // asset files exist on disk (the reconcile contract reference-counts the
+        // shared path across both nodes).
+        assert_eq!(
+            node_attachments(&connection, NODE_ID).expect("source attachments after"),
+            source_before
+        );
+        let total_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .expect("count attachments after");
+        assert_eq!(total_after, 4);
+        let distinct_paths: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT relative_path) FROM notes_attachments",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count distinct paths");
+        assert_eq!(
+            distinct_paths, 2,
+            "duplication must not introduce new asset files"
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
     fn duplicate_node_rolls_back_nodes_search_and_tags_after_a_mid_copy_failure() {
         let mut connection = test_connection();
         create_test_node(
@@ -9300,6 +9613,67 @@ mod tests {
                 .parent_trail,
             vec!["Archive root"]
         );
+    }
+
+    fn create_search_node(
+        connection: &mut Connection,
+        id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+    ) {
+        create_node_at(
+            connection,
+            CreateNodeInput {
+                id: id.to_string(),
+                parent_id: parent_id.map(str::to_string),
+                after_id: None,
+                title: title.to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create search fixture node");
+    }
+
+    #[test]
+    fn search_parent_trails_resolve_nested_root_and_empty_result_sets() {
+        let mut connection = test_connection();
+        create_search_node(&mut connection, NODE_ID, None, "Alpha");
+        create_search_node(&mut connection, CHILD_ID, Some(NODE_ID), "Bravo");
+        create_search_node(&mut connection, THIRD_ID, Some(CHILD_ID), "Charlie");
+        create_search_node(&mut connection, FOURTH_ID, Some(THIRD_ID), "Delta target");
+
+        // Nested result: full ancestor trail, ordered root-first.
+        let nested = search_nodes(&connection, "target").expect("nested search");
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].node_id, FOURTH_ID);
+        assert_eq!(nested[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+
+        // Root-level result: no ancestors to resolve.
+        let root = search_nodes(&connection, "Alpha").expect("root search");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].node_id, NODE_ID);
+        assert_eq!(root[0].parent_trail, Vec::<String>::new());
+
+        // Structured search over the same nested leaf resolves the same trail.
+        let structured = search_nodes_structured(
+            &connection,
+            &NoteStructuredSearchQuery {
+                text: "target".to_string(),
+                required_tags: Vec::new(),
+                excluded_tags: Vec::new(),
+                or_groups: Vec::new(),
+            },
+        )
+        .expect("structured nested search");
+        assert_eq!(structured.len(), 1);
+        assert_eq!(structured[0].node_id, FOURTH_ID);
+        assert_eq!(structured[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+
+        // Empty result set: no trails to resolve, no panic.
+        assert!(search_nodes(&connection, "missing")
+            .expect("empty search")
+            .is_empty());
     }
 
     #[test]

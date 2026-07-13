@@ -110,16 +110,17 @@ function normalizeAttachmentHistoryContext(
   };
 }
 
-function isStandardNumericArray(value: unknown): value is number[] {
-  return (
-    Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
-  );
-}
-
 function isStandardByteArray(value: unknown): value is Uint8Array {
   return (
     value instanceof Uint8Array &&
     Object.getPrototypeOf(value) === Uint8Array.prototype
+  );
+}
+
+function isStandardArrayBuffer(value: unknown): value is ArrayBuffer {
+  return (
+    value instanceof ArrayBuffer &&
+    Object.getPrototypeOf(value) === ArrayBuffer.prototype
   );
 }
 
@@ -682,21 +683,16 @@ export async function notesReadAttachmentBytes(
     throw notesStoreError("load", cause, true);
   }
 
-  if (!isStandardNumericArray(result) && !isStandardByteArray(result)) {
-    throw notesStoreError(
-      "load",
-      "Notes attachment bytes returned an invalid result.",
-      false
-    );
-  }
-  const numericKeys = Array.isArray(result) ? Object.keys(result) : null;
-  if (
-    result.length === 0 ||
-    result.length > MAX_NOTE_ATTACHMENT_BYTES ||
-    (numericKeys !== null &&
-      (numericKeys.length !== result.length ||
-        !numericKeys.every((key, index) => key === String(index))))
-  ) {
+  // The command now streams a raw IPC body, so Tauri hands the webview either a
+  // Uint8Array or an ArrayBuffer. Both are accepted with a strict prototype
+  // check; there is no JSON numeric-array element-wise scan any more (a 20MB
+  // image no longer becomes an ~80MB number array validated byte by byte).
+  let source: Uint8Array;
+  if (isStandardByteArray(result)) {
+    source = result;
+  } else if (isStandardArrayBuffer(result)) {
+    source = new Uint8Array(result);
+  } else {
     throw notesStoreError(
       "load",
       "Notes attachment bytes returned an invalid result.",
@@ -704,23 +700,16 @@ export async function notesReadAttachmentBytes(
     );
   }
 
-  const bytes = new Uint8Array(result.length);
-  for (let index = 0; index < result.length; index += 1) {
-    const byte: unknown = result[index];
-    if (
-      !Number.isInteger(byte) ||
-      (byte as number) < 0 ||
-      (byte as number) > 255
-    ) {
-      throw notesStoreError(
-        "load",
-        "Notes attachment bytes returned an invalid result.",
-        false
-      );
-    }
-    bytes[index] = byte as number;
+  if (source.length === 0 || source.length > MAX_NOTE_ATTACHMENT_BYTES) {
+    throw notesStoreError(
+      "load",
+      "Notes attachment bytes returned an invalid result.",
+      false
+    );
   }
-  return bytes;
+
+  // Return an owned copy so callers never observe the transport buffer.
+  return source.slice();
 }
 
 export function notesResizeAttachment(
