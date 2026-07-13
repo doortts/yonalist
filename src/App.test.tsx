@@ -3451,6 +3451,32 @@ describe("Yonalist app shell", () => {
     ).not.toBeInTheDocument();
   });
 
+  // The newest sample must group under "Today" regardless of wall-clock
+  // time. A fixed offset used to cross local midnight, dropping the sample
+  // into "Yesterday" between 00:00 and 00:05 local time and flaking this
+  // suite. Fake only Date so userEvent's real timers still resolve.
+  it.each([
+    ["just after local midnight", new Date(2026, 0, 15, 0, 2, 0)],
+    ["midday", new Date(2026, 0, 15, 12, 0, 0)]
+  ])("groups the newest sample under Today (%s)", async (_label, frozenNow) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(frozenNow);
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+      const pane = screen.getByLabelText("Notifications");
+      expect(within(pane).getByText("Today")).toBeInTheDocument();
+      expect(
+        within(pane).getByText("Design offline issue reading")
+      ).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows the selected notification's conversation in the detail pane", async () => {
     const user = userEvent.setup();
     render(<App />);
