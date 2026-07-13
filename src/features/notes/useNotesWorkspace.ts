@@ -5,12 +5,14 @@ import {
   useMemo,
   useReducer,
   useRef,
-  useState
+  useState,
+  useSyncExternalStore
 } from "react";
 import { createNoteId, isNotesMutationResult } from "../../domain/notes";
 import type {
   ImportNoteAttachmentByteItem,
   MoveNoteNodeInput,
+  NoteAttachment,
   NoteId,
   NoteNode,
   NotesHistoryContext,
@@ -47,8 +49,16 @@ import {
 import {
   normalizeWorkspace,
   notesWorkspaceReducer,
-  type NormalizedNotesWorkspace
+  reconcileUiState,
+  type NormalizedNotesWorkspace,
+  type NotesWorkspaceDelta,
+  type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
+import {
+  canonicalizeTagFilters,
+  sameScope,
+  tagFilterKey
+} from "./notesWorkspaceScope";
 import { parseAndValidateNoteSearchQuery } from "./noteSearchQuery";
 import {
   nativeNotesAttachmentUi,
@@ -58,6 +68,31 @@ import {
   buildNotesMoveNodeInput,
   isActiveMoveNode
 } from "./notesMoveTargets";
+import {
+  NotesDraftEngine,
+  type DraftWriteAttempt,
+  type NotesDraftEngineHost,
+  type NotesWorkspaceSessionRecord
+} from "./notesDraftEngine";
+import {
+  commitPreparedMoveCommand,
+  createChildCommand,
+  createRootCommand,
+  deleteNodeCommand,
+  duplicateNodeCommand,
+  emptyTrashCommand,
+  moveNodeCommand,
+  removeEmptyNodeCommand,
+  restoreNodeCommand,
+  runAtomicSubtreeCommand,
+  runRootLifecycle,
+  splitNodeCommand,
+  toggleCollapsedCommand,
+  toggleCompleteCommand,
+  toggleStarCommand,
+  updateNodeCommand,
+  type NotesCommandContext
+} from "./notesCommands";
 
 export interface NotesDeleteAllOptions {
   /**
@@ -293,6 +328,13 @@ export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
   status: "pending" | "failed";
 }
 
+/**
+ * Stable empty snapshot for the drafts external store before any engine exists
+ * (first render) or after teardown. Shared so `getDraftsSnapshot` returns a
+ * referentially stable value that never trips `useSyncExternalStore`.
+ */
+const EMPTY_DRAFTS: Readonly<Record<NoteId, NotesNodeDraft>> = {};
+
 type AttachmentImportRequest =
   | {
       readonly kind: "paths";
@@ -314,12 +356,12 @@ interface AttachmentUploadAttempt {
   error: string | null;
 }
 
-interface StructuralCommandOptions {
+export interface StructuralCommandOptions {
   readonly historyContext?: NotesHistoryContext | null;
   readonly retainHistoryOnFailure?: boolean;
 }
 
-function authoritative(
+export function authoritative(
   workspace: NotesWorkspace,
   uiUpdate?: NotesWorkspaceUiUpdate,
   historyStatus?: { canUndo: boolean; canRedo: boolean },
@@ -328,6 +370,7 @@ function authoritative(
     | "scopeAgnostic"
     | "committedHistoryEntryIds"
     | "invalidatesTagSummaries"
+    | "delta"
   >
 ): NotesWorkspaceQueueResult {
   return {
@@ -339,17 +382,40 @@ function authoritative(
   };
 }
 
-interface UnwrappedNotesMutation {
+/**
+ * The backend audit delta, relative to the full (unscoped) database. See
+ * {@link NotesMutationResult}; the fields arrive together (all present or all
+ * absent) whenever the mutation ran under a history context.
+ */
+export interface RawNotesMutationDelta {
+  changedNodes: NoteNode[];
+  removedNodeIds: NoteId[];
+  changedAttachments: NoteAttachment[];
+}
+
+export interface UnwrappedNotesMutation {
   workspace: NotesWorkspace;
   historyEntryId: string | null | undefined;
   historyStatus: NotesHistoryStatus | undefined;
   atomic: boolean;
+  delta: RawNotesMutationDelta | null;
 }
 
-function unwrapNotesMutation(
+export function unwrapNotesMutation(
   response: NotesMutationResponse
 ): UnwrappedNotesMutation {
   if (isNotesMutationResult(response)) {
+    // The three delta fields are written as a group; `changedNodes` being
+    // present is the signal that the mutation ran with a history context and
+    // therefore carries an audit delta.
+    const delta =
+      response.changedNodes !== undefined
+        ? {
+            changedNodes: response.changedNodes,
+            removedNodeIds: response.removedNodeIds ?? [],
+            changedAttachments: response.changedAttachments ?? []
+          }
+        : null;
     return {
       workspace: response.workspace,
       historyEntryId: response.historyEntryId,
@@ -357,18 +423,86 @@ function unwrapNotesMutation(
         canUndo: response.canUndo,
         canRedo: response.canRedo
       },
-      atomic: true
+      atomic: true,
+      delta
     };
   }
   return {
     workspace: response,
     historyEntryId: undefined,
     historyStatus: undefined,
-    atomic: false
+    atomic: false,
+    delta: null
   };
 }
 
-function appliedHistoryContext(
+/**
+ * Reconcile the backend's full-database audit delta into a delta that is
+ * consistent with the *active* scope's projected store. Active membership is
+ * exactly `deletedAt === null && archivedAt === null`, so any changed node that
+ * gained a `deletedAt`/`archivedAt` timestamp has left the active scope and is
+ * recorded as a removal instead of an upsert; attachments of removed nodes are
+ * dropped alongside them.
+ *
+ * Returns `undefined` when there is nothing to patch — including the
+ * attachment-removal case, whose audit delta is empty because deleted
+ * attachment rows are never surfaced (see history.rs). An empty delta falls
+ * back to full normalization, which correctly reflects the removal.
+ */
+export function scopedActiveDelta(
+  raw: RawNotesMutationDelta | null
+): NotesWorkspaceDelta | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const removedNodeIds = [...raw.removedNodeIds];
+  const removedSet = new Set(removedNodeIds);
+  const changedNodes: NoteNode[] = [];
+  for (const node of raw.changedNodes) {
+    if (node.deletedAt !== null || node.archivedAt !== null) {
+      if (!removedSet.has(node.id)) {
+        removedNodeIds.push(node.id);
+        removedSet.add(node.id);
+      }
+    } else {
+      changedNodes.push(node);
+    }
+  }
+  const changedAttachments = raw.changedAttachments.filter(
+    (attachment) => !removedSet.has(attachment.nodeId)
+  );
+  if (
+    changedNodes.length === 0 &&
+    removedNodeIds.length === 0 &&
+    changedAttachments.length === 0
+  ) {
+    return undefined;
+  }
+  return { changedNodes, removedNodeIds, changedAttachments };
+}
+
+/**
+ * The delta is safe to forward to the reducer only when the projection did not
+ * re-scope the mutation workspace: for the active scope {@link workspaceForScope}
+ * returns the mutation workspace by reference, so identity equality is a precise
+ * "this is the unprojected active workspace" signal. Any non-active scope loads
+ * a fresh workspace (new reference, different parent linkage) and must fall back
+ * to full normalization.
+ */
+function forwardableActiveDelta(
+  mutation: UnwrappedNotesMutation,
+  projection: ProjectedNotesMutation
+): NotesWorkspaceDelta | undefined {
+  if (
+    projection.projectionError !== undefined ||
+    projection.workspace !== mutation.workspace
+  ) {
+    return undefined;
+  }
+  return scopedActiveDelta(mutation.delta);
+}
+
+export function appliedHistoryContext(
   context: NotesHistoryContext | null | undefined,
   mutation: UnwrappedNotesMutation
 ): NotesHistoryContext | null | undefined {
@@ -378,7 +512,7 @@ function appliedHistoryContext(
   return context?.entryId === mutation.historyEntryId ? context : null;
 }
 
-function historyArguments(
+export function historyArguments(
   context: NotesHistoryContext | null | undefined
 ): [] | [NotesHistoryContext] {
   return context ? [context] : [];
@@ -388,7 +522,7 @@ function supportsHistory(repository: NotesStore): boolean {
   return repository.undo !== undefined && repository.redo !== undefined;
 }
 
-function expansionsOutsideSubtree(
+export function expansionsOutsideSubtree(
   current: ReadonlySet<NoteId>,
   workspace: NotesWorkspace,
   subtreeRootId: NoteId
@@ -414,7 +548,7 @@ function expansionsOutsideSubtree(
   return next;
 }
 
-function samePreparedMoveNode(
+export function samePreparedMoveNode(
   prepared: NoteNode | undefined,
   current: NoteNode | undefined
 ): boolean {
@@ -438,7 +572,7 @@ function samePreparedMoveNode(
   );
 }
 
-async function workspaceForScope(
+export async function workspaceForScope(
   context: NotesWorkspaceQueueContext,
   mutationWorkspace: NotesWorkspace,
   scope: NotesWorkspaceScope
@@ -448,12 +582,12 @@ async function workspaceForScope(
     : context.repository.loadWorkspace(context.vaultRoot, scope);
 }
 
-interface ProjectedNotesMutation {
+export interface ProjectedNotesMutation {
   workspace: NotesWorkspace;
   projectionError?: string;
 }
 
-async function projectNotesMutation(
+export async function projectNotesMutation(
   context: NotesWorkspaceQueueContext,
   mutation: UnwrappedNotesMutation,
   scope: NotesWorkspaceScope
@@ -473,7 +607,7 @@ async function projectNotesMutation(
   }
 }
 
-function directMutationResult(
+export function directMutationResult(
   mutation: UnwrappedNotesMutation,
   projection: ProjectedNotesMutation,
   uiUpdate?: NotesWorkspaceUiUpdate
@@ -483,7 +617,10 @@ function directMutationResult(
       projection.workspace,
       uiUpdate,
       mutation.historyStatus,
-      { invalidatesTagSummaries: true }
+      {
+        invalidatesTagSummaries: true,
+        delta: forwardableActiveDelta(mutation, projection)
+      }
     );
   }
   return {
@@ -500,7 +637,7 @@ function directMutationResult(
   };
 }
 
-interface NotesWorkspaceQueueStep {
+export interface NotesWorkspaceQueueStep {
   run(): Promise<NotesMutationResponse>;
   historyEntryId?: string;
 }
@@ -511,62 +648,12 @@ interface BufferedWorkspaceCommand {
   resolve(): void;
 }
 
-interface FailedDraftWrite {
-  attemptId: string;
-  patch: Pick<NoteNode, "title" | "note">;
-  revision: number;
-  focus: NotesHistoryFocus;
-  error: NotesStoreError;
-}
-
-interface DraftWriteAttempt {
-  readonly attemptId: string;
-  readonly nodeId: NoteId;
-  readonly draft: Readonly<NotesNodeDraft>;
-  readonly focus: Readonly<NotesHistoryFocus>;
-  readonly historyContext: NotesHistoryContext | null;
-  readonly standaloneHistoryEntry: boolean;
-}
-
-interface NotesWorkspaceRecoveryEntry {
-  status: "pending" | "failed";
-  drafts: Map<NoteId, NotesNodeDraft>;
-  failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
-  subscribers: Set<(entry: NotesWorkspaceRecoveryEntry) => void>;
-}
-
-interface NotesWorkspaceSessionRecord {
-  repository: NotesStore;
-  vaultRoot: string;
-  session: NotesWorkspaceCoordinatorSession;
-  writeQueue: NotesWriteQueue;
-  drafts: Map<NoteId, NotesNodeDraft>;
-  pendingDebounceByNodeId: Map<NoteId, number>;
-  inFlightDraftByNodeId: Map<NoteId, number>;
-  retryWriteByNodeId: Map<NoteId, DraftWriteAttempt>;
-  deferredFieldAttempts: DraftWriteAttempt[];
-  draftAttemptReservations: Map<string, Promise<boolean>>;
-  draftHistoryContextByNodeId: Map<NoteId, NotesHistoryContext>;
-  draftHistoryFocusByNodeId: Map<NoteId, NotesHistoryFocus>;
-  nextDraftRevision: number;
-  nextDraftAttemptId: number;
-  structuralIntents: Array<{
-    cutoff: number;
-    historyContexts: Set<NotesHistoryContext>;
-  }>;
-  failedWritesByNodeId: Map<NoteId, FailedDraftWrite>;
-  writeError: NotesStoreError | null;
-  recoveryEntry: NotesWorkspaceRecoveryEntry | null;
-  closing: boolean;
-  closeCompletion: Promise<void> | null;
-}
-
 interface SearchNavigation {
   rootId: NoteId;
   expandedNodeIds: Set<NoteId>;
 }
 
-interface LiveNotesNavigation {
+export interface LiveNotesNavigation {
   selectedId: NoteId | null;
   zoomRootId: NoteId | null;
   editingNoteId: NoteId | null;
@@ -574,7 +661,7 @@ interface LiveNotesNavigation {
   pendingFocusField: NotesHistoryFocusField | null;
 }
 
-interface TagFilterOrigin {
+export interface TagFilterOrigin {
   scope: NotesWorkspaceScope;
   libraryView: Exclude<NotesLibraryView, "tags">;
   navigation: LiveNotesNavigation;
@@ -585,57 +672,6 @@ interface TagSummaryRefreshWaiter {
   version: number;
   resolve(summaries: readonly NoteTagSummary[] | null): void;
 }
-
-const emptyLiveNavigation = (): LiveNotesNavigation => ({
-  selectedId: null,
-  zoomRootId: null,
-  editingNoteId: null,
-  pendingFocusId: null,
-  pendingFocusField: null
-});
-
-function reconcileLiveNavigation(
-  current: LiveNotesNavigation,
-  workspace: NotesWorkspace,
-  update?: NotesWorkspaceUiUpdate
-): LiveNotesNavigation {
-  const existingIds = new Set(workspace.nodes.map((item) => item.id));
-  const existing = (nodeId: NoteId | null): NoteId | null =>
-    nodeId !== null && existingIds.has(nodeId) ? nodeId : null;
-  const selectedId = existing(
-    update?.selectedId === undefined ? current.selectedId : update.selectedId
-  );
-  const zoomRootId = existing(
-    update?.zoomRootId === undefined ? current.zoomRootId : update.zoomRootId
-  );
-  const editingNoteId = existing(
-    update?.editingNoteId === undefined
-      ? current.editingNoteId
-      : update.editingNoteId
-  );
-  const pendingFocusId = existing(
-    update?.pendingFocusId === undefined
-      ? current.pendingFocusId
-      : update.pendingFocusId
-  );
-  return {
-    selectedId,
-    zoomRootId,
-    editingNoteId,
-    pendingFocusId,
-    pendingFocusField:
-      pendingFocusId === null
-        ? null
-        : update?.pendingFocusField === undefined
-          ? (current.pendingFocusField ?? "title")
-          : update.pendingFocusField
-  };
-}
-
-const notesWorkspaceRecoveryRegistry = new WeakMap<
-  NotesStore,
-  Map<string, NotesWorkspaceRecoveryEntry>
->();
 
 function resolveBufferedCommands(commands: BufferedWorkspaceCommand[]): void {
   for (const command of commands) {
@@ -682,35 +718,11 @@ function scopeForLibraryView(
   }
 }
 
-function sameScope(
-  left: NotesWorkspaceScope,
-  right: NotesWorkspaceScope
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function tagFilterKey(filter: NoteTagFilter): string {
-  return `${filter.prefix}\u0000${filter.normalizedTag}`;
-}
-
-export function canonicalizeTagFilters(
-  filters: readonly NoteTagFilter[]
-): NoteTagFilter[] {
-  const uniqueFilters = new Map(
-    filters.map((filter) => [
-      tagFilterKey(filter),
-      {
-        prefix: filter.prefix,
-        normalizedTag: filter.normalizedTag
-      }
-    ])
-  );
-  return [...uniqueFilters.values()].sort(
-    (left, right) =>
-      (left.prefix === right.prefix ? 0 : left.prefix === "#" ? -1 : 1) ||
-      left.normalizedTag.localeCompare(right.normalizedTag)
-  );
-}
+// Scope equality and tag-filter canonicalization live in one module so the
+// coordinator and this hook compare scopes the same, key-order-independent way.
+// Re-exported (below) because existing consumers (notesCommands, tests) import
+// these names from the hook module.
+export { canonicalizeTagFilters, sameScope, tagFilterKey };
 
 function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   return scope.kind === "tags"
@@ -822,305 +834,7 @@ function searchNavigation(
   };
 }
 
-function writeError(cause: unknown): NotesStoreError {
-  return Object.assign(new Error(errorMessage(cause)), {
-    operation: "write" as const,
-    retryable: true
-  });
-}
-
-function draftSnapshot(
-  drafts: Map<NoteId, NotesNodeDraft>
-): Record<NoteId, NotesNodeDraft> {
-  return Object.fromEntries(drafts) as Record<NoteId, NotesNodeDraft>;
-}
-
-function cloneDrafts(
-  drafts: Map<NoteId, NotesNodeDraft>
-): Map<NoteId, NotesNodeDraft> {
-  return new Map(
-    [...drafts].map(([nodeId, draft]) => [nodeId, { ...draft }])
-  );
-}
-
-function cloneFailedWrites(
-  failedWrites: Map<NoteId, FailedDraftWrite>,
-  drafts?: Map<NoteId, NotesNodeDraft>
-): Map<NoteId, FailedDraftWrite> {
-  return new Map(
-    [...failedWrites]
-      .filter(([nodeId]) => !drafts || drafts.has(nodeId))
-      .map(([nodeId, failed]) => [
-        nodeId,
-        {
-          ...failed,
-          patch: { ...failed.patch },
-          focus: { ...failed.focus }
-        }
-      ])
-  );
-}
-
-function draftWriteAttempt(
-  attemptId: string,
-  nodeId: NoteId,
-  draft: NotesNodeDraft,
-  focus: NotesHistoryFocus,
-  historyContext: NotesHistoryContext | null,
-  standaloneHistoryEntry = false
-): DraftWriteAttempt {
-  return {
-    attemptId,
-    nodeId,
-    draft: { ...draft },
-    focus: { ...focus },
-    historyContext,
-    standaloneHistoryEntry
-  };
-}
-
-function newDraftWriteAttempt(
-  record: NotesWorkspaceSessionRecord,
-  nodeId: NoteId,
-  draft: NotesNodeDraft,
-  focus: NotesHistoryFocus,
-  historyContext: NotesHistoryContext | null,
-  standaloneHistoryEntry = false
-): DraftWriteAttempt {
-  return draftWriteAttempt(
-    `attempt-${record.nextDraftAttemptId++}`,
-    nodeId,
-    draft,
-    focus,
-    historyContext,
-    standaloneHistoryEntry
-  );
-}
-
-function failedDraftAttempt(
-  nodeId: NoteId,
-  failed: FailedDraftWrite
-): DraftWriteAttempt {
-  return draftWriteAttempt(
-    failed.attemptId,
-    nodeId,
-    {
-      ...failed.patch,
-      revision: failed.revision,
-      status: "failed"
-    },
-    failed.focus,
-    null,
-    true
-  );
-}
-
-function draftAttemptReservationKey(attempt: DraftWriteAttempt): string {
-  return `${attempt.attemptId}:${attempt.nodeId}:${attempt.draft.revision}`;
-}
-
-function reserveDraftAttempt(
-  record: NotesWorkspaceSessionRecord,
-  attempt: DraftWriteAttempt,
-  enqueue: () => Promise<boolean>
-): Promise<boolean> {
-  const key = draftAttemptReservationKey(attempt);
-  const existing = record.draftAttemptReservations.get(key);
-  if (existing) {
-    return existing;
-  }
-
-  let resolveCompletion!: (value: boolean) => void;
-  let rejectCompletion!: (cause: unknown) => void;
-  const completion = new Promise<boolean>((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
-  });
-  let released = false;
-  const release = (settle: () => void): void => {
-    if (released) {
-      return;
-    }
-    released = true;
-    if (record.draftAttemptReservations.get(key) === completion) {
-      record.draftAttemptReservations.delete(key);
-    }
-    settle();
-  };
-
-  record.draftAttemptReservations.set(key, completion);
-  try {
-    void enqueue().then(
-      (value) => release(() => resolveCompletion(value)),
-      (cause) => release(() => rejectCompletion(cause))
-    );
-  } catch (cause) {
-    release(() => rejectCompletion(cause));
-  }
-  return completion;
-}
-
-function retryDraftAttempt(
-  record: NotesWorkspaceSessionRecord,
-  nodeId: NoteId,
-  cutoff = record.structuralIntents.at(0)?.cutoff
-): DraftWriteAttempt | undefined {
-  const failed = record.failedWritesByNodeId.get(nodeId);
-  const current = record.retryWriteByNodeId.get(nodeId);
-  if (
-    failed &&
-    ((cutoff !== undefined && failed.revision <= cutoff) ||
-      !current ||
-      current.draft.revision <= failed.revision)
-  ) {
-    return failedDraftAttempt(nodeId, failed);
-  }
-  return current;
-}
-
-function latestWriteError(
-  failedWrites: Map<NoteId, FailedDraftWrite>
-): NotesStoreError | null {
-  return [...failedWrites.values()].at(-1)?.error ?? null;
-}
-
-function recoveryEntryFor(
-  repository: NotesStore,
-  vaultRoot: string
-): NotesWorkspaceRecoveryEntry | null {
-  return notesWorkspaceRecoveryRegistry.get(repository)?.get(vaultRoot) ?? null;
-}
-
-function setRecoveryEntry(
-  repository: NotesStore,
-  vaultRoot: string,
-  entry: NotesWorkspaceRecoveryEntry
-): void {
-  let entries = notesWorkspaceRecoveryRegistry.get(repository);
-  if (!entries) {
-    entries = new Map();
-    notesWorkspaceRecoveryRegistry.set(repository, entries);
-  }
-  entries.set(vaultRoot, entry);
-}
-
-function deleteRecoveryEntry(
-  repository: NotesStore,
-  vaultRoot: string,
-  entry: NotesWorkspaceRecoveryEntry
-): void {
-  const entries = notesWorkspaceRecoveryRegistry.get(repository);
-  if (entries?.get(vaultRoot) !== entry) {
-    return;
-  }
-  entries.delete(vaultRoot);
-  if (entries.size === 0) {
-    notesWorkspaceRecoveryRegistry.delete(repository);
-  }
-}
-
-function clearRecoveryEntry(repository: NotesStore, vaultRoot: string): void {
-  const entry = recoveryEntryFor(repository, vaultRoot);
-  if (!entry) {
-    return;
-  }
-  deleteRecoveryEntry(repository, vaultRoot, entry);
-  entry.subscribers.clear();
-  entry.drafts.clear();
-  entry.failedWritesByNodeId.clear();
-}
-
-function beginShutdownRecovery(
-  record: NotesWorkspaceSessionRecord
-): NotesWorkspaceRecoveryEntry {
-  const existing = recoveryEntryFor(record.repository, record.vaultRoot);
-  const entry: NotesWorkspaceRecoveryEntry = {
-    status: "pending",
-    drafts: cloneDrafts(record.drafts),
-    failedWritesByNodeId: cloneFailedWrites(record.failedWritesByNodeId),
-    subscribers: existing?.subscribers ?? new Set()
-  };
-  setRecoveryEntry(record.repository, record.vaultRoot, entry);
-  record.recoveryEntry = entry;
-  return entry;
-}
-
-function finishShutdownRecovery(
-  record: NotesWorkspaceSessionRecord,
-  entry: NotesWorkspaceRecoveryEntry
-): void {
-  if (record.drafts.size === 0) {
-    deleteRecoveryEntry(record.repository, record.vaultRoot, entry);
-    entry.subscribers.clear();
-    record.recoveryEntry = null;
-    return;
-  }
-
-  entry.status = "failed";
-  entry.drafts = cloneDrafts(record.drafts);
-  entry.failedWritesByNodeId = cloneFailedWrites(
-    record.failedWritesByNodeId,
-    record.drafts
-  );
-  for (const subscriber of entry.subscribers) {
-    subscriber(entry);
-  }
-  entry.subscribers.clear();
-}
-
-function subscribeToRecovery(
-  repository: NotesStore,
-  vaultRoot: string,
-  subscriber: (entry: NotesWorkspaceRecoveryEntry) => void
-): () => void {
-  const entry = recoveryEntryFor(repository, vaultRoot);
-  if (!entry) {
-    return () => undefined;
-  }
-  if (entry.status === "failed") {
-    subscriber(entry);
-    return () => undefined;
-  }
-  entry.subscribers.add(subscriber);
-  return () => entry.subscribers.delete(subscriber);
-}
-
-function syncRecoveredDraft(
-  record: NotesWorkspaceSessionRecord,
-  nodeId: NoteId
-): void {
-  const entry = record.recoveryEntry;
-  if (
-    !entry ||
-    entry.status !== "failed" ||
-    recoveryEntryFor(record.repository, record.vaultRoot) !== entry ||
-    !entry.drafts.has(nodeId)
-  ) {
-    return;
-  }
-
-  const draft = record.drafts.get(nodeId);
-  const failed = record.failedWritesByNodeId.get(nodeId);
-  if (draft) {
-    entry.drafts.set(nodeId, { ...draft });
-    if (failed) {
-      entry.failedWritesByNodeId.set(nodeId, {
-        ...failed,
-        patch: { ...failed.patch }
-      });
-    }
-    return;
-  }
-
-  entry.drafts.delete(nodeId);
-  entry.failedWritesByNodeId.delete(nodeId);
-  if (entry.drafts.size === 0) {
-    deleteRecoveryEntry(record.repository, record.vaultRoot, entry);
-    record.recoveryEntry = null;
-  }
-}
-
-async function runCompoundQueueWork(
+export async function runCompoundQueueWork(
   context: NotesWorkspaceQueueContext,
   steps: NotesWorkspaceQueueStep[],
   uiUpdate?: NotesWorkspaceUiUpdate,
@@ -1129,6 +843,8 @@ async function runCompoundQueueWork(
   let workspace = context.confirmedWorkspace;
   let hasAuthoritativeStep = false;
   let historyStatus: NotesHistoryStatus | undefined;
+  let stepCount = 0;
+  let lastMutation: UnwrappedNotesMutation | null = null;
   const committedHistoryEntryIds: string[] = [];
 
   try {
@@ -1136,6 +852,8 @@ async function runCompoundQueueWork(
       const mutation = unwrapNotesMutation(await step.run());
       workspace = mutation.workspace;
       hasAuthoritativeStep = true;
+      stepCount += 1;
+      lastMutation = mutation;
       historyStatus = mutation.historyStatus ?? historyStatus;
       const committedHistoryEntryId = mutation.atomic
         ? mutation.historyEntryId
@@ -1147,13 +865,23 @@ async function runCompoundQueueWork(
         committedHistoryEntryIds.push(committedHistoryEntryId);
       }
     }
+    const projectedWorkspace = await workspaceForScope(context, workspace, scope);
+    // Forward the delta only for a single-step compound on the active scope:
+    // multi-step deltas span intermediate DB states and cannot be trusted as a
+    // single incremental patch, and a re-scoped projection breaks the raw
+    // delta's parent linkage. `projectedWorkspace === workspace` holds iff the
+    // active scope returned the mutation workspace unprojected.
+    const delta =
+      stepCount === 1 && lastMutation && projectedWorkspace === workspace
+        ? scopedActiveDelta(lastMutation.delta)
+        : undefined;
     return authoritative(
-      await workspaceForScope(context, workspace, scope),
+      projectedWorkspace,
       uiUpdate,
       historyStatus,
       committedHistoryEntryIds.length > 0
-        ? { committedHistoryEntryIds, invalidatesTagSummaries: true }
-        : { invalidatesTagSummaries: true }
+        ? { committedHistoryEntryIds, invalidatesTagSummaries: true, delta }
+        : { invalidatesTagSummaries: true, delta }
     );
   } catch (cause) {
     if (hasAuthoritativeStep && scope.kind !== "active") {
@@ -1180,7 +908,7 @@ async function runCompoundQueueWork(
   }
 }
 
-function notifySuccess(callback: (() => void) | undefined): void {
+export function notifySuccess(callback: (() => void) | undefined): void {
   if (!callback) {
     return;
   }
@@ -1191,13 +919,13 @@ function notifySuccess(callback: (() => void) | undefined): void {
   }
 }
 
-function confirmedState(
+export function confirmedState(
   context: NotesWorkspaceQueueContext
 ): NormalizedNotesWorkspace {
   return normalizeWorkspace(context.confirmedWorkspace);
 }
 
-function focusedUiUpdate(
+export function focusedUiUpdate(
   focusNodeId: NoteId | null | undefined
 ): NotesWorkspaceUiUpdate | undefined {
   return focusNodeId == null
@@ -1209,7 +937,7 @@ function focusedUiUpdate(
       };
 }
 
-function duplicateRootId(
+export function duplicateRootId(
   before: NormalizedNotesWorkspace,
   after: NotesWorkspace,
   sourceId: NoteId
@@ -1241,7 +969,7 @@ export interface NotesLifecycleNavigationTransition {
   after: NotesLifecycleNavigationSnapshot;
 }
 
-function rootIdForNode(
+export function rootIdForNode(
   workspace: NormalizedNotesWorkspace,
   nodeId: NoteId | null
 ): NoteId | null {
@@ -1342,7 +1070,7 @@ export function resolveRootLifecycleNavigation(
   };
 }
 
-function hasMoveDependencies(
+export function hasMoveDependencies(
   workspace: NormalizedNotesWorkspace,
   input: MoveNoteNodeInput
 ): boolean {
@@ -1367,9 +1095,6 @@ export function useNotesWorkspace({
       status: "loading"
     })
   );
-  const [draftsByNodeId, setDraftsByNodeId] = useState<
-    Readonly<Record<NoteId, NotesNodeDraft>>
-  >({});
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
   const libraryViewRef = useRef(libraryView);
   libraryViewRef.current = libraryView;
@@ -1385,8 +1110,6 @@ export function useNotesWorkspace({
   const [locallyExpandedNodeIds, setLocallyExpandedNodeIds] = useState<
     ReadonlySet<NoteId>
   >(() => new Set());
-  const [currentWriteError, setCurrentWriteError] =
-    useState<NotesStoreError | null>(null);
   const [attachmentUploadErrorsByNodeId, setAttachmentUploadErrorsByNodeId] =
     useState<Readonly<Record<NoteId, string>>>({});
   const [
@@ -1402,7 +1125,6 @@ export function useNotesWorkspace({
     canUndo: false,
     canRedo: false
   });
-  const historyVersionRef = useRef(0);
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const activeWorkspaceGenerationRef = useRef(0);
   const movePreparationTokenRef = useRef(0);
@@ -1412,9 +1134,22 @@ export function useNotesWorkspace({
   const tagFilterOriginRef = useRef<TagFilterOrigin | null>(null);
   const tagFilterRequestRef = useRef(0);
   const locallyExpandedNodeIdsRef = useRef<ReadonlySet<NoteId>>(new Set());
+  // The reducer is the sole owner of settled navigation (selection, zoom root,
+  // expansion, pending focus). `stateRef` is its synchronous mirror: `dispatch`
+  // is wrapped by `applyAction` (below), which runs the reducer against this ref
+  // before scheduling React, so callbacks and in-flight commands read the same
+  // "settled + just-committed" navigation the render will show — no separate
+  // live-navigation owner. The render-phase resync keeps the two in lockstep
+  // across renders triggered by unrelated state (drafts, tag summaries, …).
   const stateRef = useRef(state);
   stateRef.current = state;
-  const liveNavigationRef = useRef<LiveNotesNavigation>(emptyLiveNavigation());
+  // The one piece of navigation the reducer cannot own: which field of the
+  // node currently being edited holds the caret. Tracking it in the reducer
+  // would dispatch (and re-render every row) on each keystroke, so it lives in
+  // this single-purpose ref, written only by `setDraftEditingNavigation` and
+  // read only when capturing a history "before" snapshot. It overlays the
+  // settled focus field while its node is still the editing node.
+  const editingFocusRef = useRef<NotesHistoryFocus | null>(null);
   const navigationVersionRef = useRef(0);
   const deletingNotesDataRef = useRef(false);
   const deletionTokenRef = useRef<object | null>(null);
@@ -1423,25 +1158,101 @@ export function useNotesWorkspace({
     createNotesHistoryOwnerRegistry<NotesWorkspaceCoordinatorSession>(200)
   );
   const sessionRecordRef = useRef<NotesWorkspaceSessionRecord | null>(null);
-  const persistDraftRef = useRef<
-    | ((
-        record: NotesWorkspaceSessionRecord,
-        attempt: DraftWriteAttempt
-      ) => Promise<boolean>)
-    | null
-  >(null);
-  const flushDraftBarrierRef = useRef<
-    ((record: NotesWorkspaceSessionRecord, cutoff: number) => Promise<boolean>) | null
-  >(null);
-  const releaseDraftBarrierRef = useRef<
-    ((record: NotesWorkspaceSessionRecord, cutoff: number) => void) | null
-  >(null);
-  const scheduleDeferredDraftsRef = useRef<
-    ((record: NotesWorkspaceSessionRecord) => void) | null
-  >(null);
+  const draftEngineRef = useRef<NotesDraftEngine | null>(null);
+  const draftsListenersRef = useRef(new Set<() => void>());
+  const writeErrorListenersRef = useRef(new Set<() => void>());
   const bufferedCommandsRef = useRef<BufferedWorkspaceCommand[]>([]);
   const finalCleanupTokenRef = useRef<object | null>(null);
   const closedRef = useRef(false);
+
+  // Every reducer action flows through here. Running the reducer against the
+  // synchronous mirror first (with the same pure reducer React will run on
+  // commit) keeps `stateRef` ahead of the render, so navigation reads never
+  // observe a stale value even before React re-renders. It also retires the
+  // live editing caret whenever the reducer authoritatively moves editing (a
+  // settle carrying a focus update, focusNode, focus acknowledgement, load);
+  // a pure zoom or a silent draft settle leaves selection/editing untouched, so
+  // the caret survives to feed the next history "before" snapshot.
+  const applyAction = useCallback(
+    (action: NotesWorkspaceReducerAction): void => {
+      const previous = stateRef.current;
+      const next = notesWorkspaceReducer(previous, action);
+      stateRef.current = next;
+      if (
+        next.selectedId !== previous.selectedId ||
+        next.editingNoteId !== previous.editingNoteId ||
+        next.pendingFocusField !== previous.pendingFocusField
+      ) {
+        editingFocusRef.current = null;
+      }
+      dispatch(action);
+    },
+    []
+  );
+
+  // The single derivation of "current navigation": settled reducer state, with
+  // the live editing caret overlaid. The caret can lead the reducer — a node is
+  // editable (and typed into) before any focus/command settles a selection for
+  // it — so while the overlay is live it owns selection/editing-node/field;
+  // zoom root and pending focus stay with the reducer. `applyAction` drops the
+  // overlay the moment the reducer authoritatively moves editing, so a stale
+  // caret never leaks in. This is the one place the caret ref and the reducer
+  // are combined; every former `liveNavigationRef.current` read routes here.
+  const currentNavigation = useCallback((): LiveNotesNavigation => {
+    const settled = stateRef.current;
+    const editing = editingFocusRef.current;
+    return {
+      selectedId: editing ? editing.nodeId : settled.selectedId,
+      zoomRootId: settled.zoomRootId,
+      editingNoteId: editing ? editing.nodeId : settled.editingNoteId,
+      pendingFocusId: settled.pendingFocusId,
+      pendingFocusField: editing ? editing.field : settled.pendingFocusField
+    };
+  }, []);
+
+  // The draft engine is the external store behind the drafts slice. A stable
+  // subscribe/getSnapshot pair reads whichever engine is currently active so
+  // the store facade survives vault switches without resubscribing.
+  const subscribeDrafts = useCallback((listener: () => void): (() => void) => {
+    draftsListenersRef.current.add(listener);
+    return () => {
+      draftsListenersRef.current.delete(listener);
+    };
+  }, []);
+  const getDraftsSnapshot = useCallback(
+    (): Readonly<Record<NoteId, NotesNodeDraft>> =>
+      draftEngineRef.current?.getDraftsSnapshot() ?? EMPTY_DRAFTS,
+    []
+  );
+  const draftsByNodeId = useSyncExternalStore(subscribeDrafts, getDraftsSnapshot);
+  const subscribeWriteError = useCallback(
+    (listener: () => void): (() => void) => {
+      writeErrorListenersRef.current.add(listener);
+      return () => {
+        writeErrorListenersRef.current.delete(listener);
+      };
+    },
+    []
+  );
+  const getWriteErrorSnapshot = useCallback(
+    (): NotesStoreError | null =>
+      draftEngineRef.current?.getWriteErrorSnapshot() ?? null,
+    []
+  );
+  const currentWriteError = useSyncExternalStore(
+    subscribeWriteError,
+    getWriteErrorSnapshot
+  );
+  const notifyDraftsListeners = useCallback((): void => {
+    for (const listener of draftsListenersRef.current) {
+      listener();
+    }
+  }, []);
+  const notifyWriteErrorListeners = useCallback((): void => {
+    for (const listener of writeErrorListenersRef.current) {
+      listener();
+    }
+  }, []);
 
   const discardAttachmentUploadAttempts = useCallback((): void => {
     for (const attempts of attachmentUploadAttemptsByNodeIdRef.current.values()) {
@@ -1456,17 +1267,6 @@ export function useNotesWorkspace({
     }
     attachmentUploadAttemptsByNodeIdRef.current.clear();
   }, []);
-
-  const publishDraftState = useCallback(
-    (record: NotesWorkspaceSessionRecord): void => {
-      if (record.closing || sessionRecordRef.current !== record) {
-        return;
-      }
-      setDraftsByNodeId(draftSnapshot(record.drafts));
-      setCurrentWriteError(record.writeError);
-    },
-    []
-  );
 
   const settleTagSummaryRefreshWaiters = useCallback(
     (version: number, summaries: readonly NoteTagSummary[] | null): void => {
@@ -1558,61 +1358,13 @@ export function useNotesWorkspace({
     return completion;
   }, []);
 
-  const beginRecordShutdown = useCallback(
-    (record: NotesWorkspaceSessionRecord): Promise<void> => {
-      if (record.closeCompletion) {
-        return record.closeCompletion;
-      }
-      record.closing = true;
-      if (record.drafts.size === 0) {
-        record.session.close();
-        record.closeCompletion = Promise.resolve();
-        return record.closeCompletion;
-      }
-      const recoveryEntry = beginShutdownRecovery(record);
-      const cutoff = record.structuralIntents.at(0)?.cutoff;
-      for (const [nodeId] of record.drafts) {
-        if (
-          record.pendingDebounceByNodeId.has(nodeId) ||
-          record.inFlightDraftByNodeId.has(nodeId)
-        ) {
-          continue;
-        }
-        const attempt = retryDraftAttempt(record, nodeId, cutoff);
-        const persist = persistDraftRef.current;
-        if (
-          attempt &&
-          persist &&
-          (cutoff === undefined || attempt.draft.revision <= cutoff)
-        ) {
-          void reserveDraftAttempt(record, attempt, () =>
-            record.writeQueue.enqueue(() => persist(record, attempt))
-          )
-            .catch(() => undefined);
-        }
-      }
-      const finish = (): void => {
-        finishShutdownRecovery(record, recoveryEntry);
-        record.session.close();
-      };
-      record.closeCompletion = record.writeQueue.flush().then(
-        finish,
-        finish
-      );
-      return record.closeCompletion;
-    },
-    []
-  );
-
   useLayoutEffect(() => {
     closedRef.current = false;
-    const previousRecord = sessionRecordRef.current;
-    if (previousRecord) {
-      void beginRecordShutdown(previousRecord);
+    const previousEngine = draftEngineRef.current;
+    if (previousEngine) {
+      void previousEngine.beginShutdown();
     }
-    dispatch({ type: "startWorkspaceLoad" });
-    setDraftsByNodeId({});
-    setCurrentWriteError(null);
+    applyAction({ type: "startWorkspaceLoad" });
     setAttachmentUploadErrorsByNodeId({});
     setAttachmentUploadRetryAttemptIdsByNodeId({});
     discardAttachmentUploadAttempts();
@@ -1620,7 +1372,6 @@ export function useNotesWorkspace({
     deletionTokenRef.current = null;
     setDeletingNotesData(false);
     setHistoryStatus({ canUndo: false, canRedo: false });
-    historyVersionRef.current = 0;
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -1628,7 +1379,7 @@ export function useNotesWorkspace({
     tagFilterOriginRef.current = null;
     tagFilterRequestRef.current += 1;
     locallyExpandedNodeIdsRef.current = new Set();
-    liveNavigationRef.current = emptyLiveNavigation();
+    editingFocusRef.current = null;
     setLibraryView("all");
     setActiveTagFilters([]);
     const invalidatedTagSummaryVersion =
@@ -1640,16 +1391,16 @@ export function useNotesWorkspace({
     settleTagSummaryRefreshWaiters(invalidatedTagSummaryVersion, null);
     setTagSummaries([]);
     setLocallyExpandedNodeIds(locallyExpandedNodeIdsRef.current);
-    let record!: NotesWorkspaceSessionRecord;
+    let engine!: NotesDraftEngine;
     const session = notesWorkspaceCoordinatorRegistry.openSession({
       repository,
       vaultRoot,
       onEvent(event) {
-        if (record.closing || sessionRecordRef.current !== record) {
+        if (engine.record.closing || sessionRecordRef.current !== engine.record) {
           return;
         }
         if (event.type === "pending") {
-          dispatch({ type: "setLoading" });
+          applyAction({ type: "setLoading" });
           return;
         }
         if (
@@ -1658,15 +1409,15 @@ export function useNotesWorkspace({
         ) {
           activeWorkspaceGenerationRef.current += 1;
         }
+        // The coordinator is the single owner of undo/redo availability: it
+        // stamps every settled result with the authoritative historyStatus in
+        // queue order, so the hook just adopts whatever the latest event
+        // carries. No hook-side version comparison — settled/synchronized
+        // events already arrive in the coordinator's monotonic order.
         if (
           event.result.kind !== "skipped" &&
-          event.result.historyStatus &&
-          (event.result.historyVersion === undefined ||
-            event.result.historyVersion >= historyVersionRef.current)
+          event.result.historyStatus
         ) {
-          if (event.result.historyVersion !== undefined) {
-            historyVersionRef.current = event.result.historyVersion;
-          }
           setHistoryStatus(event.result.historyStatus);
         }
         if (
@@ -1706,8 +1457,8 @@ export function useNotesWorkspace({
               refreshScope
             );
             if (
-              record.closing ||
-              sessionRecordRef.current !== record ||
+              engine.record.closing ||
+              sessionRecordRef.current !== engine.record ||
               sessionRef.current !== session ||
               !sameScope(activeScopeRef.current, refreshScope)
             ) {
@@ -1721,121 +1472,59 @@ export function useNotesWorkspace({
           });
           return;
         }
-        const authoritativeWorkspace =
-          event.result.kind === "authoritative"
-            ? event.result.workspace
-            : event.result.kind === "failure"
-              ? event.result.workspace
-              : undefined;
-        if (authoritativeWorkspace) {
-          liveNavigationRef.current = reconcileLiveNavigation(
-            liveNavigationRef.current,
-            authoritativeWorkspace,
-            event.result.kind === "skipped" ? undefined : event.result.uiUpdate
-          );
-        }
-        dispatch({
+        // The reducer settles navigation from this same result via its one
+        // reconciler; a stale editing caret is naturally ignored once the
+        // reducer moves the editing node (see currentNavigation's guard), so
+        // there is no parallel navigation ref to reconcile here anymore.
+        applyAction({
           type: "settleQueueWork",
           result: event.result,
           hasPendingWork: event.hasPendingWork
         });
       },
-      captureDraftCutoff: () => {
-        const cutoff = record.nextDraftRevision - 1;
-        record.structuralIntents.push({
-          cutoff,
-          historyContexts: new Set(
-            record.draftHistoryContextByNodeId.values()
-          )
-        });
-        record.draftHistoryContextByNodeId.clear();
-        record.session.history.closeTextBurst();
-        return cutoff;
-      },
-      beforeStructural: (cutoff) =>
-        flushDraftBarrierRef.current?.(record, cutoff) ?? Promise.resolve(true),
-      afterStructural: (cutoff) =>
-        releaseDraftBarrierRef.current?.(record, cutoff),
+      captureDraftCutoff: () => engine.captureDraftCutoff(),
+      beforeStructural: (cutoff) => engine.flushDraftBarrier(cutoff),
+      afterStructural: (cutoff) => engine.releaseDraftBarrier(cutoff),
       isCurrent: () =>
-        !record.closing &&
-        sessionRecordRef.current === record &&
+        !engine.record.closing &&
+        sessionRecordRef.current === engine.record &&
         sessionRef.current === session,
       getScope: () => activeScopeRef.current
     });
-    record = {
+    const host: NotesDraftEngineHost = {
+      beginTextEntry,
+      beginStandaloneTextEntry,
+      completeHistoryOwner,
+      discardHistoryEntry,
+      persistDraftMutation,
+      setDraftEditingNavigation,
+      currentRecord: () => sessionRecordRef.current,
+      currentSession: () => sessionRef.current,
+      isDeletingNotesData: () => deletingNotesDataRef.current,
+      onDraftsChanged: notifyDraftsListeners,
+      onWriteErrorChanged: notifyWriteErrorListeners
+    };
+    engine = new NotesDraftEngine({
       repository,
       vaultRoot,
       session,
       writeQueue: createNotesWriteQueue(),
-      drafts: new Map(),
-      pendingDebounceByNodeId: new Map(),
-      inFlightDraftByNodeId: new Map(),
-      retryWriteByNodeId: new Map(),
-      deferredFieldAttempts: [],
-      draftAttemptReservations: new Map(),
-      draftHistoryContextByNodeId: new Map(),
-      draftHistoryFocusByNodeId: new Map(),
-      nextDraftRevision: 1,
-      nextDraftAttemptId: 1,
-      structuralIntents: [],
-      failedWritesByNodeId: new Map(),
-      writeError: null,
-      recoveryEntry: null,
-      closing: false,
-      closeCompletion: null
-    };
-    sessionRecordRef.current = record;
+      host
+    });
+    sessionRecordRef.current = engine.record;
     sessionRef.current = session;
-    const unsubscribeRecovery = subscribeToRecovery(
-      repository,
-      vaultRoot,
-      (entry) => {
-        queueMicrotask(() => {
-          if (
-            entry.status !== "failed" ||
-            recoveryEntryFor(repository, vaultRoot) !== entry ||
-            record.closing ||
-            sessionRecordRef.current !== record ||
-            sessionRef.current !== session
-          ) {
-            return;
-          }
-          record.drafts = cloneDrafts(entry.drafts);
-          record.failedWritesByNodeId = cloneFailedWrites(
-            entry.failedWritesByNodeId,
-            entry.drafts
-          );
-          record.nextDraftRevision = Math.max(
-            record.nextDraftRevision,
-            ...[...record.drafts.values()].map((draft) => draft.revision + 1)
-          );
-          record.writeError = latestWriteError(record.failedWritesByNodeId);
-          record.recoveryEntry = entry;
-          for (const [nodeId, draft] of record.drafts) {
-            const failed = record.failedWritesByNodeId.get(nodeId);
-            record.retryWriteByNodeId.set(
-              nodeId,
-              newDraftWriteAttempt(
-                record,
-                nodeId,
-                draft,
-                failed?.focus ?? { nodeId, field: "title" },
-                null,
-                true
-              )
-            );
-          }
-          publishDraftState(record);
-        });
-      }
-    );
+    draftEngineRef.current = engine;
+    // Point the drafts external store at the freshly opened engine (empty
+    // buffer). The engine wires its own recovery subscription internally.
+    notifyDraftsListeners();
+    notifyWriteErrorListeners();
     enqueueBufferedCommands(
       session,
       bufferedCommandsRef.current.splice(0)
     );
 
     return () => {
-      unsubscribeRecovery();
+      engine.dispose();
       if (sessionRef.current === session) {
         sessionRef.current = null;
         // ref array is never reassigned; draining current buffered commands at teardown is intended
@@ -1843,11 +1532,11 @@ export function useNotesWorkspace({
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       }
     };
-    // Session subscribe/teardown effect keyed on vault/repository; publishDraftState
-    // is invoked but omitted so a re-render does not tear down and re-open the session.
+    // Session subscribe/teardown effect keyed on vault/repository; the engine's
+    // host collaborators are stable callbacks invoked from the effect but omitted
+    // so a re-render does not tear down and re-open the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    beginRecordShutdown,
     discardAttachmentUploadAttempts,
     repository,
     requestTagSummaryRefresh,
@@ -1858,9 +1547,9 @@ export function useNotesWorkspace({
   useEffect(() => {
     finalCleanupTokenRef.current = null;
     return () => {
-      const record = sessionRecordRef.current;
-      if (record) {
-        void beginRecordShutdown(record);
+      const engine = draftEngineRef.current;
+      if (engine) {
+        void engine.beginShutdown();
       }
       const token = {};
       finalCleanupTokenRef.current = token;
@@ -1881,7 +1570,7 @@ export function useNotesWorkspace({
         resolveBufferedCommands(bufferedCommandsRef.current.splice(0));
       });
     };
-  }, [beginRecordShutdown, discardAttachmentUploadAttempts]);
+  }, [discardAttachmentUploadAttempts]);
 
   const runCommand = useCallback((work: NotesWorkspaceQueueWork): Promise<void> => {
     if (deletingNotesDataRef.current) {
@@ -1908,9 +1597,27 @@ export function useNotesWorkspace({
     []
   );
 
-  const captureHistorySnapshot = useCallback(
-    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot => {
-      const navigation = liveNavigationRef.current;
+  // Clear every tag-filter tracker together: the requested (optimistic) filters,
+  // the return-here origin, the request generation, and the rendered active
+  // filters. One code path so the trackers cannot drift apart across the
+  // scope-changing actions that each used to reset them inline.
+  const resetTagFilterTracking = useCallback((): void => {
+    requestedTagFiltersRef.current = [];
+    tagFilterOriginRef.current = null;
+    tagFilterRequestRef.current += 1;
+    setActiveTagFilters([]);
+  }, []);
+
+  // Build a history snapshot from an explicit navigation + expansion set. The
+  // "before" capture passes the current navigation; the "after" capture (in
+  // rememberHistoryAfter) passes the reducer-reconciled post-mutation
+  // navigation, so both share this one shape.
+  const buildHistorySnapshot = useCallback(
+    (
+      navigation: LiveNotesNavigation,
+      expandedNodeIds: ReadonlySet<NoteId>,
+      focus?: NotesHistoryFocus | null
+    ): NotesHistorySnapshot => {
       const resolvedFocus =
         focus === undefined
           ? navigation.editingNoteId
@@ -1939,12 +1646,22 @@ export function useNotesWorkspace({
         scope: activeScopeRef.current,
         selectedId: navigation.selectedId,
         zoomRootId: navigation.zoomRootId,
-        locallyExpandedNodeIds: [...locallyExpandedNodeIdsRef.current],
+        locallyExpandedNodeIds: [...expandedNodeIds],
         focus: resolvedFocus,
         tagFilterOrigin
       };
     },
     []
+  );
+
+  const captureHistorySnapshot = useCallback(
+    (focus?: NotesHistoryFocus | null): NotesHistorySnapshot =>
+      buildHistorySnapshot(
+        currentNavigation(),
+        locallyExpandedNodeIdsRef.current,
+        focus
+      ),
+    [buildHistorySnapshot, currentNavigation]
   );
 
   const registerHistoryOwner = useCallback(
@@ -2046,24 +1763,26 @@ export function useNotesWorkspace({
         historyOwnerByEntryIdRef.current.discard(context.entryId);
         return;
       }
-      liveNavigationRef.current = reconcileLiveNavigation(
-        liveNavigationRef.current,
+      // The post-mutation navigation is computed with the reducer's own
+      // reconciler against the settled navigation — the exact value the reducer
+      // will settle to when this result flows through settleQueueWork. No
+      // parallel navigation ref is advanced; the snapshot is a pure derivation.
+      const afterNavigation = reconcileUiState(
         workspace,
+        currentNavigation(),
         uiUpdate
       );
-      const after = captureHistorySnapshot(focus);
-      owner.history.rememberAfter(context.entryId, {
-        ...after,
-        locallyExpandedNodeIds:
-          expandedNodeIds === undefined
-            ? after.locallyExpandedNodeIds
-            : [...expandedNodeIds]
-      });
+      const after = buildHistorySnapshot(
+        afterNavigation,
+        expandedNodeIds ?? locallyExpandedNodeIdsRef.current,
+        focus
+      );
+      owner.history.rememberAfter(context.entryId, after);
       if (context.commandKind !== "text") {
         completeHistoryOwner(context.entryId);
       }
     },
-    [captureHistorySnapshot, completeHistoryOwner]
+    [buildHistorySnapshot, completeHistoryOwner, currentNavigation]
   );
 
   const discardHistoryEntry = useCallback(
@@ -2190,619 +1909,137 @@ export function useNotesWorkspace({
     [beginStructuralEntry, discardHistoryEntry, repository, vaultRoot]
   );
 
-  const settleDraftWrite = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      attempt: DraftWriteAttempt,
-      result: NotesWorkspaceQueueResult,
-      writeSucceeded: boolean
-    ): boolean => {
-      const { nodeId, draft, historyContext } = attempt;
-      const latest = record.drafts.get(nodeId);
-      if (result.kind === "failure" && !writeSucceeded) {
-        discardHistoryEntry(historyContext);
-        if (
-          record.draftHistoryContextByNodeId.get(nodeId)?.entryId ===
-          historyContext?.entryId
-        ) {
-          record.draftHistoryContextByNodeId.delete(nodeId);
-        }
-        if (latest?.revision === draft.revision) {
-          record.drafts.set(nodeId, { ...latest, status: "failed" });
-        }
-        const failure = writeError(result.error);
-        record.failedWritesByNodeId.set(nodeId, {
-          attemptId: attempt.attemptId,
-          patch: { title: draft.title, note: draft.note },
-          revision: draft.revision,
-          focus: { ...attempt.focus },
-          error: failure
-        });
-        record.writeError = failure;
-        syncRecoveredDraft(record, nodeId);
-        publishDraftState(record);
-        return false;
-      }
-
-      if (result.kind === "skipped") {
-        discardHistoryEntry(historyContext);
-        if (latest?.revision === draft.revision) {
-          record.drafts.delete(nodeId);
-        }
-        if (
-          record.pendingDebounceByNodeId.get(nodeId) === draft.revision
-        ) {
-          record.pendingDebounceByNodeId.delete(nodeId);
-        }
-      } else if (writeSucceeded && latest?.revision === draft.revision) {
-        record.drafts.delete(nodeId);
-      }
-      const failed = record.failedWritesByNodeId.get(nodeId);
-      if (
-        (result.kind === "skipped" || writeSucceeded) &&
-        failed &&
-        failed.revision <= draft.revision
-      ) {
-        record.failedWritesByNodeId.delete(nodeId);
-      }
-      if (attempt.standaloneHistoryEntry && historyContext) {
-        record.session.history.closeTextBurst(historyContext.entryId);
-        if (writeSucceeded) {
-          completeHistoryOwner(historyContext.entryId);
-        } else {
-          discardHistoryEntry(historyContext);
-        }
-      }
-      const activeHistoryContext =
-        record.draftHistoryContextByNodeId.get(nodeId);
-      if (
-        writeSucceeded &&
-        historyContext &&
-        activeHistoryContext?.entryId !== historyContext.entryId
-      ) {
-        record.session.history.closeTextBurst(historyContext.entryId);
-        completeHistoryOwner(historyContext.entryId);
-      }
-      record.writeError = latestWriteError(record.failedWritesByNodeId);
-      if (!record.drafts.has(nodeId)) {
-        record.retryWriteByNodeId.delete(nodeId);
-        const historyContext = record.draftHistoryContextByNodeId.get(nodeId);
-        record.draftHistoryContextByNodeId.delete(nodeId);
-        record.draftHistoryFocusByNodeId.delete(nodeId);
-        record.session.history.closeTextBurst(historyContext?.entryId);
-        if (historyContext) {
-          completeHistoryOwner(historyContext.entryId);
-        }
-      }
-      syncRecoveredDraft(record, nodeId);
-      publishDraftState(record);
-      return result.kind !== "failure" || writeSucceeded;
-    },
-    [completeHistoryOwner, discardHistoryEntry, publishDraftState]
-  );
-
-  const persistDraft = useCallback(
-    async (
-      record: NotesWorkspaceSessionRecord,
-      scheduledAttempt: DraftWriteAttempt
-    ): Promise<boolean> => {
-      const cutoff = record.structuralIntents.at(0)?.cutoff;
-      if (
-        cutoff !== undefined &&
-        scheduledAttempt.draft.revision > cutoff
-      ) {
-        return false;
-      }
-      const attempt =
-        scheduledAttempt.standaloneHistoryEntry &&
-        !scheduledAttempt.historyContext
-          ? {
-              ...scheduledAttempt,
-              historyContext: beginStandaloneTextEntry(
-                record,
-                scheduledAttempt.nodeId,
-                scheduledAttempt.focus
-              )
-            }
-          : scheduledAttempt;
-      const { nodeId, draft, historyContext } = attempt;
-      const current = record.drafts.get(nodeId);
-      if (current?.revision === draft.revision && current.status !== "pending") {
-        record.drafts.set(nodeId, { ...current, status: "pending" });
-        publishDraftState(record);
-      }
-      record.inFlightDraftByNodeId.set(nodeId, draft.revision);
-
-      let result: NotesWorkspaceQueueResult | undefined;
-      // Draft autosave is enqueued silently so it settles through the drafts
-      // slice without toggling the global loading/aria-busy state. The settled
-      // event still commits the authoritative workspace via settleQueueWork.
-      await record.session.enqueue(
-        async (context) => {
-          if (!confirmedState(context).nodesById[nodeId]) {
-            result = { kind: "skipped" };
-            return result;
-          }
-          try {
-            const mutation = unwrapNotesMutation(
-              await context.repository.updateNode(
-                context.vaultRoot,
-                {
-                  id: nodeId,
-                  title: draft.title,
-                  note: draft.note
-                },
-                ...historyArguments(historyContext)
-              )
-            );
-            const projection = await projectNotesMutation(
-              context,
-              mutation,
-              activeScopeRef.current
-            );
-            const appliedContext = appliedHistoryContext(
-              historyContext,
-              mutation
-            );
-            if (historyContext && mutation.atomic && !appliedContext) {
-              discardHistoryEntry(historyContext);
-            }
-            rememberHistoryAfter(
-              appliedContext,
-              projection.workspace,
-              undefined,
-              attempt.focus
-            );
-            result = directMutationResult(mutation, projection);
-          } catch (cause) {
-            result = { kind: "failure", error: errorMessage(cause) };
-          }
-          return result;
-        },
-        { silent: true }
-      );
-      if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
-        record.inFlightDraftByNodeId.delete(nodeId);
-      }
-
-      if (!result) {
-        return false;
-      }
-
-      return settleDraftWrite(
-        record,
-        attempt,
-        result,
-        result.kind === "authoritative" ||
-          (result.kind === "failure" && result.scopeAgnostic === true)
-      );
-    },
-    [
-      beginStandaloneTextEntry,
-      discardHistoryEntry,
-      publishDraftState,
+  // Assemble the structural-command context once. Refs are live handles;
+  // the callbacks are the only identity inputs, so this memo (and therefore
+  // every delegating command below) only churns when one of them changes —
+  // exactly the pre-extraction identity behaviour the context-split tests pin.
+  const commandCtx = useMemo<NotesCommandContext>(
+    () => ({
+      activeScopeRef,
+      sessionRecordRef,
+      sessionRef,
+      currentNavigation,
+      navigationVersionRef,
+      locallyExpandedNodeIdsRef,
+      tagFilterRequestRef,
+      tagFilterOriginRef,
+      stateRef,
+      requestedTagFiltersRef,
+      movePreparationTokenRef,
+      vaultRootRef,
+      libraryViewRef,
+      activeWorkspaceGenerationRef,
+      setLibraryView,
+      setActiveTagFilters,
+      runStructuralCommand,
       rememberHistoryAfter,
-      settleDraftWrite
+      replaceLocalExpansions,
+      beginTextEntry,
+      settleInlineTextEntry,
+      closeTextBurst
+    }),
+    [
+      currentNavigation,
+      runStructuralCommand,
+      rememberHistoryAfter,
+      replaceLocalExpansions,
+      beginTextEntry,
+      settleInlineTextEntry,
+      closeTextBurst
     ]
   );
-  persistDraftRef.current = persistDraft;
 
-  const enqueueDraftAttempt = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
+  const persistDraftMutation = useCallback(
+    async (
+      context: NotesWorkspaceQueueContext,
       attempt: DraftWriteAttempt
-    ): Promise<boolean> =>
-      reserveDraftAttempt(record, attempt, () =>
-        record.writeQueue.enqueue(() => persistDraft(record, attempt))
-      ),
-    [persistDraft]
-  );
-
-  const writeScheduledDraft = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      attempt: DraftWriteAttempt
-    ): Promise<boolean> => {
-      const { nodeId, draft } = attempt;
-      if (record.pendingDebounceByNodeId.get(nodeId) === draft.revision) {
-        record.pendingDebounceByNodeId.delete(nodeId);
+    ): Promise<NotesWorkspaceQueueResult> => {
+      const { nodeId, draft, historyContext } = attempt;
+      if (!confirmedState(context).nodesById[nodeId]) {
+        return { kind: "skipped" };
       }
-      return persistDraft(record, attempt);
-    },
-    [persistDraft]
-  );
-
-  const scheduleDraftWrite = useCallback(
-    (
-      record: NotesWorkspaceSessionRecord,
-      attempt: DraftWriteAttempt
-    ): void => {
-      const { nodeId, draft } = attempt;
-      const cutoff = record.structuralIntents.at(0)?.cutoff;
-      if (cutoff !== undefined && draft.revision > cutoff) {
-        return;
+      try {
+        const mutation = unwrapNotesMutation(
+          await context.repository.updateNode(
+            context.vaultRoot,
+            {
+              id: nodeId,
+              title: draft.title,
+              note: draft.note
+            },
+            ...historyArguments(historyContext)
+          )
+        );
+        const projection = await projectNotesMutation(
+          context,
+          mutation,
+          activeScopeRef.current
+        );
+        const appliedContext = appliedHistoryContext(historyContext, mutation);
+        if (historyContext && mutation.atomic && !appliedContext) {
+          discardHistoryEntry(historyContext);
+        }
+        rememberHistoryAfter(
+          appliedContext,
+          projection.workspace,
+          undefined,
+          attempt.focus
+        );
+        return directMutationResult(mutation, projection);
+      } catch (cause) {
+        return { kind: "failure", error: errorMessage(cause) };
       }
-      record.pendingDebounceByNodeId.set(nodeId, draft.revision);
-      void reserveDraftAttempt(record, attempt, () =>
-        record.writeQueue.enqueueDebounced(nodeId, () =>
-          writeScheduledDraft(record, attempt)
-        )
-      )
-        .catch(() => undefined);
     },
-    [writeScheduledDraft]
+    [discardHistoryEntry, rememberHistoryAfter]
   );
 
+  const setDraftEditingNavigation = useCallback(
+    (nodeId: NoteId, field: NotesHistoryFocusField): void => {
+      // Record the live caret without dispatching: a reducer update here would
+      // re-render every row on each keystroke. currentNavigation() overlays this
+      // field onto the settled navigation while nodeId is still the editing
+      // node, so history "before" snapshots see the field being typed into.
+      editingFocusRef.current = { nodeId, field };
+    },
+    []
+  );
+
+  // The draft pipeline lives in NotesDraftEngine; these are thin, stable
+  // delegators onto the currently active engine so action identity never churns.
   const updateNodeDraft = useCallback(
     (
       nodeId: NoteId,
       patch: Pick<NoteNode, "title" | "note">,
       field: NotesHistoryFocusField = "title"
     ): void => {
-      const record = sessionRecordRef.current;
-      if (!record || record.closing || sessionRef.current !== record.session) {
-        return;
-      }
-      const previous = record.drafts.get(nodeId);
-      const focus = { nodeId, field } satisfies NotesHistoryFocus;
-      const previousFocus = record.draftHistoryFocusByNodeId.get(nodeId);
-      if (previousFocus && previousFocus.field !== field) {
-        const previousHistoryContext =
-          record.draftHistoryContextByNodeId.get(nodeId);
-        const previousAttempt = record.retryWriteByNodeId.get(nodeId);
-        record.session.history.closeTextBurst(previousHistoryContext?.entryId);
-        if (
-          previousHistoryContext &&
-          previousAttempt?.historyContext?.entryId ===
-            previousHistoryContext.entryId &&
-          record.pendingDebounceByNodeId.get(nodeId) ===
-            previousAttempt.draft.revision
-        ) {
-          void record.writeQueue.flush(nodeId).catch(() => undefined);
-        } else if (
-          previousHistoryContext &&
-          previousAttempt?.historyContext?.entryId ===
-            previousHistoryContext.entryId
-        ) {
-          const reservationKey = draftAttemptReservationKey(previousAttempt);
-          if (!record.draftAttemptReservations.has(reservationKey)) {
-            const cutoff = record.structuralIntents.at(0)?.cutoff;
-            if (
-              cutoff !== undefined &&
-              previousAttempt.draft.revision > cutoff
-            ) {
-              if (
-                !record.deferredFieldAttempts.some(
-                  (attempt) => attempt.attemptId === previousAttempt.attemptId
-                )
-              ) {
-                record.deferredFieldAttempts.push(previousAttempt);
-              }
-            } else {
-              void enqueueDraftAttempt(record, previousAttempt).catch(
-                () => undefined
-              );
-            }
-          }
-        } else {
-          discardHistoryEntry(previousHistoryContext);
-        }
-        record.draftHistoryContextByNodeId.delete(nodeId);
-      }
-      liveNavigationRef.current = {
-        ...liveNavigationRef.current,
-        selectedId: nodeId,
-        editingNoteId: nodeId,
-        pendingFocusField: field
-      };
-      if (!previous || !record.draftHistoryContextByNodeId.has(nodeId)) {
-        const historyContext = beginTextEntry(record, nodeId, focus);
-        if (historyContext) {
-          record.draftHistoryContextByNodeId.set(nodeId, historyContext);
-        }
-      }
-      record.draftHistoryFocusByNodeId.set(nodeId, focus);
-      const draft: NotesNodeDraft = {
-        ...patch,
-        revision: record.nextDraftRevision++,
-        status: previous?.status === "failed" ? "failed" : "pending"
-      };
-      record.drafts.set(nodeId, draft);
-      const scheduledHistoryContext =
-        record.draftHistoryContextByNodeId.get(nodeId);
-      const attempt = newDraftWriteAttempt(
-        record,
-        nodeId,
-        draft,
-        focus,
-        scheduledHistoryContext ?? null
-      );
-      record.retryWriteByNodeId.set(nodeId, attempt);
-      syncRecoveredDraft(record, nodeId);
-      publishDraftState(record);
-      const earliestCutoff = record.structuralIntents.at(0)?.cutoff;
-      if (earliestCutoff === undefined || draft.revision <= earliestCutoff) {
-        scheduleDraftWrite(record, attempt);
-      }
+      draftEngineRef.current?.updateNodeDraft(nodeId, patch, field);
     },
-    [
-      beginTextEntry,
-      discardHistoryEntry,
-      enqueueDraftAttempt,
-      publishDraftState,
-      scheduleDraftWrite
-    ]
+    []
   );
 
   const flushNodeDraft = useCallback(
-    async (nodeId: NoteId): Promise<boolean> => {
-      const record = sessionRecordRef.current;
-      if (!record || record.closing || sessionRef.current !== record.session) {
-        return false;
-      }
-      const draft = record.drafts.get(nodeId);
-      if (draft) {
-        try {
-          const cutoff = record.structuralIntents.at(0)?.cutoff;
-          const attempt = retryDraftAttempt(record, nodeId, cutoff);
-          if (
-            attempt &&
-            !record.pendingDebounceByNodeId.has(nodeId) &&
-            !record.inFlightDraftByNodeId.has(nodeId)
-          ) {
-            if (
-              cutoff !== undefined &&
-              attempt.draft.revision > cutoff
-            ) {
-              return false;
-            }
-            await enqueueDraftAttempt(record, attempt);
-          } else {
-            await record.writeQueue.flush(nodeId);
-          }
-        } catch {
-          return false;
-        }
-      }
-      return (
-        !record.closing &&
-        sessionRecordRef.current === record &&
-        sessionRef.current === record.session &&
-        !record.drafts.has(nodeId)
-      );
-    },
-    [enqueueDraftAttempt]
+    (nodeId: NoteId): Promise<boolean> =>
+      draftEngineRef.current?.flushNodeDraft(nodeId) ?? Promise.resolve(false),
+    []
   );
 
   const retryFailedDraft = useCallback(
-    async (nodeId: NoteId): Promise<void> => {
-      if (deletingNotesDataRef.current) {
-        return;
-      }
-      const record = sessionRecordRef.current;
-      const failed = record?.failedWritesByNodeId.get(nodeId);
-      if (
-        !record ||
-        !failed ||
-        record.closing ||
-        sessionRef.current !== record.session
-      ) {
-        return;
-      }
-      if (!record.drafts.has(nodeId)) {
-        record.failedWritesByNodeId.delete(nodeId);
-        record.writeError = latestWriteError(record.failedWritesByNodeId);
-        syncRecoveredDraft(record, nodeId);
-        publishDraftState(record);
-        return;
-      }
-
-      const cutoff = record.structuralIntents.at(0)?.cutoff;
-      const attempt = retryDraftAttempt(record, nodeId, cutoff);
-      if (!attempt) {
-        return;
-      }
-      if (
-        record.pendingDebounceByNodeId.get(nodeId) ===
-          attempt.draft.revision ||
-        record.inFlightDraftByNodeId.get(nodeId) ===
-          attempt.draft.revision
-      ) {
-        await record.writeQueue.flush(nodeId);
-        return;
-      }
-      if (cutoff !== undefined && attempt.draft.revision > cutoff) {
-        return;
-      }
-      await enqueueDraftAttempt(record, attempt);
-    },
-    [enqueueDraftAttempt, publishDraftState]
+    (nodeId: NoteId): Promise<void> =>
+      draftEngineRef.current?.retryFailedDraft(nodeId) ?? Promise.resolve(),
+    []
   );
 
-  const retryLastFailedWrite = useCallback(async (): Promise<void> => {
-    const record = sessionRecordRef.current;
-    const nodeId = record
-      ? [...record.failedWritesByNodeId.keys()].at(-1)
-      : undefined;
-    if (nodeId) {
-      await retryFailedDraft(nodeId);
-    }
-  }, [retryFailedDraft]);
+  const retryLastFailedWrite = useCallback(
+    (): Promise<void> =>
+      draftEngineRef.current?.retryLastFailedWrite() ?? Promise.resolve(),
+    []
+  );
 
   const flushAllDraftsBeforeStructural = useCallback(
-    async (): Promise<boolean> => {
-      const record = sessionRecordRef.current;
-      if (!record || record.closing || sessionRef.current !== record.session) {
-        return false;
-      }
-      while (true) {
-        const cutoff = record.structuralIntents.at(0)?.cutoff;
-        for (const [nodeId] of record.drafts) {
-          if (
-            record.pendingDebounceByNodeId.has(nodeId) ||
-            record.inFlightDraftByNodeId.has(nodeId)
-          ) {
-            continue;
-          }
-          const attempt = retryDraftAttempt(record, nodeId, cutoff);
-          if (
-            attempt &&
-            (cutoff === undefined || attempt.draft.revision <= cutoff)
-          ) {
-            void enqueueDraftAttempt(record, attempt).catch(() => undefined);
-          }
-        }
-        await record.writeQueue.flush();
-        if (
-          record.closing ||
-          sessionRecordRef.current !== record ||
-          sessionRef.current !== record.session
-        ) {
-          return false;
-        }
-        if (record.drafts.size === 0) {
-          record.session.history.closeTextBurst();
-          return true;
-        }
-        const hasRetryableWork = [...record.drafts].some(([nodeId]) => {
-          const attempt = retryDraftAttempt(record, nodeId, cutoff);
-          return (
-            attempt !== undefined &&
-            (cutoff === undefined || attempt.draft.revision <= cutoff) &&
-            (record.pendingDebounceByNodeId.has(nodeId) ||
-              record.inFlightDraftByNodeId.has(nodeId) ||
-              (!record.failedWritesByNodeId.has(nodeId) &&
-                record.retryWriteByNodeId.has(nodeId))
-            )
-          );
-        });
-        if (!hasRetryableWork) {
-          return false;
-        }
-      }
-    },
-    [enqueueDraftAttempt]
+    (): Promise<boolean> =>
+      draftEngineRef.current?.flushAllDrafts() ?? Promise.resolve(false),
+    []
   );
-
-  const flushDraftsThroughCutoff = useCallback(
-    async (
-      record: NotesWorkspaceSessionRecord,
-      cutoff: number
-    ): Promise<boolean> => {
-      while (true) {
-        for (const [nodeId] of record.drafts) {
-          if (
-            record.pendingDebounceByNodeId.has(nodeId) ||
-            record.inFlightDraftByNodeId.has(nodeId)
-          ) {
-            continue;
-          }
-          const attempt = retryDraftAttempt(record, nodeId, cutoff);
-          if (attempt && attempt.draft.revision <= cutoff) {
-            void enqueueDraftAttempt(record, attempt).catch(() => undefined);
-          }
-        }
-        await record.writeQueue.flush();
-        if (
-          record.closing ||
-          sessionRecordRef.current !== record ||
-          sessionRef.current !== record.session
-        ) {
-          return false;
-        }
-        const remaining = [...record.drafts].filter(([nodeId, draft]) => {
-          const failed = record.failedWritesByNodeId.get(nodeId);
-          return (
-            draft.revision <= cutoff ||
-            (failed !== undefined && failed.revision <= cutoff)
-          );
-        });
-        if (remaining.length === 0) {
-          const intent = record.structuralIntents.find(
-            (candidate) => candidate.cutoff === cutoff
-          );
-          for (const context of intent?.historyContexts ?? []) {
-            completeHistoryOwner(context.entryId);
-          }
-          intent?.historyContexts.clear();
-          return true;
-        }
-        const retryable = remaining.some(
-          ([nodeId]) =>
-            record.pendingDebounceByNodeId.has(nodeId) ||
-            record.inFlightDraftByNodeId.has(nodeId)
-        );
-        if (!retryable) {
-          return false;
-        }
-      }
-    },
-    [completeHistoryOwner, enqueueDraftAttempt]
-  );
-
-  flushDraftBarrierRef.current = async (record, cutoff) => {
-    if (
-      record.closing ||
-      sessionRecordRef.current !== record ||
-      sessionRef.current !== record.session
-    ) {
-      return false;
-    }
-    return flushDraftsThroughCutoff(record, cutoff);
-  };
-  releaseDraftBarrierRef.current = (record, cutoff) => {
-    const index = record.structuralIntents.findIndex(
-      (intent) => intent.cutoff === cutoff
-    );
-    if (index >= 0) {
-      const [intent] = record.structuralIntents.splice(index, 1);
-      for (const context of intent?.historyContexts ?? []) {
-        discardHistoryEntry(context);
-      }
-    }
-    if (record.closing) {
-      for (const attempt of record.deferredFieldAttempts) {
-        discardHistoryEntry(attempt.historyContext);
-      }
-      record.deferredFieldAttempts.length = 0;
-      for (const context of record.draftHistoryContextByNodeId.values()) {
-        discardHistoryEntry(context);
-      }
-      record.draftHistoryContextByNodeId.clear();
-      record.draftHistoryFocusByNodeId.clear();
-      record.session.history.closeTextBurst();
-      return;
-    }
-    scheduleDeferredDraftsRef.current?.(record);
-  };
-  scheduleDeferredDraftsRef.current = (record) => {
-    const nextCutoff = record.structuralIntents.at(0)?.cutoff;
-    const retainedAttempts: DraftWriteAttempt[] = [];
-    for (const attempt of record.deferredFieldAttempts) {
-      if (
-        nextCutoff !== undefined &&
-        attempt.draft.revision > nextCutoff
-      ) {
-        retainedAttempts.push(attempt);
-        continue;
-      }
-      void enqueueDraftAttempt(record, attempt).catch(() => undefined);
-    }
-    record.deferredFieldAttempts = retainedAttempts;
-    for (const [nodeId] of record.drafts) {
-      const attempt = retryDraftAttempt(record, nodeId, nextCutoff);
-      if (
-        !attempt ||
-        (nextCutoff !== undefined &&
-          attempt.draft.revision > nextCutoff) ||
-        record.pendingDebounceByNodeId.has(nodeId) ||
-        record.inFlightDraftByNodeId.has(nodeId)
-      ) {
-        continue;
-      }
-      scheduleDraftWrite(record, attempt);
-    }
-  };
 
   const flushDraftBeforeStructural = useCallback(
     (_nodeId: NoteId): Promise<boolean> => flushAllDraftsBeforeStructural(),
@@ -3004,13 +2241,15 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView(view);
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
+      resetTagFilterTracking();
       replaceLocalExpansions(new Set());
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
+    [
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      resetTagFilterTracking,
+      runCommand
+    ]
   );
 
   const selectLibraryView = useCallback(
@@ -3037,7 +2276,7 @@ export function useNotesWorkspace({
         scope: cloneWorkspaceScope(activeScopeRef.current),
         libraryView:
           originLibrary.view === "tags" ? "all" : originLibrary.view,
-        navigation: { ...liveNavigationRef.current },
+        navigation: currentNavigation(),
         locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
       };
       let listedTags: readonly NoteTagSummary[] | null = null;
@@ -3072,6 +2311,7 @@ export function useNotesWorkspace({
       setLibraryView("tags");
       replaceLocalExpansions(new Set());
     }, [
+      currentNavigation,
       flushAllDraftsBeforeStructural,
       loadLibraryScope,
       replaceLocalExpansions,
@@ -3115,7 +2355,7 @@ export function useNotesWorkspace({
           scope: cloneWorkspaceScope(activeScopeRef.current),
           libraryView:
             originLibrary.view === "tags" ? "all" : originLibrary.view,
-          navigation: { ...liveNavigationRef.current },
+          navigation: currentNavigation(),
           locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current)
         };
         capturedOrigin = true;
@@ -3207,6 +2447,7 @@ export function useNotesWorkspace({
       tagFilterOriginRef.current = null;
     },
     [
+      currentNavigation,
       flushAllDraftsBeforeStructural,
       replaceLocalExpansions,
       requestTagSummaryRefresh,
@@ -3290,1144 +2531,172 @@ export function useNotesWorkspace({
         return;
       }
       setLibraryView("all");
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
+      resetTagFilterTracking();
       replaceLocalExpansions(expandedNodeIds);
     },
-    [flushAllDraftsBeforeStructural, replaceLocalExpansions, runCommand]
-  );
-
-  const acknowledgeFocus = useCallback(async (nodeId: NoteId) => {
-    if (liveNavigationRef.current.pendingFocusId === nodeId) {
-      liveNavigationRef.current = {
-        ...liveNavigationRef.current,
-        pendingFocusId: null,
-        pendingFocusField: null
-      };
-    }
-    dispatch({ type: "acknowledgePendingFocus", nodeId });
-  }, []);
-
-  const focusNode = useCallback(async (nodeId: NoteId) => {
-    void flushNodeDraft(nodeId);
-    navigationVersionRef.current += 1;
-    liveNavigationRef.current = {
-      ...liveNavigationRef.current,
-      selectedId: nodeId,
-      editingNoteId: nodeId,
-      pendingFocusId: nodeId,
-      pendingFocusField: "title"
-    };
-    dispatch({ type: "focusNode", nodeId });
-  }, [flushNodeDraft]);
-
-  const createRoot = useCallback(async () => {
-    const transitionToAll = libraryViewRef.current !== "all";
-    let created = false;
-    const creation = { record: null as NotesWorkspaceSessionRecord | null };
-    await runStructuralCommand("create", async (context, historyContext) => {
-      const ownerRecord = sessionRecordRef.current;
-      if (!ownerRecord) {
-        return { kind: "skipped" };
-      }
-      const before = normalizeWorkspace(
-        transitionToAll
-          ? await context.repository.loadWorkspace(context.vaultRoot, {
-              kind: "active"
-            })
-          : context.confirmedWorkspace
-      );
-      if (
-        ownerRecord.closing ||
-        sessionRecordRef.current !== ownerRecord ||
-        sessionRef.current !== ownerRecord.session
-      ) {
-        return { kind: "skipped" };
-      }
-      const id = createNoteId();
-      const mutation = unwrapNotesMutation(await context.repository.createNode(
-        context.vaultRoot,
-        {
-          id,
-          parentId: null,
-          afterId: before.rootIds.at(-1) ?? null,
-          title: "",
-          note: ""
-        },
-        ...historyArguments(historyContext)
-      ));
-      if (
-        ownerRecord.closing ||
-        sessionRecordRef.current !== ownerRecord ||
-        sessionRef.current !== ownerRecord.session
-      ) {
-        return authoritative(
-          mutation.workspace,
-          undefined,
-          mutation.historyStatus,
-          { invalidatesTagSummaries: true }
-        );
-      }
-      created = true;
-      creation.record = ownerRecord;
-      activeScopeRef.current = { kind: "active" };
-      const uiUpdate = {
-        selectedId: id,
-        editingNoteId: id,
-        pendingFocusId: id,
-        pendingFocusField: "title" as const,
-        zoomRootId: null
-      };
-      rememberHistoryAfter(
-        appliedHistoryContext(historyContext, mutation),
-        mutation.workspace,
-        uiUpdate,
-        undefined,
-        transitionToAll ? new Set() : locallyExpandedNodeIdsRef.current
-      );
-      return authoritative(
-        mutation.workspace,
-        uiUpdate,
-        mutation.historyStatus,
-        { invalidatesTagSummaries: true }
-      );
-    });
-    if (
-      created &&
-      creation.record &&
-      !creation.record.closing &&
-      sessionRecordRef.current === creation.record &&
-      sessionRef.current === creation.record.session &&
-      transitionToAll
-    ) {
-      setLibraryView("all");
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
-      replaceLocalExpansions(new Set());
-    }
-  }, [
-    runStructuralCommand,
-    rememberHistoryAfter,
-    replaceLocalExpansions,
-  ]);
-
-  const createChild = useCallback(
-    async (nodeId: NoteId) => {
-      return runStructuralCommand("create", async (context, historyContext) => {
-        const before = confirmedState(context);
-        if (!before.nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const id = createNoteId();
-        const mutation = unwrapNotesMutation(await context.repository.createNode(
-          context.vaultRoot,
-          {
-            id,
-            parentId: nodeId,
-            afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
-            title: "",
-            note: ""
-          },
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        const uiUpdate = {
-          selectedId: id,
-          editingNoteId: id,
-          pendingFocusId: id,
-          pendingFocusField: "title" as const
-        };
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace,
-          uiUpdate
-        );
-        return directMutationResult(mutation, projection, uiUpdate);
-      });
-    },
     [
-      runStructuralCommand,
-      rememberHistoryAfter,
+      flushAllDraftsBeforeStructural,
+      replaceLocalExpansions,
+      resetTagFilterTracking,
+      runCommand
     ]
   );
 
+  const acknowledgeFocus = useCallback(
+    async (nodeId: NoteId) => {
+      // applyAction retires the live caret when this clears pendingFocusField.
+      applyAction({ type: "acknowledgePendingFocus", nodeId });
+    },
+    [applyAction]
+  );
+
+  const focusNode = useCallback(
+    async (nodeId: NoteId) => {
+      void flushNodeDraft(nodeId);
+      navigationVersionRef.current += 1;
+      // applyAction retires the live caret; the reducer owns the new position.
+      applyAction({ type: "focusNode", nodeId });
+    },
+    [applyAction, flushNodeDraft]
+  );
+
+  const createRoot = useCallback(
+    () => createRootCommand(commandCtx),
+    [commandCtx]
+  );
+
+  const createChild = useCallback(
+    (nodeId: NoteId) => createChildCommand(commandCtx, nodeId),
+    [commandCtx]
+  );
+
   const splitNode = useCallback(
-    async (
+    (
       nodeId: NoteId,
       newNodeId: NoteId,
       prefix: string,
       suffix: string,
       options?: NotesWorkspaceCompoundOptions
-    ) => {
-      const hadCentralDraft =
-        sessionRecordRef.current?.drafts.has(nodeId) ?? false;
-      const record = sessionRecordRef.current;
-      const centralDraft = record?.drafts.get(nodeId);
-      const hasCentralDraft = centralDraft !== undefined;
-      const inlineDraft =
-        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      let succeeded = false;
-      const completion = runStructuralCommand(
-        "split",
-        async (context, historyContext, executionRecord) => {
-          if (!confirmedState(context).nodesById[nodeId]) {
-            return { kind: "skipped" };
-          }
-          const inlineTextContext = inlineDraft
-            ? beginTextEntry(executionRecord, nodeId, {
-                nodeId,
-                field: "title"
-              })
-            : null;
-          const steps: NotesWorkspaceQueueStep[] = [];
-          if (inlineDraft) {
-            steps.push({
-              historyEntryId: inlineTextContext?.entryId,
-              run: async () => {
-                const response = await context.repository.updateNode(
-                  context.vaultRoot,
-                  { id: nodeId, ...inlineDraft },
-                  ...historyArguments(inlineTextContext)
-                );
-                const mutation = unwrapNotesMutation(response);
-                rememberHistoryAfter(
-                  appliedHistoryContext(inlineTextContext, mutation),
-                  mutation.workspace,
-                  undefined,
-                  { nodeId, field: "title" }
-                );
-                return response;
-              }
-            });
-          }
-          steps.push({
-            historyEntryId: historyContext?.entryId,
-            run: () => context.repository.splitNode(
-              context.vaultRoot,
-              {
-                id: nodeId,
-                newNodeId,
-                prefix,
-                suffix
-              },
-              ...historyArguments(historyContext)
-            )
-          });
-          const result = await runCompoundQueueWork(
-            context,
-            steps,
-            {
-              selectedId: newNodeId,
-              editingNoteId: newNodeId,
-              pendingFocusId: newNodeId
-            },
-            activeScopeRef.current
-          );
-          settleInlineTextEntry(executionRecord, inlineTextContext, result);
-          if (result.kind === "authoritative") {
-            rememberHistoryAfter(
-              historyContext &&
-                result.committedHistoryEntryIds?.includes(historyContext.entryId)
-                ? historyContext
-                : null,
-              result.workspace,
-              result.uiUpdate
-            );
-          }
-          succeeded = result.kind === "authoritative";
-          return result;
-        }
-      );
-      return completion.then(() => {
-        if (succeeded) {
-          notifySuccess(options?.onSuccess);
-        }
-      });
-    },
-    [
-      runStructuralCommand,
-      beginTextEntry,
-      rememberHistoryAfter,
-      settleInlineTextEntry,
-    ]
+    ) =>
+      splitNodeCommand(commandCtx, nodeId, newNodeId, prefix, suffix, options),
+    [commandCtx]
   );
 
   const updateNode = useCallback(
-    async (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) => {
-      return runStructuralCommand("update", async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.updateNode(
-          context.vaultRoot,
-          {
-            id: nodeId,
-            ...patch
-          },
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace
-        );
-        return directMutationResult(mutation, projection);
-      });
-    },
-    [
-      rememberHistoryAfter,
-      runStructuralCommand
-    ]
+    (nodeId: NoteId, patch: Pick<NoteNode, "title" | "note">) =>
+      updateNodeCommand(commandCtx, nodeId, patch),
+    [commandCtx]
   );
 
   const moveNode = useCallback(
-    async (
+    (
       input: MoveNoteNodeInput,
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
-    ) => {
-      const hadCentralDraft =
-        sessionRecordRef.current?.drafts.has(input.id) ?? false;
-      const record = sessionRecordRef.current;
-      const centralDraft = record?.drafts.get(input.id);
-      const hasCentralDraft = centralDraft !== undefined;
-      const inlineDraft =
-        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      let succeeded = false;
-      await runStructuralCommand("move", async (context, historyContext, executionRecord) => {
-        const before = confirmedState(context);
-        const expandNodeId = options?.expandNodeId;
-        if (
-          !hasMoveDependencies(before, input) ||
-          (expandNodeId !== undefined && !before.nodesById[expandNodeId])
-        ) {
-          return { kind: "skipped" };
-        }
-        const inlineTextContext = inlineDraft
-          ? beginTextEntry(executionRecord, input.id, {
-              nodeId: input.id,
-              field: "title"
-            })
-          : null;
-        const steps: NotesWorkspaceQueueStep[] = [];
-        if (inlineDraft) {
-          steps.push({
-            historyEntryId: inlineTextContext?.entryId,
-            run: async () => {
-              const response = await context.repository.updateNode(
-                context.vaultRoot,
-                { id: input.id, ...inlineDraft },
-                ...historyArguments(inlineTextContext)
-              );
-              const mutation = unwrapNotesMutation(response);
-              rememberHistoryAfter(
-                appliedHistoryContext(inlineTextContext, mutation),
-                mutation.workspace,
-                undefined,
-                { nodeId: input.id, field: "title" }
-              );
-              return response;
-            }
-          });
-        }
-        if (
-          expandNodeId !== undefined &&
-          before.nodesById[expandNodeId].isCollapsed
-        ) {
-          steps.push({
-            historyEntryId: historyContext?.entryId,
-            run: () => context.repository.toggleCollapsed(
-                context.vaultRoot,
-                expandNodeId,
-                ...historyArguments(historyContext)
-              )
-          });
-        }
-        steps.push({
-          historyEntryId: historyContext?.entryId,
-          run: () => context.repository.moveNode(
-            context.vaultRoot,
-            input,
-            ...historyArguments(historyContext)
-          )
-        });
-        const result = await runCompoundQueueWork(
-          context,
-          steps,
-          focusedUiUpdate(focusNodeId),
-          activeScopeRef.current
-        );
-        settleInlineTextEntry(executionRecord, inlineTextContext, result);
-        if (result.kind === "authoritative") {
-          rememberHistoryAfter(
-            historyContext &&
-              result.committedHistoryEntryIds?.includes(historyContext.entryId)
-              ? historyContext
-              : null,
-            result.workspace,
-            result.uiUpdate
-          );
-        } else if (
-          historyContext &&
-          result.kind === "failure" &&
-          result.workspace &&
-          result.committedHistoryEntryIds?.includes(historyContext.entryId)
-        ) {
-          rememberHistoryAfter(
-            historyContext,
-            result.workspace
-          );
-        }
-        succeeded =
-          result.kind === "authoritative" &&
-          (!historyContext ||
-            Boolean(
-              result.committedHistoryEntryIds?.includes(
-                historyContext.entryId
-              )
-            ));
-        return result;
-      });
-      return succeeded;
-    },
-    [
-      runStructuralCommand,
-      beginTextEntry,
-      rememberHistoryAfter,
-      settleInlineTextEntry,
-    ]
+    ) => moveNodeCommand(commandCtx, input, focusNodeId, options),
+    [commandCtx]
   );
 
   const toggleComplete = useCallback(
-    async (nodeId: NoteId) => {
-      return runStructuralCommand("complete", async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.toggleComplete(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace
-        );
-        return directMutationResult(mutation, projection);
-      });
-    },
-    [
-      runStructuralCommand,
-      rememberHistoryAfter,
-    ]
+    (nodeId: NoteId) => toggleCompleteCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
   const toggleCollapsed = useCallback(
-    async (nodeId: NoteId) => {
-      closeTextBurst();
-      if (locallyExpandedNodeIdsRef.current.has(nodeId)) {
-        const next = new Set(locallyExpandedNodeIdsRef.current);
-        next.delete(nodeId);
-        replaceLocalExpansions(next);
-        return;
-      }
-      return runStructuralCommand("collapse", async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.toggleCollapsed(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace
-        );
-        return directMutationResult(mutation, projection);
-      });
-    },
-    [
-      runStructuralCommand,
-      closeTextBurst,
-      rememberHistoryAfter,
-      replaceLocalExpansions,
-    ]
-  );
-
-  const runAtomicSubtreeCommand = useCallback(
-    async (
-      commandKind: string,
-      method:
-        | "expandAll"
-        | "collapseAll"
-        | "sortSubtreeAscending"
-        | "sortSubtreeDescending",
-      nodeId: NoteId,
-      reconcileExpansions: boolean
-    ) => {
-      return runStructuralCommand(
-        commandKind,
-        async (context, historyContext) => {
-          const before = confirmedState(context);
-          const repositoryCommand = context.repository[method];
-          if (!before.nodesById[nodeId] || !repositoryCommand) {
-            return { kind: "skipped" };
-          }
-          const mutation = unwrapNotesMutation(
-            await repositoryCommand(
-              context.vaultRoot,
-              nodeId,
-              ...historyArguments(historyContext)
-            )
-          );
-          const projection = await projectNotesMutation(
-            context,
-            mutation,
-            activeScopeRef.current
-          );
-          const appliedContext = appliedHistoryContext(
-            historyContext,
-            mutation
-          );
-          let expandedNodeIds: ReadonlySet<NoteId> | undefined;
-          if (reconcileExpansions) {
-            const next = expansionsOutsideSubtree(
-              locallyExpandedNodeIdsRef.current,
-              mutation.workspace,
-              nodeId
-            );
-            replaceLocalExpansions(next);
-            expandedNodeIds = next;
-          }
-          rememberHistoryAfter(
-            appliedContext,
-            projection.workspace,
-            undefined,
-            undefined,
-            expandedNodeIds
-          );
-          const result = directMutationResult(mutation, projection);
-          return reconcileExpansions
-            ? { ...result, clearLocalExpansionSubtreeId: nodeId }
-            : result;
-        }
-      );
-    },
-    [rememberHistoryAfter, replaceLocalExpansions, runStructuralCommand]
+    (nodeId: NoteId) => toggleCollapsedCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
   const expandAll = useCallback(
     (nodeId: NoteId) =>
-      runAtomicSubtreeCommand("expand-all", "expandAll", nodeId, true),
-    [runAtomicSubtreeCommand]
+      runAtomicSubtreeCommand(
+        commandCtx,
+        "expand-all",
+        "expandAll",
+        nodeId,
+        true
+      ),
+    [commandCtx]
   );
 
   const collapseAll = useCallback(
     (nodeId: NoteId) =>
-      runAtomicSubtreeCommand("collapse-all", "collapseAll", nodeId, true),
-    [runAtomicSubtreeCommand]
+      runAtomicSubtreeCommand(
+        commandCtx,
+        "collapse-all",
+        "collapseAll",
+        nodeId,
+        true
+      ),
+    [commandCtx]
   );
 
   const sortSubtreeAscending = useCallback(
     (nodeId: NoteId) =>
       runAtomicSubtreeCommand(
+        commandCtx,
         "sort-ascending",
         "sortSubtreeAscending",
         nodeId,
         false
       ),
-    [runAtomicSubtreeCommand]
+    [commandCtx]
   );
 
   const sortSubtreeDescending = useCallback(
     (nodeId: NoteId) =>
       runAtomicSubtreeCommand(
+        commandCtx,
         "sort-descending",
         "sortSubtreeDescending",
         nodeId,
         false
       ),
-    [runAtomicSubtreeCommand]
+    [commandCtx]
   );
 
   const toggleStar = useCallback(
-    async (nodeId: NoteId) => {
-      return runStructuralCommand("star", async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.toggleStar(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace
-        );
-        return directMutationResult(mutation, projection);
-      });
-    },
-    [
-      runStructuralCommand,
-      rememberHistoryAfter,
-    ]
+    (nodeId: NoteId) => toggleStarCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
   const duplicateNode = useCallback(
-    async (nodeId: NoteId) => {
-      return runStructuralCommand("duplicate", async (context, historyContext) => {
-        const before = confirmedState(context);
-        if (!before.nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.duplicateNode(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        const uiUpdate = duplicateId
-          ? {
-              selectedId: duplicateId,
-              editingNoteId: duplicateId,
-              pendingFocusId: duplicateId,
-              pendingFocusField: "title" as const
-            }
-          : undefined;
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace,
-          uiUpdate
-        );
-        return directMutationResult(mutation, projection, uiUpdate);
-      });
-    },
-    [
-      runStructuralCommand,
-      rememberHistoryAfter,
-    ]
-  );
-
-  const runRootLifecycle = useCallback(
-    async (
-      nodeId: NoteId,
-      mutation: "archive" | "unarchive" | "trash"
-    ): Promise<void> => {
-      const ownerRecord = sessionRecordRef.current;
-      if (!ownerRecord) {
-        return;
-      }
-      const visibleNode = stateRef.current.nodesById[nodeId];
-      if (!visibleNode || visibleNode.parentId !== null) {
-        return;
-      }
-
-      const liveNavigation = liveNavigationRef.current;
-      const beforeNavigation: NotesLifecycleNavigationSnapshot = {
-        selectedId: liveNavigation.selectedId,
-        zoomRootId: liveNavigation.zoomRootId,
-        editingNoteId: liveNavigation.editingNoteId,
-        pendingFocusId: liveNavigation.pendingFocusId,
-        pendingFocusField: liveNavigation.pendingFocusField,
-        locallyExpandedNodeIds: new Set(locallyExpandedNodeIdsRef.current),
-        scope: activeScopeRef.current
-      };
-      const beforeNavigationVersion = navigationVersionRef.current;
-      const isLifecycleOwnerActive = (): boolean =>
-        !ownerRecord.closing &&
-        sessionRecordRef.current === ownerRecord &&
-        sessionRef.current === ownerRecord.session;
-      const lifecycleResult: {
-        transition: NotesLifecycleNavigationTransition | null;
-        recoveredToActive: boolean;
-        resolvedNavigationVersion: number | null;
-      } = {
-        transition: null,
-        recoveredToActive: false,
-        resolvedNavigationVersion: null
-      };
-
-      await runStructuralCommand(
-        mutation,
-        async (context, historyContext) => {
-          const beforeWorkspace = confirmedState(context);
-          const root = beforeWorkspace.nodesById[nodeId];
-          if (!root || root.parentId !== null) {
-            return { kind: "skipped" };
-          }
-          const mutationResult = unwrapNotesMutation(await (mutation === "archive"
-            ? context.repository.archiveNode(
-                context.vaultRoot,
-                nodeId,
-                ...historyArguments(historyContext)
-              )
-            : mutation === "unarchive"
-              ? context.repository.unarchiveNode(
-                  context.vaultRoot,
-                  nodeId,
-                  ...historyArguments(historyContext)
-                )
-              : context.repository.softDeleteNode(
-                  context.vaultRoot,
-                  nodeId,
-                  ...historyArguments(historyContext)
-                )));
-          if (
-            ownerRecord.closing ||
-            sessionRecordRef.current !== ownerRecord ||
-            sessionRef.current !== ownerRecord.session
-          ) {
-            return authoritative(
-              mutationResult.workspace,
-              undefined,
-              mutationResult.historyStatus,
-              {
-                scopeAgnostic: beforeNavigation.scope.kind !== "active",
-                invalidatesTagSummaries: true
-              }
-            );
-          }
-          const requestedScope = activeScopeRef.current;
-          let projectedWorkspace: NotesWorkspace;
-          try {
-            projectedWorkspace = await workspaceForScope(
-              context,
-              mutationResult.workspace,
-              requestedScope
-            );
-            if (!isLifecycleOwnerActive()) {
-              return authoritative(
-                projectedWorkspace,
-                undefined,
-                mutationResult.historyStatus,
-                { invalidatesTagSummaries: true }
-              );
-            }
-          } catch {
-            if (!isLifecycleOwnerActive()) {
-              return authoritative(
-                mutationResult.workspace,
-                undefined,
-                mutationResult.historyStatus,
-                {
-                  scopeAgnostic: beforeNavigation.scope.kind !== "active",
-                  invalidatesTagSummaries: true
-                }
-              );
-            }
-            lifecycleResult.recoveredToActive = true;
-            activeScopeRef.current = { kind: "active" };
-            try {
-              projectedWorkspace = await context.repository.loadWorkspace(
-                context.vaultRoot,
-                activeScopeRef.current
-              );
-              if (!isLifecycleOwnerActive()) {
-                return authoritative(
-                  projectedWorkspace,
-                  undefined,
-                  mutationResult.historyStatus,
-                  { invalidatesTagSummaries: true }
-                );
-              }
-            } catch {
-              projectedWorkspace = mutationResult.workspace;
-            }
-          }
-          if (!isLifecycleOwnerActive()) {
-            return authoritative(
-              projectedWorkspace,
-              undefined,
-              mutationResult.historyStatus,
-              { invalidatesTagSummaries: true }
-            );
-          }
-          const navigationVersion = navigationVersionRef.current;
-          const navigation =
-            navigationVersion === beforeNavigationVersion
-              ? beforeNavigation
-              : {
-                  selectedId: liveNavigationRef.current.selectedId,
-                  zoomRootId: liveNavigationRef.current.zoomRootId,
-                  editingNoteId: liveNavigationRef.current.editingNoteId,
-                  pendingFocusId: liveNavigationRef.current.pendingFocusId,
-                  pendingFocusField:
-                    liveNavigationRef.current.pendingFocusField,
-                  locallyExpandedNodeIds: new Set(
-                    locallyExpandedNodeIdsRef.current
-                  ),
-                  scope: activeScopeRef.current
-                };
-          const transition = resolveRootLifecycleNavigation(
-            beforeWorkspace,
-            normalizeWorkspace(projectedWorkspace),
-            nodeId,
-            navigation
-          );
-          lifecycleResult.transition = lifecycleResult.recoveredToActive
-            ? {
-                before: beforeNavigation,
-                after: {
-                  ...transition.after,
-                  scope: { kind: "active" }
-                }
-              }
-            : {
-                before: beforeNavigation,
-                after: transition.after
-              };
-          lifecycleResult.resolvedNavigationVersion = navigationVersion;
-          const uiUpdate = {
-            selectedId: lifecycleResult.transition.after.selectedId,
-            zoomRootId: lifecycleResult.transition.after.zoomRootId,
-            editingNoteId: lifecycleResult.transition.after.editingNoteId,
-            pendingFocusId: lifecycleResult.transition.after.pendingFocusId,
-            pendingFocusField:
-              lifecycleResult.transition.after.pendingFocusField
-          };
-          rememberHistoryAfter(
-            appliedHistoryContext(historyContext, mutationResult),
-            projectedWorkspace,
-            uiUpdate,
-            undefined,
-            lifecycleResult.transition.after.locallyExpandedNodeIds
-          );
-          return authoritative(
-            projectedWorkspace,
-            uiUpdate,
-            mutationResult.historyStatus,
-            { invalidatesTagSummaries: true }
-          );
-        }
-      );
-
-      if (
-        ownerRecord.closing ||
-        sessionRecordRef.current !== ownerRecord ||
-        sessionRef.current !== ownerRecord.session
-      ) {
-        return;
-      }
-
-      if (lifecycleResult.transition) {
-        if (
-          lifecycleResult.resolvedNavigationVersion ===
-          navigationVersionRef.current
-        ) {
-          replaceLocalExpansions(
-            lifecycleResult.transition.after.locallyExpandedNodeIds
-          );
-        }
-      }
-      if (lifecycleResult.recoveredToActive) {
-        setLibraryView("all");
-        requestedTagFiltersRef.current = [];
-        tagFilterOriginRef.current = null;
-        tagFilterRequestRef.current += 1;
-        setActiveTagFilters([]);
-      }
-    },
-    [
-      runStructuralCommand,
-      rememberHistoryAfter,
-      replaceLocalExpansions,
-    ]
+    (nodeId: NoteId) => duplicateNodeCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
   const archiveNode = useCallback(
-    (nodeId: NoteId) => runRootLifecycle(nodeId, "archive"),
-    [runRootLifecycle]
+    (nodeId: NoteId) => runRootLifecycle(commandCtx, nodeId, "archive"),
+    [commandCtx]
   );
 
   const unarchiveNode = useCallback(
-    (nodeId: NoteId) => runRootLifecycle(nodeId, "unarchive"),
-    [runRootLifecycle]
+    (nodeId: NoteId) => runRootLifecycle(commandCtx, nodeId, "unarchive"),
+    [commandCtx]
   );
 
   const removeEmptyNode = useCallback(
-    async (
+    (
       nodeId: NoteId,
       focusNodeId?: NoteId | null,
       options?: NotesWorkspaceCompoundOptions
-    ) => {
-      const hadCentralDraft =
-        sessionRecordRef.current?.drafts.has(nodeId) ?? false;
-      const record = sessionRecordRef.current;
-      const centralDraft = record?.drafts.get(nodeId);
-      const hasCentralDraft = centralDraft !== undefined;
-      const inlineDraft =
-        hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
-      return runStructuralCommand(
-        "remove",
-        async (context, historyContext, executionRecord) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const inlineTextContext = inlineDraft
-          ? beginTextEntry(executionRecord, nodeId, {
-              nodeId,
-              field: "title"
-            })
-          : null;
-        const steps: NotesWorkspaceQueueStep[] = [];
-        if (inlineDraft) {
-          steps.push({
-            historyEntryId: inlineTextContext?.entryId,
-            run: async () => {
-              const response = await context.repository.updateNode(
-                context.vaultRoot,
-                { id: nodeId, ...inlineDraft },
-                ...historyArguments(inlineTextContext)
-              );
-              const mutation = unwrapNotesMutation(response);
-              rememberHistoryAfter(
-                appliedHistoryContext(inlineTextContext, mutation),
-                mutation.workspace,
-                undefined,
-                { nodeId, field: "title" }
-              );
-              return response;
-            }
-          });
-        }
-        steps.push({
-          historyEntryId: historyContext?.entryId,
-          run: () => context.repository.removeEmptyNode(
-            context.vaultRoot,
-            nodeId,
-            ...historyArguments(historyContext)
-          )
-        });
-        const result = await runCompoundQueueWork(
-          context,
-          steps,
-          focusedUiUpdate(focusNodeId),
-          activeScopeRef.current
-        );
-        settleInlineTextEntry(executionRecord, inlineTextContext, result);
-        if (result.kind === "authoritative") {
-          rememberHistoryAfter(
-            historyContext &&
-              result.committedHistoryEntryIds?.includes(historyContext.entryId)
-              ? historyContext
-              : null,
-            result.workspace,
-            result.uiUpdate
-          );
-        }
-        return result;
-        }
-      );
-    },
-    [
-      runStructuralCommand,
-      beginTextEntry,
-      rememberHistoryAfter,
-      settleInlineTextEntry,
-    ]
+    ) => removeEmptyNodeCommand(commandCtx, nodeId, focusNodeId, options),
+    [commandCtx]
   );
 
   const deleteNode = useCallback(
-    async (nodeId: NoteId) => {
-      if (stateRef.current.nodesById[nodeId]?.parentId === null) {
-        return runRootLifecycle(nodeId, "trash");
-      }
-      return runStructuralCommand("trash", async (context, historyContext) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          return { kind: "skipped" };
-        }
-        const mutation = unwrapNotesMutation(await context.repository.softDeleteNode(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          activeScopeRef.current
-        );
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace
-        );
-        return directMutationResult(mutation, projection);
-      });
-    },
-    [
-      runStructuralCommand,
-      rememberHistoryAfter,
-      runRootLifecycle
-    ]
+    (nodeId: NoteId) => deleteNodeCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
   const restoreNode = useCallback(
-    async (nodeId: NoteId) => {
-      closeTextBurst();
-      const ownerRecord = sessionRecordRef.current;
-      const beforeNavigationVersion = navigationVersionRef.current;
-      const followsViewedTrashRoot =
-        activeScopeRef.current.kind === "trash" &&
-        rootIdForNode(
-          stateRef.current,
-          liveNavigationRef.current.zoomRootId
-        ) === nodeId;
-      let followedIntoActive = false;
-      await runStructuralCommand("restore", async (context, historyContext) => {
-        const mutation = unwrapNotesMutation(await context.repository.restoreNode(
-          context.vaultRoot,
-          nodeId,
-          ...historyArguments(historyContext)
-        ));
-        const canFollowIntoActive =
-          followsViewedTrashRoot &&
-          ownerRecord !== null &&
-          !ownerRecord.closing &&
-          sessionRecordRef.current === ownerRecord &&
-          sessionRef.current === ownerRecord.session &&
-          navigationVersionRef.current === beforeNavigationVersion &&
-          activeScopeRef.current.kind === "trash";
-        const nextScope: NotesWorkspaceScope = canFollowIntoActive
-          ? { kind: "active" }
-          : activeScopeRef.current;
-        const projection = await projectNotesMutation(
-          context,
-          mutation,
-          nextScope
-        );
-        const restoredNode = projection.workspace.nodes.find(
-          (candidate) => candidate.id === nodeId && candidate.deletedAt === null
-        );
-        followedIntoActive = canFollowIntoActive && restoredNode !== undefined;
-        if (followedIntoActive) {
-          activeScopeRef.current = nextScope;
-        }
-        const uiUpdate = followedIntoActive
-          ? {
-              selectedId: nodeId,
-              zoomRootId: nodeId,
-              editingNoteId: nodeId,
-              pendingFocusId: nodeId,
-              pendingFocusField: "title" as const
-            }
-          : undefined;
-        rememberHistoryAfter(
-          appliedHistoryContext(historyContext, mutation),
-          projection.workspace,
-          uiUpdate,
-          followedIntoActive ? { nodeId, field: "title" } : undefined,
-          followedIntoActive ? new Set() : undefined
-        );
-        return directMutationResult(mutation, projection, uiUpdate);
-      });
-      if (
-        !followedIntoActive ||
-        ownerRecord === null ||
-        ownerRecord.closing ||
-        sessionRecordRef.current !== ownerRecord ||
-        sessionRef.current !== ownerRecord.session ||
-        navigationVersionRef.current !== beforeNavigationVersion
-      ) {
-        return;
-      }
-      setLibraryView("all");
-      requestedTagFiltersRef.current = [];
-      tagFilterOriginRef.current = null;
-      tagFilterRequestRef.current += 1;
-      setActiveTagFilters([]);
-      replaceLocalExpansions(new Set());
-    },
-    [
-      closeTextBurst,
-      rememberHistoryAfter,
-      replaceLocalExpansions,
-      runStructuralCommand
-    ]
+    (nodeId: NoteId) => restoreNodeCommand(commandCtx, nodeId),
+    [commandCtx]
   );
 
-  const emptyTrash = useCallback(() => {
-    closeTextBurst();
-    const record = sessionRecordRef.current;
-    if (!record) {
-      return Promise.resolve();
-    }
-    const scope = activeScopeRef.current;
-    return record.session.enqueueStructural(async (context) => {
-      const workspace = await context.repository.emptyTrash(context.vaultRoot);
-      record.session.history.clearSnapshots();
-      const projectedWorkspace = await workspaceForScope(
-        context,
-        workspace,
-        scope
-      );
-      const isOwnerActive =
-        !record.closing &&
-        sessionRecordRef.current === record &&
-        sessionRef.current === record.session;
-      return authoritative(
-        projectedWorkspace,
-        isOwnerActive
-          ? {
-              selectedId: null,
-              zoomRootId: null,
-              editingNoteId: null,
-              pendingFocusId: null,
-              pendingFocusField: null
-            }
-          : undefined,
-        undefined,
-        { invalidatesTagSummaries: true }
-      );
-    });
-  }, [closeTextBurst]);
-
-  const discardPendingDrafts = useCallback(
-    (record: NotesWorkspaceSessionRecord): void => {
-      record.drafts.clear();
-      record.pendingDebounceByNodeId.clear();
-      record.inFlightDraftByNodeId.clear();
-      record.retryWriteByNodeId.clear();
-      record.draftAttemptReservations.clear();
-      record.draftHistoryContextByNodeId.clear();
-      record.draftHistoryFocusByNodeId.clear();
-      record.failedWritesByNodeId.clear();
-      record.writeError = null;
-      publishDraftState(record);
-    },
-    [publishDraftState]
+  const emptyTrash = useCallback(
+    () => emptyTrashCommand(commandCtx),
+    [commandCtx]
   );
 
   const deleteAllNotesData = useCallback(
@@ -4449,7 +2718,7 @@ export function useNotesWorkspace({
       try {
         if (record.drafts.size > 0) {
           if (discardDrafts) {
-            discardPendingDrafts(record);
+            draftEngineRef.current?.discardPendingDrafts();
           } else if (!(await flushAllDraftsBeforeStructural())) {
             throw notesDraftsFlushFailedError(record.writeError);
           }
@@ -4487,29 +2756,14 @@ export function useNotesWorkspace({
           throw new Error("Notes data deletion did not complete.");
         }
 
-        record.drafts.clear();
-        record.pendingDebounceByNodeId.clear();
-        record.inFlightDraftByNodeId.clear();
-        record.retryWriteByNodeId.clear();
-        record.draftAttemptReservations.clear();
-        record.draftHistoryContextByNodeId.clear();
-        record.draftHistoryFocusByNodeId.clear();
-        record.failedWritesByNodeId.clear();
-        record.writeError = null;
-        record.recoveryEntry = null;
-        record.session.history.clearSnapshots();
-        clearRecoveryEntry(repository, vaultRoot);
-        publishDraftState(record);
+        draftEngineRef.current?.resetAfterDataDeletion();
         if (
           sessionRecordRef.current === record &&
           sessionRef.current === record.session
         ) {
           activeScopeRef.current = { kind: "active" };
           setLibraryView("all");
-          requestedTagFiltersRef.current = [];
-          tagFilterOriginRef.current = null;
-          tagFilterRequestRef.current += 1;
-          setActiveTagFilters([]);
+          resetTagFilterTracking();
           setTagSummaries([]);
           replaceLocalExpansions(new Set());
         }
@@ -4523,23 +2777,19 @@ export function useNotesWorkspace({
       }
     },
     [
-      discardPendingDrafts,
       flushAllDraftsBeforeStructural,
-      publishDraftState,
       replaceLocalExpansions,
-      repository,
-      vaultRoot
+      resetTagFilterTracking
     ]
   );
 
-  const zoomTo = useCallback(async (nodeId: NoteId | null) => {
-    navigationVersionRef.current += 1;
-    liveNavigationRef.current = {
-      ...liveNavigationRef.current,
-      zoomRootId: nodeId
-    };
-    dispatch({ type: "setZoomRoot", zoomRootId: nodeId });
-  }, []);
+  const zoomTo = useCallback(
+    async (nodeId: NoteId | null) => {
+      navigationVersionRef.current += 1;
+      applyAction({ type: "setZoomRoot", zoomRootId: nodeId });
+    },
+    [applyAction]
+  );
 
   const setAttachmentUploadError = useCallback(
     (
@@ -5151,118 +3401,12 @@ export function useNotesWorkspace({
   );
 
   const commitPreparedMove = useCallback(
-    async (
+    (
       prepared: NotesPreparedMove,
       destinationId: NoteId | null
-    ): Promise<NotesPreparedMoveCommitResult> => {
-      const staleError: NotesPreparedMoveCommitResult = {
-        ok: false,
-        error: "Notes changed while Move To was open. Refresh Move To and try again."
-      };
-      let outcome: NotesPreparedMoveCommitResult = staleError;
-      await runStructuralCommand(
-        "move",
-        async (context, historyContext) => {
-          const stale = () =>
-            prepared.token !== movePreparationTokenRef.current ||
-            prepared.vaultRoot !== vaultRootRef.current ||
-            prepared.vaultRoot !== context.vaultRoot ||
-            !sameScope(prepared.scope, activeScopeRef.current) ||
-            prepared.generation !== activeWorkspaceGenerationRef.current;
-          if (stale()) {
-            return { kind: "skipped" };
-          }
-
-          let activeWorkspace: NotesWorkspace;
-          try {
-            activeWorkspace = await context.repository.loadWorkspace(
-              context.vaultRoot,
-              { kind: "active" }
-            );
-          } catch {
-            outcome = {
-              ok: false,
-              error: "Could not refresh move destinations. Try again."
-            };
-            return { kind: "skipped" };
-          }
-          if (stale()) {
-            return { kind: "skipped" };
-          }
-
-          const preparedNodesById = Object.fromEntries(
-            prepared.nodes.map((node) => [node.id, node])
-          ) as Record<NoteId, NoteNode>;
-          const currentNodesById = Object.fromEntries(
-            activeWorkspace.nodes.map((node) => [node.id, node])
-          ) as Record<NoteId, NoteNode>;
-          if (
-            !samePreparedMoveNode(
-              preparedNodesById[prepared.sourceId],
-              currentNodesById[prepared.sourceId]
-            ) ||
-            (destinationId !== null &&
-              !samePreparedMoveNode(
-                preparedNodesById[destinationId],
-                currentNodesById[destinationId]
-              ))
-          ) {
-            return { kind: "skipped" };
-          }
-
-          const input = buildNotesMoveNodeInput(
-            currentNodesById,
-            prepared.sourceId,
-            destinationId
-          );
-          if (!input) {
-            return { kind: "skipped" };
-          }
-
-          let mutation: UnwrappedNotesMutation;
-          try {
-            mutation = unwrapNotesMutation(
-              await context.repository.moveNode(
-                context.vaultRoot,
-                input,
-                ...historyArguments(historyContext)
-              )
-            );
-          } catch (cause) {
-            outcome = {
-              ok: false,
-              error: "Move could not be completed. Refresh Move To and try again."
-            };
-            throw cause;
-          }
-          const projection = await projectNotesMutation(
-            context,
-            mutation,
-            activeScopeRef.current
-          );
-          const appliedContext = appliedHistoryContext(
-            historyContext,
-            mutation
-          );
-          rememberHistoryAfter(
-            appliedContext,
-            projection.workspace,
-            focusedUiUpdate(prepared.sourceId)
-          );
-          if (!historyContext || appliedContext) {
-            movePreparationTokenRef.current += 1;
-            outcome = { ok: true };
-          }
-          return directMutationResult(
-            mutation,
-            projection,
-            focusedUiUpdate(prepared.sourceId)
-          );
-        }
-      );
-      return outcome;
-    },
-    [rememberHistoryAfter, runStructuralCommand]
+    ): Promise<NotesPreparedMoveCommitResult> =>
+      commitPreparedMoveCommand(commandCtx, prepared, destinationId),
+    [commandCtx]
   );
 
   const stateSlice = useMemo<NotesStateSlice>(

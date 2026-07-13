@@ -1,0 +1,1209 @@
+import type { MutableRefObject } from "react";
+import { createNoteId } from "../../domain/notes";
+import type {
+  MoveNoteNodeInput,
+  NoteId,
+  NoteNode,
+  NotesHistoryContext,
+  NotesWorkspace,
+  NotesWorkspaceScope,
+  NoteTagFilter
+} from "../../domain/notes";
+import type { NotesHistoryFocus } from "./notesHistory";
+import {
+  normalizeWorkspace,
+  type NormalizedNotesWorkspace
+} from "./notesWorkspaceReducer";
+import type {
+  NotesWorkspaceCoordinatorSession,
+  NotesWorkspaceQueueContext,
+  NotesWorkspaceQueueResult,
+  NotesWorkspaceUiUpdate
+} from "./notesWorkspaceCoordinator";
+import type { NotesWorkspaceSessionRecord } from "./notesDraftEngine";
+import { buildNotesMoveNodeInput } from "./notesMoveTargets";
+import {
+  appliedHistoryContext,
+  authoritative,
+  confirmedState,
+  directMutationResult,
+  duplicateRootId,
+  expansionsOutsideSubtree,
+  focusedUiUpdate,
+  hasMoveDependencies,
+  historyArguments,
+  notifySuccess,
+  projectNotesMutation,
+  resolveRootLifecycleNavigation,
+  rootIdForNode,
+  runCompoundQueueWork,
+  sameScope,
+  samePreparedMoveNode,
+  unwrapNotesMutation,
+  workspaceForScope,
+  type LiveNotesNavigation,
+  type NotesLibraryView,
+  type NotesLifecycleNavigationSnapshot,
+  type NotesLifecycleNavigationTransition,
+  type NotesPreparedMove,
+  type NotesPreparedMoveCommitResult,
+  type NotesWorkspaceCompoundOptions,
+  type NotesWorkspaceQueueStep,
+  type StructuralCommandOptions,
+  type TagFilterOrigin,
+  type UnwrappedNotesMutation
+} from "./useNotesWorkspace";
+
+/**
+ * Everything the structural command bodies read from the hook. The hook
+ * assembles this once (a memoized snapshot of its refs, state setters, and the
+ * queue/history callbacks) and delegates every structural command to the pure
+ * functions below, so the ~20 command bodies no longer live inline in the hook.
+ *
+ * Refs are the hook's live values: reading `.current` at command-execution time
+ * observes the same state the inline bodies did. Callbacks are captured by the
+ * memo dependency list so the context (and therefore the delegating actions)
+ * only churns identity when one of those callbacks changes — matching the
+ * pre-extraction identity behaviour the context-split tests pin.
+ */
+export interface NotesCommandContext {
+  readonly activeScopeRef: MutableRefObject<NotesWorkspaceScope>;
+  readonly sessionRecordRef: MutableRefObject<NotesWorkspaceSessionRecord | null>;
+  readonly sessionRef: MutableRefObject<NotesWorkspaceCoordinatorSession | null>;
+  // The reducer-owned navigation, derived on demand (settled state plus the live
+  // editing caret). Commands read this instead of a parallel navigation ref.
+  readonly currentNavigation: () => LiveNotesNavigation;
+  readonly navigationVersionRef: MutableRefObject<number>;
+  readonly locallyExpandedNodeIdsRef: MutableRefObject<ReadonlySet<NoteId>>;
+  readonly tagFilterRequestRef: MutableRefObject<number>;
+  readonly tagFilterOriginRef: MutableRefObject<TagFilterOrigin | null>;
+  readonly stateRef: MutableRefObject<NormalizedNotesWorkspace>;
+  readonly requestedTagFiltersRef: MutableRefObject<readonly NoteTagFilter[]>;
+  readonly movePreparationTokenRef: MutableRefObject<number>;
+  readonly vaultRootRef: MutableRefObject<string>;
+  readonly libraryViewRef: MutableRefObject<NotesLibraryView>;
+  readonly activeWorkspaceGenerationRef: MutableRefObject<number>;
+  readonly setLibraryView: (view: NotesLibraryView) => void;
+  readonly setActiveTagFilters: (filters: readonly NoteTagFilter[]) => void;
+  readonly runStructuralCommand: (
+    commandKind: string,
+    work: (
+      context: NotesWorkspaceQueueContext,
+      historyContext: NotesHistoryContext | null,
+      record: NotesWorkspaceSessionRecord
+    ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult,
+    options?: StructuralCommandOptions
+  ) => Promise<void>;
+  readonly rememberHistoryAfter: (
+    context: NotesHistoryContext | null | undefined,
+    workspace: NotesWorkspace,
+    uiUpdate?: NotesWorkspaceUiUpdate,
+    focus?: NotesHistoryFocus | null,
+    expandedNodeIds?: ReadonlySet<NoteId>
+  ) => void;
+  readonly replaceLocalExpansions: (nodeIds: ReadonlySet<NoteId>) => void;
+  readonly beginTextEntry: (
+    record: NotesWorkspaceSessionRecord,
+    nodeId: NoteId,
+    focus: NotesHistoryFocus
+  ) => NotesHistoryContext | null;
+  readonly settleInlineTextEntry: (
+    record: NotesWorkspaceSessionRecord,
+    context: NotesHistoryContext | null,
+    result: NotesWorkspaceQueueResult
+  ) => void;
+  readonly closeTextBurst: () => void;
+}
+
+/**
+ * The single session-staleness guard. Every command body used to inline the
+ * same triple check (record not closing, and still the session record and
+ * session the coordinator is pointing at). This is the one definition; each
+ * checkpoint that previously repeated the expression now calls this instead,
+ * preserving exact bail-out semantics.
+ */
+export function ownerStillActive(
+  ctx: NotesCommandContext,
+  record: NotesWorkspaceSessionRecord
+): boolean {
+  return (
+    !record.closing &&
+    ctx.sessionRecordRef.current === record &&
+    ctx.sessionRef.current === record.session
+  );
+}
+
+/**
+ * Return the library projection to the Active view and clear every tag-filter
+ * tracker in one step. Scope is single-sourced (activeScopeRef, set by the
+ * caller alongside the mutation), and the rendered library view + tag filters
+ * are derived from it here — the three trackers move together instead of being
+ * poked independently at each call site, which is where they used to drift.
+ */
+function activateAllLibraryView(ctx: NotesCommandContext): void {
+  ctx.setLibraryView("all");
+  ctx.requestedTagFiltersRef.current = [];
+  ctx.tagFilterOriginRef.current = null;
+  ctx.tagFilterRequestRef.current += 1;
+  ctx.setActiveTagFilters([]);
+}
+
+export async function createRootCommand(ctx: NotesCommandContext): Promise<void> {
+  const transitionToAll = ctx.libraryViewRef.current !== "all";
+  let created = false;
+  const creation = { record: null as NotesWorkspaceSessionRecord | null };
+  await ctx.runStructuralCommand("create", async (context, historyContext) => {
+    const ownerRecord = ctx.sessionRecordRef.current;
+    if (!ownerRecord) {
+      return { kind: "skipped" };
+    }
+    const before = normalizeWorkspace(
+      transitionToAll
+        ? await context.repository.loadWorkspace(context.vaultRoot, {
+            kind: "active"
+          })
+        : context.confirmedWorkspace
+    );
+    if (!ownerStillActive(ctx, ownerRecord)) {
+      return { kind: "skipped" };
+    }
+    const id = createNoteId();
+    const mutation = unwrapNotesMutation(await context.repository.createNode(
+      context.vaultRoot,
+      {
+        id,
+        parentId: null,
+        afterId: before.rootIds.at(-1) ?? null,
+        title: "",
+        note: ""
+      },
+      ...historyArguments(historyContext)
+    ));
+    if (!ownerStillActive(ctx, ownerRecord)) {
+      return authoritative(
+        mutation.workspace,
+        undefined,
+        mutation.historyStatus,
+        { invalidatesTagSummaries: true }
+      );
+    }
+    created = true;
+    creation.record = ownerRecord;
+    ctx.activeScopeRef.current = { kind: "active" };
+    const uiUpdate = {
+      selectedId: id,
+      editingNoteId: id,
+      pendingFocusId: id,
+      pendingFocusField: "title" as const,
+      zoomRootId: null
+    };
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      mutation.workspace,
+      uiUpdate,
+      undefined,
+      transitionToAll ? new Set() : ctx.locallyExpandedNodeIdsRef.current
+    );
+    return authoritative(
+      mutation.workspace,
+      uiUpdate,
+      mutation.historyStatus,
+      { invalidatesTagSummaries: true }
+    );
+  });
+  if (
+    created &&
+    creation.record &&
+    ownerStillActive(ctx, creation.record) &&
+    transitionToAll
+  ) {
+    activateAllLibraryView(ctx);
+    ctx.replaceLocalExpansions(new Set());
+  }
+}
+
+export async function createChildCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  return ctx.runStructuralCommand("create", async (context, historyContext) => {
+    const before = confirmedState(context);
+    if (!before.nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const id = createNoteId();
+    const mutation = unwrapNotesMutation(await context.repository.createNode(
+      context.vaultRoot,
+      {
+        id,
+        parentId: nodeId,
+        afterId: before.childIdsByParent[nodeId]?.at(-1) ?? null,
+        title: "",
+        note: ""
+      },
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const uiUpdate = {
+      selectedId: id,
+      editingNoteId: id,
+      pendingFocusId: id,
+      pendingFocusField: "title" as const
+    };
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  });
+}
+
+export async function splitNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  newNodeId: NoteId,
+  prefix: string,
+  suffix: string,
+  options?: NotesWorkspaceCompoundOptions
+): Promise<void> {
+  const hadCentralDraft =
+    ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
+  const record = ctx.sessionRecordRef.current;
+  const centralDraft = record?.drafts.get(nodeId);
+  const hasCentralDraft = centralDraft !== undefined;
+  const inlineDraft =
+    hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
+  let succeeded = false;
+  const completion = ctx.runStructuralCommand(
+    "split",
+    async (context, historyContext, executionRecord) => {
+      if (!confirmedState(context).nodesById[nodeId]) {
+        return { kind: "skipped" };
+      }
+      const inlineTextContext = inlineDraft
+        ? ctx.beginTextEntry(executionRecord, nodeId, {
+            nodeId,
+            field: "title"
+          })
+        : null;
+      const steps: NotesWorkspaceQueueStep[] = [];
+      if (inlineDraft) {
+        steps.push({
+          historyEntryId: inlineTextContext?.entryId,
+          run: async () => {
+            const response = await context.repository.updateNode(
+              context.vaultRoot,
+              { id: nodeId, ...inlineDraft },
+              ...historyArguments(inlineTextContext)
+            );
+            const mutation = unwrapNotesMutation(response);
+            ctx.rememberHistoryAfter(
+              appliedHistoryContext(inlineTextContext, mutation),
+              mutation.workspace,
+              undefined,
+              { nodeId, field: "title" }
+            );
+            return response;
+          }
+        });
+      }
+      steps.push({
+        historyEntryId: historyContext?.entryId,
+        run: () => context.repository.splitNode(
+          context.vaultRoot,
+          {
+            id: nodeId,
+            newNodeId,
+            prefix,
+            suffix
+          },
+          ...historyArguments(historyContext)
+        )
+      });
+      const result = await runCompoundQueueWork(
+        context,
+        steps,
+        {
+          selectedId: newNodeId,
+          editingNoteId: newNodeId,
+          pendingFocusId: newNodeId
+        },
+        ctx.activeScopeRef.current
+      );
+      ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+      if (result.kind === "authoritative") {
+        ctx.rememberHistoryAfter(
+          historyContext &&
+            result.committedHistoryEntryIds?.includes(historyContext.entryId)
+            ? historyContext
+            : null,
+          result.workspace,
+          result.uiUpdate
+        );
+      }
+      succeeded = result.kind === "authoritative";
+      return result;
+    }
+  );
+  return completion.then(() => {
+    if (succeeded) {
+      notifySuccess(options?.onSuccess);
+    }
+  });
+}
+
+export async function updateNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  patch: Pick<NoteNode, "title" | "note">
+): Promise<void> {
+  return ctx.runStructuralCommand("update", async (context, historyContext) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.updateNode(
+      context.vaultRoot,
+      {
+        id: nodeId,
+        ...patch
+      },
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace
+    );
+    return directMutationResult(mutation, projection);
+  });
+}
+
+export async function moveNodeCommand(
+  ctx: NotesCommandContext,
+  input: MoveNoteNodeInput,
+  focusNodeId?: NoteId | null,
+  options?: NotesWorkspaceCompoundOptions
+): Promise<boolean> {
+  const hadCentralDraft =
+    ctx.sessionRecordRef.current?.drafts.has(input.id) ?? false;
+  const record = ctx.sessionRecordRef.current;
+  const centralDraft = record?.drafts.get(input.id);
+  const hasCentralDraft = centralDraft !== undefined;
+  const inlineDraft =
+    hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
+  let succeeded = false;
+  await ctx.runStructuralCommand("move", async (context, historyContext, executionRecord) => {
+    const before = confirmedState(context);
+    const expandNodeId = options?.expandNodeId;
+    if (
+      !hasMoveDependencies(before, input) ||
+      (expandNodeId !== undefined && !before.nodesById[expandNodeId])
+    ) {
+      return { kind: "skipped" };
+    }
+    const inlineTextContext = inlineDraft
+      ? ctx.beginTextEntry(executionRecord, input.id, {
+          nodeId: input.id,
+          field: "title"
+        })
+      : null;
+    const steps: NotesWorkspaceQueueStep[] = [];
+    if (inlineDraft) {
+      steps.push({
+        historyEntryId: inlineTextContext?.entryId,
+        run: async () => {
+          const response = await context.repository.updateNode(
+            context.vaultRoot,
+            { id: input.id, ...inlineDraft },
+            ...historyArguments(inlineTextContext)
+          );
+          const mutation = unwrapNotesMutation(response);
+          ctx.rememberHistoryAfter(
+            appliedHistoryContext(inlineTextContext, mutation),
+            mutation.workspace,
+            undefined,
+            { nodeId: input.id, field: "title" }
+          );
+          return response;
+        }
+      });
+    }
+    if (
+      expandNodeId !== undefined &&
+      before.nodesById[expandNodeId].isCollapsed
+    ) {
+      steps.push({
+        historyEntryId: historyContext?.entryId,
+        run: () => context.repository.toggleCollapsed(
+            context.vaultRoot,
+            expandNodeId,
+            ...historyArguments(historyContext)
+          )
+      });
+    }
+    steps.push({
+      historyEntryId: historyContext?.entryId,
+      run: () => context.repository.moveNode(
+        context.vaultRoot,
+        input,
+        ...historyArguments(historyContext)
+      )
+    });
+    const result = await runCompoundQueueWork(
+      context,
+      steps,
+      focusedUiUpdate(focusNodeId),
+      ctx.activeScopeRef.current
+    );
+    ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+    if (result.kind === "authoritative") {
+      ctx.rememberHistoryAfter(
+        historyContext &&
+          result.committedHistoryEntryIds?.includes(historyContext.entryId)
+          ? historyContext
+          : null,
+        result.workspace,
+        result.uiUpdate
+      );
+    } else if (
+      historyContext &&
+      result.kind === "failure" &&
+      result.workspace &&
+      result.committedHistoryEntryIds?.includes(historyContext.entryId)
+    ) {
+      ctx.rememberHistoryAfter(
+        historyContext,
+        result.workspace
+      );
+    }
+    succeeded =
+      result.kind === "authoritative" &&
+      (!historyContext ||
+        Boolean(
+          result.committedHistoryEntryIds?.includes(
+            historyContext.entryId
+          )
+        ));
+    return result;
+  });
+  return succeeded;
+}
+
+export async function toggleCompleteCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  return ctx.runStructuralCommand("complete", async (context, historyContext) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.toggleComplete(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace
+    );
+    return directMutationResult(mutation, projection);
+  });
+}
+
+export async function toggleCollapsedCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  ctx.closeTextBurst();
+  if (ctx.locallyExpandedNodeIdsRef.current.has(nodeId)) {
+    const next = new Set(ctx.locallyExpandedNodeIdsRef.current);
+    next.delete(nodeId);
+    ctx.replaceLocalExpansions(next);
+    return;
+  }
+  return ctx.runStructuralCommand("collapse", async (context, historyContext) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.toggleCollapsed(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace
+    );
+    return directMutationResult(mutation, projection);
+  });
+}
+
+export async function runAtomicSubtreeCommand(
+  ctx: NotesCommandContext,
+  commandKind: string,
+  method:
+    | "expandAll"
+    | "collapseAll"
+    | "sortSubtreeAscending"
+    | "sortSubtreeDescending",
+  nodeId: NoteId,
+  reconcileExpansions: boolean
+): Promise<void> {
+  return ctx.runStructuralCommand(
+    commandKind,
+    async (context, historyContext) => {
+      const before = confirmedState(context);
+      const repositoryCommand = context.repository[method];
+      if (!before.nodesById[nodeId] || !repositoryCommand) {
+        return { kind: "skipped" };
+      }
+      const mutation = unwrapNotesMutation(
+        await repositoryCommand(
+          context.vaultRoot,
+          nodeId,
+          ...historyArguments(historyContext)
+        )
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      const appliedContext = appliedHistoryContext(
+        historyContext,
+        mutation
+      );
+      let expandedNodeIds: ReadonlySet<NoteId> | undefined;
+      if (reconcileExpansions) {
+        const next = expansionsOutsideSubtree(
+          ctx.locallyExpandedNodeIdsRef.current,
+          mutation.workspace,
+          nodeId
+        );
+        ctx.replaceLocalExpansions(next);
+        expandedNodeIds = next;
+      }
+      ctx.rememberHistoryAfter(
+        appliedContext,
+        projection.workspace,
+        undefined,
+        undefined,
+        expandedNodeIds
+      );
+      const result = directMutationResult(mutation, projection);
+      return reconcileExpansions
+        ? { ...result, clearLocalExpansionSubtreeId: nodeId }
+        : result;
+    }
+  );
+}
+
+export async function toggleStarCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  return ctx.runStructuralCommand("star", async (context, historyContext) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.toggleStar(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace
+    );
+    return directMutationResult(mutation, projection);
+  });
+}
+
+export async function duplicateNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  return ctx.runStructuralCommand("duplicate", async (context, historyContext) => {
+    const before = confirmedState(context);
+    if (!before.nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.duplicateNode(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const duplicateId = duplicateRootId(before, mutation.workspace, nodeId);
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const uiUpdate = duplicateId
+      ? {
+          selectedId: duplicateId,
+          editingNoteId: duplicateId,
+          pendingFocusId: duplicateId,
+          pendingFocusField: "title" as const
+        }
+      : undefined;
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  });
+}
+
+export async function runRootLifecycle(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  mutation: "archive" | "unarchive" | "trash"
+): Promise<void> {
+  const ownerRecord = ctx.sessionRecordRef.current;
+  if (!ownerRecord) {
+    return;
+  }
+  const visibleNode = ctx.stateRef.current.nodesById[nodeId];
+  if (!visibleNode || visibleNode.parentId !== null) {
+    return;
+  }
+
+  const liveNavigation = ctx.currentNavigation();
+  const beforeNavigation: NotesLifecycleNavigationSnapshot = {
+    selectedId: liveNavigation.selectedId,
+    zoomRootId: liveNavigation.zoomRootId,
+    editingNoteId: liveNavigation.editingNoteId,
+    pendingFocusId: liveNavigation.pendingFocusId,
+    pendingFocusField: liveNavigation.pendingFocusField,
+    locallyExpandedNodeIds: new Set(ctx.locallyExpandedNodeIdsRef.current),
+    scope: ctx.activeScopeRef.current
+  };
+  const beforeNavigationVersion = ctx.navigationVersionRef.current;
+  const isLifecycleOwnerActive = (): boolean =>
+    ownerStillActive(ctx, ownerRecord);
+  const lifecycleResult: {
+    transition: NotesLifecycleNavigationTransition | null;
+    recoveredToActive: boolean;
+    resolvedNavigationVersion: number | null;
+  } = {
+    transition: null,
+    recoveredToActive: false,
+    resolvedNavigationVersion: null
+  };
+
+  await ctx.runStructuralCommand(
+    mutation,
+    async (context, historyContext) => {
+      const beforeWorkspace = confirmedState(context);
+      const root = beforeWorkspace.nodesById[nodeId];
+      if (!root || root.parentId !== null) {
+        return { kind: "skipped" };
+      }
+      const mutationResult = unwrapNotesMutation(await (mutation === "archive"
+        ? context.repository.archiveNode(
+            context.vaultRoot,
+            nodeId,
+            ...historyArguments(historyContext)
+          )
+        : mutation === "unarchive"
+          ? context.repository.unarchiveNode(
+              context.vaultRoot,
+              nodeId,
+              ...historyArguments(historyContext)
+            )
+          : context.repository.softDeleteNode(
+              context.vaultRoot,
+              nodeId,
+              ...historyArguments(historyContext)
+            )));
+      if (!ownerStillActive(ctx, ownerRecord)) {
+        return authoritative(
+          mutationResult.workspace,
+          undefined,
+          mutationResult.historyStatus,
+          {
+            scopeAgnostic: beforeNavigation.scope.kind !== "active",
+            invalidatesTagSummaries: true
+          }
+        );
+      }
+      const requestedScope = ctx.activeScopeRef.current;
+      let projectedWorkspace: NotesWorkspace;
+      try {
+        projectedWorkspace = await workspaceForScope(
+          context,
+          mutationResult.workspace,
+          requestedScope
+        );
+        if (!isLifecycleOwnerActive()) {
+          return authoritative(
+            projectedWorkspace,
+            undefined,
+            mutationResult.historyStatus,
+            { invalidatesTagSummaries: true }
+          );
+        }
+      } catch {
+        if (!isLifecycleOwnerActive()) {
+          return authoritative(
+            mutationResult.workspace,
+            undefined,
+            mutationResult.historyStatus,
+            {
+              scopeAgnostic: beforeNavigation.scope.kind !== "active",
+              invalidatesTagSummaries: true
+            }
+          );
+        }
+        lifecycleResult.recoveredToActive = true;
+        ctx.activeScopeRef.current = { kind: "active" };
+        try {
+          projectedWorkspace = await context.repository.loadWorkspace(
+            context.vaultRoot,
+            ctx.activeScopeRef.current
+          );
+          if (!isLifecycleOwnerActive()) {
+            return authoritative(
+              projectedWorkspace,
+              undefined,
+              mutationResult.historyStatus,
+              { invalidatesTagSummaries: true }
+            );
+          }
+        } catch {
+          projectedWorkspace = mutationResult.workspace;
+        }
+      }
+      if (!isLifecycleOwnerActive()) {
+        return authoritative(
+          projectedWorkspace,
+          undefined,
+          mutationResult.historyStatus,
+          { invalidatesTagSummaries: true }
+        );
+      }
+      const navigationVersion = ctx.navigationVersionRef.current;
+      const latestNavigation = ctx.currentNavigation();
+      const navigation =
+        navigationVersion === beforeNavigationVersion
+          ? beforeNavigation
+          : {
+              selectedId: latestNavigation.selectedId,
+              zoomRootId: latestNavigation.zoomRootId,
+              editingNoteId: latestNavigation.editingNoteId,
+              pendingFocusId: latestNavigation.pendingFocusId,
+              pendingFocusField: latestNavigation.pendingFocusField,
+              locallyExpandedNodeIds: new Set(
+                ctx.locallyExpandedNodeIdsRef.current
+              ),
+              scope: ctx.activeScopeRef.current
+            };
+      const transition = resolveRootLifecycleNavigation(
+        beforeWorkspace,
+        normalizeWorkspace(projectedWorkspace),
+        nodeId,
+        navigation
+      );
+      lifecycleResult.transition = lifecycleResult.recoveredToActive
+        ? {
+            before: beforeNavigation,
+            after: {
+              ...transition.after,
+              scope: { kind: "active" }
+            }
+          }
+        : {
+            before: beforeNavigation,
+            after: transition.after
+          };
+      lifecycleResult.resolvedNavigationVersion = navigationVersion;
+      const uiUpdate = {
+        selectedId: lifecycleResult.transition.after.selectedId,
+        zoomRootId: lifecycleResult.transition.after.zoomRootId,
+        editingNoteId: lifecycleResult.transition.after.editingNoteId,
+        pendingFocusId: lifecycleResult.transition.after.pendingFocusId,
+        pendingFocusField:
+          lifecycleResult.transition.after.pendingFocusField
+      };
+      ctx.rememberHistoryAfter(
+        appliedHistoryContext(historyContext, mutationResult),
+        projectedWorkspace,
+        uiUpdate,
+        undefined,
+        lifecycleResult.transition.after.locallyExpandedNodeIds
+      );
+      return authoritative(
+        projectedWorkspace,
+        uiUpdate,
+        mutationResult.historyStatus,
+        { invalidatesTagSummaries: true }
+      );
+    }
+  );
+
+  if (!ownerStillActive(ctx, ownerRecord)) {
+    return;
+  }
+
+  if (lifecycleResult.transition) {
+    if (
+      lifecycleResult.resolvedNavigationVersion ===
+      ctx.navigationVersionRef.current
+    ) {
+      ctx.replaceLocalExpansions(
+        lifecycleResult.transition.after.locallyExpandedNodeIds
+      );
+    }
+  }
+  if (lifecycleResult.recoveredToActive) {
+    activateAllLibraryView(ctx);
+  }
+}
+
+export async function removeEmptyNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId,
+  focusNodeId?: NoteId | null,
+  options?: NotesWorkspaceCompoundOptions
+): Promise<void> {
+  const hadCentralDraft =
+    ctx.sessionRecordRef.current?.drafts.has(nodeId) ?? false;
+  const record = ctx.sessionRecordRef.current;
+  const centralDraft = record?.drafts.get(nodeId);
+  const hasCentralDraft = centralDraft !== undefined;
+  const inlineDraft =
+    hadCentralDraft || hasCentralDraft ? undefined : options?.draft;
+  return ctx.runStructuralCommand(
+    "remove",
+    async (context, historyContext, executionRecord) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const inlineTextContext = inlineDraft
+      ? ctx.beginTextEntry(executionRecord, nodeId, {
+          nodeId,
+          field: "title"
+        })
+      : null;
+    const steps: NotesWorkspaceQueueStep[] = [];
+    if (inlineDraft) {
+      steps.push({
+        historyEntryId: inlineTextContext?.entryId,
+        run: async () => {
+          const response = await context.repository.updateNode(
+            context.vaultRoot,
+            { id: nodeId, ...inlineDraft },
+            ...historyArguments(inlineTextContext)
+          );
+          const mutation = unwrapNotesMutation(response);
+          ctx.rememberHistoryAfter(
+            appliedHistoryContext(inlineTextContext, mutation),
+            mutation.workspace,
+            undefined,
+            { nodeId, field: "title" }
+          );
+          return response;
+        }
+      });
+    }
+    steps.push({
+      historyEntryId: historyContext?.entryId,
+      run: () => context.repository.removeEmptyNode(
+        context.vaultRoot,
+        nodeId,
+        ...historyArguments(historyContext)
+      )
+    });
+    const result = await runCompoundQueueWork(
+      context,
+      steps,
+      focusedUiUpdate(focusNodeId),
+      ctx.activeScopeRef.current
+    );
+    ctx.settleInlineTextEntry(executionRecord, inlineTextContext, result);
+    if (result.kind === "authoritative") {
+      ctx.rememberHistoryAfter(
+        historyContext &&
+          result.committedHistoryEntryIds?.includes(historyContext.entryId)
+          ? historyContext
+          : null,
+        result.workspace,
+        result.uiUpdate
+      );
+    }
+    return result;
+    }
+  );
+}
+
+export async function deleteNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  if (ctx.stateRef.current.nodesById[nodeId]?.parentId === null) {
+    return runRootLifecycle(ctx, nodeId, "trash");
+  }
+  return ctx.runStructuralCommand("trash", async (context, historyContext) => {
+    if (!confirmedState(context).nodesById[nodeId]) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(await context.repository.softDeleteNode(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace
+    );
+    return directMutationResult(mutation, projection);
+  });
+}
+
+export async function restoreNodeCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<void> {
+  ctx.closeTextBurst();
+  const ownerRecord = ctx.sessionRecordRef.current;
+  const beforeNavigationVersion = ctx.navigationVersionRef.current;
+  const followsViewedTrashRoot =
+    ctx.activeScopeRef.current.kind === "trash" &&
+    rootIdForNode(
+      ctx.stateRef.current,
+      ctx.currentNavigation().zoomRootId
+    ) === nodeId;
+  let followedIntoActive = false;
+  await ctx.runStructuralCommand("restore", async (context, historyContext) => {
+    const mutation = unwrapNotesMutation(await context.repository.restoreNode(
+      context.vaultRoot,
+      nodeId,
+      ...historyArguments(historyContext)
+    ));
+    const canFollowIntoActive =
+      followsViewedTrashRoot &&
+      ownerRecord !== null &&
+      ownerStillActive(ctx, ownerRecord) &&
+      ctx.navigationVersionRef.current === beforeNavigationVersion &&
+      ctx.activeScopeRef.current.kind === "trash";
+    const nextScope: NotesWorkspaceScope = canFollowIntoActive
+      ? { kind: "active" }
+      : ctx.activeScopeRef.current;
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      nextScope
+    );
+    const restoredNode = projection.workspace.nodes.find(
+      (candidate) => candidate.id === nodeId && candidate.deletedAt === null
+    );
+    followedIntoActive = canFollowIntoActive && restoredNode !== undefined;
+    if (followedIntoActive) {
+      ctx.activeScopeRef.current = nextScope;
+    }
+    const uiUpdate = followedIntoActive
+      ? {
+          selectedId: nodeId,
+          zoomRootId: nodeId,
+          editingNoteId: nodeId,
+          pendingFocusId: nodeId,
+          pendingFocusField: "title" as const
+        }
+      : undefined;
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate,
+      followedIntoActive ? { nodeId, field: "title" } : undefined,
+      followedIntoActive ? new Set() : undefined
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  });
+  if (
+    !followedIntoActive ||
+    ownerRecord === null ||
+    !ownerStillActive(ctx, ownerRecord) ||
+    ctx.navigationVersionRef.current !== beforeNavigationVersion
+  ) {
+    return;
+  }
+  activateAllLibraryView(ctx);
+  ctx.replaceLocalExpansions(new Set());
+}
+
+export function emptyTrashCommand(ctx: NotesCommandContext): Promise<void> {
+  ctx.closeTextBurst();
+  const record = ctx.sessionRecordRef.current;
+  if (!record) {
+    return Promise.resolve();
+  }
+  const scope = ctx.activeScopeRef.current;
+  return record.session.enqueueStructural(async (context) => {
+    const workspace = await context.repository.emptyTrash(context.vaultRoot);
+    record.session.history.clearSnapshots();
+    const projectedWorkspace = await workspaceForScope(
+      context,
+      workspace,
+      scope
+    );
+    const isOwnerActive = ownerStillActive(ctx, record);
+    return authoritative(
+      projectedWorkspace,
+      isOwnerActive
+        ? {
+            selectedId: null,
+            zoomRootId: null,
+            editingNoteId: null,
+            pendingFocusId: null,
+            pendingFocusField: null
+          }
+        : undefined,
+      undefined,
+      { invalidatesTagSummaries: true }
+    );
+  });
+}
+
+export async function commitPreparedMoveCommand(
+  ctx: NotesCommandContext,
+  prepared: NotesPreparedMove,
+  destinationId: NoteId | null
+): Promise<NotesPreparedMoveCommitResult> {
+  const staleError: NotesPreparedMoveCommitResult = {
+    ok: false,
+    error: "Notes changed while Move To was open. Refresh Move To and try again."
+  };
+  let outcome: NotesPreparedMoveCommitResult = staleError;
+  await ctx.runStructuralCommand(
+    "move",
+    async (context, historyContext) => {
+      const stale = () =>
+        prepared.token !== ctx.movePreparationTokenRef.current ||
+        prepared.vaultRoot !== ctx.vaultRootRef.current ||
+        prepared.vaultRoot !== context.vaultRoot ||
+        !sameScope(prepared.scope, ctx.activeScopeRef.current) ||
+        prepared.generation !== ctx.activeWorkspaceGenerationRef.current;
+      if (stale()) {
+        return { kind: "skipped" };
+      }
+
+      let activeWorkspace: NotesWorkspace;
+      try {
+        activeWorkspace = await context.repository.loadWorkspace(
+          context.vaultRoot,
+          { kind: "active" }
+        );
+      } catch {
+        outcome = {
+          ok: false,
+          error: "Could not refresh move destinations. Try again."
+        };
+        return { kind: "skipped" };
+      }
+      if (stale()) {
+        return { kind: "skipped" };
+      }
+
+      const preparedNodesById = Object.fromEntries(
+        prepared.nodes.map((node) => [node.id, node])
+      ) as Record<NoteId, NoteNode>;
+      const currentNodesById = Object.fromEntries(
+        activeWorkspace.nodes.map((node) => [node.id, node])
+      ) as Record<NoteId, NoteNode>;
+      if (
+        !samePreparedMoveNode(
+          preparedNodesById[prepared.sourceId],
+          currentNodesById[prepared.sourceId]
+        ) ||
+        (destinationId !== null &&
+          !samePreparedMoveNode(
+            preparedNodesById[destinationId],
+            currentNodesById[destinationId]
+          ))
+      ) {
+        return { kind: "skipped" };
+      }
+
+      const input = buildNotesMoveNodeInput(
+        currentNodesById,
+        prepared.sourceId,
+        destinationId
+      );
+      if (!input) {
+        return { kind: "skipped" };
+      }
+
+      let mutation: UnwrappedNotesMutation;
+      try {
+        mutation = unwrapNotesMutation(
+          await context.repository.moveNode(
+            context.vaultRoot,
+            input,
+            ...historyArguments(historyContext)
+          )
+        );
+      } catch (cause) {
+        outcome = {
+          ok: false,
+          error: "Move could not be completed. Refresh Move To and try again."
+        };
+        throw cause;
+      }
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      const appliedContext = appliedHistoryContext(
+        historyContext,
+        mutation
+      );
+      ctx.rememberHistoryAfter(
+        appliedContext,
+        projection.workspace,
+        focusedUiUpdate(prepared.sourceId)
+      );
+      if (!historyContext || appliedContext) {
+        ctx.movePreparationTokenRef.current += 1;
+        outcome = { ok: true };
+      }
+      return directMutationResult(
+        mutation,
+        projection,
+        focusedUiUpdate(prepared.sourceId)
+      );
+    }
+  );
+  return outcome;
+}

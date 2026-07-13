@@ -1,4 +1,5 @@
 import type {
+  NoteAttachment,
   NoteAttachmentsByNodeId,
   NoteId,
   NoteNode,
@@ -20,7 +21,7 @@ export interface NormalizedNotesWorkspace {
   error: string | null;
 }
 
-type UiState = Pick<
+export type UiState = Pick<
   NormalizedNotesWorkspace,
   | "selectedId"
   | "zoomRootId"
@@ -39,6 +40,14 @@ export type NotesWorkspaceReducerAction =
             kind: "authoritative";
             workspace: NotesWorkspace;
             uiUpdate?: Partial<UiState>;
+            /**
+             * Scope-consistent incremental delta. When present, the store is
+             * patched from it instead of re-normalizing the full workspace. The
+             * projection layer only attaches this for the active scope (see
+             * {@link settleWorkspaceStore}); every other settle path leaves it
+             * absent so the full workspace stays authoritative.
+             */
+            delta?: NotesWorkspaceDelta;
           }
         | { kind: "skipped" }
         | {
@@ -55,6 +64,10 @@ export type NotesWorkspaceReducerAction =
   | { type: "setZoomRoot"; zoomRootId: NoteId | null };
 
 function compareNodes(left: NoteNode, right: NoteNode): number {
+  return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
+}
+
+function compareAttachments(left: NoteAttachment, right: NoteAttachment): number {
   return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
 }
 
@@ -80,7 +93,15 @@ function normalizedUiState(
   };
 }
 
-function settledUiState(
+/**
+ * The single UI-state reconciler. Given the authoritative workspace, the
+ * current navigation, and an optional update, it drops ids that no longer
+ * exist, applies the update field-by-field (undefined = retain), and normalizes
+ * the pending-focus pairing. The reducer settles navigation through this on
+ * every mutation; the hook reuses it (via {@link reconcileUiState}) to compute
+ * the "after" snapshot for history, so both agree on exactly one settled shape.
+ */
+export function settledUiState(
   workspace: NormalizedNotesWorkspace,
   current: UiState,
   uiUpdate?: Partial<UiState>
@@ -108,6 +129,19 @@ function settledUiState(
         ? retainedUi.pendingFocusField
         : uiUpdate.pendingFocusField
   });
+}
+
+/**
+ * {@link settledUiState} against a not-yet-normalized workspace. The hook holds
+ * navigation results as raw {@link NotesWorkspace}s (mutation projections), so
+ * this normalizes then delegates — one reconciler, two entry points.
+ */
+export function reconcileUiState(
+  workspace: NotesWorkspace,
+  current: UiState,
+  uiUpdate?: Partial<UiState>
+): UiState {
+  return settledUiState(normalizeWorkspace(workspace), current, uiUpdate);
 }
 
 export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWorkspace {
@@ -149,6 +183,329 @@ export function normalizeWorkspace(workspace: NotesWorkspace): NormalizedNotesWo
   };
 }
 
+/**
+ * The scope-consistent incremental view of a single mutation, mirroring the
+ * backend audit delta ({@link NotesMutationResult}) but already reconciled to
+ * the store's scope by the projection layer:
+ *
+ * - `changedNodes` — nodes to upsert; each carries the authoritative
+ *   `parentId`/`sortKey`, so sibling order is derived from the node itself.
+ * - `removedNodeIds` — nodes to drop (hard-deleted rows plus any node that left
+ *   the scope, e.g. a soft-deleted node in the active scope).
+ * - `changedAttachments` — attachments to upsert; removals are never surfaced
+ *   here (a removed attachment's node is either dropped via `removedNodeIds` or
+ *   the whole settle falls back to full normalization).
+ */
+export interface NotesWorkspaceDelta {
+  changedNodes: NoteNode[];
+  removedNodeIds: NoteId[];
+  changedAttachments: NoteAttachment[];
+}
+
+function cloneNullProtoRecord<T>(source: Record<string, T>): Record<string, T> {
+  const clone = Object.create(null) as Record<string, T>;
+  for (const key of Object.keys(source)) {
+    clone[key] = source[key];
+  }
+  return clone;
+}
+
+/**
+ * Patch a normalized store from a scope-consistent {@link NotesWorkspaceDelta},
+ * touching only the affected nodes/parents/attachment lists instead of
+ * re-normalizing (and re-sorting) the whole workspace. The result is shaped
+ * exactly like {@link normalizeWorkspace}'s output (UI fields reset, status
+ * "ready") so it is a drop-in replacement in the settle path.
+ *
+ * Sibling and attachment ordering is preserved by removing an entry from its
+ * old position and re-inserting it at the sorted position derived from the
+ * authoritative `sortKey`/`id` — identical to the total order
+ * {@link normalizeWorkspace} produces. Untouched arrays are shared with the
+ * prior store; touched arrays are cloned copy-on-write so the prior state stays
+ * immutable.
+ */
+export function applyWorkspaceDelta(
+  state: NormalizedNotesWorkspace,
+  delta: NotesWorkspaceDelta
+): NormalizedNotesWorkspace {
+  const nodesById = cloneNullProtoRecord(state.nodesById);
+  const childIdsByParent = cloneNullProtoRecord(state.childIdsByParent);
+  const attachmentsByNodeId = cloneNullProtoRecord(state.attachmentsByNodeId);
+  let rootIds = state.rootIds;
+  let rootIdsCloned = false;
+  const clonedChildKeys = new Set<string>();
+  const clonedAttachmentKeys = new Set<string>();
+
+  const rootList = (): NoteId[] => {
+    if (!rootIdsCloned) {
+      rootIds = [...rootIds];
+      rootIdsCloned = true;
+    }
+    return rootIds;
+  };
+  const childListFor = (parentId: NoteId): NoteId[] => {
+    if (!clonedChildKeys.has(parentId)) {
+      childIdsByParent[parentId] = childIdsByParent[parentId]
+        ? [...childIdsByParent[parentId]]
+        : [];
+      clonedChildKeys.add(parentId);
+    }
+    return childIdsByParent[parentId];
+  };
+  const attachmentListFor = (nodeId: NoteId): NoteAttachment[] => {
+    if (!clonedAttachmentKeys.has(nodeId)) {
+      attachmentsByNodeId[nodeId] = attachmentsByNodeId[nodeId]
+        ? [...attachmentsByNodeId[nodeId]]
+        : [];
+      clonedAttachmentKeys.add(nodeId);
+    }
+    return attachmentsByNodeId[nodeId];
+  };
+
+  const detachFromParent = (node: NoteNode): void => {
+    if (node.parentId === null) {
+      const list = rootList();
+      const index = list.indexOf(node.id);
+      if (index >= 0) {
+        list.splice(index, 1);
+      }
+      return;
+    }
+    if (!childIdsByParent[node.parentId]) {
+      return;
+    }
+    const list = childListFor(node.parentId);
+    const index = list.indexOf(node.id);
+    if (index >= 0) {
+      list.splice(index, 1);
+    }
+    if (list.length === 0) {
+      delete childIdsByParent[node.parentId];
+      clonedChildKeys.delete(node.parentId);
+    }
+  };
+
+  const insertIntoSiblings = (node: NoteNode): void => {
+    const list =
+      node.parentId === null ? rootList() : childListFor(node.parentId);
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (compareNodes(nodesById[list[mid]], node) <= 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    list.splice(low, 0, node.id);
+  };
+
+  for (const node of delta.changedNodes) {
+    const previous = nodesById[node.id];
+    if (previous) {
+      detachFromParent(previous);
+    }
+    nodesById[node.id] = node;
+    insertIntoSiblings(node);
+  }
+
+  for (const removedId of delta.removedNodeIds) {
+    const previous = nodesById[removedId];
+    if (previous) {
+      detachFromParent(previous);
+    }
+    delete nodesById[removedId];
+    if (attachmentsByNodeId[removedId]) {
+      delete attachmentsByNodeId[removedId];
+      clonedAttachmentKeys.delete(removedId);
+    }
+  }
+
+  for (const change of delta.changedAttachments) {
+    if (!nodesById[change.nodeId]) {
+      continue;
+    }
+    const list = attachmentListFor(change.nodeId);
+    const existingIndex = list.findIndex(
+      (candidate) => candidate.id === change.id
+    );
+    if (existingIndex >= 0) {
+      list.splice(existingIndex, 1);
+    }
+    let low = 0;
+    let high = list.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (compareAttachments(list[mid], change) <= 0) {
+        low = mid + 1;
+      } else {
+        high = mid;
+      }
+    }
+    list.splice(low, 0, change);
+  }
+
+  return {
+    nodesById,
+    childIdsByParent,
+    rootIds,
+    attachmentsByNodeId,
+    selectedId: null,
+    zoomRootId: null,
+    editingNoteId: null,
+    pendingFocusId: null,
+    pendingFocusField: null,
+    status: "ready",
+    error: null
+  };
+}
+
+// Transition-safety gate (plan Phase 3.4 risk table): in dev builds every
+// delta-applied settle is re-derived from the full workspace payload and
+// deep-compared, falling back to the full result on divergence. Production
+// trusts the delta. The flag is module-level so tests can force-enable it
+// regardless of the build's `import.meta.env.DEV`.
+function readDevFlag(): boolean {
+  const meta = import.meta as unknown as { env?: { DEV?: boolean } };
+  return meta.env?.DEV === true;
+}
+
+let deltaVerificationEnabled = readDevFlag();
+
+export function setNotesDeltaVerificationEnabled(enabled: boolean): void {
+  deltaVerificationEnabled = enabled;
+}
+
+function valuesEqual(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+      return false;
+    }
+    return left.every((item, index) => valuesEqual(item, right[index]));
+  }
+  if (
+    typeof left === "object" &&
+    left !== null &&
+    typeof right === "object" &&
+    right !== null
+  ) {
+    const leftRecord = left as Record<string, unknown>;
+    const rightRecord = right as Record<string, unknown>;
+    const leftKeys = Object.keys(leftRecord);
+    if (leftKeys.length !== Object.keys(rightRecord).length) {
+      return false;
+    }
+    return leftKeys.every(
+      (key) =>
+        Object.prototype.hasOwnProperty.call(rightRecord, key) &&
+        valuesEqual(leftRecord[key], rightRecord[key])
+    );
+  }
+  return false;
+}
+
+export interface NormalizedStoreDiff {
+  rootIdsDiffer: boolean;
+  nodeIdsOnlyInDelta: NoteId[];
+  nodeIdsOnlyInFull: NoteId[];
+  nodesWithDifferentValues: NoteId[];
+  parentsWithDifferentChildren: string[];
+  nodesWithDifferentAttachments: NoteId[];
+}
+
+function diffNormalizedStores(
+  patched: NormalizedNotesWorkspace,
+  full: NormalizedNotesWorkspace
+): NormalizedStoreDiff | null {
+  const nodeIdsOnlyInDelta = Object.keys(patched.nodesById).filter(
+    (id) => !(id in full.nodesById)
+  );
+  const nodeIdsOnlyInFull = Object.keys(full.nodesById).filter(
+    (id) => !(id in patched.nodesById)
+  );
+  const nodesWithDifferentValues = Object.keys(patched.nodesById).filter(
+    (id) => id in full.nodesById && !valuesEqual(patched.nodesById[id], full.nodesById[id])
+  );
+  const parentKeys = new Set([
+    ...Object.keys(patched.childIdsByParent),
+    ...Object.keys(full.childIdsByParent)
+  ]);
+  const parentsWithDifferentChildren = [...parentKeys].filter(
+    (parentId) =>
+      !valuesEqual(
+        patched.childIdsByParent[parentId],
+        full.childIdsByParent[parentId]
+      )
+  );
+  const attachmentKeys = new Set([
+    ...Object.keys(patched.attachmentsByNodeId),
+    ...Object.keys(full.attachmentsByNodeId)
+  ]);
+  const nodesWithDifferentAttachments = [...attachmentKeys].filter(
+    (nodeId) =>
+      !valuesEqual(
+        patched.attachmentsByNodeId[nodeId],
+        full.attachmentsByNodeId[nodeId]
+      )
+  );
+  const rootIdsDiffer = !valuesEqual(patched.rootIds, full.rootIds);
+
+  if (
+    !rootIdsDiffer &&
+    nodeIdsOnlyInDelta.length === 0 &&
+    nodeIdsOnlyInFull.length === 0 &&
+    nodesWithDifferentValues.length === 0 &&
+    parentsWithDifferentChildren.length === 0 &&
+    nodesWithDifferentAttachments.length === 0
+  ) {
+    return null;
+  }
+  return {
+    rootIdsDiffer,
+    nodeIdsOnlyInDelta,
+    nodeIdsOnlyInFull,
+    nodesWithDifferentValues,
+    parentsWithDifferentChildren,
+    nodesWithDifferentAttachments
+  };
+}
+
+/**
+ * Compute the settled store for an authoritative result. With a
+ * {@link NotesWorkspaceDelta} present the store is patched incrementally; with
+ * the delta absent (initial load, scope change, non-active projection, or a
+ * mutation whose delta cannot be trusted) the full workspace is normalized as
+ * before. In dev the delta path is verified against a full normalization and
+ * falls back — with a structured `console.error` — on any divergence.
+ */
+export function settleWorkspaceStore(
+  state: NormalizedNotesWorkspace,
+  workspace: NotesWorkspace,
+  delta: NotesWorkspaceDelta | undefined
+): NormalizedNotesWorkspace {
+  if (!delta) {
+    return normalizeWorkspace(workspace);
+  }
+  const patched = applyWorkspaceDelta(state, delta);
+  if (!deltaVerificationEnabled) {
+    return patched;
+  }
+  const full = normalizeWorkspace(workspace);
+  const diff = diffNormalizedStores(patched, full);
+  if (diff) {
+    console.error(
+      "Notes incremental mutation delta diverged from the full workspace payload; falling back to full normalization.",
+      diff
+    );
+    return full;
+  }
+  return patched;
+}
+
 export function notesWorkspaceReducer(
   state: NormalizedNotesWorkspace,
   action: NotesWorkspaceReducerAction
@@ -183,7 +540,11 @@ export function notesWorkspaceReducer(
         };
       }
 
-      const workspace = normalizeWorkspace(action.result.workspace);
+      const workspace = settleWorkspaceStore(
+        state,
+        action.result.workspace,
+        action.result.delta
+      );
       return {
         ...workspace,
         ...settledUiState(workspace, state, action.result.uiUpdate),

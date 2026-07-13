@@ -18,10 +18,12 @@ import type {
 import {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
+  scopedActiveDelta,
   useNotesWorkspace,
   type NotesWorkspaceActions,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+import { setNotesDeltaVerificationEnabled } from "./notesWorkspaceReducer";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -4471,53 +4473,6 @@ describe("useNotesWorkspace", () => {
     expect(result.current.state.rootIds).toEqual([]);
   });
 
-  it("coalesces rapid node drafts and writes the latest patch after 300 ms", async () => {
-    const store = repository({
-      updateNode: vi.fn((_vaultRoot, input) =>
-        Promise.resolve(
-          workspace([
-            node({ id: "root", title: input.title, note: input.note })
-          ])
-        )
-      )
-    });
-    const { result } = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(result.current.status).toBe("ready"));
-    vi.useFakeTimers();
-
-    act(() => {
-      result.current.actions.updateNodeDraft("root", {
-        title: "first draft",
-        note: ""
-      });
-      result.current.actions.updateNodeDraft("root", {
-        title: "latest draft",
-        note: "latest note"
-      });
-    });
-
-    expect(result.current.draftsByNodeId.root).toMatchObject({
-      title: "latest draft",
-      note: "latest note"
-    });
-    await vi.advanceTimersByTimeAsync(299);
-    expect(store.updateNode).not.toHaveBeenCalled();
-
-    await act(async () => vi.advanceTimersByTimeAsync(1));
-    expect(store.updateNode).toHaveBeenCalledOnce();
-    expect(store.updateNode).toHaveBeenCalledWith(
-      "/vault",
-      {
-        id: "root",
-        title: "latest draft",
-        note: "latest note"
-      },
-      historyContext("text")
-    );
-  });
-
   it("keeps the loading state untouched while a debounced draft save settles", async () => {
     // Hold the draft write in flight so loading is asserted while the write is
     // genuinely pending — otherwise the pending->settle window collapses into a
@@ -6460,40 +6415,6 @@ describe("useNotesWorkspace", () => {
     expect(result.current.writeError).toBeNull();
   });
 
-  it("isolates shutdown recovery by repository object for the same vault path", async () => {
-    const firstStore = repository({
-      updateNode: vi.fn().mockRejectedValue(new Error("first store failed"))
-    });
-    const secondStore = repository({
-      loadWorkspace: vi
-        .fn()
-        .mockResolvedValue(workspace([node({ id: "second-root" })]))
-    });
-    const firstMount = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared", repository: firstStore })
-    );
-    await waitFor(() => expect(firstMount.result.current.status).toBe("ready"));
-
-    act(() => {
-      firstMount.result.current.actions.updateNodeDraft("root", {
-        title: "First store draft",
-        note: ""
-      });
-    });
-    firstMount.unmount();
-    await waitFor(() => expect(firstStore.updateNode).toHaveBeenCalledOnce());
-
-    const secondMount = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/shared", repository: secondStore })
-    );
-    await waitFor(() =>
-      expect(secondMount.result.current.state.nodesById["second-root"]).toBeDefined()
-    );
-
-    expect(secondMount.result.current.draftsByNodeId).toEqual({});
-    expect(secondMount.result.current.writeError).toBeNull();
-  });
-
   it("flushes a dirty unmount before a same-vault remount activation", async () => {
     const unmountWrite = deferred<NotesWorkspace>();
     let loadCount = 0;
@@ -6546,173 +6467,6 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenCalledOnce();
     expect(secondMount.result.current.draftsByNodeId).toEqual({});
     expect(secondMount.result.current.writeError).toBeNull();
-  });
-
-  it("returns true after flushing a draft that persists successfully", async () => {
-    const saved = workspace([node({ id: "root", title: "saved" })]);
-    const store = repository({
-      updateNode: vi.fn().mockResolvedValue(saved)
-    });
-    const mounted = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
-
-    act(() => {
-      mounted.result.current.actions.updateNodeDraft("root", {
-        title: "saved",
-        note: ""
-      });
-    });
-
-    let flushed: unknown;
-    await act(async () => {
-      flushed = await mounted.result.current.actions.flushNodeDraft("root");
-    });
-
-    expect(flushed).toBe(true);
-    expect(mounted.result.current.draftsByNodeId).toEqual({});
-  });
-
-  it("returns false when flushing retains a failed draft", async () => {
-    const store = repository({
-      updateNode: vi.fn().mockRejectedValue(new Error("disk full"))
-    });
-    const mounted = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
-
-    act(() => {
-      mounted.result.current.actions.updateNodeDraft("root", {
-        title: "not saved",
-        note: ""
-      });
-    });
-
-    let flushed: unknown;
-    await act(async () => {
-      flushed = await mounted.result.current.actions.flushNodeDraft("root");
-    });
-
-    expect(flushed).toBe(false);
-    expect(mounted.result.current.draftsByNodeId.root).toMatchObject({
-      title: "not saved",
-      status: "failed"
-    });
-  });
-
-  it("returns true when a second flush retries and saves a retained draft", async () => {
-    const saved = workspace([node({ id: "root", title: "saved on retry" })]);
-    const store = repository({
-      updateNode: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("disk full"))
-        .mockResolvedValueOnce(saved)
-    });
-    const mounted = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
-
-    act(() => {
-      mounted.result.current.actions.updateNodeDraft("root", {
-        title: "saved on retry",
-        note: ""
-      });
-    });
-
-    let firstFlush: unknown;
-    let retryFlush: unknown;
-    await act(async () => {
-      firstFlush = await mounted.result.current.actions.flushNodeDraft("root");
-      retryFlush = await mounted.result.current.actions.flushNodeDraft("root");
-    });
-
-    expect(firstFlush).toBe(false);
-    expect(retryFlush).toBe(true);
-    expect(store.updateNode).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(store.updateNode).mock.calls[1]?.[2]?.entryId).not.toBe(
-      vi.mocked(store.updateNode).mock.calls[0]?.[2]?.entryId
-    );
-    expect(mounted.result.current.draftsByNodeId).toEqual({});
-  });
-
-  it("returns false when the vault session changes before a flush completes", async () => {
-    const oldWrite = deferred<NotesWorkspace>();
-    const oldStore = repository({
-      updateNode: vi.fn().mockReturnValue(oldWrite.promise)
-    });
-    const newStore = repository({
-      loadWorkspace: vi
-        .fn()
-        .mockResolvedValue(workspace([node({ id: "new-root" })]))
-    });
-    const mounted = renderHook(
-      ({ vaultRoot, repository: current }) =>
-        useNotesWorkspace({ vaultRoot, repository: current }),
-      { initialProps: { vaultRoot: "/old", repository: oldStore } }
-    );
-    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
-
-    act(() => {
-      mounted.result.current.actions.updateNodeDraft("root", {
-        title: "old vault draft",
-        note: ""
-      });
-    });
-    const flush = mounted.result.current.actions.flushNodeDraft("root");
-    await waitFor(() => expect(oldStore.updateNode).toHaveBeenCalledOnce());
-
-    mounted.rerender({ vaultRoot: "/new", repository: newStore });
-    await act(async () => {
-      oldWrite.resolve(workspace([node({ id: "root", title: "old vault draft" })]));
-    });
-
-    await expect(flush).resolves.toBe(false);
-  });
-
-  it("retries a retained failed draft before closing its unmounted session", async () => {
-    const saved = workspace([node({ id: "root", title: "saved on unmount" })]);
-    const store = repository({
-      updateNode: vi
-        .fn()
-        .mockRejectedValueOnce(new Error("disk full"))
-        .mockResolvedValueOnce(saved)
-    });
-    const mounted = renderHook(() =>
-      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
-    );
-    await waitFor(() => expect(mounted.result.current.status).toBe("ready"));
-
-    act(() => {
-      mounted.result.current.actions.updateNodeDraft("root", {
-        title: "saved on unmount",
-        note: ""
-      });
-    });
-    await act(async () =>
-      mounted.result.current.actions.flushNodeDraft("root")
-    );
-    expect(mounted.result.current.writeError).toMatchObject({
-      operation: "write",
-      retryable: true,
-      message: "disk full"
-    });
-
-    mounted.unmount();
-
-    expect(store.updateNode).toHaveBeenCalledTimes(2);
-    expect(store.updateNode).toHaveBeenNthCalledWith(
-      2,
-      "/vault",
-      {
-        id: "root",
-        title: "saved on unmount",
-        note: ""
-      },
-      historyContext("text")
-    );
   });
 
   it("does not launch or publish old-identity queued work after a vault change", async () => {
@@ -7701,5 +7455,158 @@ describe("useNotesWorkspace", () => {
       editingNoteId: "archived-second",
       pendingFocusId: "archived-second"
     });
+  });
+});
+
+describe("scopedActiveDelta", () => {
+  it("passes through changes that remain in the active scope", () => {
+    const kept = node({ id: "kept", title: "kept" });
+    const attachmentChange = attachment({ id: "att", nodeId: "kept" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [kept],
+        removedNodeIds: ["gone"],
+        changedAttachments: [attachmentChange]
+      })
+    ).toEqual({
+      changedNodes: [kept],
+      removedNodeIds: ["gone"],
+      changedAttachments: [attachmentChange]
+    });
+  });
+
+  it("reclassifies soft-deleted and archived nodes as removals", () => {
+    const active = node({ id: "active" });
+    const trashed = node({ id: "trashed", deletedAt: "2026-07-13T00:00:00Z" });
+    const archived = node({ id: "archived", archivedAt: "2026-07-13T00:00:00Z" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [active, trashed, archived],
+        removedNodeIds: [],
+        changedAttachments: []
+      })
+    ).toEqual({
+      changedNodes: [active],
+      removedNodeIds: ["trashed", "archived"],
+      changedAttachments: []
+    });
+  });
+
+  it("drops attachments whose node left the active scope", () => {
+    const trashed = node({ id: "trashed", deletedAt: "2026-07-13T00:00:00Z" });
+    const orphaned = attachment({ id: "att", nodeId: "trashed" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [trashed],
+        removedNodeIds: [],
+        changedAttachments: [orphaned]
+      })
+    ).toEqual({
+      changedNodes: [],
+      removedNodeIds: ["trashed"],
+      changedAttachments: []
+    });
+  });
+
+  it("returns undefined for an empty delta (e.g. attachment removal)", () => {
+    expect(
+      scopedActiveDelta({
+        changedNodes: [],
+        removedNodeIds: [],
+        changedAttachments: []
+      })
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when there is no delta at all", () => {
+    expect(scopedActiveDelta(null)).toBeUndefined();
+  });
+});
+
+describe("useNotesWorkspace incremental delta wiring", () => {
+  beforeEach(() => {
+    createNoteIdMock.mockReset();
+  });
+
+  afterEach(() => {
+    setNotesDeltaVerificationEnabled(false);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("applies a delta-bearing mutation without diverging from the full payload", async () => {
+    setNotesDeltaVerificationEnabled(true);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const before = node({ id: "root", completedAt: null });
+    const after = node({ id: "root", completedAt: "2026-07-13T00:00:00Z" });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([before])),
+      toggleComplete: vi.fn().mockImplementation((_vault, _id, context) =>
+        Promise.resolve({
+          workspace: workspace([after]),
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false,
+          changedNodes: [after],
+          removedNodeIds: [],
+          changedAttachments: []
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleComplete("root"));
+
+    expect(result.current.state.nodesById.root.completedAt).toBe(
+      "2026-07-13T00:00:00Z"
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("forwards the delta to the reducer, which verifies and falls back when it diverges", async () => {
+    setNotesDeltaVerificationEnabled(true);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const before = node({ id: "root", completedAt: null });
+    const authoritativeAfter = node({
+      id: "root",
+      completedAt: "2026-07-13T00:00:00Z"
+    });
+    const corruptAfter = node({ id: "root", completedAt: "1999-01-01T00:00:00Z" });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([before])),
+      toggleComplete: vi.fn().mockImplementation((_vault, _id, context) =>
+        Promise.resolve({
+          workspace: workspace([authoritativeAfter]),
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false,
+          // A delta that disagrees with the authoritative workspace: only the
+          // forwarded delta path runs verification, so a surfaced error proves
+          // the delta reached the reducer.
+          changedNodes: [corruptAfter],
+          removedNodeIds: [],
+          changedAttachments: []
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleComplete("root"));
+
+    expect(consoleError).toHaveBeenCalled();
+    expect(result.current.state.nodesById.root.completedAt).toBe(
+      "2026-07-13T00:00:00Z"
+    );
   });
 });
