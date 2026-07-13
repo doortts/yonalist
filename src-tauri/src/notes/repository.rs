@@ -1345,6 +1345,28 @@ fn attachments_for_nodes(
     Ok(by_node_id)
 }
 
+/// Loads a single node's attachment metadata rows in stored order. Used by
+/// `duplicate_node_at` to clone attachment rows onto the copied nodes.
+fn node_attachments(
+    connection: &Connection,
+    node_id: &str,
+) -> Result<Vec<NoteAttachment>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT id, node_id, sort_key, relative_path, content_hash, original_name, \
+                    mime_type, byte_size, intrinsic_width, intrinsic_height, display_width, \
+                    created_at, updated_at \
+             FROM notes_attachments WHERE node_id = ?1 ORDER BY sort_key, id",
+        )
+        .map_err(|error| format!("Could not prepare a node's Notes attachments: {error}"))?;
+    let attachments = statement
+        .query_map([node_id], note_attachment_from_row)
+        .map_err(|error| format!("Could not load a node's Notes attachments: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not read a node's Notes attachments: {error}"))?;
+    Ok(attachments)
+}
+
 fn query_workspace<P: Params>(
     connection: &Connection,
     sql: &str,
@@ -3322,29 +3344,56 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
     Ok(ordered)
 }
 
+fn generate_uuid_v4(transaction: &Transaction<'_>) -> Result<String, String> {
+    let id: String = transaction
+        .query_row(
+            "SELECT lower(\
+               hex(randomblob(4)) || '-' || hex(randomblob(2)) || \
+               '-4' || substr(hex(randomblob(2)), 2) || '-' || \
+               substr('89ab', (random() & 3) + 1, 1) || \
+               substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))\
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not generate a Note ID: {error}"))?;
+    validate_note_id(&id)?;
+    Ok(id)
+}
+
 fn fresh_uuid_v4(
     transaction: &Transaction<'_>,
     reserved: &HashSet<String>,
 ) -> Result<String, String> {
     for _ in 0..16 {
-        let id: String = transaction
-            .query_row(
-                "SELECT lower(\
-                   hex(randomblob(4)) || '-' || hex(randomblob(2)) || \
-                   '-4' || substr(hex(randomblob(2)), 2) || '-' || \
-                   substr('89ab', (random() & 3) + 1, 1) || \
-                   substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6))\
-                 )",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not generate a Note ID: {error}"))?;
-        validate_note_id(&id)?;
+        let id = generate_uuid_v4(transaction)?;
         if !reserved.contains(&id) && node_by_id(transaction, &id)?.is_none() {
             return Ok(id);
         }
     }
     Err("Could not generate a unique Note ID.".to_string())
+}
+
+fn fresh_attachment_id(
+    transaction: &Transaction<'_>,
+    reserved: &HashSet<String>,
+) -> Result<String, String> {
+    for _ in 0..16 {
+        let id = generate_uuid_v4(transaction)?;
+        let in_use: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                [&id],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                format!("Could not validate a duplicated Notes attachment ID: {error}")
+            })?;
+        if !reserved.contains(&id) && !in_use {
+            return Ok(id);
+        }
+    }
+    Err("Could not generate a unique Notes attachment ID.".to_string())
 }
 
 pub(crate) fn duplicate_node(
@@ -3426,6 +3475,46 @@ pub(crate) fn duplicate_node_at(
                 &original.note,
                 today,
             )?;
+        }
+
+        // Clone attachment metadata onto the copied nodes. Attachment files are
+        // content-addressed, so the copies keep the source's relative_path /
+        // content_hash and no bytes are written: the reconcile contract treats a
+        // path as reachable while any active row (or history entry) references
+        // it, so the shared file stays live and nothing is orphaned. Fresh ids
+        // and current timestamps keep each copy independent from its source under
+        // history/undo. Sort keys are preserved so the copies list in source
+        // order (each copied node starts empty, so there is no collision).
+        for original in &subtree {
+            let source_attachments = node_attachments(transaction, &original.id)?;
+            if source_attachments.is_empty() {
+                continue;
+            }
+            let copied_node_id = copied_ids
+                .get(&original.id)
+                .expect("every duplicated node has a generated ID")
+                .clone();
+            for source in source_attachments {
+                let attachment_id = fresh_attachment_id(transaction, &reserved)?;
+                reserved.insert(attachment_id.clone());
+                let sort_key = source.sort_key;
+                insert_new_attachment_at_sort_key(
+                    transaction,
+                    NewAttachment {
+                        id: attachment_id,
+                        node_id: copied_node_id.clone(),
+                        relative_path: source.relative_path,
+                        content_hash: source.content_hash,
+                        original_name: source.original_name,
+                        mime_type: source.mime_type,
+                        byte_size: source.byte_size,
+                        intrinsic_width: source.intrinsic_width,
+                        intrinsic_height: source.intrinsic_height,
+                        display_width: source.display_width,
+                    },
+                    sort_key,
+                )?;
+            }
         }
 
         if copied_ids.contains_key(node_id) {
@@ -4223,7 +4312,8 @@ mod tests {
         create_attachments_coordinated_for_node, create_node, create_node_at,
         create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
         expand_all, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
-        migrate_version_one_to_two, move_node, notes_db_path, observe_next_migration_busy,
+        migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
+        observe_next_migration_busy,
         open_notes_export_db, preflight_existing_notes_schema, remove_empty_node,
         restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
         search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
@@ -8322,6 +8412,85 @@ mod tests {
                 .nodes
                 .len(),
             7
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn duplicate_node_copies_attachment_metadata_onto_the_copy() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "child");
+        let first_id = insert_test_attachment(&connection, 1, NODE_ID);
+        let second_id = insert_test_attachment(&connection, 2, NODE_ID);
+
+        let source_before = node_attachments(&connection, NODE_ID).expect("source attachments");
+        assert_eq!(
+            source_before
+                .iter()
+                .map(|attachment| attachment.id.clone())
+                .collect::<Vec<_>>(),
+            vec![first_id.clone(), second_id.clone()]
+        );
+        let total_before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .expect("count attachments before");
+        assert_eq!(total_before, 2);
+
+        let workspace = duplicate_node(&mut connection, NODE_ID).expect("duplicate subtree");
+        let copied_root = workspace
+            .nodes
+            .iter()
+            .find(|node| node.parent_id.is_none() && node.id != NODE_ID)
+            .expect("copied root in returned workspace")
+            .id
+            .clone();
+        assert_ne!(copied_root, NODE_ID);
+
+        // Both attachments land on the copy, in source order, with fresh ids but
+        // the same content-addressed file (relative_path / content_hash) and
+        // every other field preserved.
+        let copied = node_attachments(&connection, &copied_root).expect("copied attachments");
+        assert_eq!(copied.len(), 2);
+        for (source, copy) in source_before.iter().zip(&copied) {
+            assert_ne!(copy.id, first_id, "a copy must not reuse a source id");
+            assert_ne!(copy.id, second_id, "a copy must not reuse a source id");
+            assert_ne!(copy.id, source.id, "each copy gets a fresh attachment id");
+            validate_note_id(&copy.id).expect("copied attachment UUID");
+            assert_eq!(copy.node_id, copied_root);
+            assert_eq!(copy.relative_path, source.relative_path);
+            assert_eq!(copy.content_hash, source.content_hash);
+            assert_eq!(copy.original_name, source.original_name);
+            assert_eq!(copy.mime_type, source.mime_type);
+            assert_eq!(copy.byte_size, source.byte_size);
+            assert_eq!(copy.intrinsic_width, source.intrinsic_width);
+            assert_eq!(copy.intrinsic_height, source.intrinsic_height);
+            assert_eq!(copy.display_width, source.display_width);
+            assert_eq!(copy.sort_key, source.sort_key);
+        }
+
+        // The originals are untouched and the only new rows are the two copies:
+        // because the copies share the source's content-addressed paths, no new
+        // asset files exist on disk (the reconcile contract reference-counts the
+        // shared path across both nodes).
+        assert_eq!(
+            node_attachments(&connection, NODE_ID).expect("source attachments after"),
+            source_before
+        );
+        let total_after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .expect("count attachments after");
+        assert_eq!(total_after, 4);
+        let distinct_paths: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT relative_path) FROM notes_attachments",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count distinct paths");
+        assert_eq!(
+            distinct_paths, 2,
+            "duplication must not introduce new asset files"
         );
         assert_tree_invariants(&connection);
     }
