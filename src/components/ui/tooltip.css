@@ -40,3 +40,14 @@
 .tooltip-popup[data-instant] {
   transition-duration: 0s;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip-popup {
+    transition: none;
+  }
+
+  .tooltip-popup[data-starting-style],
+  .tooltip-popup[data-ending-style] {
+    transform: none;
+  }
+}

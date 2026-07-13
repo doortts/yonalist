@@ -9,6 +9,23 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use tauri::Manager;
 
+mod file_io;
+mod notes;
+
+use file_io::{ensure_parent, write_text_file_inner};
+use notes::commands::{
+    notes_archive_node, notes_clear_history, notes_collapse_all, notes_create_node,
+    notes_delete_database, notes_duplicate_node, notes_empty_trash, notes_expand_all,
+    notes_export_markdown, notes_export_pdf, notes_history_status, notes_import_attachment,
+    notes_import_attachment_bytes, notes_import_attachment_paths_batch, notes_initialize,
+    notes_list_tags, notes_list_tags_with_counts, notes_load_workspace, notes_move_node,
+    notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
+    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
+    notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
+    notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
+    notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
+};
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct VaultPaths {
     pub metadata_dir: String,
@@ -100,7 +117,7 @@ pub fn vault_paths(vault_path: impl AsRef<Path>) -> VaultPaths {
     }
 }
 
-fn metadata_dir(vault_path: &str) -> PathBuf {
+pub(crate) fn metadata_dir(vault_path: &str) -> PathBuf {
     expand_vault_path(vault_path).join(".yonalist")
 }
 
@@ -278,32 +295,6 @@ pub fn resolve_vault_file(vault_path: &str, relative_path: &str) -> Result<PathB
     }
 
     Ok(expand_vault_path(vault_path).join(relative))
-}
-
-fn ensure_parent(path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-/// Writes through a sibling temp file and renames it into place so a crash
-/// mid-write never leaves a truncated vault document behind.
-fn write_text_file_inner(path: &Path, contents: &str) -> Result<(), String> {
-    ensure_parent(path)?;
-
-    let mut temp_name = path
-        .file_name()
-        .ok_or_else(|| "File path must name a file.".to_string())?
-        .to_os_string();
-    temp_name.push(".tmp");
-    let temp_path = path.with_file_name(temp_name);
-
-    fs::write(&temp_path, contents).map_err(|error| error.to_string())?;
-    fs::rename(&temp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        error.to_string()
-    })
 }
 
 fn collect_markdown_files(
@@ -1480,15 +1471,12 @@ fn macos_major_version() -> Option<u32> {
 /// it across resize/fullscreen, unlike a manual `NSWindow` button nudge.
 fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     #[allow(unused_mut)]
-    let mut builder = tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Yonalist")
-    .inner_size(1280.0, 820.0)
-    .min_inner_size(900.0, 650.0)
-    .decorations(true);
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("Yonalist")
+            .inner_size(1280.0, 820.0)
+            .min_inner_size(900.0, 650.0)
+            .decorations(true);
 
     // Overlay title bar, hidden title and traffic-light placement are macOS-only
     // concepts, so keep them off other platforms (the task's "no-op elsewhere").
@@ -1508,6 +1496,7 @@ fn build_main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(OAuthServerState::default())
         .setup(|app| {
@@ -1544,7 +1533,45 @@ pub fn run() {
             load_cached_avatar_image,
             store_cached_avatar_image,
             touch_cached_avatar_image,
-            record_perf_event
+            record_perf_event,
+            notes_initialize,
+            notes_load_workspace,
+            notes_create_node,
+            notes_update_node,
+            notes_split_node,
+            notes_move_node,
+            notes_toggle_complete,
+            notes_toggle_collapsed,
+            notes_expand_all,
+            notes_collapse_all,
+            notes_sort_subtree_ascending,
+            notes_sort_subtree_descending,
+            notes_toggle_star,
+            notes_duplicate_node,
+            notes_remove_empty_node,
+            notes_soft_delete_node,
+            notes_restore_node,
+            notes_archive_node,
+            notes_unarchive_node,
+            notes_undo,
+            notes_redo,
+            notes_history_status,
+            notes_clear_history,
+            notes_empty_trash,
+            notes_search,
+            notes_search_structured,
+            notes_list_tags,
+            notes_list_tags_with_counts,
+            notes_import_attachment,
+            notes_import_attachment_paths_batch,
+            notes_import_attachment_bytes,
+            notes_read_attachment_bytes,
+            notes_resize_attachment,
+            notes_remove_attachment,
+            notes_restore_attachment,
+            notes_delete_database,
+            notes_export_markdown,
+            notes_export_pdf
         ])
         .run(tauri::generate_context!())
         .expect("error while running Yonalist");
@@ -1553,6 +1580,34 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflowy_subtree_commands_are_registered_for_desktop_invoke() {
+        let source = include_str!("lib.rs");
+        let handler = source
+            .split_once(".invoke_handler(tauri::generate_handler![")
+            .expect("desktop invoke handler")
+            .1
+            .split_once("])")
+            .expect("desktop invoke handler terminator")
+            .0;
+
+        for command in [
+            "notes_expand_all",
+            "notes_collapse_all",
+            "notes_sort_subtree_ascending",
+            "notes_sort_subtree_descending",
+            "notes_import_attachment_paths_batch",
+            "notes_import_attachment_bytes",
+        ] {
+            assert!(
+                handler
+                    .lines()
+                    .any(|line| line.trim() == format!("{command},")),
+                "desktop invoke handler is missing {command}"
+            );
+        }
+    }
 
     #[test]
     fn vault_paths_match_markdown_vault_plan() {
@@ -1752,6 +1807,41 @@ mod tests {
         assert_eq!(stored, None);
         assert!(!temp_dir.path().join(".yonalist/cache").exists());
         assert!(outbox_file.exists());
+    }
+
+    #[test]
+    fn clear_vault_cache_keeps_notes_sqlite_and_its_nodes() {
+        use crate::notes::repository::{connect_notes_db, create_node, load_workspace};
+        use crate::notes::types::{CreateNodeInput, NotesWorkspaceScope};
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let mut notes = connect_notes_db(&vault_path).expect("notes db");
+        create_node(
+            &mut notes,
+            CreateNodeInput {
+                id: "11111111-1111-4111-8111-111111111111".to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Persistent note".to_string(),
+                note: "This is user data.".to_string(),
+            },
+        )
+        .expect("create note");
+
+        drop(notes);
+        let notes_path = metadata_dir(&vault_path).join("notes.sqlite");
+        let notes_bytes_before = fs::read(&notes_path).expect("read notes database");
+        clear_vault_cache(vault_path.clone()).expect("clear cache");
+        assert_eq!(
+            fs::read(&notes_path).expect("read notes database after cache clear"),
+            notes_bytes_before
+        );
+
+        let notes = connect_notes_db(&vault_path).expect("reopen notes");
+        let workspace = load_workspace(&notes, NotesWorkspaceScope::Active).expect("load notes");
+        assert_eq!(workspace.nodes.len(), 1);
+        assert_eq!(workspace.nodes[0].title, "Persistent note");
     }
 
     #[test]
@@ -2153,7 +2243,10 @@ mod tests {
         // further right and further down than on earlier macOS.
         let (legacy_x, legacy_y) = traffic_light_inset(Some(15));
         let (tahoe_x, tahoe_y) = traffic_light_inset(Some(26));
-        assert!(tahoe_x > legacy_x, "Tahoe controls should sit further right");
+        assert!(
+            tahoe_x > legacy_x,
+            "Tahoe controls should sit further right"
+        );
         assert!(tahoe_y > legacy_y, "Tahoe controls should sit further down");
     }
 

@@ -49,6 +49,12 @@ export interface UseOutboxSyncOptions {
   setLoadedItemBodies: Dispatch<SetStateAction<Record<string, string>>>;
   /** Runs after any sync that pushed at least one change (cache refresh). */
   onAfterSync: () => void;
+  /**
+   * When false (e.g. a non-Inbox feature is active or the vault has not
+   * finished loading), a reconnect edge is remembered and handled once
+   * eligibility returns.
+   */
+  reconnectEligible?: boolean;
 }
 
 /**
@@ -67,7 +73,8 @@ export function useOutboxSync(options: UseOutboxSyncOptions) {
     items,
     setDrafts,
     setLoadedItemBodies,
-    onAfterSync
+    onAfterSync,
+    reconnectEligible
   } = options;
 
   const [outbox, setOutbox] = useState<OutboxOperationDocument[]>([]);
@@ -406,7 +413,7 @@ export function useOutboxSync(options: UseOutboxSyncOptions) {
     operations: OutboxOperationDocument[]
   ) {
     const reachable = await isRemoteReachable(connection);
-    if (!reachable) {
+    if (!reachable || !reconnectEligibleRef.current) {
       return;
     }
     setReconnectSyncPrompt({ operations, count: operations.length });
@@ -450,15 +457,26 @@ export function useOutboxSync(options: UseOutboxSyncOptions) {
   // remote is reachable, then ask before flushing; unsigned sessions surface
   // the queue for review so it is never forgotten. The transition is evaluated
   // once per offline→online edge (guarded by previousOnline), so a cancelled or
-  // unreachable probe is not re-asked until the next reconnect.
+  // unreachable probe is not re-asked until the next reconnect. When the caller
+  // is ineligible (a non-Inbox feature is active, or the vault has not finished
+  // loading), the reconnect edge is remembered in pendingReconnect and consumed
+  // the moment eligibility returns.
   const previousOnline = useRef(online);
+  const pendingReconnect = useRef(false);
+  const reconnectEligibleRef = useRef(reconnectEligible ?? true);
   useEffect(() => {
-    if (
+    reconnectEligibleRef.current = reconnectEligible ?? true;
+  }, [reconnectEligible]);
+  useEffect(() => {
+    const reconnected = online && !previousOnline.current;
+    if (reconnected) {
+      pendingReconnect.current = true;
+    }
+    const eligible =
+      (reconnectEligible ?? true) &&
       online &&
-      !previousOnline.current &&
-      syncQueuedOnReconnect &&
-      outbox.length > 0
-    ) {
+      (reconnected || pendingReconnect.current);
+    if (eligible && syncQueuedOnReconnect && outbox.length > 0) {
       const retryable = outbox.filter(
         (operation) => operation.frontMatter.status !== "blocked"
       );
@@ -471,9 +489,12 @@ export function useOutboxSync(options: UseOutboxSyncOptions) {
         setShowOutbox(true);
       }
     }
+    if (eligible) {
+      pendingReconnect.current = false;
+    }
     previousOnline.current = online;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online, outbox, syncQueuedOnReconnect]);
+  }, [online, outbox, syncQueuedOnReconnect, reconnectEligible]);
 
   return {
     outbox,

@@ -98,9 +98,15 @@ ordered child ID arrays. No UI component mutates nested tree objects in place.
 
 ### Persistence
 
-`notes.sqlite` uses WAL, foreign keys, `PRAGMA user_version` migrations, and
-FTS5. Structural changes call one typed native command each. The renderer
-serializes mutations per vault so responses cannot arrive out of order.
+`notes.sqlite` uses WAL, foreign keys, `PRAGMA user_version` migrations through
+schema version 2, and FTS5. Version 2 keeps `deleted_at` as the UTC deletion
+timestamp and adds repository-only `deleted_batch_id` provenance so restore is
+scoped to one deletion operation rather than timestamp equality. Version 1
+deleted rows migrate non-destructively to deterministic
+`legacy:<stored deleted_at>` groups; equal pre-v2 timestamps remain ambiguous
+because version 1 did not store operation identity. Structural changes call
+one typed native command each. The renderer serializes mutations per vault so
+responses cannot arrive out of order.
 
 ### Export
 
@@ -123,6 +129,14 @@ supporting-note content.
 - `cargo test --manifest-path src-tauri/Cargo.toml notes` passes.
 - A temporary vault contains both independent files after initialization:
   `.yonalist/index.sqlite` and `.yonalist/notes.sqlite`.
+- New Notes databases finish at schema version 2 through the version 0-to-1
+  and version 1-to-2 sequence; existing version 1 data migrates transactionally
+  and a failed migration leaves version 1 intact.
+- Same-timestamp child and ancestor deletions retain distinct batch provenance,
+  and restoring the ancestor does not revive the independently trashed child.
+- Concurrent initializers are released from a held migration lock only after a
+  test observer proves both workers reached SQLite's busy path; both calls then
+  succeed against one valid version 2 schema.
 - Clearing cache/index data leaves a persisted Notes node untouched.
 
 ### Gate C: After Phase 3

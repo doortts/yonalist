@@ -2,10 +2,40 @@ import React from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const notificationDetailInputs = vi.hoisted(() => vi.fn());
+const loadVaultStateOverride = vi.hoisted(() => vi.fn());
+
+vi.mock("./hooks/useNotificationDetail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hooks/useNotificationDetail")>();
+  return {
+    ...actual,
+    useNotificationDetail: (...args: Parameters<typeof actual.useNotificationDetail>) => {
+      notificationDetailInputs(args[0]);
+      return actual.useNotificationDetail(...args);
+    }
+  };
+});
+
+vi.mock("./services/vaultStore", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./services/vaultStore")>();
+  return {
+    ...actual,
+    loadVaultState: (...args: Parameters<typeof actual.loadVaultState>) => {
+      const override = loadVaultStateOverride.getMockImplementation();
+      return override ? override(...args) : actual.loadVaultState(...args);
+    }
+  };
+});
+
 import App from "./App";
 import { serializeMarkdownDocument } from "./domain/markdown";
+import type { NoteNode, UpdateNoteNodeInput } from "./domain/notes";
 import type { ItemFrontMatter } from "./domain/types";
 import { clearWorkItemsCache } from "./hooks/useWorkItems";
+import { activeFeatureStorageKey } from "./features/core/featureSelection";
+import { notesFeature } from "./features/notes/NotesFeature";
+import { notesStore } from "./services/notesStore";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
@@ -35,9 +65,38 @@ function installLocalStorageMock() {
   });
 }
 
+function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
+  return {
+    parentId: null,
+    sortKey: 1024,
+    title: "",
+    note: "",
+    layoutMode: "bullets",
+    isCollapsed: false,
+    isStarred: false,
+    completedAt: null,
+    createdAt: "2026-07-10T00:00:00Z",
+    updatedAt: "2026-07-10T00:00:00Z",
+    deletedAt: null,
+    archivedAt: null,
+    archiveRootId: null,
+    ...overrides
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((nextResolve) => {
+    resolve = nextResolve;
+  });
+  return { promise, resolve };
+}
+
 describe("Yonalist app shell", () => {
   beforeEach(() => {
     installLocalStorageMock();
+    notificationDetailInputs.mockClear();
+    loadVaultStateOverride.mockReset();
     clearWorkItemsCache();
     clearNotificationCache();
     clearNotificationDetailCache();
@@ -66,6 +125,204 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Navigation")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBe("true");
+  });
+
+  it("opens Notes immediately while startup auth restoration keeps running", () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    vi.mocked(window.localStorage.setItem).mockClear();
+    render(<App />);
+
+    const restore = screen.getByLabelText("Restoring GitHub session");
+    fireEvent.click(within(restore).getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+    expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+      "yonalist.auth.skipLogin.v1",
+      expect.anything()
+    );
+  });
+
+  it("opens Notes without a GitHub session or persisting skip-login", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    const user = userEvent.setup();
+    render(<App />);
+
+    const login = await screen.findByLabelText("GitHub login");
+    await user.click(within(login).getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
+    expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+  });
+
+  it("continues to edit Notes while offline and unsigned in", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [appTestNote({ id: "offline-note", title: "Offline note" })]
+    });
+    const updateNodeSpy = vi
+      .spyOn(notesStore, "updateNode")
+      .mockImplementation(async (_vaultPath: string, input: UpdateNoteNodeInput) => {
+        return {
+          nodes: [
+            appTestNote({
+              id: input.id,
+              title: input.title ?? "",
+              note: input.note ?? ""
+            })
+          ]
+        };
+      });
+    const fetchMock = vi.fn(async () => {
+      throw new Error("Network access is forbidden in local Notes");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let rendered: ReturnType<typeof render> | null = null;
+
+    try {
+      const user = userEvent.setup();
+      rendered = render(<App initialOnline={false} />);
+
+      const login = await screen.findByLabelText("GitHub login");
+      await user.click(within(login).getByRole("button", { name: "Notes" }));
+      expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
+
+      const presentation = await screen.findByRole("group", {
+        name: "Edit node title"
+      });
+      const mountedTitle = document.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Edit node title"]'
+      );
+      expect(presentation).toHaveAttribute("tabindex", "0");
+      expect(
+        screen.queryByRole("textbox", { name: "Edit node title" })
+      ).not.toBeInTheDocument();
+      expect(mountedTitle).toHaveAttribute("aria-hidden", "true");
+      expect(mountedTitle).toHaveAttribute("tabindex", "-1");
+
+      await user.click(presentation);
+
+      const title = await screen.findByRole("textbox", {
+        name: "Edit node title"
+      });
+      expect(title).toBe(mountedTitle);
+      expect(title).toHaveFocus();
+      expect(presentation).toHaveAttribute("aria-hidden", "true");
+      await user.clear(title);
+      await user.type(title, "Edited offline");
+      fireEvent.blur(title);
+
+      expect(title).toHaveValue("Edited offline");
+      await waitFor(() =>
+        expect(updateNodeSpy).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ title: "Edited offline" }),
+          expect.any(Object)
+        )
+      );
+      expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      rendered?.unmount();
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("persists a selected Notes feature", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes");
+  });
+
+  it("keeps Inbox filter state when returning from Notes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    const search = within(screen.getByLabelText("Items")).getByRole("textbox", {
+      name: "Search"
+    });
+    await user.type(search, "Design");
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notes" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    expect(screen.getByRole("button", { name: /^All items/ })).toHaveAttribute(
+      "aria-pressed",
+      "false"
+    );
+    expect(screen.getByRole("button", { name: /^Notifications/ })).not.toHaveClass(
+      "active"
+    );
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("Design");
+  });
+
+  it("restores the selected notification after visiting Notes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const notification = screen.getByRole("button", {
+      name: /Design offline issue reading/
+    });
+    await user.click(notification);
+    expect(
+      within(screen.getByLabelText("Detail")).getByRole("heading", {
+        name: "Design offline issue reading"
+      })
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^Notifications/ }));
+
+    expect(
+      await within(screen.getByLabelText("Detail")).findByRole("heading", {
+        name: "Design offline issue reading"
+      })
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("button", { name: /Design offline issue reading/ })
+        .closest(".notification-row")
+    ).toHaveClass("selected");
+  });
+
+  it("mounts the active feature Provider around both resolved panes", () => {
+    const OriginalProvider = notesFeature.Provider;
+    notesFeature.Provider = ({ children }) => (
+      <div aria-label="Notes feature provider sentinel">
+        <OriginalProvider>{children}</OriginalProvider>
+      </div>
+    );
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    try {
+      render(<App />);
+
+      const provider = screen.getByLabelText("Notes feature provider sentinel");
+      expect(within(provider).getByLabelText("Notes library")).toBeInTheDocument();
+      expect(within(provider).getByLabelText("Notes outline")).toBeInTheDocument();
+    } finally {
+      notesFeature.Provider = OriginalProvider;
+    }
   });
 
   it("opens straight into the app when the last authenticated host verifies", async () => {
@@ -148,6 +405,76 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("keeps Inbox background work paused while restored Notes is active", async () => {
+    window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+    window.localStorage.setItem(
+      "yonalist.github.sessionTokens.v1",
+      JSON.stringify({ "https://oss.navercorp.com/api/v3": "gho_persisted" })
+    );
+    window.localStorage.setItem(
+      "yonalist.github.lastAuthenticatedUrl.v1",
+      "https://oss.navercorp.com/api/v3"
+    );
+    vi.mocked(window.localStorage.getItem).mockClear();
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "doortts" }), { status: 200 });
+      }
+      if (target.includes("/search/issues")) {
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      if (target.includes("/api/graphql")) {
+        return new Response(JSON.stringify({ data: { search: { nodes: [] } } }), {
+          status: 200
+        });
+      }
+      return new Response("[]", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+
+      expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "https://oss.navercorp.com/api/v3/user",
+          expect.anything()
+        )
+      );
+      await act(async () => Promise.resolve());
+
+      const backgroundTargets = fetchMock.mock.calls.map(([url]) => String(url));
+      expect(backgroundTargets.some((url) => url.includes("/search/issues"))).toBe(
+        false
+      );
+      expect(backgroundTargets.some((url) => url.includes("/notifications"))).toBe(
+        false
+      );
+      expect(backgroundTargets.some((url) => url.includes("/user/repos"))).toBe(false);
+      expect(window.localStorage.getItem).not.toHaveBeenCalledWith(
+        "yonalist.vaultDocuments.v1"
+      );
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      await waitFor(() => {
+        const resumedTargets = fetchMock.mock.calls.map(([url]) => String(url));
+        expect(resumedTargets.some((url) => url.includes("/search/issues"))).toBe(true);
+        expect(resumedTargets.some((url) => url.includes("/notifications"))).toBe(true);
+        expect(resumedTargets.some((url) => url.includes("/user/repos"))).toBe(true);
+        expect(window.localStorage.getItem).toHaveBeenCalledWith(
+          "yonalist.vaultDocuments.v1"
+        );
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows the login page when the stored credentials fail verification", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(
@@ -216,7 +543,7 @@ describe("Yonalist app shell", () => {
     }
   });
 
-  it("lands on the notifications view after passing the gate", () => {
+  it("lands on the notifications view after passing the gate", async () => {
     render(<App />);
 
     expect(screen.getByLabelText("Notifications")).toBeInTheDocument();
@@ -224,6 +551,9 @@ describe("Yonalist app shell", () => {
       screen.getByLabelText("Empty notification detail")
     ).toBeInTheDocument();
     expect(screen.queryByLabelText("Items")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("inbox");
+    });
   });
 
   it("collapses owners with no selected repositories in the project tree", async () => {
@@ -621,16 +951,18 @@ describe("Yonalist app shell", () => {
       "button",
       { name: "Open in browser" }
     );
-    // The notification detail button now uses a Base UI Tooltip: no native
-    // `title`, the visible label lives in a portalled `.tooltip-popup` that only
-    // appears once the button is focused. The accessible name stays on
-    // `aria-label`.
+    // The portalled tooltip stays mounted so aria-describedby resolves at rest.
+    // Its visual state still opens only when the button is focused.
     expect(notificationOpen).not.toHaveAttribute("title");
     expect(notificationOpen.textContent).toBe("");
-    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
-    notificationOpen.focus();
-    const notificationTip = await screen.findByText("브라우저에서 열기");
+    const notificationTip = document.getElementById(
+      notificationOpen.getAttribute("aria-describedby")!
+    );
     expect(notificationTip).toHaveClass("tooltip-popup");
+    expect(notificationTip).toHaveAttribute("data-closed");
+    expect(notificationTip).toHaveTextContent("브라우저에서 열기");
+    notificationOpen.focus();
+    await waitFor(() => expect(notificationTip).toHaveAttribute("data-open"));
 
     // Item detail: the visible label now lives in a Base UI Tooltip popup, not
     // a native `title`; the accessible name is still carried by `aria-label`.
@@ -640,13 +972,14 @@ describe("Yonalist app shell", () => {
     });
     expect(itemOpen).not.toHaveAttribute("title");
     expect(itemOpen.textContent).toBe("");
-    // Keyboard focus opens the Base UI tooltip instantly (focus opens skip the
-    // hover delay), portalling the label into a `.tooltip-popup` element that
-    // is absent before the button is focused.
-    expect(screen.queryByText("브라우저에서 열기")).toBeNull();
-    itemOpen.focus();
-    const itemTip = await screen.findByText("브라우저에서 열기");
+    const itemTip = document.getElementById(
+      itemOpen.getAttribute("aria-describedby")!
+    );
     expect(itemTip).toHaveClass("tooltip-popup");
+    expect(itemTip).toHaveAttribute("data-closed");
+    expect(itemTip).toHaveTextContent("브라우저에서 열기");
+    itemOpen.focus();
+    await waitFor(() => expect(itemTip).toHaveAttribute("data-open"));
   });
 
   it("shows the item state and its comment thread in the detail pane", async () => {
@@ -1115,15 +1448,18 @@ describe("Yonalist app shell", () => {
       name: "Open outbox, 0 pending changes"
     });
     expect(outboxButton).toHaveTextContent("Outbox 0");
-    // The explanatory text moved from a native `title` to a Base UI Tooltip
-    // that opens on hover/focus and portals its popup into the document. It is
-    // absent until the button gains focus, then surfaces in `.tooltip-popup`.
+    // The description is mounted at rest and opens visually on focus.
     const outboxTip =
       "Outbox stores offline issues and comments waiting to sync to GitHub.";
     expect(outboxButton).not.toHaveAttribute("title");
-    expect(screen.queryByText(outboxTip)).toBeNull();
+    const outboxPopup = document.getElementById(
+      outboxButton.getAttribute("aria-describedby")!
+    );
+    expect(outboxPopup).toHaveClass("tooltip-popup");
+    expect(outboxPopup).toHaveAttribute("data-closed");
+    expect(outboxPopup).toHaveTextContent(outboxTip);
     outboxButton.focus();
-    expect(await screen.findByText(outboxTip)).toHaveClass("tooltip-popup");
+    await waitFor(() => expect(outboxPopup).toHaveAttribute("data-open"));
     expect(
       within(navigation).queryByRole("button", {
         name: /Open outbox/
@@ -1141,6 +1477,65 @@ describe("Yonalist app shell", () => {
 
     expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
       /Cache Notifications 0\/0 B · Notification details 0\/0 B · Markdown/
+    );
+  });
+
+  it("clears notification detail activity when Notes becomes active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expect.any(String) })
+      );
+    });
+
+    notificationDetailInputs.mockClear();
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+    });
+  });
+
+  it("clears notification detail activity when All items becomes active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: expect.any(String) })
+      );
+    });
+
+    notificationDetailInputs.mockClear();
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    expect(screen.getByLabelText("Items")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(notificationDetailInputs).toHaveBeenLastCalledWith(null);
+    });
+  });
+
+  it("uses neutral status metrics while Notes is active", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: /Design offline issue reading/ })
+    );
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+    expect(screen.getByLabelText("Performance metrics")).toHaveTextContent(
+      "List --Item --Prefetch off · 0 visibleCache --"
     );
   });
 
@@ -1474,7 +1869,7 @@ describe("Yonalist app shell", () => {
 
   function autoFlushFetchMock(
     issuePost: () => Response,
-    rateLimit: () => Response = () =>
+    rateLimit: () => Response | Promise<Response> = () =>
       new Response(JSON.stringify({ resources: {} }), { status: 200 })
   ) {
     return vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -1569,6 +1964,180 @@ describe("Yonalist app shell", () => {
 
       expect(await screen.findByText(/Synced 1 queued change/)).toBeInTheDocument();
       expect(queuedIssuePostCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("retains a reconnect until the active Inbox vault load completes", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const vaultLoad = deferred<void>();
+    loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+      await vaultLoad.promise;
+      loadVaultStateOverride.mockReset();
+      const { loadVaultState } = await import("./services/vaultStore");
+      return loadVaultState(vaultRoot);
+    });
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 205 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      vaultLoad.resolve();
+
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("waits for a fresh Inbox vault generation after returning from Notes", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 206 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+
+      await user.click(screen.getByRole("button", { name: "Notes" }));
+      const freshVaultLoad = deferred<void>();
+      loadVaultStateOverride.mockImplementation(async (vaultRoot: string) => {
+        await freshVaultLoad.promise;
+        loadVaultStateOverride.mockReset();
+        const { loadVaultState } = await import("./services/vaultStore");
+        return loadVaultState(vaultRoot);
+      });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+
+      freshVaultLoad.resolve();
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("ignores a reconnect probe that resolves after Notes becomes active", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const reachability = deferred<Response>();
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 207 }), { status: 201 }),
+      () => reachability.promise
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+      const notesButton = screen.getByRole("button", { name: "Notes" });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await waitFor(() => expect(reconnectProbeCalls(fetchMock)).toHaveLength(1));
+
+      fireEvent.click(notesButton);
+      reachability.resolve(
+        new Response(JSON.stringify({ resources: {} }), { status: 200 })
+      );
+      await settleReconnectProbe();
+
+      expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("closes an open reconnect prompt when Notes becomes active", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 208 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      expect((await screen.findAllByText("Auto flush me")).length).toBeGreaterThan(0);
+      const notesButton = screen.getByRole("button", { name: "Notes" });
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+
+      fireEvent.click(notesButton);
+
+      expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("defers a Notes reconnect until Inbox is active without touching Inbox data", async () => {
+    const user = userEvent.setup();
+    await seedQueuedIssueDraft(user);
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    const fetchMock = autoFlushFetchMock(
+      () => new Response(JSON.stringify({ number: 204 }), { status: 201 })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      render(<App initialOnline={false} />);
+      expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(window.localStorage.getItem(activeFeatureStorageKey)).toBe("notes")
+      );
+      vi.mocked(window.localStorage.setItem).mockClear();
+
+      await user.click(screen.getByRole("button", { name: "Go online" }));
+      await settleReconnectProbe();
+
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+      expect(window.localStorage.setItem).not.toHaveBeenCalledWith(
+        "yonalist.vaultDocuments.v1",
+        expect.anything()
+      );
+
+      await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+      expect(
+        await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
+      ).toBeInTheDocument();
+      expect(reconnectProbeCalls(fetchMock)).toHaveLength(1);
+      expect(queuedIssuePostCalls(fetchMock)).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
     }

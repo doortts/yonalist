@@ -1,0 +1,50 @@
+[
+  {
+    "source": "안녕 #프로젝트 @Person_1 #a-b",
+    "tags": [
+      { "prefix": "#", "display": "프로젝트", "normalized": "프로젝트", "startUtf16": 3, "endUtf16": 8 },
+      { "prefix": "@", "display": "Person_1", "normalized": "person_1", "startUtf16": 9, "endUtf16": 18 },
+      { "prefix": "#", "display": "a-b", "normalized": "a-b", "startUtf16": 19, "endUtf16": 23 }
+    ]
+  },
+  {
+    "source": "😀#Tag 🚀#𐐷 #café",
+    "tags": [
+      { "prefix": "#", "display": "Tag", "normalized": "tag", "startUtf16": 2, "endUtf16": 6 },
+      { "prefix": "#", "display": "𐐷", "normalized": "𐐷", "startUtf16": 9, "endUtf16": 12 },
+      { "prefix": "#", "display": "café", "normalized": "café", "startUtf16": 13, "endUtf16": 19 }
+    ]
+  },
+  {
+    "source": "(#one),[@two];!#three.more",
+    "tags": [
+      { "prefix": "#", "display": "one", "normalized": "one", "startUtf16": 1, "endUtf16": 5 },
+      { "prefix": "@", "display": "two", "normalized": "two", "startUtf16": 8, "endUtf16": 12 },
+      { "prefix": "#", "display": "three", "normalized": "three", "startUtf16": 15, "endUtf16": 21 }
+    ]
+  },
+  {
+    "source": "#first,https://x/?q=#second",
+    "tags": [
+      { "prefix": "#", "display": "first", "normalized": "first", "startUtf16": 0, "endUtf16": 6 }
+    ]
+  },
+  {
+    "source": "https://x/?q=#tag www.x.com/?u=@alice example.com/?q=#tag /path/?q=#tag",
+    "tags": []
+  },
+  {
+    "source": "café#todo नमस्ते#todo #नमस्ते",
+    "tags": [
+      { "prefix": "#", "display": "नमस्ते", "normalized": "नमस्ते", "startUtf16": 23, "endUtf16": 30 }
+    ]
+  },
+  {
+    "source": "foo#bar _#tag -#tag /#tag ##tag @@person #@tag @#tag # @",
+    "tags": []
+  },
+  {
+    "source": "abc𐐷#tag",
+    "tags": []
+  }
+]

@@ -538,6 +538,31 @@ describe("fetchNotifications", () => {
     expect(b).toBe(a);
   });
 
+  it("keeps opt-out requests independent from an in-flight coalesced request", async () => {
+    let resolveFirstResponse: (response: Response) => void = () => {};
+    const firstPending = new Promise<Response>((resolve) => {
+      resolveFirstResponse = resolve;
+    });
+    const fetchMock = vi
+      .fn<() => Promise<Response>>()
+      .mockReturnValueOnce(firstPending)
+      .mockResolvedValueOnce(jsonResponse([notification("fresh")]));
+
+    const options = {
+      token: "token",
+      apiBaseUrl: "https://api.github.com",
+      fetchImpl: fetchMock as unknown as typeof fetch
+    };
+    const first = fetchNotifications(options);
+    const independent = fetchNotifications({ ...options, coalesce: false });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(independent).resolves.toEqual([notification("fresh")]);
+
+    resolveFirstResponse(jsonResponse([notification("old")]));
+    await expect(first).resolves.toEqual([notification("old")]);
+  });
+
   it("keeps paginating on full pages when no Link header exists", async () => {
     const fullPage = Array.from({ length: 50 }, (_, index) =>
       notification(String(index))

@@ -11,6 +11,7 @@ import {
   useTransition
 } from "react";
 import { Toast } from "@base-ui/react/toast";
+import { NotebookPen } from "lucide-react";
 import {
   APP_SNACKBAR_TIMEOUT_MS,
   AppSnackbarToasts,
@@ -126,6 +127,12 @@ import { useOutboxSync } from "./hooks/useOutboxSync";
 import { useSettingsReset } from "./hooks/useSettingsReset";
 import { useVisibleItemPrefetch } from "./hooks/useVisibleItemPrefetch";
 import { useVisibleNotificationPrefetch } from "./hooks/useVisibleNotificationPrefetch";
+import { featureRegistry, getFeatureDefinition } from "./features/core/featureRegistry";
+import {
+  loadActiveFeature,
+  persistActiveFeature
+} from "./features/core/featureSelection";
+import type { FeatureId, FeaturePanes } from "./features/core/featureTypes";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import {
@@ -159,6 +166,23 @@ import {
 // Notifications pane is not virtualized, so this caps the top-of-feed slice we
 // prefetch rather than a measured viewport window.
 const NOTIFICATION_PREFETCH_CAP = 30;
+
+const neutralStatusMetrics: StatusBarMetrics = {
+  listFetchDurationMs: null,
+  detailDisplayDurationMs: null,
+  prefetch: {
+    enabled: false,
+    visible: 0,
+    queued: 0,
+    active: 0,
+    cached: 0,
+    completed: 0,
+    totalDurationMs: 0,
+    lastDurationMs: null
+  },
+  caches: []
+};
+
 
 interface AppProps {
   initialOnline?: boolean;
@@ -229,7 +253,7 @@ function itemSortEquals(left: ItemSort, right: ItemSort): boolean {
   return left.field === right.field && left.direction === right.direction;
 }
 
-function AuthRestorePage() {
+function AuthRestorePage({ onOpenNotes }: { onOpenNotes: () => void }) {
   return (
     <main className="login-shell" aria-label="Restoring GitHub session">
       <TitleBar />
@@ -241,6 +265,10 @@ function AuthRestorePage() {
             저장된 인증 정보를 확인하고 있습니다.
           </p>
         </div>
+        <button type="button" className="text-button" onClick={onOpenNotes}>
+          <NotebookPen size={16} aria-hidden="true" />
+          <span>Notes</span>
+        </button>
       </div>
     </main>
   );
@@ -261,8 +289,16 @@ export default function App({ initialOnline }: AppProps) {
   const [repositoryFilter, setRepositoryFilter] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState("");
   const [replyDraft, setReplyDraft] = useState<CommentReplyDraft | undefined>();
+  // Reconnect-sync offers are only valid once the current vault's queued
+  // operations are actually loaded for the active Inbox; Notes must neither
+  // consume nor discard a reconnect edge (see useOutboxSync.reconnectEligible).
+  const [inboxVaultReady, setInboxVaultReady] = useState(false);
   const [showNewIssue, setShowNewIssue] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [activeFeatureId, setActiveFeatureId] =
+    useState<FeatureId>(loadActiveFeature);
+  const activeFeature = getFeatureDefinition(activeFeatureId);
+  const inboxActive = activeFeatureId === "inbox";
+  const showSettings = activeFeatureId === "settings";
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   // Notifications are the landing view once authentication passes.
   const [showNotifications, setShowNotifications] = useState(true);
@@ -293,6 +329,21 @@ export default function App({ initialOnline }: AppProps) {
   const auth = useGithubAuth(servers);
   const vaultRoot = settings.vaultFolder.trim() || SAMPLE_VAULT_ROOT;
   const authGate = useAuthGate({ auth, servers, online });
+
+  function changeActiveFeature(nextFeatureId: FeatureId) {
+    if (nextFeatureId !== activeFeatureId && nextFeatureId !== "inbox") {
+      outboxSync.setReconnectSyncPrompt(null);
+    }
+    setActiveFeatureId(nextFeatureId);
+  }
+  // Mirror changeActiveFeature through a ref so render-stable callbacks can call
+  // the latest closure without listing it (a new identity each render) in deps.
+  const changeActiveFeatureRef = useRef(changeActiveFeature);
+  changeActiveFeatureRef.current = changeActiveFeature;
+
+  useEffect(() => {
+    persistActiveFeature(activeFeatureId);
+  }, [activeFeatureId]);
 
   useEffect(() => {
     setSettings((current) =>
@@ -332,6 +383,11 @@ export default function App({ initialOnline }: AppProps) {
   // Local vault data loads immediately, in parallel with the background auth
   // check — offline-first means the first screen never waits on the network.
   useEffect(() => {
+    setInboxVaultReady(false);
+    if (!inboxActive) {
+      outboxSync.setReconnectSyncPrompt(null);
+      return;
+    }
     let cancelled = false;
     const startedAt = performance.now();
     tracePerf("vault_load_start", { vaultRoot });
@@ -342,6 +398,7 @@ export default function App({ initialOnline }: AppProps) {
         }
         setDrafts(state.items);
         outboxSync.setOutbox(state.outbox);
+        setInboxVaultReady(true);
         tracePerf("vault_load_done", {
           items: state.items.length,
           outbox: state.outbox.length,
@@ -358,7 +415,8 @@ export default function App({ initialOnline }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [vaultRoot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inboxActive, vaultRoot]);
 
   // Warm the markdown renderer chunk while the app is idle so the first
   // opened detail does not pay the dynamic-import cost on click.
@@ -366,7 +424,11 @@ export default function App({ initialOnline }: AppProps) {
 
   const rebuiltVaultRoot = useRef<string | null>(null);
   useEffect(() => {
-    if (authGate.state !== "passed" || rebuiltVaultRoot.current === vaultRoot) {
+    if (
+      !inboxActive ||
+      authGate.state !== "passed" ||
+      rebuiltVaultRoot.current === vaultRoot
+    ) {
       return;
     }
     rebuiltVaultRoot.current = vaultRoot;
@@ -398,7 +460,7 @@ export default function App({ initialOnline }: AppProps) {
       cancelled = true;
       cancelIdle();
     };
-  }, [authGate.state, vaultRoot]);
+  }, [authGate.state, inboxActive, vaultRoot]);
 
   const repositoryScope = useMemo<WorkScope>(() => {
     if (repositoryFilter) {
@@ -428,7 +490,7 @@ export default function App({ initialOnline }: AppProps) {
     online,
     { type: "inbox" },
     vaultRoot,
-    true,
+    inboxActive,
     itemSort
   );
   const projectWorkItems = useWorkItems(
@@ -436,7 +498,7 @@ export default function App({ initialOnline }: AppProps) {
     online,
     repositoryScope,
     vaultRoot,
-    Boolean(repositoryFilter),
+    inboxActive && Boolean(repositoryFilter),
     itemSort
   );
   const workItems = repositoryFilter ? projectWorkItems : inboxWorkItems;
@@ -462,17 +524,18 @@ export default function App({ initialOnline }: AppProps) {
   const unfilteredNotifications = useNotifications(
     auth.connection,
     online,
-    authGate.state === "passed"
+    inboxActive && authGate.state === "passed"
   );
   const repositoryGroups = useRepositories(
     auth.connection,
-    online,
+    online && inboxActive,
     inboxItems,
     unfilteredNotifications.notifications
   );
   useEffect(() => {
     if (
       authGate.state !== "passed" ||
+      !inboxActive ||
       !online ||
       workItems.demoMode ||
       workItems.items.length === 0
@@ -486,7 +549,7 @@ export default function App({ initialOnline }: AppProps) {
         workItems.items.map((item) => withVaultItemPath(vaultRoot, item))
       );
     });
-  }, [authGate.state, online, workItems.demoMode, workItems.items, vaultRoot]);
+  }, [authGate.state, inboxActive, online, workItems.demoMode, workItems.items, vaultRoot]);
   const notificationRepoNames = useMemo(
     () =>
       new Set(
@@ -505,7 +568,7 @@ export default function App({ initialOnline }: AppProps) {
       !repositoryGroups.loading
   );
   const selectedRepositoryForCounts =
-    showSettings || showNotifications ? null : repositoryFilter;
+    activeFeatureId !== "inbox" || showNotifications ? null : repositoryFilter;
   const visibleRepositoryCounts = useRepositoryOpenCounts(
     auth.connection,
     online,
@@ -577,7 +640,10 @@ export default function App({ initialOnline }: AppProps) {
     items,
     setDrafts,
     setLoadedItemBodies,
-    onAfterSync: refreshAfterOutboxSync
+    onAfterSync: refreshAfterOutboxSync,
+    // Reconnect offers are only valid once the active Inbox's queued vault data
+    // is loaded; Notes must neither consume nor discard a reconnect edge.
+    reconnectEligible: inboxActive && inboxVaultReady
   });
   const displayedUnreadNotificationCount =
     repositoryGroups.loaded ? notifications.unreadCount : 0;
@@ -586,14 +652,19 @@ export default function App({ initialOnline }: AppProps) {
     connection: auth.connection,
     viewedAt: notifications.viewedAt,
     online,
-    enabled: settings.desktopNotifications && authGate.state === "passed",
+    enabled:
+      inboxActive &&
+      settings.desktopNotifications &&
+      authGate.state === "passed",
     demoMode: notifications.demoMode,
     isRepoVisible: notificationRepoFilter
   });
   const [selectedNotification, setSelectedNotification] =
     useState<GitHubNotification | null>(null);
+  const activeSelectedNotification =
+    activeFeatureId === "inbox" && showNotifications ? selectedNotification : null;
   useEffect(() => {
-    if (!showNotifications) {
+    if (activeFeatureId !== "inbox" || !showNotifications) {
       return;
     }
     if (notifications.notifications.length === 0 && notifications.loading) {
@@ -606,6 +677,7 @@ export default function App({ initialOnline }: AppProps) {
       demoMode: notifications.demoMode
     });
   }, [
+    activeFeatureId,
     showNotifications,
     notifications.notifications.length,
     notifications.unreadCount,
@@ -613,7 +685,7 @@ export default function App({ initialOnline }: AppProps) {
     notifications.demoMode
   ]);
   const notificationDetail = useNotificationDetail(
-    selectedNotification,
+    activeSelectedNotification,
     auth.connection,
     online,
     conversationRefreshKey
@@ -728,7 +800,9 @@ export default function App({ initialOnline }: AppProps) {
   );
   const activeNavigationKey = showSettings
     ? "app:settings"
-    : showNotifications
+    : activeFeatureId === "notes"
+      ? "workspace:notes"
+      : showNotifications
       ? "github:notifications"
       : repositoryFilter
         ? `repository:${repositoryFilter}`
@@ -749,6 +823,16 @@ export default function App({ initialOnline }: AppProps) {
     },
     [outboxSync.setOutbox]
   );
+  // The branch replaced boolean settings state with the feature registry, so
+  // adapt the hook's setShowSettings toggle onto changeActiveFeature. Keep this
+  // render-stable (calling the latest closure via the ref) so useDraftIssue's
+  // openNewIssue keeps a stable identity and ItemListPane's React.memo bailout
+  // holds across app-level state churn (e.g. notification polls).
+  const setShowSettingsFromDraftIssue = useCallback(
+    (show: boolean) =>
+      changeActiveFeatureRef.current(show ? "settings" : "inbox"),
+    []
+  );
   const { draftIssue, setDraftIssue, openNewIssue, queueIssue } = useDraftIssue({
     vaultRoot,
     repositories,
@@ -756,7 +840,7 @@ export default function App({ initialOnline }: AppProps) {
     setDrafts,
     setSelectedPath,
     setShowNewIssue,
-    setShowSettings,
+    setShowSettings: setShowSettingsFromDraftIssue,
     appendOutboxOperation
   });
   const selectedItemWithBody = useMemo(() => {
@@ -772,6 +856,7 @@ export default function App({ initialOnline }: AppProps) {
 
   useEffect(() => {
     if (
+      !inboxActive ||
       !selectedItem ||
       selectedItem.body ||
       loadedItemBodies[selectedItem.path] !== undefined
@@ -799,11 +884,11 @@ export default function App({ initialOnline }: AppProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedItem, loadedItemBodies, vaultRoot]);
+  }, [inboxActive, selectedItem, loadedItemBodies, vaultRoot]);
 
   const detailVisible =
     authGate.state === "passed" &&
-    !showSettings &&
+    activeFeatureId === "inbox" &&
     !showNewIssue &&
     !showNotifications;
   const itemThread = useItemThread(
@@ -824,7 +909,6 @@ export default function App({ initialOnline }: AppProps) {
       settings.prefetchVisibleItems !== false &&
       authGate.state === "passed" &&
       !workItems.demoMode &&
-      !showSettings &&
       !showNewIssue &&
       !showNotifications,
     loadedBodies: loadedItemBodies,
@@ -858,17 +942,17 @@ export default function App({ initialOnline }: AppProps) {
     [visibleNotificationPrefetchItems]
   );
   const notificationPrefetchEnabled =
+    activeFeatureId === "inbox" &&
     showNotifications &&
     settings.prefetchVisibleItems !== false &&
     authGate.state === "passed" &&
     !notifications.demoMode &&
-    !showSettings &&
     !showNewIssue;
   const getNotificationPrefetchStats = useVisibleNotificationPrefetch({
     visibleNotifications: notificationPrefetchEnabled
       ? notificationPrefetchTargets
       : [],
-    selectedId: selectedNotification?.id ?? null,
+    selectedId: activeSelectedNotification?.id ?? null,
     connection: auth.connection,
     online,
     enabled: notificationPrefetchEnabled,
@@ -876,25 +960,31 @@ export default function App({ initialOnline }: AppProps) {
       tracePerf("visible_notification_prefetch_error", { message });
     }
   });
-  const activeDetailKey = showNotifications
-    ? selectedNotification
-      ? `notification:${selectedNotification.id}`
-      : null
-    : detailVisible && selectedItem
-      ? `item:${selectedItem.path}`
-      : null;
+  const activeDetailKey =
+    activeFeatureId !== "inbox"
+      ? null
+      : showNotifications
+        ? selectedNotification
+          ? `notification:${selectedNotification.id}`
+          : null
+        : detailVisible && selectedItem
+          ? `item:${selectedItem.path}`
+          : null;
   // Identifies what the shared `.detail-scroll` container is currently showing.
   // The same DOM node is reused across every selection and content mode, so a
   // change here means the pane switched targets and its scroll must snap back
   // to the top (see the reset effect below). Same-target re-clicks leave this
   // key unchanged, so the previous scroll position is preserved.
-  const detailScrollResetKey = showSettings
-    ? `settings:${settingsSection}`
-    : showNewIssue
-      ? "new-issue"
-      : showNotifications
-        ? `notification:${selectedNotification?.id ?? "none"}`
-        : `item:${selectedItem?.path ?? "none"}`;
+  const detailScrollResetKey =
+    activeFeatureId === "settings"
+      ? `settings:${settingsSection}`
+      : activeFeatureId === "notes"
+        ? "notes"
+        : showNewIssue
+          ? "new-issue"
+          : showNotifications
+            ? `notification:${selectedNotification?.id ?? "none"}`
+            : `item:${selectedItem?.path ?? "none"}`;
   const detailScrollRef = useRef<HTMLDivElement>(null);
 
   // Snap the detail pane back to the top whenever it switches to a different
@@ -919,16 +1009,23 @@ export default function App({ initialOnline }: AppProps) {
     !selectedItem ||
     Boolean(selectedItem.body) ||
     loadedItemBodies[selectedItem.path] !== undefined;
-  const detailReady = showNotifications
-    ? Boolean(selectedNotification && notificationDetail.detail && !notificationDetail.loading)
-    : Boolean(selectedItem && selectedBodyReady && !itemThread.loading);
-  const expectedDetailMarkdownBodies = showNotifications
-    ? notificationDetail.detail
-      ? 1 + countConversationMarkdownBodies(notificationDetail.detail.comments)
-      : 0
-    : selectedItem
-      ? 1 + countConversationMarkdownBodies(itemThread.thread?.comments ?? [])
-      : 0;
+  const detailReady =
+    activeFeatureId === "inbox" &&
+    (showNotifications
+      ? Boolean(
+          selectedNotification && notificationDetail.detail && !notificationDetail.loading
+        )
+      : Boolean(selectedItem && selectedBodyReady && !itemThread.loading));
+  const expectedDetailMarkdownBodies =
+    activeFeatureId !== "inbox"
+      ? 0
+      : showNotifications
+        ? notificationDetail.detail
+          ? 1 + countConversationMarkdownBodies(notificationDetail.detail.comments)
+          : 0
+        : selectedItem
+          ? 1 + countConversationMarkdownBodies(itemThread.thread?.comments ?? [])
+          : 0;
   const detailContentReady = useDetailContentPaintReady(
     detailScrollRef,
     activeDetailKey,
@@ -995,7 +1092,7 @@ export default function App({ initialOnline }: AppProps) {
       detailReady &&
       detailContentReady &&
       authGate.state === "passed" &&
-      !showSettings &&
+      activeFeatureId === "inbox" &&
       !showNewIssue,
     onChanged: refreshActiveDetailAfterRemoteChange,
     onError: (message) => tracePerf("detail_revalidation_error", { message })
@@ -1020,7 +1117,6 @@ export default function App({ initialOnline }: AppProps) {
       startSelectionTransition(() => {
         setSelectedPath(path);
         setShowNewIssue(false);
-        setShowSettings(false);
       });
     },
     [startDetailTransition, startSelectionTransition]
@@ -1043,17 +1139,24 @@ export default function App({ initialOnline }: AppProps) {
   // cache-stat getters at poll time. Body byte estimation (O(total bytes))
   // also runs at poll time, which only happens in dev/perf builds.
   const statusMetricsInputs = useRef({
+    activeFeatureId,
     listFetchDurationMs: workItems.lastFetchDurationMs,
     showNotifications,
     loadedItemBodies
   });
   statusMetricsInputs.current = {
+    activeFeatureId,
     listFetchDurationMs: workItems.lastFetchDurationMs,
     showNotifications,
     loadedItemBodies
   };
   const getStatusMetrics = useCallback((): StatusBarMetrics => {
     const inputs = statusMetricsInputs.current;
+    // Notes (and any non-Inbox feature) never touches the Inbox caches, so the
+    // status bar reads neutral metrics rather than polling stale getters.
+    if (inputs.activeFeatureId !== "inbox") {
+      return neutralStatusMetrics;
+    }
     return {
       listFetchDurationMs: inputs.listFetchDurationMs,
       detailDisplayDurationMs: getDetailDisplayDurationMs(),
@@ -1076,7 +1179,11 @@ export default function App({ initialOnline }: AppProps) {
             { label: "Markdown", ...getMarkdownRenderCacheStats() }
           ]
     };
+    // activeFeatureId gates the whole readout (neutral off Inbox), so a feature
+    // switch must give the status bar a fresh getter to re-poll immediately
+    // rather than waiting for the next interval tick.
   }, [
+    activeFeatureId,
     getDetailDisplayDurationMs,
     getItemPrefetchStats,
     getNotificationPrefetchStats
@@ -1119,15 +1226,15 @@ export default function App({ initialOnline }: AppProps) {
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
-    setShowSettings(true);
+    changeActiveFeature("settings");
     setSettingsStatus("");
   }
 
   function openNotifications() {
     setRepositoryFilter(null);
     setShowNewIssue(false);
-    setShowSettings(false);
     setShowNotifications(true);
+    changeActiveFeature("inbox");
   }
 
   function editQueuedComment(operation: OutboxOperationDocument) {
@@ -1169,7 +1276,7 @@ export default function App({ initialOnline }: AppProps) {
     setFilter("all");
     setQuery("");
     setItemStateFilter("open");
-    setShowSettings(false);
+    changeActiveFeature("inbox");
     setShowNotifications(false);
     outboxSync.setShowOutbox(false);
     setShowNewIssue(true);
@@ -1228,7 +1335,7 @@ export default function App({ initialOnline }: AppProps) {
         ? "closed"
         : "open"
     );
-    setShowSettings(false);
+    changeActiveFeature("inbox");
     setShowNewIssue(false);
     setShowNotifications(false);
     outboxSync.setShowOutbox(false);
@@ -1402,11 +1509,128 @@ export default function App({ initialOnline }: AppProps) {
   const showingResetResult =
     showSettings && settingsSection === "reset" && resetProgress.status !== "idle";
 
-  if (authGate.state === "checking") {
-    return <AuthRestorePage />;
+  function renderInboxPanes(): FeaturePanes {
+    return {
+      middle: showNotifications ? (
+        <NotificationsPane
+          state={notifications}
+          webBaseUrl={auth.connection.webBaseUrl}
+          online={online}
+          selectedId={selectedNotification?.id ?? null}
+          onSelect={selectNotification}
+          onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
+        />
+      ) : (
+        <ItemListPane
+          items={filteredItems}
+          selectedPath={selectedItem?.path ?? null}
+          stateFilter={itemStateFilter}
+          stateCounts={displayedItemStateCounts}
+          itemSort={itemSort}
+          query={query}
+          loading={workItems.loading}
+          error={workItems.error}
+          demoMode={workItems.demoMode}
+          online={online}
+          onItemSortChange={setScopedItemSort}
+          onStateFilterChange={setItemStateFilter}
+          onQueryChange={setQuery}
+          onSelect={selectItemPath}
+          onVisibleItemsChange={setVisiblePrefetchItems}
+          onNewIssue={openNewIssue}
+          onRefresh={workItems.refresh}
+        />
+      ),
+      detail: showNewIssue ? (
+        <NewIssuePage
+          draft={draftIssue}
+          repositories={repositories}
+          online={online}
+          onChange={setDraftIssue}
+          onSubmit={queueIssue}
+          onClose={() => setShowNewIssue(false)}
+        />
+      ) : showNotifications ? (
+        <NotificationDetail
+          notification={selectedNotification}
+          state={notificationDetail}
+          online={online}
+          commentDraft={commentDraft}
+          replyDraft={replyDraft}
+          detailMaximized={detailMaximized}
+          onToggleMaximize={toggleDetailMaximized}
+          onHeaderVisibilityChange={setDetailHeaderVisible}
+          onOpenInBrowser={notifications.openNotification}
+          onCommentDraftChange={setCommentDraft}
+          onQueueComment={queueNotificationComment}
+          onQueueReply={queueNotificationReply}
+        />
+      ) : (
+        <ItemDetail
+          item={selectedItemWithBody}
+          thread={itemThread}
+          online={online}
+          commentDraft={commentDraft}
+          replyDraft={replyDraft}
+          detailMaximized={detailMaximized}
+          onToggleMaximize={toggleDetailMaximized}
+          onHeaderVisibilityChange={setDetailHeaderVisible}
+          onCommentDraftChange={setCommentDraft}
+          onQueueComment={queueItemComment}
+          onQueueReply={queueItemReply}
+          onToggleFavorite={onToggleFavorite}
+        />
+      )
+    };
   }
 
-  if (authGate.state === "required" && !showingResetResult) {
+  function renderSettingsPanes(): FeaturePanes {
+    return {
+      middle: (
+        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
+      ),
+      detail: (
+        <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
+          <SettingsPage
+            section={settingsSection}
+            settings={settings}
+            status={settingsStatus}
+            resetProgress={resetProgress}
+            themeMode={themeMode}
+            lightTheme={lightTheme}
+            darkTheme={darkTheme}
+            onThemeModeChange={setThemeMode}
+            onLightThemeChange={setLightTheme}
+            onDarkThemeChange={setDarkTheme}
+            servers={servers}
+            auth={auth}
+            repositoryGroups={repositoryGroups.groups}
+            projectVisibility={projectVisibility}
+            onUpdate={updateSetting}
+            onSave={saveSettings}
+            onResetAll={resetAllSettingsAndCaches}
+            onClose={() => changeActiveFeature("inbox")}
+          />
+        </Suspense>
+      )
+    };
+  }
+
+  const panes = activeFeature.renderPanes({
+    renderInboxPanes,
+    renderSettingsPanes
+  });
+  const ActiveFeatureProvider = activeFeature.Provider;
+
+  if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
+    return <AuthRestorePage onOpenNotes={() => changeActiveFeature("notes")} />;
+  }
+
+  if (
+    activeFeature.requiresGithubAuth &&
+    authGate.state === "required" &&
+    !showingResetResult
+  ) {
     return (
       <LoginPage
         servers={servers}
@@ -1414,6 +1638,7 @@ export default function App({ initialOnline }: AppProps) {
         checking={false}
         error={authGate.error}
         onSkip={authGate.skipLogin}
+        onOpenNotes={() => changeActiveFeature("notes")}
       />
     );
   }
@@ -1447,16 +1672,16 @@ export default function App({ initialOnline }: AppProps) {
         onFilterChange={(next) => {
           setFilter(next);
           setRepositoryFilter(null);
-          setShowSettings(false);
           setShowNewIssue(false);
           setShowNotifications(false);
+          changeActiveFeature("inbox");
         }}
         repositoryFilter={repositoryFilter}
         onRepositoryFilterChange={(key) => {
           setRepositoryFilter(key);
-          setShowSettings(false);
           setShowNewIssue(false);
           setShowNotifications(false);
+          changeActiveFeature("inbox");
         }}
         repositoryGroups={visibleRepositoryCounts.groups}
         repositoriesLoading={repositoryGroups.loading}
@@ -1464,7 +1689,7 @@ export default function App({ initialOnline }: AppProps) {
         settingsOpen={showSettings}
         onOpenSettings={openSettings}
         onOpenProjectSettings={() => openSettings("projects")}
-        notificationsOpen={showNotifications}
+        notificationsOpen={activeFeatureId === "inbox" && showNotifications}
         onOpenNotifications={openNotifications}
         unreadNotificationCount={
           // Until the repository filter basis has loaded, the raw unread
@@ -1474,6 +1699,9 @@ export default function App({ initialOnline }: AppProps) {
         notificationsLoading={
           notifications.loading || (!notifications.demoMode && !repositoryGroups.loaded)
         }
+        activeFeatureId={activeFeatureId}
+        featureEntries={featureRegistry}
+        onFeatureChange={changeActiveFeature}
       />
 
       <div
@@ -1489,123 +1717,32 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      {showSettings ? (
-        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
-      ) : showNotifications ? (
-        <NotificationsPane
-          state={notifications}
-          webBaseUrl={auth.connection.webBaseUrl}
-          online={online}
-          selectedId={selectedNotification?.id ?? null}
-          onSelect={selectNotification}
-          onVisibleNotificationsChange={setVisibleNotificationPrefetchItems}
-        />
-      ) : (
-        <ItemListPane
-          items={filteredItems}
-          selectedPath={selectedItem?.path ?? null}
-          stateFilter={itemStateFilter}
-          stateCounts={displayedItemStateCounts}
-          itemSort={itemSort}
-          query={query}
-          loading={workItems.loading}
-          error={workItems.error}
-          demoMode={workItems.demoMode}
-          online={online}
-          onItemSortChange={setScopedItemSort}
-          onStateFilterChange={setItemStateFilter}
-          onQueryChange={setQuery}
-          onSelect={selectItemPath}
-          onVisibleItemsChange={setVisiblePrefetchItems}
-          onNewIssue={openNewIssue}
-          onRefresh={workItems.refresh}
-        />
-      )}
+      <ActiveFeatureProvider>
+        {panes.middle}
 
-      <div
-        className="pane-resizer list-detail-resizer"
-        role="separator"
-        aria-label="Resize item list pane"
-        aria-orientation="vertical"
-        aria-valuemin={paneWidthLimits.list.min}
-        aria-valuemax={paneWidthLimits.list.max}
-        aria-valuenow={paneWidths.list}
-        tabIndex={0}
-        onPointerDown={(event) => startResize("list", event)}
-        onKeyDown={(event) => resizeWithKeyboard("list", event)}
-      />
+        <div
+          className="pane-resizer list-detail-resizer"
+          role="separator"
+          aria-label="Resize item list pane"
+          aria-orientation="vertical"
+          aria-valuemin={paneWidthLimits.list.min}
+          aria-valuemax={paneWidthLimits.list.max}
+          aria-valuenow={paneWidths.list}
+          tabIndex={0}
+          onPointerDown={(event) => startResize("list", event)}
+          onKeyDown={(event) => resizeWithKeyboard("list", event)}
+        />
 
-      <section className="detail-pane" aria-label="Detail">
-        <div className="pane-titlebar-spacer" />
-        <div className="detail-scroll" ref={detailScrollRef}>
-          {activeDetailRenderSnapshot && (
-            <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
-          )}
-          {showSettings ? (
-          <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
-            <SettingsPage
-              section={settingsSection}
-              settings={settings}
-              status={settingsStatus}
-              resetProgress={resetProgress}
-              themeMode={themeMode}
-              lightTheme={lightTheme}
-              darkTheme={darkTheme}
-              onThemeModeChange={setThemeMode}
-              onLightThemeChange={setLightTheme}
-              onDarkThemeChange={setDarkTheme}
-              servers={servers}
-              auth={auth}
-              repositoryGroups={repositoryGroups.groups}
-              projectVisibility={projectVisibility}
-              onUpdate={updateSetting}
-              onSave={saveSettings}
-              onResetAll={resetAllSettingsAndCaches}
-              onClose={() => setShowSettings(false)}
-            />
-          </Suspense>
-        ) : showNewIssue ? (
-          <NewIssuePage
-            draft={draftIssue}
-            repositories={repositories}
-            online={online}
-            onChange={setDraftIssue}
-            onSubmit={queueIssue}
-            onClose={() => setShowNewIssue(false)}
-          />
-        ) : showNotifications ? (
-          <NotificationDetail
-            notification={selectedNotification}
-            state={notificationDetail}
-            online={online}
-            commentDraft={commentDraft}
-            replyDraft={replyDraft}
-            detailMaximized={detailMaximized}
-            onToggleMaximize={toggleDetailMaximized}
-            onHeaderVisibilityChange={setDetailHeaderVisible}
-            onOpenInBrowser={notifications.openNotification}
-            onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueNotificationComment}
-            onQueueReply={queueNotificationReply}
-          />
-        ) : (
-          <ItemDetail
-            item={selectedItemWithBody}
-            thread={itemThread}
-            online={online}
-            commentDraft={commentDraft}
-            replyDraft={replyDraft}
-            detailMaximized={detailMaximized}
-            onToggleMaximize={toggleDetailMaximized}
-            onHeaderVisibilityChange={setDetailHeaderVisible}
-            onCommentDraftChange={setCommentDraft}
-            onQueueComment={queueItemComment}
-            onQueueReply={queueItemReply}
-            onToggleFavorite={onToggleFavorite}
-          />
-        )}
-        </div>
-      </section>
+        <section className="detail-pane" aria-label="Detail">
+          <div className="pane-titlebar-spacer" />
+          <div className="detail-scroll" ref={detailScrollRef}>
+            {activeDetailRenderSnapshot && (
+              <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
+            )}
+            {panes.detail}
+          </div>
+        </section>
+      </ActiveFeatureProvider>
 
       <AppStatusBar
         outboxCount={outboxSync.outbox.length}
