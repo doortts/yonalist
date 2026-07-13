@@ -548,6 +548,20 @@ h2 {
   grid-row: 1;
 }
 
+/* Feature panes are wrapped in a slot so a kept-mounted-but-inactive feature
+   (Notes, while Inbox/Settings is showing) can stay in the tree without taking
+   a grid cell. `display: contents` makes the slot itself invisible to layout,
+   so the pane it wraps is placed as a direct grid item exactly as if it were an
+   App child; `[hidden]` collapses the whole slot (and drops it from the a11y
+   tree) when its feature is not active. */
+.feature-pane-slot {
+  display: contents;
+}
+
+.feature-pane-slot[hidden] {
+  display: none;
+}
+
 .sidebar,
 .list-pane,
 .detail-pane,
@@ -705,8 +719,8 @@ body.is-resizing-pane {
 
 .app-shell[data-detail-maximized="true"] > .sidebar,
 .app-shell[data-detail-maximized="true"] > .sidebar-list-resizer,
-.app-shell[data-detail-maximized="true"] > .list-pane,
-.app-shell[data-detail-maximized="true"] > .notifications-pane,
+.app-shell[data-detail-maximized="true"] > .feature-pane-slot > .list-pane,
+.app-shell[data-detail-maximized="true"] > .feature-pane-slot > .notifications-pane,
 .app-shell[data-detail-maximized="true"] > .list-detail-resizer {
   visibility: hidden;
   overflow: hidden;
@@ -743,8 +757,8 @@ body.is-resizing-pane {
      overflow/min-width clip any intrinsic content down to the 0px track. */
   .app-shell[data-sidebar-collapsed="true"] > .sidebar,
   .app-shell[data-sidebar-collapsed="true"] > .sidebar-list-resizer,
-  .app-shell[data-list-collapsed="true"] > .list-pane,
-  .app-shell[data-list-collapsed="true"] > .notifications-pane,
+  .app-shell[data-list-collapsed="true"] > .feature-pane-slot > .list-pane,
+  .app-shell[data-list-collapsed="true"] > .feature-pane-slot > .notifications-pane,
   .app-shell[data-list-collapsed="true"] > .list-detail-resizer {
     visibility: hidden;
     overflow: hidden;
@@ -756,8 +770,8 @@ body.is-resizing-pane {
      reserve only a slim top spacer, so their header (search row / eyebrow)
      would collide with the toggle buttons. Restore a full titlebar-height top
      spacer on whichever pane becomes leftmost so its header clears them. */
-  .app-shell[data-sidebar-collapsed="true"] > .list-pane > .pane-titlebar-spacer,
-  .app-shell[data-sidebar-collapsed="true"] > .notifications-pane > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"] > .feature-pane-slot > .list-pane > .pane-titlebar-spacer,
+  .app-shell[data-sidebar-collapsed="true"] > .feature-pane-slot > .notifications-pane > .pane-titlebar-spacer,
   .app-shell[data-sidebar-collapsed="true"][data-list-collapsed="true"]
     > .detail-pane
     > .pane-titlebar-spacer {

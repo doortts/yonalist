@@ -22,6 +22,15 @@ export interface FeatureDefinition {
   section: FeatureNavigationSection;
   order: number;
   requiresGithubAuth: boolean;
+  /**
+   * When true the feature's panes stay mounted (hidden) while another feature
+   * is active, instead of being torn down on every switch. Reserved for
+   * features that own a live session whose in-memory state — drafts, scroll,
+   * edit focus — must survive navigating away and back (Notes). Stateless,
+   * App-state-driven features leave this false so their panes only mount while
+   * active. Providers are always mounted regardless; this only governs panes.
+   */
+  keepMounted: boolean;
   Provider: ComponentType<PropsWithChildren>;
   renderPanes: (context: FeatureRenderContext) => FeaturePanes;
 }

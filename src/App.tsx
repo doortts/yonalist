@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type FormEvent,
+  type ReactNode,
   lazy,
   Suspense,
   useCallback,
@@ -1626,11 +1627,30 @@ export default function App({ initialOnline }: AppProps) {
     };
   }
 
-  const panes = activeFeature.renderPanes({
-    renderInboxPanes,
-    renderSettingsPanes
-  });
-  const ActiveFeatureProvider = activeFeature.Provider;
+  // Every feature's Provider stays mounted for the shell's lifetime, in a fixed
+  // nesting order, so switching features never remounts one — the Notes
+  // workspace session (drafts, debounced writes, recovery bookkeeping) is
+  // created once and survives every Notes↔Inbox↔Settings switch. The providers
+  // render no DOM, so their children remain direct grid items of `.app-shell`.
+  const withFeatureProviders = (content: ReactNode): ReactNode =>
+    featureRegistry.reduceRight<ReactNode>((wrapped, feature) => {
+      const FeatureProvider = feature.Provider;
+      return <FeatureProvider>{wrapped}</FeatureProvider>;
+    }, content);
+
+  // Panes render for the active feature plus any feature that opts into staying
+  // mounted (`keepMounted`, i.e. Notes). Inactive kept-mounted panes are marked
+  // `hidden` so CSS drops them from the grid flow and the a11y tree while React
+  // keeps their subtree — and its local state — alive. Stable `key`s keep the
+  // Notes slot from remounting as the active feature comes and goes around it.
+  const mountedPaneFeatures = featureRegistry.filter(
+    (feature) => feature.keepMounted || feature.id === activeFeatureId
+  );
+  const featurePanes = mountedPaneFeatures.map((feature) => ({
+    id: feature.id,
+    active: feature.id === activeFeatureId,
+    panes: feature.renderPanes({ renderInboxPanes, renderSettingsPanes })
+  }));
 
   if (activeFeature.requiresGithubAuth && authGate.state === "checking") {
     return <AuthRestorePage onOpenNotes={() => changeActiveFeature("notes")} />;
@@ -1727,32 +1747,42 @@ export default function App({ initialOnline }: AppProps) {
         onKeyDown={(event) => resizeWithKeyboard("sidebar", event)}
       />
 
-      <ActiveFeatureProvider>
-        {panes.middle}
+      {withFeatureProviders(
+        <>
+          {featurePanes.map(({ id, active, panes }) => (
+            <div key={id} className="feature-pane-slot" hidden={!active}>
+              {panes.middle}
+            </div>
+          ))}
 
-        <div
-          className="pane-resizer list-detail-resizer"
-          role="separator"
-          aria-label="Resize item list pane"
-          aria-orientation="vertical"
-          aria-valuemin={paneWidthLimits.list.min}
-          aria-valuemax={paneWidthLimits.list.max}
-          aria-valuenow={paneWidths.list}
-          tabIndex={0}
-          onPointerDown={(event) => startResize("list", event)}
-          onKeyDown={(event) => resizeWithKeyboard("list", event)}
-        />
+          <div
+            className="pane-resizer list-detail-resizer"
+            role="separator"
+            aria-label="Resize item list pane"
+            aria-orientation="vertical"
+            aria-valuemin={paneWidthLimits.list.min}
+            aria-valuemax={paneWidthLimits.list.max}
+            aria-valuenow={paneWidths.list}
+            tabIndex={0}
+            onPointerDown={(event) => startResize("list", event)}
+            onKeyDown={(event) => resizeWithKeyboard("list", event)}
+          />
 
-        <section className="detail-pane" aria-label="Detail">
-          <div className="pane-titlebar-spacer" />
-          <div className="detail-scroll" ref={detailScrollRef}>
-            {activeDetailRenderSnapshot && (
-              <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
-            )}
-            {panes.detail}
-          </div>
-        </section>
-      </ActiveFeatureProvider>
+          <section className="detail-pane" aria-label="Detail">
+            <div className="pane-titlebar-spacer" />
+            <div className="detail-scroll" ref={detailScrollRef}>
+              {activeDetailRenderSnapshot && (
+                <DetailRenderSnapshotOverlay html={activeDetailRenderSnapshot.html} />
+              )}
+              {featurePanes.map(({ id, active, panes }) => (
+                <div key={id} className="feature-pane-slot" hidden={!active}>
+                  {panes.detail}
+                </div>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
 
       <AppStatusBar
         outboxCount={outboxSync.outbox.length}

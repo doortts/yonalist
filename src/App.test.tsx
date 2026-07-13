@@ -325,6 +325,67 @@ describe("Yonalist app shell", () => {
     }
   });
 
+  it("keeps the Notes workspace session alive across feature switches", async () => {
+    const user = userEvent.setup();
+    const initializeSpy = vi
+      .spyOn(notesStore, "initialize")
+      .mockResolvedValue(undefined);
+    const loadWorkspaceSpy = vi
+      .spyOn(notesStore, "loadWorkspace")
+      .mockResolvedValue({
+        nodes: [appTestNote({ id: "kept-note", title: "Kept alive" })]
+      });
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    render(<App />);
+
+    // Let the workspace session settle so the baseline reflects a single
+    // initialize/load for the freshly mounted Notes feature.
+    expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+    await waitFor(() => expect(initializeSpy).toHaveBeenCalledTimes(1));
+    const loadsAfterMount = loadWorkspaceSpy.mock.calls.length;
+    expect(loadsAfterMount).toBeGreaterThan(0);
+
+    // Navigate away to Inbox and back to Notes.
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    expect(screen.getByLabelText("Items")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Notes" }));
+    expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
+
+    // The provider was never torn down, so the session is not re-created: no
+    // extra initialize and no extra active-scope reload from the round-trip.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(initializeSpy).toHaveBeenCalledTimes(1);
+    expect(loadWorkspaceSpy.mock.calls.length).toBe(loadsAfterMount);
+  });
+
+  it("keeps the inactive Notes panes mounted but hidden", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({ nodes: [] });
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    render(<App />);
+    expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /^All items/ }));
+
+    // Inbox is now the visible feature.
+    expect(screen.getByLabelText("Items")).toBeInTheDocument();
+
+    // The Notes panes remain in the tree (getByLabelText ignores visibility)
+    // but are wrapped in a `hidden` slot, so they leave the accessibility tree
+    // and the grid flow.
+    const hiddenLibrary = screen.getByLabelText("Notes library");
+    expect(hiddenLibrary).toBeInTheDocument();
+    expect(hiddenLibrary.closest(".feature-pane-slot")).toHaveAttribute("hidden");
+    expect(screen.getByLabelText("Notes outline").closest(".feature-pane-slot")).toHaveAttribute(
+      "hidden"
+    );
+  });
+
   it("opens straight into the app when the last authenticated host verifies", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(

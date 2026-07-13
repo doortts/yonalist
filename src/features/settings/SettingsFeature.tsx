@@ -13,6 +13,9 @@ export const settingsFeature: FeatureDefinition = {
   section: "app",
   order: 10,
   requiresGithubAuth: true,
+  // Settings panes are stateless views of App-owned state; they mount only
+  // while active.
+  keepMounted: false,
   Provider: PassthroughFeatureProvider,
   renderPanes: ({ renderSettingsPanes }) => renderSettingsPanes()
 };

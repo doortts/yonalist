@@ -90,6 +90,13 @@ export const notesFeature: FeatureDefinition = {
   section: "workspace",
   order: 20,
   requiresGithubAuth: false,
+  // Notes owns a live workspace session (drafts, debounced writes, outline
+  // scroll and edit focus). Keeping its panes mounted while another feature is
+  // active — instead of tearing the provider down on every switch — is what
+  // lets that in-memory state survive navigating away and back. The stable
+  // `notesPanes` references above keep the mounted-but-hidden subtree from
+  // re-rendering on unrelated App commits.
+  keepMounted: true,
   Provider: NotesFeatureProvider,
   renderPanes: () => notesPanes
 };
