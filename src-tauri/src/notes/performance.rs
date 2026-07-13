@@ -25,14 +25,53 @@ const ARCHIVE_SUBTREE_SIZE: usize = 100;
 const FIXED_TIMESTAMP: &str = "2026-07-12T00:00:00.000Z";
 const DATE_RANGE_QUERY: &str = "07/10/2026 - 07/12/2026";
 const HISTORY_SESSION_ID: &str = "90000000-0000-4000-8000-000000000001";
-const REGRESSION_LIMIT: f64 = 1.20;
+// Allowed inflation of a workload's in-run cost relative to the calibration
+// workload, versus the recorded reference ratio. This is looser than a same-
+// machine +20% because the gate now compares DIFFERENT operations to each
+// other: inter-workload cost ratios drift with a host's CPU/memory-bandwidth
+// balance even with no code regression (e.g. the memory-bound `active_load`
+// ran 1.15x its reference ratio on a second machine with zero changes). 1.5x
+// clears that observed noise floor while still catching gross (>=50%) median
+// regressions, which is the signal a portable gate can assert without flaking.
+const REGRESSION_LIMIT: f64 = 1.50;
 
-// Maximum per-statistic values from repeated captures on 2026-07-12 with
-// rustc 1.96.1, macOS 15.7.1, Apple M1 Pro, aarch64-apple-darwin, --release,
-// 5 warmups, and 31 measured samples. Values are normalized nanoseconds per
-// vault node; the final gate allows +20%.
+// Workload whose in-run cost is the machine-speed yardstick for the OTHER six
+// workloads: each of them is gated as a *multiple* of this one's measured cost,
+// so the gate carries no absolute nanosecond threshold. It must be a cheap,
+// low-variance read path that is measured on every vault: `tag_and_or_not` is a
+// full-index structured scan with the tightest observed p95/median spread of
+// the seven.
+//
+// The calibration workload cannot gate ITSELF: dividing its own in-run cost by
+// itself yields a self-ratio of identically 1.0 that can never exceed the
+// limit. Left that way it would (a) leave `tag_and_or_not` — one of the seven
+// measured paths — with no gate coverage at all, and (b) let a regression in it
+// go undetected while simultaneously deflating every other workload's ratio
+// (its inflated cost sits in their denominator), blinding the gate to
+// concurrent regressions elsewhere. So `print_and_gate` special-cases the
+// calibration row to be gated against `CALIBRATION_CROSS_CHECK` instead.
+const CALIBRATION_WORKLOAD: &str = "tag_and_or_not";
+
+// Second cheap, low-variance read path used solely to gate the calibration
+// workload against something other than itself. `date_range` is the natural
+// pick: it is a production date-index read measured on every vault with a tight
+// p95/median spread (830/1236 ns per node at 1k, 822/906 at 10k), so a
+// regression isolated to `tag_and_or_not` moves the two apart and trips the
+// gate on the calibration row. Every non-calibration workload (date_range
+// included) is still gated against CALIBRATION_WORKLOAD.
+const CALIBRATION_CROSS_CHECK: &str = "date_range";
+
+// Reference per-node statistics captured on 2026-07-12 with rustc 1.96.1,
+// macOS 15.7.1, Apple M1 Pro, aarch64-apple-darwin, --release, 5 warmups and
+// 31 measured samples. These absolute nanoseconds are HOST-SPECIFIC and are no
+// longer asserted on — they survive only (a) as logged diagnostics and (b) to
+// derive the machine-INDEPENDENT expected ratio of each workload to the
+// calibration workload. Ratios between workloads on one host stay comparatively
+// stable as CPU/build-profile/host change together, so the gate compares the
+// in-run workload/calibration median ratio against that recorded ratio within
+// REGRESSION_LIMIT (see above).
 const BASELINE_METADATA: &str =
-    "2026-07-12|Apple M1 Pro|macOS 15.7.1|rustc 1.96.1|release|5w+31m|max-observed";
+    "2026-07-12|Apple M1 Pro|macOS 15.7.1|rustc 1.96.1|release|5w+31m|reference-ratios";
 
 #[derive(Clone, Copy)]
 struct Baseline {
@@ -721,53 +760,117 @@ fn measure_vault(vault: &mut PerfVault) -> Vec<Measurement> {
     measurements
 }
 
-fn baseline_for(measurement: &Measurement) -> Baseline {
+fn baseline_for_workload(node_count: usize, workload: &str) -> Baseline {
     BASELINES
         .iter()
         .copied()
-        .find(|baseline| {
-            baseline.node_count == measurement.node_count
-                && baseline.workload == measurement.workload
-        })
+        .find(|baseline| baseline.node_count == node_count && baseline.workload == workload)
         .expect("recorded performance baseline")
 }
 
+fn baseline_for(measurement: &Measurement) -> Baseline {
+    baseline_for_workload(measurement.node_count, measurement.workload)
+}
+
+fn measurement_for_workload<'a>(
+    measurements: &'a [Measurement],
+    node_count: usize,
+    workload: &str,
+) -> &'a Measurement {
+    measurements
+        .iter()
+        .find(|measurement| {
+            measurement.node_count == node_count && measurement.workload == workload
+        })
+        .expect("yardstick workload measured for each vault size")
+}
+
 fn print_and_gate(measurements: &[Measurement], enforce_gate: bool) {
+    let gate_label = if enforce_gate {
+        format!("median <= expected_ratio * {REGRESSION_LIMIT:.2} (p95 diagnostic only)")
+    } else {
+        "diagnostic".to_string()
+    };
     println!(
-        "notes_perf metadata={} samples={}+{} gate={} profile={}",
+        "notes_perf calibration={} reference={} samples={}+{} gate={} profile={}",
+        CALIBRATION_WORKLOAD,
         BASELINE_METADATA,
         WARMUP_SAMPLES,
         MEASURED_SAMPLES,
-        if enforce_gate { "+20%" } else { "diagnostic" },
+        gate_label,
         if cfg!(debug_assertions) {
             "debug"
         } else {
             "release"
         }
     );
-    println!("nodes workload          median_ms   p95_ms   p95_ns/node ratio status");
+    println!(
+        "nodes workload          median_ms   p95_ms   p95_ns/node  rel_med  exp_med  ratio  p95_rel  exp_p95 status"
+    );
     let mut regressions = Vec::new();
     for measurement in measurements {
         let baseline = baseline_for(measurement);
-        let nodes = measurement.node_count as f64;
-        let median_per_node = measurement.median_ns as f64 / nodes;
-        let p95_per_node = measurement.p95_ns as f64 / nodes;
-        let ratio = (median_per_node / baseline.median_ns_per_node)
-            .max(p95_per_node / baseline.p95_ns_per_node);
+        // Every workload is gated against the calibration workload, EXCEPT the
+        // calibration workload itself: gating it against itself yields a
+        // self-ratio of identically 1.0 (see CALIBRATION_WORKLOAD), so it is
+        // cross-checked against CALIBRATION_CROSS_CHECK instead. That gives the
+        // calibration path real gate coverage and means a regression isolated
+        // to it trips this row rather than silently deflating every other row.
+        let yardstick_workload = if measurement.workload == CALIBRATION_WORKLOAD {
+            CALIBRATION_CROSS_CHECK
+        } else {
+            CALIBRATION_WORKLOAD
+        };
+        let yardstick =
+            measurement_for_workload(measurements, measurement.node_count, yardstick_workload);
+        let yardstick_baseline = baseline_for_workload(measurement.node_count, yardstick_workload);
+
+        // Machine-relative gate: express each workload's cost as a multiple of
+        // its yardstick workload measured in THIS run, and compare that in-run
+        // multiple against the recorded reference multiple. Both the measured
+        // and the expected multiples divide out host CPU speed and build
+        // profile, so only a genuine change in the tested path's relative cost
+        // moves the ratio. The recorded per-node baselines feed ONLY the
+        // reference multiples (never absolute thresholds); the raw nanoseconds
+        // printed here are diagnostics. Both workload and yardstick are sampled
+        // on the same vault, so the per-node normalization cancels and the
+        // ratio is unitless.
+        //
+        // Only the MEDIAN drives the assertion. A single-run p95 over 31 samples
+        // swings on one scheduler/allocator outlier (an early port of this gate
+        // flagged clean runs at 2.6x purely on p95 tail noise), so no relative
+        // normalization can make a per-run p95 a non-flaky assertion. p95 and
+        // its relative ratios stay as logged diagnostics for humans to eyeball
+        // tail drift, matching the "absolute numbers may remain as diagnostics"
+        // guidance.
+        let expected_median_ratio =
+            baseline.median_ns_per_node / yardstick_baseline.median_ns_per_node;
+        let measured_median_ratio = measurement.median_ns as f64 / yardstick.median_ns as f64;
+        let ratio = measured_median_ratio / expected_median_ratio;
         let passed = !enforce_gate || ratio <= REGRESSION_LIMIT;
+
+        // Diagnostics only (not asserted): p95 relative to the yardstick p95,
+        // so common-mode tail jitter partly cancels when a reader compares them.
+        let expected_p95_ratio = baseline.p95_ns_per_node / yardstick_baseline.p95_ns_per_node;
+        let measured_p95_ratio = measurement.p95_ns as f64 / yardstick.p95_ns as f64;
+        let p95_per_node = measurement.p95_ns as f64 / measurement.node_count as f64;
         println!(
-            "{:>5} {:<17} {:>9.3} {:>8.3} {:>13.1} {:>5.2} {}",
+            "{:>5} {:<17} {:>9.3} {:>8.3} {:>13.1} {:>8.2} {:>8.2} {:>5.2} {:>8.2} {:>8.2} {}",
             measurement.node_count,
             measurement.workload,
             measurement.median_ns as f64 / 1_000_000.0,
             measurement.p95_ns as f64 / 1_000_000.0,
             p95_per_node,
+            measured_median_ratio,
+            expected_median_ratio,
             ratio,
+            measured_p95_ratio,
+            expected_p95_ratio,
             if passed { "ok" } else { "REGRESSION" }
         );
         if !passed {
             regressions.push(format!(
-                "{}@{} nodes {:.2}x (limit {:.2}x)",
+                "{}@{} nodes {:.2}x calibration-normalized median (limit {:.2}x)",
                 measurement.workload, measurement.node_count, ratio, REGRESSION_LIMIT
             ));
         }

@@ -219,14 +219,16 @@ describe("tokenizeNoteText", () => {
   );
 
   it.each(["#cafe\u0301", "#नमस्ते"])(
-    "keeps combining marks in the tag body %j",
+    "keeps combining marks in the tag body and derives an NFC value %j",
     (source) => {
       expect(tokenizeNoteText(source)).toEqual([
         {
           kind: "tag",
           prefix: "#",
-          display: source.slice(1),
-          normalized: source.slice(1).toLowerCase(),
+          // The derived value is NFC-normalized; `raw` and the offsets still index
+          // the original (possibly decomposed) source.
+          display: source.slice(1).normalize("NFC"),
+          normalized: source.slice(1).normalize("NFC").toLowerCase(),
           raw: source,
           startUtf16: 0,
           endUtf16: source.length
@@ -308,4 +310,37 @@ describe("tokenizeNoteText", () => {
     });
     expectLosslessCoverage(source);
   });
+
+  it.each(["café", "한글"])(
+    "unifies decomposed and composed tag derivations to NFC for %j",
+    (word) => {
+      // Derive both spellings explicitly so the test does not depend on how the
+      // source literal above happens to be normalized on disk.
+      const composedSource = `#${word.normalize("NFC")}`;
+      const decomposedSource = `#${word.normalize("NFD")}`;
+      const composedValue = word.normalize("NFC");
+      const decomposed = tokenizeNoteText(decomposedSource);
+      const composed = tokenizeNoteText(composedSource);
+
+      expect(decomposed).toHaveLength(1);
+      expect(composed).toHaveLength(1);
+      const decomposedTag = decomposed[0];
+      const composedTag = composed[0];
+      if (decomposedTag.kind !== "tag" || composedTag.kind !== "tag") {
+        throw new Error("expected tag tokens");
+      }
+
+      // A decomposed spelling derives the same tag value as the composed spelling.
+      expect(decomposedTag.display).toBe(composedTag.display);
+      expect(decomposedTag.normalized).toBe(composedTag.normalized);
+      expect(decomposedTag.display).toBe(composedValue);
+      expect(decomposedTag.display.normalize("NFC")).toBe(decomposedTag.display);
+      // Offsets still index the ORIGINAL source, so the decomposed span is longer.
+      expect(decomposedSource.length).toBeGreaterThan(composedSource.length);
+      expect(decomposedTag.endUtf16).toBe(decomposedSource.length);
+      expect(composedTag.endUtf16).toBe(composedSource.length);
+      expectLosslessCoverage(decomposedSource);
+      expectLosslessCoverage(composedSource);
+    }
+  );
 });

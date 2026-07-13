@@ -12,7 +12,7 @@
     "tags": [
       { "prefix": "#", "display": "Tag", "normalized": "tag", "startUtf16": 2, "endUtf16": 6 },
       { "prefix": "#", "display": "𐐷", "normalized": "𐐷", "startUtf16": 9, "endUtf16": 12 },
-      { "prefix": "#", "display": "café", "normalized": "café", "startUtf16": 13, "endUtf16": 19 }
+      { "prefix": "#", "display": "café", "normalized": "café", "startUtf16": 13, "endUtf16": 19 }
     ]
   },
   {
@@ -46,5 +46,29 @@
   {
     "source": "abc𐐷#tag",
     "tags": []
+  },
+  {
+    "source": "#café",
+    "tags": [
+      { "prefix": "#", "display": "café", "normalized": "café", "startUtf16": 0, "endUtf16": 5 }
+    ]
+  },
+  {
+    "source": "#café",
+    "tags": [
+      { "prefix": "#", "display": "café", "normalized": "café", "startUtf16": 0, "endUtf16": 6 }
+    ]
+  },
+  {
+    "source": "#한글",
+    "tags": [
+      { "prefix": "#", "display": "한글", "normalized": "한글", "startUtf16": 0, "endUtf16": 3 }
+    ]
+  },
+  {
+    "source": "#한글",
+    "tags": [
+      { "prefix": "#", "display": "한글", "normalized": "한글", "startUtf16": 0, "endUtf16": 7 }
+    ]
   }
 ]

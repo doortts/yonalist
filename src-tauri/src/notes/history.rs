@@ -1,5 +1,7 @@
 use crate::notes::attachments::AttachmentStorageLease;
-use crate::notes::date_index::{LocalDate, LocalTodayProvider, SystemLocalTodayProvider};
+use crate::notes::date_index::LocalDate;
+#[cfg(test)]
+use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::repository::{load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at};
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NoteId, NoteNode, NotesHistoryContext,
@@ -354,6 +356,7 @@ pub(crate) fn with_history_transaction_and_prunes(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn with_history_transaction(
     connection: &mut Connection,
     context: Option<&NotesHistoryContext>,
@@ -1210,16 +1213,6 @@ pub(crate) fn redo(
     replay(connection, session_id, scope, false, None, today)
 }
 
-pub(crate) fn undo_with_attachment_storage(
-    connection: &mut Connection,
-    session_id: &str,
-    scope: NotesWorkspaceScope,
-    attachment_storage: &AttachmentStorageLease,
-) -> Result<NotesHistoryReplayResult, String> {
-    let today = SystemLocalTodayProvider.local_today(connection)?;
-    undo_with_attachment_storage_at(connection, session_id, scope, attachment_storage, today)
-}
-
 pub(crate) fn undo_with_attachment_storage_at(
     connection: &mut Connection,
     session_id: &str,
@@ -1235,16 +1228,6 @@ pub(crate) fn undo_with_attachment_storage_at(
         Some(attachment_storage),
         today,
     )
-}
-
-pub(crate) fn redo_with_attachment_storage(
-    connection: &mut Connection,
-    session_id: &str,
-    scope: NotesWorkspaceScope,
-    attachment_storage: &AttachmentStorageLease,
-) -> Result<NotesHistoryReplayResult, String> {
-    let today = SystemLocalTodayProvider.local_today(connection)?;
-    redo_with_attachment_storage_at(connection, session_id, scope, attachment_storage, today)
 }
 
 pub(crate) fn redo_with_attachment_storage_at(

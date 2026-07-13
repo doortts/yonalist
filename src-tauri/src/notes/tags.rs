@@ -1,6 +1,7 @@
 use crate::notes::types::NoteTagPrefix;
 use std::collections::BTreeMap;
 use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_normalization::{is_nfc, UnicodeNormalization};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NoteTagToken {
@@ -43,6 +44,10 @@ pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
     is_tag_body_start(first)
         && characters.all(is_tag_body_continuation)
         && source.to_lowercase() == source
+        // Canonical tag bodies are NFC: macOS routinely emits NFD (decomposed)
+        // Hangul/accented text, so a decomposed spelling is not canonical even
+        // though its scalars all pass the body checks above.
+        && is_nfc(source)
 }
 
 fn is_ascii_letter(byte: u8) -> bool {
@@ -226,7 +231,12 @@ pub(crate) fn tokenize_note_text(source: &str) -> Vec<NoteTagToken> {
         let body_end_byte = scalars
             .get(body_end)
             .map_or(source.len(), |next| next.byte_start);
-        let display = source[body_start_byte..body_end_byte].to_string();
+        // Normalize the derived tag VALUE to NFC so decomposed (NFD) and composed
+        // spellings of the same tag unify. The UTF-16 offsets below still index the
+        // ORIGINAL source, which may differ in length from the normalized value.
+        let display = source[body_start_byte..body_end_byte]
+            .nfc()
+            .collect::<String>();
         tags.push(NoteTagToken {
             prefix: prefix.expect("tag prefix"),
             normalized: display.to_lowercase(),
@@ -257,7 +267,7 @@ pub(crate) fn extract_note_tags(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_canonical_tag_body, tokenize_note_text};
+    use super::{is_canonical_tag_body, is_nfc, tokenize_note_text};
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -297,6 +307,39 @@ mod tests {
                 fixture.valid,
                 "normalizedTag: {:?}",
                 fixture.normalized_tag
+            );
+        }
+    }
+
+    #[test]
+    fn notes_tag_tokenizer_unifies_decomposed_and_composed_tags() {
+        // macOS drag/paste/IME text arrives decomposed (NFD); deriving a tag from it
+        // must equal deriving from the composed (NFC) spelling of the same tag.
+        for (decomposed, composed) in [
+            ("#cafe\u{0301}", "#caf\u{e9}"),
+            (
+                "#\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}",
+                "#\u{d55c}\u{ae00}",
+            ),
+        ] {
+            let from_decomposed = tokenize_note_text(decomposed);
+            let from_composed = tokenize_note_text(composed);
+            assert_eq!(from_decomposed.len(), 1, "decomposed source: {decomposed:?}");
+            assert_eq!(from_composed.len(), 1, "composed source: {composed:?}");
+
+            let decomposed_tag = &from_decomposed[0];
+            let composed_tag = &from_composed[0];
+            assert_eq!(decomposed_tag.display, composed_tag.display);
+            assert_eq!(decomposed_tag.normalized, composed_tag.normalized);
+            // The derived value is composed even though the source was decomposed.
+            assert_eq!(decomposed_tag.display, composed[1..]);
+            assert!(is_nfc(&decomposed_tag.display));
+            // Offsets still index the ORIGINAL (decomposed) source, so they span the
+            // longer NFD scalar run rather than the composed length.
+            assert_eq!(decomposed_tag.start_utf16, 0);
+            assert_eq!(
+                decomposed_tag.end_utf16,
+                decomposed.encode_utf16().count()
             );
         }
     }
