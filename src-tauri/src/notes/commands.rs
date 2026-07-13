@@ -1255,12 +1255,16 @@ pub(crate) fn notes_resize_attachment_inner(
         history_context.as_ref(),
         |connection| resize_attachment(connection, &input.id, input.display_width),
     )?;
+    // Candidates-only, mirroring `run_mutation`: the pruned-path set is the
+    // complete candidate list (a resize touches no attachment files at all), and
+    // `reconcile_candidates_after_committed_change` still escalates to a full
+    // reachable-set scan whenever the reconciliation marker is set. The extra
+    // unconditional full pass was pure redundancy.
     reconcile_candidates_after_committed_change(
         &storage,
         &connection,
         &result.pruned_attachment_paths,
     );
-    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.into_mutation_result())
 }
 
@@ -1287,12 +1291,17 @@ pub(crate) fn notes_remove_attachment_inner(
         history_context.as_ref(),
         |connection| remove_attachment(connection, &attachment_id),
     )?;
+    // Candidates-only, mirroring `run_mutation`. A removed attachment's file
+    // stays reachable through its history rows and is only pruned when that
+    // history is trimmed, at which point the trimmed path is recorded in
+    // `pruned_attachment_paths`; the candidates pass escalates to a full scan
+    // whenever the reconciliation marker is set, so the former unconditional
+    // full pass added nothing.
     reconcile_candidates_after_committed_change(
         &storage,
         &connection,
         &result.pruned_attachment_paths,
     );
-    reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(result.into_mutation_result())
 }
 
