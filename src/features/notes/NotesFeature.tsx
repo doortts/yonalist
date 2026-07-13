@@ -2,7 +2,7 @@ import { NotebookPen } from "lucide-react";
 import { useContext, type PropsWithChildren } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
 import { notesStore } from "../../services/notesStore";
-import type { FeatureDefinition } from "../core/featureTypes";
+import type { FeatureDefinition, FeaturePanes } from "../core/featureTypes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import {
@@ -69,6 +69,20 @@ export function NotesFeatureProvider({
   );
 }
 
+// The Notes panes take no props and never read App state, so build the
+// FeaturePanes object — and the pane element mount points inside it — once and
+// reuse the same references on every render. App calls `renderPanes()` in its
+// render body, so returning stable references lets React bail out of the Notes
+// subtree when an App-only state change (notification polling, status metrics,
+// online toggles) re-renders the shell. This mirrors main's 0c19b5d pane
+// memoization at the feature-pane layer. Inbox/Settings deliberately rebuild
+// their panes each render so selection/list props keep flowing; their leaf
+// panes are React.memo'd instead.
+const notesPanes: FeaturePanes = {
+  middle: <NotesLibraryPane />,
+  detail: <NotesOutlinePane />
+};
+
 export const notesFeature: FeatureDefinition = {
   id: "notes",
   label: "Notes",
@@ -77,8 +91,5 @@ export const notesFeature: FeatureDefinition = {
   order: 20,
   requiresGithubAuth: false,
   Provider: NotesFeatureProvider,
-  renderPanes: () => ({
-    middle: <NotesLibraryPane />,
-    detail: <NotesOutlinePane />
-  })
+  renderPanes: () => notesPanes
 };
