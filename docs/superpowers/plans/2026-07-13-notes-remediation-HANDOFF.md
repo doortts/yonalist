@@ -23,7 +23,15 @@
 
 ## 1. 현재 상태 (검증 완료)
 
-**통합 브랜치 `notes-remediation` @ `73b839c`** 에 다음이 모두 병합·인증됨:
+> **2026-07-14 갱신:** Phase 2 전체 완료·병합됨 — `notes-remediation` @ `3d617c4`.
+> 2-B 후속 2건 + 2.2 행 메모이제이션 + 2.3 autosave loading 격리 + 2.4 패널 메모,
+> 전부 적대 리뷰 승인 (2.2/2.3은 재작업 1회). 게이트: tsc/eslint clean,
+> vitest 2203+ passed, cargo 354 passed/1 ignored. `rem-p1-backend`/`rem-p2-frontend`
+> worktree·브랜치 정리 완료, Phase 3용 `rem-p3-frontend`/`rem-p3-backend` 생성(@ 3d617c4).
+> 다음: Phase 3 (FE 체인 3.1→3.2→3.3→3.4→3.5→3.7 ∥ BE 체인 3.8 → 병합 후 3.6).
+> **범위 변경:** Phase 4.4의 OPML import/export는 사용자 지시로 제외.
+
+**통합 브랜치 `notes-remediation` @ `73b839c`** (이하 계정 전환 시점 기록) 에 다음이 모두 병합·인증됨:
 - Phase R: main 병합(`5b3d65b`) + ESLint 도입(`8c83a4b`)
 - Phase 0: 핫픽스 8건 (디바운스 상한, flush-on-quit, 키보드 버그 2건, 클립보드 paste, export 안전장치, flock 데드라인, 쓰기 실패 가시화)
 - Phase 1: 백엔드 실행 모델 **전체 6태스크 10커밋** (커맨드 async화, SQLite 연결 재사용, 트랜잭션 밖 파일 I/O, 첨부 raw IPC 읽기, mutation delta, 검색 CTE, reconcile 정리, 복제 시 첨부 복사, 단일 인스턴스 락, export 테스트 강화)
@@ -72,7 +80,7 @@ git -C /Users/doortts/repos/yonalist branch -d rem/p1-backend
 1. **4.1 다중 노드 선택** — Shift+Click/Shift+↑↓, 일괄 Complete/Delete/Move/Indent/Outdent, 백엔드 `notes_apply_batch`(한 트랜잭션+한 히스토리 엔트리, undo 1단위).
 2. **4.2 인라인 텍스트 서식** — 마크다운 서브셋 토큰(`**b**`/`*i*`/`~~s~~`/`` `code` ``), 저장은 플레인 텍스트 유지, 표시 오버레이만 서식. **4.3과 같은 트랙(둘 다 noteTokens.ts 확장).**
 3. **4.3 URL 자동 링크** — noteTokens에 url 토큰, 외부 브라우저 오픈.
-4. **4.4 붙여넣기 임포트 + OPML** — 들여쓰기 텍스트→서브트리, OPML import/export.
+4. **4.4 붙여넣기 임포트** — 들여쓰기 텍스트→서브트리. (OPML import/export는 2026-07-14 사용자 지시로 범위 제외.)
 5. **4.5 빠른 이동 팔레트 (Cmd+K)** — FTS 재사용, Enter→zoomTo.
 - **4.6 미러/백링크·보드·타임라인은 범위 제외** (로드맵의 별도 승인 방침 유지). 사용자가 명시 요청하면 별도 설계 선행.
 

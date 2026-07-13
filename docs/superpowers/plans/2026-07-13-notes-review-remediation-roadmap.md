@@ -260,10 +260,10 @@
 - [ ] `noteTokens.ts`에 `url` 토큰 종류 추가 (http/https만), `NoteTokenText`에서 앵커 렌더, 클릭 시 `tauri-plugin-opener`로 외부 브라우저.
 - 커밋: `feat(notes): clickable urls`
 
-### 4.4 붙여넣기 임포트 + OPML (1주)
+### 4.4 붙여넣기 임포트 (3~4일)
 - [ ] 다중 행 + 들여쓰기 구조 텍스트 paste → 서브트리 생성 (`notes_apply_batch` 재사용, undo 1단위).
-- [ ] OPML 파서(import) + OPML export 추가 — Workflowy 이주 왕복 경로 확보.
-- 커밋: `feat(notes): paste import and opml`
+- ~~OPML 파서(import) + OPML export~~ — **2026-07-14 사용자 지시로 범위 제외.**
+- 커밋: `feat(notes): paste import subtrees`
 
 ### 4.5 빠른 이동 팔레트 Cmd+K (3~4일)
 - [ ] 모달 팔레트: 기존 FTS 검색 재사용, Enter → `zoomTo`.
