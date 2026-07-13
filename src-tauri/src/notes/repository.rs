@@ -2104,6 +2104,7 @@ fn search_parent_trails(
     Ok(trails)
 }
 
+#[cfg(test)]
 pub(crate) fn search_nodes(
     connection: &Connection,
     query: &str,
@@ -2757,14 +2758,6 @@ fn replace_derived_content(
     replace_dates(transaction, node_id, title, note, today)
 }
 
-pub(crate) fn rebuild_derived_for_nodes(
-    transaction: &Transaction<'_>,
-    node_ids: &BTreeSet<String>,
-) -> Result<(), String> {
-    let today = SystemLocalTodayProvider.local_today(transaction)?;
-    rebuild_derived_for_nodes_at(transaction, node_ids, today)
-}
-
 pub(crate) fn rebuild_derived_for_nodes_at(
     transaction: &Transaction<'_>,
     node_ids: &BTreeSet<String>,
@@ -2799,6 +2792,7 @@ pub(crate) fn rebuild_derived_for_nodes_at(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn create_node(
     connection: &mut Connection,
     input: CreateNodeInput,
@@ -2837,6 +2831,7 @@ pub(crate) fn create_node_at(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn update_node(
     connection: &mut Connection,
     input: UpdateNodeInput,
@@ -2865,6 +2860,7 @@ pub(crate) fn update_node_at(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn split_node(
     connection: &mut Connection,
     input: SplitNodeInput,
@@ -3396,6 +3392,7 @@ fn fresh_attachment_id(
     Err("Could not generate a unique Notes attachment ID.".to_string())
 }
 
+#[cfg(test)]
 pub(crate) fn duplicate_node(
     connection: &mut Connection,
     node_id: &str,
@@ -3740,6 +3737,7 @@ fn resolve_restore_sort_collision(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn restore_node(
     connection: &mut Connection,
     node_id: &str,
@@ -3975,6 +3973,7 @@ fn insert_new_attachment_at_sort_key(
     Ok(())
 }
 
+#[cfg(test)]
 fn insert_new_attachment(
     transaction: &Transaction<'_>,
     attachment: NewAttachment,
@@ -4005,6 +4004,7 @@ fn insert_new_attachment(
     insert_new_attachment_at_sort_key(transaction, attachment, sort_key)
 }
 
+#[cfg(test)]
 pub(crate) fn create_attachment(
     connection: &mut Connection,
     attachment: NewAttachment,
@@ -4116,21 +4116,6 @@ fn create_attachment_coordinated_inner(
         .commit()
         .map_err(|error| format!("Could not commit the Notes attachment transaction: {error}"))?;
     Ok(workspace)
-}
-
-pub(crate) fn create_attachment_coordinated_for_node(
-    connection: &mut Connection,
-    node_id: &str,
-    prepare: impl FnOnce() -> Result<NewAttachment, String>,
-    before_commit: impl FnOnce() -> Result<(), String>,
-) -> Result<NotesWorkspace, String> {
-    create_attachment_coordinated_inner(
-        connection,
-        Some((node_id, 1)),
-        || prepare().map(|attachment| (node_id.to_string(), vec![attachment])),
-        || Ok(()),
-        before_commit,
-    )
 }
 
 pub(crate) fn create_attachments_coordinated_for_node(

@@ -1346,6 +1346,7 @@ impl AttachmentStorageLease {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_source_attachment(
         &self,
         source_path: &str,
@@ -1379,6 +1380,7 @@ impl AttachmentStorageLease {
         self.sync_directory()
     }
 
+    #[cfg(test)]
     pub(crate) fn publish_attachment_bytes(
         &self,
         prepared: &PreparedAttachment,
