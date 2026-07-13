@@ -14,7 +14,8 @@ mod notes;
 
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
-    notes_archive_node, notes_clear_history, notes_collapse_all, notes_create_node,
+    notes_apply_batch, notes_archive_node, notes_clear_history, notes_collapse_all,
+    notes_create_node,
     notes_delete_database, notes_duplicate_node, notes_empty_trash, notes_expand_all,
     notes_export_markdown, notes_export_pdf, notes_history_status, notes_import_attachment,
     notes_import_attachment_bytes, notes_import_attachment_paths_batch, notes_initialize,
@@ -1540,6 +1541,7 @@ pub fn run() {
             notes_update_node,
             notes_split_node,
             notes_move_node,
+            notes_apply_batch,
             notes_toggle_complete,
             notes_toggle_collapsed,
             notes_expand_all,
@@ -1599,6 +1601,7 @@ mod tests {
             "notes_sort_subtree_descending",
             "notes_import_attachment_paths_batch",
             "notes_import_attachment_bytes",
+            "notes_apply_batch",
         ] {
             assert!(
                 handler

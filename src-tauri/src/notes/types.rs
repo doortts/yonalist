@@ -324,6 +324,124 @@ pub struct SplitNodeInput {
     pub suffix: String,
 }
 
+/// One structural operation applied to a *set* of selected nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BatchOp {
+    /// Set the completion state of every selected node to `completed`
+    /// (idempotent: already-matching nodes are untouched).
+    Complete { completed: bool },
+    /// Soft-delete every selected node as ONE trash batch (they share a single
+    /// `deleted_batch_id`).
+    Delete,
+    /// Move the selected nodes as a contiguous block under `parentId`, after
+    /// `afterId`, preserving their order in `nodeIds`.
+    Move {
+        parent_id: Option<NoteId>,
+        after_id: Option<NoteId>,
+    },
+    /// Indent each eligible selected node under its nearest preceding sibling
+    /// that is not itself selected.
+    Indent,
+    /// Outdent each eligible selected node up one level (after its old parent).
+    Outdent,
+}
+
+/// Input to `notes_apply_batch`: a set of node ids plus the operation to apply
+/// to all of them in one transaction / one history entry. Deserialized from the
+/// internally-tagged wire shape `{ "op": "move", "nodeIds": [...], "parentId": ... }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyBatchInput {
+    pub node_ids: Vec<NoteId>,
+    pub op: BatchOp,
+}
+
+/// Wire representation of [`ApplyBatchInput`]: an internally-tagged enum with the
+/// op-specific fields at the top level. This shape deserializes reliably, whereas
+/// a `#[serde(flatten)]` `BatchOp` silently drops fields — serde flatten and
+/// internally tagged enums do not compose.
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum ApplyBatchWire {
+    Complete {
+        node_ids: Vec<NoteId>,
+        completed: bool,
+    },
+    Delete {
+        node_ids: Vec<NoteId>,
+    },
+    Move {
+        node_ids: Vec<NoteId>,
+        parent_id: Option<NoteId>,
+        after_id: Option<NoteId>,
+    },
+    Indent {
+        node_ids: Vec<NoteId>,
+    },
+    Outdent {
+        node_ids: Vec<NoteId>,
+    },
+}
+
+impl<'de> Deserialize<'de> for ApplyBatchInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match ApplyBatchWire::deserialize(deserializer)? {
+            ApplyBatchWire::Complete {
+                node_ids,
+                completed,
+            } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Complete { completed },
+            },
+            ApplyBatchWire::Delete { node_ids } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Delete,
+            },
+            ApplyBatchWire::Move {
+                node_ids,
+                parent_id,
+                after_id,
+            } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Move {
+                    parent_id,
+                    after_id,
+                },
+            },
+            ApplyBatchWire::Indent { node_ids } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Indent,
+            },
+            ApplyBatchWire::Outdent { node_ids } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Outdent,
+            },
+        })
+    }
+}
+
+impl ApplyBatchInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.node_ids.is_empty() {
+            return Err("A batch operation requires at least one node.".to_string());
+        }
+        for id in &self.node_ids {
+            validate_note_id(id)?;
+        }
+        if let BatchOp::Move {
+            parent_id,
+            after_id,
+        } = &self.op
+        {
+            validate_optional_note_id(parent_id.as_deref())?;
+            validate_optional_note_id(after_id.as_deref())?;
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_note_id(id: &str) -> Result<(), String> {
     let bytes = id.as_bytes();
     let has_canonical_shape = bytes.len() == 36
@@ -406,11 +524,11 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, ImportAttachmentPathBatchInput, MoveNodeInput, NoteAttachment,
-        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchScope, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
-        NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
-        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+        validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput, MoveNodeInput,
+        NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchScope,
+        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
+        NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -489,6 +607,81 @@ mod tests {
             self_anchored.validate().expect_err("self before anchor"),
             "A node cannot be placed before itself."
         );
+    }
+
+    #[test]
+    fn apply_batch_input_deserializes_the_flattened_op_wire_shape() {
+        let complete: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID, SECOND_ID],
+            "op": "complete",
+            "completed": true
+        }))
+        .expect("complete batch input");
+        assert_eq!(complete.node_ids, vec![NODE_ID, SECOND_ID]);
+        assert_eq!(complete.op, BatchOp::Complete { completed: true });
+
+        let delete: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID],
+            "op": "delete"
+        }))
+        .expect("delete batch input");
+        assert_eq!(delete.op, BatchOp::Delete);
+
+        let move_op: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [SECOND_ID, THIRD_ID],
+            "op": "move",
+            "parentId": NODE_ID,
+            "afterId": null
+        }))
+        .expect("move batch input");
+        assert_eq!(
+            move_op.op,
+            BatchOp::Move {
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+            }
+        );
+
+        let indent: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID],
+            "op": "indent"
+        }))
+        .expect("indent batch input");
+        assert_eq!(indent.op, BatchOp::Indent);
+
+        let outdent: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID],
+            "op": "outdent"
+        }))
+        .expect("outdent batch input");
+        assert_eq!(outdent.op, BatchOp::Outdent);
+    }
+
+    #[test]
+    fn apply_batch_input_validation_rejects_empty_and_malformed_selections() {
+        let empty = ApplyBatchInput {
+            node_ids: Vec::new(),
+            op: BatchOp::Delete,
+        };
+        assert_eq!(
+            empty.validate().expect_err("empty selection"),
+            "A batch operation requires at least one node."
+        );
+
+        let malformed = ApplyBatchInput {
+            node_ids: vec!["not-a-uuid".to_string()],
+            op: BatchOp::Delete,
+        };
+        assert!(malformed.validate().is_err());
+
+        let bad_parent = ApplyBatchInput {
+            node_ids: vec![NODE_ID.to_string()],
+            op: BatchOp::Move {
+                parent_id: Some("not-a-uuid".to_string()),
+                after_id: None,
+            },
+        };
+        assert!(bad_parent.validate().is_err());
     }
 
     #[test]

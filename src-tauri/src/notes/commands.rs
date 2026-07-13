@@ -17,8 +17,9 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, collapse_all, create_attachments_coordinated_for_node,
-    create_node_at, delete_database, duplicate_node_at, empty_trash, expand_all, list_tags,
+    apply_batch, archive_node, attachment_by_id, collapse_all,
+    create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
+    empty_trash, expand_all, list_tags,
     list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
     remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
     restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node,
@@ -27,8 +28,9 @@ use crate::notes::repository::{
     validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ImportAttachmentInput, ImportAttachmentPathBatchInput,
-    MoveNodeInput, NoteAttachment, NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery,
+    validate_note_id, ApplyBatchInput, CreateNodeInput, ImportAttachmentInput,
+    ImportAttachmentPathBatchInput, MoveNodeInput, NoteAttachment, NoteSearchResult,
+    NoteSearchScope, NoteStructuredSearchQuery,
     NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
     NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
     NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
@@ -354,6 +356,28 @@ pub(crate) fn notes_move_node_inner(
 ) -> Result<NotesMutationResult, String> {
     run_mutation(&vault_path, history_context, |connection| {
         move_node(connection, input)
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_apply_batch(
+    vault_path: String,
+    input: ApplyBatchInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || notes_apply_batch_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_apply_batch_inner(
+    vault_path: String,
+    input: ApplyBatchInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    // Batch ops are structural only (no title/note edits), so no date rebuild is
+    // needed — a plain `run_mutation` gives us the single-transaction /
+    // single-history-entry / delta behavior for free.
+    run_mutation(&vault_path, history_context, |connection| {
+        apply_batch(connection, input)
     })
 }
 
@@ -1644,6 +1668,7 @@ mod tests {
     // command name to its synchronous `_inner` body. Every existing call site
     // stays byte-for-byte identical.
     use super::{
+        notes_apply_batch_inner as notes_apply_batch,
         notes_archive_node_inner as notes_archive_node,
         notes_collapse_all_inner as notes_collapse_all,
         notes_create_node_inner as notes_create_node,
@@ -1680,10 +1705,11 @@ mod tests {
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
-        ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportAttachmentPathItem,
-        NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
-        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        ApplyBatchInput, BatchOp, ImportAttachmentInput, ImportAttachmentPathBatchInput,
+        ImportAttachmentPathItem, NoteLayoutMode, NoteNode, NoteSearchMatchedField,
+        NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+        NoteTagSummary, NotesExportFormat, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::params;
     use serde_json::json;
@@ -1706,6 +1732,82 @@ mod tests {
 
     fn assert_active(workspace: &NotesWorkspace) {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
+    }
+
+    const BATCH_A_ID: &str = "44444444-4444-4444-8444-444444444444";
+    const BATCH_B_ID: &str = "55555555-5555-4555-8555-555555555555";
+    const BATCH_C_ID: &str = "66666666-6666-4666-8666-666666666666";
+    const BATCH_D_ID: &str = "77777777-7777-4777-8777-777777777777";
+    const BATCH_MISSING_ID: &str = "99999999-9999-4999-8999-999999999999";
+
+    fn seed_batch_node(vault_path: &str, id: &str, parent_id: Option<&str>, after_id: Option<&str>) {
+        notes_create_node(
+            vault_path.to_string(),
+            CreateNodeInput {
+                id: id.to_string(),
+                parent_id: parent_id.map(str::to_string),
+                after_id: after_id.map(str::to_string),
+                title: id.to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("seed batch node");
+    }
+
+    fn batch_op_context(entry_id: &str, command_kind: &str) -> NotesHistoryContext {
+        NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            entry_id: entry_id.to_string(),
+            command_kind: command_kind.to_string(),
+        }
+    }
+
+    /// Live children of `parent_id` (NULL = roots) in document order.
+    fn active_child_ids(vault_path: &str, parent_id: Option<&str>) -> Vec<String> {
+        let connection = connect_notes_db(vault_path).expect("open vault for children");
+        let mut statement = connection
+            .prepare(
+                "SELECT id, sort_key FROM notes_nodes \
+                 WHERE parent_id IS ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+                 ORDER BY sort_key, id",
+            )
+            .expect("prepare active children");
+        let rows = statement
+            .query_map([parent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .expect("query active children")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect active children");
+        // Sort keys of live siblings must be strictly increasing and distinct.
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0].1 < pair[1].1,
+                "sibling sort keys are not strictly increasing: {rows:?}"
+            );
+        }
+        rows.into_iter().map(|(id, _)| id).collect()
+    }
+
+    fn deleted_batch_id_of(vault_path: &str, id: &str) -> Option<String> {
+        let connection = connect_notes_db(vault_path).expect("open vault for batch id");
+        connection
+            .query_row(
+                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .expect("read deleted batch id")
+    }
+
+    fn history_entry_count(vault_path: &str) -> i64 {
+        let connection = connect_notes_db(vault_path).expect("open vault for history count");
+        connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("count history entries")
     }
 
     fn insert_limit_attachment_metadata(
@@ -2858,6 +2960,411 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![ROOT_ID, SPLIT_ID]
         );
+    }
+
+    #[test]
+    fn batch_complete_sets_every_node_in_one_history_entry_and_undo_reverts_all() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        for id in [BATCH_A_ID, BATCH_B_ID, BATCH_C_ID] {
+            seed_batch_node(&vault_path, id, None, None);
+        }
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![
+                    BATCH_A_ID.to_string(),
+                    BATCH_B_ID.to_string(),
+                    BATCH_C_ID.to_string(),
+                ],
+                op: BatchOp::Complete { completed: true },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchComplete")),
+        )
+        .expect("batch complete");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(mutation.can_undo);
+        assert!(mutation
+            .workspace
+            .nodes
+            .iter()
+            .all(|node| node.completed_at.is_some()));
+        // Exactly one history entry covers the whole batch.
+        assert_eq!(history_entry_count(&vault_path), 1);
+        // The delta enumerates every touched node (Phase 1.5 wiring).
+        let mut changed = mutation
+            .changed_nodes
+            .as_ref()
+            .expect("batch mutation carries a node delta")
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        changed.sort();
+        assert_eq!(
+            changed,
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string()
+            ]
+        );
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo batch complete");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(undone
+            .workspace
+            .nodes
+            .iter()
+            .all(|node| node.completed_at.is_none()));
+    }
+
+    #[test]
+    fn batch_delete_shares_one_trash_batch_and_undo_restores_all() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        // Two independent subtrees: A>A_child and B>B_child.
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_D_ID, Some(BATCH_B_ID), None);
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchDelete")),
+        )
+        .expect("batch delete");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(mutation.workspace.nodes.is_empty());
+        assert_eq!(history_entry_count(&vault_path), 1);
+
+        // All four deleted rows share one non-null deletion batch id.
+        let batch_id = deleted_batch_id_of(&vault_path, BATCH_A_ID).expect("A deletion batch");
+        for id in [BATCH_A_ID, BATCH_C_ID, BATCH_B_ID, BATCH_D_ID] {
+            assert_eq!(
+                deleted_batch_id_of(&vault_path, id).as_deref(),
+                Some(batch_id.as_str()),
+                "node {id} does not share the batch deletion id"
+            );
+        }
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo batch delete");
+        let mut restored = undone
+            .workspace
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        restored.sort();
+        assert_eq!(
+            restored,
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_D_ID.to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_delete_restore_is_scoped_to_the_restored_subtree() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_D_ID, Some(BATCH_B_ID), None);
+
+        notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+                op: BatchOp::Delete,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchDelete")),
+        )
+        .expect("batch delete");
+
+        // Restoring one batch member restores only its subtree; the sibling
+        // subtree stays trashed even though it shares the batch id.
+        let restored = notes_restore_node(vault_path.clone(), BATCH_A_ID.to_string(), None)
+            .expect("restore one batch member");
+        let mut active = restored
+            .workspace
+            .nodes
+            .iter()
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        active.sort();
+        assert_eq!(
+            active,
+            vec![BATCH_A_ID.to_string(), BATCH_C_ID.to_string()]
+        );
+        assert!(deleted_batch_id_of(&vault_path, BATCH_B_ID).is_some());
+        assert!(deleted_batch_id_of(&vault_path, BATCH_D_ID).is_some());
+    }
+
+    #[test]
+    fn batch_move_places_the_selection_as_a_contiguous_ordered_block() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        // Target parent D already holds one child (A) so we can prove the moved
+        // block lands contiguously after it.
+        seed_batch_node(&vault_path, BATCH_D_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_A_ID, Some(BATCH_D_ID), None);
+        // Three roots to move, in document order B, C, then the missing-id stand-in.
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_D_ID));
+        seed_batch_node(&vault_path, BATCH_C_ID, None, Some(BATCH_B_ID));
+        seed_batch_node(&vault_path, BATCH_MISSING_ID, None, Some(BATCH_C_ID));
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![
+                    BATCH_B_ID.to_string(),
+                    BATCH_C_ID.to_string(),
+                    BATCH_MISSING_ID.to_string(),
+                ],
+                op: BatchOp::Move {
+                    parent_id: Some(BATCH_D_ID.to_string()),
+                    after_id: Some(BATCH_A_ID.to_string()),
+                },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
+        )
+        .expect("batch move");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        // Block is contiguous and keeps the requested order after the anchor.
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_D_ID)),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_MISSING_ID.to_string()
+            ]
+        );
+        // Only the (unmoved) target parent remains at the root level.
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![BATCH_D_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn batch_move_under_a_live_descendant_rejects_the_whole_batch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        // A has a live descendant A_child; B is an unrelated root.
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+
+        // Moving [B, A] under A's own descendant must reject the entire batch,
+        // even though moving B alone would be legal.
+        let error = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_B_ID.to_string(), BATCH_A_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: Some(BATCH_C_ID.to_string()),
+                    after_id: None,
+                },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
+        )
+        .expect_err("descendant move must be rejected");
+        assert_eq!(error, "A Note node cannot be moved under a live descendant.");
+
+        // Nothing changed and no history entry was written.
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()]
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_A_ID)),
+            vec![BATCH_C_ID.to_string()]
+        );
+        assert_eq!(history_entry_count(&vault_path), 0);
+    }
+
+    #[test]
+    fn batch_indent_reparents_each_node_under_its_prior_unselected_sibling() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        // Parent D with children A, B, C, (missing-id) in order.
+        seed_batch_node(&vault_path, BATCH_D_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_A_ID, Some(BATCH_D_ID), None);
+        seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_D_ID), Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_D_ID), Some(BATCH_B_ID));
+        seed_batch_node(&vault_path, BATCH_MISSING_ID, Some(BATCH_D_ID), Some(BATCH_C_ID));
+
+        // Selecting first child A is ineligible (no prior sibling) -> no-op.
+        let noop = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_A_ID.to_string()],
+                op: BatchOp::Indent,
+            },
+            Some(batch_op_context(NOOP_ENTRY_ID, "batchIndent")),
+        )
+        .expect("indent first child is a no-op");
+        assert_eq!(noop.history_entry_id, None);
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_D_ID)),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_MISSING_ID.to_string()
+            ]
+        );
+
+        // B and C both indent under their nearest unselected prior sibling (A),
+        // preserving their order under A.
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_B_ID.to_string(), BATCH_C_ID.to_string()],
+                op: BatchOp::Indent,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchIndent")),
+        )
+        .expect("batch indent");
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_D_ID)),
+            vec![BATCH_A_ID.to_string(), BATCH_MISSING_ID.to_string()]
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_A_ID)),
+            vec![BATCH_B_ID.to_string(), BATCH_C_ID.to_string()]
+        );
+    }
+
+    #[test]
+    fn batch_outdent_lifts_each_node_after_its_old_parent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        // Grandparent A > parent B > children C, (missing-id).
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_B_ID), None);
+        seed_batch_node(&vault_path, BATCH_MISSING_ID, Some(BATCH_B_ID), Some(BATCH_C_ID));
+
+        // A root node cannot outdent (no parent) -> no-op.
+        let noop = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_A_ID.to_string()],
+                op: BatchOp::Outdent,
+            },
+            Some(batch_op_context(NOOP_ENTRY_ID, "batchOutdent")),
+        )
+        .expect("outdent root is a no-op");
+        assert_eq!(noop.history_entry_id, None);
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![BATCH_A_ID.to_string()]
+        );
+
+        // C and its sibling outdent to the grandparent, landing after B in order.
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_C_ID.to_string(), BATCH_MISSING_ID.to_string()],
+                op: BatchOp::Outdent,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchOutdent")),
+        )
+        .expect("batch outdent");
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_A_ID)),
+            vec![
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_MISSING_ID.to_string()
+            ]
+        );
+        assert!(active_child_ids(&vault_path, Some(BATCH_B_ID)).is_empty());
+    }
+
+    #[test]
+    fn batch_with_one_invalid_node_rolls_back_the_committed_work() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_initialize(vault_path.clone()).expect("initialize");
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+
+        // A and B are completed inside the transaction before the missing third
+        // node fails validation; the failure must roll their completions back.
+        let error = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![
+                    BATCH_A_ID.to_string(),
+                    BATCH_B_ID.to_string(),
+                    BATCH_MISSING_ID.to_string(),
+                ],
+                op: BatchOp::Complete { completed: true },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchComplete")),
+        )
+        .expect_err("missing node aborts the batch");
+        assert!(error.contains("does not exist"));
+
+        let workspace = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+            .expect("reload workspace after aborted batch");
+        assert!(
+            workspace.nodes.iter().all(|node| node.completed_at.is_none()),
+            "aborted batch left a node completed"
+        );
+        assert_eq!(history_entry_count(&vault_path), 0);
     }
 
     #[test]

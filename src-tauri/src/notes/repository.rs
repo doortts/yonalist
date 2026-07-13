@@ -5,11 +5,11 @@ use crate::notes::date_index::{
 use crate::notes::history;
 use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
-    validate_note_id, CreateNodeInput, ExportAttachment, ExportDateSpan, ExportNode, MoveNodeInput,
-    NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult,
-    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
+    ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField,
+    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
+    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope,
+    SplitNodeInput, UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
     MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{
@@ -3834,6 +3834,319 @@ pub(crate) fn restore_node_at(
         rebuild_derived_for_nodes_at(transaction, &restored_node_ids, today)?;
         Ok(())
     })
+}
+
+// ---- Batch (multi-select) structural operations ------------------------------
+//
+// `apply_batch` applies ONE structural operation to a SET of selected nodes.
+// Everything runs inside a single `with_workspace_transaction`, so when a
+// history context is active `finalize_transaction` records exactly ONE history
+// entry from the audit rows every mutation in the batch accumulates — the whole
+// batch is one all-or-nothing undo step. If any node or op is invalid the
+// closure returns `Err`, the transaction is rolled back, and the vault is left
+// untouched (no history entry, no partial changes). This mirrors the atomic
+// multi-image ingest's transaction+history discipline.
+
+pub(crate) fn apply_batch(
+    connection: &mut Connection,
+    input: ApplyBatchInput,
+) -> Result<NotesWorkspace, String> {
+    input.validate()?;
+    let node_ids = dedup_preserving_order(&input.node_ids);
+    with_workspace_transaction(connection, |transaction| match &input.op {
+        BatchOp::Complete { completed } => {
+            batch_set_completed(transaction, &node_ids, *completed)
+        }
+        BatchOp::Delete => batch_soft_delete(transaction, &node_ids),
+        BatchOp::Move {
+            parent_id,
+            after_id,
+        } => batch_move(
+            transaction,
+            &node_ids,
+            parent_id.as_deref(),
+            after_id.as_deref(),
+        ),
+        BatchOp::Indent => batch_indent(transaction, &node_ids),
+        BatchOp::Outdent => batch_outdent(transaction, &node_ids),
+    })
+}
+
+fn dedup_preserving_order(ids: &[String]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut result = Vec::with_capacity(ids.len());
+    for id in ids {
+        if seen.insert(id.as_str()) {
+            result.push(id.clone());
+        }
+    }
+    result
+}
+
+/// Sets the completion state of every selected node to `completed`. Validation
+/// and mutation are interleaved: each node is required active immediately before
+/// it is updated, so a later invalid node rolls back the completions already
+/// applied to earlier nodes in the same transaction (all-or-nothing). Nodes
+/// already in the target state are skipped so no spurious history rows appear.
+fn batch_set_completed(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+    completed: bool,
+) -> Result<(), String> {
+    let statement = if completed {
+        "UPDATE notes_nodes SET \
+           completed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = ?1 AND completed_at IS NULL \
+           AND deleted_at IS NULL AND archived_at IS NULL"
+    } else {
+        "UPDATE notes_nodes SET \
+           completed_at = NULL, \
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+         WHERE id = ?1 AND completed_at IS NOT NULL \
+           AND deleted_at IS NULL AND archived_at IS NULL"
+    };
+    for node_id in node_ids {
+        require_active_node(transaction, node_id)?;
+        transaction
+            .execute(statement, [node_id])
+            .map_err(|error| format!("Could not set Note completion in batch: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Soft-deletes every selected node as ONE trash batch: they all receive the
+/// same fresh `deleted_batch_id`, so the trash view groups them and a single
+/// undo restores the whole batch. Every selected node is required active up
+/// front (a snapshot before any mutation) so nested selections are legal —
+/// once an ancestor's subtree is trashed, re-running for a descendant is a
+/// no-op via the `deleted_at IS NULL` anchor.
+fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
+    for node_id in node_ids {
+        require_active_node(transaction, node_id)?;
+    }
+    let deletion_batch_id = fresh_deletion_batch_id(transaction)?;
+    for node_id in node_ids {
+        transaction
+            .execute(
+                "WITH RECURSIVE subtree(id) AS (\
+                   SELECT id FROM notes_nodes \
+                   WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
+                   UNION ALL \
+                   SELECT child.id FROM notes_nodes child \
+                   JOIN subtree parent ON child.parent_id = parent.id \
+                   WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
+                 ) \
+                 UPDATE notes_nodes SET \
+                   deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   deleted_batch_id = ?2, \
+                   updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id IN subtree",
+                params![node_id, deletion_batch_id],
+            )
+            .map_err(|error| format!("Could not move the Note selection to trash: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Returns whether any live ancestor of `node_id` is itself in the selection.
+/// Used to reduce a selection to its "roots" — a selected node whose ancestor
+/// is also selected travels inside that ancestor's subtree, so moving it
+/// independently would tear the block apart.
+fn has_selected_ancestor(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    selected: &BTreeSet<&str>,
+) -> Result<bool, String> {
+    let mut current = node_by_id(transaction, node_id)?.and_then(|node| node.parent_id);
+    while let Some(parent_id) = current {
+        if selected.contains(parent_id.as_str()) {
+            return Ok(true);
+        }
+        current = node_by_id(transaction, &parent_id)?.and_then(|node| node.parent_id);
+    }
+    Ok(false)
+}
+
+fn selection_roots(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+    selected: &BTreeSet<&str>,
+) -> Result<Vec<String>, String> {
+    let mut roots = Vec::new();
+    for node_id in node_ids {
+        if !has_selected_ancestor(transaction, node_id, selected)? {
+            roots.push(node_id.clone());
+        }
+    }
+    Ok(roots)
+}
+
+/// Moves a single node within the current transaction. A thin wrapper over
+/// `next_sort_key_excluding` used to place batch-moved nodes one after another.
+fn move_node_within_transaction(
+    transaction: &Transaction<'_>,
+    node_id: &str,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+) -> Result<(), String> {
+    let sort_key =
+        next_sort_key_excluding(transaction, parent_id, after_id, None, Some(node_id))?;
+    transaction
+        .execute(
+            "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+             WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
+            params![parent_id, sort_key, node_id],
+        )
+        .map_err(|error| format!("Could not move a Note node in batch: {error}"))?;
+    Ok(())
+}
+
+/// Moves the selected nodes as a contiguous block under `parent_id`, positioned
+/// after `after_id`. Only the roots of the selection move (descendants travel
+/// with their root); they are placed in the order they appear in `node_ids`
+/// (the caller passes them in outline order). All self/descendant guards run up
+/// front so an illegal target rolls the whole batch back before any row moves.
+fn batch_move(
+    transaction: &Transaction<'_>,
+    node_ids: &[String],
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+) -> Result<(), String> {
+    ensure_live_parent(transaction, parent_id)?;
+    for node_id in node_ids {
+        require_active_node(transaction, node_id)?;
+    }
+    let selected: BTreeSet<&str> = node_ids.iter().map(String::as_str).collect();
+    if let Some(after_id) = after_id {
+        if selected.contains(after_id) {
+            return Err("A batch move cannot be anchored after a node in the selection.".to_string());
+        }
+    }
+    let roots = selection_roots(transaction, node_ids, &selected)?;
+    for root in &roots {
+        if parent_id == Some(root.as_str()) {
+            return Err("A Note node cannot be moved under itself.".to_string());
+        }
+        if let Some(parent_id) = parent_id {
+            if live_descendant_exists(transaction, root, parent_id)? {
+                return Err("A Note node cannot be moved under a live descendant.".to_string());
+            }
+        }
+    }
+    // Place each root immediately after the previous one, so the block is
+    // contiguous and keeps its `node_ids` order.
+    let mut anchor = after_id.map(str::to_string);
+    for root in &roots {
+        move_node_within_transaction(transaction, root, parent_id, anchor.as_deref())?;
+        anchor = Some(root.clone());
+    }
+    Ok(())
+}
+
+/// Indents each eligible selection root. DOCUMENTED SEMANTICS: a root becomes
+/// the last child of the nearest preceding sibling (under its current parent)
+/// that is NOT itself in the selection. A root with no such sibling (it is the
+/// first child, or every preceding sibling is selected) is ineligible and stays
+/// in place — e.g. indenting every child of a parent is a no-op. Targets are
+/// computed from the pre-mutation snapshot; nodes moving under the same target
+/// are appended in their original sibling order, so the result is independent
+/// of the order the batch is applied.
+fn batch_indent(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
+    for node_id in node_ids {
+        require_active_node(transaction, node_id)?;
+    }
+    let selected: BTreeSet<&str> = node_ids.iter().map(String::as_str).collect();
+    let roots = selection_roots(transaction, node_ids, &selected)?;
+    // (new_parent_id, original_sibling_index, node_id)
+    let mut plans: Vec<(String, usize, String)> = Vec::new();
+    for root in &roots {
+        let node = node_by_id(transaction, root)?
+            .ok_or_else(|| format!("Note node {root} does not exist."))?;
+        let siblings = sibling_keys(transaction, node.parent_id.as_deref(), None)?;
+        let Some(index) = siblings.iter().position(|(id, _)| id == root) else {
+            continue;
+        };
+        let target = siblings[..index]
+            .iter()
+            .rev()
+            .map(|(id, _)| id)
+            .find(|id| !selected.contains(id.as_str()));
+        if let Some(target) = target {
+            plans.push((target.clone(), index, root.clone()));
+        }
+        // else: no eligible prior sibling -> ineligible, leave in place.
+    }
+    // Group by target parent and append in original order so siblings moving
+    // under the same parent keep their relative order regardless of input order.
+    plans.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    for (new_parent, _, node_id) in &plans {
+        move_node_within_transaction(transaction, node_id, Some(new_parent), None)?;
+    }
+    Ok(())
+}
+
+/// Outdents each eligible selection root. DOCUMENTED SEMANTICS: a root that has
+/// a parent moves up one level — its new parent is its grandparent (may be the
+/// root level), positioned immediately after its old parent. A root already at
+/// the top level (no parent) is ineligible and stays in place. When several
+/// selected siblings outdent from the same parent they are chained after that
+/// parent in original order, so the block stays contiguous and ordered. Plans
+/// are computed from the pre-mutation snapshot for order-independence.
+fn batch_outdent(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(), String> {
+    for node_id in node_ids {
+        require_active_node(transaction, node_id)?;
+    }
+    let selected: BTreeSet<&str> = node_ids.iter().map(String::as_str).collect();
+    let roots = selection_roots(transaction, node_ids, &selected)?;
+    struct OutdentPlan {
+        parent_id: String,
+        grandparent_id: Option<String>,
+        index: usize,
+        node_id: String,
+    }
+    let mut plans: Vec<OutdentPlan> = Vec::new();
+    for root in &roots {
+        let node = node_by_id(transaction, root)?
+            .ok_or_else(|| format!("Note node {root} does not exist."))?;
+        let Some(parent_id) = node.parent_id.clone() else {
+            continue; // already at the top level -> ineligible.
+        };
+        let parent = node_by_id(transaction, &parent_id)?
+            .ok_or_else(|| format!("Note node {parent_id} does not exist."))?;
+        let grandparent_id = parent.parent_id.clone();
+        let siblings = sibling_keys(transaction, Some(&parent_id), None)?;
+        let index = siblings
+            .iter()
+            .position(|(id, _)| id == root)
+            .ok_or_else(|| format!("Note node {root} is not a live child of its parent."))?;
+        plans.push(OutdentPlan {
+            parent_id,
+            grandparent_id,
+            index,
+            node_id: root.clone(),
+        });
+    }
+    // Emit each parent-group in document order; the first node of a group lands
+    // right after its old parent, and subsequent nodes chain after the previous.
+    plans.sort_by(|a, b| a.parent_id.cmp(&b.parent_id).then(a.index.cmp(&b.index)));
+    let mut current_parent: Option<&str> = None;
+    let mut anchor: Option<String> = None;
+    for plan in &plans {
+        if current_parent != Some(plan.parent_id.as_str()) {
+            current_parent = Some(plan.parent_id.as_str());
+            anchor = Some(plan.parent_id.clone());
+        }
+        move_node_within_transaction(
+            transaction,
+            &plan.node_id,
+            plan.grandparent_id.as_deref(),
+            anchor.as_deref(),
+        )?;
+        anchor = Some(plan.node_id.clone());
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
