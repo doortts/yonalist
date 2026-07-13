@@ -2018,58 +2018,68 @@ fn fts_match_expression(query: &str) -> Option<String> {
     )
 }
 
-fn search_parent_map(
+/// Resolve the ancestor title trail for each search hit with a recursive CTE
+/// scoped to the LIMITed result set, instead of loading every
+/// `(id, parent_id, title)` row in the vault into a map on every search.
+///
+/// The walk only follows ancestors that satisfy the same scope predicate as the
+/// match set, so an out-of-scope ancestor (for example a live parent above a
+/// trashed node) terminates the trail exactly like the previous map lookup did.
+/// Each returned trail is ordered root-first. Node trees are acyclic by
+/// construction; the depth bound is a defensive guard against a corrupt cycle.
+fn search_parent_trails(
     connection: &Connection,
     scope: NoteSearchScope,
-) -> Result<HashMap<String, (Option<String>, String)>, String> {
-    let sql = format!(
-        "SELECT node.id, node.parent_id, node.title FROM notes_nodes node WHERE {}",
-        search_scope_predicate(scope)
-    );
-    let mut statement = connection
-        .prepare(&sql)
-        .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
-    let mut parents = HashMap::new();
-    for row in rows {
-        let (id, parent_id, title) =
-            row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
-        parents.insert(id, (parent_id, title));
+    node_ids: &[&str],
+) -> Result<HashMap<String, Vec<String>>, String> {
+    const MAX_TRAIL_DEPTH: i64 = 10_000;
+    let mut trails: HashMap<String, Vec<String>> = HashMap::new();
+    if node_ids.is_empty() {
+        return Ok(trails);
     }
-    Ok(parents)
-}
-
-fn parent_trail(
-    node_id: &str,
-    parents: &HashMap<String, (Option<String>, String)>,
-) -> Result<Vec<String>, String> {
-    let mut trail = Vec::new();
-    let mut seen = HashSet::new();
-    let mut parent_id = parents
-        .get(node_id)
-        .and_then(|(parent_id, _)| parent_id.clone());
-    while let Some(id) = parent_id {
-        if !seen.insert(id.clone()) {
-            return Err(format!(
-                "Could not assemble the Notes search parent trail for {node_id}: cycle detected."
-            ));
+    let scope_predicate = search_scope_predicate(scope);
+    let unique_ids = node_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    for chunk in unique_ids.chunks(500) {
+        let placeholders = std::iter::repeat("?")
+            .take(chunk.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, depth) AS (\
+               SELECT child.id, node.id, node.parent_id, node.title, 0 \
+               FROM notes_nodes child \
+               JOIN notes_nodes node ON node.id = child.parent_id \
+               WHERE child.id IN ({placeholders}) AND {scope_predicate} \
+               UNION ALL \
+               SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, \
+                      ancestor_trail.depth + 1 \
+               FROM ancestor_trail \
+               JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
+               WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
+             ) \
+             SELECT match_id, title, depth FROM ancestor_trail \
+             ORDER BY match_id, depth DESC"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter().copied()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
+        for row in rows {
+            let (match_id, title) =
+                row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
+            trails.entry(match_id).or_default().push(title);
         }
-        let Some((next_parent_id, title)) = parents.get(&id) else {
-            break;
-        };
-        trail.push(title.clone());
-        parent_id = next_parent_id.clone();
     }
-    trail.reverse();
-    Ok(trail)
+    Ok(trails)
 }
 
 pub(crate) fn search_nodes(
@@ -2111,18 +2121,20 @@ fn search_nodes_by_date(
         .map_err(|error| format!("Could not search Note dates: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let parents = search_parent_map(connection, scope)?;
-    matches
+    let node_ids = matches.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, scope, &node_ids)?;
+    Ok(matches
         .into_iter()
         .map(|(node_id, title)| {
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field: NoteSearchMatchedField::Date,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 fn search_nodes_fts(
@@ -2162,13 +2174,15 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not search Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let parents = search_parent_map(connection, scope)?;
+    let node_ids = matches.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, scope, &node_ids)?;
 
-    matches
+    Ok(matches
         .into_iter()
         .map(|(node_id, title, matched_title)| {
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field: if matched_title {
@@ -2176,9 +2190,9 @@ fn search_nodes_fts(
                 } else {
                     NoteSearchMatchedField::Note
                 },
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 pub(crate) fn search_nodes_at(
@@ -2403,9 +2417,10 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let parents = search_parent_map(connection, NoteSearchScope::Active)?;
+    let node_ids = matches.iter().map(|(id, _, _, _)| id.as_str()).collect::<Vec<_>>();
+    let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
 
-    matches
+    Ok(matches
         .into_iter()
         .map(|(node_id, title, _note, matched_title)| {
             let matched_field = if match_expression.is_some() {
@@ -2423,14 +2438,15 @@ pub(crate) fn search_nodes_structured(
             } else {
                 NoteSearchMatchedField::Note
             };
-            Ok(NoteSearchResult {
-                parent_trail: parent_trail(&node_id, &parents)?,
+            let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
+            NoteSearchResult {
+                parent_trail,
                 node_id,
                 title,
                 matched_field,
-            })
+            }
         })
-        .collect()
+        .collect())
 }
 
 fn with_workspace_transaction(
@@ -9428,6 +9444,67 @@ mod tests {
                 .parent_trail,
             vec!["Archive root"]
         );
+    }
+
+    fn create_search_node(
+        connection: &mut Connection,
+        id: &str,
+        parent_id: Option<&str>,
+        title: &str,
+    ) {
+        create_node_at(
+            connection,
+            CreateNodeInput {
+                id: id.to_string(),
+                parent_id: parent_id.map(str::to_string),
+                after_id: None,
+                title: title.to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create search fixture node");
+    }
+
+    #[test]
+    fn search_parent_trails_resolve_nested_root_and_empty_result_sets() {
+        let mut connection = test_connection();
+        create_search_node(&mut connection, NODE_ID, None, "Alpha");
+        create_search_node(&mut connection, CHILD_ID, Some(NODE_ID), "Bravo");
+        create_search_node(&mut connection, THIRD_ID, Some(CHILD_ID), "Charlie");
+        create_search_node(&mut connection, FOURTH_ID, Some(THIRD_ID), "Delta target");
+
+        // Nested result: full ancestor trail, ordered root-first.
+        let nested = search_nodes(&connection, "target").expect("nested search");
+        assert_eq!(nested.len(), 1);
+        assert_eq!(nested[0].node_id, FOURTH_ID);
+        assert_eq!(nested[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+
+        // Root-level result: no ancestors to resolve.
+        let root = search_nodes(&connection, "Alpha").expect("root search");
+        assert_eq!(root.len(), 1);
+        assert_eq!(root[0].node_id, NODE_ID);
+        assert_eq!(root[0].parent_trail, Vec::<String>::new());
+
+        // Structured search over the same nested leaf resolves the same trail.
+        let structured = search_nodes_structured(
+            &connection,
+            &NoteStructuredSearchQuery {
+                text: "target".to_string(),
+                required_tags: Vec::new(),
+                excluded_tags: Vec::new(),
+                or_groups: Vec::new(),
+            },
+        )
+        .expect("structured nested search");
+        assert_eq!(structured.len(), 1);
+        assert_eq!(structured[0].node_id, FOURTH_ID);
+        assert_eq!(structured[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+
+        // Empty result set: no trails to resolve, no panic.
+        assert!(search_nodes(&connection, "missing")
+            .expect("empty search")
+            .is_empty());
     }
 
     #[test]
