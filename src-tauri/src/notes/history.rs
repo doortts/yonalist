@@ -1010,10 +1010,11 @@ fn read_replay_changes(
     Ok(changes)
 }
 
-/// Re-reads and fully re-decodes the owned bytes for every attachment the
-/// replay would touch, confirming they still match their stored metadata.
-/// Runs outside the replay transaction so the slow image decode never holds
-/// the write lock (mirrors the PreparedAttachmentBatch pre-transaction decode).
+/// Re-reads the owned bytes for every attachment the replay would touch and
+/// SHA-256-verifies them against their stored content hash, confirming the
+/// files are still intact. Runs outside the replay transaction so the file read
+/// never holds the write lock (mirrors the PreparedAttachmentBatch
+/// pre-transaction check).
 fn validate_replay_attachment_bytes(
     storage: &AttachmentStorageLease,
     changes: &[(String, String, Option<String>, Option<String>)],

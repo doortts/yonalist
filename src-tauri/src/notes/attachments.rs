@@ -1417,9 +1417,6 @@ impl AttachmentStorageLease {
             &attachment.relative_path,
             &attachment.content_hash,
             &attachment.mime_type,
-            attachment.byte_size,
-            attachment.intrinsic_width,
-            attachment.intrinsic_height,
         )
     }
 
@@ -1431,9 +1428,6 @@ impl AttachmentStorageLease {
             &attachment.relative_path,
             &attachment.content_hash,
             &attachment.mime_type,
-            attachment.byte_size,
-            attachment.intrinsic_width,
-            attachment.intrinsic_height,
         )
     }
 
@@ -1442,9 +1436,6 @@ impl AttachmentStorageLease {
         relative_path: &str,
         content_hash: &str,
         mime_type: &str,
-        byte_size: i64,
-        intrinsic_width: i64,
-        intrinsic_height: i64,
     ) -> Result<Vec<u8>, String> {
         resolve_owned_asset_path(Path::new("."), relative_path, content_hash, mime_type)?;
         let file_name = safe_owned_file_name(relative_path)?;
@@ -1457,16 +1448,14 @@ impl AttachmentStorageLease {
             return Err("A Notes attachment owned path must contain a regular file.".to_string());
         }
         let bytes = read_bounded(file, MAX_ATTACHMENT_BYTES)?;
-        let validated =
-            validate_image_bytes(Path::new(relative_path), &bytes, ValidationLimits::DEFAULT)?;
-        if validated.content_hash != content_hash
-            || validated.mime_type != mime_type
-            || validated.byte_size != byte_size as u64
-            || i64::from(validated.width) != intrinsic_width
-            || i64::from(validated.height) != intrinsic_height
-        {
+        // The image was fully decoded and validated at ingest, so on read we only
+        // recompute the SHA-256 digest to detect on-disk corruption or tampering.
+        // Skipping the per-read decode keeps multi-megabyte reads cheap. The
+        // canonical `notes-assets/{hash}.{ext}` path was already checked by
+        // `resolve_owned_asset_path`, so a matching digest confirms the bytes.
+        if format!("{:x}", Sha256::digest(&bytes)) != content_hash {
             return Err(
-                "The Notes attachment file no longer matches its stored metadata.".to_string(),
+                "The Notes attachment file no longer matches its stored content hash.".to_string(),
             );
         }
         Ok(bytes)

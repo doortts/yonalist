@@ -1197,8 +1197,13 @@ pub(crate) fn notes_import_attachment_inner(
 pub(crate) async fn notes_read_attachment_bytes(
     vault_path: String,
     attachment_id: String,
-) -> Result<Vec<u8>, String> {
-    run_blocking(move || notes_read_attachment_bytes_inner(vault_path, attachment_id)).await
+) -> Result<tauri::ipc::Response, String> {
+    // Return the attachment as a raw IPC body so Tauri streams the bytes instead
+    // of serializing a multi-megabyte image into a JSON number array (which the
+    // webview would then re-parse element by element).
+    let bytes =
+        run_blocking(move || notes_read_attachment_bytes_inner(vault_path, attachment_id)).await?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 pub(crate) fn notes_read_attachment_bytes_inner(
@@ -4244,8 +4249,11 @@ mod tests {
         )
         .expect_err("corrupt attachment must fail export");
 
+        // Reads now SHA-256-verify against the stored content hash instead of
+        // re-decoding the image, so corrupt bytes fail the digest check before
+        // any assets are published.
         assert!(
-            error.contains("Could not decode the Notes attachment image format"),
+            error.contains("no longer matches its stored content hash"),
             "{error}"
         );
         assert!(!destination.exists());
