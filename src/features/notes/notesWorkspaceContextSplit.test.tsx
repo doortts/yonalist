@@ -172,4 +172,36 @@ describe("notes workspace context split", () => {
     // ...while the actions-only consumer must not.
     expect(actionsRenders).toBe(actionsRendersBefore);
   });
+
+  it("keeps the actions slice stable while createRoot tracks the live library view", async () => {
+    createNoteIdMock.mockReturnValue("created-root");
+    const store = repository();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const actionsBefore = result.current.actions;
+    const actionsSliceBefore = result.current.actionsSlice;
+
+    // 2.1 moved createRoot's libraryView dependency onto a ref, so switching the
+    // view must no longer re-memoize the actions callbacks.
+    await act(async () => result.current.actions.selectLibraryView("archive"));
+
+    // The view change must actually land, otherwise the identity assertions
+    // below would pass vacuously.
+    expect(result.current.libraryView).toBe("archive");
+    // ...yet the action callbacks retain their identity (an identity-churn
+    // regression would fail here).
+    expect(result.current.actions).toBe(actionsBefore);
+    expect(result.current.actionsSlice).toBe(actionsSliceBefore);
+
+    // createRoot reads the live view through the ref: invoked from "archive" it
+    // observes the current view and transitions the library back to "all". A
+    // stale captured "all" would skip that transition and leave "archive",
+    // failing this assertion.
+    await act(async () => result.current.actions.createRoot());
+    expect(store.createNode).toHaveBeenCalled();
+    expect(result.current.libraryView).toBe("all");
+  });
 });
