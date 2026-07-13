@@ -1,6 +1,6 @@
 import {
   defaultNotesExportFileName,
-  isNotesExportConflictMessage,
+  isNotesExportConflict,
   isNotesExportResult,
   NotesExportConflictError
 } from "../domain/notesExport";
@@ -45,7 +45,7 @@ async function renderNotesExport(
       overwrite: request.overwrite
     });
   } catch (cause) {
-    if (isNotesExportConflictMessage(cause)) {
+    if (isNotesExportConflict(cause)) {
       throw new NotesExportConflictError(request.destination, request);
     }
     throw cause;

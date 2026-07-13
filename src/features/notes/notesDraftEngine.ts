@@ -1,3 +1,7 @@
+import {
+  isRetryableNotesErrorCode,
+  parseNotesError
+} from "../../domain/notes";
 import type {
   NoteId,
   NoteNode,
@@ -143,14 +147,12 @@ export interface NotesDraftEngineOptions {
   host: NotesDraftEngineHost;
 }
 
-function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
 function writeError(cause: unknown): NotesStoreError {
-  return Object.assign(new Error(errorMessage(cause)), {
+  const { code, message } = parseNotesError(cause);
+  return Object.assign(new Error(message), {
     operation: "write" as const,
-    retryable: true
+    code,
+    retryable: isRetryableNotesErrorCode(code)
   });
 }
 

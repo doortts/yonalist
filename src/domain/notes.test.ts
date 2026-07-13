@@ -7,10 +7,14 @@ import {
   isNotesMutationResult,
   isNoteSearchResult,
   isNoteStructuredSearchQuery,
+  isRetryableNotesErrorCode,
   MAX_NOTE_ATTACHMENTS_PER_NODE,
   MAX_NOTE_ATTACHMENTS_PER_WORKSPACE,
-  normalizeNotesWorkspace
+  normalizeNotesWorkspace,
+  notesErrorHasCode,
+  parseNotesError
 } from "./notes";
+import type { NotesErrorCode } from "./notes";
 import type {
   NoteAttachment,
   ImportNoteAttachmentByteItem,
@@ -651,5 +655,71 @@ describe("Notes domain contract", () => {
     vi.stubGlobal("crypto", {});
 
     expect(() => createNoteId()).toThrow(/crypto\.randomUUID/);
+  });
+});
+
+describe("notes error taxonomy", () => {
+  it("keeps a recognized backend code and message", () => {
+    expect(
+      parseNotesError({
+        code: "destinationExists",
+        message: "Destination already exists."
+      })
+    ).toEqual({
+      code: "destinationExists",
+      message: "Destination already exists."
+    });
+    expect(
+      parseNotesError({ code: "vaultBusy", message: "Vault is open elsewhere." })
+    ).toEqual({ code: "vaultBusy", message: "Vault is open elsewhere." });
+  });
+
+  it("classifies unstructured causes as internal while preserving their text", () => {
+    expect(parseNotesError("Notes requires Tauri desktop storage.")).toEqual({
+      code: "internal",
+      message: "Notes requires Tauri desktop storage."
+    });
+    expect(parseNotesError(new Error("disk full"))).toEqual({
+      code: "internal",
+      message: "disk full"
+    });
+    // An unknown code is not trusted; it falls back to internal.
+    expect(
+      parseNotesError({ code: "notAKnownCode", message: "boom" })
+    ).toEqual({ code: "internal", message: "boom" });
+  });
+
+  it("derives retryability from the code", () => {
+    const retryable: NotesErrorCode[] = ["vaultBusy", "internal"];
+    const notRetryable: NotesErrorCode[] = [
+      "destinationExists",
+      "foreignExportAssetDir",
+      "unsupportedSchemaVersion"
+    ];
+    for (const code of retryable) {
+      expect(isRetryableNotesErrorCode(code)).toBe(true);
+    }
+    for (const code of notRetryable) {
+      expect(isRetryableNotesErrorCode(code)).toBe(false);
+    }
+  });
+
+  it("matches a code only on a structured cause", () => {
+    expect(
+      notesErrorHasCode(
+        { code: "destinationExists", message: "x" },
+        "destinationExists"
+      )
+    ).toBe(true);
+    expect(
+      notesErrorHasCode(
+        { code: "foreignExportAssetDir", message: "x" },
+        "destinationExists"
+      )
+    ).toBe(false);
+    expect(notesErrorHasCode("destinationExists", "destinationExists")).toBe(
+      false
+    );
+    expect(notesErrorHasCode(null, "internal")).toBe(false);
   });
 });

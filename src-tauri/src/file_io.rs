@@ -5,6 +5,12 @@ use std::path::Path;
 use tempfile::Builder;
 use tempfile::NamedTempFile;
 
+/// Canonical message for a no-overwrite conflict, shared by every atomic write
+/// and export destination check. The Notes IPC boundary maps this exact text to
+/// [`crate::notes::error::NotesErrorCode::DestinationExists`], so all producers
+/// must use this constant rather than an inline literal.
+pub(crate) const DESTINATION_EXISTS_MESSAGE: &str = "Destination already exists.";
+
 pub(crate) fn ensure_parent(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
@@ -14,7 +20,7 @@ pub(crate) fn ensure_parent(path: &Path) -> Result<(), String> {
 
 fn ensure_destination_is_available(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
-        Ok(_) => Err("Destination already exists.".to_string()),
+        Ok(_) => Err(DESTINATION_EXISTS_MESSAGE.to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
     }
@@ -82,7 +88,7 @@ fn write_atomic_file_with_parent_sync(
             Ok(())
         }
         Err(error) if !overwrite && error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            Err("Destination already exists.".to_string())
+            Err(DESTINATION_EXISTS_MESSAGE.to_string())
         }
         Err(error) => Err(error.error.to_string()),
     }

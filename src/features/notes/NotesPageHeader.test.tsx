@@ -1267,6 +1267,7 @@ describe("NotesPageHeader", () => {
     const retryLastFailedWrite = vi.fn().mockResolvedValue(undefined);
     const writeError = Object.assign(new Error("Draft save failed"), {
       operation: "write" as const,
+      code: "internal" as const,
       retryable: true
     });
     renderZoomedOutline(

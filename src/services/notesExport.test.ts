@@ -200,8 +200,11 @@ describe("notesExport", () => {
     );
   });
 
-  it("maps only the exact conflict text and retains the retry request", async () => {
-    invokeMock.mockRejectedValue("Destination already exists.");
+  it("maps the destinationExists code and retains the retry request", async () => {
+    invokeMock.mockRejectedValue({
+      code: "destinationExists",
+      message: "Destination already exists."
+    });
 
     const error = await renderMarkdownExport(exportRequest).catch(
       (rejection: unknown) => rejection
@@ -217,13 +220,16 @@ describe("notesExport", () => {
     expect((error as NotesExportConflictError).request).toBe(exportRequest);
   });
 
-  it("maps a PDF conflict and retains the PDF retry request", async () => {
+  it("maps a PDF destinationExists conflict and retains the PDF retry request", async () => {
     const request = {
       ...exportRequest,
       destination: "/exports/project.pdf",
       overwrite: false
     };
-    invokeMock.mockRejectedValue("Destination already exists.");
+    invokeMock.mockRejectedValue({
+      code: "destinationExists",
+      message: "Destination already exists."
+    });
 
     const error = await renderPdfExport(request).catch(
       (rejection: unknown) => rejection
@@ -238,10 +244,20 @@ describe("notesExport", () => {
   });
 
   it.each([
-    "Destination already exists",
+    // Bare message text — even the exact conflict string — is no longer a
+    // conflict now that detection keys on the structured code.
+    "Destination already exists.",
     new Error("Destination already exists."),
-    new Error("Disk full")
-  ])("passes through a non-exact conflict rejection", async (cause) => {
+    new Error("Disk full"),
+    // A different structured code (foreign assets folder) is a distinct
+    // failure, not a destination-exists conflict.
+    {
+      code: "foreignExportAssetDir",
+      message:
+        "Export assets folder already exists and was not created by a previous export. Move or rename it and retry."
+    },
+    { code: "internal", message: "Notes background task failed." }
+  ])("passes through a non-destinationExists rejection", async (cause) => {
     invokeMock.mockRejectedValue(cause);
 
     const error = await renderMarkdownExport(exportRequest).catch(

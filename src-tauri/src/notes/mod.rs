@@ -3,6 +3,7 @@ pub(crate) mod attachments;
 pub(crate) mod commands;
 pub(crate) mod connection;
 pub(crate) mod date_index;
+pub(crate) mod error;
 pub(crate) mod export;
 pub(crate) mod history;
 #[cfg(test)]

@@ -9,6 +9,7 @@ import {
   useState
 } from "react";
 import { VaultRootContext } from "../../VaultRootContext";
+import { parseNotesError } from "../../domain/notes";
 import type { NoteId } from "../../domain/notes";
 import {
   NotesExportConflictError,
@@ -73,13 +74,11 @@ function formatLabel(format: NotesExportFormat): string {
 }
 
 function exportErrorMessage(cause: unknown): string {
-  if (cause instanceof Error && cause.message.trim()) {
-    return cause.message;
-  }
-  if (typeof cause === "string" && cause.trim()) {
-    return cause;
-  }
-  return "Notes export failed.";
+  // Handles Error, string, and the backend's structured `{ code, message }`
+  // rejection alike, so a non-conflict failure (e.g. a foreign assets folder)
+  // still shows its message rather than a generic fallback.
+  const { message } = parseNotesError(cause);
+  return message.trim() ? message : "Notes export failed.";
 }
 
 export function NotesExportControllerProvider({
