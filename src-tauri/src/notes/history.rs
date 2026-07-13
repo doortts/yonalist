@@ -961,19 +961,15 @@ fn apply_attachment_state(
     Ok(Some(node_id))
 }
 
-fn replay(
-    connection: &mut Connection,
+/// Chooses the history entry a replay will advance. Accepts anything that
+/// derefs to a `Connection` (a plain connection for the pre-transaction
+/// attachment check, or a `&Transaction` inside the replay transaction).
+fn select_replay_entry_id(
+    executor: &Connection,
     session_id: &str,
-    scope: NotesWorkspaceScope,
     undoing: bool,
-    attachment_storage: Option<&AttachmentStorageLease>,
-    today: LocalDate,
-) -> Result<NotesHistoryReplayResult, String> {
-    validate_history_id("Notes history session ID", session_id)?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("Could not start Notes history replay: {error}"))?;
-    let entry_id = transaction
+) -> Result<Option<String>, String> {
+    executor
         .query_row(
             if undoing {
                 "SELECT id FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 0 ORDER BY sequence DESC LIMIT 1"
@@ -984,8 +980,85 @@ fn replay(
             |row| row.get::<_, String>(0),
         )
         .optional()
-        .map_err(|error| format!("Could not choose a Notes history entry: {error}"))?;
-    let Some(entry_id) = entry_id else {
+        .map_err(|error| format!("Could not choose a Notes history entry: {error}"))
+}
+
+/// Reads the audit change rows for a history entry in replay order.
+fn read_replay_changes(
+    executor: &Connection,
+    entry_id: &str,
+    undoing: bool,
+) -> Result<Vec<(String, String, Option<String>, Option<String>)>, String> {
+    let order = if undoing { "DESC" } else { "ASC" };
+    let mut statement = executor
+        .prepare(&format!(
+            "SELECT table_name, row_id, before_json, after_json FROM notes_history_changes WHERE entry_id = ?1 ORDER BY ordinal {order}"
+        ))
+        .map_err(|error| format!("Could not prepare Notes history replay: {error}"))?;
+    let changes = statement
+        .query_map([entry_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Could not read Notes history replay: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect Notes history replay: {error}"))?;
+    Ok(changes)
+}
+
+/// Re-reads and fully re-decodes the owned bytes for every attachment the
+/// replay would touch, confirming they still match their stored metadata.
+/// Runs outside the replay transaction so the slow image decode never holds
+/// the write lock (mirrors the PreparedAttachmentBatch pre-transaction decode).
+fn validate_replay_attachment_bytes(
+    storage: &AttachmentStorageLease,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    for (table_name, row_id, before_json, after_json) in changes {
+        if table_name != "notes_attachments" {
+            continue;
+        }
+        let target = if undoing { before_json } else { after_json };
+        if let Some(state) = target {
+            let attachment = decode_attachment_snapshot(row_id, state)?;
+            storage.read_validated_attachment_bytes(&attachment)?;
+        }
+    }
+    Ok(())
+}
+
+fn replay(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    undoing: bool,
+    attachment_storage: Option<&AttachmentStorageLease>,
+    today: LocalDate,
+) -> Result<NotesHistoryReplayResult, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+
+    // Re-decode every touched attachment's owned bytes BEFORE opening the write
+    // transaction. Doing this inside the IMMEDIATE transaction (as before) held
+    // the write lock across a full image decode of each attachment; instead we
+    // validate against the current, serialized snapshot first — the same entry
+    // and change set the transaction below re-reads (note commands are
+    // serialized per vault on a single managed connection).
+    if let Some(storage) = attachment_storage {
+        if let Some(entry_id) = select_replay_entry_id(&*connection, session_id, undoing)? {
+            let changes = read_replay_changes(&*connection, &entry_id, undoing)?;
+            validate_replay_attachment_bytes(storage, &changes, undoing)?;
+        }
+    }
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start Notes history replay: {error}"))?;
+    let Some(entry_id) = select_replay_entry_id(&transaction, session_id, undoing)? else {
         let workspace = load_workspace(&transaction, scope)?;
         let status = history_status(&transaction, session_id)?;
         transaction
@@ -998,42 +1071,10 @@ fn replay(
             can_redo: status.can_redo,
         });
     };
-    let changes = {
-        let order = if undoing { "DESC" } else { "ASC" };
-        let mut statement = transaction
-            .prepare(&format!(
-                "SELECT table_name, row_id, before_json, after_json FROM notes_history_changes WHERE entry_id = ?1 ORDER BY ordinal {order}"
-            ))
-            .map_err(|error| format!("Could not prepare Notes history replay: {error}"))?;
-        let changes = statement
-            .query_map([&entry_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .map_err(|error| format!("Could not read Notes history replay: {error}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| format!("Could not collect Notes history replay: {error}"))?;
-        changes
-    };
+    let changes = read_replay_changes(&transaction, &entry_id, undoing)?;
     validate_expected_states(&transaction, &changes, undoing)?;
     validate_target_lifecycle(&transaction, &changes, undoing)?;
     validate_target_attachment_capacity(&transaction, &changes, undoing)?;
-    if let Some(storage) = attachment_storage {
-        for (table_name, row_id, before_json, after_json) in &changes {
-            if table_name != "notes_attachments" {
-                continue;
-            }
-            let target = if undoing { before_json } else { after_json };
-            if let Some(state) = target {
-                let attachment = decode_attachment_snapshot(row_id, state)?;
-                storage.read_validated_attachment_bytes(&attachment)?;
-            }
-        }
-    }
     let mut affected_nodes = BTreeSet::new();
     for (table_name, row_id, before_json, after_json) in changes {
         let state = if undoing {

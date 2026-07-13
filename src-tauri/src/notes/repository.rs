@@ -2390,12 +2390,14 @@ fn with_workspace_transaction(
     operation: impl FnOnce(&Transaction<'_>) -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
     let journaled = history::has_active_context(connection)?;
-    let transaction = if journaled {
-        connection.transaction_with_behavior(TransactionBehavior::Immediate)
-    } else {
-        connection.transaction()
-    }
-    .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
+    // Every workspace mutation runs in an IMMEDIATE transaction, including the
+    // non-journaled branch. A DEFERRED transaction starts read-only and only
+    // upgrades to a write lock on its first mutation; under WAL that deferred
+    // read->write upgrade can fail with SQLITE_BUSY_SNAPSHOT, which our busy
+    // handler does not retry. Taking the write lock up front avoids that race.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes transaction: {error}"))?;
     operation(&transaction)?;
     let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
     if journaled {
@@ -3868,58 +3870,87 @@ fn create_attachment_coordinated_inner(
     before_commit: impl FnOnce() -> Result<(), String>,
 ) -> Result<NotesWorkspace, String> {
     let journaled = history::has_active_context(connection)?;
+
+    // Phase 1 — validate the batch and reserve its ordering inside a short
+    // read-only transaction. Every check here only reads the DB (node/vault
+    // capacity, ID uniqueness, sort keys) and the transaction is rolled back
+    // when this block ends. Publication MUST come after these checks so a
+    // rejected batch never touches the filesystem (the `*_before_publication`
+    // contract tests pin this).
+    let (attachments, sort_keys) = {
+        let transaction = connection.transaction().map_err(|error| {
+            format!("Could not start the Notes attachment validation: {error}")
+        })?;
+        if let Some((node_id, batch_len)) = capacity_preflight {
+            validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
+        }
+        let (node_id, attachments) = prepare()?;
+        validate_attachment_batch_capacity(&transaction, &node_id, attachments.len())?;
+
+        let mut ids = HashSet::with_capacity(attachments.len());
+        for attachment in &attachments {
+            validate_new_attachment(attachment)?;
+            if attachment.node_id != node_id {
+                return Err("Prepared Notes attachment targets an unexpected node.".to_string());
+            }
+            if !ids.insert(attachment.id.as_str()) {
+                return Err(format!(
+                    "Notes attachment ID {} is already in use.",
+                    attachment.id
+                ));
+            }
+            let id_exists: bool = transaction
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                    [&attachment.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    format!("Could not validate the new Notes attachment ID: {error}")
+                })?;
+            if id_exists {
+                return Err(format!(
+                    "Notes attachment ID {} is already in use.",
+                    attachment.id
+                ));
+            }
+        }
+
+        let mut sort_key: i64 = transaction
+            .query_row(
+                "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
+                [&node_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?;
+        let mut sort_keys = Vec::with_capacity(attachments.len());
+        for _ in &attachments {
+            sort_key = sort_key
+                .checked_add(SORT_KEY_STEP)
+                .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
+            sort_keys.push(sort_key);
+        }
+        (attachments, sort_keys)
+    };
+
+    // Phase 2 — publish the files with NO transaction (and so no write lock)
+    // held, keeping the slow temp-write + fsync + rename + dir-fsync out of the
+    // metadata transaction. We publish *before* committing the metadata
+    // (file-before-commit): `reconcile_attachment_files`/`reconcile_attachment_candidates`
+    // only *remove* files that no DB row references — they can never restore a
+    // missing one — so a committed row must never outlive its bytes. If the
+    // phase 3 transaction fails, the freshly published files are unreferenced
+    // orphans that the caller's marker/reconcile path (e.g.
+    // `reconcile_failed_attachment_batch`) sweeps.
+    publish()?;
+
+    // Phase 3 — insert the metadata rows and commit inside an IMMEDIATE write
+    // transaction. Note commands are serialized per vault on a single managed
+    // connection behind the attachment storage lease, so no other writer slips
+    // between phase 1's validation snapshot and this commit.
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start the Notes attachment transaction: {error}"))?;
-    if let Some((node_id, batch_len)) = capacity_preflight {
-        validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
-    }
-    let (node_id, attachments) = prepare()?;
-    validate_attachment_batch_capacity(&transaction, &node_id, attachments.len())?;
-
-    let mut ids = HashSet::with_capacity(attachments.len());
-    for attachment in &attachments {
-        validate_new_attachment(attachment)?;
-        if attachment.node_id != node_id {
-            return Err("Prepared Notes attachment targets an unexpected node.".to_string());
-        }
-        if !ids.insert(attachment.id.as_str()) {
-            return Err(format!(
-                "Notes attachment ID {} is already in use.",
-                attachment.id
-            ));
-        }
-        let id_exists: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-                [&attachment.id],
-                |row| row.get(0),
-            )
-            .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
-        if id_exists {
-            return Err(format!(
-                "Notes attachment ID {} is already in use.",
-                attachment.id
-            ));
-        }
-    }
-
-    let mut sort_key: i64 = transaction
-        .query_row(
-            "SELECT COALESCE(MAX(sort_key), 0) FROM notes_attachments WHERE node_id = ?1",
-            [&node_id],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes attachment ordering: {error}"))?;
-    let mut sort_keys = Vec::with_capacity(attachments.len());
-    for _ in &attachments {
-        sort_key = sort_key
-            .checked_add(SORT_KEY_STEP)
-            .ok_or_else(|| "The Notes attachment ordering is too large.".to_string())?;
-        sort_keys.push(sort_key);
-    }
-
-    publish()?;
     for (attachment, sort_key) in attachments.into_iter().zip(sort_keys) {
         insert_new_attachment_at_sort_key(&transaction, attachment, sort_key)?;
     }
@@ -5123,6 +5154,55 @@ mod tests {
             })
             .expect("count history entries");
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_publishes_before_the_write_transaction() {
+        // Pins the file-before-commit ordering from remediation 1.3: `publish`
+        // (the file I/O) runs *before* the metadata write transaction opens, so
+        // no write lock is held while attachment bytes are written. A second
+        // connection must be able to take the single WAL writer slot during
+        // `publish`; if a future change moved publication back inside the
+        // IMMEDIATE metadata transaction, that probe would see SQLITE_BUSY and
+        // this test would fail.
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let mut connection = connect_notes_db(&vault_path).expect("open notes database");
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let database_path = notes_db_path(&vault_path);
+
+        let observed_writer_slot_free = std::cell::Cell::new(false);
+        let workspace = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![
+                test_new_attachment(38_000, NODE_ID),
+                test_new_attachment(38_001, NODE_ID),
+            ],
+            || {
+                let probe = Connection::open(&database_path).expect("second connection");
+                probe
+                    .busy_timeout(Duration::from_millis(0))
+                    .expect("disable probe busy wait");
+                probe
+                    .execute_batch("BEGIN IMMEDIATE; COMMIT;")
+                    .expect("publish must not hold the metadata write transaction");
+                observed_writer_slot_free.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect("coordinated attachment batch");
+
+        assert!(
+            observed_writer_slot_free.get(),
+            "publish closure must have run and observed a free writer slot"
+        );
+        assert_eq!(
+            workspace.attachments_by_node_id[NODE_ID].len(),
+            2,
+            "the metadata rows must still commit after publication"
+        );
     }
 
     #[test]

@@ -2292,7 +2292,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_attachment_storage_and_sqlite_locks_cover_publication_through_metadata_commit() {
+    fn notes_attachment_storage_lease_covers_publication_through_metadata_commit() {
         use std::sync::mpsc;
         use std::time::Duration;
 
@@ -2329,10 +2329,19 @@ mod tests {
                 sqlite_contender
                     .busy_timeout(Duration::from_millis(50))
                     .expect("short busy timeout");
-                assert!(
-                    sqlite_contender.execute_batch("BEGIN IMMEDIATE").is_err(),
-                    "publication occurred without the SQLite write lock"
-                );
+                // Remediation 1.3 moved file publication *outside* the metadata
+                // write transaction (file-before-commit) so the slow temp-write +
+                // fsync + rename no longer holds the single SQLite writer slot.
+                // This assertion previously required the write lock to be held
+                // during publication; it now verifies the opposite — an
+                // independent connection can take and release the writer slot
+                // mid-publication, and the metadata commit runs afterward in its
+                // own IMMEDIATE transaction. The vault storage lease (flock),
+                // asserted just below, is what actually covers the whole
+                // publication-through-commit window.
+                sqlite_contender
+                    .execute_batch("BEGIN IMMEDIATE; COMMIT")
+                    .expect("publication must not hold the SQLite write lock");
 
                 let second_vault = vault_path.clone();
                 second_thread = Some(std::thread::spawn(move || {
