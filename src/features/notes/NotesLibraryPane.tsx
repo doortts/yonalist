@@ -26,7 +26,11 @@ import {
   useNotesExportController
 } from "./NotesExportController";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  useNotesActions,
+  useNotesDrafts,
+  useNotesState
+} from "./NotesWorkspaceContext";
 import type { NotesLibraryView } from "./useNotesWorkspace";
 
 const libraryViews = [
@@ -56,15 +60,15 @@ function resultLabel(result: NoteSearchResult): string {
 }
 
 function NotesLibraryPaneContent() {
+  const { actions } = useNotesActions();
   const {
-    actions,
     activeTagFilters,
     deletingNotesData,
-    draftsByNodeId,
     libraryView,
     state,
     tagSummaries
-  } = useNotesWorkspaceContext();
+  } = useNotesState();
+  const { draftsByNodeId } = useNotesDrafts();
   const exportController = useNotesExportController();
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly NoteSearchResult[]>([]);
@@ -480,8 +484,8 @@ function NotesLibraryPaneContent() {
 }
 
 export function NotesLibraryPane() {
-  const { actions, deletingNotesData, libraryView, state } =
-    useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
+  const { deletingNotesData, libraryView, state } = useNotesState();
   const lifecycleReadOnly = libraryView === "archive" || libraryView === "trash";
 
   return (

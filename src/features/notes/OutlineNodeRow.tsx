@@ -30,7 +30,11 @@ import {
   type ClipboardImageExtraction
 } from "./notesClipboardImages";
 import { NoteTextField } from "./NoteTextField";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  useNotesActions,
+  useNotesDrafts,
+  useNotesState
+} from "./NotesWorkspaceContext";
 import type { NotesPreparedMove } from "./useNotesWorkspace";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
@@ -72,16 +76,17 @@ export function OutlineNodeRow({
 }: OutlineNodeRowProps) {
   const {
     actions,
-    activeTagFilters,
-    attachmentUploadErrorsByNodeId,
-    attachmentUploadRetryAttemptIdsByNodeId,
-    draftsByNodeId,
     commitPreparedMove,
     loadActiveNodesForMove,
     prepareMoveNode,
-    retryFailedDraft,
-    state
-  } = useNotesWorkspaceContext();
+    retryFailedDraft
+  } = useNotesActions();
+  const { activeTagFilters, state } = useNotesState();
+  const {
+    attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
+    draftsByNodeId
+  } = useNotesDrafts();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
@@ -160,6 +165,13 @@ export function OutlineNodeRow({
       focusedPendingIdRef.current = null;
       return;
     }
+    // A read-only row (archive/trash) renders no editable textarea; wait until
+    // it becomes editable. `readOnly` in the deps re-runs this once editability
+    // flips so focus lands after a restore — previously an incidental `actions`
+    // identity churn (now removed) provided that retry.
+    if (readOnly) {
+      return;
+    }
     if (focusedPendingIdRef.current === nodeId) {
       return;
     }
@@ -178,7 +190,14 @@ export function OutlineNodeRow({
     }
     focusedPendingIdRef.current = nodeId;
     void actions.acknowledgeFocus(nodeId);
-  }, [actions, nodeId, noteOpen, state.pendingFocusField, state.pendingFocusId]);
+  }, [
+    actions,
+    nodeId,
+    noteOpen,
+    readOnly,
+    state.pendingFocusField,
+    state.pendingFocusId
+  ]);
 
   useLayoutEffect(() => {
     if (!noteOpen || !noteRef.current) {

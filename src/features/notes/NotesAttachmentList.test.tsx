@@ -15,7 +15,7 @@ const workspaceActions = vi.hoisted(() => ({
 }));
 
 vi.mock("./NotesWorkspaceContext", () => ({
-  useNotesWorkspaceContext: () => ({ actions: workspaceActions })
+  useNotesActions: () => ({ actions: workspaceActions })
 }));
 
 const intersectionCallbacks = new Map<Element, IntersectionObserverCallback>();

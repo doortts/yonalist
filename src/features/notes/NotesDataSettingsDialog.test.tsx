@@ -6,10 +6,10 @@ import { NOTES_DRAFTS_FLUSH_FAILED_CODE } from "./useNotesWorkspace";
 const deleteAllNotesDataMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./NotesWorkspaceContext", () => ({
-  useNotesWorkspaceContext: () => ({
-    actions: { deleteAllNotesData: deleteAllNotesDataMock },
-    deletingNotesData: false
-  })
+  useNotesActions: () => ({
+    actions: { deleteAllNotesData: deleteAllNotesDataMock }
+  }),
+  useNotesState: () => ({ deletingNotesData: false })
 }));
 
 import { NotesDataSettingsDialog } from "./NotesDataSettingsDialog";

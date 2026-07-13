@@ -229,31 +229,63 @@ export type NotesPreparedMoveCommitResult =
   | { ok: true }
   | { ok: false; error: string };
 
-export interface UseNotesWorkspaceResult {
+/**
+ * Low-volatility slice: workspace projection + navigation + loading/history
+ * status. Changes on structural mutations, navigation, and scope switches, but
+ * NOT on draft keystrokes.
+ */
+export interface NotesStateSlice {
   state: NormalizedNotesWorkspace;
-  actions: NotesWorkspaceActions;
   deletingNotesData: boolean;
   libraryView: NotesLibraryView;
   activeTagFilters: readonly NoteTagFilter[];
   tagSummaries: readonly NoteTagSummary[];
   locallyExpandedNodeIds: ReadonlySet<NoteId>;
-  draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
-  writeError: NotesStoreError | null;
-  attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
-  attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
-  retryFailedDraft(nodeId: NoteId): Promise<void>;
-  retryLastFailedWrite(): Promise<void>;
   status: NormalizedNotesWorkspace["status"];
   loading: boolean;
   error: string | null;
   canUndo?: boolean;
   canRedo?: boolean;
+}
+
+/**
+ * High-volatility slice: the per-node draft buffer plus write/save-failure
+ * surfaces. This is what churns on every keystroke.
+ */
+export interface NotesDraftsSlice {
+  draftsByNodeId: Readonly<Record<NoteId, NotesNodeDraft>>;
+  writeError: NotesStoreError | null;
+  attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
+  attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
+}
+
+/**
+ * Stable slice: every action callback. Its identity must stay referentially
+ * stable across draft keystrokes and unrelated state changes so that
+ * action-only consumers never re-render for data they do not read.
+ */
+export interface NotesActionsSlice {
+  actions: NotesWorkspaceActions;
+  retryFailedDraft(nodeId: NoteId): Promise<void>;
+  retryLastFailedWrite(): Promise<void>;
   loadActiveNodesForMove?(): Promise<readonly NoteNode[]>;
   prepareMoveNode?(nodeId: NoteId): Promise<NotesPreparedMove>;
   commitPreparedMove?(
     prepared: NotesPreparedMove,
     destinationId: NoteId | null
   ): Promise<NotesPreparedMoveCommitResult>;
+}
+
+export interface UseNotesWorkspaceResult
+  extends NotesStateSlice,
+    NotesDraftsSlice,
+    NotesActionsSlice {
+  // Memoized slices for volatility-partitioned context providers. Always
+  // populated by the hook; optional so that test fixtures may build the flat
+  // shape without them.
+  stateSlice?: NotesStateSlice;
+  draftsSlice?: NotesDraftsSlice;
+  actionsSlice?: NotesActionsSlice;
 }
 
 export interface NotesNodeDraft extends Pick<NoteNode, "title" | "note"> {
@@ -1339,6 +1371,8 @@ export function useNotesWorkspace({
     Readonly<Record<NoteId, NotesNodeDraft>>
   >({});
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
+  const libraryViewRef = useRef(libraryView);
+  libraryViewRef.current = libraryView;
   const [activeTagFilters, setActiveTagFilters] = useState<
     readonly NoteTagFilter[]
   >([]);
@@ -3281,7 +3315,7 @@ export function useNotesWorkspace({
   }, [flushNodeDraft]);
 
   const createRoot = useCallback(async () => {
-    const transitionToAll = libraryView !== "all";
+    const transitionToAll = libraryViewRef.current !== "all";
     let created = false;
     const creation = { record: null as NotesWorkspaceSessionRecord | null };
     await runStructuralCommand("create", async (context, historyContext) => {
@@ -3368,7 +3402,6 @@ export function useNotesWorkspace({
     }
   }, [
     runStructuralCommand,
-    libraryView,
     rememberHistoryAfter,
     replaceLocalExpansions,
   ]);
@@ -5223,27 +5256,71 @@ export function useNotesWorkspace({
     [rememberHistoryAfter, runStructuralCommand]
   );
 
+  const stateSlice = useMemo<NotesStateSlice>(
+    () => ({
+      state,
+      deletingNotesData,
+      libraryView,
+      activeTagFilters,
+      tagSummaries,
+      locallyExpandedNodeIds,
+      status: state.status,
+      loading: state.status === "loading",
+      error: state.error,
+      canUndo: historyStatus.canUndo,
+      canRedo: historyStatus.canRedo
+    }),
+    [
+      state,
+      deletingNotesData,
+      libraryView,
+      activeTagFilters,
+      tagSummaries,
+      locallyExpandedNodeIds,
+      historyStatus
+    ]
+  );
+
+  const draftsSlice = useMemo<NotesDraftsSlice>(
+    () => ({
+      draftsByNodeId,
+      writeError: currentWriteError,
+      attachmentUploadErrorsByNodeId,
+      attachmentUploadRetryAttemptIdsByNodeId
+    }),
+    [
+      draftsByNodeId,
+      currentWriteError,
+      attachmentUploadErrorsByNodeId,
+      attachmentUploadRetryAttemptIdsByNodeId
+    ]
+  );
+
+  const actionsSlice = useMemo<NotesActionsSlice>(
+    () => ({
+      actions,
+      retryFailedDraft,
+      retryLastFailedWrite,
+      loadActiveNodesForMove,
+      prepareMoveNode,
+      commitPreparedMove
+    }),
+    [
+      actions,
+      retryFailedDraft,
+      retryLastFailedWrite,
+      loadActiveNodesForMove,
+      prepareMoveNode,
+      commitPreparedMove
+    ]
+  );
+
   return {
-    state,
-    actions,
-    deletingNotesData,
-    libraryView,
-    activeTagFilters,
-    tagSummaries,
-    locallyExpandedNodeIds,
-    draftsByNodeId,
-    writeError: currentWriteError,
-    attachmentUploadErrorsByNodeId,
-    attachmentUploadRetryAttemptIdsByNodeId,
-    retryFailedDraft,
-    retryLastFailedWrite,
-    status: state.status,
-    loading: state.status === "loading",
-    error: state.error,
-    canUndo: historyStatus.canUndo,
-    canRedo: historyStatus.canRedo,
-    loadActiveNodesForMove,
-    prepareMoveNode,
-    commitPreparedMove
+    ...stateSlice,
+    ...draftsSlice,
+    ...actionsSlice,
+    stateSlice,
+    draftsSlice,
+    actionsSlice
   };
 }

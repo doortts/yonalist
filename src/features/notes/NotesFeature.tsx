@@ -9,7 +9,11 @@ import {
   NotesAttachmentUiContext,
   useNotesAttachmentUi
 } from "./NotesAttachmentUiContext";
-import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  NotesActionsContext,
+  NotesDraftsContext,
+  NotesStateContext
+} from "./NotesWorkspaceContext";
 import {
   nativeNotesAttachmentUi,
   type NotesAttachmentUiBoundary
@@ -36,10 +40,20 @@ export function NotesWorkspaceProvider({
 
   useFlushDraftsOnWindowClose(workspace.actions.flushAllDrafts);
 
+  // The hook always populates the memoized slices; `?? workspace` only satisfies
+  // the type (the merged result is itself a valid slice).
+  const stateValue = workspace.stateSlice ?? workspace;
+  const draftsValue = workspace.draftsSlice ?? workspace;
+  const actionsValue = workspace.actionsSlice ?? workspace;
+
   return (
-    <NotesWorkspaceContext.Provider value={workspace}>
-      {children}
-    </NotesWorkspaceContext.Provider>
+    <NotesActionsContext.Provider value={actionsValue}>
+      <NotesStateContext.Provider value={stateValue}>
+        <NotesDraftsContext.Provider value={draftsValue}>
+          {children}
+        </NotesDraftsContext.Provider>
+      </NotesStateContext.Provider>
+    </NotesActionsContext.Provider>
   );
 }
 

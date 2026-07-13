@@ -38,7 +38,11 @@ import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
 import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
 import { NotesPageHeader } from "./NotesPageHeader";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  useNotesActions,
+  useNotesDrafts,
+  useNotesState
+} from "./NotesWorkspaceContext";
 import {
   deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
@@ -71,7 +75,8 @@ function NotesBreadcrumb({
   trashView,
   onRequestEmptyTrash
 }: NotesBreadcrumbProps) {
-  const { actions, state } = useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
+  const { state } = useNotesState();
   const trail = state.zoomRootId ? parentTrail(state, state.zoomRootId) : [];
 
   return (
@@ -187,18 +192,15 @@ function useOutlineIndentPx(): number {
 }
 
 export function NotesOutlinePane() {
-  const workspace = useNotesWorkspaceContext();
   const attachmentUi = useNotesAttachmentUi();
+  const { actions, retryLastFailedWrite } = useNotesActions();
   const {
-    actions,
     deletingNotesData,
-    draftsByNodeId,
     libraryView,
     locallyExpandedNodeIds,
-    retryLastFailedWrite,
-    state,
-    writeError
-  } = workspace;
+    state
+  } = useNotesState();
+  const { draftsByNodeId, writeError } = useNotesDrafts();
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);

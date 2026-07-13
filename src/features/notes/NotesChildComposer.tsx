@@ -2,7 +2,7 @@ import { Plus } from "lucide-react";
 import { useRef, useState } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { useNotesActions } from "./NotesWorkspaceContext";
 
 export interface NotesChildComposerProps {
   parentId: NoteId;
@@ -15,7 +15,7 @@ export function NotesChildComposer({
   disabled,
   hasChildren
 }: NotesChildComposerProps) {
-  const { actions } = useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
   const createInFlightRef = useRef(false);
   const [creating, setCreating] = useState(false);
 

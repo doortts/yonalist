@@ -3,7 +3,7 @@ import { AlertTriangle, Database, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import "../../components/ui/dialog.css";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { useNotesActions, useNotesState } from "./NotesWorkspaceContext";
 import { isNotesDraftsFlushFailedError } from "./useNotesWorkspace";
 
 interface NotesDataSettingsDialogProps {
@@ -15,7 +15,8 @@ export function NotesDataSettingsDialog({
   open,
   onOpenChange
 }: NotesDataSettingsDialogProps) {
-  const { actions, deletingNotesData } = useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
+  const { deletingNotesData } = useNotesState();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
   const [deletionRequestPending, setDeletionRequestPending] = useState(false);

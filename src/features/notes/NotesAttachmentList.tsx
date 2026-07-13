@@ -13,7 +13,7 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesImageAttachment } from "./NotesImageAttachment";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import { useNotesActions } from "./NotesWorkspaceContext";
 
 interface NotesAttachmentListProps {
   readonly nodeId: NoteId;
@@ -43,7 +43,7 @@ function DeferredNotesImage({
   readonly onRequestRemove?: () => void;
   readonly readOnly: boolean;
 }) {
-  const { actions } = useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
   const slotRef = useRef<HTMLDivElement>(null);
   const manualFocusPendingRef = useRef(false);
   const observerGenerationRef = useRef(0);
@@ -169,7 +169,7 @@ export function NotesAttachmentList({
   readOnly = false,
   showDropPlaceholder = false
 }: NotesAttachmentListProps) {
-  const { actions } = useNotesWorkspaceContext();
+  const { actions } = useNotesActions();
   const [pendingRemoval, setPendingRemoval] =
     useState<NoteAttachment | null>(null);
   const [residentAttachmentIds, setResidentAttachmentIds] = useState<

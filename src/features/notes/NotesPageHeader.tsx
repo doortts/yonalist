@@ -16,7 +16,11 @@ import {
 } from "./NotesBulletMenu";
 import { NotesAttachmentList } from "./NotesAttachmentList";
 import { useNotesExportController } from "./NotesExportController";
-import { useNotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  useNotesActions,
+  useNotesDrafts,
+  useNotesState
+} from "./NotesWorkspaceContext";
 import type { NotesPreparedMove } from "./useNotesWorkspace";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
@@ -46,16 +50,17 @@ export function NotesPageHeader({
 }: NotesPageHeaderProps) {
   const {
     actions,
-    activeTagFilters,
-    attachmentUploadErrorsByNodeId,
-    attachmentUploadRetryAttemptIdsByNodeId,
-    draftsByNodeId,
     commitPreparedMove,
     loadActiveNodesForMove,
     prepareMoveNode,
-    retryFailedDraft,
-    state
-  } = useNotesWorkspaceContext();
+    retryFailedDraft
+  } = useNotesActions();
+  const { activeTagFilters, state } = useNotesState();
+  const {
+    attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
+    draftsByNodeId
+  } = useNotesDrafts();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const draft = draftsByNodeId[nodeId];
@@ -115,6 +120,13 @@ export function NotesPageHeader({
     if (state.pendingFocusId !== nodeId) {
       return;
     }
+    // A read-only page (archive/trash) is not focusable; wait until it becomes
+    // editable. `readOnly` in the deps re-runs this once editability flips so
+    // focus lands after a restore — previously an incidental `actions` identity
+    // churn (now removed) provided that retry.
+    if (readOnly) {
+      return;
+    }
     if (state.pendingFocusField === "note" && !noteVisible) {
       setRevealedNoteNodeId(nodeId);
       return;
@@ -125,7 +137,14 @@ export function NotesPageHeader({
     if (target && document.activeElement === target) {
       void actions.acknowledgeFocus(nodeId);
     }
-  }, [actions, nodeId, noteVisible, state.pendingFocusField, state.pendingFocusId]);
+  }, [
+    actions,
+    nodeId,
+    noteVisible,
+    readOnly,
+    state.pendingFocusField,
+    state.pendingFocusId
+  ]);
 
   if (!node) {
     return null;
