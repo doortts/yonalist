@@ -4,6 +4,7 @@ pub(crate) mod attachment_ingest;
 pub(crate) mod attachments;
 #[allow(dead_code)]
 pub(crate) mod commands;
+pub(crate) mod connection;
 #[allow(dead_code)]
 pub(crate) mod date_index;
 #[allow(dead_code)]

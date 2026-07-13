@@ -1,6 +1,10 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::attachment_ingest::decode_raw_attachment_envelope;
 use crate::notes::attachments::{AttachmentStorageLease, PreparedAttachmentBatch};
+use crate::notes::connection::{
+    acquire_notes_connection, evict_notes_connection, lock_notes_connection,
+    reinitialize_notes_connection,
+};
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{
     hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
@@ -12,14 +16,14 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    archive_node, attachment_by_id, collapse_all, connect_notes_db,
-    create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
-    empty_trash, expand_all, list_tags, list_tags_with_counts, load_workspace, move_node,
-    open_notes_export_db, remove_attachment, remove_empty_node, removed_attachment_snapshot,
-    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
-    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    validate_note_tag_filters, validate_structured_search_query_input, NewAttachment,
+    archive_node, attachment_by_id, collapse_all, create_attachments_coordinated_for_node,
+    create_node_at, delete_database, duplicate_node_at, empty_trash, expand_all, list_tags,
+    list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
+    remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
+    restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node,
+    sort_subtree_ascending, sort_subtree_descending, split_node_at, toggle_collapsed,
+    toggle_complete, toggle_star, unarchive_node, update_node_at, validate_note_tag_filters,
+    validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, CreateNodeInput, ImportAttachmentInput, ImportAttachmentPathBatchInput,
@@ -33,6 +37,11 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
+
+// Tests exercise the schema/migration pipeline directly through owned
+// connections; production command bodies go through the connection manager.
+#[cfg(test)]
+use crate::notes::repository::connect_notes_db;
 
 /// Runs a synchronous note operation on Tauri's blocking thread pool so the
 /// per-command SQLite/file work never occupies the main (UI) thread. Each
@@ -123,6 +132,50 @@ fn take_attachment_batch_crash_interruption() -> bool {
     false
 }
 
+#[cfg(test)]
+thread_local! {
+    /// When armed, `notes_delete_database_inner` acquires a connection in the
+    /// window between evicting the cache and unlinking the files — simulating a
+    /// read-only command (search, tag counts, …) that raced into that window and
+    /// cached a handle to the inode deletion is about to unlink. The acquired
+    /// connection is stashed so the test can assert the post-delete acquisition
+    /// does not hand it back.
+    static DELETE_DATABASE_RACE_ARMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static DELETE_DATABASE_RACED_CONNECTION: std::cell::RefCell<
+        Option<crate::notes::connection::SharedNotesConnection>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn arm_delete_database_race() {
+    DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = None);
+    DELETE_DATABASE_RACE_ARMED.with(|armed| armed.set(true));
+}
+
+#[cfg(test)]
+fn take_delete_database_raced_connection(
+) -> Option<crate::notes::connection::SharedNotesConnection> {
+    DELETE_DATABASE_RACED_CONNECTION.with(|slot| slot.borrow_mut().take())
+}
+
+fn maybe_inject_delete_database_race(vault_path: &str) {
+    #[cfg(not(test))]
+    let _ = vault_path;
+    #[cfg(test)]
+    if DELETE_DATABASE_RACE_ARMED.with(|armed| {
+        let value = armed.get();
+        armed.set(false);
+        value
+    }) {
+        // Reopen and cache the vault's connection the way a raced read command
+        // would, then stash it so the test can verify the post-delete evict
+        // drops it instead of leaving it bound to the unlinked inode.
+        if let Ok(raced) = acquire_notes_connection(vault_path) {
+            DELETE_DATABASE_RACED_CONNECTION.with(|slot| *slot.borrow_mut() = Some(raced));
+        }
+    }
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), String> {
     run_blocking(move || notes_initialize_inner(vault_path)).await
@@ -130,7 +183,11 @@ pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), String> {
 
 pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    // Opening a vault must run the schema/migration pipeline exactly once, so
+    // force a fresh connection here even if an earlier command already cached
+    // one. Every subsequent command reuses this connection without re-migrating.
+    let shared = reinitialize_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     clear_all_history(&mut connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(())
@@ -142,7 +199,8 @@ fn run_mutation(
     operation: impl FnOnce(&mut rusqlite::Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(vault_path)?;
-    let mut connection = connect_notes_db(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result =
         with_history_transaction_and_prunes(&mut connection, history_context.as_ref(), operation)?;
     reconcile_candidates_after_committed_change(
@@ -163,7 +221,8 @@ fn run_dated_mutation(
     ) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(vault_path)?;
-    let mut connection = connect_notes_db(vault_path)?;
+    let shared = acquire_notes_connection(vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result = with_history_transaction_and_prunes(
         &mut connection,
@@ -193,7 +252,8 @@ pub(crate) fn notes_load_workspace_inner(
     if let NotesWorkspaceScope::Tags { tags } = &scope {
         validate_note_tag_filters(tags)?;
     }
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     load_workspace(&connection, scope)
 }
 
@@ -561,7 +621,8 @@ fn notes_undo_with_provider(
     today_provider: &impl LocalTodayProvider,
 ) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result =
         undo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
@@ -593,7 +654,8 @@ fn notes_redo_with_provider(
     today_provider: &impl LocalTodayProvider,
 ) -> Result<NotesHistoryReplayResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     let result =
         redo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
@@ -613,7 +675,8 @@ pub(crate) fn notes_history_status_inner(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     history_status(&connection, &session_id)
 }
 
@@ -630,7 +693,8 @@ pub(crate) fn notes_clear_history_inner(
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let status = clear_history(&mut connection, &session_id)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(status)
@@ -643,7 +707,8 @@ pub(crate) async fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspa
 
 pub(crate) fn notes_empty_trash_inner(vault_path: String) -> Result<NotesWorkspace, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let workspace = empty_trash(&mut connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     Ok(workspace)
@@ -897,7 +962,7 @@ fn import_prepared_attachment_batch(
     history_context: Option<NotesHistoryContext>,
     prepared_batch: PreparedAttachmentBatch,
     storage: AttachmentStorageLease,
-    mut connection: rusqlite::Connection,
+    connection: &mut rusqlite::Connection,
 ) -> Result<NotesMutationResult, String> {
     validate_attachment_batch_ids(&node_id, &ids)?;
     if initial_max_display_width <= 0 {
@@ -909,7 +974,7 @@ fn import_prepared_attachment_batch(
         return Err("Notes attachment metadata does not match the prepared batch.".to_string());
     }
 
-    let identity = storage.capture_database_identity(&connection)?;
+    let identity = storage.capture_database_identity(&*connection)?;
     let mut attachments = Vec::with_capacity(ids.len());
     for (id, prepared) in ids.into_iter().zip(prepared_batch.attachments()) {
         let byte_size = i64::try_from(prepared.image.byte_size)
@@ -936,14 +1001,14 @@ fn import_prepared_attachment_batch(
         .collect::<Vec<_>>();
 
     if let Some(result) =
-        committed_attachment_batch_retry(&connection, &attachments, history_context.as_ref())?
+        committed_attachment_batch_retry(&*connection, &attachments, history_context.as_ref())?
     {
         return Ok(result);
     }
 
     storage.mark_reconciliation_needed()?;
     let result = with_history_transaction_and_prunes(
-        &mut connection,
+        &mut *connection,
         history_context.as_ref(),
         |connection| {
             create_attachments_coordinated_for_node(
@@ -979,7 +1044,7 @@ fn import_prepared_attachment_batch(
 
     match result {
         Ok(result) => {
-            reconcile_after_committed_attachment_change(&storage, &connection);
+            reconcile_after_committed_attachment_change(&storage, &*connection);
             Ok(result.into_mutation_result())
         }
         Err(error) => {
@@ -988,7 +1053,7 @@ fn import_prepared_attachment_batch(
             } else {
                 Err(reconcile_failed_attachment_batch(
                     &storage,
-                    &connection,
+                    &*connection,
                     &candidates,
                     error,
                 ))
@@ -1031,8 +1096,11 @@ pub(crate) fn notes_import_attachment_paths_batch_inner(
         .map(|attachment| attachment.source_path.as_str())
         .collect::<Vec<_>>();
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let connection = connect_notes_db(&vault_path)?;
-    reconcile_before_attachment_batch(&storage, &connection)?;
+    // Decode the sources and read their files BEFORE taking the connection lock.
+    // The prepare step is pure file I/O with no database dependency, and holding
+    // the per-vault `Mutex` across it would block every read on this vault (e.g.
+    // search keystrokes) for the whole import — the exact cross-command blocking
+    // task 1.2 aims to avoid ("hold the lock only around the DB work").
     let prepared_batch =
         PreparedAttachmentBatch::from_source_paths(&source_paths).map_err(|error| {
             let names = input
@@ -1043,6 +1111,9 @@ pub(crate) fn notes_import_attachment_paths_batch_inner(
                 .join(", ");
             format!("Could not prepare Notes attachment batch [{names}]: {error}")
         })?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
+    reconcile_before_attachment_batch(&storage, &connection)?;
     import_prepared_attachment_batch(
         input.node_id,
         ids,
@@ -1050,7 +1121,7 @@ pub(crate) fn notes_import_attachment_paths_batch_inner(
         history_context,
         prepared_batch,
         storage,
-        connection,
+        &mut connection,
     )
 }
 
@@ -1064,7 +1135,8 @@ fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult
         .collect::<Vec<_>>();
     validate_attachment_batch_ids(&decoded.metadata.node_id, &ids)?;
     let storage = AttachmentStorageLease::acquire(&decoded.metadata.vault_path)?;
-    let connection = connect_notes_db(&decoded.metadata.vault_path)?;
+    let shared = acquire_notes_connection(&decoded.metadata.vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     reconcile_before_attachment_batch(&storage, &connection)?;
     let prepared_batch = PreparedAttachmentBatch::from_bytes(decoded.sources)?;
     import_prepared_attachment_batch(
@@ -1074,7 +1146,7 @@ fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult
         decoded.metadata.history_context,
         prepared_batch,
         storage,
-        connection,
+        &mut connection,
     )
 }
 
@@ -1134,9 +1206,15 @@ pub(crate) fn notes_read_attachment_bytes_inner(
     attachment_id: String,
 ) -> Result<Vec<u8>, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let connection = connect_notes_db(&vault_path)?;
-    let attachment = attachment_by_id(&connection, &attachment_id)?
-        .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    // Hold the connection lock only for the metadata lookup; the (potentially
+    // large) attachment file read and hash verification runs without it so
+    // concurrent reads on the same vault do not serialize on the byte copy.
+    let attachment = {
+        let connection = lock_notes_connection(&shared);
+        attachment_by_id(&connection, &attachment_id)?
+            .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?
+    };
     storage.read_validated_attachment_bytes(&attachment)
 }
 
@@ -1155,7 +1233,8 @@ pub(crate) fn notes_resize_attachment_inner(
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result = with_history_transaction_and_prunes(
         &mut connection,
         history_context.as_ref(),
@@ -1186,7 +1265,8 @@ pub(crate) fn notes_remove_attachment_inner(
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let result = with_history_transaction_and_prunes(
         &mut connection,
         history_context.as_ref(),
@@ -1219,7 +1299,8 @@ pub(crate) fn notes_restore_attachment_inner(
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    let mut connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared);
     let attachment = removed_attachment_snapshot(&connection, &attachment_id)?;
     storage.read_validated_attachment_bytes(&attachment)?;
     match with_history_transaction_and_prunes(
@@ -1258,7 +1339,8 @@ fn notes_search_with_provider(
     scope: NoteSearchScope,
     today_provider: &impl LocalTodayProvider,
 ) -> Result<Vec<NoteSearchResult>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     let today = today_provider.local_today(&connection)?;
     search_nodes_at(&connection, &query, scope, today)
 }
@@ -1276,7 +1358,8 @@ pub(crate) fn notes_search_structured_inner(
     query: NoteStructuredSearchQuery,
 ) -> Result<Vec<NoteSearchResult>, String> {
     validate_structured_search_query_input(&query)?;
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     search_nodes_structured(&connection, &query)
 }
 
@@ -1286,7 +1369,8 @@ pub(crate) async fn notes_list_tags(vault_path: String) -> Result<Vec<String>, S
 }
 
 pub(crate) fn notes_list_tags_inner(vault_path: String) -> Result<Vec<String>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     list_tags(&connection)
 }
 
@@ -1300,7 +1384,8 @@ pub(crate) async fn notes_list_tags_with_counts(
 pub(crate) fn notes_list_tags_with_counts_inner(
     vault_path: String,
 ) -> Result<Vec<NoteTagSummary>, String> {
-    let connection = connect_notes_db(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared);
     list_tags_with_counts(&connection)
 }
 
@@ -1321,7 +1406,20 @@ pub(crate) fn notes_delete_database_inner(
     vault_path: String,
 ) -> Result<DeleteDatabaseOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    delete_database(&vault_path)?;
+    // Close and forget the cached connection before removing the files so no
+    // open handle survives the deletion and the next acquisition reconnects.
+    evict_notes_connection(&vault_path);
+    // Read-only commands (search, tag counts, …) take no attachment lease and
+    // run outside the structural queue, so one can slip into the window between
+    // the evict above and the file removal below, reopen the old file, and cache
+    // a connection to the now-unlinked inode — leaving reads showing deleted
+    // data and writes silently lost on restart. Evict again after deletion so
+    // any such raced connection is dropped; a later reader then reconnects
+    // against a fresh empty database, matching the pre-manager behavior.
+    maybe_inject_delete_database_race(&vault_path);
+    let deletion = delete_database(&vault_path);
+    evict_notes_connection(&vault_path);
+    deletion?;
     let attachment_cleanup_failed = match storage.delete_attachment_files() {
         Ok(()) => false,
         Err(error) => {
@@ -3340,6 +3438,82 @@ mod tests {
         let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
         assert!(!deletion.attachment_cleanup_failed);
         assert!(!crate::notes::repository::notes_db_path(&vault_path).exists());
+    }
+
+    #[test]
+    fn notes_delete_database_evicts_a_connection_raced_into_the_unlink_window() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Doomed".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create node before deletion");
+
+        // Arm the hook so a read-only command "slips" into the window between the
+        // pre-delete evict and the file removal, reopening the vault and caching a
+        // connection to the inode deletion is about to unlink.
+        arm_delete_database_race();
+        let deletion = notes_delete_database(vault_path.clone()).expect("delete database");
+        assert!(!deletion.attachment_cleanup_failed);
+        assert!(
+            !crate::notes::repository::notes_db_path(&vault_path).exists(),
+            "deletion must unlink the database file"
+        );
+
+        let raced = take_delete_database_raced_connection()
+            .expect("the armed hook must have acquired a connection in the unlink window");
+
+        // Without the post-delete evict this raced connection to the unlinked
+        // inode would stay cached and every later command would reuse it: reads
+        // would see deleted data and writes would vanish because they never reach
+        // a file at `notes_db_path`. The fix drops it, so the next acquisition
+        // reconnects against a fresh on-disk database instead.
+        let reacquired =
+            acquire_notes_connection(&vault_path).expect("reacquire after deletion");
+        assert!(
+            !std::sync::Arc::ptr_eq(&raced, &reacquired),
+            "the raced connection to the unlinked inode must not be handed back after deletion"
+        );
+
+        // The fresh connection must reconnect against a real on-disk database, so
+        // a write persists and is readable through a later acquisition.
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: SPLIT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Reborn".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("create node after deletion");
+        // File existence alone is a weak check: the acquire above already recreated
+        // the file and schema via `connect_notes_db`, so it would hold even if the
+        // write had vanished into the unlinked inode. Read the node back through a
+        // fresh acquisition to prove the write actually reached the live database.
+        let reborn = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
+            .expect("load workspace after the reborn write");
+        assert!(
+            reborn
+                .nodes
+                .iter()
+                .any(|node| node.id == SPLIT_ID && node.title == "Reborn"),
+            "the write after deletion must persist and be readable through a fresh acquisition"
+        );
+        assert!(
+            crate::notes::repository::notes_db_path(&vault_path).exists(),
+            "a write after deletion must recreate the database file on disk"
+        );
     }
 
     #[test]
