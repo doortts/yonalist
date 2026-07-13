@@ -130,8 +130,86 @@ export interface NoteSearchResult {
   matchedField: "title" | "note" | "date";
 }
 
+/**
+ * Machine-readable error classification mirrored from the Rust `NotesErrorCode`
+ * enum (`src-tauri/src/notes/error.rs`). Every `notes_*` command rejects with a
+ * serialized `{ code, message }` object; the frontend branches on `code` rather
+ * than matching human-facing message text.
+ */
+export type NotesErrorCode =
+  | "vaultBusy"
+  | "unsupportedSchemaVersion"
+  | "destinationExists"
+  | "foreignExportAssetDir"
+  | "internal";
+
+const NOTES_ERROR_CODES: ReadonlySet<NotesErrorCode> = new Set<NotesErrorCode>([
+  "vaultBusy",
+  "unsupportedSchemaVersion",
+  "destinationExists",
+  "foreignExportAssetDir",
+  "internal"
+]);
+
+/**
+ * Codes that will never succeed on a bare retry of the identical request, so a
+ * derived {@link NotesStoreError.retryable} must be `false` for them. Everything
+ * else (transport failures, `vaultBusy`, unclassified `internal`) is retryable.
+ */
+const NON_RETRYABLE_NOTES_ERROR_CODES: ReadonlySet<NotesErrorCode> =
+  new Set<NotesErrorCode>([
+    "destinationExists",
+    "foreignExportAssetDir",
+    "unsupportedSchemaVersion"
+  ]);
+
+export interface NotesStructuredError {
+  code: NotesErrorCode;
+  message: string;
+}
+
+/**
+ * Parses a rejected IPC cause into a structured `{ code, message }`. A cause
+ * that carries a recognized `code` (the backend's `NotesError`) keeps it;
+ * anything else — a transport `Error`, a legacy string, a malformed payload —
+ * is classified as `internal` with its text preserved as the message.
+ */
+export function parseNotesError(cause: unknown): NotesStructuredError {
+  if (typeof cause === "object" && cause !== null && !Array.isArray(cause)) {
+    const record = cause as Record<string, unknown>;
+    const message =
+      typeof record.message === "string" ? record.message : undefined;
+    if (message !== undefined) {
+      const code =
+        typeof record.code === "string" &&
+        NOTES_ERROR_CODES.has(record.code as NotesErrorCode)
+          ? (record.code as NotesErrorCode)
+          : "internal";
+      return { code, message };
+    }
+  }
+  const message = typeof cause === "string" ? cause : String(cause);
+  return { code: "internal", message };
+}
+
+export function isRetryableNotesErrorCode(code: NotesErrorCode): boolean {
+  return !NON_RETRYABLE_NOTES_ERROR_CODES.has(code);
+}
+
+/** True only when `cause` is a structured backend error carrying `code`. */
+export function notesErrorHasCode(
+  cause: unknown,
+  code: NotesErrorCode
+): boolean {
+  if (typeof cause !== "object" || cause === null || Array.isArray(cause)) {
+    return false;
+  }
+  return (cause as Record<string, unknown>).code === code;
+}
+
 export interface NotesStoreError extends Error {
   operation: "load" | "write" | "search" | "deleteData";
+  code: NotesErrorCode;
   retryable: boolean;
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NotesExportRequest } from "./notesExport";
 import {
   defaultNotesExportFileName,
-  isNotesExportConflictMessage,
+  isNotesExportConflict,
   isNotesExportResult,
   NotesExportConflictError
 } from "./notesExport";
@@ -185,15 +185,26 @@ describe("Notes export conflicts", () => {
     expect(error.request).toBe(request);
   });
 
-  it("recognizes only the exact native conflict string", () => {
-    expect(isNotesExportConflictMessage("Destination already exists.")).toBe(
-      true
-    );
-    expect(isNotesExportConflictMessage("Destination already exists")).toBe(
-      false
-    );
+  it("detects the conflict by its structured code, never by message text", () => {
     expect(
-      isNotesExportConflictMessage(new Error("Destination already exists."))
+      isNotesExportConflict({
+        code: "destinationExists",
+        message: "Destination already exists."
+      })
+    ).toBe(true);
+    // Bare message text — legacy string or Error — is no longer a conflict.
+    expect(isNotesExportConflict("Destination already exists.")).toBe(false);
+    expect(
+      isNotesExportConflict(new Error("Destination already exists."))
+    ).toBe(false);
+    // A different structured code (e.g. a foreign assets folder) is not a
+    // destination-exists conflict.
+    expect(
+      isNotesExportConflict({
+        code: "foreignExportAssetDir",
+        message:
+          "Export assets folder already exists and was not created by a previous export. Move or rename it and retry."
+      })
     ).toBe(false);
   });
 });

@@ -2,10 +2,12 @@ import {
   isNoteSearchResult,
   isNotesHistoryReplayResult,
   isNotesMutationResult,
+  isRetryableNotesErrorCode,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
   MAX_NOTE_ATTACHMENTS_PER_NODE,
-  normalizeNotesWorkspace
+  normalizeNotesWorkspace,
+  parseNotesError
 } from "../domain/notes";
 import { encodeNotesAttachmentRawEnvelope } from "./notesAttachmentRawIpc";
 import {
@@ -37,21 +39,24 @@ import type {
   UpdateNoteNodeInput
 } from "../domain/notes";
 
-function errorMessage(cause: unknown): string {
-  if (cause instanceof Error) {
-    return cause.message;
-  }
-  return typeof cause === "string" ? cause : String(cause);
-}
-
+/**
+ * Builds a {@link NotesStoreError} from a rejected IPC cause. The structured
+ * `code` is parsed from the backend `NotesError` (falling back to `internal`),
+ * and `retryable` is derived from that code — omit the third argument for
+ * transport/backend failures. The only callers that pass `retryable`
+ * explicitly are the client-side "response was malformed" guards, which are
+ * never retryable regardless of code.
+ */
 function notesStoreError(
   operation: NotesStoreError["operation"],
   cause: unknown,
-  retryable: boolean
+  retryable?: boolean
 ): NotesStoreError {
-  return Object.assign(new Error(errorMessage(cause)), {
+  const { code, message } = parseNotesError(cause);
+  return Object.assign(new Error(message), {
     operation,
-    retryable
+    code,
+    retryable: retryable ?? isRetryableNotesErrorCode(code)
   });
 }
 
@@ -307,7 +312,7 @@ export async function notesLoadWorkspace(
       scope
     });
   } catch (cause) {
-    throw notesStoreError("load", cause, true);
+    throw notesStoreError("load", cause);
   }
   const workspace = normalizeNotesWorkspace(result);
   if (workspace === null) {
@@ -361,7 +366,7 @@ async function invokeMutation(
   try {
     result = await invokeNotes<unknown>(command, args);
   } catch (cause) {
-    throw notesStoreError("write", cause, true);
+    throw notesStoreError("write", cause);
   }
   return normalizeMutationResult(result, historyContext);
 }
@@ -549,7 +554,7 @@ async function invokeHistoryReplay(
   try {
     result = await invokeNotes<unknown>(command, args);
   } catch (cause) {
-    throw notesStoreError("write", cause, true);
+    throw notesStoreError("write", cause);
   }
   if (!isNotesHistoryReplayResult(result)) {
     throw notesStoreError(
@@ -664,7 +669,7 @@ export async function notesImportAttachmentBytes(
     const { invoke } = await import("@tauri-apps/api/core");
     result = await invoke<unknown>("notes_import_attachment_bytes", body);
   } catch (cause) {
-    throw notesStoreError("write", cause, true);
+    throw notesStoreError("write", cause);
   }
   return normalizeMutationResult(result, normalizedHistoryContext);
 }
@@ -680,7 +685,7 @@ export async function notesReadAttachmentBytes(
       attachmentId
     });
   } catch (cause) {
-    throw notesStoreError("load", cause, true);
+    throw notesStoreError("load", cause);
   }
 
   // The command now streams a raw IPC body, so Tauri hands the webview either a
@@ -755,7 +760,7 @@ export async function notesEmptyTrash(
   try {
     result = await invokeNotes<unknown>("notes_empty_trash", { vaultPath });
   } catch (cause) {
-    throw notesStoreError("write", cause, true);
+    throw notesStoreError("write", cause);
   }
   const workspace = normalizeNotesWorkspace(result);
   if (workspace === null) {

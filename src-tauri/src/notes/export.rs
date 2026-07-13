@@ -54,10 +54,12 @@ const PDF_RETAINED_RGBA_BYTES_PER_PIXEL: u64 = 4;
 pub(crate) const EXPORT_ASSET_MARKER_NAME: &str = ".yonalist-notes-export.json";
 pub(crate) const EXPORT_ASSET_MARKER_CREATED_BY: &str = "yonalist-notes-export";
 const EXPORT_ASSET_MARKER_VERSION: u32 = 1;
-/// Overwrite-refusal message. Kept deliberately distinct from
-/// "Destination already exists." so it never triggers the frontend overwrite
-/// prompt (see `src/domain/notesExport.ts`).
-const FOREIGN_EXPORT_ASSET_DIR_MESSAGE: &str = "Export assets folder already exists and was not created by a previous export. Move or rename it and retry.";
+/// Overwrite-refusal message for an assets folder not created by a previous
+/// export. The Notes IPC boundary maps this exact text to
+/// [`crate::notes::error::NotesErrorCode::ForeignExportAssetDir`], a code
+/// distinct from `DestinationExists`, so the frontend never mistakes it for an
+/// overwrite conflict (see `src/domain/notesExport.ts`).
+pub(crate) const FOREIGN_EXPORT_ASSET_DIR_MESSAGE: &str = "Export assets folder already exists and was not created by a previous export. Move or rename it and retry.";
 
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
@@ -593,7 +595,7 @@ pub(crate) fn preflight_markdown_asset_destination(
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err("Notes export asset directory must not be a symlink.".to_string())
         }
-        Ok(_) if !overwrite => Err("Destination already exists.".to_string()),
+        Ok(_) if !overwrite => Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string()),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.to_string()),
@@ -697,7 +699,7 @@ fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), 
     ) {
         Ok(()) => Ok(()),
         Err(error) if error == rustix::io::Errno::EXIST => {
-            Err("Destination already exists.".to_string())
+            Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
         }
         Err(error) => Err(error.to_string()),
     }
@@ -742,7 +744,7 @@ fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), 
     let error = std::io::Error::last_os_error();
     match error.raw_os_error().map(|code| code as u32) {
         Some(ERROR_ALREADY_EXISTS) | Some(ERROR_FILE_EXISTS) => {
-            Err("Destination already exists.".to_string())
+            Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
         }
         _ => Err(error.to_string()),
     }
@@ -1007,7 +1009,7 @@ pub(crate) fn publish_markdown_export(
     preflight_markdown_asset_destination(asset_destination, overwrite)?;
     if !overwrite {
         match fs::symlink_metadata(destination) {
-            Ok(_) => return Err("Destination already exists.".to_string()),
+            Ok(_) => return Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
         }
@@ -1066,7 +1068,7 @@ pub(crate) fn publish_markdown_export(
             match fs::hard_link(&staged_document, destination) {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    Err("Destination already exists.".to_string())
+                    Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
                 }
                 Err(error) => Err(error.to_string()),
             }

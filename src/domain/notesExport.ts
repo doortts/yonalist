@@ -1,3 +1,4 @@
+import { notesErrorHasCode } from "./notes";
 import type { NoteId } from "./notes";
 
 export type NotesExportFormat = "markdown" | "pdf";
@@ -21,6 +22,12 @@ export interface NotesExportResult {
   format: NotesExportFormat;
 }
 
+/**
+ * User-facing message for the destination-exists conflict. Retained purely as
+ * the display text of {@link NotesExportConflictError}; the conflict is
+ * *detected* by the backend `destinationExists` code (see
+ * {@link isNotesExportConflict}), never by matching this string.
+ */
 const NOTES_EXPORT_CONFLICT_MESSAGE = "Destination already exists.";
 const NOTES_EXPORT_EXTENSIONS: Record<NotesExportFormat, string> = {
   markdown: "md",
@@ -115,8 +122,13 @@ export function isNotesExportResult(
   );
 }
 
-export function isNotesExportConflictMessage(cause: unknown): cause is string {
-  return cause === NOTES_EXPORT_CONFLICT_MESSAGE;
+/**
+ * True when a rejected export IPC cause is the backend's destination-exists
+ * conflict, identified by its structured `destinationExists` code rather than
+ * by any message text.
+ */
+export function isNotesExportConflict(cause: unknown): boolean {
+  return notesErrorHasCode(cause, "destinationExists");
 }
 
 export class NotesExportConflictError extends Error {

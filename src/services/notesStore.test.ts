@@ -82,3 +82,64 @@ describe("notesStore outside Tauri", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 });
+
+describe("notesStore structured errors", () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    tauriCoreFactoryEvaluated.current = false;
+    invokeMock.mockReset();
+  });
+
+  it("parses the backend code and marks unsupportedSchemaVersion non-retryable", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({
+      code: "unsupportedSchemaVersion",
+      message: "This Notes database uses unsupported schema version 99."
+    });
+
+    const error = await notesLoadWorkspace("/vault", { kind: "active" }).catch(
+      (rejection: unknown) => rejection
+    );
+
+    expect(error).toMatchObject({
+      operation: "load",
+      code: "unsupportedSchemaVersion",
+      retryable: false,
+      message: "This Notes database uses unsupported schema version 99."
+    });
+  });
+
+  it("derives a retryable error from the vaultBusy code", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({
+      code: "vaultBusy",
+      message: "Notes vault is already open in another window."
+    });
+
+    const error = await notesLoadWorkspace("/vault", { kind: "active" }).catch(
+      (rejection: unknown) => rejection
+    );
+
+    expect(error).toMatchObject({
+      operation: "load",
+      code: "vaultBusy",
+      retryable: true
+    });
+  });
+
+  it("classifies an unstructured transport failure as retryable internal", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue(new Error("IPC channel closed"));
+
+    const error = await notesLoadWorkspace("/vault", { kind: "active" }).catch(
+      (rejection: unknown) => rejection
+    );
+
+    expect(error).toMatchObject({
+      operation: "load",
+      code: "internal",
+      retryable: true,
+      message: "IPC channel closed"
+    });
+  });
+});
