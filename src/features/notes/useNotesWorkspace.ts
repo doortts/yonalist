@@ -2314,44 +2314,53 @@ export function useNotesWorkspace({
       record.inFlightDraftByNodeId.set(nodeId, draft.revision);
 
       let result: NotesWorkspaceQueueResult | undefined;
-      await record.session.enqueue(async (context) => {
-        if (!confirmedState(context).nodesById[nodeId]) {
-          result = { kind: "skipped" };
-          return result;
-        }
-        try {
-          const mutation = unwrapNotesMutation(
-            await context.repository.updateNode(
-              context.vaultRoot,
-              {
-                id: nodeId,
-                title: draft.title,
-                note: draft.note
-              },
-              ...historyArguments(historyContext)
-            )
-          );
-          const projection = await projectNotesMutation(
-            context,
-            mutation,
-            activeScopeRef.current
-          );
-          const appliedContext = appliedHistoryContext(historyContext, mutation);
-          if (historyContext && mutation.atomic && !appliedContext) {
-            discardHistoryEntry(historyContext);
+      // Draft autosave is enqueued silently so it settles through the drafts
+      // slice without toggling the global loading/aria-busy state. The settled
+      // event still commits the authoritative workspace via settleQueueWork.
+      await record.session.enqueue(
+        async (context) => {
+          if (!confirmedState(context).nodesById[nodeId]) {
+            result = { kind: "skipped" };
+            return result;
           }
-          rememberHistoryAfter(
-            appliedContext,
-            projection.workspace,
-            undefined,
-            attempt.focus
-          );
-          result = directMutationResult(mutation, projection);
-        } catch (cause) {
-          result = { kind: "failure", error: errorMessage(cause) };
-        }
-        return result;
-      });
+          try {
+            const mutation = unwrapNotesMutation(
+              await context.repository.updateNode(
+                context.vaultRoot,
+                {
+                  id: nodeId,
+                  title: draft.title,
+                  note: draft.note
+                },
+                ...historyArguments(historyContext)
+              )
+            );
+            const projection = await projectNotesMutation(
+              context,
+              mutation,
+              activeScopeRef.current
+            );
+            const appliedContext = appliedHistoryContext(
+              historyContext,
+              mutation
+            );
+            if (historyContext && mutation.atomic && !appliedContext) {
+              discardHistoryEntry(historyContext);
+            }
+            rememberHistoryAfter(
+              appliedContext,
+              projection.workspace,
+              undefined,
+              attempt.focus
+            );
+            result = directMutationResult(mutation, projection);
+          } catch (cause) {
+            result = { kind: "failure", error: errorMessage(cause) };
+          }
+          return result;
+        },
+        { silent: true }
+      );
       if (record.inFlightDraftByNodeId.get(nodeId) === draft.revision) {
         record.inFlightDraftByNodeId.delete(nodeId);
       }

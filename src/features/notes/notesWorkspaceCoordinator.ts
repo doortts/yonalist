@@ -86,7 +86,10 @@ export interface OpenNotesWorkspaceSessionOptions {
 export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
   readonly history: NotesHistorySession;
-  enqueue(work: NotesWorkspaceQueueWork): Promise<void>;
+  enqueue(
+    work: NotesWorkspaceQueueWork,
+    options?: { silent?: boolean }
+  ): Promise<void>;
   enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void>;
   close(): void;
 }
@@ -149,6 +152,10 @@ interface CommandItem extends QueueItemBase {
   owner: SessionState | null;
   work: NotesWorkspaceQueueWork | null;
   sourceScope: NotesWorkspaceScope;
+  // Silent work (draft autosave) stays out of the loading/pending accounting:
+  // it neither drives the "pending" event nor the pendingWork counter, so
+  // background saves do not toggle aria-busy or force a full-pane re-render.
+  silent: boolean;
 }
 
 type QueueItem = ActivationItem | CommandItem;
@@ -288,7 +295,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         owner.confirmedWorkspace = authoritativeWorkspace;
       }
       if (owner?.active) {
-        owner.pendingWork = Math.max(0, owner.pendingWork - 1);
+        if (!item.silent) {
+          owner.pendingWork = Math.max(0, owner.pendingWork - 1);
+        }
         notify(owner, {
           type: "settled",
           result,
@@ -577,7 +586,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       pump(entry);
 
       const activationCompletion = activation.completion;
-      const enqueueCommand = (work: NotesWorkspaceQueueWork): Promise<void> => {
+      const enqueueCommand = (
+        work: NotesWorkspaceQueueWork,
+        silent = false
+      ): Promise<void> => {
         if (!session.active) {
           return Promise.resolve();
         }
@@ -588,20 +600,32 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           owner: session,
           work,
           sourceScope: session.getScope?.() ?? { kind: "active" },
+          silent,
           canceled: false,
           ...completion
         };
-        session.pendingWork += 1;
+        // Silent (draft autosave) work must not surface as loading: skip the
+        // pendingWork bump and the "pending" event so aria-busy stays put. Its
+        // settlement still emits a "settled" event so the authoritative
+        // workspace is ingested.
+        if (!silent) {
+          session.pendingWork += 1;
+        }
         entry.queue.push(item);
-        notify(session, { type: "pending" });
+        if (!silent) {
+          notify(session, { type: "pending" });
+        }
         pump(entry);
         return item.completion;
       };
       return {
         activation: activationCompletion,
         history: entry.history,
-        enqueue(work: NotesWorkspaceQueueWork): Promise<void> {
-          return enqueueCommand(work);
+        enqueue(
+          work: NotesWorkspaceQueueWork,
+          options?: { silent?: boolean }
+        ): Promise<void> {
+          return enqueueCommand(work, options?.silent ?? false);
         },
         enqueueStructural(work: NotesWorkspaceQueueWork): Promise<void> {
           const participants = [...entry.sessions]

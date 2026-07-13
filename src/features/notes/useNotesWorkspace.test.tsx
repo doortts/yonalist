@@ -4518,6 +4518,137 @@ describe("useNotesWorkspace", () => {
     );
   });
 
+  it("keeps the loading state untouched while a debounced draft save settles", async () => {
+    // Hold the draft write in flight so loading is asserted while the write is
+    // genuinely pending — otherwise the pending->settle window collapses into a
+    // single commit and never captures an intermediate loading flash.
+    const write = deferred<NotesWorkspace>();
+    const store = repository({
+      updateNode: vi.fn().mockReturnValue(write.promise)
+    });
+    const observedLoading: boolean[] = [];
+    const { result } = renderHook(() => {
+      const value = useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store
+      });
+      observedLoading.push(value.loading);
+      return value;
+    });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    observedLoading.length = 0;
+    vi.useFakeTimers();
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "typed",
+        note: ""
+      });
+    });
+    // Debounce fires and the silent write goes in flight, but does not settle.
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+
+    // The write is genuinely pending here: loading must stay false while a
+    // draft save is outstanding.
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(result.current.loading).toBe(false);
+    expect(observedLoading).not.toContain(true);
+
+    // The authoritative result settles through the drafts slice only.
+    await act(async () => {
+      write.resolve(workspace([node({ id: "root", title: "typed" })]));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.status).toBe("ready");
+    expect(result.current.state.nodesById.root?.title).toBe("typed");
+    expect(observedLoading).not.toContain(true);
+  });
+
+  it("still drives the loading state for a structural command", async () => {
+    const command = deferred<NotesWorkspace>();
+    const store = repository({
+      updateNode: vi.fn().mockReturnValue(command.promise)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.loading).toBe(false);
+
+    let completion!: Promise<void>;
+    act(() => {
+      completion = result.current.actions.updateNode("root", {
+        title: "structural",
+        note: ""
+      });
+    });
+
+    await waitFor(() => expect(result.current.loading).toBe(true));
+    expect(result.current.status).toBe("loading");
+
+    await act(async () => {
+      command.resolve(workspace([node({ id: "root", title: "structural" })]));
+      await completion;
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.status).toBe("ready");
+  });
+
+  it("surfaces a failing draft write through writeError without a loading flash", async () => {
+    // Hold the write in flight so the no-flash claim is asserted while the
+    // draft save is genuinely outstanding, not after it has already settled.
+    const write = deferred<NotesWorkspace>();
+    const store = repository({
+      updateNode: vi.fn().mockReturnValue(write.promise)
+    });
+    const observedLoading: boolean[] = [];
+    const { result } = renderHook(() => {
+      const value = useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store
+      });
+      observedLoading.push(value.loading);
+      return value;
+    });
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    observedLoading.length = 0;
+    vi.useFakeTimers();
+
+    act(() => {
+      result.current.actions.updateNodeDraft("root", {
+        title: "unsaved",
+        note: ""
+      });
+    });
+    // Debounce fires and the silent write goes in flight, but does not settle.
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+
+    expect(store.updateNode).toHaveBeenCalledOnce();
+    expect(result.current.loading).toBe(false);
+    expect(observedLoading).not.toContain(true);
+
+    // The write fails: the Phase 0.8 banner surfaces without a loading flash.
+    await act(async () => {
+      write.reject(new Error("disk full"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.draftsByNodeId.root).toMatchObject({
+      title: "unsaved",
+      status: "failed"
+    });
+    expect(result.current.writeError).toMatchObject({
+      operation: "write",
+      retryable: true,
+      message: "disk full"
+    });
+    expect(result.current.loading).toBe(false);
+    expect(observedLoading).not.toContain(true);
+  });
+
   it("keeps a pending draft and split in one coordinator command", async () => {
     const draftWrite = deferred<NotesWorkspace>();
     const invocations: string[] = [];

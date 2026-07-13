@@ -699,4 +699,38 @@ describe("notesWorkspaceCoordinator registry", () => {
     secondSession.close();
     expect(registry.hasCoordinator(store, "/vault")).toBe(false);
   });
+
+  it("keeps silent work out of pending accounting while still settling it", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/silent",
+      onEvent: events
+    });
+    await session.activation;
+    events.mockClear();
+
+    const settled = workspace([node({ id: "silent-result" })]);
+    await session.enqueue(
+      () => ({ kind: "authoritative" as const, workspace: settled }),
+      { silent: true }
+    );
+
+    // No "pending" event is raised for silent work, so loading never toggles...
+    expect(events).not.toHaveBeenCalledWith({ type: "pending" });
+    // ...but the authoritative workspace still settles to the owner, and the
+    // silent write must not leave stale pending accounting behind.
+    expect(events).toHaveBeenCalledWith({
+      type: "settled",
+      result: {
+        kind: "authoritative",
+        workspace: settled,
+        historyStatus: undefined
+      },
+      hasPendingWork: false
+    });
+    session.close();
+  });
 });

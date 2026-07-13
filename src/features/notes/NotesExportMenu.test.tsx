@@ -626,8 +626,10 @@ describe("NotesExportMenu", () => {
     );
 
     expect(screen.getByText("Exporting...")).toBeInTheDocument();
-    await waitFor(() => expect(currentWorkspace?.status).toBe("loading"));
-    expect(store.updateNode).toHaveBeenCalledOnce();
+    // The draft flush that gates the export is a silent (non-structural) write:
+    // it must stay out of the loading state even while in flight.
+    await waitFor(() => expect(store.updateNode).toHaveBeenCalledOnce());
+    expect(currentWorkspace?.status).toBe("ready");
     expect(store.updateNode).toHaveBeenCalledWith(
       "/vault",
       {
