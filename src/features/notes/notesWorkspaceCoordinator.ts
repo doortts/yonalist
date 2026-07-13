@@ -10,6 +10,7 @@ import {
   type NotesHistoryFocusField,
   type NotesHistorySession
 } from "./notesHistory";
+import type { NotesWorkspaceDelta } from "./notesWorkspaceReducer";
 import { scopeKey } from "./notesWorkspaceScope";
 
 export type NotesWorkspaceUiUpdate = Partial<{
@@ -32,6 +33,11 @@ export type NotesWorkspaceQueueResult =
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
+      // Scope-consistent incremental delta forwarded to the reducer (and, via
+      // synchronization, to same-scope sibling sessions) so the normalized
+      // store is patched instead of fully re-normalized. Only ever set for the
+      // active scope; see directMutationResult/runCompoundQueueWork.
+      delta?: NotesWorkspaceDelta;
     }
   | { kind: "skipped" }
   | {
@@ -322,6 +328,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             workspace: result.workspace,
             historyStatus: result.historyStatus,
             historyVersion: result.historyVersion,
+            ...(result.delta ? { delta: result.delta } : {}),
             ...(result.clearLocalExpansionSubtreeId
               ? {
                   clearLocalExpansionSubtreeId:

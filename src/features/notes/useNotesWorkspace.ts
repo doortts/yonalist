@@ -12,6 +12,7 @@ import { createNoteId, isNotesMutationResult } from "../../domain/notes";
 import type {
   ImportNoteAttachmentByteItem,
   MoveNoteNodeInput,
+  NoteAttachment,
   NoteId,
   NoteNode,
   NotesHistoryContext,
@@ -50,6 +51,7 @@ import {
   notesWorkspaceReducer,
   reconcileUiState,
   type NormalizedNotesWorkspace,
+  type NotesWorkspaceDelta,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
 import {
@@ -368,6 +370,7 @@ export function authoritative(
     | "scopeAgnostic"
     | "committedHistoryEntryIds"
     | "invalidatesTagSummaries"
+    | "delta"
   >
 ): NotesWorkspaceQueueResult {
   return {
@@ -379,17 +382,40 @@ export function authoritative(
   };
 }
 
+/**
+ * The backend audit delta, relative to the full (unscoped) database. See
+ * {@link NotesMutationResult}; the fields arrive together (all present or all
+ * absent) whenever the mutation ran under a history context.
+ */
+export interface RawNotesMutationDelta {
+  changedNodes: NoteNode[];
+  removedNodeIds: NoteId[];
+  changedAttachments: NoteAttachment[];
+}
+
 export interface UnwrappedNotesMutation {
   workspace: NotesWorkspace;
   historyEntryId: string | null | undefined;
   historyStatus: NotesHistoryStatus | undefined;
   atomic: boolean;
+  delta: RawNotesMutationDelta | null;
 }
 
 export function unwrapNotesMutation(
   response: NotesMutationResponse
 ): UnwrappedNotesMutation {
   if (isNotesMutationResult(response)) {
+    // The three delta fields are written as a group; `changedNodes` being
+    // present is the signal that the mutation ran with a history context and
+    // therefore carries an audit delta.
+    const delta =
+      response.changedNodes !== undefined
+        ? {
+            changedNodes: response.changedNodes,
+            removedNodeIds: response.removedNodeIds ?? [],
+            changedAttachments: response.changedAttachments ?? []
+          }
+        : null;
     return {
       workspace: response.workspace,
       historyEntryId: response.historyEntryId,
@@ -397,15 +423,83 @@ export function unwrapNotesMutation(
         canUndo: response.canUndo,
         canRedo: response.canRedo
       },
-      atomic: true
+      atomic: true,
+      delta
     };
   }
   return {
     workspace: response,
     historyEntryId: undefined,
     historyStatus: undefined,
-    atomic: false
+    atomic: false,
+    delta: null
   };
+}
+
+/**
+ * Reconcile the backend's full-database audit delta into a delta that is
+ * consistent with the *active* scope's projected store. Active membership is
+ * exactly `deletedAt === null && archivedAt === null`, so any changed node that
+ * gained a `deletedAt`/`archivedAt` timestamp has left the active scope and is
+ * recorded as a removal instead of an upsert; attachments of removed nodes are
+ * dropped alongside them.
+ *
+ * Returns `undefined` when there is nothing to patch — including the
+ * attachment-removal case, whose audit delta is empty because deleted
+ * attachment rows are never surfaced (see history.rs). An empty delta falls
+ * back to full normalization, which correctly reflects the removal.
+ */
+export function scopedActiveDelta(
+  raw: RawNotesMutationDelta | null
+): NotesWorkspaceDelta | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  const removedNodeIds = [...raw.removedNodeIds];
+  const removedSet = new Set(removedNodeIds);
+  const changedNodes: NoteNode[] = [];
+  for (const node of raw.changedNodes) {
+    if (node.deletedAt !== null || node.archivedAt !== null) {
+      if (!removedSet.has(node.id)) {
+        removedNodeIds.push(node.id);
+        removedSet.add(node.id);
+      }
+    } else {
+      changedNodes.push(node);
+    }
+  }
+  const changedAttachments = raw.changedAttachments.filter(
+    (attachment) => !removedSet.has(attachment.nodeId)
+  );
+  if (
+    changedNodes.length === 0 &&
+    removedNodeIds.length === 0 &&
+    changedAttachments.length === 0
+  ) {
+    return undefined;
+  }
+  return { changedNodes, removedNodeIds, changedAttachments };
+}
+
+/**
+ * The delta is safe to forward to the reducer only when the projection did not
+ * re-scope the mutation workspace: for the active scope {@link workspaceForScope}
+ * returns the mutation workspace by reference, so identity equality is a precise
+ * "this is the unprojected active workspace" signal. Any non-active scope loads
+ * a fresh workspace (new reference, different parent linkage) and must fall back
+ * to full normalization.
+ */
+function forwardableActiveDelta(
+  mutation: UnwrappedNotesMutation,
+  projection: ProjectedNotesMutation
+): NotesWorkspaceDelta | undefined {
+  if (
+    projection.projectionError !== undefined ||
+    projection.workspace !== mutation.workspace
+  ) {
+    return undefined;
+  }
+  return scopedActiveDelta(mutation.delta);
 }
 
 export function appliedHistoryContext(
@@ -523,7 +617,10 @@ export function directMutationResult(
       projection.workspace,
       uiUpdate,
       mutation.historyStatus,
-      { invalidatesTagSummaries: true }
+      {
+        invalidatesTagSummaries: true,
+        delta: forwardableActiveDelta(mutation, projection)
+      }
     );
   }
   return {
@@ -746,6 +843,8 @@ export async function runCompoundQueueWork(
   let workspace = context.confirmedWorkspace;
   let hasAuthoritativeStep = false;
   let historyStatus: NotesHistoryStatus | undefined;
+  let stepCount = 0;
+  let lastMutation: UnwrappedNotesMutation | null = null;
   const committedHistoryEntryIds: string[] = [];
 
   try {
@@ -753,6 +852,8 @@ export async function runCompoundQueueWork(
       const mutation = unwrapNotesMutation(await step.run());
       workspace = mutation.workspace;
       hasAuthoritativeStep = true;
+      stepCount += 1;
+      lastMutation = mutation;
       historyStatus = mutation.historyStatus ?? historyStatus;
       const committedHistoryEntryId = mutation.atomic
         ? mutation.historyEntryId
@@ -764,13 +865,23 @@ export async function runCompoundQueueWork(
         committedHistoryEntryIds.push(committedHistoryEntryId);
       }
     }
+    const projectedWorkspace = await workspaceForScope(context, workspace, scope);
+    // Forward the delta only for a single-step compound on the active scope:
+    // multi-step deltas span intermediate DB states and cannot be trusted as a
+    // single incremental patch, and a re-scoped projection breaks the raw
+    // delta's parent linkage. `projectedWorkspace === workspace` holds iff the
+    // active scope returned the mutation workspace unprojected.
+    const delta =
+      stepCount === 1 && lastMutation && projectedWorkspace === workspace
+        ? scopedActiveDelta(lastMutation.delta)
+        : undefined;
     return authoritative(
-      await workspaceForScope(context, workspace, scope),
+      projectedWorkspace,
       uiUpdate,
       historyStatus,
       committedHistoryEntryIds.length > 0
-        ? { committedHistoryEntryIds, invalidatesTagSummaries: true }
-        : { invalidatesTagSummaries: true }
+        ? { committedHistoryEntryIds, invalidatesTagSummaries: true, delta }
+        : { invalidatesTagSummaries: true, delta }
     );
   } catch (cause) {
     if (hasAuthoritativeStep && scope.kind !== "active") {

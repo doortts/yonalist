@@ -18,10 +18,12 @@ import type {
 import {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
+  scopedActiveDelta,
   useNotesWorkspace,
   type NotesWorkspaceActions,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
+import { setNotesDeltaVerificationEnabled } from "./notesWorkspaceReducer";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
@@ -7453,5 +7455,158 @@ describe("useNotesWorkspace", () => {
       editingNoteId: "archived-second",
       pendingFocusId: "archived-second"
     });
+  });
+});
+
+describe("scopedActiveDelta", () => {
+  it("passes through changes that remain in the active scope", () => {
+    const kept = node({ id: "kept", title: "kept" });
+    const attachmentChange = attachment({ id: "att", nodeId: "kept" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [kept],
+        removedNodeIds: ["gone"],
+        changedAttachments: [attachmentChange]
+      })
+    ).toEqual({
+      changedNodes: [kept],
+      removedNodeIds: ["gone"],
+      changedAttachments: [attachmentChange]
+    });
+  });
+
+  it("reclassifies soft-deleted and archived nodes as removals", () => {
+    const active = node({ id: "active" });
+    const trashed = node({ id: "trashed", deletedAt: "2026-07-13T00:00:00Z" });
+    const archived = node({ id: "archived", archivedAt: "2026-07-13T00:00:00Z" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [active, trashed, archived],
+        removedNodeIds: [],
+        changedAttachments: []
+      })
+    ).toEqual({
+      changedNodes: [active],
+      removedNodeIds: ["trashed", "archived"],
+      changedAttachments: []
+    });
+  });
+
+  it("drops attachments whose node left the active scope", () => {
+    const trashed = node({ id: "trashed", deletedAt: "2026-07-13T00:00:00Z" });
+    const orphaned = attachment({ id: "att", nodeId: "trashed" });
+    expect(
+      scopedActiveDelta({
+        changedNodes: [trashed],
+        removedNodeIds: [],
+        changedAttachments: [orphaned]
+      })
+    ).toEqual({
+      changedNodes: [],
+      removedNodeIds: ["trashed"],
+      changedAttachments: []
+    });
+  });
+
+  it("returns undefined for an empty delta (e.g. attachment removal)", () => {
+    expect(
+      scopedActiveDelta({
+        changedNodes: [],
+        removedNodeIds: [],
+        changedAttachments: []
+      })
+    ).toBeUndefined();
+  });
+
+  it("returns undefined when there is no delta at all", () => {
+    expect(scopedActiveDelta(null)).toBeUndefined();
+  });
+});
+
+describe("useNotesWorkspace incremental delta wiring", () => {
+  beforeEach(() => {
+    createNoteIdMock.mockReset();
+  });
+
+  afterEach(() => {
+    setNotesDeltaVerificationEnabled(false);
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("applies a delta-bearing mutation without diverging from the full payload", async () => {
+    setNotesDeltaVerificationEnabled(true);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const before = node({ id: "root", completedAt: null });
+    const after = node({ id: "root", completedAt: "2026-07-13T00:00:00Z" });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([before])),
+      toggleComplete: vi.fn().mockImplementation((_vault, _id, context) =>
+        Promise.resolve({
+          workspace: workspace([after]),
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false,
+          changedNodes: [after],
+          removedNodeIds: [],
+          changedAttachments: []
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleComplete("root"));
+
+    expect(result.current.state.nodesById.root.completedAt).toBe(
+      "2026-07-13T00:00:00Z"
+    );
+    expect(consoleError).not.toHaveBeenCalled();
+  });
+
+  it("forwards the delta to the reducer, which verifies and falls back when it diverges", async () => {
+    setNotesDeltaVerificationEnabled(true);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const before = node({ id: "root", completedAt: null });
+    const authoritativeAfter = node({
+      id: "root",
+      completedAt: "2026-07-13T00:00:00Z"
+    });
+    const corruptAfter = node({ id: "root", completedAt: "1999-01-01T00:00:00Z" });
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace([before])),
+      toggleComplete: vi.fn().mockImplementation((_vault, _id, context) =>
+        Promise.resolve({
+          workspace: workspace([authoritativeAfter]),
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false,
+          // A delta that disagrees with the authoritative workspace: only the
+          // forwarded delta path runs verification, so a surfaced error proves
+          // the delta reached the reducer.
+          changedNodes: [corruptAfter],
+          removedNodeIds: [],
+          changedAttachments: []
+        })
+      )
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => result.current.actions.toggleComplete("root"));
+
+    expect(consoleError).toHaveBeenCalled();
+    expect(result.current.state.nodesById.root.completedAt).toBe(
+      "2026-07-13T00:00:00Z"
+    );
   });
 });
