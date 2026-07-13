@@ -37,6 +37,14 @@ const ATTACHMENT_LEASE_POLL_INTERVAL: std::time::Duration = std::time::Duration:
 /// deadline (typically because another Yonalist window holds it).
 pub(crate) const ATTACHMENT_LEASE_BUSY_MESSAGE: &str =
     "Notes vault is busy in another window. Close other Yonalist windows and try again.";
+/// Name of the vault-level application lock inside `.yonalist`. Held for the
+/// connection manager's (process) lifetime so only one app instance opens a
+/// vault at a time; distinct from the short-lived attachment storage lease.
+pub(crate) const VAULT_APP_LOCK_NAME: &str = "notes.app.lock";
+/// User-facing error when another OS-level app instance already holds the
+/// vault application lock.
+pub(crate) const VAULT_APP_LOCK_BUSY_MESSAGE: &str =
+    "Notes vault is already open in another window.";
 static IMPORT_BUDGET_LOCK: Mutex<()> = Mutex::new(());
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -1023,6 +1031,54 @@ fn mark_reconciliation_needed_in(metadata: &Dir) -> Result<(), String> {
             format!("Could not sync the Notes attachment reconciliation marker: {error}")
         })?;
     sync_capability_directory(metadata)
+}
+
+/// Opens `.yonalist/notes.app.lock` symlink-safely (the same directory
+/// discipline the attachment lease uses) and takes the exclusive `flock` for
+/// this process without blocking. On success the returned `File` owns the lock
+/// for as long as it lives; callers keep it alive for the connection manager's
+/// lifetime. A second OS-level process that already holds the lock yields
+/// [`VAULT_APP_LOCK_BUSY_MESSAGE`]. Reentrancy within one process is the
+/// caller's responsibility — a same-process second `flock` on a fresh descriptor
+/// would contend with our own held lock, so the manager caches one handle per
+/// vault instead of re-opening here.
+pub(crate) fn acquire_vault_app_lock_file(vault_path: &str) -> Result<File, String> {
+    let metadata_path = crate::metadata_dir(vault_path);
+    fs::create_dir_all(&metadata_path)
+        .map_err(|error| format!("Could not create the Notes metadata directory: {error}"))?;
+    let vault_dir = metadata_path
+        .parent()
+        .ok_or_else(|| "Could not resolve the Notes vault directory.".to_string())?;
+    let vault = Dir::open_ambient_dir(vault_dir, ambient_authority())
+        .map_err(|error| format!("Could not open the Notes vault directory: {error}"))?;
+    let metadata = vault.open_dir_nofollow(".yonalist").map_err(|error| {
+        format!("The Notes metadata directory must be an owned directory, not a symlink: {error}")
+    })?;
+
+    let mut lock_options = OpenOptions::new();
+    lock_options
+        .read(true)
+        .write(true)
+        .create(true)
+        .follow(FollowSymlinks::No);
+    let lock_file = metadata
+        .open_with(VAULT_APP_LOCK_NAME, &lock_options)
+        .map_err(|error| format!("Could not open the Notes vault application lock: {error}"))?
+        .into_std();
+    if !lock_file
+        .metadata()
+        .map_err(|error| format!("Could not inspect the Notes vault application lock: {error}"))?
+        .is_file()
+    {
+        return Err("The Notes vault application lock must be a regular file.".to_string());
+    }
+    match FileExt::try_lock(&lock_file) {
+        Ok(()) => Ok(lock_file),
+        Err(fs4::TryLockError::WouldBlock) => Err(VAULT_APP_LOCK_BUSY_MESSAGE.to_string()),
+        Err(fs4::TryLockError::Error(error)) => {
+            Err(format!("Could not lock the Notes vault: {error}"))
+        }
+    }
 }
 
 pub(crate) struct AttachmentStorageLease {

@@ -15,9 +15,11 @@
 //! the per-connection `Mutex` serializes database access per vault; callers must
 //! hold that lock only around the actual database work.
 
+use crate::notes::attachments::acquire_vault_app_lock_file;
 use crate::notes::repository::{connect_notes_db, notes_db_path};
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
@@ -133,6 +135,43 @@ pub(crate) fn evict_notes_connection(vault_path: &str) {
 /// [`acquire_notes_connection`].
 pub(crate) fn lock_notes_connection(shared: &SharedNotesConnection) -> MutexGuard<'_, Connection> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Process-wide table of held vault application locks, keyed by the vault's
+/// `.yonalist` directory. Each entry owns an `flock`ed file handle whose lock is
+/// released only when the handle is dropped; because entries are never removed,
+/// the lock is held for the connection manager's (process) lifetime.
+fn app_lock_registry() -> &'static Mutex<HashMap<PathBuf, File>> {
+    static APP_LOCKS: OnceLock<Mutex<HashMap<PathBuf, File>>> = OnceLock::new();
+    APP_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Ensures this process holds the exclusive application lock for `vault_path`,
+/// acquiring it on first use. Returns
+/// [`VAULT_APP_LOCK_BUSY_MESSAGE`](crate::notes::attachments::VAULT_APP_LOCK_BUSY_MESSAGE)
+/// when another OS-level instance already holds the vault, so `notes_initialize`
+/// rejects a second window instead of letting its `clear_all_history` wipe this
+/// instance's undo stack.
+///
+/// Reentrant within one process: the first acquisition caches the locked file
+/// handle keyed by the vault's `.yonalist` directory, and every later call for
+/// the same vault returns `Ok(())` without opening a second descriptor. That
+/// reentrancy is essential — a same-process second `flock` on a fresh descriptor
+/// contends with our own held lock, so single-process reopen paths (and the test
+/// suite) must never re-lock. The registry `Mutex` is held across the check and
+/// the lock acquisition so two threads racing the first open cannot both attempt
+/// the (non-blocking) `flock`.
+pub(crate) fn acquire_vault_app_lock(vault_path: &str) -> Result<(), String> {
+    let key = crate::metadata_dir(vault_path);
+    let mut locks = app_lock_registry()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if locks.contains_key(&key) {
+        return Ok(());
+    }
+    let lock_file = acquire_vault_app_lock_file(vault_path)?;
+    locks.insert(key, lock_file);
+    Ok(())
 }
 
 // One-shot test hook fired inside `open_and_cache` *after* `connect_notes_db`

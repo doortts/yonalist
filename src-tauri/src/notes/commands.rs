@@ -2,8 +2,8 @@ use crate::file_io::write_atomic_file;
 use crate::notes::attachment_ingest::decode_raw_attachment_envelope;
 use crate::notes::attachments::{AttachmentStorageLease, PreparedAttachmentBatch};
 use crate::notes::connection::{
-    acquire_notes_connection, evict_notes_connection, lock_notes_connection,
-    reinitialize_notes_connection,
+    acquire_notes_connection, acquire_vault_app_lock, evict_notes_connection,
+    lock_notes_connection, reinitialize_notes_connection,
 };
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::export::{
@@ -182,6 +182,12 @@ pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), String> {
 }
 
 pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
+    // Take the process-wide vault lock before anything else so a second window
+    // is rejected up front (with a clear message) rather than after waiting on
+    // the attachment lease. Holding it for the connection manager's lifetime is
+    // what stops a second instance's `clear_all_history` below from destroying
+    // this instance's undo history. Reentrant within one process.
+    acquire_vault_app_lock(&vault_path)?;
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     // Opening a vault must run the schema/migration pipeline exactly once, so
     // force a fresh connection here even if an earlier command already cached
@@ -2247,6 +2253,53 @@ mod tests {
             let storage = AttachmentStorageLease::acquire(&vault_path).expect("cleared marker");
             assert!(!storage.reconciliation_needed().expect("marker state"));
         }
+    }
+
+    #[test]
+    fn notes_initialize_reopens_the_same_vault_within_one_process() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        // The vault lock is reentrant within one process: opening, then reopening
+        // the same vault (as a webview reload or a repeated command would) must
+        // reuse the already-held lock instead of deadlocking against it.
+        notes_initialize(vault_path.clone()).expect("first initialize");
+        notes_initialize(vault_path.clone()).expect("reinitialize in the same process");
+        notes_initialize(vault_path).expect("reinitialize again");
+    }
+
+    #[test]
+    fn notes_initialize_rejects_a_second_instance_holding_the_vault_lock() {
+        use fs4::FileExt;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        // Simulate another OS-level app instance holding the vault: open the lock
+        // file directly and take the exclusive flock. A fresh descriptor from
+        // this same process contends with that lock exactly as a second process
+        // would, so `notes_initialize` (which has never cached a handle for this
+        // vault) must be refused with the single-writer message rather than
+        // running `clear_all_history` and wiping the other instance's undo stack.
+        let metadata = crate::metadata_dir(&vault_path);
+        fs::create_dir_all(&metadata).expect("create metadata directory");
+        let lock_path = metadata.join("notes.app.lock");
+        let foreign = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .expect("open the vault lock as another instance");
+        FileExt::try_lock(&foreign).expect("another instance takes the vault lock");
+
+        let error =
+            notes_initialize(vault_path.clone()).expect_err("a second instance must be rejected");
+        assert_eq!(error, "Notes vault is already open in another window.");
+
+        // Once the other instance closes (releases the lock), this instance can
+        // open the vault normally.
+        FileExt::unlock(&foreign).expect("the other instance releases the vault lock");
+        notes_initialize(vault_path).expect("initialize after the other instance closes");
     }
 
     #[test]
