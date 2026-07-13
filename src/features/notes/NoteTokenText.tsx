@@ -1,4 +1,9 @@
-import type { CSSProperties, HTMLAttributes, ReactNode } from "react";
+import {
+  useMemo,
+  type CSSProperties,
+  type HTMLAttributes,
+  type ReactNode
+} from "react";
 import {
   tokenizeNoteText,
   type NoteTagToken
@@ -59,20 +64,25 @@ export function NoteTokenText({
   const rootClassName = ["notes-token-text", className]
     .filter(Boolean)
     .join(" ");
-  const interactiveTokens: InteractiveToken[] = tokenizeNoteText(text)
-    .filter((token): token is NoteTagToken => token.kind === "tag")
-    .map((token) => ({ kind: "tag", token }));
-  if (today) {
-    interactiveTokens.push(
-      ...findNoteDateMatches(text, { today }).map((token) => ({
-        kind: "date" as const,
-        token
-      }))
+  // tokenizeNoteText / findNoteDateMatches re-scan the whole string; memoize so
+  // an unrelated re-render (or a keystroke in another row) does not re-parse.
+  const interactiveTokens = useMemo<InteractiveToken[]>(() => {
+    const tokens: InteractiveToken[] = tokenizeNoteText(text)
+      .filter((token): token is NoteTagToken => token.kind === "tag")
+      .map((token) => ({ kind: "tag", token }));
+    if (today) {
+      tokens.push(
+        ...findNoteDateMatches(text, { today }).map((token) => ({
+          kind: "date" as const,
+          token
+        }))
+      );
+    }
+    tokens.sort(
+      (left, right) => left.token.startUtf16 - right.token.startUtf16
     );
-  }
-  interactiveTokens.sort(
-    (left, right) => left.token.startUtf16 - right.token.startUtf16
-  );
+    return tokens;
+  }, [text, today]);
 
   const content: ReactNode[] = [];
   let textStartUtf16 = 0;

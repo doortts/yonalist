@@ -7,6 +7,7 @@ import {
   type ClipboardEvent,
   type CSSProperties,
   type KeyboardEvent,
+  memo,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -32,10 +33,12 @@ import {
 import { NoteTextField } from "./NoteTextField";
 import {
   useNotesActions,
-  useNotesDrafts,
   useNotesState
 } from "./NotesWorkspaceContext";
-import type { NotesPreparedMove } from "./useNotesWorkspace";
+import type {
+  NotesNodeDraft,
+  NotesPreparedMove
+} from "./useNotesWorkspace";
 import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
@@ -48,7 +51,16 @@ interface OutlineNodeRowProps {
   depth: number;
   ancestorGuideDepths: readonly number[];
   visibleDescendantEndId: NoteId | null;
-  visibleNodeIds: readonly NoteId[];
+  // A stable accessor for the current visible-id list, rather than the array by
+  // value — passing the array as a prop would churn its identity every render
+  // and defeat this component's memo.
+  getVisibleNodeIds(): readonly NoteId[];
+  // Atomic drafts-slice reads, hoisted to props so the row does NOT subscribe to
+  // the high-volatility drafts context. A keystroke in another row therefore
+  // leaves these props referentially unchanged and the memo bails out.
+  draft?: NotesNodeDraft;
+  attachmentUploadError?: string;
+  attachmentUploadRetryAttemptId?: string;
   dragDisabled: boolean;
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
@@ -61,12 +73,15 @@ function controlLabel(title: string): string {
   return title.trim() || "Untitled node";
 }
 
-export function OutlineNodeRow({
+function OutlineNodeRowComponent({
   nodeId,
   depth,
   ancestorGuideDepths,
   visibleDescendantEndId,
-  visibleNodeIds,
+  getVisibleNodeIds,
+  draft,
+  attachmentUploadError,
+  attachmentUploadRetryAttemptId,
   dragDisabled,
   disabled = false,
   readOnlyMode,
@@ -82,14 +97,8 @@ export function OutlineNodeRow({
     retryFailedDraft
   } = useNotesActions();
   const { activeTagFilters, state } = useNotesState();
-  const {
-    attachmentUploadErrorsByNodeId,
-    attachmentUploadRetryAttemptIdsByNodeId,
-    draftsByNodeId
-  } = useNotesDrafts();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
-  const draft = draftsByNodeId[nodeId];
   const readOnly = readOnlyMode !== undefined;
   const imageDropEnabled =
     !disabled &&
@@ -139,9 +148,6 @@ export function OutlineNodeRow({
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
-  const attachmentUploadError = attachmentUploadErrorsByNodeId?.[nodeId];
-  const attachmentUploadRetryAttemptId =
-    attachmentUploadRetryAttemptIdsByNodeId?.[nodeId];
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
@@ -409,7 +415,7 @@ export function OutlineNodeRow({
       nodeId,
       platform: detectOutlineShortcutPlatform(),
       workspace: state,
-      visibleNodeIds
+      visibleNodeIds: getVisibleNodeIds()
     });
     if (!resolution) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -792,3 +798,10 @@ export function OutlineNodeRow({
     </div>
   );
 }
+
+// Memoized so a draft keystroke in one row (which re-renders the pane shell and
+// re-creates every row element) only re-renders the row whose atomic props
+// actually changed. All props are primitives, referentially stable objects, or
+// stable callbacks; the drafts context is read at the pane and passed down as
+// the `draft`/attachment props so sibling rows keep identical props and bail.
+export const OutlineNodeRow = memo(OutlineNodeRowComponent);

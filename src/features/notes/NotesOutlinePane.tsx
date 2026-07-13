@@ -191,6 +191,9 @@ function useOutlineIndentPx(): number {
   return isNarrow ? OUTLINE_NARROW_INDENT_PX : OUTLINE_INDENT_PX;
 }
 
+const pointerSensorOptions = { activationConstraint: { distance: 4 } };
+const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates };
+
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const { actions, retryLastFailedWrite } = useNotesActions();
@@ -200,7 +203,12 @@ export function NotesOutlinePane() {
     locallyExpandedNodeIds,
     state
   } = useNotesState();
-  const { draftsByNodeId, writeError } = useNotesDrafts();
+  const {
+    attachmentUploadErrorsByNodeId,
+    attachmentUploadRetryAttemptIdsByNodeId,
+    draftsByNodeId,
+    writeError
+  } = useNotesDrafts();
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
@@ -235,8 +243,8 @@ export function NotesOutlinePane() {
     projection: ReturnType<typeof projectOutlineDrop>;
   } | null>(null);
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    useSensor(PointerSensor, pointerSensorOptions),
+    useSensor(KeyboardSensor, keyboardSensorOptions)
   );
 
   useEffect(() => {
@@ -358,25 +366,57 @@ export function NotesOutlinePane() {
       actions.setImageImportMaxDisplayWidth(null);
     };
   }, [actions]);
-  const allStructuralRows = flattenVisibleOutlineRows(
-    state,
-    state.zoomRootId,
-    locallyExpandedNodeIds
+  // Recomputing the visible-row projection on every render (including draft
+  // keystrokes) would hand each row a fresh `ancestorGuideDepths` array and
+  // defeat OutlineNodeRow's memo. Memoizing keyed on the structural inputs keeps
+  // the row objects referentially stable across keystrokes (which only touch the
+  // drafts slice, never `state`).
+  const allStructuralRows = useMemo(
+    () =>
+      flattenVisibleOutlineRows(
+        state,
+        state.zoomRootId,
+        locallyExpandedNodeIds
+      ),
+    [state, locallyExpandedNodeIds]
   );
-  const structuralRows = showCompleted
-    ? allStructuralRows
-    : hideCompletedSubtrees(
-        allStructuralRows,
-        state.nodesById,
-        state.zoomRootId
-      );
-  const bodyRows = deriveOutlineBodyRows(structuralRows, state.zoomRootId);
+  const structuralRows = useMemo(
+    () =>
+      showCompleted
+        ? allStructuralRows
+        : hideCompletedSubtrees(
+            allStructuralRows,
+            state.nodesById,
+            state.zoomRootId
+          ),
+    [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId]
+  );
+  const bodyRows = useMemo(
+    () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
+    [structuralRows, state.zoomRootId]
+  );
   const completedItemsHidden =
     !showCompleted &&
     allStructuralRows.length > structuralRows.length &&
     bodyRows.length === 0;
-  const structuralVisibleIds = structuralRows.map((row) => row.id);
-  const bodyVisibleIds = bodyRows.map((row) => row.id);
+  const structuralVisibleIds = useMemo(
+    () => structuralRows.map((row) => row.id),
+    [structuralRows]
+  );
+  // Rows resolve prev/next-row neighbours (keyboard nav) through this stable
+  // accessor instead of receiving the visible-id array by value — passing the
+  // array as a prop would churn its identity every render and defeat row memo.
+  // The ref keeps a live pointer so the callback identity never changes.
+  const structuralVisibleIdsRef = useRef(structuralVisibleIds);
+  structuralVisibleIdsRef.current = structuralVisibleIds;
+  const getVisibleNodeIds = useCallback(
+    () => structuralVisibleIdsRef.current,
+    []
+  );
+  const bodyVisibleIds = useMemo(
+    () => bodyRows.map((row) => row.id),
+    [bodyRows]
+  );
   const bodyDropPreview =
     dropPreview && state.zoomRootId !== null
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
@@ -662,7 +702,14 @@ export function NotesOutlinePane() {
                       depth={row.depth}
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
-                      visibleNodeIds={structuralVisibleIds}
+                      getVisibleNodeIds={getVisibleNodeIds}
+                      draft={draftsByNodeId[row.id]}
+                      attachmentUploadError={
+                        attachmentUploadErrorsByNodeId?.[row.id]
+                      }
+                      attachmentUploadRetryAttemptId={
+                        attachmentUploadRetryAttemptIdsByNodeId?.[row.id]
+                      }
                       readOnlyMode={
                         lifecycleReadOnly
                           ? lifecycleMode === "archive"
