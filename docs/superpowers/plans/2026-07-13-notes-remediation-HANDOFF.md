@@ -24,12 +24,24 @@
 ## 1. 현재 상태 (검증 완료)
 
 > **2026-07-14 갱신:** Phase 2 전체 완료·병합됨 — `notes-remediation` @ `3d617c4`.
-> 2-B 후속 2건 + 2.2 행 메모이제이션 + 2.3 autosave loading 격리 + 2.4 패널 메모,
-> 전부 적대 리뷰 승인 (2.2/2.3은 재작업 1회). 게이트: tsc/eslint clean,
-> vitest 2203+ passed, cargo 354 passed/1 ignored. `rem-p1-backend`/`rem-p2-frontend`
-> worktree·브랜치 정리 완료, Phase 3용 `rem-p3-frontend`/`rem-p3-backend` 생성(@ 3d617c4).
-> 다음: Phase 3 (FE 체인 3.1→3.2→3.3→3.4→3.5→3.7 ∥ BE 체인 3.8 → 병합 후 3.6).
 > **범위 변경:** Phase 4.4의 OPML import/export는 사용자 지시로 제외.
+>
+> **2026-07-14 갱신 2 (Phase 3 완료):** `notes-remediation` @ `b4269cb`.
+> - Phase 3 전 태스크 완료·병합: 3.1 드래프트 엔진 추출, 3.2 커맨드 레이어,
+>   3.3 내비게이션/scope 단일 소유권, 3.4 delta 프론트 소비, 3.5 settlement 타입,
+>   3.6 에러 taxonomy, 3.7 registry 정직화, 3.8 정리(dead_code·perf게이트·NFC v4).
+>   (3.1~3.4/3.8은 이전 계정 세션이 커밋 → 새 세션이 적대 리뷰 전원 승인 후 병합.)
+> - 게이트: tsc/eslint clean, **vitest 2280 pass / 21 skip, cargo 361 pass / 1 ignored.**
+> - **Gate 3 정량 목표 2개 이월(비블로킹):** (1) `useNotesWorkspace.ts` 5194→3491줄로
+>   감소했으나 목표 ≤1500 미달 — 추가 추출은 명세 불명확+회귀 위험으로 보류.
+>   (2) 훅 테스트의 mock 호출순서 assertion 66곳 잔존(목표 "소멸"). Phase 4 이후 정리.
+> - **Phase 3 리뷰가 남긴 이월 정리(비블로킹):** ① 3.3의 `Scope` 값객체 클래스가
+>   프로덕션 미사용(free fn `scopeKey`/`sameScope`만 씀) → 제거 또는 배선. ② 3.3 scope
+>   3중화가 완전 단일소스 아님(reset 헬퍼 중앙화로 완화). ③ 3.4 프로덕션에 delta 검증
+>   fallback 없음(백엔드 delta 계약 의존). ④ 3.5 NotesChildComposer는 skipped 피드백
+>   미반영(OutlineNodeRow만). ⑤ 3.6 commands.rs import 알파벳순 아님(cargo fmt로 정리).
+> - 다음: **Phase 4 Workflowy Parity (사용자 최우선)** — 4.1 다중선택 → 4.2 서식 +
+>   4.3 URL링크(동일 트랙) → 4.4 붙여넣기 임포트(OPML 제외) → 4.5 Cmd+K.
 
 **통합 브랜치 `notes-remediation` @ `73b839c`** (이하 계정 전환 시점 기록) 에 다음이 모두 병합·인증됨:
 - Phase R: main 병합(`5b3d65b`) + ESLint 도입(`8c83a4b`)
