@@ -1750,10 +1750,22 @@ mod tests {
         publish_attachment_bytes, resolve_owned_asset_path, validate_image_bytes,
         AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
     };
+    // Alias each command to its synchronous `_inner` body so these tests keep
+    // running the note logic inline (the public commands are now async wrappers
+    // that dispatch onto the blocking thread pool). Call sites stay unchanged.
     use crate::notes::commands::{
-        notes_clear_history, notes_delete_database, notes_empty_trash, notes_import_attachment,
-        notes_initialize, notes_read_attachment_bytes, notes_redo, notes_remove_attachment,
-        notes_resize_attachment, notes_restore_attachment, notes_undo, notes_update_node,
+        notes_clear_history_inner as notes_clear_history,
+        notes_delete_database_inner as notes_delete_database,
+        notes_empty_trash_inner as notes_empty_trash,
+        notes_import_attachment_inner as notes_import_attachment,
+        notes_initialize_inner as notes_initialize,
+        notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
+        notes_redo_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
+        notes_resize_attachment_inner as notes_resize_attachment,
+        notes_restore_attachment_inner as notes_restore_attachment,
+        notes_undo_inner as notes_undo,
+        notes_update_node_inner as notes_update_node,
     };
     use crate::notes::history::HISTORY_MAX_ENTRIES;
     use crate::notes::history::{redo, undo};

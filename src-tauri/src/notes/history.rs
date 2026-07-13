@@ -2404,7 +2404,7 @@ mod tests {
             restore_node(connection, NODE_ID)
         })
         .expect("restore");
-        crate::notes::commands::notes_initialize(vault_path.to_string())
+        crate::notes::commands::notes_initialize_inner(vault_path.to_string())
             .expect("expire sessions at initialize");
         assert_eq!(entry_count(&connection), 0);
 

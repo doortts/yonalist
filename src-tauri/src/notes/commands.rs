@@ -34,6 +34,22 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
+/// Runs a synchronous note operation on Tauri's blocking thread pool so the
+/// per-command SQLite/file work never occupies the main (UI) thread. Each
+/// `notes_*` command is a thin async wrapper over its `_inner` sync body; the
+/// inner functions remain directly callable from tests.
+async fn run_blocking<T>(
+    operation: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    match tauri::async_runtime::spawn_blocking(operation).await {
+        Ok(result) => result,
+        Err(join_error) => Err(format!("Notes background task failed: {join_error}")),
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttachmentBatchFault {
@@ -108,7 +124,11 @@ fn take_attachment_batch_crash_interruption() -> bool {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_initialize(vault_path: String) -> Result<(), String> {
+pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), String> {
+    run_blocking(move || notes_initialize_inner(vault_path)).await
+}
+
+pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     clear_all_history(&mut connection)?;
@@ -159,7 +179,14 @@ fn run_dated_mutation(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_load_workspace(
+pub(crate) async fn notes_load_workspace(
+    vault_path: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesWorkspace, String> {
+    run_blocking(move || notes_load_workspace_inner(vault_path, scope)).await
+}
+
+pub(crate) fn notes_load_workspace_inner(
     vault_path: String,
     scope: NotesWorkspaceScope,
 ) -> Result<NotesWorkspace, String> {
@@ -171,7 +198,15 @@ pub(crate) fn notes_load_workspace(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_create_node(
+pub(crate) async fn notes_create_node(
+    vault_path: String,
+    input: CreateNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_create_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_create_node_inner(
     vault_path: String,
     input: CreateNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -185,7 +220,15 @@ pub(crate) fn notes_create_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_update_node(
+pub(crate) async fn notes_update_node(
+    vault_path: String,
+    input: UpdateNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_update_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_update_node_inner(
     vault_path: String,
     input: UpdateNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -199,7 +242,15 @@ pub(crate) fn notes_update_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_split_node(
+pub(crate) async fn notes_split_node(
+    vault_path: String,
+    input: SplitNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_split_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_split_node_inner(
     vault_path: String,
     input: SplitNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -213,7 +264,15 @@ pub(crate) fn notes_split_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_move_node(
+pub(crate) async fn notes_move_node(
+    vault_path: String,
+    input: MoveNodeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_move_node_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_move_node_inner(
     vault_path: String,
     input: MoveNodeInput,
     history_context: Option<NotesHistoryContext>,
@@ -224,7 +283,15 @@ pub(crate) fn notes_move_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_complete(
+pub(crate) async fn notes_toggle_complete(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_complete_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_complete_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -235,7 +302,15 @@ pub(crate) fn notes_toggle_complete(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_collapsed(
+pub(crate) async fn notes_toggle_collapsed(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_collapsed_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_collapsed_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -246,7 +321,15 @@ pub(crate) fn notes_toggle_collapsed(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_collapse_all(
+pub(crate) async fn notes_collapse_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_collapse_all_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_collapse_all_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -257,7 +340,15 @@ pub(crate) fn notes_collapse_all(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_expand_all(
+pub(crate) async fn notes_expand_all(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_expand_all_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_expand_all_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -268,7 +359,16 @@ pub(crate) fn notes_expand_all(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_sort_subtree_ascending(
+pub(crate) async fn notes_sort_subtree_ascending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_sort_subtree_ascending_inner(vault_path, node_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_sort_subtree_ascending_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -279,7 +379,16 @@ pub(crate) fn notes_sort_subtree_ascending(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_sort_subtree_descending(
+pub(crate) async fn notes_sort_subtree_descending(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_sort_subtree_descending_inner(vault_path, node_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_sort_subtree_descending_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -290,7 +399,15 @@ pub(crate) fn notes_sort_subtree_descending(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_toggle_star(
+pub(crate) async fn notes_toggle_star(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_toggle_star_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_toggle_star_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -301,7 +418,15 @@ pub(crate) fn notes_toggle_star(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_duplicate_node(
+pub(crate) async fn notes_duplicate_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_duplicate_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_duplicate_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -315,7 +440,15 @@ pub(crate) fn notes_duplicate_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_remove_empty_node(
+pub(crate) async fn notes_remove_empty_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_remove_empty_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_remove_empty_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -326,7 +459,15 @@ pub(crate) fn notes_remove_empty_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_soft_delete_node(
+pub(crate) async fn notes_soft_delete_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_soft_delete_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_soft_delete_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -337,7 +478,15 @@ pub(crate) fn notes_soft_delete_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_restore_node(
+pub(crate) async fn notes_restore_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_restore_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_restore_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -351,7 +500,15 @@ pub(crate) fn notes_restore_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_archive_node(
+pub(crate) async fn notes_archive_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_archive_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_archive_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -362,7 +519,15 @@ pub(crate) fn notes_archive_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_unarchive_node(
+pub(crate) async fn notes_unarchive_node(
+    vault_path: String,
+    node_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_unarchive_node_inner(vault_path, node_id, history_context)).await
+}
+
+pub(crate) fn notes_unarchive_node_inner(
     vault_path: String,
     node_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -373,7 +538,15 @@ pub(crate) fn notes_unarchive_node(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_undo(
+pub(crate) async fn notes_undo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    run_blocking(move || notes_undo_inner(vault_path, session_id, scope)).await
+}
+
+pub(crate) fn notes_undo_inner(
     vault_path: String,
     session_id: String,
     scope: NotesWorkspaceScope,
@@ -397,7 +570,15 @@ fn notes_undo_with_provider(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_redo(
+pub(crate) async fn notes_redo(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    run_blocking(move || notes_redo_inner(vault_path, session_id, scope)).await
+}
+
+pub(crate) fn notes_redo_inner(
     vault_path: String,
     session_id: String,
     scope: NotesWorkspaceScope,
@@ -421,7 +602,14 @@ fn notes_redo_with_provider(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_history_status(
+pub(crate) async fn notes_history_status(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    run_blocking(move || notes_history_status_inner(vault_path, session_id)).await
+}
+
+pub(crate) fn notes_history_status_inner(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
@@ -430,7 +618,14 @@ pub(crate) fn notes_history_status(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_clear_history(
+pub(crate) async fn notes_clear_history(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryStatus, String> {
+    run_blocking(move || notes_clear_history_inner(vault_path, session_id)).await
+}
+
+pub(crate) fn notes_clear_history_inner(
     vault_path: String,
     session_id: String,
 ) -> Result<NotesHistoryStatus, String> {
@@ -442,7 +637,11 @@ pub(crate) fn notes_clear_history(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
+pub(crate) async fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, String> {
+    run_blocking(move || notes_empty_trash_inner(vault_path)).await
+}
+
+pub(crate) fn notes_empty_trash_inner(vault_path: String) -> Result<NotesWorkspace, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let mut connection = connect_notes_db(&vault_path)?;
     let workspace = empty_trash(&mut connection)?;
@@ -799,7 +998,18 @@ fn import_prepared_attachment_batch(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_import_attachment_paths_batch(
+pub(crate) async fn notes_import_attachment_paths_batch(
+    vault_path: String,
+    input: ImportAttachmentPathBatchInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || {
+        notes_import_attachment_paths_batch_inner(vault_path, input, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_import_attachment_paths_batch_inner(
     vault_path: String,
     input: ImportAttachmentPathBatchInput,
     history_context: Option<NotesHistoryContext>,
@@ -869,24 +1079,35 @@ fn notes_import_attachment_bytes_body(body: &[u8]) -> Result<NotesMutationResult
 }
 
 #[tauri::command]
-pub(crate) fn notes_import_attachment_bytes(
+pub(crate) async fn notes_import_attachment_bytes(
     request: tauri::ipc::Request<'_>,
 ) -> Result<NotesMutationResult, String> {
-    match request.body() {
-        tauri::ipc::InvokeBody::Raw(body) => notes_import_attachment_bytes_body(body),
+    // `Request` borrows the IPC buffer, which is not `'static`, so copy the raw
+    // body out before handing ownership to the blocking pool.
+    let body = match request.body() {
+        tauri::ipc::InvokeBody::Raw(body) => body.to_vec(),
         tauri::ipc::InvokeBody::Json(_) => {
-            Err("Notes attachment byte imports require a raw IPC body.".to_string())
+            return Err("Notes attachment byte imports require a raw IPC body.".to_string());
         }
-    }
+    };
+    run_blocking(move || notes_import_attachment_bytes_body(&body)).await
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_import_attachment(
+pub(crate) async fn notes_import_attachment(
     vault_path: String,
     input: ImportAttachmentInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    notes_import_attachment_paths_batch(
+    run_blocking(move || notes_import_attachment_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_import_attachment_inner(
+    vault_path: String,
+    input: ImportAttachmentInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    notes_import_attachment_paths_batch_inner(
         vault_path,
         ImportAttachmentPathBatchInput {
             node_id: input.node_id,
@@ -901,7 +1122,14 @@ pub(crate) fn notes_import_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_read_attachment_bytes(
+pub(crate) async fn notes_read_attachment_bytes(
+    vault_path: String,
+    attachment_id: String,
+) -> Result<Vec<u8>, String> {
+    run_blocking(move || notes_read_attachment_bytes_inner(vault_path, attachment_id)).await
+}
+
+pub(crate) fn notes_read_attachment_bytes_inner(
     vault_path: String,
     attachment_id: String,
 ) -> Result<Vec<u8>, String> {
@@ -913,7 +1141,15 @@ pub(crate) fn notes_read_attachment_bytes(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_resize_attachment(
+pub(crate) async fn notes_resize_attachment(
+    vault_path: String,
+    input: ResizeAttachmentInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_resize_attachment_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_resize_attachment_inner(
     vault_path: String,
     input: ResizeAttachmentInput,
     history_context: Option<NotesHistoryContext>,
@@ -935,7 +1171,16 @@ pub(crate) fn notes_resize_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_remove_attachment(
+pub(crate) async fn notes_remove_attachment(
+    vault_path: String,
+    attachment_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || notes_remove_attachment_inner(vault_path, attachment_id, history_context))
+        .await
+}
+
+pub(crate) fn notes_remove_attachment_inner(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -957,7 +1202,18 @@ pub(crate) fn notes_remove_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_restore_attachment(
+pub(crate) async fn notes_restore_attachment(
+    vault_path: String,
+    attachment_id: String,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    run_blocking(move || {
+        notes_restore_attachment_inner(vault_path, attachment_id, history_context)
+    })
+    .await
+}
+
+pub(crate) fn notes_restore_attachment_inner(
     vault_path: String,
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
@@ -980,7 +1236,15 @@ pub(crate) fn notes_restore_attachment(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_search(
+pub(crate) async fn notes_search(
+    vault_path: String,
+    query: String,
+    scope: NoteSearchScope,
+) -> Result<Vec<NoteSearchResult>, String> {
+    run_blocking(move || notes_search_inner(vault_path, query, scope)).await
+}
+
+pub(crate) fn notes_search_inner(
     vault_path: String,
     query: String,
     scope: NoteSearchScope,
@@ -1000,7 +1264,14 @@ fn notes_search_with_provider(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_search_structured(
+pub(crate) async fn notes_search_structured(
+    vault_path: String,
+    query: NoteStructuredSearchQuery,
+) -> Result<Vec<NoteSearchResult>, String> {
+    run_blocking(move || notes_search_structured_inner(vault_path, query)).await
+}
+
+pub(crate) fn notes_search_structured_inner(
     vault_path: String,
     query: NoteStructuredSearchQuery,
 ) -> Result<Vec<NoteSearchResult>, String> {
@@ -1010,13 +1281,23 @@ pub(crate) fn notes_search_structured(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
+pub(crate) async fn notes_list_tags(vault_path: String) -> Result<Vec<String>, String> {
+    run_blocking(move || notes_list_tags_inner(vault_path)).await
+}
+
+pub(crate) fn notes_list_tags_inner(vault_path: String) -> Result<Vec<String>, String> {
     let connection = connect_notes_db(&vault_path)?;
     list_tags(&connection)
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_list_tags_with_counts(
+pub(crate) async fn notes_list_tags_with_counts(
+    vault_path: String,
+) -> Result<Vec<NoteTagSummary>, String> {
+    run_blocking(move || notes_list_tags_with_counts_inner(vault_path)).await
+}
+
+pub(crate) fn notes_list_tags_with_counts_inner(
     vault_path: String,
 ) -> Result<Vec<NoteTagSummary>, String> {
     let connection = connect_notes_db(&vault_path)?;
@@ -1030,7 +1311,15 @@ pub(crate) struct DeleteDatabaseOutcome {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_delete_database(vault_path: String) -> Result<DeleteDatabaseOutcome, String> {
+pub(crate) async fn notes_delete_database(
+    vault_path: String,
+) -> Result<DeleteDatabaseOutcome, String> {
+    run_blocking(move || notes_delete_database_inner(vault_path)).await
+}
+
+pub(crate) fn notes_delete_database_inner(
+    vault_path: String,
+) -> Result<DeleteDatabaseOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     delete_database(&vault_path)?;
     let attachment_cleanup_failed = match storage.delete_attachment_files() {
@@ -1097,7 +1386,19 @@ fn hydrate_export_snapshot_if_needed(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_export_markdown(
+pub(crate) async fn notes_export_markdown(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    run_blocking(move || {
+        notes_export_markdown_inner(vault_path, root_node_id, destination, overwrite)
+    })
+    .await
+}
+
+pub(crate) fn notes_export_markdown_inner(
     vault_path: String,
     root_node_id: String,
     destination: String,
@@ -1140,7 +1441,17 @@ pub(crate) fn notes_export_markdown(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) fn notes_export_pdf(
+pub(crate) async fn notes_export_pdf(
+    vault_path: String,
+    root_node_id: String,
+    destination: String,
+    overwrite: bool,
+) -> Result<NotesExportResult, String> {
+    run_blocking(move || notes_export_pdf_inner(vault_path, root_node_id, destination, overwrite))
+        .await
+}
+
+pub(crate) fn notes_export_pdf_inner(
     vault_path: String,
     root_node_id: String,
     destination: String,
@@ -1187,6 +1498,46 @@ fn export_notes_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The public `notes_*` commands are now async wrappers that dispatch onto the
+    // blocking thread pool. These tests (and the thread-local fault injectors
+    // above) must run the note logic inline on the test thread, so alias each
+    // command name to its synchronous `_inner` body. Every existing call site
+    // stays byte-for-byte identical.
+    use super::{
+        notes_archive_node_inner as notes_archive_node,
+        notes_collapse_all_inner as notes_collapse_all,
+        notes_create_node_inner as notes_create_node,
+        notes_delete_database_inner as notes_delete_database,
+        notes_duplicate_node_inner as notes_duplicate_node,
+        notes_empty_trash_inner as notes_empty_trash,
+        notes_expand_all_inner as notes_expand_all,
+        notes_export_markdown_inner as notes_export_markdown,
+        notes_export_pdf_inner as notes_export_pdf,
+        notes_history_status_inner as notes_history_status,
+        notes_import_attachment_inner as notes_import_attachment,
+        notes_import_attachment_paths_batch_inner as notes_import_attachment_paths_batch,
+        notes_initialize_inner as notes_initialize,
+        notes_list_tags_inner as notes_list_tags,
+        notes_list_tags_with_counts_inner as notes_list_tags_with_counts,
+        notes_load_workspace_inner as notes_load_workspace,
+        notes_move_node_inner as notes_move_node,
+        notes_redo_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
+        notes_remove_empty_node_inner as notes_remove_empty_node,
+        notes_restore_node_inner as notes_restore_node,
+        notes_search_inner as notes_search,
+        notes_search_structured_inner as notes_search_structured,
+        notes_soft_delete_node_inner as notes_soft_delete_node,
+        notes_sort_subtree_ascending_inner as notes_sort_subtree_ascending,
+        notes_sort_subtree_descending_inner as notes_sort_subtree_descending,
+        notes_split_node_inner as notes_split_node,
+        notes_toggle_collapsed_inner as notes_toggle_collapsed,
+        notes_toggle_complete_inner as notes_toggle_complete,
+        notes_toggle_star_inner as notes_toggle_star,
+        notes_unarchive_node_inner as notes_unarchive_node,
+        notes_undo_inner as notes_undo,
+        notes_update_node_inner as notes_update_node,
+    };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
         ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportAttachmentPathItem,
