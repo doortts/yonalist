@@ -3,7 +3,10 @@ use crate::notes::date_index::{
     SystemLocalTodayProvider, WeekStartsOn,
 };
 use crate::notes::history;
-use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
+use crate::notes::tags::{
+    add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, remove_exact_tag_tokens,
+    tokenize_note_text,
+};
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
     ExportNode, ImportNode, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteId,
@@ -3163,8 +3166,8 @@ pub(crate) fn apply_batch_at(
             )?);
             Ok(())
         }
-        BatchOp::AddTag { .. } => Err("Batch tag addition is not implemented yet.".to_string()),
-        BatchOp::RemoveTag { .. } => Err("Batch tag removal is not implemented yet.".to_string()),
+        BatchOp::AddTag { tag } => batch_add_tag(transaction, &node_ids, tag, today),
+        BatchOp::RemoveTag { tag } => batch_remove_tag(transaction, &node_ids, tag, today),
     })?;
     Ok((workspace, duplicated_root_ids))
 }
@@ -3178,6 +3181,63 @@ fn dedup_preserving_order(ids: &[String]) -> Vec<String> {
         }
     }
     result
+}
+
+fn apply_batch_content_updates(
+    transaction: &Transaction<'_>,
+    updates: Vec<(NoteId, String, String)>,
+    today: LocalDate,
+) -> Result<(), String> {
+    for (node_id, title, note) in updates {
+        transaction
+            .execute(
+                "UPDATE notes_nodes SET title = ?1, note = ?2, \
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
+                 WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
+                params![title, note, node_id],
+            )
+            .map_err(|error| format!("Could not update Note content in batch: {error}"))?;
+        replace_derived_content(transaction, &node_id, &title, &note, today)?;
+    }
+    Ok(())
+}
+
+fn batch_add_tag(
+    transaction: &Transaction<'_>,
+    node_ids: &[NoteId],
+    tag: &NoteSearchTag,
+    today: LocalDate,
+) -> Result<(), String> {
+    let mut updates = Vec::new();
+    for node_id in node_ids {
+        let node = require_active_node(transaction, node_id)?;
+        if let Some(title) = add_exact_tag_to_title(&node.title, &node.note, tag)? {
+            updates.push((node.id, title, node.note));
+        }
+    }
+    apply_batch_content_updates(transaction, updates, today)
+}
+
+fn batch_remove_tag(
+    transaction: &Transaction<'_>,
+    node_ids: &[NoteId],
+    tag: &NoteTagFilter,
+    today: LocalDate,
+) -> Result<(), String> {
+    let mut updates = Vec::new();
+    for node_id in node_ids {
+        let node = require_active_node(transaction, node_id)?;
+        let title = remove_exact_tag_tokens(&node.title, tag);
+        let note = remove_exact_tag_tokens(&node.note, tag);
+        if title.is_some() || note.is_some() {
+            updates.push((
+                node.id,
+                title.unwrap_or(node.title),
+                note.unwrap_or(node.note),
+            ));
+        }
+    }
+    apply_batch_content_updates(transaction, updates, today)
 }
 
 /// Sets the completion state of every selected node to `completed`. Validation
@@ -6993,6 +7053,322 @@ mod tests {
         );
         assert_eq!(persistent_state(&connection), before);
         assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn batch_tag_add_updates_each_explicit_node_once_and_rebuilds_derived_content() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "Parent today",
+            "parent note",
+        );
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "Child",
+            "child note",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            None,
+            "Unselected #Roadmap",
+            "nested note",
+        );
+        connection
+            .execute(
+                "UPDATE notes_dates SET normalized_start = '2099-01-01', \
+                   normalized_end = '2099-01-01' WHERE node_id = ?1",
+                [NODE_ID],
+            )
+            .expect("corrupt selected date projection");
+        connection
+            .execute_batch(
+                "CREATE TEMP TABLE batch_tag_update_count(node_id TEXT NOT NULL); \
+                 CREATE TEMP TRIGGER count_batch_tag_content_updates \
+                 AFTER UPDATE OF title, note ON notes_nodes \
+                 BEGIN INSERT INTO batch_tag_update_count(node_id) VALUES (NEW.id); END;",
+            )
+            .expect("install batch tag update counter");
+
+        apply_batch_at(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![
+                    NODE_ID.to_string(),
+                    CHILD_ID.to_string(),
+                    NODE_ID.to_string(),
+                ],
+                op: BatchOp::AddTag {
+                    tag: NoteSearchTag {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                        display_tag: "RoadMap".to_string(),
+                    },
+                },
+            },
+            fixed_today(),
+        )
+        .expect("batch add tag");
+
+        let content = connection
+            .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
+            .expect("prepare added content")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query added content")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect added content");
+        assert_eq!(
+            content,
+            vec![
+                (
+                    NODE_ID.to_string(),
+                    "Parent today #RoadMap".to_string(),
+                    "parent note".to_string(),
+                ),
+                (
+                    CHILD_ID.to_string(),
+                    "Child #RoadMap".to_string(),
+                    "child note".to_string(),
+                ),
+                (
+                    THIRD_ID.to_string(),
+                    "Unselected #Roadmap".to_string(),
+                    "nested note".to_string(),
+                ),
+            ]
+        );
+        let update_counts = connection
+            .prepare(
+                "SELECT node_id, COUNT(*) FROM batch_tag_update_count \
+                 GROUP BY node_id ORDER BY node_id",
+            )
+            .expect("prepare update counts")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .expect("query update counts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect update counts");
+        assert_eq!(
+            update_counts,
+            vec![(NODE_ID.to_string(), 1), (CHILD_ID.to_string(), 1)]
+        );
+        let indexed_tags = connection
+            .prepare(
+                "SELECT node_id, tag, normalized_tag FROM notes_tags \
+                 ORDER BY node_id, normalized_tag",
+            )
+            .expect("prepare added tag index")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query added tag index")
+            .collect::<Result<Vec<(String, String, String)>, _>>()
+            .expect("collect added tag index");
+        assert_eq!(
+            indexed_tags,
+            vec![
+                (
+                    NODE_ID.to_string(),
+                    "RoadMap".to_string(),
+                    "roadmap".to_string(),
+                ),
+                (
+                    CHILD_ID.to_string(),
+                    "RoadMap".to_string(),
+                    "roadmap".to_string(),
+                ),
+                (
+                    THIRD_ID.to_string(),
+                    "Roadmap".to_string(),
+                    "roadmap".to_string(),
+                ),
+            ]
+        );
+        assert_eq!(date_rows(&connection, NODE_ID)[0].3, "2026-07-11");
+        let indexed_search: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_search WHERE node_id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read added search projection");
+        assert_eq!(
+            indexed_search,
+            (
+                "Parent today #RoadMap".to_string(),
+                "parent note".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_updates_title_and_note_but_not_unsubmitted_descendants() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "Plan #ROADMAP today, #Roadmap",
+            "#roadmap details @Roadmap",
+        );
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "한글 #ROADMAP 끝",
+            "메모(#roadmap), 유지",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            None,
+            "Nested #Roadmap",
+            "unchanged #roadmap",
+        );
+
+        apply_batch_at(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::RemoveTag {
+                    tag: NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                    },
+                },
+            },
+            fixed_today(),
+        )
+        .expect("batch remove tag");
+
+        for (id, expected_title, expected_note) in [
+            (NODE_ID, "Plan today,", "details @Roadmap"),
+            (CHILD_ID, "한글 끝", "메모(), 유지"),
+            (THIRD_ID, "Nested #Roadmap", "unchanged #roadmap"),
+        ] {
+            let actual: (String, String) = connection
+                .query_row(
+                    "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .expect("read removed content");
+            assert_eq!(
+                actual,
+                (expected_title.to_string(), expected_note.to_string())
+            );
+        }
+        let indexed_tags = connection
+            .prepare(
+                "SELECT node_id, prefix, normalized_tag FROM notes_tags \
+                 ORDER BY node_id, prefix, normalized_tag",
+            )
+            .expect("prepare remaining tag index")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .expect("query remaining tag index")
+            .collect::<Result<Vec<(String, String, String)>, _>>()
+            .expect("collect remaining tag index");
+        assert_eq!(
+            indexed_tags,
+            vec![
+                (NODE_ID.to_string(), "@".to_string(), "roadmap".to_string(),),
+                (THIRD_ID.to_string(), "#".to_string(), "roadmap".to_string(),),
+            ]
+        );
+        let date = date_rows(&connection, NODE_ID);
+        assert_eq!(date.len(), 1);
+        assert_eq!(
+            (date[0].0.as_str(), date[0].1, date[0].3.as_str()),
+            ("title", 5, "2026-07-11")
+        );
+        let indexed_search: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_search WHERE node_id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read removed search projection");
+        assert_eq!(
+            indexed_search,
+            ("Plan today,".to_string(), "details @Roadmap".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_rolls_back_earlier_content_and_indexes_after_later_failure() {
+        let mut connection = test_connection();
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "A #Roadmap today #Safe",
+            "first #Roadmap",
+        );
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            None,
+            Some(NODE_ID),
+            "B #Roadmap #Reject",
+            "second #Roadmap",
+        );
+        let before = persistent_state(&connection);
+        let before_dates = (
+            date_rows(&connection, NODE_ID),
+            date_rows(&connection, CHILD_ID),
+        );
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER reject_later_batch_tag BEFORE INSERT ON notes_tags \
+                 WHEN NEW.node_id = '{CHILD_ID}' AND NEW.normalized_tag = 'reject' \
+                 BEGIN SELECT RAISE(ABORT, 'later batch tag index rejected'); END;"
+            ))
+            .expect("install later tag failure trigger");
+
+        let error = apply_batch_at(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::RemoveTag {
+                    tag: NoteTagFilter {
+                        prefix: NoteTagPrefix::Hash,
+                        normalized_tag: "roadmap".to_string(),
+                    },
+                },
+            },
+            fixed_today(),
+        )
+        .expect_err("later index failure must roll back batch tag removal");
+
+        assert!(
+            error.contains("later batch tag index rejected"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(persistent_state(&connection), before);
+        assert_eq!(
+            (
+                date_rows(&connection, NODE_ID),
+                date_rows(&connection, CHILD_ID)
+            ),
+            before_dates
+        );
     }
 
     #[test]

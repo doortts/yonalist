@@ -541,8 +541,8 @@ pub(crate) fn notes_apply_batch_inner(
     input: ApplyBatchInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    // Duplicate copies title/note content, so every batch runs through the dated
-    // path. The repository still returns `None` for every non-duplicate op.
+    // Duplicate and tag batches can write title/note content, so every batch
+    // runs through one dated path. Only duplicate returns copied root ids.
     let mut duplicated_root_ids = None;
     let mut result = run_dated_mutation(
         &vault_path,
@@ -3657,6 +3657,185 @@ mod tests {
         );
         assert_eq!(active_child_ids(&vault_path, None), before);
         assert_eq!(history_entry_count(&vault_path), 0);
+    }
+
+    #[test]
+    fn batch_tag_remove_is_one_dated_undoable_entry_and_all_noops_skip_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        for (id, parent_id, after_id, title, note) in [
+            (BATCH_A_ID, None, None, "A #Roadmap today", "note #ROADMAP"),
+            (
+                BATCH_B_ID,
+                None,
+                Some(BATCH_A_ID),
+                "B",
+                "#roadmap supporting",
+            ),
+            (
+                BATCH_C_ID,
+                Some(BATCH_A_ID),
+                None,
+                "C #Roadmap",
+                "unchanged",
+            ),
+        ] {
+            notes_create_node(
+                vault_path.clone(),
+                CreateNodeInput {
+                    id: id.to_string(),
+                    parent_id: parent_id.map(str::to_string),
+                    after_id: after_id.map(str::to_string),
+                    title: title.to_string(),
+                    note: note.to_string(),
+                },
+                None,
+            )
+            .expect("seed batch tag node");
+        }
+        let input = ApplyBatchInput {
+            node_ids: vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_A_ID.to_string(),
+            ],
+            op: BatchOp::RemoveTag {
+                tag: NoteTagFilter {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                },
+            },
+        };
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            input.clone(),
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchRemoveTag")),
+        )
+        .expect("batch remove tag");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(mutation.can_undo);
+        assert!(!mutation.can_redo);
+        assert_eq!(history_entry_count(&vault_path), 1);
+        let changed_ids = mutation
+            .changed_nodes
+            .as_ref()
+            .expect("batch tag delta")
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            changed_ids,
+            std::collections::BTreeSet::from([BATCH_A_ID, BATCH_B_ID])
+        );
+        for (id, expected_title, expected_note) in [
+            (BATCH_A_ID, "A today", "note"),
+            (BATCH_B_ID, "B", "supporting"),
+            (BATCH_C_ID, "C #Roadmap", "unchanged"),
+        ] {
+            let node = mutation
+                .workspace
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .expect("batch tag result node");
+            assert_eq!(
+                (node.title.as_str(), node.note.as_str()),
+                (expected_title, expected_note)
+            );
+        }
+        let connection = connect_notes_db(&vault_path).expect("open dated batch tag vault");
+        let expected_today: String = connection
+            .query_row("SELECT date('now', 'localtime')", [], |row| row.get(0))
+            .expect("system local date");
+        let indexed_date: (i64, String) = connection
+            .query_row(
+                "SELECT start_utf16, normalized_start FROM notes_dates \
+                 WHERE node_id = ?1 AND field = 'title'",
+                [BATCH_A_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("dated batch tag index");
+        assert_eq!(indexed_date, (2, expected_today));
+        drop(connection);
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo batch tag removal");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        let undone_a = undone
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == BATCH_A_ID)
+            .expect("undone first node");
+        let undone_b = undone
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == BATCH_B_ID)
+            .expect("undone second node");
+        assert_eq!(
+            (undone_a.title.as_str(), undone_a.note.as_str()),
+            ("A #Roadmap today", "note #ROADMAP")
+        );
+        assert_eq!(
+            (undone_b.title.as_str(), undone_b.note.as_str()),
+            ("B", "#roadmap supporting")
+        );
+
+        let redone = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo batch tag removal");
+        assert_eq!(
+            redone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        let redone_a = redone
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == BATCH_A_ID)
+            .expect("redone first node");
+        let redone_b = redone
+            .workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == BATCH_B_ID)
+            .expect("redone second node");
+        assert_eq!(
+            (redone_a.title.as_str(), redone_a.note.as_str()),
+            ("A today", "note")
+        );
+        assert_eq!(
+            (redone_b.title.as_str(), redone_b.note.as_str()),
+            ("B", "supporting")
+        );
+
+        let noop = notes_apply_batch(
+            vault_path.clone(),
+            input,
+            Some(batch_op_context(NOOP_ENTRY_ID, "batchRemoveTag")),
+        )
+        .expect("all-noop batch tag removal");
+        assert_eq!(noop.history_entry_id, None);
+        assert!(noop.can_undo);
+        assert!(!noop.can_redo);
+        assert_eq!(history_entry_count(&vault_path), 1);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::notes::types::NoteTagPrefix;
+use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
 use std::collections::BTreeMap;
 use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
@@ -8,6 +8,8 @@ pub(crate) struct NoteTagToken {
     pub prefix: NoteTagPrefix,
     pub display: String,
     pub normalized: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
     pub start_utf16: usize,
     pub end_utf16: usize,
 }
@@ -241,6 +243,8 @@ pub(crate) fn tokenize_note_text(source: &str) -> Vec<NoteTagToken> {
             prefix: prefix.expect("tag prefix"),
             normalized: display.to_lowercase(),
             display,
+            start_byte: scalar.byte_start,
+            end_byte: body_end_byte,
             start_utf16: scalar.utf16_start,
             end_utf16: scalars
                 .get(body_end)
@@ -249,6 +253,99 @@ pub(crate) fn tokenize_note_text(source: &str) -> Vec<NoteTagToken> {
         index = body_end;
     }
     tags
+}
+
+fn has_exact_tag(source: &str, tag: &NoteTagFilter) -> bool {
+    tokenize_note_text(source)
+        .into_iter()
+        .any(|token| token.prefix == tag.prefix && token.normalized == tag.normalized_tag)
+}
+
+/// Appends the submitted display spelling to the title when neither content
+/// field already contains the same tokenizer identity. `display_tag` is a body,
+/// not a complete token; the persisted token is the submitted prefix plus that
+/// body, byte-for-byte.
+pub(crate) fn add_exact_tag_to_title(
+    title: &str,
+    note: &str,
+    tag: &NoteSearchTag,
+) -> Result<Option<String>, String> {
+    let persisted_token = format!("{}{}", tag.prefix.as_str(), tag.display_tag);
+    let tokens = tokenize_note_text(&persisted_token);
+    let valid = matches!(tokens.as_slice(), [token]
+        if token.start_byte == 0
+            && token.end_byte == persisted_token.len()
+            && token.prefix == tag.prefix
+            && token.normalized == tag.normalized_tag);
+    if !valid {
+        return Err(
+            "Batch tag displayTag must form exactly one complete tag token matching prefix and normalizedTag."
+                .to_string(),
+        );
+    }
+
+    let identity = NoteTagFilter {
+        prefix: tag.prefix,
+        normalized_tag: tag.normalized_tag.clone(),
+    };
+    if has_exact_tag(title, &identity) || has_exact_tag(note, &identity) {
+        return Ok(None);
+    }
+
+    Ok(Some(if title.is_empty() {
+        persisted_token
+    } else {
+        format!("{title} {persisted_token}")
+    }))
+}
+
+fn remove_exact_tag_tokens_once(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    let bytes = source.as_bytes();
+    let ranges = tokenize_note_text(source)
+        .into_iter()
+        .filter(|token| token.prefix == tag.prefix && token.normalized == tag.normalized_tag)
+        .map(|token| {
+            let mut start = token.start_byte;
+            let mut end = token.end_byte;
+            if start > 0 && bytes[start - 1] == b' ' {
+                start -= 1;
+            } else if end < bytes.len() && bytes[end] == b' ' {
+                end += 1;
+            }
+            (start, end)
+        })
+        .collect::<Vec<_>>();
+    if ranges.is_empty() {
+        return None;
+    }
+
+    let mut result = String::with_capacity(source.len());
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        if start > cursor {
+            result.push_str(&source[cursor..start]);
+        }
+        cursor = cursor.max(end);
+    }
+    result.push_str(&source[cursor..]);
+    Some(result)
+}
+
+/// Removes every tokenizer-exact occurrence and, for each occurrence, consumes
+/// one immediately preceding ASCII space when present or otherwise one
+/// immediately following ASCII space. All ranges are UTF-8 byte ranges derived
+/// alongside the tokenizer's UTF-16 display offsets.
+pub(crate) fn remove_exact_tag_tokens(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    let mut result = remove_exact_tag_tokens_once(source, tag)?;
+    // A deletion can expose a marker that was not a token in the original
+    // source (`#x#x` -> `#x`). Continue to the tokenizer's fixed point so a
+    // successful RemoveTag is idempotent while every pass still honors the
+    // canonical boundary, URL, prefix, and normalized-identity rules.
+    while let Some(next) = remove_exact_tag_tokens_once(&result, tag) {
+        debug_assert!(next.len() < result.len());
+        result = next;
+    }
+    Some(result)
 }
 
 pub(crate) fn extract_note_tags(
@@ -267,7 +364,11 @@ pub(crate) fn extract_note_tags(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_canonical_tag_body, is_nfc, tokenize_note_text};
+    use super::{
+        add_exact_tag_to_title, is_canonical_tag_body, is_nfc, remove_exact_tag_tokens,
+        tokenize_note_text,
+    };
+    use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize)]
@@ -364,6 +465,134 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             assert_eq!(actual, fixture.tags, "source: {:?}", fixture.source);
+        }
+    }
+
+    fn hash_tag(normalized_tag: &str) -> NoteTagFilter {
+        NoteTagFilter {
+            prefix: NoteTagPrefix::Hash,
+            normalized_tag: normalized_tag.to_string(),
+        }
+    }
+
+    fn search_tag(prefix: NoteTagPrefix, normalized_tag: &str, display_tag: &str) -> NoteSearchTag {
+        NoteSearchTag {
+            prefix,
+            normalized_tag: normalized_tag.to_string(),
+            display_tag: display_tag.to_string(),
+        }
+    }
+
+    #[test]
+    fn batch_tag_remove_matches_exact_prefix_and_normalized_identity_only() {
+        let source = concat!(
+            "#ROADMAP @Roadmap #roadmaps road#roadmap /#roadmap ##roadmap ",
+            "https://x.test/?q=#roadmap #Roadmap,#other"
+        );
+
+        assert_eq!(
+            remove_exact_tag_tokens(source, &hash_tag("roadmap")),
+            Some(
+                concat!(
+                    "@Roadmap #roadmaps road#roadmap /#roadmap ##roadmap ",
+                    "https://x.test/?q=#roadmap,#other"
+                )
+                .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_unifies_nfc_and_decomposed_unicode_without_byte_corruption() {
+        let source = "앞 #CAFE\u{301} 뒤 #café, 한글 #프로젝트 끝 #cafe\u{301}";
+
+        assert_eq!(
+            remove_exact_tag_tokens(source, &hash_tag("café")),
+            Some("앞 뒤, 한글 #프로젝트 끝".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_deletes_every_occurrence_and_only_one_adjacent_ascii_space() {
+        let tag = hash_tag("x");
+        for (source, expected) in [
+            ("left #x right", "left right"),
+            ("#x right", "right"),
+            ("left:#x right", "left:right"),
+            ("left  #x  right", "left   right"),
+            ("#x #X #x", ""),
+            ("(#x),[#X];", "(),[];"),
+            ("left\t#x\nright", "left\t\nright"),
+        ] {
+            assert_eq!(
+                remove_exact_tag_tokens(source, &tag),
+                Some(expected.to_string()),
+                "source: {source:?}"
+            );
+        }
+        assert_eq!(remove_exact_tag_tokens("plain #xy @x", &tag), None);
+    }
+
+    #[test]
+    fn batch_tag_remove_is_idempotent_when_one_deletion_exposes_another_exact_token() {
+        let tag = hash_tag("x");
+
+        for (source, expected) in [
+            ("#x#x", ""),
+            ("#x#X", ""),
+            ("#x#xy", "#xy"),
+            ("a #x#x", "a#x"),
+        ] {
+            let removed = remove_exact_tag_tokens(source, &tag);
+            assert_eq!(removed, Some(expected.to_string()), "source: {source:?}");
+            assert_eq!(
+                remove_exact_tag_tokens(removed.as_deref().expect("changed source"), &tag),
+                None,
+                "result was not idempotent for source: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_tag_add_preserves_display_body_and_checks_both_content_fields() {
+        let tag = search_tag(NoteTagPrefix::Hash, "café", "CAFE\u{301}");
+
+        assert_eq!(
+            add_exact_tag_to_title("Plan", "", &tag).expect("valid display tag"),
+            Some("Plan #CAFE\u{301}".to_string())
+        );
+        assert_eq!(
+            add_exact_tag_to_title("", "", &tag).expect("valid empty title append"),
+            Some("#CAFE\u{301}".to_string())
+        );
+        assert_eq!(
+            add_exact_tag_to_title("Plan #CAFÉ", "", &tag).expect("title identity"),
+            None
+        );
+        assert_eq!(
+            add_exact_tag_to_title("Plan", "support #cafe\u{301}", &tag)
+                .expect("supporting-note identity"),
+            None
+        );
+        assert_eq!(
+            add_exact_tag_to_title("Plan @café", "", &tag).expect("prefix distinction"),
+            Some("Plan @café #CAFE\u{301}".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_add_rejects_display_text_that_is_not_one_full_matching_token() {
+        for tag in [
+            search_tag(NoteTagPrefix::Hash, "roadmap", ""),
+            search_tag(NoteTagPrefix::Hash, "roadmap", "Roadmap more"),
+            search_tag(NoteTagPrefix::Hash, "roadmap", "Roadmap.more"),
+            search_tag(NoteTagPrefix::Hash, "roadmap", "Roadmap #other"),
+            search_tag(NoteTagPrefix::Hash, "roadmap", "#Roadmap"),
+            search_tag(NoteTagPrefix::Hash, "different", "Roadmap"),
+        ] {
+            let error = add_exact_tag_to_title("Plan", "", &tag)
+                .expect_err("invalid display token must be rejected");
+            assert!(error.contains("displayTag"), "unexpected error: {error}");
         }
     }
 }
