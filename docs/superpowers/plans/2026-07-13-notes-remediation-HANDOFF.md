@@ -42,6 +42,19 @@
 >   미반영(OutlineNodeRow만). ⑤ 3.6 commands.rs import 알파벳순 아님(cargo fmt로 정리).
 > - 다음: **Phase 4 Workflowy Parity (사용자 최우선)** — 4.1 다중선택 → 4.2 서식 +
 >   4.3 URL링크(동일 트랙) → 4.4 붙여넣기 임포트(OPML 제외) → 4.5 Cmd+K.
+>
+> **2026-07-14 갱신 3 (Phase 4.1 완료):** `notes-remediation` @ `92ab457` (ff).
+> - 4.1 다중 노드 선택 완료·병합: 4.1a `notes_apply_batch`(한 트랜잭션+한 히스토리
+>   엔트리, 자손이동 거부, 부분실패 롤백, 트래시배치 스코프) · 4.1b 선택모델(anchor/head,
+>   Shift+↑↓/Shift+Click/Esc, isSelected 원자 prop) · 4.1c 배치 라우팅(선택 시 Complete/
+>   Delete(Cmd+Shift+Backspace)/Tab/Shift+Tab/MoveTo/Drag를 batch로, undo 1단위).
+> - 4.1a/4.1b는 자동 리뷰 승인; 4.1c는 자동 리뷰가 스키마 출력 이슈로 실패 → 오케스트레이터가
+>   직접 적대 검토 후 승인(코드 무결). 게이트: tsc/eslint clean, **vitest 2325 pass/21 skip,
+>   cargo 371 pass/1 ignored.**
+> - 4.1c minor 이월(비블로킹): 배치삭제가 Cmd+Shift+Backspace(plan "Backspace"에 안전장치
+>   추가), 이동 후 선택이 블록을 따라가지 않고 해제, complete 토글방향이 포커스노드 기준.
+> - 다음: **4.2 인라인 서식 + 4.3 URL 링크(동일 트랙, noteTokens 확장) → 4.4 붙여넣기 임포트
+>   → 4.5 Cmd+K.**
 
 **통합 브랜치 `notes-remediation` @ `73b839c`** (이하 계정 전환 시점 기록) 에 다음이 모두 병합·인증됨:
 - Phase R: main 병합(`5b3d65b`) + ESLint 도입(`8c83a4b`)
