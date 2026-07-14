@@ -5,6 +5,7 @@ import type {
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
+  ImportSubtreeInput,
   MoveNoteNodeInput,
   NoteAttachment,
   NotesHistoryContext,
@@ -30,6 +31,7 @@ import {
   notesImportAttachment,
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
+  notesImportSubtree,
   notesInitialize,
   notesListTags,
   notesListTagsWithCounts,
@@ -1174,6 +1176,53 @@ describe("notesStore in Tauri", () => {
       vaultPath,
       input: legacyInput,
       historyContext: null
+    });
+  });
+
+  it("maps notes_import_subtree to the exact input payload and surfaces importedRootIds", async () => {
+    const importInput: ImportSubtreeInput = {
+      parentId: nodeId,
+      afterId: null,
+      nodes: [
+        { title: "Imported root", children: [{ title: "Imported child", children: [] }] }
+      ]
+    };
+    const importedRootId = "55555555-5555-4555-8555-555555555555";
+    invokeMock.mockResolvedValue({
+      ...mutationResult,
+      importedRootIds: [importedRootId]
+    });
+
+    await expect(
+      notesImportSubtree(vaultPath, importInput, historyContext)
+    ).resolves.toEqual({
+      ...normalizedMutationResult,
+      importedRootIds: [importedRootId]
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("notes_import_subtree", {
+      vaultPath,
+      input: importInput,
+      historyContext
+    });
+  });
+
+  it("rejects notes_import_subtree when the response returns a malformed importedRootIds", async () => {
+    invokeMock.mockResolvedValue({
+      ...mutationResult,
+      importedRootIds: [42]
+    });
+
+    await expect(
+      notesImportSubtree(vaultPath, {
+        parentId: null,
+        afterId: null,
+        nodes: [{ title: "x", children: [] }]
+      })
+    ).rejects.toMatchObject({
+      message: "Notes mutation returned an invalid result.",
+      operation: "write",
+      retryable: false
     });
   });
 

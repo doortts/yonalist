@@ -6,11 +6,11 @@ use crate::notes::history;
 use crate::notes::tags::{extract_note_tags, is_canonical_tag_body, tokenize_note_text};
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
-    ExportNode, MoveNodeInput, NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField,
-    NoteSearchResult, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter,
-    NoteTagPrefix, NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope,
-    SplitNodeInput, UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
-    MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    ExportNode, ImportNode, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteId,
+    NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope,
+    NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
+    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -3556,6 +3556,118 @@ pub(crate) fn duplicate_node_at(
     })
 }
 
+// ---- Paste import (nested subtree) -------------------------------------------
+//
+// `import_subtree_at` inserts a caller-supplied forest of *new* nodes as one
+// contiguous block under `parentId`, right after `afterId`. It mirrors
+// `duplicate_node_at`'s discipline: one `with_workspace_transaction` (so a
+// history context records exactly ONE entry and a single undo removes every
+// imported node), backend-generated ids (the store stays authoritative), and
+// sparse sort keys. Any failure rolls the whole transaction back — nothing is
+// inserted and no history entry is written.
+//
+// Ids are never taken from the client. The forest is inserted iteratively (an
+// explicit work stack, never recursion) so a deep payload cannot overflow the
+// stack; the depth/size/field bounds are enforced in `ImportSubtreeInput::
+// validate`. The generated root ids are returned in caller order so the command
+// can surface them to the frontend for focus.
+fn insert_import_node(
+    transaction: &Transaction<'_>,
+    id: &str,
+    parent_id: Option<&str>,
+    sort_key: i64,
+    node: &ImportNode,
+    today: LocalDate,
+) -> Result<(), String> {
+    let note = node.note.as_deref().unwrap_or("");
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes (\
+               id, parent_id, sort_key, title, note, created_at, updated_at\
+             ) VALUES (\
+               ?1, ?2, ?3, ?4, ?5, \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+             )",
+            params![id, parent_id, sort_key, node.title, note],
+        )
+        .map_err(|error| format!("Could not create an imported Note node: {error}"))?;
+    replace_derived_content(transaction, id, &node.title, note, today)
+}
+
+pub(crate) fn import_subtree_at(
+    connection: &mut Connection,
+    input: ImportSubtreeInput,
+    today: LocalDate,
+) -> Result<(NotesWorkspace, Vec<NoteId>), String> {
+    input.validate()?;
+    let mut imported_root_ids: Vec<NoteId> = Vec::with_capacity(input.nodes.len());
+    let workspace = with_workspace_transaction(connection, |transaction| {
+        ensure_live_parent(transaction, input.parent_id.as_deref())?;
+
+        // Reserving generated ids guards against the (astronomically unlikely)
+        // case of drawing the same UUID twice before it is queryable, matching
+        // `duplicate_node_at`.
+        let mut reserved: HashSet<String> = HashSet::new();
+        // Each root is placed right after the previous imported root (the first
+        // after `afterId`), so `next_sort_key` keeps the whole block contiguous
+        // between `afterId` and its former next sibling under `parentId`.
+        let mut previous_root: Option<String> = input.after_id.clone();
+
+        for root in &input.nodes {
+            let root_id = fresh_uuid_v4(transaction, &reserved)?;
+            reserved.insert(root_id.clone());
+            let root_sort_key = next_sort_key(
+                transaction,
+                input.parent_id.as_deref(),
+                previous_root.as_deref(),
+            )?;
+            insert_import_node(
+                transaction,
+                &root_id,
+                input.parent_id.as_deref(),
+                root_sort_key,
+                root,
+                today,
+            )?;
+
+            // Insert descendants iteratively. Each freshly-created parent starts
+            // empty, so children get sparse sort keys by their position — no
+            // existing siblings to reconcile against.
+            let mut stack: Vec<(String, &Vec<ImportNode>)> =
+                vec![(root_id.clone(), &root.children)];
+            while let Some((parent_id, children)) = stack.pop() {
+                for (index, child) in children.iter().enumerate() {
+                    let child_id = fresh_uuid_v4(transaction, &reserved)?;
+                    reserved.insert(child_id.clone());
+                    let child_sort_key = i64::try_from(index + 1)
+                        .ok()
+                        .and_then(|position| position.checked_mul(SORT_KEY_STEP))
+                        .ok_or_else(|| {
+                            "The imported subtree has too many siblings to order.".to_string()
+                        })?;
+                    insert_import_node(
+                        transaction,
+                        &child_id,
+                        Some(&parent_id),
+                        child_sort_key,
+                        child,
+                        today,
+                    )?;
+                    if !child.children.is_empty() {
+                        stack.push((child_id, &child.children));
+                    }
+                }
+            }
+
+            imported_root_ids.push(root_id.clone());
+            previous_root = Some(root_id);
+        }
+        Ok(())
+    })?;
+    Ok((workspace, imported_root_ids))
+}
+
 pub(crate) fn remove_empty_node(
     connection: &mut Connection,
     node_id: &str,
@@ -4643,7 +4755,8 @@ mod tests {
         archive_node, collapse_all, connect_notes_db, create_attachment,
         create_attachments_coordinated_for_node, create_node, create_node_at,
         create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
-        expand_all, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
+        expand_all, import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts,
+        load_workspace,
         migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
         observe_next_migration_busy,
         open_notes_export_db, preflight_existing_notes_schema, remove_empty_node,
@@ -4654,12 +4767,13 @@ mod tests {
         SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
-    use crate::notes::history::{undo, with_history_transaction_and_prunes};
+    use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        validate_note_id, CreateNodeInput, ImportNode, ImportSubtreeInput, MoveNodeInput,
+        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
+        NoteTagFilter, NoteTagPrefix, NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput,
+        UpdateNodeInput, MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::HashMap;
@@ -5309,6 +5423,293 @@ mod tests {
             .expect("query active children")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect active children")
+    }
+
+    // ---- Paste import (notes_import_subtree) helpers + tests -----------------
+
+    fn import_leaf(title: &str) -> ImportNode {
+        ImportNode {
+            title: title.to_string(),
+            note: None,
+            children: Vec::new(),
+        }
+    }
+
+    fn import_context(command_kind: &str) -> NotesHistoryContext {
+        NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            entry_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
+            command_kind: command_kind.to_string(),
+        }
+    }
+
+    fn import_with_history(
+        connection: &mut Connection,
+        context: &NotesHistoryContext,
+        input: ImportSubtreeInput,
+    ) -> Vec<String> {
+        let mut roots = Vec::new();
+        with_history_transaction_and_prunes(connection, Some(context), |connection| {
+            let (workspace, root_ids) = import_subtree_at(connection, input, fixed_today())?;
+            roots = root_ids;
+            Ok(workspace)
+        })
+        .expect("import subtree with history");
+        roots
+    }
+
+    fn active_node_ids(connection: &Connection) -> std::collections::BTreeSet<String> {
+        load_workspace(connection, NotesWorkspaceScope::Active)
+            .expect("active workspace")
+            .nodes
+            .into_iter()
+            .map(|node| node.id)
+            .collect()
+    }
+
+    /// `(parent_id, sort_key, title)` for one node — the structural facts an
+    /// import must place correctly and undo/redo must restore verbatim.
+    fn node_shape(connection: &Connection, id: &str) -> (Option<String>, i64, String) {
+        connection
+            .query_row(
+                "SELECT parent_id, sort_key, title FROM notes_nodes WHERE id = ?1",
+                [id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("node shape")
+    }
+
+    fn history_entry_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("history entry count")
+    }
+
+    #[test]
+    fn imports_a_flat_forest_under_the_parent_in_order_with_one_history_entry() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        let context = import_context("importSubtree");
+
+        let roots = import_with_history(
+            &mut connection,
+            &context,
+            ImportSubtreeInput {
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                nodes: vec![import_leaf("first"), import_leaf("second"), import_leaf("third")],
+            },
+        );
+
+        assert_eq!(roots.len(), 3);
+        let children = active_children(&connection, Some(NODE_ID));
+        assert_eq!(
+            children.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            roots,
+            "imported roots land under the parent in caller order"
+        );
+        let titles = children
+            .iter()
+            .map(|(id, _)| node_shape(&connection, id).2)
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["first", "second", "third"]);
+        assert!(
+            children.windows(2).all(|pair| pair[0].1 < pair[1].1),
+            "sort keys stay strictly increasing across the imported block"
+        );
+        assert_eq!(
+            history_entry_count(&connection),
+            1,
+            "the whole import is a single history entry"
+        );
+
+        undo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
+            .expect("undo import");
+        assert!(
+            active_children(&connection, Some(NODE_ID)).is_empty(),
+            "one undo removes every imported node"
+        );
+    }
+
+    #[test]
+    fn imports_a_nested_tree_with_correct_structure_and_sort_keys() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        let context = import_context("importSubtree");
+
+        let roots = import_with_history(
+            &mut connection,
+            &context,
+            ImportSubtreeInput {
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                nodes: vec![ImportNode {
+                    title: "root".to_string(),
+                    note: Some("body".to_string()),
+                    children: vec![
+                        ImportNode {
+                            title: "child-a".to_string(),
+                            note: None,
+                            children: vec![import_leaf("grandchild")],
+                        },
+                        import_leaf("child-b"),
+                    ],
+                }],
+            },
+        );
+
+        assert_eq!(roots.len(), 1);
+        let root_id = &roots[0];
+        let (root_parent, root_sort, root_title) = node_shape(&connection, root_id);
+        assert_eq!(root_parent.as_deref(), Some(NODE_ID));
+        assert_eq!(root_sort, SORT_KEY_STEP);
+        assert_eq!(root_title, "root");
+
+        let root_children = active_children(&connection, Some(root_id));
+        assert_eq!(root_children.len(), 2);
+        assert_eq!(root_children[0].1, SORT_KEY_STEP);
+        assert_eq!(root_children[1].1, 2 * SORT_KEY_STEP);
+        let child_a = root_children[0].0.clone();
+        assert_eq!(node_shape(&connection, &child_a).2, "child-a");
+        assert_eq!(node_shape(&connection, &root_children[1].0).2, "child-b");
+
+        let grandchildren = active_children(&connection, Some(&child_a));
+        assert_eq!(grandchildren.len(), 1);
+        assert_eq!(grandchildren[0].1, SORT_KEY_STEP);
+        assert_eq!(node_shape(&connection, &grandchildren[0].0).2, "grandchild");
+
+        let root_note: String = connection
+            .query_row("SELECT note FROM notes_nodes WHERE id = ?1", [root_id], |row| {
+                row.get(0)
+            })
+            .expect("root note");
+        assert_eq!(root_note, "body");
+    }
+
+    #[test]
+    fn imports_a_block_directly_after_the_requested_sibling() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "existing-x");
+        insert_node(&connection, THIRD_ID, Some(NODE_ID), 2048, "existing-y");
+        let context = import_context("importSubtree");
+
+        let roots = import_with_history(
+            &mut connection,
+            &context,
+            ImportSubtreeInput {
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: Some(CHILD_ID.to_string()),
+                nodes: vec![import_leaf("b1"), import_leaf("b2")],
+            },
+        );
+
+        let ordered = active_children(&connection, Some(NODE_ID))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ordered,
+            vec![
+                CHILD_ID.to_string(),
+                roots[0].clone(),
+                roots[1].clone(),
+                THIRD_ID.to_string(),
+            ],
+            "the imported block sits contiguously right after afterId"
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_subtree_import() {
+        let mut connection = test_connection();
+        let error = import_subtree_at(
+            &mut connection,
+            ImportSubtreeInput {
+                parent_id: None,
+                after_id: None,
+                nodes: Vec::new(),
+            },
+            fixed_today(),
+        )
+        .expect_err("empty import must be rejected");
+        assert!(error.contains("at least one node"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn rejects_an_oversized_subtree_import_without_writing_anything() {
+        let mut connection = test_connection();
+        let nodes = (0..=MAX_IMPORT_SUBTREE_NODES)
+            .map(|index| import_leaf(&format!("n{index}")))
+            .collect::<Vec<_>>();
+        let error = import_subtree_at(
+            &mut connection,
+            ImportSubtreeInput {
+                parent_id: None,
+                after_id: None,
+                nodes,
+            },
+            fixed_today(),
+        )
+        .expect_err("oversized import must be rejected");
+        assert!(error.contains("cannot exceed"), "unexpected error: {error}");
+        assert!(
+            load_workspace(&connection, NotesWorkspaceScope::Active)
+                .expect("workspace")
+                .nodes
+                .is_empty(),
+            "a rejected import writes nothing"
+        );
+    }
+
+    #[test]
+    fn undo_then_redo_restores_the_identical_imported_subtree() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "parent");
+        let context = import_context("importSubtree");
+
+        let before = active_node_ids(&connection);
+        import_with_history(
+            &mut connection,
+            &context,
+            ImportSubtreeInput {
+                parent_id: Some(NODE_ID.to_string()),
+                after_id: None,
+                nodes: vec![ImportNode {
+                    title: "root".to_string(),
+                    note: Some("body".to_string()),
+                    children: vec![import_leaf("child-a"), import_leaf("child-b")],
+                }],
+            },
+        );
+        let after = active_node_ids(&connection);
+        let imported = after.difference(&before).cloned().collect::<Vec<_>>();
+        assert_eq!(imported.len(), 3);
+        let snapshot = imported
+            .iter()
+            .map(|id| (id.clone(), node_shape(&connection, id)))
+            .collect::<Vec<_>>();
+
+        undo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
+            .expect("undo import");
+        let after_undo = active_node_ids(&connection);
+        assert!(
+            imported.iter().all(|id| !after_undo.contains(id)),
+            "undo removes every imported node"
+        );
+
+        redo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
+            .expect("redo import");
+        let restored = imported
+            .iter()
+            .map(|id| (id.clone(), node_shape(&connection, id)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored, snapshot,
+            "redo restores the identical subtree (same ids, parents, sort keys, titles)"
+        );
     }
 
     fn insert_test_attachment(connection: &Connection, index: usize, node_id: &str) -> String {

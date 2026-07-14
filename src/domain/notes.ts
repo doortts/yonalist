@@ -77,6 +77,13 @@ export interface NotesMutationResult extends NotesHistoryStatus {
   changedNodes?: NoteNode[];
   removedNodeIds?: NoteId[];
   changedAttachments?: NoteAttachment[];
+  /**
+   * New root ids created by `notes_import_subtree` (paste import, plan Phase
+   * 4.4), in the order supplied by the caller. Present only on that
+   * mutation's result; every other mutation omits it. The frontend uses
+   * `importedRootIds[0]` to focus the first imported node.
+   */
+  importedRootIds?: NoteId[];
 }
 
 export type NotesMutationResponse = NotesWorkspace | NotesMutationResult;
@@ -300,6 +307,30 @@ export type ApplyNotesBatchInput =
   | { op: "indent"; nodeIds: readonly NoteId[] }
   | { op: "outdent"; nodeIds: readonly NoteId[] };
 
+/**
+ * One node in a `notes_import_subtree` payload (plan Phase 4.4, paste
+ * import). Mirrors the Rust `ImportNode` (src-tauri/src/notes/types.rs): ids
+ * are never supplied by the client — the backend generates them so the store
+ * stays authoritative — only content + nesting is carried here.
+ */
+export interface NoteImportNode {
+  title: string;
+  note?: string;
+  children: readonly NoteImportNode[];
+}
+
+/**
+ * Input to `notes_import_subtree`: a forest of new nodes inserted as one
+ * contiguous block under `parentId`, right after `afterId`. One backend
+ * transaction / one history entry, so undo removes every imported node in a
+ * single step.
+ */
+export interface ImportSubtreeInput {
+  parentId: NoteId | null;
+  afterId: NoteId | null;
+  nodes: readonly NoteImportNode[];
+}
+
 export interface NotesStore {
   initialize(vaultPath: string): Promise<void>;
   loadWorkspace(vaultPath: string, scope: NotesWorkspaceScope): Promise<NotesWorkspace>;
@@ -310,6 +341,9 @@ export interface NotesStore {
   // Structural batch (plan Phase 4.1): one operation applied to a whole node set
   // as a single transaction / single history entry (one undo step).
   applyBatch(vaultPath: string, input: ApplyNotesBatchInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
+  // Paste import (plan Phase 4.4): insert a caller-supplied forest of new
+  // nodes as one contiguous block, one transaction / one history entry.
+  importSubtree(vaultPath: string, input: ImportSubtreeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   toggleComplete(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   toggleCollapsed(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   expandAll?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;
@@ -642,7 +676,8 @@ const NOTES_MUTATION_RESULT_REQUIRED_KEYS = [
 const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
   "changedNodes",
   "removedNodeIds",
-  "changedAttachments"
+  "changedAttachments",
+  "importedRootIds"
 ] as const;
 
 const NOTES_MUTATION_RESULT_ALLOWED_KEYS = new Set<string>([
@@ -689,6 +724,15 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
     !(
       isDenseArray(value.changedAttachments) &&
       value.changedAttachments.every(isNoteAttachment)
+    )
+  ) {
+    return false;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "importedRootIds") &&
+    !(
+      isDenseArray(value.importedRootIds) &&
+      value.importedRootIds.every((id) => typeof id === "string")
     )
   ) {
     return false;

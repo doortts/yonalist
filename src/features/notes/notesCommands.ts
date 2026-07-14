@@ -2,6 +2,7 @@ import type { MutableRefObject } from "react";
 import { createNoteId } from "../../domain/notes";
 import type {
   ApplyNotesBatchInput,
+  ImportSubtreeInput,
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
@@ -571,6 +572,56 @@ export async function applyBatchCommand(
       mutation,
       ctx.activeScopeRef.current
     );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  });
+}
+
+/**
+ * Paste import (plan Phase 4.4): insert `input.nodes` as one contiguous new
+ * block under `input.parentId` right after `input.afterId`. Mirrors
+ * `duplicateNodeCommand` — one mutation, one history entry — except the new
+ * root to focus comes straight from the backend's `importedRootIds` (set by
+ * `notes_import_subtree`) rather than being inferred by diffing before/after
+ * workspaces.
+ */
+export async function importSubtreeCommand(
+  ctx: NotesCommandContext,
+  input: ImportSubtreeInput
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("import", async (context, historyContext) => {
+    const before = confirmedState(context);
+    if (
+      (input.parentId !== null && !before.nodesById[input.parentId]) ||
+      (input.afterId !== null && !before.nodesById[input.afterId])
+    ) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(
+      await context.repository.importSubtree(
+        context.vaultRoot,
+        input,
+        ...historyArguments(historyContext)
+      )
+    );
+    const importedRootId = mutation.importedRootIds?.[0] ?? null;
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const uiUpdate = importedRootId
+      ? {
+          selectedId: importedRootId,
+          editingNoteId: importedRootId,
+          pendingFocusId: importedRootId,
+          pendingFocusField: "title" as const
+        }
+      : undefined;
     ctx.rememberHistoryAfter(
       appliedHistoryContext(historyContext, mutation),
       projection.workspace,

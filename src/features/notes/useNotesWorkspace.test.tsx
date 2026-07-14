@@ -113,6 +113,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     splitNode: empty,
     moveNode: empty,
     applyBatch: empty,
+    importSubtree: empty,
     toggleComplete: empty,
     toggleCollapsed: empty,
     toggleStar: empty,
@@ -7891,5 +7892,150 @@ describe("useNotesWorkspace multi-node selection", () => {
     // its "Command paused" notice) and the batch never reached the backend.
     expect(outcome).toBe("skipped");
     expect(store.applyBatch).not.toHaveBeenCalled();
+  });
+});
+
+describe("importSubtree (plan Phase 4.4b, paste import)", () => {
+  it("imports a forest under parentId after afterId as a single history entry and focuses the first root", async () => {
+    const importedNodes = workspace([
+      node({ id: "root", sortKey: 1 }),
+      node({ id: "imported-a", parentId: "root", sortKey: 2, title: "Alpha" }),
+      node({
+        id: "imported-a-child",
+        parentId: "imported-a",
+        sortKey: 1,
+        title: "Alpha child"
+      }),
+      node({ id: "imported-b", parentId: "root", sortKey: 3, title: "Beta" })
+    ]);
+    const importSubtree = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: importedNodes,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false,
+        importedRootIds: ["imported-a", "imported-b"]
+      })
+    );
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "root" })])),
+      importSubtree
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    let outcome: string | undefined;
+    await act(async () => {
+      outcome = await result.current.actions.importSubtree("root", null, [
+        {
+          title: "Alpha",
+          children: [{ title: "Alpha child", children: [] }]
+        },
+        { title: "Beta", children: [] }
+      ]);
+    });
+
+    expect(outcome).toBe("committed");
+    expect(importSubtree).toHaveBeenCalledTimes(1);
+    expect(importSubtree).toHaveBeenCalledWith(
+      "/vault",
+      {
+        parentId: "root",
+        afterId: null,
+        nodes: [
+          {
+            title: "Alpha",
+            children: [{ title: "Alpha child", children: [] }]
+          },
+          { title: "Beta", children: [] }
+        ]
+      },
+      historyContext("import")
+    );
+    // One backend call carrying one history entry id: undo reverts the whole
+    // imported subtree in one step.
+    expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
+    // Focuses the first imported root (importedRootIds[0]), not the second.
+    expect(result.current.state).toMatchObject({
+      selectedId: "imported-a",
+      editingNoteId: "imported-a",
+      pendingFocusId: "imported-a",
+      pendingFocusField: "title"
+    });
+    expect(result.current.state.nodesById["imported-a-child"]).toBeDefined();
+  });
+
+  it("removes the imported subtree in one undo step", async () => {
+    const importedNodes = workspace([
+      node({ id: "root", sortKey: 1 }),
+      node({ id: "imported-a", parentId: "root", sortKey: 2, title: "Alpha" })
+    ]);
+    const importSubtree = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: importedNodes,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false,
+        importedRootIds: ["imported-a"]
+      })
+    );
+    const undo = vi.fn().mockResolvedValue({
+      workspace: workspace([node({ id: "root" })]),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: true
+    });
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "root" })])),
+      importSubtree,
+      undo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.importSubtree("root", null, [
+        { title: "Alpha", children: [] }
+      ]);
+    });
+    expect(result.current.state.nodesById["imported-a"]).toBeDefined();
+
+    await act(async () => result.current.actions.undo!());
+
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(result.current.state.nodesById["imported-a"]).toBeUndefined();
+    expect(result.current.state.rootIds).toEqual(["root"]);
+  });
+
+  it("skips the import when the target parent no longer exists", async () => {
+    const store = repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace([node({ id: "root" })]))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    let outcome: string | undefined;
+    await act(async () => {
+      outcome = await result.current.actions.importSubtree(
+        "missing-parent",
+        null,
+        [{ title: "Alpha", children: [] }]
+      );
+    });
+
+    expect(outcome).toBe("skipped");
+    expect(store.importSubtree).not.toHaveBeenCalled();
   });
 });
