@@ -1,6 +1,6 @@
 # Notes Multi-Select Actions Design
 
-**Status:** Approved feature scope; awaiting written-spec review
+**Status:** Approved for implementation
 
 ## Goal
 
