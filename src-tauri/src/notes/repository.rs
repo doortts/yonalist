@@ -22,6 +22,7 @@ use std::fs;
 use std::io::{ErrorKind, Read};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 #[cfg(test)]
 use std::cell::RefCell;
@@ -35,6 +36,17 @@ const NOTE_DATE_PARSER_VERSION: i64 = 3;
 const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
 const NOTE_LIFECYCLE_SEARCH_VERSION: i64 = 1;
 const NOTE_LIFECYCLE_SEARCH_VERSION_KEY: &str = "derived.lifecycleSearchVersion";
+const NOTES_ONBOARDING_VERSION_KEY: &str = "notes.onboarding.v1";
+const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
+const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
+const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
+    "Enter — 새 항목 만들기",
+    "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+    "Shift+Enter — 설명 입력하기",
+    "⌘/Ctrl+Enter — 완료 표시",
+    "↑/↓ — 항목 사이 이동",
+    "불릿을 드래그해 순서와 계층 바꾸기",
+];
 const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
 const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
@@ -311,6 +323,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
              ON notes_nodes(archive_root_id, parent_id, sort_key);",
         )
         .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
+    ensure_notes_onboarding(&transaction)?;
     ensure_lifecycle_search_version(&transaction)?;
     ensure_tag_tokenizer_version(&transaction)?;
     let today = SystemLocalTodayProvider.local_today(&transaction)?;
@@ -319,6 +332,73 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     transaction
         .commit()
         .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+}
+
+fn ensure_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> {
+    let marker_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes_preferences WHERE key = ?1)",
+            [NOTES_ONBOARDING_VERSION_KEY],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not read the Notes onboarding state: {error}"))?;
+    if marker_exists {
+        return Ok(());
+    }
+
+    let node_count: i64 = transaction
+        .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+        .map_err(|error| format!("Could not inspect Notes onboarding content: {error}"))?;
+    if node_count == 0 {
+        let root_id = Uuid::new_v4().to_string();
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, NULL, ?2, ?3, ?4, \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                 )",
+                params![
+                    &root_id,
+                    SORT_KEY_STEP,
+                    NOTES_ONBOARDING_TITLE,
+                    NOTES_ONBOARDING_NOTE
+                ],
+            )
+            .map_err(|error| format!("Could not create the Notes onboarding page: {error}"))?;
+
+        for (index, title) in NOTES_ONBOARDING_CHILDREN.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO notes_nodes (\
+                       id, parent_id, sort_key, title, created_at, updated_at\
+                     ) VALUES (\
+                       ?1, ?2, ?3, ?4, \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                     )",
+                    params![
+                        Uuid::new_v4().to_string(),
+                        &root_id,
+                        (index as i64 + 1) * SORT_KEY_STEP,
+                        title
+                    ],
+                )
+                .map_err(|error| {
+                    format!("Could not create Notes onboarding guidance: {error}")
+                })?;
+        }
+    }
+
+    transaction
+        .execute(
+            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, '1')",
+            [NOTES_ONBOARDING_VERSION_KEY],
+        )
+        .map_err(|error| format!("Could not record the Notes onboarding state: {error}"))?;
+    Ok(())
 }
 
 const HISTORY_ENTRIES_CURRENT_SQL: &str = "CREATE TABLE notes_history_entries (\
@@ -4833,6 +4913,9 @@ mod tests {
         let mut connection = Connection::open_in_memory().expect("in-memory notes database");
         initialize_notes_db(&mut connection).expect("initialize notes database");
         connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("clear onboarding nodes from empty test fixture");
+        connection
     }
 
     fn seed_version_one_database(connection: &mut Connection) {
@@ -5381,6 +5464,34 @@ mod tests {
             )
             .expect("insert test node");
         id.to_string()
+    }
+
+    fn test_node_count(connection: &Connection) -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
+            .expect("node count")
+    }
+
+    fn test_preference_value(connection: &Connection, key: &str) -> Option<String> {
+        connection
+            .query_row(
+                "SELECT value_json FROM notes_preferences WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .ok()
+    }
+
+    fn remove_onboarding_for_test(connection: &Connection) {
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("delete onboarding nodes");
+        connection
+            .execute(
+                "DELETE FROM notes_preferences WHERE key = ?1",
+                ["notes.onboarding.v1"],
+            )
+            .expect("delete onboarding marker");
     }
 
     fn insert_tree(connection: &Connection) -> String {
@@ -6734,7 +6845,7 @@ mod tests {
         let node_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
             .expect("nodes table");
-        assert_eq!(node_count, 0);
+        assert_eq!(node_count, 7);
         assert_eq!(
             notes_db_path(vault_path),
             temp_dir.path().join(".yonalist/notes.sqlite")
@@ -6812,6 +6923,139 @@ mod tests {
                 "before_json",
                 "after_json"
             ]
+        );
+    }
+
+    #[test]
+    fn onboarding_seeds_a_fresh_database_once() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+
+        let nodes: Vec<(String, Option<String>, i64, String, String)> = connection
+            .prepare(
+                "SELECT id, parent_id, sort_key, title, note \
+                 FROM notes_nodes ORDER BY parent_id IS NOT NULL, sort_key",
+            )
+            .expect("prepare onboarding query")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .expect("query onboarding")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect onboarding");
+
+        assert_eq!(nodes.len(), 7);
+        assert_eq!(nodes[0].3, "Yonalist Notes 시작하기");
+        assert_eq!(
+            nodes[0].4,
+            "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."
+        );
+        assert!(
+            nodes[1..]
+                .iter()
+                .all(|node| node.1.as_deref() == Some(nodes[0].0.as_str()))
+        );
+        assert_eq!(
+            nodes[1..]
+                .iter()
+                .map(|node| node.3.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "Enter — 새 항목 만들기",
+                "Tab / Shift+Tab — 들여쓰기 / 내어쓰기",
+                "Shift+Enter — 설명 입력하기",
+                "⌘/Ctrl+Enter — 완료 표시",
+                "↑/↓ — 항목 사이 이동",
+                "불릿을 드래그해 순서와 계층 바꾸기",
+            ]
+        );
+        assert_eq!(
+            test_preference_value(&connection, "notes.onboarding.v1"),
+            Some("1".to_string())
+        );
+
+        initialize_notes_db(&mut connection).expect("reinitialize notes");
+        assert_eq!(test_node_count(&connection), 7);
+    }
+
+    #[test]
+    fn onboarding_marks_but_does_not_modify_an_existing_workspace() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        remove_onboarding_for_test(&connection);
+        insert_node(
+            &connection,
+            NODE_ID,
+            None,
+            SORT_KEY_STEP,
+            "Existing note",
+        );
+
+        initialize_notes_db(&mut connection).expect("reinitialize notes");
+
+        assert_eq!(test_node_count(&connection), 1);
+        assert_eq!(
+            connection
+                .query_row("SELECT title FROM notes_nodes", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("existing title"),
+            "Existing note"
+        );
+        assert_eq!(
+            test_preference_value(&connection, "notes.onboarding.v1"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn onboarding_does_not_return_after_its_nodes_are_deleted() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("delete onboarding nodes");
+
+        initialize_notes_db(&mut connection).expect("reinitialize notes");
+
+        assert_eq!(test_node_count(&connection), 0);
+        assert_eq!(
+            test_preference_value(&connection, "notes.onboarding.v1"),
+            Some("1".to_string())
+        );
+    }
+
+    #[test]
+    fn onboarding_nodes_and_marker_roll_back_together() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        remove_onboarding_for_test(&connection);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_onboarding_child \
+                 BEFORE INSERT ON notes_nodes \
+                 WHEN NEW.parent_id IS NOT NULL \
+                 BEGIN SELECT RAISE(ABORT, 'reject onboarding child'); END;",
+            )
+            .expect("create rejecting trigger");
+
+        let error = initialize_notes_db(&mut connection).expect_err("seed must fail");
+
+        assert!(error.contains("Could not create Notes onboarding guidance"));
+        assert_eq!(test_node_count(&connection), 0);
+        assert_eq!(
+            test_preference_value(&connection, "notes.onboarding.v1"),
+            None
         );
     }
 
@@ -11456,7 +11700,7 @@ mod tests {
     }
 
     #[test]
-    fn deleted_database_reinitializes_empty_without_changing_other_metadata() {
+    fn deleted_database_reinitializes_onboarding_without_changing_other_metadata() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("vault path");
         let connection = connect_notes_db(vault_path).expect("connect notes");
@@ -11473,9 +11717,12 @@ mod tests {
         delete_database(vault_path).expect("delete Notes database");
         let reopened = connect_notes_db(vault_path).expect("reinitialize Notes database");
         let workspace =
-            load_workspace(&reopened, NotesWorkspaceScope::Active).expect("load empty workspace");
+            load_workspace(&reopened, NotesWorkspaceScope::Active).expect("load fresh workspace");
 
-        assert!(workspace.nodes.is_empty());
+        assert_eq!(workspace.nodes.len(), 7);
+        assert!(workspace.nodes.iter().any(|node| {
+            node.parent_id.is_none() && node.title == "Yonalist Notes 시작하기"
+        }));
         assert!(notes_path.exists());
         assert_eq!(
             std::fs::read(index_path).expect("read index fixture"),
