@@ -234,6 +234,7 @@ export function NotesPageHeader({
     }
     if (
       ![
+        "focus",
         "focusNote",
         "toggleComplete",
         "duplicate",
@@ -247,6 +248,10 @@ export function NotesPageHeader({
     }
     event.preventDefault();
     switch (resolution.type) {
+      case "focus":
+        void actions.flushNodeDraft(nodeId);
+        void actions.focusNode(resolution.nodeId);
+        return;
       case "focusNote":
         openAndFocusNote();
         return;

@@ -2774,6 +2774,34 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
   });
 
+  it("saves the zoomed page title before moving focus to its first child", async () => {
+    const user = userEvent.setup();
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Project" })
+    );
+    const pageTitlePresentation = screen.getByRole("group", {
+      name: "Edit page title"
+    });
+    fireEvent.pointerDown(pageTitlePresentation);
+    const pageTitle = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Edit page title"
+    });
+    fireEvent.focus(pageTitle);
+    fireEvent.change(pageTitle, { target: { value: "Project edited" } });
+
+    expect(fireEvent.keyDown(pageTitle, { key: "ArrowDown" })).toBe(false);
+    await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
+    expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "project",
+      title: "Project edited",
+      note: "Project note"
+    });
+    expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+  });
+
   it("keeps horizontal caret movement native except at collapse boundaries", async () => {
     renderNotesWorkspace();
     const project = await findTitleInput("Project");
