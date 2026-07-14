@@ -1,5 +1,5 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
-import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
+import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
   type NormalizedNotesWorkspace,
   type NotesSelection
@@ -110,9 +110,11 @@ export interface ResolveOutlineKeyInput {
   nodeId: NoteId;
   platform: OutlineShortcutPlatform;
   workspace: NormalizedNotesWorkspace;
-  /** Explicit complete active workspace for every selection structural action. */
+  /** @deprecated Selection eligibility now belongs to the shared command router. */
   authoritativeWorkspace?: NormalizedNotesWorkspace;
   visibleNodeIds?: readonly NoteId[];
+  /** Rows that may participate in a selection, excluding a zoom page header. */
+  selectionVisibleNodeIds?: readonly NoteId[];
   // The live multi-node selection, if any. Shift+Arrow extends the head from
   // here; Escape clears only when a selection exists (so a bare Escape keeps its
   // default behaviour).
@@ -136,9 +138,9 @@ export type OutlineKeyResolution =
   | { type: "remove"; focusNodeId: NoteId | null }
   | { type: "extendSelection"; headId: NoteId }
   | { type: "clearSelection" }
-  // Whole-selection structural ops (plan Phase 4.1c). Each carries the
-  // materialized selection range in outline order so the caller forwards it to
-  // notes_apply_batch as one transaction / one undo step.
+  | { type: "selectionAction"; action: NotesSelectionActionIntent }
+  // Legacy variants remain until OutlineNodeRow is migrated in the integration
+  // step. resolveOutlineKey no longer emits them for a live selection.
   | { type: "batchComplete"; nodeIds: readonly NoteId[]; completed: boolean }
   | { type: "batchDelete"; nodeIds: readonly NoteId[]; focusNodeId: NoteId | null }
   | { type: "batchIndent"; nodeIds: readonly NoteId[] }
@@ -177,6 +179,7 @@ export function resolveOutlineKey(
     (input.key === "ArrowUp" || input.key === "ArrowDown")
   ) {
     const selectionVisibleIds =
+      input.selectionVisibleNodeIds ??
       input.visibleNodeIds ??
       visibleNodeIds(input.workspace, input.workspace.zoomRootId);
     const currentHead = input.selection?.headId ?? input.nodeId;
@@ -206,24 +209,11 @@ export function resolveOutlineKey(
       ? input.metaKey && !input.altKey && !input.ctrlKey
       : input.altKey && !input.metaKey && !input.ctrlKey;
 
-  // With a live multi-node selection, the structural shortcuts act on the WHOLE
-  // range as one batch (one undo step) instead of the focused node (plan Phase
-  // 4.1c). These branches own their keys entirely: an ineligible batch resolves
-  // to null (a no-op, matching an ineligible single-node command) and never
-  // falls through to the single-node path, so the selection is never torn.
-  // Extend/clear were already handled above; other keys (Enter split, arrows,
-  // typing) keep single-node behavior and collapse the selection elsewhere.
+  // A live range owns recognized selection shortcuts semantically. Eligibility,
+  // exact targets, authority freshness, and disabled feedback are all resolved
+  // by the shared command router. Copy/Cut intentionally stay native here so
+  // the synchronous clipboard event is their single owner.
   if (input.selection) {
-    const selectionVisibleIds =
-      input.visibleNodeIds ??
-      visibleNodeIds(input.workspace, input.workspace.zoomRootId);
-    const selectionSnapshot = () =>
-      deriveNotesSelectionActionSnapshot({
-        selection: input.selection ?? null,
-        visibleNodeIds: selectionVisibleIds,
-        workspace: input.workspace,
-        authoritativeWorkspace: input.authoritativeWorkspace
-      });
     if (
       !input.repeat &&
       input.key === "Enter" &&
@@ -231,15 +221,7 @@ export function resolveOutlineKey(
       !input.altKey &&
       primaryModifierPressed
     ) {
-      const snapshot = selectionSnapshot();
-      if (!snapshot) {
-        return null;
-      }
-      return {
-        type: "batchComplete",
-        nodeIds: snapshot.selectedNodeIds,
-        completed: snapshot.completion !== "all"
-      };
+      return { type: "selectionAction", action: "toggleComplete" };
     }
     if (
       !input.repeat &&
@@ -248,18 +230,7 @@ export function resolveOutlineKey(
       !input.altKey &&
       primaryModifierPressed
     ) {
-      const snapshot = selectionSnapshot();
-      if (!snapshot) {
-        return null;
-      }
-      const targets = snapshot.eligibility.delete;
-      return !targets.eligible
-        ? null
-        : {
-            type: "batchDelete",
-            nodeIds: targets.nodeIds,
-            focusNodeId: snapshot.deleteFocusNodeId
-          };
+      return { type: "selectionAction", action: "delete" };
     }
     if (
       !input.repeat &&
@@ -268,24 +239,10 @@ export function resolveOutlineKey(
       !input.ctrlKey &&
       !input.metaKey
     ) {
-      const snapshot = selectionSnapshot();
-      if (!snapshot) {
-        return null;
-      }
-      if (!input.shiftKey) {
-        return snapshot.eligibility.indent.eligible
-          ? {
-              type: "batchIndent",
-              nodeIds: snapshot.eligibility.indent.nodeIds
-            }
-          : null;
-      }
-      return snapshot.eligibility.outdent.eligible
-        ? {
-            type: "batchOutdent",
-            nodeIds: snapshot.eligibility.outdent.nodeIds
-          }
-        : null;
+      return {
+        type: "selectionAction",
+        action: input.shiftKey ? "outdent" : "indent"
+      };
     }
     if (
       !input.repeat &&
@@ -293,13 +250,7 @@ export function resolveOutlineKey(
       input.shiftKey &&
       duplicateModifierPressed
     ) {
-      const snapshot = selectionSnapshot();
-      return snapshot?.eligibility.duplicate.eligible
-        ? {
-            type: "batchDuplicate",
-            nodeIds: snapshot.eligibility.duplicate.nodeIds
-          }
-        : null;
+      return { type: "selectionAction", action: "duplicate" };
     }
     if (
       !input.repeat &&
@@ -308,55 +259,10 @@ export function resolveOutlineKey(
       primaryModifierPressed &&
       (input.key === "ArrowUp" || input.key === "ArrowDown")
     ) {
-      const snapshot = selectionSnapshot();
-      if (!snapshot) {
-        return null;
-      }
-      const eligibility =
-        input.key === "ArrowUp"
-          ? snapshot.eligibility.moveUp
-          : snapshot.eligibility.moveDown;
-      return eligibility.eligible
-        ? {
-            type: "batchReorder",
-            nodeIds: eligibility.nodeIds,
-            parentId: eligibility.target.parentId,
-            afterId: eligibility.target.afterId,
-            ...(eligibility.target.beforeId
-              ? { beforeId: eligibility.target.beforeId }
-              : {})
-          }
-        : null;
-    }
-    if (
-      !input.repeat &&
-      !input.shiftKey &&
-      !input.altKey &&
-      primaryModifierPressed &&
-      (input.key.toLowerCase() === "c" || input.key.toLowerCase() === "x")
-    ) {
-      const snapshot = selectionSnapshot();
-      const nativeSelectionIsCollapsed =
-        Number.isInteger(input.selectionStart) &&
-        Number.isInteger(input.selectionEnd) &&
-        input.selectionStart === input.selectionEnd &&
-        input.selectionStart !== null &&
-        input.selectionStart >= 0 &&
-        input.selectionStart <= input.title.length;
-      if (!snapshot || !nativeSelectionIsCollapsed) {
-        return null;
-      }
-      if (input.key.toLowerCase() === "c") {
-        return snapshot.eligibility.copy.eligible
-          ? {
-              type: "selectionCopy",
-              nodeIds: snapshot.eligibility.copy.nodeIds
-            }
-          : null;
-      }
-      return snapshot.eligibility.cut.eligible
-        ? { type: "selectionCut", nodeIds: snapshot.eligibility.cut.nodeIds }
-        : null;
+      return {
+        type: "selectionAction",
+        action: input.key === "ArrowUp" ? "moveUp" : "moveDown"
+      };
     }
   }
 

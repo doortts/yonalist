@@ -883,6 +883,48 @@ describe("resolveOutlineKey selection", () => {
     ).toEqual({ type: "extendSelection", headId: "grandchild" });
   });
 
+  it("uses the selection-only visible rows when extending a zoomed range", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowUp",
+          shiftKey: true,
+          nodeId: "child-a",
+          visibleNodeIds: ["root-a", "child-a", "grandchild", "child-b"],
+          selectionVisibleNodeIds: ["child-a", "grandchild", "child-b"]
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("keeps structural visible rows for ordinary zoomed caret navigation", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowUp",
+          nodeId: "child-a",
+          visibleNodeIds: ["root-a", "child-a", "grandchild", "child-b"],
+          selectionVisibleNodeIds: ["child-a", "grandchild", "child-b"]
+        })
+      )
+    ).toEqual({ type: "focus", nodeId: "root-a" });
+  });
+
+  it("does not extend when the live selection head is outside selection rows", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowDown",
+          shiftKey: true,
+          nodeId: "child-a",
+          visibleNodeIds: ["root-a", "child-a", "grandchild", "child-b"],
+          selectionVisibleNodeIds: ["child-a", "grandchild", "child-b"],
+          selection: { anchorId: "child-a", headId: "root-a" }
+        })
+      )
+    ).toBeNull();
+  });
+
   it("Shift+ArrowUp moves the head up from the current head", () => {
     expect(
       resolveOutlineKey(
@@ -981,607 +1023,180 @@ function batchInput(
   });
 }
 
-describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
-  it("Cmd/Ctrl+Enter completes the whole selection when the focused row is open", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({ key: "Enter", ctrlKey: true, selectionStart: 2, selectionEnd: 2 })
-      )
-    ).toEqual({
-      type: "batchComplete",
-      nodeIds: ["c2", "c3", "c4"],
-      completed: true
-    });
-  });
-
-  it("Cmd/Ctrl+Enter completes a mixed selection even when the focused row is done", () => {
-    const withDone = normalizeWorkspace(
-      workspace([
-        node({ id: "root-a", sortKey: 1 }),
-        node({
-          id: "c2",
-          parentId: "root-a",
-          sortKey: 2,
-          completedAt: "2026-07-10T00:00:00Z"
-        }),
-        node({ id: "c3", parentId: "root-a", sortKey: 3 }),
-        node({ id: "c4", parentId: "root-a", sortKey: 4 })
-      ])
-    );
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Enter",
-          ctrlKey: true,
-          workspace: withDone,
-          visibleNodeIds: ["root-a", "c2", "c3", "c4"]
-        })
-      )
-    ).toEqual({
-      type: "batchComplete",
-      nodeIds: ["c2", "c3", "c4"],
-      completed: true
-    });
-  });
-
-  it("Cmd/Ctrl+Enter uncompletes only when every selected row is done", () => {
-    const allDone = normalizeWorkspace(
-      workspace([
-        node({ id: "root-a", sortKey: 1 }),
-        node({
-          id: "c2",
-          parentId: "root-a",
-          sortKey: 2,
-          completedAt: "2026-07-10T00:00:00Z"
-        }),
-        node({
-          id: "c3",
-          parentId: "root-a",
-          sortKey: 3,
-          completedAt: "2026-07-10T00:00:00Z"
-        }),
-        node({
-          id: "c4",
-          parentId: "root-a",
-          sortKey: 4,
-          completedAt: "2026-07-10T00:00:00Z"
-        })
-      ])
-    );
-
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Enter",
-          ctrlKey: true,
-          workspace: allDone,
-          visibleNodeIds: ["root-a", "c2", "c3", "c4"]
-        })
-      )
-    ).toEqual({
-      type: "batchComplete",
-      nodeIds: ["c2", "c3", "c4"],
-      completed: false
-    });
-  });
-
-  it("Cmd/Ctrl+Shift+Backspace deletes the whole selection and focuses the next row", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({ key: "Backspace", ctrlKey: true, shiftKey: true })
-      )
-    ).toEqual({
-      type: "batchDelete",
-      nodeIds: ["c2", "c3", "c4"],
-      focusNodeId: "root-b"
-    });
-  });
-
-  it("batch delete falls back to the row before the range when nothing follows", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Backspace",
-          ctrlKey: true,
-          shiftKey: true,
-          nodeId: "root-a",
-          selection: { anchorId: "root-a", headId: "root-b" }
-        })
-      )
-    ).toEqual({
-      type: "batchDelete",
-      nodeIds: ["root-a", "root-b"],
-      focusNodeId: null
-    });
-  });
-
-  it("Tab indents the whole selection under the first non-selected visible sibling", () => {
-    expect(
-      resolveOutlineKey(batchInput({ key: "Tab" }))
-    ).toEqual({ type: "batchIndent", nodeIds: ["c2", "c3", "c4"] });
-  });
-
-  it("Tab is a no-op when every child of the parent is selected", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          nodeId: "c1",
-          selection: { anchorId: "c1", headId: "c4" }
-        })
-      )
-    ).toBeNull();
-  });
-
-  it("Tab refuses to indent the selection under a hidden completed sibling (0.3)", () => {
-    const withHiddenDone = normalizeWorkspace(
-      workspace([
-        node({ id: "a", sortKey: 1 }),
-        node({
-          id: "done",
-          sortKey: 2,
-          completedAt: "2026-07-10T00:00:00Z"
-        }),
-        node({ id: "s1", sortKey: 3 }),
-        node({ id: "s2", sortKey: 4 })
-      ])
-    );
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          nodeId: "s1",
-          title: "s1",
-          workspace: withHiddenDone,
-          visibleNodeIds: ["a", "s1", "s2"],
-          selection: { anchorId: "s1", headId: "s2" }
-        })
-      )
-    ).toBeNull();
-  });
-
-  it("Shift+Tab outdents the whole selection", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          shiftKey: true,
-          nodeId: "c1",
-          selection: { anchorId: "c1", headId: "c3" }
-        })
-      )
-    ).toEqual({ type: "batchOutdent", nodeIds: ["c1", "c2", "c3"] });
-  });
-
-  it("Shift+Tab refuses to outdent the zoom root's direct children out of the zoom (0.3)", () => {
-    const zoomed = { ...batchTree, zoomRootId: "root-a" };
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          shiftKey: true,
-          workspace: zoomed,
-          visibleNodeIds: ["c1", "c2", "c3", "c4"],
-          nodeId: "c1",
-          selection: { anchorId: "c1", headId: "c3" }
-        })
-      )
-    ).toBeNull();
-  });
-
-  it("Tab submits only the model's eligible roots across mixed parents", () => {
-    const projected = normalizeWorkspace(
-      workspace([
-        node({ id: "right-prior", parentId: "right-parent", sortKey: 1 }),
-        node({ id: "left-selected", parentId: "left-parent" }),
-        node({ id: "right-selected", parentId: "right-parent", sortKey: 2 })
-      ])
-    );
-    const authoritative = normalizeWorkspace(
-      workspace([
-        node({ id: "left-parent", sortKey: 1 }),
-        node({ id: "left-selected", parentId: "left-parent" }),
-        node({ id: "right-parent", sortKey: 2 }),
-        node({ id: "right-prior", parentId: "right-parent", sortKey: 1 }),
-        node({ id: "right-selected", parentId: "right-parent", sortKey: 2 })
-      ])
-    );
-
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          workspace: projected,
-          authoritativeWorkspace: authoritative,
-          visibleNodeIds: ["right-prior", "left-selected", "right-selected"],
-          nodeId: "left-selected",
-          selection: {
-            anchorId: "left-selected",
-            headId: "right-selected"
-          }
-        })
-      )
-    ).toEqual({ type: "batchIndent", nodeIds: ["right-selected"] });
-  });
-
-  it("Shift+Tab submits only roots that stay inside the zoom", () => {
-    const projected = {
-      ...normalizeWorkspace(
-        workspace([
-          node({ id: "at-boundary", parentId: "zoom" }),
-          node({ id: "deep", parentId: "branch" })
-        ])
-      ),
-      zoomRootId: "zoom"
-    };
-    const authoritative = normalizeWorkspace(
-      workspace([
-        node({ id: "zoom" }),
-        node({ id: "at-boundary", parentId: "zoom" }),
-        node({ id: "branch", parentId: "zoom" }),
-        node({ id: "deep", parentId: "branch" })
-      ])
-    );
-
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Tab",
-          shiftKey: true,
-          workspace: projected,
-          authoritativeWorkspace: authoritative,
-          visibleNodeIds: ["at-boundary", "deep"],
-          nodeId: "at-boundary",
-          selection: { anchorId: "at-boundary", headId: "deep" }
-        })
-      )
-    ).toEqual({ type: "batchOutdent", nodeIds: ["deep"] });
-  });
-
+describe("resolveOutlineKey semantic selection actions", () => {
   it.each([
-    {
-      label: "Alt+Shift+D on other platforms",
-      overrides: {
+    [
+      "Ctrl+Enter",
+      { key: "Enter", ctrlKey: true, platform: "other" as const },
+      "toggleComplete"
+    ],
+    [
+      "Cmd+Enter",
+      { key: "Enter", metaKey: true, platform: "mac" as const },
+      "toggleComplete"
+    ],
+    [
+      "Ctrl+Shift+Backspace",
+      {
+        key: "Backspace",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      },
+      "delete"
+    ],
+    ["Tab", { key: "Tab" }, "indent"],
+    ["Shift+Tab", { key: "Tab", shiftKey: true }, "outdent"],
+    [
+      "Alt+Shift+D",
+      {
         key: "D",
         altKey: true,
         shiftKey: true,
         platform: "other" as const
-      }
-    },
-    {
-      label: "Cmd+Shift+D on macOS",
-      overrides: {
+      },
+      "duplicate"
+    ],
+    [
+      "Cmd+Shift+D",
+      {
         key: "D",
         metaKey: true,
         shiftKey: true,
         platform: "mac" as const
-      }
-    }
-  ])("routes $label to batch duplicate", ({ overrides }) => {
+      },
+      "duplicate"
+    ],
+    [
+      "Ctrl+Shift+ArrowUp",
+      {
+        key: "ArrowUp",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      },
+      "moveUp"
+    ],
+    [
+      "Cmd+Shift+ArrowDown",
+      {
+        key: "ArrowDown",
+        metaKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      },
+      "moveDown"
+    ]
+  ] as const)("routes selected %s as a shared command intent", (
+    _label,
+    overrides,
+    action
+  ) => {
     expect(resolveOutlineKey(batchInput(overrides))).toEqual({
-      type: "batchDuplicate",
-      nodeIds: ["c2", "c3", "c4"]
+      type: "selectionAction",
+      action
     });
   });
 
-  it("routes a one-step batch reorder before the first sibling", () => {
+  it.each([
+    ["complete", { key: "Enter", ctrlKey: true }, "toggleComplete"],
+    ["delete", { key: "Backspace", ctrlKey: true, shiftKey: true }, "delete"],
+    ["indent", { key: "Tab" }, "indent"],
+    ["outdent", { key: "Tab", shiftKey: true }, "outdent"],
+    ["duplicate", { key: "D", altKey: true, shiftKey: true }, "duplicate"],
+    [
+      "move",
+      { key: "ArrowDown", ctrlKey: true, shiftKey: true },
+      "moveDown"
+    ]
+  ] as const)("owns an ineligible %s chord without computing eligibility", (
+    _label,
+    overrides,
+    action
+  ) => {
     expect(
       resolveOutlineKey(
         batchInput({
-          key: "ArrowUp",
-          ctrlKey: true,
-          shiftKey: true,
-          platform: "other",
-          selection: { anchorId: "c2", headId: "c3" }
+          ...overrides,
+          authoritativeWorkspace: undefined,
+          visibleNodeIds: ["c2"],
+          selection: { anchorId: "c2", headId: "not-visible" }
         })
       )
     ).toEqual({
-      type: "batchReorder",
-      nodeIds: ["c2", "c3"],
-      parentId: "root-a",
-      afterId: null,
-      beforeId: "c1"
+      type: "selectionAction",
+      action
     });
   });
 
-  it("routes Cmd+Shift+ArrowDown to an exact one-step batch reorder", () => {
+  it.each([
+    ["Ctrl+C", { key: "c", ctrlKey: true, platform: "other" as const }],
+    ["Ctrl+X", { key: "x", ctrlKey: true, platform: "other" as const }],
+    ["Cmd+C", { key: "c", metaKey: true, platform: "mac" as const }],
+    ["Cmd+X", { key: "x", metaKey: true, platform: "mac" as const }]
+  ] as const)("leaves selected %s to the native clipboard event", (
+    _label,
+    overrides
+  ) => {
     expect(
       resolveOutlineKey(
         batchInput({
-          key: "ArrowDown",
-          metaKey: true,
-          shiftKey: true,
-          platform: "mac",
-          selection: { anchorId: "c2", headId: "c3" }
-        })
-      )
-    ).toEqual({
-      type: "batchReorder",
-      nodeIds: ["c2", "c3"],
-      parentId: "root-a",
-      afterId: "c4"
-    });
-  });
-
-  it("keeps a reorder shortcut inside the selection branch at a boundary", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "ArrowDown",
-          ctrlKey: true,
-          shiftKey: true,
-          selection: { anchorId: "c3", headId: "c4" }
+          ...overrides,
+          selectionStart: 1,
+          selectionEnd: 1
         })
       )
     ).toBeNull();
   });
 
-  it("reorders across exactly one authoritative sibling omitted by the projection", () => {
-    const projected = normalizeWorkspace(
-      workspace([
-        node({ id: "a", sortKey: 1 }),
-        node({ id: "b", sortKey: 3 }),
-        node({ id: "c", sortKey: 4 })
-      ])
-    );
-    const authoritative = normalizeWorkspace(
-      workspace([
-        node({ id: "a", sortKey: 1 }),
-        node({ id: "hidden", sortKey: 2 }),
-        node({ id: "b", sortKey: 3 }),
-        node({ id: "c", sortKey: 4 })
-      ])
-    );
-
+  it("leaves copy and cut native regardless of textarea selection shape", () => {
     expect(
       resolveOutlineKey(
         batchInput({
-          key: "ArrowUp",
+          key: "c",
           ctrlKey: true,
-          shiftKey: true,
-          workspace: projected,
-          authoritativeWorkspace: authoritative,
-          visibleNodeIds: ["a", "b", "c"],
-          nodeId: "b",
-          selection: { anchorId: "b", headId: "c" }
+          selectionStart: 0,
+          selectionEnd: 2
         })
       )
-    ).toEqual({
-      type: "batchReorder",
-      nodeIds: ["b", "c"],
-      parentId: null,
-      afterId: "a"
-    });
-  });
-
-  it("forwards an omitted first authoritative sibling as beforeId", () => {
-    const projected = normalizeWorkspace(
-      workspace([
-        node({ id: "b", sortKey: 2 }),
-        node({ id: "c", sortKey: 3 })
-      ])
-    );
-    const authoritative = normalizeWorkspace(
-      workspace([
-        node({ id: "hidden", sortKey: 1 }),
-        node({ id: "b", sortKey: 2 }),
-        node({ id: "c", sortKey: 3 })
-      ])
-    );
-
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "ArrowUp",
-          ctrlKey: true,
-          shiftKey: true,
-          workspace: projected,
-          authoritativeWorkspace: authoritative,
-          visibleNodeIds: ["b", "c"],
-          nodeId: "b",
-          selection: { anchorId: "b", headId: "c" }
-        })
-      )
-    ).toEqual({
-      type: "batchReorder",
-      nodeIds: ["b", "c"],
-      parentId: null,
-      afterId: null,
-      beforeId: "hidden"
-    });
-  });
-
-  it.each([
-    {
-      label: "Ctrl+C",
-      key: "c",
-      type: "selectionCopy",
-      modifiers: { ctrlKey: true, platform: "other" as const }
-    },
-    {
-      label: "Cmd+C",
-      key: "c",
-      type: "selectionCopy",
-      modifiers: { metaKey: true, platform: "mac" as const }
-    },
-    {
-      label: "Ctrl+X",
-      key: "x",
-      type: "selectionCut",
-      modifiers: { ctrlKey: true, platform: "other" as const }
-    },
-    {
-      label: "Cmd+X",
-      key: "x",
-      type: "selectionCut",
-      modifiers: { metaKey: true, platform: "mac" as const }
-    }
-  ] as const)("routes selection $label when the native text selection is collapsed", ({
-    key,
-    type,
-    modifiers
-  }) => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key,
-          ...modifiers,
-          selectionStart: 1,
-          selectionEnd: 1
-        })
-      )
-    ).toEqual({ type, nodeIds: ["c2", "c3", "c4"] });
-  });
-
-  it.each(["c", "x"])(
-    "leaves Ctrl+%s native when the title has a non-collapsed text selection",
-    (key) => {
-      expect(
-        resolveOutlineKey(
-          batchInput({
-            key,
-            ctrlKey: true,
-            selectionStart: 0,
-            selectionEnd: 2
-          })
-        )
-      ).toBeNull();
-    }
-  );
-
-  it("allows Copy but rejects lossy Cut for a rich selected subtree", () => {
-    const rich = normalizeWorkspace(
-      workspace([
-        node({ id: "root-a", sortKey: 1 }),
-        node({ id: "c2", parentId: "root-a", sortKey: 2, note: "rich" }),
-        node({ id: "c3", parentId: "root-a", sortKey: 3 })
-      ])
-    );
-    const shared = {
-      workspace: rich,
-      visibleNodeIds: ["root-a", "c2", "c3"],
-      selection: { anchorId: "c2", headId: "c3" },
-      ctrlKey: true,
-      selectionStart: 0,
-      selectionEnd: 0
-    };
-
-    expect(resolveOutlineKey(batchInput({ ...shared, key: "c" }))).toEqual({
-      type: "selectionCopy",
-      nodeIds: ["c2", "c3"]
-    });
-    expect(resolveOutlineKey(batchInput({ ...shared, key: "x" }))).toBeNull();
-  });
-
-  it("rejects Cut when rich content exists only in an authoritative omitted descendant", () => {
-    const projected = normalizeWorkspace(workspace([node({ id: "selected" })]));
-    const authoritative = normalizeWorkspace(
-      workspace([
-        node({ id: "selected" }),
-        node({
-          id: "hidden-rich",
-          parentId: "selected",
-          note: "omitted supporting note"
-        })
-      ])
-    );
-
+    ).toBeNull();
     expect(
       resolveOutlineKey(
         batchInput({
           key: "x",
           ctrlKey: true,
-          selectionStart: 0,
-          selectionEnd: 0,
-          workspace: projected,
-          authoritativeWorkspace: authoritative,
-          visibleNodeIds: ["selected"],
-          nodeId: "selected",
-          selection: { anchorId: "selected", headId: "selected" }
-        })
-      )
-    ).toBeNull();
-  });
-
-  it("keeps projected completion available without authoritative structure", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Enter",
-          ctrlKey: true,
-          authoritativeWorkspace: undefined
-        })
-      )
-    ).toEqual({
-      type: "batchComplete",
-      nodeIds: ["c2", "c3", "c4"],
-      completed: true
-    });
-  });
-
-  it.each([
-    ["Delete", { key: "Backspace", ctrlKey: true, shiftKey: true }],
-    ["Indent", { key: "Tab" }],
-    ["Outdent", { key: "Tab", shiftKey: true }],
-    ["Duplicate", { key: "D", altKey: true, shiftKey: true }],
-    ["Reorder", { key: "ArrowUp", ctrlKey: true, shiftKey: true }],
-    ["Copy", { key: "c", ctrlKey: true }],
-    ["Cut", { key: "x", ctrlKey: true }]
-  ])("fails selection %s closed without authoritative structure", (_label, key) => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          ...key,
-          authoritativeWorkspace: undefined,
-          selectionStart: 0,
-          selectionEnd: 0
+          selectionStart: null,
+          selectionEnd: null
         })
       )
     ).toBeNull();
   });
 
   it.each([
-    ["duplicate repeat", { key: "D", altKey: true, shiftKey: true, repeat: true }],
-    [
-      "reorder repeat",
-      { key: "ArrowUp", ctrlKey: true, shiftKey: true, repeat: true }
-    ],
-    ["copy repeat", { key: "c", ctrlKey: true, repeat: true }],
-    ["cut IME", { key: "x", ctrlKey: true, isComposing: true }]
-  ])("suppresses selection $label", (_label, overrides) => {
-    expect(resolveOutlineKey(batchInput(overrides))).toBeNull();
+    ["complete", { key: "Enter", ctrlKey: true }],
+    ["delete", { key: "Backspace", ctrlKey: true, shiftKey: true }],
+    ["indent", { key: "Tab" }],
+    ["duplicate", { key: "D", altKey: true, shiftKey: true }],
+    ["move", { key: "ArrowUp", ctrlKey: true, shiftKey: true }]
+  ])("suppresses repeated selected %s commands", (_label, overrides) => {
+    expect(
+      resolveOutlineKey(batchInput({ ...overrides, repeat: true }))
+    ).toBeNull();
   });
 
-  it("routes selected descendants through their stable structural root", () => {
+  it("does not let a wrong-platform selected shortcut fall through", () => {
     expect(
       resolveOutlineKey(
-        input({
+        batchInput({ key: "Enter", metaKey: true, platform: "other" })
+      )
+    ).toBeNull();
+    expect(
+      resolveOutlineKey(
+        batchInput({
           key: "D",
-          altKey: true,
+          metaKey: true,
           shiftKey: true,
-          workspace: tree,
-          visibleNodeIds: [
-            "root-a",
-            "child-a",
-            "grandchild",
-            "child-b",
-            "root-b",
-            "root-c"
-          ],
-          nodeId: "root-a",
-          selection: { anchorId: "root-a", headId: "grandchild" }
-        })
-      )
-    ).toEqual({ type: "batchDuplicate", nodeIds: ["root-a"] });
-  });
-
-  it("resolves nothing to batch when the range endpoints are not both visible", () => {
-    expect(
-      resolveOutlineKey(
-        batchInput({
-          key: "Enter",
-          ctrlKey: true,
-          selection: { anchorId: "c2", headId: "not-visible" }
+          platform: "other"
         })
       )
     ).toBeNull();
@@ -1589,14 +1204,16 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
 
   it("keeps single-node behavior when there is no selection", () => {
     expect(
-      resolveOutlineKey(batchInput({ key: "Enter", ctrlKey: true, selection: null }))
+      resolveOutlineKey(
+        batchInput({ key: "Enter", ctrlKey: true, selection: null })
+      )
     ).toEqual({ type: "toggleComplete" });
-    expect(
-      resolveOutlineKey(batchInput({ key: "Tab", selection: null }))
-    ).toEqual({
-      type: "move",
-      input: { id: "c2", parentId: "c1", afterId: null },
-      focusNodeId: "c2"
-    });
+    expect(resolveOutlineKey(batchInput({ key: "Tab", selection: null }))).toEqual(
+      {
+        type: "move",
+        input: { id: "c2", parentId: "c1", afterId: null },
+        focusNodeId: "c2"
+      }
+    );
   });
 });
