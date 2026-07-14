@@ -224,7 +224,8 @@ export function NotesPageHeader({
       note: noteValue,
       nodeId,
       platform: detectOutlineShortcutPlatform(),
-      workspace: state
+      workspace: state,
+      visibleNodeIds: getVisibleNodeIds()
     });
     if (!resolution) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {

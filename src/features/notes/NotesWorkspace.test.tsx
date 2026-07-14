@@ -376,6 +376,15 @@ async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
   return waitFor(() => getTitleInput(value));
 }
 
+async function activatePageTitle(): Promise<HTMLTextAreaElement> {
+  fireEvent.pointerDown(
+    screen.getByRole("group", { name: "Edit page title" })
+  );
+  return screen.findByRole<HTMLTextAreaElement>("textbox", {
+    name: "Edit page title"
+  });
+}
+
 function textareasByName(name: string): HTMLTextAreaElement[] {
   return Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea"))
     .filter((textarea) => textarea.getAttribute("aria-label") === name);
@@ -2781,15 +2790,16 @@ describe("Notes workspace", () => {
     await user.click(
       screen.getByRole("button", { name: "Zoom into Project" })
     );
-    const pageTitlePresentation = screen.getByRole("group", {
-      name: "Edit page title"
-    });
-    fireEvent.pointerDown(pageTitlePresentation);
-    const pageTitle = await screen.findByRole<HTMLTextAreaElement>("textbox", {
-      name: "Edit page title"
-    });
+    const pageTitle = await activatePageTitle();
     fireEvent.focus(pageTitle);
     fireEvent.change(pageTitle, { target: { value: "Project edited" } });
+    const plan = queryTitleInput("Plan");
+    expect(plan).not.toBeNull();
+    if (plan === null) {
+      throw new Error("Expected Plan title input to be rendered");
+    }
+    const planFocus = vi.fn();
+    plan.addEventListener("focus", planFocus, { once: true });
 
     expect(fireEvent.keyDown(pageTitle, { key: "ArrowDown" })).toBe(false);
     await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
@@ -2800,6 +2810,73 @@ describe("Notes workspace", () => {
     });
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    expect(planFocus).toHaveBeenCalledOnce();
+    expect(
+      notesStoreMock.updateNode.mock.invocationCallOrder[0]
+    ).toBeLessThan(planFocus.mock.invocationCallOrder[0]);
+  });
+
+  it("skips hidden completed children from the zoomed page title", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "project", sortKey: 1, title: "Project" }),
+      node({
+        id: "completed",
+        parentId: "project",
+        sortKey: 1,
+        title: "Completed child",
+        completedAt: "2026-07-10T01:00:00Z"
+      }),
+      node({
+        id: "visible",
+        parentId: "project",
+        sortKey: 2,
+        title: "Visible child"
+      })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    await user.click(
+      screen.getByRole("button", { name: "Completed items" })
+    );
+    expect(queryTitleInput("Completed child")).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Project" })
+    );
+    expect(queryTitleInput("Completed child")).not.toBeInTheDocument();
+    const pageTitle = await activatePageTitle();
+
+    expect(fireEvent.keyDown(pageTitle, { key: "ArrowDown" })).toBe(false);
+    await waitFor(() =>
+      expect(queryTitleInput("Visible child")).toHaveFocus()
+    );
+  });
+
+  it("treats a stored-collapsed zoomed page title as effectively expanded", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "project",
+        sortKey: 1,
+        title: "Project",
+        isCollapsed: true
+      }),
+      node({ id: "plan", parentId: "project", sortKey: 1, title: "Plan" })
+    ]);
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    await user.click(
+      screen.getByRole("button", { name: "Zoom into Project" })
+    );
+    await waitFor(() =>
+      expect(queryTitleInput("Plan")).toBeInTheDocument()
+    );
+    const pageTitle = await activatePageTitle();
+    pageTitle.setSelectionRange(pageTitle.value.length, pageTitle.value.length);
+
+    expect(fireEvent.keyDown(pageTitle, { key: "ArrowRight" })).toBe(false);
+    await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
+    expect(notesStoreMock.toggleCollapsed).not.toHaveBeenCalled();
   });
 
   it("keeps horizontal caret movement native except at collapse boundaries", async () => {

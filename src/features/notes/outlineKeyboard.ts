@@ -505,7 +505,11 @@ export function resolveOutlineKey(
       return null;
     }
     const childIds = input.workspace.childIdsByParent[input.nodeId] ?? [];
-    if (node.isCollapsed && childIds.length > 0) {
+    if (
+      node.isCollapsed &&
+      input.nodeId !== input.workspace.zoomRootId &&
+      childIds.length > 0
+    ) {
       return { type: "toggleCollapsed" };
     }
     const firstVisibleChild = childIds.find((childId) =>
