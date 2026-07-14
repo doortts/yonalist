@@ -38,6 +38,7 @@ import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
 import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
 import { NotesPageHeader } from "./NotesPageHeader";
+import { NotesQuickJump } from "./NotesQuickJump";
 import {
   useNotesActions,
   useNotesDrafts,
@@ -214,6 +215,7 @@ export function NotesOutlinePane() {
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
+  const [quickJumpOpen, setQuickJumpOpen] = useState(false);
   const [showCompleted, setShowCompleted] = useState(true);
   const [imageDropTargetId, setImageDropTargetId] =
     useState<NoteId | null>(null);
@@ -332,6 +334,33 @@ export function NotesOutlinePane() {
     imageDropPathsRef.current = [];
     setImageDropTargetId(null);
   }, [imageDropAvailable]);
+
+  // Cmd/Ctrl+K opens the quick-jump palette while Notes is the active
+  // feature. Notes' panes stay mounted (hidden) while another feature is
+  // active (see App.tsx's `feature-pane-slot` wrapper), so a plain global
+  // listener would fire from the background; guarding on whether this pane's
+  // own DOM sits under a `[hidden]` ancestor scopes the shortcut to Notes
+  // without needing a dedicated "active feature" context.
+  useEffect(() => {
+    const handleWindowKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.key === "Process") {
+        return;
+      }
+      if (event.key.toLowerCase() !== "k") {
+        return;
+      }
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey) {
+        return;
+      }
+      if (contentRef.current?.closest("[hidden]")) {
+        return;
+      }
+      event.preventDefault();
+      setQuickJumpOpen(true);
+    };
+    window.addEventListener("keydown", handleWindowKeyDown);
+    return () => window.removeEventListener("keydown", handleWindowKeyDown);
+  }, []);
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -801,6 +830,12 @@ export function NotesOutlinePane() {
           cancelLabel="Cancel"
           danger
           onConfirm={() => void actions.emptyTrash()}
+        />
+        <NotesQuickJump
+          open={quickJumpOpen}
+          onOpenChange={setQuickJumpOpen}
+          onSearch={actions.searchNotes}
+          onJump={actions.zoomTo}
         />
         </TooltipProvider>
       </section>

@@ -1750,3 +1750,102 @@ button.notes-date-token:hover {
     transition: none;
   }
 }
+
+/*
+ * Quick-jump palette (Cmd/Ctrl+K). Reuses the shared `.modal`/`.modal-backdrop`
+ * look from dialog.css/styles.css, but sits higher up the viewport like a
+ * traditional command palette rather than dead-center like the confirm and
+ * settings dialogs.
+ */
+.notes-quick-jump.modal.modal {
+  top: 18%;
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.notes-quick-jump-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.notes-quick-jump-field {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-3);
+}
+
+.notes-quick-jump-field input {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: 14px;
+}
+
+.notes-quick-jump-results {
+  max-height: min(360px, calc(100vh - 160px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+}
+
+.notes-quick-jump-result {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 6px 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+}
+
+.notes-quick-jump-result:hover,
+.notes-quick-jump-result[aria-selected="true"] {
+  background: var(--bg-hover);
+}
+
+.notes-quick-jump-result:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.notes-quick-jump-result-title {
+  overflow: hidden;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-quick-jump-result-trail {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-quick-jump-empty {
+  margin: 0;
+  padding: 16px 10px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  text-align: center;
+}
