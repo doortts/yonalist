@@ -2,8 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { NoteId, NoteNode, NotesWorkspace } from "../../domain/notes";
 import {
   deriveOutlineDropPreview,
+  deriveOutlineSelectionDropPreview,
+  derivePreparedOutlineSelectionDropPreview,
   OUTLINE_INDENT_PX,
+  prepareOutlineSelectionDrag,
   projectOutlineDrop,
+  projectPreparedOutlineSelectionDrop,
+  projectOutlineSelectionDrop,
   type OutlineDropPreview,
   type OutlineSiblingOrder
 } from "./outlineDrag";
@@ -537,5 +542,317 @@ describe("projectOutlineDrop", () => {
       const anchor = current.nodes.find((item) => item.id === anchors[0]);
       expect(anchor?.parentId).toBe(result?.parentId);
     }
+  });
+});
+
+describe("projectOutlineSelectionDrop", () => {
+  it("returns one stable source-ordered batch target and preview", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1 }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "target", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+
+    const result = projectOutlineSelectionDrop(
+      "second",
+      "target",
+      ["second", "first"],
+      0,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(result).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: { parentId: null, afterId: "target" }
+    });
+    expect(deriveOutlineSelectionDropPreview(rows, result)).toEqual({
+      beforeId: null,
+      parentId: null,
+      depth: 0
+    } satisfies OutlineDropPreview);
+  });
+
+  it("uses the containing selected root when a reverse-selected child is active", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1 }),
+        node({ id: "active-child", parentId: "first" }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "second-child", parentId: "second" }),
+        node({ id: "target", sortKey: 3 }),
+        node({ id: "tail", sortKey: 4 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+
+    const result = projectOutlineSelectionDrop(
+      "active-child",
+      "target",
+      ["second", "first"],
+      0,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(result).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: { parentId: null, afterId: "target" }
+    });
+    expect(deriveOutlineSelectionDropPreview(rows, result)).toEqual({
+      beforeId: "tail",
+      parentId: null,
+      depth: 0
+    } satisfies OutlineDropPreview);
+  });
+
+  it("normalizes selected ancestors and descendants to one forest root", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "parent", sortKey: 1 }),
+        node({ id: "active-child", parentId: "parent" }),
+        node({ id: "target", sortKey: 2 }),
+        node({ id: "tail", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+
+    const result = projectOutlineSelectionDrop(
+      "active-child",
+      "target",
+      ["active-child", "parent"],
+      0,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(result).toEqual({
+      kind: "valid",
+      nodeIds: ["parent"],
+      projection: { parentId: null, afterId: "target" }
+    });
+  });
+
+  it("projects the whole forest into expanded and collapsed nested destinations", () => {
+    const expanded = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1 }),
+        node({ id: "active-child", parentId: "first" }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "parent", sortKey: 3 }),
+        node({ id: "existing", parentId: "parent" }),
+        node({ id: "tail", sortKey: 4 })
+      ]
+    } satisfies NotesWorkspace);
+    const expandedRows = flattenVisibleOutlineRows(expanded, null);
+    const expandedResult = projectOutlineSelectionDrop(
+      "active-child",
+      "parent",
+      ["second", "first"],
+      OUTLINE_INDENT_PX,
+      expandedRows,
+      {
+        rootIds: expanded.rootIds,
+        childIdsByParent: expanded.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(expandedResult).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: { parentId: "parent", afterId: "existing" }
+    });
+    expect(
+      deriveOutlineSelectionDropPreview(expandedRows, expandedResult)
+    ).toEqual({ beforeId: "tail", parentId: "parent", depth: 1 });
+
+    const collapsed = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1 }),
+        node({ id: "active-child", parentId: "first" }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "parent", sortKey: 3, isCollapsed: true }),
+        node({ id: "hidden", parentId: "parent" }),
+        node({ id: "tail", sortKey: 4 })
+      ]
+    } satisfies NotesWorkspace);
+    const collapsedRows = flattenVisibleOutlineRows(collapsed, null);
+    const collapsedResult = projectOutlineSelectionDrop(
+      "active-child",
+      "parent",
+      ["first", "second"],
+      OUTLINE_INDENT_PX,
+      collapsedRows,
+      {
+        rootIds: collapsed.rootIds,
+        childIdsByParent: collapsed.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(collapsedResult).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: {
+        parentId: "parent",
+        afterId: "hidden",
+        expandNodeId: "parent"
+      }
+    });
+    expect(
+      deriveOutlineSelectionDropPreview(collapsedRows, collapsedResult)
+    ).toEqual({ beforeId: "tail", parentId: "parent", depth: 1 });
+  });
+
+  it.each([
+    { name: "selected root", overId: "selected" },
+    { name: "visible selected descendant", overId: "visible-child" },
+    { name: "collapsed selected descendant", overId: "hidden-child" }
+  ])("returns a typed invalid result over a $name", ({ overId }) => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "active", sortKey: 1 }),
+        node({ id: "selected", sortKey: 2, isCollapsed: overId === "hidden-child" }),
+        node({ id: "visible-child", parentId: "selected", sortKey: 1 }),
+        node({ id: "hidden-child", parentId: "selected", sortKey: 2 }),
+        node({ id: "tail", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+
+    const result = projectOutlineSelectionDrop(
+      "active",
+      overId,
+      ["selected", "active"],
+      0,
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+
+    expect(result).toEqual({
+      kind: "invalid",
+      reason: "selected-forest-target"
+    });
+    expect(deriveOutlineSelectionDropPreview(rows, result)).toBeNull();
+  });
+
+  it("returns typed invalid results for empty and all-selected candidates", () => {
+    const state = normalizeWorkspace({
+      nodes: [node({ id: "first", sortKey: 1 }), node({ id: "second", sortKey: 2 })]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const order = {
+      rootIds: state.rootIds,
+      childIdsByParent: state.childIdsByParent,
+      zoomRootId: null
+    } satisfies OutlineSiblingOrder;
+
+    expect(
+      projectOutlineSelectionDrop("first", "second", [], 0, rows, order)
+    ).toEqual({ kind: "invalid", reason: "empty-selection" });
+    expect(
+      projectOutlineSelectionDrop(
+        "first",
+        "second",
+        ["first", "second"],
+        0,
+        rows,
+        order
+      )
+    ).toEqual({ kind: "invalid", reason: "selected-forest-target" });
+  });
+
+  it("reuses one prepared forest without traversing the source child map again", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "first", sortKey: 1 }),
+        node({ id: "first-child", parentId: "first" }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "target", sortKey: 3 }),
+        node({ id: "target-child", parentId: "target" }),
+        node({ id: "tail", sortKey: 4 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    let sourceChildMapReads = 0;
+    const trackedChildIds = new Proxy(state.childIdsByParent, {
+      get(target, property, receiver) {
+        sourceChildMapReads += 1;
+        return Reflect.get(target, property, receiver);
+      },
+      ownKeys(target) {
+        sourceChildMapReads += 1;
+        return Reflect.ownKeys(target);
+      }
+    });
+
+    const prepared = prepareOutlineSelectionDrag(
+      "first-child",
+      ["second", "first"],
+      rows,
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: trackedChildIds,
+        zoomRootId: null
+      }
+    );
+    expect(prepared.kind).toBe("ready");
+    const readsAfterPreparation = sourceChildMapReads;
+    expect(readsAfterPreparation).toBeGreaterThan(0);
+    if (prepared.kind !== "ready") {
+      throw new Error("Expected drag preparation to succeed.");
+    }
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared.nodeIds)).toBe(true);
+
+    const rootResult = projectPreparedOutlineSelectionDrop(
+      prepared,
+      "target",
+      0
+    );
+    expect(rootResult).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: { parentId: null, afterId: "target" }
+    });
+    expect(
+      derivePreparedOutlineSelectionDropPreview(prepared, rootResult)
+    ).toEqual({ beforeId: "tail", parentId: null, depth: 0 });
+    const nestedResult = projectPreparedOutlineSelectionDrop(
+      prepared,
+      "target",
+      OUTLINE_INDENT_PX
+    );
+    expect(nestedResult).toEqual({
+      kind: "valid",
+      nodeIds: ["first", "second"],
+      projection: { parentId: "target", afterId: "target-child" }
+    });
+    expect(
+      derivePreparedOutlineSelectionDropPreview(prepared, nestedResult)
+    ).toEqual({ beforeId: "tail", parentId: "target", depth: 1 });
+    expect(sourceChildMapReads).toBe(readsAfterPreparation);
   });
 });
