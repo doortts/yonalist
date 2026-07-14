@@ -8,16 +8,19 @@ import {
 } from "./outlineDrag";
 import type { NotesSelectionMoveTarget } from "./notesSelectionActions";
 import type { FlattenedOutlineRow } from "./outlineTree";
+import type { NotesFrozenSelectionCommandContext } from "./useNotesSelectionCommandRouter";
+import type { NotesPreparedSelectionAuthority } from "./useNotesWorkspace";
 
-export interface StartOutlineSelectionDragSessionInput<
-  FrozenContext extends object
-> {
+export type OutlineSelectionDragFrozenContext =
+  NotesFrozenSelectionCommandContext<NotesPreparedSelectionAuthority>;
+
+export interface StartOutlineSelectionDragSessionInput {
   readonly activeId: NoteId;
   readonly selectedNodeIds: readonly NoteId[];
   readonly rows: readonly FlattenedOutlineRow[];
   readonly order: OutlineSiblingOrder;
-  /** Opaque router ownership captured for the lifetime of this drag. */
-  readonly frozenContext: FrozenContext;
+  /** Router ownership for the exact structural roots being dragged. */
+  readonly frozenContext: OutlineSelectionDragFrozenContext;
 }
 
 export interface OrdinaryOutlineDragSession {
@@ -25,42 +28,69 @@ export interface OrdinaryOutlineDragSession {
   readonly activeId: NoteId;
 }
 
-export interface ReadyOutlineSelectionDragSession<
-  FrozenContext extends object
-> {
+export interface ReadyOutlineSelectionDragSession {
   readonly kind: "selected-ready";
   readonly prepared: PreparedOutlineSelectionDrag;
-  readonly frozenContext: Readonly<FrozenContext>;
+  readonly frozenContext: OutlineSelectionDragFrozenContext;
 }
+
+export type OutlineSelectionDragInvalidReason =
+  | OutlineSelectionDropInvalidReason
+  | "selection-authority-mismatch";
 
 export interface InvalidOutlineSelectionDragSession {
   readonly kind: "selected-invalid";
-  readonly reason: OutlineSelectionDropInvalidReason;
+  readonly reason: OutlineSelectionDragInvalidReason;
 }
 
-export type SelectedOutlineDragSession<FrozenContext extends object> =
-  | ReadyOutlineSelectionDragSession<FrozenContext>
+export type SelectedOutlineDragSession =
+  | ReadyOutlineSelectionDragSession
   | InvalidOutlineSelectionDragSession;
 
-export type OutlineSelectionDragSession<FrozenContext extends object> =
+export type OutlineSelectionDragSession =
   | OrdinaryOutlineDragSession
-  | SelectedOutlineDragSession<FrozenContext>;
+  | SelectedOutlineDragSession;
 
-export interface OutlineSelectionDragMove<FrozenContext extends object> {
+export interface OutlineSelectionDragMove {
   readonly kind: "selected-move";
   readonly target: Readonly<NotesSelectionMoveTarget>;
   readonly expandNodeId?: NoteId;
-  readonly frozenContext: Readonly<FrozenContext>;
+  readonly frozenContext: OutlineSelectionDragFrozenContext;
 }
 
-export type OutlineSelectionDragProjection<FrozenContext extends object> =
-  | OutlineSelectionDragMove<FrozenContext>
+export type OutlineSelectionDragProjection =
+  | OutlineSelectionDragMove
   | InvalidOutlineSelectionDragSession;
 
 function invalidSelectionDrag(
-  reason: OutlineSelectionDropInvalidReason
+  reason: OutlineSelectionDragInvalidReason
 ): InvalidOutlineSelectionDragSession {
   return Object.freeze({ kind: "selected-invalid", reason });
+}
+
+function exactNodeIds(
+  left: readonly NoteId[],
+  right: readonly NoteId[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((nodeId, index) => nodeId === right[index])
+  );
+}
+
+function captureFrozenContext(
+  context: OutlineSelectionDragFrozenContext
+): OutlineSelectionDragFrozenContext {
+  return Object.freeze({
+    nodeIds: Object.freeze([...context.nodeIds]),
+    ownership: Object.freeze({
+      // `deriveNotesSelectionActionSnapshot` freezes the snapshot graph used by
+      // commands, and `prepareSelectionAuthority` deeply freezes its authority
+      // workspace. This session owns only the shell and the node-id copy.
+      actionSnapshot: context.ownership.actionSnapshot,
+      authority: context.ownership.authority
+    })
+  });
 }
 
 /**
@@ -68,11 +98,9 @@ function invalidSelectionDrag(
  * active row is selected, every preparation failure remains a selected no-op;
  * callers cannot reinterpret it as an ordinary single-row drag.
  */
-export function startOutlineSelectionDragSession<
-  FrozenContext extends object
->(
-  input: StartOutlineSelectionDragSessionInput<FrozenContext>
-): OutlineSelectionDragSession<FrozenContext> {
+export function startOutlineSelectionDragSession(
+  input: StartOutlineSelectionDragSessionInput
+): OutlineSelectionDragSession {
   if (!input.selectedNodeIds.includes(input.activeId)) {
     return Object.freeze({ kind: "ordinary", activeId: input.activeId });
   }
@@ -87,13 +115,25 @@ export function startOutlineSelectionDragSession<
     return invalidSelectionDrag(prepared.reason);
   }
 
+  const context = input.frozenContext;
+  if (
+    !exactNodeIds(prepared.nodeIds, context.nodeIds) ||
+    !exactNodeIds(
+      prepared.nodeIds,
+      context.ownership.authority.selectedNodeIds
+    ) ||
+    !exactNodeIds(
+      prepared.nodeIds,
+      context.ownership.actionSnapshot.structuralRootIds
+    )
+  ) {
+    return invalidSelectionDrag("selection-authority-mismatch");
+  }
+
   return Object.freeze({
     kind: "selected-ready",
     prepared,
-    // Router ownership is already an immutable authority snapshot. Freezing
-    // its outer identity prevents a caller from retargeting this drag later
-    // without traversing or copying the potentially large workspace payload.
-    frozenContext: Object.freeze(input.frozenContext)
+    frozenContext: captureFrozenContext(context)
   });
 }
 
@@ -102,14 +142,12 @@ export function startOutlineSelectionDragSession<
  * valid input, so integration code must branch before considering a single-row
  * move. Invalid selected sessions remain explicit no-ops.
  */
-export function projectOutlineSelectionDragSession<
-  FrozenContext extends object
->(
-  session: SelectedOutlineDragSession<FrozenContext>,
+export function projectOutlineSelectionDragSession(
+  session: SelectedOutlineDragSession,
   overId: NoteId,
   horizontalOffset: number,
   indentPx?: number
-): OutlineSelectionDragProjection<FrozenContext> {
+): OutlineSelectionDragProjection {
   if (session.kind === "selected-invalid") {
     return invalidSelectionDrag(session.reason);
   }
