@@ -68,6 +68,7 @@ function installLocalStorageMock() {
 
 function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
+    nodeKind: "text",
     parentId: null,
     sortKey: 1024,
     title: "",

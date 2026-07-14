@@ -11,6 +11,7 @@ import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
 function deletedRoot(): NoteNode {
   return {
     id: "deleted",
+    nodeKind: "text",
     parentId: null,
     sortKey: 1,
     title: "Deleted project",

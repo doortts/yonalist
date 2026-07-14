@@ -22,6 +22,7 @@ import type { NotesSelectionActionSnapshot } from "./notesSelectionActions";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
+    nodeKind: "text",
     parentId: null,
     sortKey: 1024,
     title: overrides.id,

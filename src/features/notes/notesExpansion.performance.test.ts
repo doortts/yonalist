@@ -165,6 +165,7 @@ function noteNode(
 ): NoteNode {
   return {
     id: `node-${index}`,
+    nodeKind: "text",
     parentId,
     sortKey: index,
     title: `Node ${index}`,

@@ -112,6 +112,7 @@ function findTitleTextarea(value: string) {
 function note(id: NoteId, title: string, parentId: NoteId | null): NoteNode {
   return {
     id,
+    nodeKind: "text",
     parentId,
     sortKey: 1,
     title,

@@ -14,6 +14,7 @@ import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 function node(overrides: Partial<NoteNode> = {}): NoteNode {
   return {
     id: "page",
+    nodeKind: "text",
     parentId: null,
     sortKey: 1,
     title: "Project plan",
