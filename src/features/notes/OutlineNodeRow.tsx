@@ -997,8 +997,14 @@ function OutlineNodeRowComponent({
         uploadRetryAttemptId={attachmentUploadRetryAttemptId}
         className="notes-node-attachments"
         readOnly={disabled}
-        showDropPlaceholder={imageDropEnabled && showDropPlaceholder}
       />
+      {imageDropEnabled && showDropPlaceholder && (
+        <span
+          className="notes-image-drop-position"
+          data-testid="notes-image-drop-position"
+          aria-hidden="true"
+        />
+      )}
       {datePicker.picker}
     </div>
   );

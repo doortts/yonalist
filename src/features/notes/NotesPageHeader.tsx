@@ -530,8 +530,14 @@ export function NotesPageHeader({
           }
           className="notes-page-attachments"
           readOnly={readOnly || disabled}
-          showDropPlaceholder={imageDropEnabled && showDropPlaceholder}
         />
+        {imageDropEnabled && showDropPlaceholder && (
+          <span
+            className="notes-image-drop-position"
+            data-testid="notes-image-drop-position"
+            aria-hidden="true"
+          />
+        )}
       </header>
       {datePicker.picker}
       <ConfirmDialog

@@ -35,6 +35,7 @@ import {
 import type { NoteId } from "../../domain/notes";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
+import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
@@ -76,6 +77,14 @@ const outlineScreenReaderInstructions = {
 interface ImageIngestError {
   readonly label: "Image drop failed" | "Image paste failed";
   readonly message: string;
+}
+
+interface ImageDropPreview {
+  readonly paths: readonly string[];
+  readonly position: Extract<
+    NotesNativeImageDropEvent,
+    { position: unknown }
+  >["position"];
 }
 
 interface ImagePasteExecutionScope {
@@ -240,6 +249,8 @@ export function NotesOutlinePane() {
   const [showCompleted, setShowCompleted] = useState(true);
   const [imageDropTargetId, setImageDropTargetId] =
     useState<NoteId | null>(null);
+  const [imageDropPreview, setImageDropPreview] =
+    useState<ImageDropPreview | null>(null);
   const [imageIngestError, setImageIngestError] =
     useState<ImageIngestError | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -414,6 +425,7 @@ export function NotesOutlinePane() {
     const clearPreview = () => {
       imageDropPathsRef.current = [];
       setImageDropTargetId(null);
+      setImageDropPreview(null);
     };
     const targetFromEvent = (
       event: Extract<NotesNativeImageDropEvent, { position: unknown }>
@@ -439,15 +451,33 @@ export function NotesOutlinePane() {
         clearPreview();
         return;
       }
+      const root = contentRef.current;
+      if (!root || root.closest("[hidden]")) {
+        clearPreview();
+        return;
+      }
       if (event.type === "enter") {
         imageDropPathsRef.current = event.paths;
         setImageIngestError(null);
+        setImageDropPreview(
+          event.paths.length > 0
+            ? { paths: event.paths, position: event.position }
+            : null
+        );
         setImageDropTargetId(
           event.paths.length > 0 ? targetFromEvent(event) : null
         );
         return;
       }
       if (event.type === "over") {
+        setImageDropPreview(
+          imageDropPathsRef.current.length > 0
+            ? {
+                paths: imageDropPathsRef.current,
+                position: event.position
+              }
+            : null
+        );
         setImageDropTargetId(
           imageDropPathsRef.current.length > 0 ? targetFromEvent(event) : null
         );
@@ -490,9 +520,31 @@ export function NotesOutlinePane() {
   }, [attachmentUi]);
 
   useEffect(() => {
+    const featureSlot = contentRef.current?.closest<HTMLElement>(
+      ".feature-pane-slot"
+    );
+    if (!featureSlot || typeof MutationObserver === "undefined") return;
+
+    const clearWhenHidden = () => {
+      if (!featureSlot.hidden) return;
+      imageDropPathsRef.current = [];
+      setImageDropTargetId(null);
+      setImageDropPreview(null);
+    };
+    clearWhenHidden();
+    const observer = new MutationObserver(clearWhenHidden);
+    observer.observe(featureSlot, {
+      attributes: true,
+      attributeFilter: ["hidden"]
+    });
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
     if (imageDropAvailable) return;
     imageDropPathsRef.current = [];
     setImageDropTargetId(null);
+    setImageDropPreview(null);
   }, [imageDropAvailable]);
 
   // Cmd/Ctrl+K opens the quick-jump palette while Notes is the active
@@ -985,6 +1037,15 @@ export function NotesOutlinePane() {
           )}
           </div>
         </div>
+        {imageDropPreview && (
+          <NotesAttachmentDragPreview
+            paths={imageDropPreview.paths}
+            position={imageDropPreview.position}
+            portalContainer={
+              contentRef.current?.closest(".feature-pane-slot") ?? undefined
+            }
+          />
+        )}
         <ConfirmDialog
           open={emptyTrashConfirmOpen}
           onOpenChange={setEmptyTrashConfirmOpen}

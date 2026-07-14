@@ -72,6 +72,11 @@ function hasSupportedImageExtension(path: string): boolean {
   return extension.length > 0 && supportedExtensions.has(extension);
 }
 
+function nativeDragPositionUsesCssCoordinates(): boolean {
+  const { platform, userAgent } = window.navigator;
+  return platform.startsWith("Mac") || userAgent.includes("Macintosh");
+}
+
 export function isSupportedImagePath(path: string): boolean {
   const absoluteLocalPath =
     path.startsWith("/") ||
@@ -145,6 +150,12 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
       }
 
       const toLogicalPoint = (position: NotesNativeDragPosition) => {
+        // Wry's macOS backend reports NSPoint coordinates, which already match
+        // the webview's CSS coordinate space even though Tauri types them as
+        // PhysicalPosition. Dividing them again misses the hovered note on Retina.
+        if (nativeDragPositionUsesCssCoordinates()) {
+          return { x: position.x, y: position.y };
+        }
         const { x, y } = new PhysicalPosition(position).toLogical(
           currentScaleFactor!
         );

@@ -75,6 +75,8 @@ afterEach(() => {
   listen.mockReset();
   useNotesWorkspace.mockReset();
   Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  Reflect.deleteProperty(window.navigator, "platform");
+  Reflect.deleteProperty(window.navigator, "userAgent");
 });
 
 describe("notes attachment UI boundary", () => {
@@ -145,6 +147,80 @@ describe("notes attachment UI boundary", () => {
       type: "enter",
       paths: ["/incoming/one.png"],
       position: { x: 100, y: 60 }
+    });
+  });
+
+  it("keeps macOS native drag coordinates in CSS point space on Retina displays", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "MacIntel"
+    });
+    enableTauri();
+    const handlers = captureDragHandlers();
+    const listener = vi.fn();
+    scaleFactor.mockResolvedValue(2);
+
+    await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    handlers.get(TauriEvent.DRAG_DROP)?.({
+      payload: {
+        paths: ["/incoming/retina.png"],
+        position: { x: 690, y: 111 }
+      }
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "drop",
+      paths: ["/incoming/retina.png"],
+      position: { x: 690, y: 111 }
+    });
+  });
+
+  it("recognizes macOS drag coordinates from the WKWebView user agent fallback", async () => {
+    Object.defineProperties(window.navigator, {
+      platform: { configurable: true, value: "" },
+      userAgent: {
+        configurable: true,
+        value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+      }
+    });
+    enableTauri();
+    const handlers = captureDragHandlers();
+    const listener = vi.fn();
+    scaleFactor.mockResolvedValue(2);
+
+    await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    handlers.get(TauriEvent.DRAG_OVER)?.({
+      payload: { position: { x: 640, y: 360 } }
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "over",
+      position: { x: 640, y: 360 }
+    });
+  });
+
+  it("converts Windows native physical drag coordinates to CSS pixels", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "Win32"
+    });
+    enableTauri();
+    const handlers = captureDragHandlers();
+    const listener = vi.fn();
+    scaleFactor.mockResolvedValue(2);
+
+    await nativeNotesAttachmentUi.subscribeToImageDrop(listener);
+    handlers.get(TauriEvent.DRAG_DROP)?.({
+      payload: {
+        paths: ["C:\\incoming\\retina.png"],
+        position: { x: 690, y: 110 }
+      }
+    });
+
+    expect(listener).toHaveBeenCalledWith({
+      type: "drop",
+      paths: ["C:\\incoming\\retina.png"],
+      position: { x: 345, y: 55 }
     });
   });
 

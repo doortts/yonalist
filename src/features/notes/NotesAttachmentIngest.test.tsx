@@ -262,7 +262,9 @@ function renderPane(
       <VaultRootContext.Provider value={currentVaultRoot}>
         <NotesAttachmentUiContext.Provider value={attachmentUi}>
           <NotesWorkspaceContext.Provider value={value}>
-            <NotesOutlinePane />
+            <div className="feature-pane-slot">
+              <NotesOutlinePane />
+            </div>
           </NotesWorkspaceContext.Provider>
         </NotesAttachmentUiContext.Provider>
       </VaultRootContext.Provider>
@@ -381,7 +383,7 @@ describe("Notes image ingest", () => {
     }
   });
 
-  it("moves one preview across writable rows and imports authoritative drop paths", async () => {
+  it("moves one insertion line across writable rows while a filename badge follows the pointer", async () => {
     let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
     const importDroppedImagePaths = vi.fn().mockResolvedValue(undefined);
     const workspace = workspaceValue({ importDroppedImagePaths });
@@ -410,14 +412,18 @@ describe("Notes image ingest", () => {
     act(() =>
       nativeDrop?.({
         type: "enter",
-        paths: ["/incoming/from-enter.png"],
+        paths: ["/incoming/from-enter.png", "/incoming/second.webp"],
         position: { x: 110, y: 80 }
       })
     );
     expect(firstRow).toHaveAttribute("data-image-drop-active", "true");
     expect(
-      within(firstRow).getByTestId("notes-image-drop-placeholder")
+      within(firstRow).getByTestId("notes-image-drop-position")
     ).toBeVisible();
+    const dragPreview = screen.getByTestId("notes-attachment-drag-preview");
+    expect(dragPreview).toHaveTextContent("from-enter.png");
+    expect(dragPreview).toHaveTextContent("+1");
+    expect(dragPreview).toHaveStyle({ left: "124px", top: "94px" });
 
     elementFromPoint.mockReturnValue(secondTitle);
     act(() =>
@@ -425,9 +431,13 @@ describe("Notes image ingest", () => {
     );
     expect(firstRow).not.toHaveAttribute("data-image-drop-active");
     expect(
-      within(firstRow).queryByTestId("notes-image-drop-placeholder")
+      within(firstRow).queryByTestId("notes-image-drop-position")
     ).toBeNull();
     expect(secondRow).toHaveAttribute("data-image-drop-active", "true");
+    expect(
+      within(secondRow).getByTestId("notes-image-drop-position")
+    ).toBeVisible();
+    expect(dragPreview).toHaveStyle({ left: "234px", top: "194px" });
 
     act(() =>
       nativeDrop?.({
@@ -443,8 +453,9 @@ describe("Notes image ingest", () => {
     ]);
     expect(secondRow).not.toHaveAttribute("data-image-drop-active");
     expect(
-      screen.queryByTestId("notes-image-drop-placeholder")
+      screen.queryByTestId("notes-image-drop-position")
     ).toBeNull();
+    expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
     expect(document.activeElement).toBe(secondTitle);
     expect(secondTitle.selectionStart).toBe(1);
     expect(secondTitle.selectionEnd).toBe(4);
@@ -486,13 +497,15 @@ describe("Notes image ingest", () => {
       nativeDrop?.({ type: "over", position: { x: 4, y: 6 } })
     );
     expect(row).not.toHaveAttribute("data-image-drop-active");
+    expect(screen.getByTestId("notes-attachment-drag-preview")).toBeVisible();
 
     elementFromPoint.mockReturnValue(title);
     act(() =>
       nativeDrop?.({ type: "over", position: { x: 40, y: 60 } })
     );
     act(() => nativeDrop?.({ type: "leave" }));
-    expect(screen.queryByTestId("notes-image-drop-placeholder")).toBeNull();
+    expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
+    expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
 
     elementFromPoint.mockReturnValue(title);
     act(() =>
@@ -502,11 +515,56 @@ describe("Notes image ingest", () => {
         position: { x: 40, y: 60 }
       })
     );
-    expect(screen.queryByTestId("notes-image-drop-placeholder")).toBeNull();
+    expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
+    expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
     expect(importDroppedImagePaths).toHaveBeenCalledOnce();
     expect(
       await screen.findByRole("alert", { name: "Image drop failed" })
     ).toHaveTextContent("unsupported image batch");
+  });
+
+  it("clears native drag UI when the Notes feature slot becomes hidden", async () => {
+    let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
+    const subscribe = vi.fn().mockImplementation(async (listener) => {
+      nativeDrop = listener;
+      return vi.fn();
+    });
+    renderPane(workspaceValue(), subscribe);
+    await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+
+    const row = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    const slot = row.closest<HTMLElement>(".feature-pane-slot")!;
+    elementFromPoint.mockReturnValue(row);
+    act(() =>
+      nativeDrop?.({
+        type: "enter",
+        paths: ["/incoming/hidden-pane.png"],
+        position: { x: 60, y: 80 }
+      })
+    );
+    expect(screen.getByTestId("notes-attachment-drag-preview")).toBeVisible();
+    expect(within(row).getByTestId("notes-image-drop-position")).toBeVisible();
+
+    act(() => {
+      slot.hidden = true;
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
+      expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
+    });
+
+    act(() =>
+      nativeDrop?.({
+        type: "enter",
+        paths: ["/incoming/still-hidden.png"],
+        position: { x: 60, y: 80 }
+      })
+    );
+    expect(screen.queryByTestId("notes-attachment-drag-preview")).toBeNull();
+    expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
   });
 
   it("reports subscription failure without disabling the image picker", async () => {
@@ -1243,7 +1301,7 @@ describe("Notes image ingest", () => {
     );
     expect(firstRow).not.toHaveAttribute("data-image-drop-active");
     expect(
-      screen.queryByTestId("notes-image-drop-placeholder")
+      screen.queryByTestId("notes-image-drop-position")
     ).toBeNull();
     rowView.unmount();
 
@@ -1273,7 +1331,7 @@ describe("Notes image ingest", () => {
     ]);
     expect(header).not.toHaveAttribute("data-image-drop-active");
     expect(
-      screen.queryByTestId("notes-image-drop-placeholder")
+      screen.queryByTestId("notes-image-drop-position")
     ).toBeNull();
     pageView.unmount();
   });
@@ -1314,7 +1372,7 @@ describe("Notes image ingest", () => {
         "true"
       );
       expect(
-        screen.getByTestId("notes-image-drop-placeholder"),
+        screen.getByTestId("notes-image-drop-position"),
         label
       ).toBeVisible();
 
@@ -1328,7 +1386,7 @@ describe("Notes image ingest", () => {
         label
       ).toBeNull();
       expect(
-        screen.queryByTestId("notes-image-drop-placeholder"),
+        screen.queryByTestId("notes-image-drop-position"),
         label
       ).toBeNull();
 
@@ -1342,7 +1400,7 @@ describe("Notes image ingest", () => {
         label
       ).toBeNull();
       expect(
-        screen.queryByTestId("notes-image-drop-placeholder"),
+        screen.queryByTestId("notes-image-drop-position"),
         label
       ).toBeNull();
     }

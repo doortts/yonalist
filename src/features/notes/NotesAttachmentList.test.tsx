@@ -128,37 +128,6 @@ afterEach(() => {
 });
 
 describe("NotesAttachmentList", () => {
-  it("renders a fixed insertion placeholder after existing attachments", () => {
-    render(
-      <NotesAttachmentList
-        nodeId="node-1"
-        attachments={[attachment(1)]}
-        showDropPlaceholder
-      />
-    );
-
-    const list = screen
-      .getByRole("group", { name: "Image: image-1.png" })
-      .closest<HTMLElement>(".notes-attachment-list")!;
-    const placeholder = within(list).getByTestId(
-      "notes-image-drop-placeholder"
-    );
-    expect(placeholder).toHaveAttribute("aria-hidden", "true");
-    expect(list.lastElementChild).toBe(placeholder);
-  });
-
-  it("can render the insertion placeholder without existing attachments", () => {
-    render(
-      <NotesAttachmentList
-        nodeId="node-1"
-        attachments={[]}
-        showDropPlaceholder
-      />
-    );
-
-    expect(screen.getByTestId("notes-image-drop-placeholder")).toBeVisible();
-  });
-
   it("binds retry to the visible failed attempt and suppresses it for validation errors", async () => {
     const user = userEvent.setup();
     const view = render(

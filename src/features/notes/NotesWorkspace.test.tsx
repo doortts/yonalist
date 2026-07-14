@@ -4138,6 +4138,25 @@ describe("Notes workspace", () => {
     );
   });
 
+  it("renders image drop position as a non-layout-shifting thin slot", () => {
+    const dropPositionRule = notesStyles.match(
+      /\.notes-image-drop-position\s*{([^}]*)}/s
+    )?.[1];
+
+    expect(dropPositionRule).toBeDefined();
+    expect(dropPositionRule).toMatch(/position:\s*absolute;/);
+    expect(dropPositionRule).toMatch(/box-sizing:\s*border-box;/);
+    expect(dropPositionRule).toMatch(/inset-block-end:\s*-3px;/);
+    expect(dropPositionRule).toMatch(/height:\s*6px;/);
+    expect(dropPositionRule).toMatch(
+      /border:\s*1px solid var\(--accent\);/
+    );
+    expect(dropPositionRule).toMatch(/border-radius:\s*2px;/);
+    expect(dropPositionRule).toMatch(
+      /background:\s*var\(--accent-soft\);/
+    );
+  });
+
   it("resolves collapsed halo tokens in light and dark themes", () => {
     const style = document.createElement("style");
     style.textContent = appStyles.replace(/^@import .*;$/gm, "");
