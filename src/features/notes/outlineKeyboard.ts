@@ -139,6 +139,7 @@ export type OutlineKeyResolution =
   | { type: "extendSelection"; headId: NoteId }
   | { type: "clearSelection" }
   | { type: "selectionAction"; action: NotesSelectionActionIntent }
+  | { type: "consumeSelectionShortcut" }
   // Legacy variants remain until OutlineNodeRow is migrated in the integration
   // step. resolveOutlineKey no longer emits them for a live selection.
   | { type: "batchComplete"; nodeIds: readonly NoteId[]; completed: boolean }
@@ -214,55 +215,53 @@ export function resolveOutlineKey(
   // by the shared command router. Copy/Cut intentionally stay native here so
   // the synchronous clipboard event is their single owner.
   if (input.selection) {
+    const selectionShortcut = (
+      action: NotesSelectionActionIntent
+    ): OutlineKeyResolution =>
+      input.repeat
+        ? { type: "consumeSelectionShortcut" }
+        : { type: "selectionAction", action };
+
     if (
-      !input.repeat &&
       input.key === "Enter" &&
       !input.shiftKey &&
       !input.altKey &&
       primaryModifierPressed
     ) {
-      return { type: "selectionAction", action: "toggleComplete" };
+      return selectionShortcut("toggleComplete");
     }
     if (
-      !input.repeat &&
       input.key === "Backspace" &&
       input.shiftKey &&
       !input.altKey &&
       primaryModifierPressed
     ) {
-      return { type: "selectionAction", action: "delete" };
+      return selectionShortcut("delete");
     }
     if (
-      !input.repeat &&
       input.key === "Tab" &&
       !input.altKey &&
       !input.ctrlKey &&
       !input.metaKey
     ) {
-      return {
-        type: "selectionAction",
-        action: input.shiftKey ? "outdent" : "indent"
-      };
+      return selectionShortcut(input.shiftKey ? "outdent" : "indent");
     }
     if (
-      !input.repeat &&
       input.key.toLowerCase() === "d" &&
       input.shiftKey &&
       duplicateModifierPressed
     ) {
-      return { type: "selectionAction", action: "duplicate" };
+      return selectionShortcut("duplicate");
     }
     if (
-      !input.repeat &&
       input.shiftKey &&
       !input.altKey &&
       primaryModifierPressed &&
       (input.key === "ArrowUp" || input.key === "ArrowDown")
     ) {
-      return {
-        type: "selectionAction",
-        action: input.key === "ArrowUp" ? "moveUp" : "moveDown"
-      };
+      return selectionShortcut(
+        input.key === "ArrowUp" ? "moveUp" : "moveDown"
+      );
     }
   }
 

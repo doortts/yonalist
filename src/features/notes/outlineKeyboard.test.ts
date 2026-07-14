@@ -1176,12 +1176,26 @@ describe("resolveOutlineKey semantic selection actions", () => {
     ["complete", { key: "Enter", ctrlKey: true }],
     ["delete", { key: "Backspace", ctrlKey: true, shiftKey: true }],
     ["indent", { key: "Tab" }],
+    ["outdent", { key: "Tab", shiftKey: true }],
     ["duplicate", { key: "D", altKey: true, shiftKey: true }],
-    ["move", { key: "ArrowUp", ctrlKey: true, shiftKey: true }]
-  ])("suppresses repeated selected %s commands", (_label, overrides) => {
+    ["move up", { key: "ArrowUp", ctrlKey: true, shiftKey: true }],
+    ["move down", { key: "ArrowDown", ctrlKey: true, shiftKey: true }]
+  ])("consumes repeated selected %s commands without executing", (
+    _label,
+    overrides
+  ) => {
     expect(
       resolveOutlineKey(batchInput({ ...overrides, repeat: true }))
-    ).toBeNull();
+    ).toEqual({ type: "consumeSelectionShortcut" });
+  });
+
+  it.each([
+    ["copy", { key: "c", ctrlKey: true, repeat: true }],
+    ["cut", { key: "x", ctrlKey: true, repeat: true }],
+    ["IME", { key: "Enter", ctrlKey: true, isComposing: true }],
+    ["Process", { key: "Process", ctrlKey: true }]
+  ])("does not consume selected %s input", (_label, overrides) => {
+    expect(resolveOutlineKey(batchInput(overrides))).toBeNull();
   });
 
   it("does not let a wrong-platform selected shortcut fall through", () => {
