@@ -135,7 +135,14 @@ export function parsePastedOutline(text: string): ImportNode[] | null {
   for (const rawLine of rawLines) {
     const relativeDepth = Math.max(0, rawLine.depth - baseline);
     const treeDepth = Math.min(relativeDepth, stack.length);
-    if (treeDepth > MAX_PASTE_IMPORT_DEPTH) {
+    // `treeDepth` is 0-indexed (roots = 0), but the backend counts roots as
+    // depth 1 and rejects `depth > MAX_IMPORT_SUBTREE_DEPTH`
+    // (src-tauri/src/notes/types.rs) — i.e. it accepts 0-indexed depths
+    // 0..MAX_PASTE_IMPORT_DEPTH-1. Rejecting `>=` here (rather than `>`) keeps
+    // the two caps in sync so a tree the backend would refuse never gets past
+    // `event.preventDefault()` only to have the import silently dropped when
+    // IPC rejects it.
+    if (treeDepth >= MAX_PASTE_IMPORT_DEPTH) {
       return null;
     }
     stack.length = treeDepth;

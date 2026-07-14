@@ -522,6 +522,14 @@ function titleTextarea(id: string): HTMLTextAreaElement {
     )!;
 }
 
+function noteTextarea(id: string, label: string): HTMLTextAreaElement {
+  return document
+    .querySelector(`[data-outline-id="${id}"]`)!
+    .querySelector<HTMLTextAreaElement>(
+      `textarea[aria-label="Supporting note: ${label}"]`
+    )!;
+}
+
 function idleSubscribe() {
   return vi.fn().mockResolvedValue(vi.fn());
 }
@@ -553,14 +561,9 @@ describe("clipboard Notes image paste ingest", () => {
       idleSubscribe()
     );
     const file = pngFile("note-shot.png");
-    const noteTextarea = document
-      .querySelector('[data-outline-id="second"]')!
-      .querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Supporting note: Second"]'
-      )!;
 
     const notPrevented = fireEvent.paste(
-      noteTextarea,
+      noteTextarea("second", "Second"),
       pasteEventInit([
         { kind: "file", type: "image/png", getAsFile: () => file }
       ])
@@ -750,6 +753,50 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     );
 
     expect(notPrevented).toBe(true);
+    expect(importSubtree).not.toHaveBeenCalled();
+  });
+
+  it("does not import a subtree when pasted into the note body (Workflowy semantics: notes are free multi-line text)", () => {
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(
+      workspaceValue({ importSubtree, secondNoteText: "existing" }),
+      idleSubscribe()
+    );
+
+    const notPrevented = fireEvent.paste(
+      noteTextarea("second", "Second"),
+      textPasteEventInit("Parent\n\tChild")
+    );
+
+    // Subtree import is a title-only affordance; the note body always falls
+    // through to the default browser text paste, unprevented.
+    expect(notPrevented).toBe(true);
+    expect(importSubtree).not.toHaveBeenCalled();
+  });
+
+  it("still lets a pasted clipboard image take precedence over default paste on the note body", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(
+      workspaceValue({
+        importClipboardImages,
+        importSubtree,
+        secondNoteText: "existing"
+      }),
+      idleSubscribe()
+    );
+    const file = pngFile("note-body-image.png");
+
+    const notPrevented = fireEvent.paste(
+      noteTextarea("second", "Second"),
+      pasteEventInit(
+        [{ kind: "file", type: "image/png", getAsFile: () => file }],
+        "Parent\n\tChild"
+      )
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importClipboardImages).toHaveBeenCalledOnce();
     expect(importSubtree).not.toHaveBeenCalled();
   });
 });

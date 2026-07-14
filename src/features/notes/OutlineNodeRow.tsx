@@ -468,14 +468,22 @@ function OutlineNodeRowComponent({
   };
 
   // Paste dispatch order (plan Phase 4.4b): clipboard image import (0.5)
-  // always wins when the clipboard carries an image, then a multi-line
-  // structural paste is tried, and only then does the event fall through to
-  // the textarea's default text paste.
-  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+  // always wins when the clipboard carries an image, then — title only — a
+  // multi-line structural paste is tried, and only then does the event fall
+  // through to the textarea's default text paste. The note body is free
+  // multi-line text (Workflowy semantics): a pasted indented outline there
+  // must never spawn a child subtree, so `field` gates the subtree-import
+  // branch to "title" while both fields still get the image-paste behavior.
+  const handlePaste = (
+    event: ClipboardEvent<HTMLTextAreaElement>,
+    field: "title" | "note"
+  ) => {
     if (handleImagePaste(event)) {
       return;
     }
-    handleSubtreeImportPaste(event);
+    if (field === "title") {
+      handleSubtreeImportPaste(event);
+    }
   };
 
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -886,7 +894,7 @@ function OutlineNodeRowComponent({
             }, "title")
           }}
           onKeyDown={handleTitleKeyDown}
-          onPaste={handlePaste}
+          onPaste={(event) => handlePaste(event, "title")}
           onSelect={(event) => {
             titleSelectionRef.current = {
               startUtf16: event.currentTarget.selectionStart,
@@ -968,7 +976,7 @@ function OutlineNodeRowComponent({
               note: event.target.value
             }, "note");
           }}
-          onPaste={handlePaste}
+          onPaste={(event) => handlePaste(event, "note")}
           onBlur={() => {
             if (!datePicker.shouldSuppressBlur()) {
               commitDrafts();

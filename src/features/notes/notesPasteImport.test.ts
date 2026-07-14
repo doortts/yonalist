@@ -146,6 +146,31 @@ describe("parsePastedOutline", () => {
     expect(parsePastedOutline(lines.join("\n"))).toBeNull();
   });
 
+  it("accepts a tree whose deepest node sits at treeDepth MAX_PASTE_IMPORT_DEPTH - 1, matching the backend's 64-level max", () => {
+    // `treeDepth` is 0-indexed (roots = 0); the backend counts roots as depth
+    // 1 and rejects `depth > 64` (src-tauri/src/notes/types.rs:558), i.e. it
+    // accepts 0-indexed depths 0..63. This tree's deepest line lands at
+    // treeDepth 63 (MAX_PASTE_IMPORT_DEPTH - 1) and must still parse.
+    const lines = ["Root"];
+    for (let depth = 1; depth < MAX_PASTE_IMPORT_DEPTH; depth += 1) {
+      lines.push(`${"\t".repeat(depth)}line-${depth}`);
+    }
+    const result = parsePastedOutline(lines.join("\n"));
+    expect(result).not.toBeNull();
+  });
+
+  it("rejects a tree whose deepest node sits at treeDepth MAX_PASTE_IMPORT_DEPTH, one level past the backend's 64-level max", () => {
+    // One level deeper than the previous case: the deepest line now lands at
+    // treeDepth 64 (MAX_PASTE_IMPORT_DEPTH), which the backend would reject
+    // (depth 65 in its 1-indexed counting). The parser must reject it too,
+    // rather than let it through only to have IPC silently drop the paste.
+    const lines = ["Root"];
+    for (let depth = 1; depth <= MAX_PASTE_IMPORT_DEPTH; depth += 1) {
+      lines.push(`${"\t".repeat(depth)}line-${depth}`);
+    }
+    expect(parsePastedOutline(lines.join("\n"))).toBeNull();
+  });
+
   it("rejects a paste with an oversized line", () => {
     const hugeLine = "a".repeat(100_001);
     expect(parsePastedOutline(`First\n${hugeLine}`)).toBeNull();
