@@ -409,9 +409,11 @@ describe("tokenizeNoteText", () => {
     const source = `https://example.test/?q=${"#todo&next=".repeat(20_000)}end`;
     const tokens = tokenizeNoteText(source);
 
+    // The whole run is a single http URL token: its `#` markers are consumed as
+    // URL characters, never re-scanned as tags. The scan stays linear.
     expect(tokens).toHaveLength(1);
     expect(tokens[0]).toEqual({
-      kind: "text",
+      kind: "url",
       raw: source,
       startUtf16: 0,
       endUtf16: source.length
@@ -451,4 +453,145 @@ describe("tokenizeNoteText", () => {
       expectLosslessCoverage(composedSource);
     }
   );
+
+  it("extracts an http URL and splits the surrounding prose", () => {
+    expect(tokenizeNoteText("see http://example.com now")).toEqual([
+      { kind: "text", raw: "see ", startUtf16: 0, endUtf16: 4 },
+      {
+        kind: "url",
+        raw: "http://example.com",
+        startUtf16: 4,
+        endUtf16: 22
+      },
+      { kind: "text", raw: " now", startUtf16: 22, endUtf16: 26 }
+    ]);
+    expectLosslessCoverage("see http://example.com now");
+  });
+
+  it("keeps the whole https URL, including query and fragment", () => {
+    expect(tokenizeNoteText("https://example.com/a/b?x=1#frag")).toEqual([
+      {
+        kind: "url",
+        raw: "https://example.com/a/b?x=1#frag",
+        startUtf16: 0,
+        endUtf16: 32
+      }
+    ]);
+    expectLosslessCoverage("https://example.com/a/b?x=1#frag");
+  });
+
+  it("matches the URL scheme case-insensitively", () => {
+    expect(tokenizeNoteText("HTTPS://Example.com/Path")).toEqual([
+      {
+        kind: "url",
+        raw: "HTTPS://Example.com/Path",
+        startUtf16: 0,
+        endUtf16: 24
+      }
+    ]);
+    expectLosslessCoverage("HTTPS://Example.com/Path");
+  });
+
+  it.each([
+    ["Visit https://example.com.", "https://example.com"],
+    ["Visit https://example.com, then", "https://example.com"],
+    ["(https://example.com)", "https://example.com"],
+    ["see [https://example.com]!", "https://example.com"],
+    ["ask https://example.com?", "https://example.com"]
+  ])(
+    "trims trailing sentence punctuation and unbalanced brackets in %j",
+    (source, expected) => {
+      const url = tokenizeNoteText(source).find(
+        (token) => token.kind === "url"
+      );
+      expect(url?.raw).toBe(expected);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it("keeps balanced parentheses inside a URL", () => {
+    const source = "https://en.wikipedia.org/wiki/Foo_(bar)";
+    const tokens = tokenizeNoteText(source);
+
+    expect(tokens).toHaveLength(1);
+    expect(tokens[0]).toEqual({
+      kind: "url",
+      raw: source,
+      startUtf16: 0,
+      endUtf16: source.length
+    });
+    expectLosslessCoverage(source);
+  });
+
+  it.each([
+    "javascript:alert(1)",
+    "mailto:someone@example.com",
+    "ftp://files.example.com/pub",
+    "www.example.com/path",
+    "http:/example.com",
+    "https//example.com"
+  ])("does not linkify non-http(s) text %j", (source) => {
+    expect(tokenizeNoteText(source).some((token) => token.kind === "url")).toBe(
+      false
+    );
+    expectLosslessCoverage(source);
+  });
+
+  it("requires a word boundary before the scheme", () => {
+    const source = "xhttp://example.com";
+
+    expect(tokenizeNoteText(source).some((token) => token.kind === "url")).toBe(
+      false
+    );
+    expectLosslessCoverage(source);
+  });
+
+  it.each(["http://", "https://", "http:// spaced"])(
+    "does not linkify a bare scheme without an authority in %j",
+    (source) => {
+      expect(
+        tokenizeNoteText(source).some((token) => token.kind === "url")
+      ).toBe(false);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it("does not recurse: a URL inside a formatting span stays styled text", () => {
+    expect(tokenizeNoteText("**see http://example.com**")).toEqual([
+      {
+        kind: "strong",
+        raw: "**see http://example.com**",
+        startUtf16: 0,
+        endUtf16: 26,
+        innerStartUtf16: 2,
+        innerEndUtf16: 24
+      }
+    ]);
+    expectLosslessCoverage("**see http://example.com**");
+  });
+
+  it("wins over a formatting span that opens inside the URL", () => {
+    // `*em*` would be emphasis, but it sits inside the URL that starts first, so
+    // the URL consumes the markers as plain URL characters (non-recursion).
+    const source = "http://example.com/*em*/page";
+    const tokens = tokenizeNoteText(source);
+
+    expect(tokens).toEqual([
+      { kind: "url", raw: source, startUtf16: 0, endUtf16: source.length }
+    ]);
+    expectLosslessCoverage(source);
+  });
+
+  it("recognizes a tag that follows a URL separated by whitespace", () => {
+    const source = "http://example.com #tag";
+
+    expect(tokenizeNoteText(source).map((token) => [token.kind, token.raw])).toEqual(
+      [
+        ["url", "http://example.com"],
+        ["text", " "],
+        ["tag", "#tag"]
+      ]
+    );
+    expectLosslessCoverage(source);
+  });
 });

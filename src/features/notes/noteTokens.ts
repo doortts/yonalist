@@ -33,10 +33,23 @@ export interface NoteFormatToken extends NoteTokenBase {
   innerEndUtf16: number;
 }
 
+/**
+ * An auto-linked `http`/`https` URL stored as PLAIN TEXT. Like a tag, the full
+ * source slice is preserved in {@link raw} so the rendered overlay reproduces
+ * the source character-for-character (caret / selection mapping depends on
+ * identical length). Only `http://` and `https://` are recognized — never
+ * `javascript:`, `mailto:`, other schemes, or a bare `www.` host — so the
+ * value in {@link raw} is always safe to hand to `openExternal`.
+ */
+export interface NoteUrlToken extends NoteTokenBase {
+  kind: "url";
+}
+
 export type NoteTextToken =
   | NotePlainTextToken
   | NoteTagToken
-  | NoteFormatToken;
+  | NoteFormatToken
+  | NoteUrlToken;
 
 const unicodeLetterOrNumber = /^[\p{L}\p{N}]$/u;
 const unicodeMark = /^\p{M}$/u;
@@ -285,6 +298,188 @@ function readSegmentContext(
   };
 }
 
+// ---------------------------------------------------------------------------
+// URL auto-links (http/https only)
+//
+// A URL token is emitted for a literal `http://` or `https://` run. The scheme
+// is matched case-insensitively; every other scheme (including `javascript:`,
+// `mailto:`, and a bare `www.` host) is left as ordinary text, so a URL token's
+// `raw` is always an http/https URL that is safe to open externally.
+//
+// Boundary rule (kept deliberately conservative so prose is not over-linked):
+//   * The scheme must sit at a word boundary — offset 0, or preceded by a
+//     scalar that is NOT an ASCII letter or digit — so `http` embedded inside a
+//     larger token (e.g. `xhttp://…`) is not linkified.
+//   * The body runs from the scheme to the first RFC "delimiter"/whitespace
+//     character (space, control, `<` `>` `"` `` ` `` `{` `}` `|` `\` `^`), which
+//     never appears unescaped in a URL.
+//   * Trailing sentence punctuation (`. , ; : ! ? '`) is dropped, as is a
+//     trailing `)`/`]` that is unbalanced within the URL (so `(http://x)` links
+//     `http://x` while `http://x/a(b)` keeps its balanced parens).
+//   * At least one authority character must remain after `://`; a bare scheme
+//     is not a link.
+// ---------------------------------------------------------------------------
+
+function matchesLowercaseAscii(
+  source: string,
+  offsetUtf16: number,
+  lowercaseTarget: string
+): boolean {
+  if (offsetUtf16 + lowercaseTarget.length > source.length) {
+    return false;
+  }
+  for (let index = 0; index < lowercaseTarget.length; index += 1) {
+    let codeUnit = source.charCodeAt(offsetUtf16 + index);
+    if (codeUnit >= 0x41 && codeUnit <= 0x5a) {
+      codeUnit += 0x20;
+    }
+    if (codeUnit !== lowercaseTarget.charCodeAt(index)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function urlSchemeLength(source: string, offsetUtf16: number): number {
+  const firstCodeUnit = source.charCodeAt(offsetUtf16);
+  // Fast reject: every accepted scheme starts with `h`/`H`.
+  if (firstCodeUnit !== 0x68 && firstCodeUnit !== 0x48) {
+    return 0;
+  }
+  if (matchesLowercaseAscii(source, offsetUtf16, "https://")) {
+    return 8;
+  }
+  if (matchesLowercaseAscii(source, offsetUtf16, "http://")) {
+    return 7;
+  }
+  return 0;
+}
+
+function isUrlBodyStopCodeUnit(codeUnit: number): boolean {
+  if (codeUnit <= 0x20) {
+    // C0 controls and the space character.
+    return true;
+  }
+  if (codeUnit < 0x80) {
+    return (
+      codeUnit === 0x22 || // "
+      codeUnit === 0x3c || // <
+      codeUnit === 0x3e || // >
+      codeUnit === 0x5c || // \
+      codeUnit === 0x5e || // ^
+      codeUnit === 0x60 || // `
+      codeUnit === 0x7b || // {
+      codeUnit === 0x7c || // |
+      codeUnit === 0x7d || // }
+      codeUnit === 0x7f // DEL
+    );
+  }
+  // Non-ASCII: stop on Unicode whitespace only. A lone surrogate is never
+  // whitespace, so an astral scalar stays inside the URL and its pair is never
+  // split (both halves are non-stop, so the boundary lands after the pair).
+  return unicodeWhitespace.test(String.fromCharCode(codeUnit));
+}
+
+function countCodeUnit(
+  source: string,
+  startUtf16: number,
+  endUtf16: number,
+  codeUnit: number
+): number {
+  let total = 0;
+  for (let offsetUtf16 = startUtf16; offsetUtf16 < endUtf16; offsetUtf16 += 1) {
+    if (source.charCodeAt(offsetUtf16) === codeUnit) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+function trimTrailingUrlPunctuation(
+  source: string,
+  startUtf16: number,
+  endUtf16: number
+): number {
+  // Opener counts are fixed (openers are never trailing punctuation, so they
+  // are never trimmed); only closer counts fall as brackets are stripped, so
+  // this stays linear in the URL length.
+  const openParenCount = countCodeUnit(source, startUtf16, endUtf16, 0x28);
+  let closeParenCount = countCodeUnit(source, startUtf16, endUtf16, 0x29);
+  const openBracketCount = countCodeUnit(source, startUtf16, endUtf16, 0x5b);
+  let closeBracketCount = countCodeUnit(source, startUtf16, endUtf16, 0x5d);
+
+  let trimmedEndUtf16 = endUtf16;
+  while (trimmedEndUtf16 > startUtf16) {
+    const codeUnit = source.charCodeAt(trimmedEndUtf16 - 1);
+    if (
+      codeUnit === 0x2e || // .
+      codeUnit === 0x2c || // ,
+      codeUnit === 0x3b || // ;
+      codeUnit === 0x3a || // :
+      codeUnit === 0x21 || // !
+      codeUnit === 0x3f || // ?
+      codeUnit === 0x27 // '
+    ) {
+      trimmedEndUtf16 -= 1;
+      continue;
+    }
+    if (codeUnit === 0x29) {
+      if (closeParenCount > openParenCount) {
+        trimmedEndUtf16 -= 1;
+        closeParenCount -= 1;
+        continue;
+      }
+      break;
+    }
+    if (codeUnit === 0x5d) {
+      if (closeBracketCount > openBracketCount) {
+        trimmedEndUtf16 -= 1;
+        closeBracketCount -= 1;
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+  return trimmedEndUtf16;
+}
+
+// Returns the exclusive end offset of an http/https URL starting at
+// `offsetUtf16`, or null if no URL begins there.
+function matchUrlAt(source: string, offsetUtf16: number): number | null {
+  if (offsetUtf16 > 0) {
+    const previousCodeUnit = source.charCodeAt(offsetUtf16 - 1);
+    if (isAsciiLetterOrDigit(previousCodeUnit)) {
+      return null;
+    }
+  }
+
+  const schemeLength = urlSchemeLength(source, offsetUtf16);
+  if (schemeLength === 0) {
+    return null;
+  }
+
+  const schemeEndUtf16 = offsetUtf16 + schemeLength;
+  let bodyEndUtf16 = schemeEndUtf16;
+  while (
+    bodyEndUtf16 < source.length &&
+    !isUrlBodyStopCodeUnit(source.charCodeAt(bodyEndUtf16))
+  ) {
+    bodyEndUtf16 += 1;
+  }
+
+  const endUtf16 = trimTrailingUrlPunctuation(
+    source,
+    schemeEndUtf16,
+    bodyEndUtf16
+  );
+  // A bare scheme with no authority is not a link.
+  if (endUtf16 <= schemeEndUtf16) {
+    return null;
+  }
+  return endUtf16;
+}
+
 interface FormatMarker {
   readonly text: string;
   readonly kind: NoteFormatKind;
@@ -426,6 +621,40 @@ export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
       nextSpanIndex += 1;
       textStartUtf16 = span.endUtf16;
       offsetUtf16 = span.endUtf16;
+      continue;
+    }
+
+    // A URL literal (http/https only) is an atomic top-level token, like a tag:
+    // its whole extent — including any `#`/`@` that would otherwise open a tag —
+    // is consumed here, so the enclosed text is never re-scanned. Formatting
+    // wins when it starts first (the loop reaches the span's opener before the
+    // URL and jumps past it); conversely a formatting span that starts INSIDE a
+    // URL is discarded (nextSpanIndex advances past it) and its markers render
+    // as plain URL characters — mirroring the tokenizer's non-recursion rule.
+    const urlEndUtf16 = matchUrlAt(source, offsetUtf16);
+    if (urlEndUtf16 !== null) {
+      if (textStartUtf16 < offsetUtf16) {
+        tokens.push({
+          kind: "text",
+          raw: source.slice(textStartUtf16, offsetUtf16),
+          startUtf16: textStartUtf16,
+          endUtf16: offsetUtf16
+        });
+      }
+      tokens.push({
+        kind: "url",
+        raw: source.slice(offsetUtf16, urlEndUtf16),
+        startUtf16: offsetUtf16,
+        endUtf16: urlEndUtf16
+      });
+      while (
+        nextSpanIndex < formatSpans.length &&
+        formatSpans[nextSpanIndex].startUtf16 < urlEndUtf16
+      ) {
+        nextSpanIndex += 1;
+      }
+      textStartUtf16 = urlEndUtf16;
+      offsetUtf16 = urlEndUtf16;
       continue;
     }
 

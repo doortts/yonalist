@@ -8,13 +8,15 @@ import {
   tokenizeNoteText,
   type NoteFormatKind,
   type NoteFormatToken,
-  type NoteTagToken
+  type NoteTagToken,
+  type NoteUrlToken
 } from "./noteTokens";
 import {
   findNoteDateMatches,
   type LocalDate,
   type NoteDateMatch
 } from "./noteDates";
+import { openExternal } from "../../services/browser";
 
 export interface NoteTokenTextProps
   extends Omit<HTMLAttributes<HTMLSpanElement>, "children" | "onDateClick"> {
@@ -49,6 +51,33 @@ const tagStyle: CSSProperties = {
   whiteSpace: "inherit"
 };
 
+// A URL keeps the flow's wrapping semantics (long links break like the source
+// text) while presenting as an inline link; notes.css owns the accent color.
+const urlStyle: CSSProperties = {
+  appearance: "none",
+  margin: 0,
+  padding: 0,
+  border: 0,
+  background: "none",
+  cursor: "pointer",
+  font: "inherit",
+  letterSpacing: "inherit",
+  lineHeight: "inherit",
+  overflowWrap: "anywhere",
+  pointerEvents: "auto",
+  textDecoration: "underline",
+  whiteSpace: "inherit"
+};
+
+// Defense in depth: the tokenizer only emits http/https URL tokens, but re-check
+// the scheme before handing the value to the external opener so a future change
+// upstream can never route another scheme through here.
+function openUrlTokenExternally(url: string): void {
+  if (/^https?:\/\//i.test(url)) {
+    void openExternal(url);
+  }
+}
+
 // Each formatting kind maps to a stable class pair so notes.css owns the visual
 // treatment. The markers keep flowing through the DOM (dimmed, not removed) so
 // the overlay's text content stays character-for-character identical to source.
@@ -62,7 +91,8 @@ const FORMAT_TOKEN_CLASS: Record<NoteFormatKind, string> = {
 type RenderToken =
   | { readonly kind: "tag"; readonly token: NoteTagToken }
   | { readonly kind: "date"; readonly token: NoteDateMatch }
-  | { readonly kind: "format"; readonly token: NoteFormatToken };
+  | { readonly kind: "format"; readonly token: NoteFormatToken }
+  | { readonly kind: "url"; readonly token: NoteUrlToken };
 
 function isFormatToken(
   token: { kind: string }
@@ -92,28 +122,36 @@ export function NoteTokenText({
   // an unrelated re-render (or a keystroke in another row) does not re-parse.
   const renderTokens = useMemo<RenderToken[]>(() => {
     const parsed = tokenizeNoteText(text);
-    // Formatting spans are top-level and non-overlapping; the tokenizer already
-    // suppresses tags inside them, so tag tokens never collide with a span.
+    // Formatting spans and URLs are top-level and non-overlapping; the tokenizer
+    // already suppresses tags inside them, so tag tokens never collide with a
+    // span or URL.
     const formatTokens = parsed.filter(isFormatToken);
+    const urlTokens = parsed.filter(
+      (token): token is NoteUrlToken => token.kind === "url"
+    );
     const tokens: RenderToken[] = parsed
       .filter((token): token is NoteTagToken => token.kind === "tag")
       .map((token) => ({ kind: "tag", token }));
     for (const token of formatTokens) {
       tokens.push({ kind: "format", token });
     }
+    for (const token of urlTokens) {
+      tokens.push({ kind: "url", token });
+    }
     if (today) {
       // Dates are matched independently of the tokenizer, so a date that falls
-      // inside a formatting span must be dropped: the span renders
-      // non-recursively (its inner content is plain styled text), matching the
+      // inside a formatting span or a URL must be dropped: those render
+      // non-recursively (their inner content is plain text), matching the
       // tokenizer's own no-recursion rule for tags.
-      const overlapsFormatSpan = (match: NoteDateMatch) =>
-        formatTokens.some(
-          (span) =>
-            match.startUtf16 < span.endUtf16 &&
-            match.endUtf16 > span.startUtf16
+      const atomicRanges = [...formatTokens, ...urlTokens];
+      const overlapsAtomicRange = (match: NoteDateMatch) =>
+        atomicRanges.some(
+          (range) =>
+            match.startUtf16 < range.endUtf16 &&
+            match.endUtf16 > range.startUtf16
         );
       for (const token of findNoteDateMatches(text, { today })) {
-        if (!overlapsFormatSpan(token)) {
+        if (!overlapsAtomicRange(token)) {
           tokens.push({ kind: "date", token });
         }
       }
@@ -177,6 +215,25 @@ export function NoteTokenText({
             {text.slice(formatToken.innerEndUtf16, formatToken.endUtf16)}
           </span>
         </span>
+      );
+    } else if (renderToken.kind === "url") {
+      const urlToken = renderToken.token;
+      // Render the raw URL text verbatim (no character added or removed) so the
+      // overlay stays aligned with the source. Interactivity is gated by the
+      // parent field: while editing, the overlay has pointer-events: none, so
+      // this only receives clicks in the resting state — exactly like tags.
+      content.push(
+        <button
+          className="notes-url-token"
+          type="button"
+          key={`url:${urlToken.startUtf16}:${urlToken.endUtf16}`}
+          aria-label={`Open link ${urlToken.raw}`}
+          style={urlStyle}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={() => openUrlTokenExternally(urlToken.raw)}
+        >
+          {urlToken.raw}
+        </button>
       );
     } else {
       const tagToken = renderToken.token;

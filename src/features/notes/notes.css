@@ -722,6 +722,22 @@
   outline-offset: 1px;
 }
 
+.notes-url-token {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.notes-url-token:hover {
+  text-decoration-thickness: 2px;
+}
+
+.notes-url-token:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .notes-date-token {
   box-sizing: border-box;
   appearance: none;

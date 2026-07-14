@@ -1,10 +1,20 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NoteTokenText } from "./NoteTokenText";
+
+const openExternalMock = vi.hoisted(() => vi.fn(() => Promise.resolve()));
+
+vi.mock("../../services/browser", () => ({
+  openExternal: openExternalMock
+}));
 
 describe("NoteTokenText", () => {
   const today = { year: 2026, month: 7, day: 11 } as const;
+
+  beforeEach(() => {
+    openExternalMock.mockReset();
+  });
 
   it("reconstructs the source text losslessly with textarea whitespace semantics", () => {
     const source = "  Plan\t#Today  \n담당: @수원\n";
@@ -135,9 +145,11 @@ describe("NoteTokenText", () => {
     // in the flow (dimmed) and only the enclosed content is styled.
     expect(presentation).toHaveTextContent(source, { normalizeWhitespace: false });
 
+    // The tag is interactive; so is the trailing URL (formatting spans render as
+    // non-interactive styled spans).
     expect(
       screen.getAllByRole("button").map((button) => button.textContent)
-    ).toEqual(["#done"]);
+    ).toEqual(["#done", "https://ex.com/#f"]);
 
     expect(
       container.querySelector(".notes-format-strong .notes-format-content")
@@ -202,5 +214,58 @@ describe("NoteTokenText", () => {
     expect(container.querySelector(".notes-date-token")).toHaveTextContent(
       "07/12/2026"
     );
+  });
+
+  it("linkifies http and https URLs and opens them externally on click", async () => {
+    const user = userEvent.setup();
+    const source = "docs at https://example.com/guide#top and http://x.test/a";
+    const { container } = render(
+      <NoteTokenText text={source} onTagClick={vi.fn()} />
+    );
+
+    // The overlay reproduces the source verbatim (the raw URL text stays in the
+    // flow, so caret/selection mapping is preserved).
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent(
+      source,
+      { normalizeWhitespace: false }
+    );
+
+    const links = screen.getAllByRole("button");
+    expect(links.map((button) => button.textContent)).toEqual([
+      "https://example.com/guide#top",
+      "http://x.test/a"
+    ]);
+    expect(links[0]).toHaveClass("notes-url-token");
+
+    await user.click(links[0]);
+
+    expect(openExternalMock).toHaveBeenCalledTimes(1);
+    expect(openExternalMock).toHaveBeenCalledWith(
+      "https://example.com/guide#top"
+    );
+  });
+
+  it("keeps trimmed trailing punctuation as plain text after a URL", () => {
+    const source = "See (https://example.com).";
+    const { container } = render(
+      <NoteTokenText text={source} onTagClick={vi.fn()} />
+    );
+
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent(
+      source,
+      { normalizeWhitespace: false }
+    );
+    const link = screen.getByRole("button");
+    expect(link).toHaveClass("notes-url-token");
+    expect(link).toHaveTextContent("https://example.com");
+    expect(link.textContent).toBe("https://example.com");
+  });
+
+  it("does not linkify non-http schemes or bare hosts", () => {
+    const source =
+      "run javascript:alert(1) or email me@example.com or www.example.com";
+    render(<NoteTokenText text={source} onTagClick={vi.fn()} />);
+
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 });
