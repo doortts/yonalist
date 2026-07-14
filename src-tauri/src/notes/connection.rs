@@ -1,12 +1,8 @@
 //! Process-wide manager that keeps a single SQLite connection open per vault.
 //!
-//! Every Notes command used to call [`connect_notes_db`], which re-ran the full
-//! initialization pipeline (header preflight, WAL pragma, and an `IMMEDIATE`
-//! write transaction that re-checks the schema) on *every* invocation — even for
-//! read-only search keystrokes. This module caches one
-//! `Arc<Mutex<Connection>>` per vault so that expensive pipeline runs exactly
-//! once, on the first acquisition, and later acquisitions hand back the cached
-//! connection with no schema or migration work.
+//! This module caches one `Arc<Mutex<Connection>>` per vault so database setup
+//! runs once, on the first acquisition, and later acquisitions hand back the
+//! cached connection without repeating schema work.
 //!
 //! The manager is a module-level `OnceLock` rather than Tauri managed
 //! [`State`](tauri::State) on purpose: the command bodies stay plain functions
@@ -99,7 +95,7 @@ pub(crate) fn acquire_notes_connection(vault_path: &str) -> Result<SharedNotesCo
 /// Discards any cached connection and opens a fresh, fully-initialized one.
 ///
 /// `notes_initialize` uses this so that (re)opening a vault always runs the
-/// schema/migration pipeline exactly once, regardless of whether an earlier
+/// initialization pipeline exactly once, regardless of whether an earlier
 /// command already populated the cache.
 pub(crate) fn reinitialize_notes_connection(
     vault_path: &str,
@@ -202,8 +198,8 @@ fn open_and_cache(vault_path: &str, key: PathBuf) -> Result<SharedNotesConnectio
     // mid-open), the re-check below refuses to cache our now-stale connection.
     let epoch_at_open = registry_lock().epoch(&key);
 
-    // Open + migrate without holding the registry lock so unrelated vaults can be
-    // acquired concurrently and a slow migration never blocks the whole map.
+    // Open and initialize without holding the registry lock so unrelated vaults
+    // can be acquired concurrently without blocking the whole map.
     let connection = connect_notes_db(vault_path)?;
     #[cfg(test)]
     run_open_and_cache_after_connect_hook();

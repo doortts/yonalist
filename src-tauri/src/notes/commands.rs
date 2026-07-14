@@ -41,7 +41,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-// Tests exercise the schema/migration pipeline directly through owned
+// Tests exercise schema initialization directly through owned
 // connections; production command bodies go through the connection manager.
 #[cfg(test)]
 use crate::notes::repository::connect_notes_db;
@@ -368,9 +368,9 @@ pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     // this instance's undo history. Reentrant within one process.
     acquire_vault_app_lock(&vault_path)?;
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
-    // Opening a vault must run the schema/migration pipeline exactly once, so
+    // Opening a vault must run schema initialization exactly once, so
     // force a fresh connection here even if an earlier command already cached
-    // one. Every subsequent command reuses this connection without re-migrating.
+    // one. Every subsequent command reuses this initialized connection.
     let shared = reinitialize_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared);
     clear_all_history(&mut connection)?;

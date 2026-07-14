@@ -9,5 +9,6 @@ pub(crate) mod history;
 #[cfg(test)]
 mod performance;
 pub(crate) mod repository;
+pub(crate) mod schema;
 pub(crate) mod tags;
 pub(crate) mod types;

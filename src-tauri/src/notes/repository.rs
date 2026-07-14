@@ -19,7 +19,7 @@ use rusqlite::{
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::{ErrorKind, Read};
+use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -29,14 +29,6 @@ use std::cell::RefCell;
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
-const NOTES_SCHEMA_VERSION: i64 = 4;
-const NOTE_TAG_TOKENIZER_VERSION: i64 = 1;
-const NOTE_TAG_TOKENIZER_VERSION_KEY: &str = "derived.tagTokenizerVersion";
-const NOTE_DATE_PARSER_VERSION: i64 = 3;
-const NOTE_DATE_PARSER_VERSION_KEY: &str = "derived.dateParserVersion";
-const NOTE_LIFECYCLE_SEARCH_VERSION: i64 = 1;
-const NOTE_LIFECYCLE_SEARCH_VERSION_KEY: &str = "derived.lifecycleSearchVersion";
-const NOTES_ONBOARDING_VERSION_KEY: &str = "notes.onboarding.v1";
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
@@ -51,38 +43,38 @@ const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
 const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
 const NOTE_SEARCH_MAX_ALTERNATIVES_PER_OR_GROUP: usize = 16;
-const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
 const SORT_KEY_STEP: i64 = 1024;
 pub(crate) const MIN_ATTACHMENT_DISPLAY_WIDTH: i64 = 160;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[cfg(test)]
-struct MigrationBusyObservation {
+struct InitializationBusyObservation {
     sender: Sender<usize>,
     worker_id: usize,
 }
 
 #[cfg(test)]
 thread_local! {
-    static NEXT_MIGRATION_BUSY_OBSERVATION: RefCell<Option<MigrationBusyObservation>> =
+    static NEXT_INITIALIZATION_BUSY_OBSERVATION: RefCell<Option<InitializationBusyObservation>> =
         const { RefCell::new(None) };
 }
 
 #[cfg(test)]
-fn observe_next_migration_busy(sender: Sender<usize>, worker_id: usize) {
-    NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| {
-        let previous = observation.replace(Some(MigrationBusyObservation { sender, worker_id }));
+fn observe_next_initialization_busy(sender: Sender<usize>, worker_id: usize) {
+    NEXT_INITIALIZATION_BUSY_OBSERVATION.with(|observation| {
+        let previous =
+            observation.replace(Some(InitializationBusyObservation { sender, worker_id }));
         assert!(
             previous.is_none(),
-            "migration busy observer already installed"
+            "initialization busy observer already installed"
         );
     });
 }
 
 #[cfg(test)]
-fn migration_busy_observer(_attempt: i32) -> bool {
-    NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| {
+fn initialization_busy_observer(_attempt: i32) -> bool {
+    NEXT_INITIALIZATION_BUSY_OBSERVATION.with(|observation| {
         if let Some(observation) = observation.take() {
             let _ = observation.sender.send(observation.worker_id);
         }
@@ -91,13 +83,13 @@ fn migration_busy_observer(_attempt: i32) -> bool {
 }
 
 #[cfg(test)]
-fn install_migration_busy_observer(connection: &Connection) -> Result<(), String> {
+fn install_initialization_busy_observer(connection: &Connection) -> Result<(), String> {
     let observation_is_pending =
-        NEXT_MIGRATION_BUSY_OBSERVATION.with(|observation| observation.borrow().is_some());
+        NEXT_INITIALIZATION_BUSY_OBSERVATION.with(|observation| observation.borrow().is_some());
     if observation_is_pending {
         connection
-            .busy_handler(Some(migration_busy_observer))
-            .map_err(|error| format!("Could not observe the Notes migration lock: {error}"))?;
+            .busy_handler(Some(initialization_busy_observer))
+            .map_err(|error| format!("Could not observe the Notes initialization lock: {error}"))?;
     }
     Ok(())
 }
@@ -146,62 +138,13 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
         return Err("Vault path must not be empty.".to_string());
     }
 
-    let database_path = notes_db_path(vault_path);
-    preflight_existing_notes_schema(&database_path)?;
     let metadata = crate::metadata_dir(vault_path);
     fs::create_dir_all(&metadata)
         .map_err(|error| format!("Could not prepare Notes storage: {error}"))?;
-    let mut connection = Connection::open(database_path)
+    let mut connection = Connection::open(notes_db_path(vault_path))
         .map_err(|error| format!("Could not open Notes storage: {error}"))?;
     initialize_notes_db(&mut connection)?;
     Ok(connection)
-}
-
-fn preflight_existing_notes_schema(database_path: &PathBuf) -> Result<(), String> {
-    match fs::symlink_metadata(database_path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
-    }
-
-    preflight_notes_schema_header(database_path)?;
-
-    let connection =
-        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
-    let user_version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    if user_version > NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "This Notes database uses unsupported schema version {user_version}."
-        ));
-    }
-
-    Ok(())
-}
-
-fn preflight_notes_schema_header(database_path: &PathBuf) -> Result<(), String> {
-    let mut file = fs::File::open(database_path)
-        .map_err(|error| format!("Could not inspect Notes storage: {error}"))?;
-    let mut header = [0_u8; 64];
-    match file.read_exact(&mut header) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
-    }
-    if &header[..SQLITE_HEADER_MAGIC.len()] != SQLITE_HEADER_MAGIC {
-        return Ok(());
-    }
-
-    let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
-    if i64::from(user_version) > NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "This Notes database uses unsupported schema version {user_version}."
-        ));
-    }
-
-    Ok(())
 }
 
 pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, String> {
@@ -218,30 +161,11 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     }
 
-    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("Could not open Notes storage for export: {error}"))?;
-    let user_version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    if user_version != NOTES_SCHEMA_VERSION {
-        return Err(format!(
-            "This Notes database uses unsupported schema version {user_version}."
-        ));
-    }
-
-    Ok(connection)
+    Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Could not open Notes storage for export: {error}"))
 }
 
 fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
-    let preflight_version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-    if !(0..=NOTES_SCHEMA_VERSION).contains(&preflight_version) {
-        return Err(format!(
-            "This Notes database uses unsupported schema version {preflight_version}."
-        ));
-    }
-
     connection
         .busy_timeout(NOTES_BUSY_TIMEOUT)
         .map_err(|error| format!("Could not configure the Notes busy timeout: {error}"))?;
@@ -250,800 +174,72 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .map_err(|error| format!("Could not configure Notes storage: {error}"))?;
     #[cfg(test)]
-    install_migration_busy_observer(connection)?;
+    install_initialization_busy_observer(connection)?;
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("Could not start the Notes database migration: {error}"))?;
-    let user_version: i64 = transaction
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
-
-    match user_version {
-        0 => {
-            create_version_one_schema(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 1)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_one_to_two(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 2)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_two_to_three(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 3)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_three_to_four(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-        }
-        1 => {
-            migrate_version_one_to_two(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 2)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_two_to_three(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 3)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_three_to_four(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-        }
-        2 => {
-            migrate_version_two_to_three(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", 3)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-            migrate_version_three_to_four(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-        }
-        3 => {
-            migrate_version_three_to_four(&transaction)?;
-            transaction
-                .pragma_update(None, "user_version", NOTES_SCHEMA_VERSION)
-                .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
-        }
-        NOTES_SCHEMA_VERSION => {}
-        version => {
-            return Err(format!(
-                "This Notes database uses unsupported schema version {version}."
-            ));
-        }
+        .map_err(|error| format!("Could not start Notes storage initialization: {error}"))?;
+    if crate::notes::schema::create_if_missing(&transaction)? {
+        seed_notes_onboarding(&transaction)?;
+        let node_ids = {
+            let mut statement = transaction
+                .prepare("SELECT id FROM notes_nodes ORDER BY id")
+                .map_err(|error| format!("Could not prepare Notes bootstrap rows: {error}"))?;
+            let node_ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("Could not load Notes bootstrap rows: {error}"))?
+                .collect::<Result<BTreeSet<_>, _>>()
+                .map_err(|error| format!("Could not read Notes bootstrap rows: {error}"))?;
+            node_ids
+        };
+        let today = SystemLocalTodayProvider.local_today(&transaction)?;
+        rebuild_derived_for_nodes_at(&transaction, &node_ids, today)?;
     }
-
-    ensure_history_schema(&transaction)?;
-    transaction
-        .execute_batch(
-            "CREATE INDEX IF NOT EXISTS notes_nodes_archive_root_order \
-             ON notes_nodes(archive_root_id, parent_id, sort_key);",
-        )
-        .map_err(|error| format!("Could not ensure Notes version three indexes: {error}"))?;
-    ensure_notes_onboarding(&transaction)?;
-    ensure_lifecycle_search_version(&transaction)?;
-    ensure_tag_tokenizer_version(&transaction)?;
-    let today = SystemLocalTodayProvider.local_today(&transaction)?;
-    ensure_date_parser_version(&transaction, today)?;
 
     transaction
         .commit()
-        .map_err(|error| format!("Could not finish the Notes database migration: {error}"))
+        .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
 }
 
-fn ensure_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> {
-    let marker_exists: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM notes_preferences WHERE key = ?1)",
-            [NOTES_ONBOARDING_VERSION_KEY],
-            |row| row.get(0),
+fn seed_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> {
+    let root_id = Uuid::new_v4().to_string();
+    transaction
+        .execute(
+            "INSERT INTO notes_nodes (\
+               id, parent_id, sort_key, title, note, created_at, updated_at\
+             ) VALUES (\
+               ?1, NULL, ?2, ?3, ?4, \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+               strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+             )",
+            params![
+                &root_id,
+                SORT_KEY_STEP,
+                NOTES_ONBOARDING_TITLE,
+                NOTES_ONBOARDING_NOTE
+            ],
         )
-        .map_err(|error| format!("Could not read the Notes onboarding state: {error}"))?;
-    if marker_exists {
-        return Ok(());
-    }
+        .map_err(|error| format!("Could not create the Notes onboarding page: {error}"))?;
 
-    let node_count: i64 = transaction
-        .query_row("SELECT COUNT(*) FROM notes_nodes", [], |row| row.get(0))
-        .map_err(|error| format!("Could not inspect Notes onboarding content: {error}"))?;
-    if node_count == 0 {
-        let root_id = Uuid::new_v4().to_string();
+    for (index, title) in NOTES_ONBOARDING_CHILDREN.iter().enumerate() {
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, created_at, updated_at\
+                   id, parent_id, sort_key, title, created_at, updated_at\
                  ) VALUES (\
-                   ?1, NULL, ?2, ?3, ?4, \
+                   ?1, ?2, ?3, ?4, \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
                 params![
+                    Uuid::new_v4().to_string(),
                     &root_id,
-                    SORT_KEY_STEP,
-                    NOTES_ONBOARDING_TITLE,
-                    NOTES_ONBOARDING_NOTE
+                    (index as i64 + 1) * SORT_KEY_STEP,
+                    title
                 ],
             )
-            .map_err(|error| format!("Could not create the Notes onboarding page: {error}"))?;
-
-        for (index, title) in NOTES_ONBOARDING_CHILDREN.iter().enumerate() {
-            transaction
-                .execute(
-                    "INSERT INTO notes_nodes (\
-                       id, parent_id, sort_key, title, created_at, updated_at\
-                     ) VALUES (\
-                       ?1, ?2, ?3, ?4, \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
-                       strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
-                     )",
-                    params![
-                        Uuid::new_v4().to_string(),
-                        &root_id,
-                        (index as i64 + 1) * SORT_KEY_STEP,
-                        title
-                    ],
-                )
-                .map_err(|error| format!("Could not create Notes onboarding guidance: {error}"))?;
-        }
+            .map_err(|error| format!("Could not create Notes onboarding guidance: {error}"))?;
     }
-
-    transaction
-        .execute(
-            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, '1')",
-            [NOTES_ONBOARDING_VERSION_KEY],
-        )
-        .map_err(|error| format!("Could not record the Notes onboarding state: {error}"))?;
-    Ok(())
-}
-
-const HISTORY_ENTRIES_CURRENT_SQL: &str = "CREATE TABLE notes_history_entries (\
-  id TEXT PRIMARY KEY, \
-  session_id TEXT NOT NULL, \
-  sequence INTEGER NOT NULL, \
-  is_undone INTEGER NOT NULL DEFAULT 0, \
-  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-  command_kind TEXT NOT NULL DEFAULT 'legacy'\
-)";
-const HISTORY_ENTRIES_MISSING_COMMAND_KIND_SQL: &str = "CREATE TABLE notes_history_entries (\
-  id TEXT PRIMARY KEY, \
-  session_id TEXT NOT NULL, \
-  sequence INTEGER NOT NULL, \
-  is_undone INTEGER NOT NULL DEFAULT 0, \
-  estimated_bytes INTEGER NOT NULL DEFAULT 0\
-)";
-const HISTORY_ENTRIES_NO_DEFAULT_SQL: &str = "CREATE TABLE notes_history_entries (\
-  id TEXT PRIMARY KEY, \
-  session_id TEXT NOT NULL, \
-  sequence INTEGER NOT NULL, \
-  is_undone INTEGER NOT NULL DEFAULT 0, \
-  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-  command_kind TEXT NOT NULL\
-)";
-const HISTORY_ENTRIES_BACKUP_SQL: &str = "CREATE TABLE notes_history_entries (\
-  id TEXT PRIMARY KEY, \
-  session_id TEXT NOT NULL, \
-  sequence INTEGER NOT NULL, \
-  command_kind TEXT NOT NULL, \
-  is_undone INTEGER NOT NULL DEFAULT 0, \
-  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-  created_at TEXT NOT NULL\
-)";
-const HISTORY_ENTRIES_HYBRID_SQL: &str = "CREATE TABLE notes_history_entries (\
-  id TEXT PRIMARY KEY, \
-  session_id TEXT NOT NULL, \
-  sequence INTEGER NOT NULL, \
-  is_undone INTEGER NOT NULL DEFAULT 0, \
-  estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-  created_at TEXT NOT NULL, \
-  command_kind TEXT NOT NULL DEFAULT 'legacy'\
-)";
-const HISTORY_CHANGES_CURRENT_SQL: &str = "CREATE TABLE notes_history_changes (\
-  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
-  table_name TEXT NOT NULL, \
-  row_id TEXT NOT NULL, \
-  ordinal INTEGER NOT NULL, \
-  before_json TEXT, \
-  after_json TEXT, \
-  PRIMARY KEY (entry_id, table_name, row_id)\
-)";
-const HISTORY_CHANGES_HISTORICAL_SQL: &str = "CREATE TABLE notes_history_changes (\
-  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
-  sequence INTEGER NOT NULL, \
-  table_name TEXT NOT NULL, \
-  row_id TEXT NOT NULL, \
-  before_json TEXT, \
-  after_json TEXT, \
-  PRIMARY KEY (entry_id, sequence)\
-)";
-
-type HistorySchemaObject = (String, String, String, Option<String>);
-
-fn ensure_history_schema(transaction: &Transaction<'_>) -> Result<(), String> {
-    let actual = history_schema_objects(transaction)?;
-    if actual
-        == expected_history_schema_objects(HISTORY_ENTRIES_CURRENT_SQL, HISTORY_CHANGES_CURRENT_SQL)
-    {
-        return Ok(());
-    }
-    if actual
-        == expected_history_schema_objects(
-            HISTORY_ENTRIES_MISSING_COMMAND_KIND_SQL,
-            HISTORY_CHANGES_CURRENT_SQL,
-        )
-    {
-        return transaction
-            .execute_batch(
-                "ALTER TABLE notes_history_entries \
-                 ADD COLUMN command_kind TEXT NOT NULL DEFAULT 'legacy';",
-            )
-            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
-    }
-    if actual
-        == expected_history_schema_objects(
-            HISTORY_ENTRIES_NO_DEFAULT_SQL,
-            HISTORY_CHANGES_CURRENT_SQL,
-        )
-    {
-        return transaction
-            .execute_batch(
-                "ALTER TABLE notes_history_entries \
-                   ADD COLUMN yonalist_command_kind_repair TEXT NOT NULL DEFAULT 'legacy'; \
-                 UPDATE notes_history_entries \
-                   SET yonalist_command_kind_repair = command_kind; \
-                 ALTER TABLE notes_history_entries DROP COLUMN command_kind; \
-                 ALTER TABLE notes_history_entries \
-                   RENAME COLUMN yonalist_command_kind_repair TO command_kind;",
-            )
-            .map_err(|error| format!("Could not repair Notes history command kinds: {error}"));
-    }
-    let is_historical_pair = actual
-        == expected_history_schema_objects(
-            HISTORY_ENTRIES_BACKUP_SQL,
-            HISTORY_CHANGES_HISTORICAL_SQL,
-        )
-        || actual
-            == expected_history_schema_objects(
-                HISTORY_ENTRIES_HYBRID_SQL,
-                HISTORY_CHANGES_HISTORICAL_SQL,
-            );
-    if is_historical_pair {
-        validate_historical_history_data(transaction)?;
-        return migrate_historical_history_schema(transaction);
-    }
-
-    let command_kind = transaction
-        .prepare("PRAGMA table_info(notes_history_entries)")
-        .and_then(|mut statement| {
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)? != 0,
-                        row.get::<_, Option<String>>(4)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .map_err(|error| format!("Could not inspect Notes history command kinds: {error}"))?
-        .into_iter()
-        .find(|(name, _, _, _)| name == "command_kind");
-    match command_kind {
-        None => Err(noncanonical_history_schema_error()),
-        Some((_, column_type, not_null, default_value))
-            if column_type == "TEXT"
-                && not_null
-                && matches!(default_value.as_deref(), None | Some("'legacy'")) =>
-        {
-            Err(noncanonical_history_schema_error())
-        }
-        Some((_, column_type, not_null, default_value)) => Err(format!(
-            "Notes history command_kind has incompatible schema metadata \
-             (type {column_type:?}, not-null {not_null}, default {default_value:?}); \
-             expected TEXT NOT NULL DEFAULT 'legacy'."
-        )),
-    }
-}
-
-fn normalize_schema_sql(sql: Option<String>) -> Option<String> {
-    sql.map(|sql| {
-        sql.chars()
-            .filter(|character| !character.is_whitespace())
-            .collect()
-    })
-}
-
-fn history_schema_objects(
-    transaction: &Transaction<'_>,
-) -> Result<Vec<HistorySchemaObject>, String> {
-    let mut objects = transaction
-        .prepare(
-            "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-             WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
-                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
-             UNION ALL \
-             SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
-             WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
-                OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0",
-        )
-        .and_then(|mut statement| {
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        normalize_schema_sql(row.get::<_, Option<String>>(3)?),
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .map_err(|error| format!("Could not inspect Notes history schema objects: {error}"))?;
-    objects.sort();
-    Ok(objects)
-}
-
-fn expected_history_schema_objects(
-    entries_sql: &str,
-    changes_sql: &str,
-) -> Vec<HistorySchemaObject> {
-    let mut expected = vec![
-        (
-            "index".to_string(),
-            "notes_history_session_sequence".to_string(),
-            "notes_history_entries".to_string(),
-            normalize_schema_sql(Some(
-                "CREATE UNIQUE INDEX notes_history_session_sequence \
-                 ON notes_history_entries(session_id, sequence)"
-                    .to_string(),
-            )),
-        ),
-        (
-            "index".to_string(),
-            "sqlite_autoindex_notes_history_entries_1".to_string(),
-            "notes_history_entries".to_string(),
-            None,
-        ),
-        (
-            "index".to_string(),
-            "sqlite_autoindex_notes_history_changes_1".to_string(),
-            "notes_history_changes".to_string(),
-            None,
-        ),
-        (
-            "table".to_string(),
-            "notes_history_changes".to_string(),
-            "notes_history_changes".to_string(),
-            normalize_schema_sql(Some(changes_sql.to_string())),
-        ),
-        (
-            "table".to_string(),
-            "notes_history_entries".to_string(),
-            "notes_history_entries".to_string(),
-            normalize_schema_sql(Some(entries_sql.to_string())),
-        ),
-    ];
-    expected.sort();
-    expected
-}
-
-fn noncanonical_history_schema_error() -> String {
-    "Notes history command_kind repair requires the canonical legacy schema without \
-     additional clauses or dependent objects."
-        .to_string()
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct HistoricalNodeSnapshot {
-    id: String,
-    parent_id: Option<String>,
-    sort_key: i64,
-    title: String,
-    note: String,
-    layout_mode: String,
-    is_collapsed: i64,
-    is_starred: i64,
-    completed_at: Option<String>,
-    created_at: String,
-    updated_at: String,
-    deleted_at: Option<String>,
-    deleted_batch_id: Option<String>,
-    archived_at: Option<String>,
-    archive_root_id: Option<String>,
-}
-
-#[allow(dead_code)]
-#[derive(Deserialize)]
-struct HistoricalAttachmentSnapshot {
-    id: String,
-    node_id: String,
-    sort_key: i64,
-    relative_path: String,
-    content_hash: String,
-    original_name: String,
-    mime_type: String,
-    byte_size: i64,
-    intrinsic_width: i64,
-    intrinsic_height: i64,
-    display_width: i64,
-    created_at: String,
-    updated_at: String,
-}
-
-fn validate_historical_snapshot(
-    table_name: &str,
-    row_id: &str,
-    snapshot: &str,
-) -> Result<(), String> {
-    let snapshot_id = match table_name {
-        "notes_nodes" => serde_json::from_str::<HistoricalNodeSnapshot>(snapshot)
-            .map(|snapshot| snapshot.id)
-            .map_err(|error| format!("Could not decode historical Notes node snapshot: {error}"))?,
-        "notes_attachments" => serde_json::from_str::<HistoricalAttachmentSnapshot>(snapshot)
-            .map(|snapshot| snapshot.id)
-            .map_err(|error| {
-                format!("Could not decode historical Notes attachment snapshot: {error}")
-            })?,
-        _ => {
-            return Err(format!(
-                "Unsupported historical Notes history table {table_name}."
-            ))
-        }
-    };
-    if snapshot_id != row_id {
-        return Err(
-            "A historical Notes snapshot row ID does not match its history row.".to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn validate_historical_history_data(transaction: &Transaction<'_>) -> Result<(), String> {
-    let repair_name_exists: bool = transaction
-        .query_row(
-            "SELECT EXISTS(\
-               SELECT 1 FROM sqlite_schema \
-               WHERE name IN ('notes_history_entries_legacy', 'notes_history_changes_legacy') \
-                  OR instr(lower(COALESCE(sql, '')), 'notes_history_entries_legacy') > 0 \
-                  OR instr(lower(COALESCE(sql, '')), 'notes_history_changes_legacy') > 0 \
-               UNION ALL \
-               SELECT 1 FROM sqlite_temp_schema \
-               WHERE name IN ('notes_history_entries_legacy', 'notes_history_changes_legacy') \
-                  OR instr(lower(COALESCE(sql, '')), 'notes_history_entries_legacy') > 0 \
-                  OR instr(lower(COALESCE(sql, '')), 'notes_history_changes_legacy') > 0\
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not inspect Notes history repair names: {error}"))?;
-    if repair_name_exists {
-        return Err(noncanonical_history_schema_error());
-    }
-    let has_orphan: bool = transaction
-        .query_row(
-            "SELECT EXISTS(\
-               SELECT 1 FROM notes_history_changes change \
-               LEFT JOIN notes_history_entries entry ON entry.id = change.entry_id \
-               WHERE entry.id IS NULL\
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not validate historical Notes history owners: {error}"))?;
-    if has_orphan {
-        return Err("Historical Notes history contains orphaned changes.".to_string());
-    }
-    let has_unsupported_table: bool = transaction
-        .query_row(
-            "SELECT EXISTS(\
-               SELECT 1 FROM notes_history_changes \
-               WHERE table_name NOT IN ('notes_nodes', 'notes_attachments')\
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not validate historical Notes history tables: {error}"))?;
-    if has_unsupported_table {
-        return Err("Historical Notes history contains unsupported tables.".to_string());
-    }
-    let snapshots = transaction
-        .prepare(
-            "SELECT table_name, row_id, before_json, after_json \
-             FROM notes_history_changes ORDER BY entry_id, sequence",
-        )
-        .and_then(|mut statement| {
-            statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                    ))
-                })?
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .map_err(|error| format!("Could not read historical Notes snapshots: {error}"))?;
-    for (table_name, row_id, before_json, after_json) in snapshots {
-        if let Some(snapshot) = before_json.as_deref() {
-            validate_historical_snapshot(&table_name, &row_id, snapshot)?;
-        }
-        if let Some(snapshot) = after_json.as_deref() {
-            validate_historical_snapshot(&table_name, &row_id, snapshot)?;
-        }
-    }
-    // Current journaling keeps the first state and last state for each touched row.
-    let has_broken_chain: bool = transaction
-        .query_row(
-            "WITH ordered AS (\
-               SELECT before_json, \
-                      lag(after_json) OVER (\
-                        PARTITION BY entry_id, table_name, row_id ORDER BY sequence\
-                      ) AS previous_after, \
-                      row_number() OVER (\
-                        PARTITION BY entry_id, table_name, row_id ORDER BY sequence\
-                      ) AS position \
-               FROM notes_history_changes\
-             ) \
-             SELECT EXISTS(\
-               SELECT 1 FROM ordered \
-               WHERE position > 1 AND NOT (previous_after IS before_json)\
-             )",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| {
-            format!("Could not validate historical Notes history continuity: {error}")
-        })?;
-    if has_broken_chain {
-        return Err(
-            "Historical Notes history changes must form a contiguous state chain.".to_string(),
-        );
-    }
-    Ok(())
-}
-
-fn migrate_historical_history_schema(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction
-        .execute_batch(
-            r#"
-            ALTER TABLE notes_history_changes RENAME TO notes_history_changes_legacy;
-            ALTER TABLE notes_history_entries RENAME TO notes_history_entries_legacy;
-
-            CREATE TABLE notes_history_entries (
-              id TEXT PRIMARY KEY,
-              session_id TEXT NOT NULL,
-              sequence INTEGER NOT NULL,
-              is_undone INTEGER NOT NULL DEFAULT 0,
-              estimated_bytes INTEGER NOT NULL DEFAULT 0,
-              command_kind TEXT NOT NULL DEFAULT 'legacy'
-            );
-            INSERT INTO notes_history_entries(
-              id, session_id, sequence, is_undone, estimated_bytes, command_kind
-            )
-              SELECT id, session_id, sequence, is_undone, estimated_bytes, command_kind
-              FROM notes_history_entries_legacy;
-
-            CREATE TABLE notes_history_changes (
-              entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
-              table_name TEXT NOT NULL,
-              row_id TEXT NOT NULL,
-              ordinal INTEGER NOT NULL,
-              before_json TEXT,
-              after_json TEXT,
-              PRIMARY KEY (entry_id, table_name, row_id)
-            );
-            WITH grouped AS (
-              SELECT entry_id, table_name, row_id,
-                     MIN(sequence) AS first_sequence,
-                     MAX(sequence) AS last_sequence
-              FROM notes_history_changes_legacy
-              GROUP BY entry_id, table_name, row_id
-            )
-            INSERT INTO notes_history_changes(
-              entry_id, table_name, row_id, ordinal, before_json, after_json
-            )
-              SELECT grouped.entry_id, grouped.table_name, grouped.row_id,
-                     grouped.first_sequence, first.before_json, last.after_json
-              FROM grouped
-              JOIN notes_history_changes_legacy first
-                ON first.entry_id = grouped.entry_id
-               AND first.sequence = grouped.first_sequence
-              JOIN notes_history_changes_legacy last
-                ON last.entry_id = grouped.entry_id
-               AND last.sequence = grouped.last_sequence
-              WHERE NOT (first.before_json IS last.after_json);
-
-            DELETE FROM notes_history_entries
-              WHERE NOT EXISTS (
-                SELECT 1 FROM notes_history_changes change
-                WHERE change.entry_id = notes_history_entries.id
-              );
-            UPDATE notes_history_entries SET estimated_bytes = (
-              SELECT COALESCE(SUM(
-                length(CAST(COALESCE(before_json, '') AS BLOB)) +
-                length(CAST(COALESCE(after_json, '') AS BLOB))
-              ), 0)
-              FROM notes_history_changes
-              WHERE entry_id = notes_history_entries.id
-            );
-
-            DROP TABLE notes_history_changes_legacy;
-            DROP TABLE notes_history_entries_legacy;
-            CREATE UNIQUE INDEX notes_history_session_sequence
-              ON notes_history_entries(session_id, sequence);
-            "#,
-        )
-        .map_err(|error| format!("Could not migrate historical Notes history: {error}"))
-}
-
-fn ensure_lifecycle_search_version(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction
-        .execute_batch(
-            r#"
-            CREATE VIRTUAL TABLE IF NOT EXISTS notes_search_lifecycle USING fts5(
-              node_id UNINDEXED,
-              title,
-              note,
-              tokenize = 'unicode61'
-            );
-
-            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_insert
-            AFTER INSERT ON notes_nodes
-            BEGIN
-              INSERT INTO notes_search_lifecycle (node_id, title, note)
-              VALUES (NEW.id, NEW.title, NEW.note);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_update
-            AFTER UPDATE OF title, note ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
-              INSERT INTO notes_search_lifecycle (node_id, title, note)
-              VALUES (NEW.id, NEW.title, NEW.note);
-            END;
-
-            CREATE TRIGGER IF NOT EXISTS notes_nodes_lifecycle_search_delete
-            AFTER DELETE ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search_lifecycle WHERE node_id = OLD.id;
-            END;
-            "#,
-        )
-        .map_err(|error| format!("Could not ensure the lifecycle Notes search index: {error}"))?;
-
-    let stored_version = transaction
-        .query_row(
-            "SELECT value_json FROM notes_preferences WHERE key = ?1",
-            [NOTE_LIFECYCLE_SEARCH_VERSION_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| format!("Could not read the lifecycle Notes search version: {error}"))?
-        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
-    if stored_version.is_some_and(|version| version >= NOTE_LIFECYCLE_SEARCH_VERSION) {
-        return Ok(());
-    }
-
-    transaction
-        .execute_batch(
-            "DELETE FROM notes_search_lifecycle; \
-             INSERT INTO notes_search_lifecycle (node_id, title, note) \
-             SELECT id, title, note FROM notes_nodes;",
-        )
-        .map_err(|error| format!("Could not rebuild the lifecycle Notes search index: {error}"))?;
-    transaction
-        .execute(
-            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            params![
-                NOTE_LIFECYCLE_SEARCH_VERSION_KEY,
-                NOTE_LIFECYCLE_SEARCH_VERSION.to_string()
-            ],
-        )
-        .map_err(|error| format!("Could not record the lifecycle Notes search version: {error}"))?;
-    Ok(())
-}
-
-fn ensure_tag_tokenizer_version(transaction: &Transaction<'_>) -> Result<(), String> {
-    let stored_version = transaction
-        .query_row(
-            "SELECT value_json FROM notes_preferences WHERE key = ?1",
-            [NOTE_TAG_TOKENIZER_VERSION_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| format!("Could not read the Notes tag tokenizer version: {error}"))?
-        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
-    if stored_version.is_some_and(|version| version >= NOTE_TAG_TOKENIZER_VERSION) {
-        return Ok(());
-    }
-
-    rebuild_all_note_tags(transaction)?;
-    transaction
-        .execute(
-            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            params![
-                NOTE_TAG_TOKENIZER_VERSION_KEY,
-                NOTE_TAG_TOKENIZER_VERSION.to_string()
-            ],
-        )
-        .map_err(|error| format!("Could not record the Notes tag tokenizer version: {error}"))?;
-    Ok(())
-}
-
-// Re-derives the tag index for every node from its current title/note. Callers own
-// the version gating; this only rewrites `notes_tags` rows through `replace_tags`.
-fn rebuild_all_note_tags(transaction: &Transaction<'_>) -> Result<(), String> {
-    let nodes = transaction
-        .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
-        .map_err(|error| format!("Could not prepare the Notes tag index rebuild: {error}"))?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| format!("Could not load Notes for the tag index rebuild: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read Notes for the tag index rebuild: {error}"))?;
-    for (node_id, title, note) in nodes {
-        replace_tags(transaction, &node_id, &title, &note)?;
-    }
-    Ok(())
-}
-
-fn ensure_date_parser_version(
-    transaction: &Transaction<'_>,
-    today: LocalDate,
-) -> Result<(), String> {
-    let stored_version = transaction
-        .query_row(
-            "SELECT value_json FROM notes_preferences WHERE key = ?1",
-            [NOTE_DATE_PARSER_VERSION_KEY],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()
-        .map_err(|error| format!("Could not read the Notes date parser version: {error}"))?
-        .and_then(|value| serde_json::from_str::<i64>(&value).ok());
-    if stored_version.is_some_and(|version| version >= NOTE_DATE_PARSER_VERSION) {
-        return Ok(());
-    }
-
-    let nodes = transaction
-        .prepare("SELECT id, title, note FROM notes_nodes ORDER BY id")
-        .map_err(|error| format!("Could not prepare the Notes date index rebuild: {error}"))?
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(|error| format!("Could not load Notes for the date index rebuild: {error}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Could not read Notes for the date index rebuild: {error}"))?;
-    for (node_id, title, note) in nodes {
-        replace_dates(transaction, &node_id, &title, &note, today)?;
-    }
-    transaction
-        .execute(
-            "INSERT INTO notes_preferences (key, value_json) VALUES (?1, ?2) \
-             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            params![
-                NOTE_DATE_PARSER_VERSION_KEY,
-                NOTE_DATE_PARSER_VERSION.to_string()
-            ],
-        )
-        .map_err(|error| format!("Could not record the Notes date parser version: {error}"))?;
     Ok(())
 }
 
@@ -1069,217 +265,6 @@ fn is_database_busy(error: &Error) -> bool {
         Error::SqliteFailure(details, _)
             if matches!(details.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
     )
-}
-
-fn create_version_one_schema(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction
-        .execute_batch(
-            r#"
-            CREATE TABLE notes_nodes (
-              id TEXT PRIMARY KEY,
-              parent_id TEXT REFERENCES notes_nodes(id),
-              sort_key INTEGER NOT NULL,
-              title TEXT NOT NULL DEFAULT '',
-              note TEXT NOT NULL DEFAULT '',
-              layout_mode TEXT NOT NULL DEFAULT 'bullets',
-              is_collapsed INTEGER NOT NULL DEFAULT 0,
-              is_starred INTEGER NOT NULL DEFAULT 0,
-              completed_at TEXT,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              deleted_at TEXT
-            );
-
-            CREATE INDEX notes_nodes_active_parent_order
-              ON notes_nodes(parent_id, deleted_at, sort_key);
-
-            CREATE TABLE notes_tags (
-              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
-              tag TEXT NOT NULL,
-              normalized_tag TEXT NOT NULL,
-              PRIMARY KEY (node_id, normalized_tag)
-            );
-
-            CREATE INDEX notes_tags_normalized_tag ON notes_tags(normalized_tag);
-
-            CREATE TABLE notes_preferences (
-              key TEXT PRIMARY KEY,
-              value_json TEXT NOT NULL
-            );
-
-            CREATE VIRTUAL TABLE notes_search USING fts5(
-              node_id UNINDEXED,
-              title,
-              note,
-              tokenize = 'unicode61'
-            );
-
-            CREATE TRIGGER notes_nodes_search_insert
-            AFTER INSERT ON notes_nodes
-            WHEN NEW.deleted_at IS NULL
-            BEGIN
-              INSERT INTO notes_search (node_id, title, note)
-              VALUES (NEW.id, NEW.title, NEW.note);
-            END;
-
-            CREATE TRIGGER notes_nodes_search_update
-            AFTER UPDATE OF title, note, deleted_at ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search WHERE node_id = OLD.id;
-              INSERT INTO notes_search (node_id, title, note)
-              SELECT NEW.id, NEW.title, NEW.note
-              WHERE NEW.deleted_at IS NULL;
-            END;
-
-            CREATE TRIGGER notes_nodes_search_delete
-            AFTER DELETE ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search WHERE node_id = OLD.id;
-            END;
-            "#,
-        )
-        .map_err(|error| format!("Could not migrate Notes storage to version one: {error}"))
-}
-
-fn migrate_version_one_to_two(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction
-        .execute_batch(
-            r#"
-            ALTER TABLE notes_nodes ADD COLUMN deleted_batch_id TEXT;
-
-            UPDATE notes_nodes
-            SET deleted_batch_id = 'legacy:' || deleted_at
-            WHERE deleted_at IS NOT NULL;
-
-            CREATE INDEX notes_nodes_deleted_batch
-              ON notes_nodes(deleted_batch_id, parent_id);
-            "#,
-        )
-        .map_err(|error| format!("Could not migrate Notes storage to version two: {error}"))
-}
-
-fn migrate_version_two_to_three(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction
-        .execute_batch(
-            r#"
-            ALTER TABLE notes_nodes ADD COLUMN archived_at TEXT;
-            ALTER TABLE notes_nodes ADD COLUMN archive_root_id TEXT REFERENCES notes_nodes(id);
-
-            CREATE INDEX notes_nodes_archive_parent_order
-              ON notes_nodes(archived_at, parent_id, sort_key);
-
-            DROP TRIGGER notes_nodes_search_insert;
-            DROP TRIGGER notes_nodes_search_update;
-            DROP TRIGGER notes_nodes_search_delete;
-
-            DROP INDEX notes_tags_normalized_tag;
-            ALTER TABLE notes_tags RENAME TO notes_tags_v2;
-            CREATE TABLE notes_tags (
-              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
-              prefix TEXT NOT NULL CHECK (prefix IN ('#', '@')),
-              tag TEXT NOT NULL,
-              normalized_tag TEXT NOT NULL,
-              PRIMARY KEY (node_id, prefix, normalized_tag)
-            );
-            INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag)
-              SELECT node_id, '#', tag, normalized_tag FROM notes_tags_v2;
-            DROP TABLE notes_tags_v2;
-
-            CREATE INDEX notes_tags_normalized_tag ON notes_tags(normalized_tag);
-            CREATE INDEX notes_tags_prefix_normalized_tag
-              ON notes_tags(prefix, normalized_tag, node_id);
-
-            CREATE TABLE notes_dates (
-              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
-              field TEXT NOT NULL CHECK (field IN ('title', 'note')),
-              start_utf16 INTEGER NOT NULL,
-              end_utf16 INTEGER NOT NULL,
-              normalized_start TEXT NOT NULL,
-              normalized_end TEXT NOT NULL,
-              token_text TEXT NOT NULL,
-              PRIMARY KEY (node_id, field, start_utf16, end_utf16)
-            );
-            CREATE INDEX notes_dates_range
-              ON notes_dates(normalized_start, normalized_end, node_id);
-
-            CREATE TABLE notes_attachments (
-              id TEXT PRIMARY KEY,
-              node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
-              sort_key INTEGER NOT NULL,
-              relative_path TEXT NOT NULL,
-              content_hash TEXT NOT NULL,
-              original_name TEXT NOT NULL,
-              mime_type TEXT NOT NULL,
-              byte_size INTEGER NOT NULL,
-              intrinsic_width INTEGER NOT NULL,
-              intrinsic_height INTEGER NOT NULL,
-              display_width INTEGER NOT NULL,
-              created_at TEXT NOT NULL,
-              updated_at TEXT NOT NULL
-            );
-            CREATE INDEX notes_attachments_node_order
-              ON notes_attachments(node_id, sort_key, id);
-
-            CREATE TABLE notes_history_entries (
-              id TEXT PRIMARY KEY,
-              session_id TEXT NOT NULL,
-              sequence INTEGER NOT NULL,
-              is_undone INTEGER NOT NULL DEFAULT 0,
-              estimated_bytes INTEGER NOT NULL DEFAULT 0,
-              command_kind TEXT NOT NULL DEFAULT 'legacy'
-            );
-            CREATE UNIQUE INDEX notes_history_session_sequence
-              ON notes_history_entries(session_id, sequence);
-
-            CREATE TABLE notes_history_changes (
-              entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
-              table_name TEXT NOT NULL,
-              row_id TEXT NOT NULL,
-              ordinal INTEGER NOT NULL,
-              before_json TEXT,
-              after_json TEXT,
-              PRIMARY KEY (entry_id, table_name, row_id)
-            );
-
-            DELETE FROM notes_search;
-            INSERT INTO notes_search (node_id, title, note)
-              SELECT id, title, note FROM notes_nodes
-              WHERE deleted_at IS NULL AND archived_at IS NULL;
-
-            CREATE TRIGGER notes_nodes_search_insert
-            AFTER INSERT ON notes_nodes
-            WHEN NEW.deleted_at IS NULL AND NEW.archived_at IS NULL
-            BEGIN
-              INSERT INTO notes_search (node_id, title, note)
-              VALUES (NEW.id, NEW.title, NEW.note);
-            END;
-
-            CREATE TRIGGER notes_nodes_search_update
-            AFTER UPDATE OF title, note, deleted_at, archived_at ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search WHERE node_id = OLD.id;
-              INSERT INTO notes_search (node_id, title, note)
-              SELECT NEW.id, NEW.title, NEW.note
-              WHERE NEW.deleted_at IS NULL AND NEW.archived_at IS NULL;
-            END;
-
-            CREATE TRIGGER notes_nodes_search_delete
-            AFTER DELETE ON notes_nodes
-            BEGIN
-              DELETE FROM notes_search WHERE node_id = OLD.id;
-            END;
-            "#,
-        )
-        .map_err(|error| format!("Could not migrate Notes storage to version three: {error}"))
-}
-
-// Version four re-derives every node's tags under the NFC-normalizing tokenizer and
-// rebuilds the tag index, unifying tags whose stored text was decomposed (NFD) — a
-// common macOS spelling — with their composed (NFC) equivalents. No table shape
-// changes; only `notes_tags` rows are rewritten.
-fn migrate_version_three_to_four(transaction: &Transaction<'_>) -> Result<(), String> {
-    rebuild_all_note_tags(transaction)
-        .map_err(|error| format!("Could not migrate Notes storage to version four: {error}"))
 }
 
 #[derive(Clone)]
@@ -4836,14 +3821,13 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 mod tests {
     use super::{
         archive_node, collapse_all, connect_notes_db, create_attachment,
-        create_attachments_coordinated_for_node, create_node, create_node_at,
-        create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
-        expand_all, import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts,
-        load_workspace, migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
-        observe_next_migration_busy, open_notes_export_db, preflight_existing_notes_schema,
+        create_attachments_coordinated_for_node, create_node, create_node_at, delete_database,
+        duplicate_node, duplicate_node_at, empty_trash, expand_all, import_subtree_at,
+        initialize_notes_db, list_tags, list_tags_with_counts, load_workspace, move_node,
+        node_attachments, notes_db_path, observe_next_initialization_busy, open_notes_export_db,
         remove_empty_node, restore_attachment, restore_node, restore_node_at, search_nodes,
-        search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
-        sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
+        search_nodes_at, search_nodes_structured, seed_notes_onboarding, soft_delete_node,
+        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
         toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
         update_node_at, NewAttachment, NoteAttachment, SORT_KEY_STEP,
     };
@@ -4919,25 +3903,6 @@ mod tests {
         connection
     }
 
-    fn seed_version_one_database(connection: &mut Connection) {
-        let transaction = connection.transaction().expect("version one transaction");
-        create_version_one_schema(&transaction).expect("create version one schema");
-        transaction
-            .pragma_update(None, "user_version", 1)
-            .expect("record version one");
-        transaction.commit().expect("commit version one schema");
-    }
-
-    fn seed_version_two_database(connection: &mut Connection) {
-        seed_version_one_database(connection);
-        let transaction = connection.transaction().expect("version two transaction");
-        migrate_version_one_to_two(&transaction).expect("migrate to version two");
-        transaction
-            .pragma_update(None, "user_version", 2)
-            .expect("record version two");
-        transaction.commit().expect("commit version two schema");
-    }
-
     #[test]
     fn export_open_rejects_a_missing_database_without_creating_notes_storage() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -4949,35 +3914,6 @@ mod tests {
         assert!(error.contains("does not exist"));
         assert!(!vault_path.join(".yonalist").exists());
         assert!(!notes_db_path(vault_path.to_str().expect("vault path")).exists());
-    }
-
-    #[test]
-    fn export_open_rejects_a_future_schema_without_migration_or_file_mutation() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().join("vault");
-        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
-        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
-            .expect("create metadata fixture");
-        let connection = Connection::open(&database_path).expect("create database fixture");
-        connection
-            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 5;")
-            .expect("seed future schema");
-        drop(connection);
-        let bytes_before = std::fs::read(&database_path).expect("read database before export open");
-
-        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
-            .expect_err("future schema must be rejected");
-
-        assert_eq!(
-            error,
-            "This Notes database uses unsupported schema version 5."
-        );
-        assert_eq!(
-            std::fs::read(&database_path).expect("read database after export open"),
-            bytes_before
-        );
-        assert!(!database_path.with_file_name("notes.sqlite-wal").exists());
-        assert!(!database_path.with_file_name("notes.sqlite-shm").exists());
     }
 
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
@@ -5044,412 +3980,6 @@ mod tests {
             })
     }
 
-    fn history_schema_snapshot(
-        connection: &Connection,
-    ) -> (
-        Vec<(String, String, String, Option<String>)>,
-        Vec<(String, String, i64, String)>,
-        Vec<(String, String, String, i64, Option<String>, Option<String>)>,
-    ) {
-        let objects = connection
-            .prepare(
-                "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-                 WHERE tbl_name = 'notes_history_entries' \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                 UNION ALL \
-                 SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
-                 WHERE tbl_name = 'notes_history_entries' \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                 ORDER BY 1, 2, 3, 4",
-            )
-            .expect("prepare history schema snapshot")
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .expect("query history schema snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect history schema snapshot");
-        let entries = connection
-            .prepare(
-                "SELECT id, session_id, sequence, command_kind \
-                 FROM notes_history_entries ORDER BY id",
-            )
-            .expect("prepare history entry snapshot")
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .expect("query history entry snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect history entry snapshot");
-        let changes = connection
-            .prepare(
-                "SELECT entry_id, table_name, row_id, ordinal, before_json, after_json \
-                 FROM notes_history_changes ORDER BY entry_id, table_name, row_id",
-            )
-            .expect("prepare history change snapshot")
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            })
-            .expect("query history change snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect history change snapshot");
-        (objects, entries, changes)
-    }
-
-    fn seed_no_default_history_schema(
-        connection: &Connection,
-        command_kind_definition: &str,
-        command_kind: &str,
-    ) {
-        connection
-            .execute_batch(&format!(
-                r#"
-                DROP TABLE notes_history_changes;
-                DROP TABLE notes_history_entries;
-                CREATE TABLE notes_history_entries (
-                  id TEXT PRIMARY KEY,
-                  session_id TEXT NOT NULL,
-                  sequence INTEGER NOT NULL,
-                  is_undone INTEGER NOT NULL DEFAULT 0,
-                  estimated_bytes INTEGER NOT NULL DEFAULT 0,
-                  command_kind {command_kind_definition}
-                );
-                CREATE UNIQUE INDEX notes_history_session_sequence
-                  ON notes_history_entries(session_id, sequence);
-                CREATE TABLE notes_history_changes (
-                  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
-                  table_name TEXT NOT NULL,
-                  row_id TEXT NOT NULL,
-                  ordinal INTEGER NOT NULL,
-                  before_json TEXT,
-                  after_json TEXT,
-                  PRIMARY KEY (entry_id, table_name, row_id)
-                );
-                "#
-            ))
-            .expect("seed no-default history schema");
-        connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind\
-                 ) VALUES (?1, ?2, 1, ?3)",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                    command_kind
-                ],
-            )
-            .expect("seed no-default history entry");
-        connection
-            .execute(
-                "INSERT INTO notes_history_changes(\
-                   entry_id, table_name, row_id, ordinal, before_json, after_json\
-                 ) VALUES (?1, 'notes_nodes', 'preserved-row', 0, 'before', 'after')",
-                ["00000000-0000-4000-8000-000000000001"],
-            )
-            .expect("seed no-default history child");
-    }
-
-    fn seed_historical_history_schema(connection: &Connection, hybrid: bool) {
-        let entries_sql = if hybrid {
-            r#"
-            CREATE TABLE notes_history_entries (
-              id TEXT PRIMARY KEY,
-              session_id TEXT NOT NULL,
-              sequence INTEGER NOT NULL,
-              is_undone INTEGER NOT NULL DEFAULT 0,
-              estimated_bytes INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL,
-              command_kind TEXT NOT NULL DEFAULT 'legacy'
-            );
-            "#
-        } else {
-            r#"
-            CREATE TABLE notes_history_entries (
-              id TEXT PRIMARY KEY,
-              session_id TEXT NOT NULL,
-              sequence INTEGER NOT NULL,
-              command_kind TEXT NOT NULL,
-              is_undone INTEGER NOT NULL DEFAULT 0,
-              estimated_bytes INTEGER NOT NULL DEFAULT 0,
-              created_at TEXT NOT NULL
-            );
-            "#
-        };
-        connection
-            .execute_batch(&format!(
-                r#"
-                DROP TABLE notes_history_changes;
-                DROP TABLE notes_history_entries;
-                {entries_sql}
-                CREATE UNIQUE INDEX notes_history_session_sequence
-                  ON notes_history_entries(session_id, sequence);
-                CREATE TABLE notes_history_changes (
-                  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
-                  sequence INTEGER NOT NULL,
-                  table_name TEXT NOT NULL,
-                  row_id TEXT NOT NULL,
-                  before_json TEXT,
-                  after_json TEXT,
-                  PRIMARY KEY (entry_id, sequence)
-                );
-                "#
-            ))
-            .expect("seed historical history schema");
-    }
-
-    fn node_history_snapshot(connection: &Connection, node_id: &str, title: &str) -> String {
-        connection
-            .query_row(
-                "SELECT json_object(\
-                   'id', node.id, 'parent_id', node.parent_id, 'sort_key', node.sort_key, \
-                   'title', ?2, 'note', node.note, 'layout_mode', node.layout_mode, \
-                   'is_collapsed', node.is_collapsed, 'is_starred', node.is_starred, \
-                   'completed_at', node.completed_at, 'created_at', node.created_at, \
-                   'updated_at', node.updated_at, 'deleted_at', node.deleted_at, \
-                   'deleted_batch_id', node.deleted_batch_id, \
-                   'archived_at', node.archived_at, 'archive_root_id', node.archive_root_id\
-                 ) FROM notes_nodes node WHERE node.id = ?1",
-                params![node_id, title],
-                |row| row.get(0),
-            )
-            .expect("build node history snapshot")
-    }
-
-    fn attachment_history_snapshot(connection: &Connection, attachment_id: &str) -> String {
-        connection
-            .query_row(
-                "SELECT json_object(\
-                   'id', attachment.id, 'node_id', attachment.node_id, \
-                   'sort_key', attachment.sort_key, 'relative_path', attachment.relative_path, \
-                   'content_hash', attachment.content_hash, \
-                   'original_name', attachment.original_name, 'mime_type', attachment.mime_type, \
-                   'byte_size', attachment.byte_size, \
-                   'intrinsic_width', attachment.intrinsic_width, \
-                   'intrinsic_height', attachment.intrinsic_height, \
-                   'display_width', attachment.display_width, \
-                   'created_at', attachment.created_at, 'updated_at', attachment.updated_at\
-                 ) FROM notes_attachments attachment WHERE attachment.id = ?1",
-                [attachment_id],
-                |row| row.get(0),
-            )
-            .expect("build attachment history snapshot")
-    }
-
-    fn historical_history_snapshot(
-        connection: &Connection,
-    ) -> (
-        Vec<(String, String, String, Option<String>)>,
-        Vec<(String, String, i64, String, i64, i64, String)>,
-        Vec<(String, i64, String, String, Option<String>, Option<String>)>,
-    ) {
-        let objects = connection
-            .prepare(
-                "SELECT type, name, tbl_name, sql FROM sqlite_schema \
-                 WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
-                 UNION ALL \
-                 SELECT type, name, tbl_name, sql FROM sqlite_temp_schema \
-                 WHERE tbl_name IN ('notes_history_entries', 'notes_history_changes') \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_entries') > 0 \
-                    OR instr(lower(COALESCE(sql, '')), 'notes_history_changes') > 0 \
-                 ORDER BY 1, 2, 3, 4",
-            )
-            .expect("prepare historical history schema snapshot")
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .expect("query historical history schema snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect historical history schema snapshot");
-        let entries = connection
-            .prepare(
-                "SELECT id, session_id, sequence, command_kind, is_undone, estimated_bytes, \
-                        created_at \
-                 FROM notes_history_entries ORDER BY id",
-            )
-            .expect("prepare historical history entry snapshot")
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            })
-            .expect("query historical history entry snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect historical history entry snapshot");
-        let changes = connection
-            .prepare(
-                "SELECT entry_id, sequence, table_name, row_id, before_json, after_json \
-                 FROM notes_history_changes ORDER BY entry_id, sequence",
-            )
-            .expect("prepare historical history change snapshot")
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                ))
-            })
-            .expect("query historical history change snapshot")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect historical history change snapshot");
-        (objects, entries, changes)
-    }
-
-    fn assert_invalid_historical_snapshot_rejected(
-        connection: &mut Connection,
-        table_name: &str,
-        row_id: &str,
-        before_json: Option<&str>,
-        after_json: Option<&str>,
-        expected_error: &str,
-    ) {
-        seed_historical_history_schema(connection, false);
-        connection
-            .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
-            .expect("drop post-history-repair index");
-        connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind, created_at\
-                 ) VALUES (?1, ?2, 1, 'updateText', '2026-07-12T00:00:00.000Z')",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ],
-            )
-            .expect("seed invalid snapshot history entry");
-        connection
-            .execute(
-                "INSERT INTO notes_history_changes(\
-                   entry_id, sequence, table_name, row_id, before_json, after_json\
-                 ) VALUES (?1, 1, ?2, ?3, ?4, ?5)",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    table_name,
-                    row_id,
-                    before_json,
-                    after_json
-                ],
-            )
-            .expect("seed invalid historical snapshot");
-        let snapshot = historical_history_snapshot(connection);
-
-        let error = initialize_notes_db(connection)
-            .expect_err("invalid historical snapshot must be rejected");
-
-        assert!(error.contains(expected_error), "{error}");
-        assert_eq!(historical_history_snapshot(connection), snapshot);
-        assert!(!object_exists(
-            connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    fn assert_historical_history_pair_repairs_and_replays_trash(hybrid: bool) {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("vault path");
-        {
-            let mut connection = connect_notes_db(vault_path).expect("create notes database");
-            create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
-            seed_historical_history_schema(&connection, hybrid);
-        }
-
-        let mut connection = connect_notes_db(vault_path).expect("repair historical history pair");
-        assert_eq!(
-            table_columns(&connection, "notes_history_entries"),
-            vec![
-                "id",
-                "session_id",
-                "sequence",
-                "is_undone",
-                "estimated_bytes",
-                "command_kind"
-            ]
-        );
-        assert_eq!(
-            table_columns(&connection, "notes_history_changes"),
-            vec![
-                "entry_id",
-                "table_name",
-                "row_id",
-                "ordinal",
-                "before_json",
-                "after_json"
-            ]
-        );
-        assert_eq!(
-            primary_key_columns(&connection, "notes_history_changes"),
-            vec!["entry_id", "table_name", "row_id"]
-        );
-        initialize_notes_db(&mut connection).expect("reinitialize repaired history pair");
-
-        let context = NotesHistoryContext {
-            session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
-            entry_id: "00000000-0000-4000-8000-000000000003".to_string(),
-            command_kind: "trash".to_string(),
-        };
-        with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
-            soft_delete_node(connection, NODE_ID)
-        })
-        .expect("move note to trash after historical history repair");
-
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
-                    [&context.entry_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .expect("stored trash command kind"),
-            "trash"
-        );
-        assert!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM notes_history_changes \
-                     WHERE entry_id = ?1 AND ordinal IS NOT NULL",
-                    [&context.entry_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("stored trash changes")
-                > 0
-        );
-        let undone = undo(
-            &mut connection,
-            &context.session_id,
-            NotesWorkspaceScope::Active,
-        )
-        .expect("undo trash after historical history repair");
-        assert!(undone.workspace.nodes.iter().any(|node| node.id == NODE_ID));
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .expect("historical history foreign key check"),
-            0
-        );
-    }
-
     fn insert_node(
         connection: &Connection,
         id: &str,
@@ -5473,26 +4003,10 @@ mod tests {
             .expect("node count")
     }
 
-    fn test_preference_value(connection: &Connection, key: &str) -> Option<String> {
-        connection
-            .query_row(
-                "SELECT value_json FROM notes_preferences WHERE key = ?1",
-                [key],
-                |row| row.get(0),
-            )
-            .ok()
-    }
-
     fn remove_onboarding_for_test(connection: &Connection) {
         connection
             .execute("DELETE FROM notes_nodes", [])
             .expect("delete onboarding nodes");
-        connection
-            .execute(
-                "DELETE FROM notes_preferences WHERE key = ?1",
-                ["notes.onboarding.v1"],
-            )
-            .expect("delete onboarding marker");
     }
 
     fn insert_tree(connection: &Connection) -> String {
@@ -6862,7 +5376,7 @@ mod tests {
     }
 
     #[test]
-    fn fresh_database_creates_the_complete_version_three_schema() {
+    fn fresh_database_creates_only_the_current_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
         let connection = connect_notes_db(vault_path).expect("connect notes");
@@ -6881,7 +5395,6 @@ mod tests {
         for table in [
             "notes_nodes",
             "notes_tags",
-            "notes_preferences",
             "notes_search",
             "notes_search_lifecycle",
             "notes_dates",
@@ -6936,7 +5449,7 @@ mod tests {
         );
         assert_eq!(
             table_column_metadata(&connection, "notes_history_entries", "command_kind"),
-            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
+            Some(("TEXT".to_string(), 1, None))
         );
         assert_eq!(
             table_columns(&connection, "notes_history_changes"),
@@ -6999,17 +5512,12 @@ mod tests {
                 "불릿을 드래그해 순서와 계층 바꾸기",
             ]
         );
-        assert_eq!(
-            test_preference_value(&connection, "notes.onboarding.v1"),
-            Some("1".to_string())
-        );
-
         initialize_notes_db(&mut connection).expect("reinitialize notes");
         assert_eq!(test_node_count(&connection), 7);
     }
 
     #[test]
-    fn onboarding_marks_but_does_not_modify_an_existing_workspace() {
+    fn onboarding_does_not_modify_an_existing_current_workspace() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
         let mut connection = connect_notes_db(vault_path).expect("connect notes");
@@ -7027,10 +5535,6 @@ mod tests {
                 .expect("existing title"),
             "Existing note"
         );
-        assert_eq!(
-            test_preference_value(&connection, "notes.onboarding.v1"),
-            Some("1".to_string())
-        );
     }
 
     #[test]
@@ -7045,19 +5549,19 @@ mod tests {
         initialize_notes_db(&mut connection).expect("reinitialize notes");
 
         assert_eq!(test_node_count(&connection), 0);
-        assert_eq!(
-            test_preference_value(&connection, "notes.onboarding.v1"),
-            Some("1".to_string())
-        );
     }
 
     #[test]
-    fn onboarding_nodes_and_marker_roll_back_together() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("path");
-        let mut connection = connect_notes_db(vault_path).expect("connect notes");
-        remove_onboarding_for_test(&connection);
+    fn onboarding_schema_and_nodes_roll_back_together() {
+        let mut connection = Connection::open_in_memory().expect("in-memory notes database");
         connection
+            .execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable foreign keys");
+        let transaction = connection.transaction().expect("begin schema transaction");
+        assert!(
+            crate::notes::schema::create_if_missing(&transaction).expect("create current schema")
+        );
+        transaction
             .execute_batch(
                 "CREATE TRIGGER reject_onboarding_child \
                  BEFORE INSERT ON notes_nodes \
@@ -7066,18 +5570,15 @@ mod tests {
             )
             .expect("create rejecting trigger");
 
-        let error = initialize_notes_db(&mut connection).expect_err("seed must fail");
+        let error = seed_notes_onboarding(&transaction).expect_err("seed must fail");
 
         assert!(error.contains("Could not create Notes onboarding guidance"));
-        assert_eq!(test_node_count(&connection), 0);
-        assert_eq!(
-            test_preference_value(&connection, "notes.onboarding.v1"),
-            None
-        );
+        drop(transaction);
+        assert!(!object_exists(&connection, "table", "notes_nodes"));
     }
 
     #[test]
-    fn notes_connection_is_configured_and_migrated_to_version_four() {
+    fn notes_connection_is_configured_for_the_current_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect notes");
@@ -7091,14 +5592,9 @@ mod tests {
         let busy_timeout: i64 = connection
             .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
             .expect("busy timeout");
-        let user_version: i64 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .expect("user version");
-
         assert_eq!(journal_mode, "wal");
         assert_eq!(foreign_keys, 1);
         assert_eq!(busy_timeout, 5_000);
-        assert_eq!(user_version, 4);
         assert!(column_exists(
             &connection,
             "notes_nodes",
@@ -7109,1557 +5605,12 @@ mod tests {
     }
 
     #[test]
-    fn version_three_initialization_repairs_a_missing_archive_ownership_index() {
-        let mut connection = test_connection();
-        connection
-            .execute_batch("DROP INDEX IF EXISTS notes_nodes_archive_root_order;")
-            .expect("drop archive ownership index");
-
-        initialize_notes_db(&mut connection).expect("reinitialize version three database");
-
-        assert!(object_exists(
-            &connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    #[test]
-    fn version_three_initialization_repairs_the_exact_backup_history_pair() {
-        assert_historical_history_pair_repairs_and_replays_trash(false);
-    }
-
-    #[test]
-    fn version_three_initialization_repairs_the_exact_live_hybrid_history_pair() {
-        assert_historical_history_pair_repairs_and_replays_trash(true);
-    }
-
-    #[test]
-    fn version_three_initialization_collapses_contiguous_historical_changes_deterministically() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root final");
-        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Child final");
-        let root_before = node_history_snapshot(&connection, NODE_ID, "Root before");
-        let root_middle = node_history_snapshot(&connection, NODE_ID, "Root middle");
-        let root_final = node_history_snapshot(&connection, NODE_ID, "Root final");
-        let child_before = node_history_snapshot(&connection, CHILD_ID, "Child before");
-        let child_final = node_history_snapshot(&connection, CHILD_ID, "Child final");
-        seed_historical_history_schema(&connection, false);
-        connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind, is_undone, estimated_bytes, created_at\
-                 ) VALUES (?1, ?2, 1, 'updateText', 0, 999, '2026-07-12T00:00:00.000Z')",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ],
-            )
-            .expect("seed populated historical history entry");
-        for (sequence, row_id, before_json, after_json) in [
-            (1, NODE_ID, &root_before, &root_middle),
-            (2, CHILD_ID, &child_before, &child_final),
-            (3, NODE_ID, &root_middle, &root_final),
-        ] {
-            connection
-                .execute(
-                    "INSERT INTO notes_history_changes(\
-                       entry_id, sequence, table_name, row_id, before_json, after_json\
-                     ) VALUES (?1, ?2, 'notes_nodes', ?3, ?4, ?5)",
-                    params![
-                        "00000000-0000-4000-8000-000000000001",
-                        sequence,
-                        row_id,
-                        before_json,
-                        after_json
-                    ],
-                )
-                .expect("seed populated historical history change");
-        }
-
-        initialize_notes_db(&mut connection).expect("migrate populated historical history");
-
-        let changes = connection
-            .prepare(
-                "SELECT row_id, ordinal, before_json, after_json \
-                 FROM notes_history_changes ORDER BY ordinal",
-            )
-            .expect("prepare collapsed historical changes")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .expect("query collapsed historical changes")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect collapsed historical changes");
-        assert_eq!(
-            changes,
-            vec![
-                (
-                    NODE_ID.to_string(),
-                    1,
-                    Some(root_before.clone()),
-                    Some(root_final.clone())
-                ),
-                (
-                    CHILD_ID.to_string(),
-                    2,
-                    Some(child_before.clone()),
-                    Some(child_final.clone())
-                )
-            ]
-        );
-        let (command_kind, estimated_bytes): (String, i64) = connection
-            .query_row(
-                "SELECT command_kind, estimated_bytes FROM notes_history_entries",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("migrated historical history entry");
-        assert_eq!(command_kind, "updateText");
-        assert_eq!(
-            estimated_bytes,
-            i64::try_from(
-                root_before.len() + root_final.len() + child_before.len() + child_final.len()
-            )
-            .expect("estimated historical payload bytes")
-        );
-
-        undo(
-            &mut connection,
-            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            NotesWorkspaceScope::Active,
-        )
-        .expect("undo migrated historical update");
-        let restored_titles = connection
-            .prepare("SELECT id, title FROM notes_nodes ORDER BY id")
-            .expect("prepare restored historical titles")
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .expect("query restored historical titles")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect restored historical titles");
-        assert_eq!(
-            restored_titles,
-            vec![
-                (NODE_ID.to_string(), "Root before".to_string()),
-                (CHILD_ID.to_string(), "Child before".to_string())
-            ]
-        );
-        assert_eq!(
-            connection
-                .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .expect("populated historical history foreign key check"),
-            0
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_malformed_historical_snapshot_json_without_mutation() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root");
-
-        assert_invalid_historical_snapshot_rejected(
-            &mut connection,
-            "notes_nodes",
-            NODE_ID,
-            Some("{"),
-            None,
-            "decode historical Notes node snapshot",
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_mismatched_historical_snapshot_ids_without_mutation() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root");
-        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Child");
-        let mismatched = node_history_snapshot(&connection, CHILD_ID, "Child");
-
-        assert_invalid_historical_snapshot_rejected(
-            &mut connection,
-            "notes_nodes",
-            NODE_ID,
-            None,
-            Some(&mismatched),
-            "row ID does not match",
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_wrong_historical_snapshot_kinds_without_mutation() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root");
-        let attachment_id = insert_test_attachment(&connection, 91, NODE_ID);
-        let attachment = attachment_history_snapshot(&connection, &attachment_id);
-
-        assert_invalid_historical_snapshot_rejected(
-            &mut connection,
-            "notes_nodes",
-            &attachment_id,
-            None,
-            Some(&attachment),
-            "decode historical Notes node snapshot",
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_migrates_valid_node_and_attachment_null_states() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root");
-        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "Deleted child");
-        let attachment_id = insert_test_attachment(&connection, 92, NODE_ID);
-        let deleted_node = node_history_snapshot(&connection, CHILD_ID, "Deleted child");
-        let created_attachment = attachment_history_snapshot(&connection, &attachment_id);
-        connection
-            .execute("DELETE FROM notes_nodes WHERE id = ?1", [CHILD_ID])
-            .expect("apply historical node deletion");
-        seed_historical_history_schema(&connection, false);
-        connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind, created_at\
-                 ) VALUES (?1, ?2, 1, 'mixed', '2026-07-12T00:00:00.000Z')",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ],
-            )
-            .expect("seed valid mixed historical entry");
-        connection
-            .execute(
-                "INSERT INTO notes_history_changes(\
-                   entry_id, sequence, table_name, row_id, before_json, after_json\
-                 ) VALUES (?1, 1, 'notes_nodes', ?2, ?3, NULL)",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    CHILD_ID,
-                    deleted_node
-                ],
-            )
-            .expect("seed valid historical node deletion");
-        connection
-            .execute(
-                "INSERT INTO notes_history_changes(\
-                   entry_id, sequence, table_name, row_id, before_json, after_json\
-                 ) VALUES (?1, 2, 'notes_attachments', ?2, NULL, ?3)",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    attachment_id,
-                    created_attachment
-                ],
-            )
-            .expect("seed valid historical attachment creation");
-
-        initialize_notes_db(&mut connection).expect("migrate valid mixed historical snapshots");
-
-        let migrated = connection
-            .prepare(
-                "SELECT table_name, row_id, before_json, after_json \
-                 FROM notes_history_changes ORDER BY ordinal",
-            )
-            .expect("prepare valid migrated snapshots")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                ))
-            })
-            .expect("query valid migrated snapshots")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect valid migrated snapshots");
-        assert_eq!(
-            migrated,
-            vec![
-                (
-                    "notes_nodes".to_string(),
-                    CHILD_ID.to_string(),
-                    Some(deleted_node),
-                    None
-                ),
-                (
-                    "notes_attachments".to_string(),
-                    attachment_id,
-                    None,
-                    Some(created_attachment)
-                )
-            ]
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_broken_historical_change_chains_without_mutation() {
-        let mut connection = test_connection();
-        insert_node(&connection, NODE_ID, None, 1024, "Root final");
-        let before = node_history_snapshot(&connection, NODE_ID, "Root before");
-        let middle = node_history_snapshot(&connection, NODE_ID, "Root middle");
-        let wrong = node_history_snapshot(&connection, NODE_ID, "Unrelated state");
-        let final_state = node_history_snapshot(&connection, NODE_ID, "Root final");
-        seed_historical_history_schema(&connection, false);
-        connection
-            .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
-            .expect("drop post-history-repair index");
-        connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind, created_at\
-                 ) VALUES (?1, ?2, 1, 'updateText', '2026-07-12T00:00:00.000Z')",
-                params![
-                    "00000000-0000-4000-8000-000000000001",
-                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                ],
-            )
-            .expect("seed broken historical history entry");
-        for (sequence, before_json, after_json) in
-            [(1, &before, &middle), (2, &wrong, &final_state)]
-        {
-            connection
-                .execute(
-                    "INSERT INTO notes_history_changes(\
-                       entry_id, sequence, table_name, row_id, before_json, after_json\
-                     ) VALUES (?1, ?2, 'notes_nodes', ?3, ?4, ?5)",
-                    params![
-                        "00000000-0000-4000-8000-000000000001",
-                        sequence,
-                        NODE_ID,
-                        before_json,
-                        after_json
-                    ],
-                )
-                .expect("seed broken historical history change");
-        }
-        let snapshot = historical_history_snapshot(&connection);
-
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("broken historical history chain must be rejected");
-
-        assert!(error.contains("contiguous"), "{error}");
-        assert_eq!(historical_history_snapshot(&connection), snapshot);
-        assert!(!object_exists(
-            &connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_live_hybrid_dependencies_without_mutation() {
-        let mut connection = test_connection();
-        seed_historical_history_schema(&connection, true);
-        connection
-            .execute_batch(
-                "CREATE TABLE history_repair_audit (events INTEGER NOT NULL); \
-                 INSERT INTO history_repair_audit(events) VALUES (0); \
-                 CREATE TRIGGER unexpected_hybrid_history_update \
-                 AFTER UPDATE ON notes_history_entries \
-                 BEGIN \
-                   UPDATE history_repair_audit SET events = events + 1; \
-                 END; \
-                 DROP INDEX notes_nodes_archive_root_order;",
-            )
-            .expect("seed unexpected live hybrid dependency");
-        let snapshot = historical_history_snapshot(&connection);
-
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("live hybrid history dependency must be rejected");
-
-        assert!(error.contains("canonical legacy schema"), "{error}");
-        assert_eq!(historical_history_snapshot(&connection), snapshot);
-        assert_eq!(
-            connection
-                .query_row("SELECT events FROM history_repair_audit", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .expect("hybrid history repair audit count"),
-            0
-        );
-        assert!(!object_exists(
-            &connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    #[test]
-    fn version_three_initialization_repairs_history_command_kind() {
-        let mut connection = test_connection();
-        connection
-            .execute_batch(
-                "DROP TABLE notes_history_changes; \
-                 DROP TABLE notes_history_entries; \
-                 CREATE TABLE notes_history_entries (\
-                   id TEXT PRIMARY KEY, \
-                   session_id TEXT NOT NULL, \
-                   sequence INTEGER NOT NULL, \
-                   is_undone INTEGER NOT NULL DEFAULT 0, \
-                   estimated_bytes INTEGER NOT NULL DEFAULT 0\
-                 ); \
-                 CREATE UNIQUE INDEX notes_history_session_sequence \
-                   ON notes_history_entries(session_id, sequence); \
-                 CREATE TABLE notes_history_changes (\
-                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
-                   table_name TEXT NOT NULL, \
-                   row_id TEXT NOT NULL, \
-                   ordinal INTEGER NOT NULL, \
-                   before_json TEXT, \
-                   after_json TEXT, \
-                   PRIMARY KEY (entry_id, table_name, row_id)\
-                 ); \
-                 INSERT INTO notes_history_entries(id, session_id, sequence) \
-                 VALUES (\
-                   '00000000-0000-4000-8000-000000000001', \
-                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
-                   1\
-                 );",
-            )
-            .expect("seed five-column version three history table");
-
-        initialize_notes_db(&mut connection).expect("repair version three history command kind");
-
-        assert_eq!(
-            table_columns(&connection, "notes_history_entries"),
-            vec![
-                "id",
-                "session_id",
-                "sequence",
-                "is_undone",
-                "estimated_bytes",
-                "command_kind"
-            ]
-        );
-        assert_eq!(
-            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
-            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
-        );
-        let retained: (String, String) = connection
-            .query_row(
-                "SELECT id, command_kind FROM notes_history_entries",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("retained history entry");
-        assert_eq!(
-            retained,
-            (
-                "00000000-0000-4000-8000-000000000001".to_string(),
-                "legacy".to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn version_three_initialization_repairs_history_command_kind_without_default() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("vault path");
-        {
-            let mut connection = connect_notes_db(vault_path).expect("create notes database");
-            create_test_node(&mut connection, NODE_ID, None, None, "Root", "");
-            seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
-            connection
-                .execute(
-                    "INSERT INTO notes_history_entries(\
-                       id, session_id, sequence, command_kind\
-                     ) VALUES (?1, ?2, 2, 'updateText')",
-                    params![
-                        "00000000-0000-4000-8000-000000000002",
-                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-                    ],
-                )
-                .expect("seed second no-default history entry");
-            assert_eq!(
-                table_column_metadata(&connection, "notes_history_entries", "command_kind"),
-                Some(("TEXT".to_string(), 1, None))
-            );
-        }
-
-        let mut connection = connect_notes_db(vault_path)
-            .expect("repair no-default version three history command kind");
-
-        assert_eq!(
-            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
-            Some(("TEXT".to_string(), 1, Some("'legacy'".to_string())))
-        );
-        let retained = connection
-            .prepare(
-                "SELECT id, command_kind FROM notes_history_entries \
-                 ORDER BY sequence",
-            )
-            .expect("prepare retained history entries")
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .expect("query retained history entries")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect retained history entries");
-        assert_eq!(
-            retained,
-            vec![
-                (
-                    "00000000-0000-4000-8000-000000000001".to_string(),
-                    "legacy-trash".to_string()
-                ),
-                (
-                    "00000000-0000-4000-8000-000000000002".to_string(),
-                    "updateText".to_string()
-                )
-            ]
-        );
-        let retained_child = connection
-            .query_row(
-                "SELECT entry_id, table_name, row_id, ordinal, before_json, after_json \
-                 FROM notes_history_changes WHERE row_id = 'preserved-row'",
-                [],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                        row.get::<_, Option<String>>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                    ))
-                },
-            )
-            .expect("retained history child");
-        assert_eq!(
-            retained_child,
-            (
-                "00000000-0000-4000-8000-000000000001".to_string(),
-                "notes_nodes".to_string(),
-                "preserved-row".to_string(),
-                0,
-                Some("before".to_string()),
-                Some("after".to_string())
-            )
-        );
-        assert_eq!(
-            primary_key_columns(&connection, "notes_history_entries"),
-            vec!["id"]
-        );
-        assert_eq!(
-            primary_key_columns(&connection, "notes_history_changes"),
-            vec!["entry_id", "table_name", "row_id"]
-        );
-        assert!(object_exists(
-            &connection,
-            "index",
-            "notes_history_session_sequence"
-        ));
-        assert!(connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind\
-                 ) VALUES (\
-                   '00000000-0000-4000-8000-000000000001', \
-                   'cccccccc-cccc-4ccc-8ccc-cccccccccccc', \
-                   1, \
-                   'duplicate-id'\
-                 )",
-                [],
-            )
-            .is_err());
-        assert!(connection
-            .execute(
-                "INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind\
-                 ) VALUES (\
-                   '00000000-0000-4000-8000-000000000004', \
-                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
-                   1, \
-                   'duplicate-sequence'\
-                 )",
-                [],
-            )
-            .is_err());
-
-        let context = NotesHistoryContext {
-            session_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".to_string(),
-            entry_id: "00000000-0000-4000-8000-000000000003".to_string(),
-            command_kind: "trash".to_string(),
-        };
-        let result =
-            with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
-                soft_delete_node(connection, NODE_ID)
-            })
-            .expect("move note to trash after schema repair");
-
-        assert_eq!(
-            result.history_entry_id.as_deref(),
-            Some(context.entry_id.as_str())
-        );
-        let stored: String = connection
-            .query_row(
-                "SELECT command_kind FROM notes_history_entries WHERE id = ?1",
-                [&context.entry_id],
-                |row| row.get(0),
-            )
-            .expect("stored trash command kind");
-        assert_eq!(stored, "trash");
-        let captured_changes: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
-                [&context.entry_id],
-                |row| row.get(0),
-            )
-            .expect("captured trash history changes");
-        assert!(captured_changes > 0);
-
-        let undone = undo(
-            &mut connection,
-            &context.session_id,
-            NotesWorkspaceScope::Active,
-        )
-        .expect("undo move to trash after schema repair");
-        assert_eq!(
-            undone.replayed_entry_id.as_deref(),
-            Some(context.entry_id.as_str())
-        );
-        assert!(undone.workspace.nodes.iter().any(|node| node.id == NODE_ID));
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
-                    [&context.entry_id],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("undone trash history entry"),
-            1
-        );
-        assert_eq!(
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM notes_history_changes WHERE row_id = 'preserved-row'",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .expect("preserved history child after undo"),
-            1
-        );
-        let foreign_key_violations = connection
-            .prepare("PRAGMA foreign_key_check")
-            .expect("prepare history foreign key check")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
-            })
-            .expect("query history foreign key check")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect history foreign key check");
-        assert!(foreign_key_violations.is_empty());
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_hidden_no_default_column_clauses_without_mutation() {
-        for command_kind_definition in [
-            "TEXT NOT NULL CHECK (length(command_kind) > 0)",
-            "TEXT NOT NULL REFERENCES notes_nodes(id)",
-            "TEXT COLLATE NOCASE NOT NULL",
-        ] {
-            let mut connection = test_connection();
-            insert_node(&connection, NODE_ID, None, 1024, "referenced node");
-            seed_no_default_history_schema(&connection, command_kind_definition, NODE_ID);
-            connection
-                .execute_batch("DROP INDEX notes_nodes_archive_root_order;")
-                .expect("drop post-repair index");
-            let before = history_schema_snapshot(&connection);
-
-            let error = initialize_notes_db(&mut connection)
-                .expect_err("hidden command kind clause must be rejected");
-
-            assert!(error.contains("canonical legacy schema"), "{error}");
-            assert_eq!(history_schema_snapshot(&connection), before);
-            assert!(!object_exists(
-                &connection,
-                "index",
-                "notes_nodes_archive_root_order"
-            ));
-        }
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_history_update_triggers_without_mutation() {
-        for temporary in [false, true] {
-            let mut connection = test_connection();
-            seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
-            connection
-                .execute_batch(&format!(
-                    "CREATE TABLE history_repair_audit (events INTEGER NOT NULL); \
-                     INSERT INTO history_repair_audit(events) VALUES (0); \
-                     CREATE {}TRIGGER unexpected_history_update \
-                     AFTER UPDATE ON notes_history_entries \
-                     BEGIN \
-                       UPDATE history_repair_audit SET events = events + 1; \
-                     END; \
-                     DROP INDEX notes_nodes_archive_root_order;",
-                    if temporary { "TEMP " } else { "" }
-                ))
-                .expect("seed unexpected history update trigger");
-            let before = history_schema_snapshot(&connection);
-
-            let error = initialize_notes_db(&mut connection)
-                .expect_err("unexpected history update trigger must be rejected");
-
-            assert!(error.contains("canonical legacy schema"), "{error}");
-            assert_eq!(history_schema_snapshot(&connection), before);
-            assert_eq!(
-                connection
-                    .query_row("SELECT events FROM history_repair_audit", [], |row| {
-                        row.get::<_, i64>(0)
-                    })
-                    .expect("history repair audit count"),
-                0
-            );
-            assert!(!object_exists(
-                &connection,
-                "index",
-                "notes_nodes_archive_root_order"
-            ));
-        }
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_unexpected_history_dependencies_without_mutation() {
-        let mut connection = test_connection();
-        seed_no_default_history_schema(&connection, "TEXT NOT NULL", "legacy-trash");
-        connection
-            .execute_batch(
-                "CREATE VIEW unexpected_history_dependency AS \
-                   SELECT command_kind FROM notes_history_entries; \
-                 DROP INDEX notes_nodes_archive_root_order;",
-            )
-            .expect("seed unexpected history dependency");
-        let before = history_schema_snapshot(&connection);
-
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("unexpected history dependency must be rejected");
-
-        assert!(error.contains("canonical legacy schema"), "{error}");
-        assert_eq!(history_schema_snapshot(&connection), before);
-        assert!(!object_exists(
-            &connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    #[test]
-    fn version_three_initialization_rejects_nullable_history_command_kind_without_mutation() {
-        let mut connection = test_connection();
-        connection
-            .execute_batch(
-                "DROP TABLE notes_history_changes; \
-                 DROP TABLE notes_history_entries; \
-                 DROP INDEX notes_nodes_archive_root_order; \
-                 CREATE TABLE notes_history_entries (\
-                   id TEXT PRIMARY KEY, \
-                   session_id TEXT NOT NULL, \
-                   sequence INTEGER NOT NULL, \
-                   is_undone INTEGER NOT NULL DEFAULT 0, \
-                   estimated_bytes INTEGER NOT NULL DEFAULT 0, \
-                   command_kind TEXT DEFAULT 'legacy'\
-                 ); \
-                 CREATE UNIQUE INDEX notes_history_session_sequence \
-                   ON notes_history_entries(session_id, sequence); \
-                 CREATE TABLE notes_history_changes (\
-                   entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
-                   table_name TEXT NOT NULL, \
-                   row_id TEXT NOT NULL, \
-                   ordinal INTEGER NOT NULL, \
-                   before_json TEXT, \
-                   after_json TEXT, \
-                   PRIMARY KEY (entry_id, table_name, row_id)\
-                 ); \
-                 INSERT INTO notes_history_entries(\
-                   id, session_id, sequence, command_kind\
-                 ) VALUES (\
-                   '00000000-0000-4000-8000-000000000001', \
-                   'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', \
-                   1, \
-                   NULL\
-                 );",
-            )
-            .expect("seed nullable version three history command kind");
-
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("nullable history command kind must be rejected");
-
-        assert!(
-            error.contains("expected TEXT NOT NULL DEFAULT 'legacy'"),
-            "{error}"
-        );
-        assert_eq!(
-            table_column_metadata(&connection, "notes_history_entries", "command_kind"),
-            Some(("TEXT".to_string(), 0, Some("'legacy'".to_string())))
-        );
-        let retained: (String, Option<String>) = connection
-            .query_row(
-                "SELECT id, command_kind FROM notes_history_entries",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("retained malformed history entry");
-        assert_eq!(
-            retained,
-            ("00000000-0000-4000-8000-000000000001".to_string(), None)
-        );
-        assert!(!object_exists(
-            &connection,
-            "index",
-            "notes_nodes_archive_root_order"
-        ));
-    }
-
-    #[test]
-    fn version_three_initialization_rebuilds_old_tag_tokens_once_for_every_node() {
-        let mut connection = test_connection();
-        connection
-            .execute(
-                "DELETE FROM notes_preferences WHERE key = 'derived.tagTokenizerVersion'",
-                [],
-            )
-            .expect("remove tokenizer version marker");
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (\
-                   id, sort_key, title, note, created_at, updated_at\
-                 ) VALUES (\
-                   ?1, 1024, 'https://example.test/#fragment #café', '', \
-                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z'\
-                 )",
-                [NODE_ID],
-            )
-            .expect("insert active old-tokenizer node");
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (\
-                   id, sort_key, title, note, created_at, updated_at, archived_at, archive_root_id\
-                 ) VALUES (\
-                   ?1, 2048, '#Archived', '', '2026-07-10T00:00:00.000Z', \
-                   '2026-07-10T00:00:00.000Z', '2026-07-10T01:00:00.000Z', ?1\
-                 )",
-                [CHILD_ID],
-            )
-            .expect("insert archived old-tokenizer node");
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (\
-                   id, sort_key, title, note, created_at, updated_at, deleted_at, deleted_batch_id\
-                 ) VALUES (\
-                   ?1, 3072, 'Trash', '@Trashed', '2026-07-10T00:00:00.000Z', \
-                   '2026-07-10T00:00:00.000Z', '2026-07-10T02:00:00.000Z', 'legacy-trash'\
-                 )",
-                [THIRD_ID],
-            )
-            .expect("insert trashed old-tokenizer node");
-        connection
-            .execute_batch(&format!(
-                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) VALUES \
-                   ('{NODE_ID}', '#', 'fragment', 'fragment'), \
-                   ('{NODE_ID}', '#', 'cafe', 'cafe'), \
-                   ('{CHILD_ID}', '#', 'Archived', 'archived'), \
-                   ('{THIRD_ID}', '@', 'Trashed', 'trashed'); \
-                 CREATE TABLE tag_rebuild_audit (operation TEXT NOT NULL); \
-                 CREATE TRIGGER audit_tag_rebuild_delete AFTER DELETE ON notes_tags BEGIN \
-                   INSERT INTO tag_rebuild_audit VALUES ('delete'); \
-                 END; \
-                 CREATE TRIGGER audit_tag_rebuild_insert AFTER INSERT ON notes_tags BEGIN \
-                   INSERT INTO tag_rebuild_audit VALUES ('insert'); \
-                 END;"
-            ))
-            .expect("seed stale tags and rewrite audit");
-
-        initialize_notes_db(&mut connection).expect("rebuild old tokenizer tags");
-
-        let tags = connection
-            .prepare(
-                "SELECT node_id, prefix, tag, normalized_tag FROM notes_tags \
-                 ORDER BY node_id, prefix, normalized_tag",
-            )
-            .expect("prepare rebuilt tags")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            })
-            .expect("query rebuilt tags")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt tags");
-        assert_eq!(
-            tags,
-            vec![
-                (
-                    NODE_ID.to_string(),
-                    "#".to_string(),
-                    "caf\u{e9}".to_string(),
-                    "caf\u{e9}".to_string(),
-                ),
-                (
-                    CHILD_ID.to_string(),
-                    "#".to_string(),
-                    "Archived".to_string(),
-                    "archived".to_string(),
-                ),
-                (
-                    THIRD_ID.to_string(),
-                    "@".to_string(),
-                    "Trashed".to_string(),
-                    "trashed".to_string(),
-                ),
-            ]
-        );
-        let version: String = connection
-            .query_row(
-                "SELECT value_json FROM notes_preferences \
-                 WHERE key = 'derived.tagTokenizerVersion'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("tag tokenizer version marker");
-        assert_eq!(version, "1");
-        let first_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("first rewrite count");
-        assert!(first_rewrite_count > 0);
-
-        initialize_notes_db(&mut connection).expect("idempotent tokenizer initialization");
-
-        let second_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("second rewrite count");
-        assert_eq!(second_rewrite_count, first_rewrite_count);
-
-        connection
-            .execute(
-                "UPDATE notes_preferences SET value_json = '0' \
-                 WHERE key = 'derived.tagTokenizerVersion'",
-                [],
-            )
-            .expect("downgrade tokenizer marker");
-        initialize_notes_db(&mut connection).expect("rebuild old tokenizer version");
-        let old_version_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("old-version rewrite count");
-        assert!(old_version_rewrite_count > second_rewrite_count);
-
-        initialize_notes_db(&mut connection).expect("idempotent upgraded tokenizer version");
-        let final_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM tag_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("final rewrite count");
-        assert_eq!(final_rewrite_count, old_version_rewrite_count);
-    }
-
-    #[test]
-    fn version_three_initialization_backfills_the_date_index_once() {
-        let mut connection = test_connection();
-        connection
-            .execute(
-                "DELETE FROM notes_preferences WHERE key = 'derived.dateParserVersion'",
-                [],
-            )
-            .expect("remove date parser version marker");
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
-                 VALUES (?1, 1024, 'Due 07/12/2026', '07/13/2026', \
-                         '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
-                [NODE_ID],
-            )
-            .expect("insert pre-index date node");
-        connection
-            .execute(
-                "INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
-                   normalized_start, normalized_end, token_text) \
-                 VALUES (?1, 'title', 0, 5, '2000-01-01', '2000-01-01', 'stale')",
-                [NODE_ID],
-            )
-            .expect("insert stale date row");
-        connection
-            .execute_batch(
-                "CREATE TABLE date_rebuild_audit (operation TEXT NOT NULL); \
-                 CREATE TRIGGER audit_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
-                   INSERT INTO date_rebuild_audit VALUES ('delete'); \
-                 END; \
-                 CREATE TRIGGER audit_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
-                   INSERT INTO date_rebuild_audit VALUES ('insert'); \
-                 END;",
-            )
-            .expect("install date rebuild audit");
-
-        initialize_notes_db(&mut connection).expect("backfill date index");
-        assert_eq!(
-            date_rows(&connection, NODE_ID),
-            vec![
-                (
-                    "title".to_string(),
-                    4,
-                    14,
-                    "2026-07-12".to_string(),
-                    "2026-07-12".to_string(),
-                    "07/12/2026".to_string()
-                ),
-                (
-                    "note".to_string(),
-                    0,
-                    10,
-                    "2026-07-13".to_string(),
-                    "2026-07-13".to_string(),
-                    "07/13/2026".to_string()
-                ),
-            ]
-        );
-        let first_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("date rebuild count");
-        assert!(first_rewrite_count >= 3);
-
-        initialize_notes_db(&mut connection).expect("idempotent date index initialization");
-        let second_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("idempotent date rebuild count");
-        assert_eq!(second_rewrite_count, first_rewrite_count);
-        let version: String = connection
-            .query_row(
-                "SELECT value_json FROM notes_preferences \
-                 WHERE key = 'derived.dateParserVersion'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("current date parser version marker");
-        assert_eq!(version, "3");
-    }
-
-    #[test]
-    fn version_three_initialization_upgrades_stored_v1_dates_without_mutating_source() {
-        let mut connection = test_connection();
-        let title = "Plan 07/11 - 7/14 then 07/15/2026";
-        let note = "Window 07/20/2026 - 07/22/2026";
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
-                 VALUES (?1, 1024, ?2, ?3, '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, title, note],
-            )
-            .expect("insert stored-v1 date node");
-        connection
-            .execute_batch(&format!(
-                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
-                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
-                   normalized_start, normalized_end, token_text) VALUES \
-                   ('{NODE_ID}', 'title', 5, 10, '2026-07-11', '2026-07-11', '07/11'), \
-                   ('{NODE_ID}', 'note', 7, 17, '1999-01-01', '1999-01-01', 'stale-note'); \
-                 UPDATE notes_preferences SET value_json = '1' \
-                 WHERE key = 'derived.dateParserVersion';"
-            ))
-            .expect("seed stored-v1 stale date rows");
-        connection
-            .execute_batch(
-                "CREATE TABLE v1_date_rebuild_audit (operation TEXT NOT NULL); \
-                 CREATE TRIGGER audit_v1_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
-                   INSERT INTO v1_date_rebuild_audit VALUES ('delete'); \
-                 END; \
-                 CREATE TRIGGER audit_v1_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
-                   INSERT INTO v1_date_rebuild_audit VALUES ('insert'); \
-                 END;",
-            )
-            .expect("install stored-v1 rebuild audit");
-
-        initialize_notes_db(&mut connection).expect("upgrade stored-v1 date index");
-
-        assert_eq!(
-            date_rows(&connection, NODE_ID),
-            vec![
-                (
-                    "title".to_string(),
-                    23,
-                    33,
-                    "2026-07-15".to_string(),
-                    "2026-07-15".to_string(),
-                    "07/15/2026".to_string(),
-                ),
-                (
-                    "note".to_string(),
-                    7,
-                    30,
-                    "2026-07-20".to_string(),
-                    "2026-07-22".to_string(),
-                    "07/20/2026 - 07/22/2026".to_string(),
-                ),
-            ]
-        );
-        let stored_source: (String, String) = connection
-            .query_row(
-                "SELECT title, note FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("unchanged stored-v1 source");
-        assert_eq!(stored_source, (title.to_string(), note.to_string()));
-        let version: String = connection
-            .query_row(
-                "SELECT value_json FROM notes_preferences \
-                 WHERE key = 'derived.dateParserVersion'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("upgraded date parser marker");
-        assert_eq!(version, "3");
-        let first_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM v1_date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("stored-v1 rebuild count");
-        assert_eq!(first_rewrite_count, 4);
-
-        initialize_notes_db(&mut connection).expect("idempotent stored-v1 upgrade");
-        let second_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM v1_date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("idempotent stored-v1 rebuild count");
-        assert_eq!(second_rewrite_count, first_rewrite_count);
-    }
-
-    #[test]
-    fn version_three_initialization_upgrades_stored_v2_unicode_range_rows() {
-        let mut connection = test_connection();
-        let title = "😀07/11\u{00A0}-\u{00A0}07/14 then 07/15";
-        let note = "😀07/11\u{202F}-\u{202F}7/14 then 07/15/2026";
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
-                 VALUES (?1, 1024, ?2, ?3, '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, title, note],
-            )
-            .expect("insert stored-v2 Unicode range node");
-        connection
-            .execute_batch(&format!(
-                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
-                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
-                   normalized_start, normalized_end, token_text) VALUES \
-                   ('{NODE_ID}', 'title', 2, 7, '2026-07-11', '2026-07-11', '07/11'), \
-                   ('{NODE_ID}', 'title', 10, 15, '2026-07-14', '2026-07-14', '07/14'), \
-                   ('{NODE_ID}', 'title', 21, 26, '2026-07-15', '2026-07-15', '07/15'), \
-                   ('{NODE_ID}', 'note', 2, 7, '2026-07-11', '2026-07-11', '07/11'), \
-                   ('{NODE_ID}', 'note', 20, 30, '2026-07-15', '2026-07-15', '07/15/2026'); \
-                 UPDATE notes_preferences SET value_json = '2' \
-                 WHERE key = 'derived.dateParserVersion'; \
-                 CREATE TABLE v2_date_rebuild_audit (operation TEXT NOT NULL); \
-                 CREATE TRIGGER audit_v2_date_rebuild_delete AFTER DELETE ON notes_dates BEGIN \
-                   INSERT INTO v2_date_rebuild_audit VALUES ('delete'); \
-                 END; \
-                 CREATE TRIGGER audit_v2_date_rebuild_insert AFTER INSERT ON notes_dates BEGIN \
-                   INSERT INTO v2_date_rebuild_audit VALUES ('insert'); \
-                 END;"
-            ))
-            .expect("seed stored-v2 Unicode range rows");
-
-        initialize_notes_db(&mut connection).expect("upgrade stored-v2 Unicode range rows");
-
-        assert_eq!(
-            date_rows(&connection, NODE_ID),
-            vec![
-                (
-                    "title".to_string(),
-                    2,
-                    15,
-                    "2026-07-11".to_string(),
-                    "2026-07-14".to_string(),
-                    "07/11\u{00A0}-\u{00A0}07/14".to_string(),
-                ),
-                (
-                    "title".to_string(),
-                    21,
-                    26,
-                    "2026-07-15".to_string(),
-                    "2026-07-15".to_string(),
-                    "07/15".to_string(),
-                ),
-                (
-                    "note".to_string(),
-                    20,
-                    30,
-                    "2026-07-15".to_string(),
-                    "2026-07-15".to_string(),
-                    "07/15/2026".to_string(),
-                ),
-            ]
-        );
-        let stored_source: (String, String) = connection
-            .query_row(
-                "SELECT title, note FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("unchanged stored-v2 source");
-        assert_eq!(stored_source, (title.to_string(), note.to_string()));
-        let version: String = connection
-            .query_row(
-                "SELECT value_json FROM notes_preferences \
-                 WHERE key = 'derived.dateParserVersion'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("upgraded stored-v2 date parser marker");
-        assert_eq!(version, "3");
-        let first_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM v2_date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("stored-v2 rebuild count");
-        assert_eq!(first_rewrite_count, 8);
-
-        initialize_notes_db(&mut connection).expect("idempotent stored-v2 date upgrade");
-        let second_rewrite_count: i64 = connection
-            .query_row("SELECT count(*) FROM v2_date_rebuild_audit", [], |row| {
-                row.get(0)
-            })
-            .expect("idempotent stored-v2 rebuild count");
-        assert_eq!(second_rewrite_count, first_rewrite_count);
-    }
-
-    #[test]
-    fn version_three_date_upgrade_failure_rolls_back_rows_marker_and_source() {
-        let mut connection = test_connection();
-        let title = "Plan 07/11 - 7/14 then 07/15/2026";
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
-                 VALUES (?1, 1024, ?2, '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, title],
-            )
-            .expect("insert failing stored-v1 date node");
-        connection
-            .execute_batch(&format!(
-                "DELETE FROM notes_dates WHERE node_id = '{NODE_ID}'; \
-                 INSERT INTO notes_dates (node_id, field, start_utf16, end_utf16, \
-                   normalized_start, normalized_end, token_text) \
-                 VALUES ('{NODE_ID}', 'title', 5, 10, '2026-07-11', '2026-07-11', '07/11'); \
-                 UPDATE notes_preferences SET value_json = '1' \
-                 WHERE key = 'derived.dateParserVersion'; \
-                 CREATE TRIGGER reject_v1_date_upgrade BEFORE INSERT ON notes_dates \
-                 WHEN NEW.token_text = '07/15/2026' \
-                 BEGIN SELECT RAISE(ABORT, 'stored-v1 date upgrade rejected'); END;"
-            ))
-            .expect("seed rejected stored-v1 upgrade");
-        let stale_rows = date_rows(&connection, NODE_ID);
-
-        let error = initialize_notes_db(&mut connection).expect_err("date upgrade must fail");
-
-        assert!(error.contains("stored-v1 date upgrade rejected"), "{error}");
-        assert_eq!(date_rows(&connection, NODE_ID), stale_rows);
-        let preserved: (String, String) = connection
-            .query_row(
-                "SELECT node.title, preference.value_json \
-                 FROM notes_nodes node CROSS JOIN notes_preferences preference \
-                 WHERE node.id = ?1 AND preference.key = 'derived.dateParserVersion'",
-                [NODE_ID],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("rolled-back date upgrade state");
-        assert_eq!(preserved, (title.to_string(), "1".to_string()));
-    }
-
-    #[test]
-    fn version_one_deleted_rows_migrate_to_deterministic_legacy_batches() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
-        seed_version_one_database(&mut connection);
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
-                 VALUES (?1, 1024, 'live', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                [NODE_ID],
-            )
-            .expect("insert live version one row");
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, deleted_at) \
-                 VALUES (?1, 2048, 'legacy one', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z'), \
-                        (?2, 3072, 'legacy two', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z'), \
-                        (?3, 4096, 'legacy three', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z', '2026-07-10T05:06:07.008Z')",
-                params![CHILD_ID, THIRD_ID, FOURTH_ID],
-            )
-            .expect("insert deleted version one rows");
-
-        initialize_notes_db(&mut connection).expect("migrate version one database");
-
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("migrated user version");
-        assert_eq!(user_version, 4);
-        let live_batch: Option<String> = connection
-            .query_row(
-                "SELECT deleted_batch_id FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| row.get(0),
-            )
-            .expect("live batch marker");
-        assert_eq!(live_batch, None);
-        let migrated = connection
-            .prepare(
-                "SELECT id, deleted_at, deleted_batch_id FROM notes_nodes \
-                 WHERE deleted_at IS NOT NULL ORDER BY id",
-            )
-            .expect("prepare migrated rows")
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            })
-            .expect("query migrated rows")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect migrated rows");
-        assert_eq!(
-            migrated,
-            vec![
-                (
-                    CHILD_ID.to_string(),
-                    "2026-07-10T01:02:03.004Z".to_string(),
-                    "legacy:2026-07-10T01:02:03.004Z".to_string(),
-                ),
-                (
-                    THIRD_ID.to_string(),
-                    "2026-07-10T01:02:03.004Z".to_string(),
-                    "legacy:2026-07-10T01:02:03.004Z".to_string(),
-                ),
-                (
-                    FOURTH_ID.to_string(),
-                    "2026-07-10T05:06:07.008Z".to_string(),
-                    "legacy:2026-07-10T05:06:07.008Z".to_string(),
-                ),
-            ]
-        );
-        let archive_values: (Option<String>, Option<String>) = connection
-            .query_row(
-                "SELECT archived_at, archive_root_id FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("version one archive defaults");
-        assert_eq!(archive_values, (None, None));
-    }
-
-    #[test]
-    fn version_two_rows_and_hashtags_migrate_to_version_four() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
-        seed_version_two_database(&mut connection);
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at) \
-                 VALUES (?1, 1024, '#Roadmap', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                [NODE_ID],
-            )
-            .expect("insert version two node");
-        connection
-            .execute(
-                "INSERT INTO notes_tags (node_id, tag, normalized_tag) VALUES (?1, 'Roadmap', 'roadmap')",
-                [NODE_ID],
-            )
-            .expect("insert version two tag");
-
-        initialize_notes_db(&mut connection).expect("migrate version two database");
-
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("migrated user version");
-        assert_eq!(user_version, 4);
-        let migrated: (String, String, String, Option<String>, Option<String>) = connection
-            .query_row(
-                "SELECT prefix, tag, normalized_tag, node.archived_at, node.archive_root_id \
-                 FROM notes_tags tag JOIN notes_nodes node ON node.id = tag.node_id \
-                 WHERE tag.node_id = ?1",
-                [NODE_ID],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
-            )
-            .expect("migrated version two row");
-        assert_eq!(
-            migrated,
-            (
-                "#".to_string(),
-                "Roadmap".to_string(),
-                "roadmap".to_string(),
-                None,
-                None
-            )
-        );
-    }
-
-    #[test]
-    fn version_three_nfd_tags_migrate_to_nfc_on_version_four_upgrade() {
-        let mut connection = test_connection();
-
-        // A node whose title was entered decomposed (NFD) — the macOS default for
-        // dragged/pasted/IME text — together with the tag rows a pre-NFC tokenizer
-        // would have stored for it.
-        let decomposed_cafe = "cafe\u{0301}";
-        let decomposed_hangul = "\u{1112}\u{1161}\u{11ab}\u{1100}\u{1173}\u{11af}";
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, note, created_at, updated_at) \
-                 VALUES (?1, 1024, ?2, '', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z')",
-                params![NODE_ID, format!("#{decomposed_cafe} #{decomposed_hangul}")],
-            )
-            .expect("insert decomposed node");
-        connection
-            .execute("DELETE FROM notes_tags", [])
-            .expect("clear derived tags");
-        connection
-            .execute(
-                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) VALUES \
-                   (?1, '#', ?2, ?2), (?1, '#', ?3, ?3)",
-                params![NODE_ID, decomposed_cafe, decomposed_hangul],
-            )
-            .expect("seed decomposed tags");
-        connection
-            .pragma_update(None, "user_version", 3)
-            .expect("pin database to version three");
-
-        initialize_notes_db(&mut connection).expect("upgrade version three database to four");
-
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("upgraded user version");
-        assert_eq!(user_version, 4);
-
-        let composed_cafe = "caf\u{e9}";
-        let composed_hangul = "\u{d55c}\u{ae00}";
-        let stored: Vec<(String, String)> = connection
-            .prepare(
-                "SELECT tag, normalized_tag FROM notes_tags \
-                 WHERE node_id = ?1 ORDER BY normalized_tag",
-            )
-            .expect("prepare rebuilt tags")
-            .query_map([NODE_ID], |row| Ok((row.get(0)?, row.get(1)?)))
-            .expect("query rebuilt tags")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("collect rebuilt tags");
-        assert_eq!(
-            stored,
-            vec![
-                (composed_cafe.to_string(), composed_cafe.to_string()),
-                (composed_hangul.to_string(), composed_hangul.to_string()),
-            ]
-        );
-
-        // Searching by the composed spelling finds the node whose text was decomposed.
-        for composed in [composed_cafe, composed_hangul] {
-            let matches = search_nodes_structured(
-                &connection,
-                &structured_query(
-                    "",
-                    vec![search_tag(NoteTagPrefix::Hash, composed)],
-                    vec![],
-                    vec![],
-                ),
-            )
-            .expect("composed tag search");
-            assert_eq!(
-                matches
-                    .iter()
-                    .map(|result| result.node_id.as_str())
-                    .collect::<Vec<_>>(),
-                vec![NODE_ID],
-                "composed tag {composed:?} must find the node stored under NFD",
-            );
-        }
-    }
-
-    #[test]
-    fn failed_version_two_migration_keeps_version_one_schema_and_rows() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
-        seed_version_one_database(&mut connection);
-        connection
-            .execute(
-                "INSERT INTO notes_nodes (id, sort_key, title, created_at, updated_at, deleted_at) \
-                 VALUES (?1, 1024, 'legacy', '2026-07-10T00:00:00.000Z', \
-                         '2026-07-10T00:00:00.000Z', '2026-07-10T01:02:03.004Z')",
-                [NODE_ID],
-            )
-            .expect("insert legacy deleted row");
-        connection
-            .execute_batch(
-                "CREATE TRIGGER reject_version_two_update \
-                 BEFORE UPDATE ON notes_nodes \
-                 WHEN OLD.deleted_at IS NOT NULL \
-                 BEGIN SELECT RAISE(ABORT, 'version two migration rejected'); END;",
-            )
-            .expect("install migration rejection trigger");
-
-        let error = initialize_notes_db(&mut connection).expect_err("migration must fail");
-
-        assert!(error.contains("version two migration rejected"));
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("user version after failed migration");
-        assert_eq!(user_version, 1);
-        assert!(!column_exists(
-            &connection,
-            "notes_nodes",
-            "deleted_batch_id"
-        ));
-        let deleted_at: String = connection
-            .query_row(
-                "SELECT deleted_at FROM notes_nodes WHERE id = ?1",
-                [NODE_ID],
-                |row| row.get(0),
-            )
-            .expect("legacy row after rollback");
-        assert_eq!(deleted_at, "2026-07-10T01:02:03.004Z");
-    }
-
-    #[test]
     fn concurrent_first_initialization_waits_for_locks_and_creates_one_valid_schema() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
         let path = notes_db_path(&vault_path);
         std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
-        let blocker = Connection::open(&path).expect("open migration blocker");
+        let blocker = Connection::open(&path).expect("open initialization blocker");
         blocker
             .execute_batch("PRAGMA journal_mode = WAL; BEGIN IMMEDIATE")
             .expect("hold first initialization lock");
@@ -8670,7 +5621,7 @@ mod tests {
                 let vault_path = vault_path.clone();
                 let busy_sender = busy_sender.clone();
                 thread::spawn(move || {
-                    observe_next_migration_busy(busy_sender, worker_id);
+                    observe_next_initialization_busy(busy_sender, worker_id);
                     connect_notes_db(&vault_path)
                 })
             })
@@ -8680,16 +5631,16 @@ mod tests {
         let mut workers_at_lock = vec![
             busy_receiver
                 .recv_timeout(Duration::from_secs(5))
-                .expect("first initializer reached held migration lock"),
+                .expect("first initializer reached held initialization lock"),
             busy_receiver
                 .recv_timeout(Duration::from_secs(5))
-                .expect("second initializer reached held migration lock"),
+                .expect("second initializer reached held initialization lock"),
         ];
         workers_at_lock.sort_unstable();
         assert_eq!(workers_at_lock, vec![0, 1]);
         blocker
             .execute_batch("COMMIT")
-            .expect("release migration lock");
+            .expect("release initialization lock");
 
         for worker in workers {
             worker
@@ -8699,10 +5650,6 @@ mod tests {
         }
 
         let connection = Connection::open(&path).expect("reopen initialized database");
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("user version");
-        assert_eq!(user_version, 4);
         assert!(column_exists(
             &connection,
             "notes_nodes",
@@ -8711,7 +5658,6 @@ mod tests {
         for (object_type, name) in [
             ("table", "notes_nodes"),
             ("table", "notes_tags"),
-            ("table", "notes_preferences"),
             ("table", "notes_search"),
             ("table", "notes_search_lifecycle"),
             ("index", "notes_nodes_active_parent_order"),
@@ -8738,33 +5684,6 @@ mod tests {
     }
 
     #[test]
-    fn failed_version_one_migration_keeps_the_prior_schema_and_version() {
-        let mut connection = Connection::open_in_memory().expect("in-memory database");
-        connection
-            .execute("CREATE TABLE notes_nodes (sentinel TEXT)", [])
-            .expect("seed prior schema");
-
-        let error = initialize_notes_db(&mut connection).expect_err("migration must fail");
-
-        assert!(error.contains("already exists"));
-        let user_version: i64 = connection
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("user version after failed migration");
-        assert_eq!(user_version, 0);
-        assert!(object_exists(&connection, "table", "notes_nodes"));
-        for (object_type, name) in [
-            ("table", "notes_tags"),
-            ("table", "notes_preferences"),
-            ("table", "notes_search"),
-            ("index", "notes_nodes_active_parent_order"),
-            ("index", "notes_tags_normalized_tag"),
-            ("trigger", "notes_nodes_search_insert"),
-        ] {
-            assert!(!object_exists(&connection, object_type, name));
-        }
-    }
-
-    #[test]
     fn notes_connection_leaves_short_and_corrupt_headers_to_sqlite_diagnostics() {
         for (label, bytes) in [("short", vec![0_u8; 8]), ("corrupt", vec![b'x'; 64])] {
             let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -8777,98 +5696,6 @@ mod tests {
 
             assert!(error.contains("file is not a database"), "{label}: {error}");
         }
-    }
-
-    #[test]
-    fn notes_connection_rejects_a_checkpointed_future_wal_without_creating_companions() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let path = notes_db_path(temp_dir.path().to_str().expect("path"));
-        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
-        let connection = Connection::open(&path).expect("open future database");
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode = WAL; \
-                 PRAGMA wal_autocheckpoint = 0; \
-                 PRAGMA user_version = 5; \
-                 PRAGMA wal_checkpoint(TRUNCATE);",
-            )
-            .expect("checkpoint future WAL schema");
-        drop(connection);
-        let bytes_before = std::fs::read(&path).expect("future database bytes before connect");
-        assert_eq!(
-            u32::from_be_bytes(bytes_before[60..64].try_into().expect("user version bytes")),
-            5
-        );
-        let wal_path = sqlite_companion_path(&path, "-wal");
-        let shm_path = sqlite_companion_path(&path, "-shm");
-        assert!(!wal_path.exists());
-        assert!(!shm_path.exists());
-
-        let error = connect_notes_db(temp_dir.path().to_str().expect("path"))
-            .expect_err("future schema must be rejected");
-        assert!(error.contains("unsupported schema version 5"));
-        assert_eq!(
-            std::fs::read(&path).expect("future database bytes after connect"),
-            bytes_before
-        );
-        assert!(!wal_path.exists());
-        assert!(!shm_path.exists());
-    }
-
-    #[test]
-    fn notes_connection_rejects_a_live_future_wal_without_touching_database_files() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let vault_path = temp_dir.path().to_str().expect("vault path");
-        let path = notes_db_path(vault_path);
-        std::fs::create_dir_all(path.parent().expect("metadata dir")).expect("metadata dir");
-        let writer = Connection::open(&path).expect("open WAL fixture");
-        writer
-            .execute_batch(
-                "PRAGMA journal_mode = WAL; \
-                 PRAGMA wal_autocheckpoint = 0; \
-                 PRAGMA user_version = 3; \
-                 PRAGMA wal_checkpoint(TRUNCATE); \
-                 PRAGMA user_version = 5;",
-            )
-            .expect("seed live future WAL schema");
-        let visible_version: i64 = writer
-            .pragma_query_value(None, "user_version", |row| row.get(0))
-            .expect("live WAL user version");
-        assert_eq!(visible_version, 5);
-
-        let wal_path = sqlite_companion_path(&path, "-wal");
-        let shm_path = sqlite_companion_path(&path, "-shm");
-        assert!(wal_path.exists());
-        assert!(shm_path.exists());
-        let main_before = std::fs::read(&path).expect("main bytes before connect");
-        let wal_before = std::fs::read(&wal_path).expect("WAL bytes before connect");
-        let shm_before = std::fs::read(&shm_path).expect("SHM bytes before connect");
-        assert_eq!(
-            u32::from_be_bytes(main_before[60..64].try_into().expect("user version bytes")),
-            3,
-            "version 5 must remain uncheckpointed in the WAL"
-        );
-
-        let preflight_error = preflight_existing_notes_schema(&path)
-            .expect_err("read-only preflight must reject the future WAL schema");
-        assert!(preflight_error.contains("unsupported schema version 5"));
-
-        let error = connect_notes_db(vault_path).expect_err("future WAL schema must be rejected");
-
-        assert!(error.contains("unsupported schema version 5"));
-        assert_eq!(
-            std::fs::read(&path).expect("main bytes after connect"),
-            main_before
-        );
-        assert_eq!(
-            std::fs::read(&wal_path).expect("WAL bytes after connect"),
-            wal_before
-        );
-        assert_eq!(
-            std::fs::read(&shm_path).expect("SHM bytes after connect"),
-            shm_before
-        );
-        drop(writer);
     }
 
     #[test]

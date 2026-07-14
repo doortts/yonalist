@@ -1822,24 +1822,6 @@ mod tests {
     fn notes_history_trash_persists_command_kind() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
-        let has_command_kind: bool = connection
-            .query_row(
-                "SELECT EXISTS(\
-                   SELECT 1 FROM pragma_table_info('notes_history_entries') \
-                   WHERE name = 'command_kind'\
-                 )",
-                [],
-                |row| row.get(0),
-            )
-            .expect("inspect history command kind");
-        if !has_command_kind {
-            connection
-                .execute_batch(
-                    "ALTER TABLE notes_history_entries \
-                     ADD COLUMN command_kind TEXT NOT NULL;",
-                )
-                .expect("require history command kind");
-        }
         create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
 
         let context = history_context(1, "trash");
