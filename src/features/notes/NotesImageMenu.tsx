@@ -13,7 +13,7 @@ import { IconTooltip } from "../../components/ui/Tooltip";
 export interface NotesImageMenuProps {
   readonly originalName: string;
   readonly disabled?: boolean;
-  readonly onShowFullScreen: () => void;
+  readonly onShowFullScreen?: () => void;
   readonly onViewOriginal?: () => void;
   readonly onDownload?: () => void;
   readonly onDelete?: () => void;
@@ -79,6 +79,7 @@ export function NotesImageMenu({
         <Menu.Positioner side="bottom" align="end" sideOffset={4}>
           <Menu.Popup className="notes-bullet-menu notes-image-menu">
             <ImageMenuItem
+              disabled={!onShowFullScreen}
               icon={<Maximize2 size={16} aria-hidden="true" />}
               onClick={onShowFullScreen}
             >
@@ -119,4 +120,3 @@ export function NotesImageMenu({
     </Menu.Root>
   );
 }
-

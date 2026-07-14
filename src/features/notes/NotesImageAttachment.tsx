@@ -1,4 +1,3 @@
-import { Trash2 } from "lucide-react";
 import {
   type CSSProperties,
   type KeyboardEvent,
@@ -9,7 +8,8 @@ import {
   useRef,
   useState
 } from "react";
-import { IconTooltip } from "../../components/ui/Tooltip";
+import { NotesImageLightbox } from "./NotesImageLightbox";
+import { NotesImageMenu } from "./NotesImageMenu";
 
 const preferredMinimumWidth = 160;
 const keyboardResizeStep = 16;
@@ -37,6 +37,9 @@ export interface NotesImageAttachmentProps {
   readonly loadBytes?: NotesImageByteLoader;
   readonly onDisplayWidthCommit: (displayWidth: number) => void;
   readonly onRemove?: () => void;
+  readonly onViewOriginal?: () => void;
+  readonly onDownload?: () => void;
+  readonly onOpenSettings?: () => void;
   readonly readOnly?: boolean;
   readonly embedded?: boolean;
 }
@@ -137,25 +140,6 @@ const resizeHandleLineStyle: CSSProperties = {
   pointerEvents: "none"
 };
 
-const removeButtonStyle: CSSProperties = {
-  position: "absolute",
-  zIndex: 3,
-  top: 6,
-  right: 18,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 28,
-  height: 28,
-  padding: 0,
-  border: "1px solid var(--border)",
-  borderRadius: 6,
-  background: "var(--bg-card)",
-  color: "var(--danger)",
-  boxShadow: "var(--shadow-modal)",
-  cursor: "pointer"
-};
-
 function widthLimits(
   intrinsicWidth: number,
   contentWidth: number | null
@@ -227,6 +211,9 @@ export function NotesImageAttachment({
   loadBytes,
   onDisplayWidthCommit,
   onRemove,
+  onViewOriginal,
+  onDownload,
+  onOpenSettings,
   readOnly = false,
   embedded = false
 }: NotesImageAttachmentProps) {
@@ -239,6 +226,7 @@ export function NotesImageAttachment({
   const [contentWidth, setContentWidth] = useState<number | null>(null);
   const [proposedWidth, setProposedWidth] = useState(attachment.displayWidth);
   const [source, setSource] = useState<ImageSourceState>({ status: "loading" });
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const limits = useMemo(
     () =>
       metadataValid
@@ -319,6 +307,7 @@ export function NotesImageAttachment({
 
     let disposed = false;
     let objectUrl: string | null = null;
+    setLightboxOpen(false);
     setSource({ status: "loading" });
 
     const load = async () => {
@@ -517,20 +506,18 @@ export function NotesImageAttachment({
     }
   };
 
-  const removeAction = onRemove && !readOnly ? (
-    <IconTooltip label="Remove image" side="left">
-      <button
-        type="button"
-        aria-label={`Remove ${attachment.originalName}`}
-        title="Remove image"
-        style={removeButtonStyle}
-        onPointerDown={(event) => event.stopPropagation()}
-        onClick={onRemove}
-      >
-        <Trash2 aria-hidden="true" size={15} />
-      </button>
-    </IconTooltip>
-  ) : null;
+  const imageMenu = (
+    <NotesImageMenu
+      originalName={attachment.originalName}
+      onShowFullScreen={
+        source.status === "ready" ? () => setLightboxOpen(true) : undefined
+      }
+      onViewOriginal={onViewOriginal}
+      onDownload={onDownload}
+      onDelete={readOnly ? undefined : onRemove}
+      onOpenSettings={onOpenSettings}
+    />
+  );
 
   if (!metadataValid || !limits) {
     return (
@@ -545,7 +532,7 @@ export function NotesImageAttachment({
           <div role="alert" style={fallbackStyle}>
             Image unavailable
           </div>
-          {removeAction}
+          {imageMenu}
         </div>
       </div>
     );
@@ -574,6 +561,7 @@ export function NotesImageAttachment({
             height={attachment.intrinsicHeight}
             draggable={false}
             style={imageStyle}
+            onDoubleClick={() => setLightboxOpen(true)}
             onError={() => setSource({ status: "error" })}
           />
         ) : source.status === "loading" ? (
@@ -586,7 +574,7 @@ export function NotesImageAttachment({
           </div>
         )}
 
-        {removeAction}
+        {imageMenu}
 
         {!readOnly && (
           <div
@@ -613,6 +601,16 @@ export function NotesImageAttachment({
           </div>
         )}
       </div>
+      {source.status === "ready" && (
+        <NotesImageLightbox
+          open={lightboxOpen}
+          onOpenChange={setLightboxOpen}
+          originalName={attachment.originalName}
+          sourceUrl={source.objectUrl}
+          intrinsicWidth={attachment.intrinsicWidth}
+          intrinsicHeight={attachment.intrinsicHeight}
+        />
+      )}
     </div>
   );
 }

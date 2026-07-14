@@ -133,7 +133,7 @@ afterEach(() => {
 });
 
 describe("NotesImageAttachment", () => {
-  it("renders a read-only image without resize or remove controls", async () => {
+  it("renders a read-only image without resize or destructive controls", async () => {
     const onDisplayWidthCommit = vi.fn();
     const onRemove = vi.fn();
     render(
@@ -147,9 +147,13 @@ describe("NotesImageAttachment", () => {
     expect(
       screen.queryByRole("separator", { name: "Resize diagram.png" })
     ).toBeNull();
-    expect(
-      screen.queryByRole("button", { name: "Remove diagram.png" })
-    ).toBeNull();
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+    expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveAttribute(
+      "aria-disabled",
+      "true"
+    );
     expect(onDisplayWidthCommit).not.toHaveBeenCalled();
     expect(onRemove).not.toHaveBeenCalled();
   });
@@ -893,21 +897,56 @@ describe("NotesImageAttachment", () => {
     }
   );
 
-  it("offers an accessible icon removal action only when a callback is supplied", async () => {
+  it("routes deletion through the hover action menu when a callback is supplied", async () => {
     const onRemove = vi.fn();
     const user = userEvent.setup();
-    const view = render(
-      <NotesImageAttachment {...standardProps({ onRemove })} />
+    render(<NotesImageAttachment {...standardProps({ onRemove })} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(onRemove).toHaveBeenCalledOnce();
+  });
+
+  it("opens the resident image full-screen without reading or allocating it again", async () => {
+    const user = userEvent.setup();
+    const loadBytes = vi.fn().mockResolvedValue(imageBytes);
+    render(
+      <NotesImageAttachment
+        {...standardProps({ bytes: undefined, loadBytes })}
+      />
     );
 
-    const remove = screen.getByRole("button", { name: "Remove diagram.png" });
-    expect(remove).toHaveAttribute("title", "Remove image");
-    await user.click(remove);
-    expect(onRemove).toHaveBeenCalledOnce();
+    await screen.findByRole("img", { name: "diagram.png" });
+    expect(loadBytes).toHaveBeenCalledOnce();
+    expect(createObjectURL).toHaveBeenCalledOnce();
 
-    view.rerender(<NotesImageAttachment {...standardProps()} />);
+    await user.click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Show full-screen" }));
+
+    expect(screen.getByRole("dialog", { name: "diagram.png" })).toBeVisible();
     expect(
-      screen.queryByRole("button", { name: "Remove diagram.png" })
-    ).not.toBeInTheDocument();
+      screen.getAllByRole("img", { name: "diagram.png" }).at(-1)
+    ).toHaveAttribute("src", "blob:notes-image");
+    expect(loadBytes).toHaveBeenCalledOnce();
+    expect(createObjectURL).toHaveBeenCalledOnce();
+
+    await user.click(
+      screen.getByRole("button", { name: "Close full-screen image" })
+    );
+    expect(screen.queryByRole("dialog", { name: "diagram.png" })).toBeNull();
+  });
+
+  it("opens the resident image full-screen on double click", async () => {
+    const user = userEvent.setup();
+    render(<NotesImageAttachment {...standardProps()} />);
+
+    const image = await screen.findByRole("img", { name: "diagram.png" });
+    await user.dblClick(image);
+
+    expect(screen.getByRole("dialog", { name: "diagram.png" })).toBeVisible();
   });
 });
