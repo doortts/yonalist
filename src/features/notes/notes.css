@@ -1443,11 +1443,16 @@ button.notes-date-token:hover {
   line-height: 15px;
 }
 
+.notes-node-note-field {
+  width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
+  margin: 2px 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
+}
+
 .notes-node-note {
   display: block;
-  width: calc(100% - var(--notes-indent) - var(--notes-content-offset));
+  width: 100%;
   min-height: 20px;
-  margin: 2px 0 8px calc(var(--notes-indent) + var(--notes-content-offset));
+  margin: 0;
   padding: 0;
   overflow: hidden;
   resize: none;
