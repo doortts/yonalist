@@ -3256,6 +3256,7 @@ fn has_selected_ancestor(
     selected: &BTreeSet<&str>,
 ) -> Result<bool, String> {
     let mut visited = HashSet::from([node_id.to_string()]);
+    let mut found_selected_ancestor = false;
     let mut current = node_by_id(transaction, node_id)?.and_then(|node| node.parent_id);
     while let Some(parent_id) = current {
         if !visited.insert(parent_id.clone()) {
@@ -3264,11 +3265,11 @@ fn has_selected_ancestor(
             );
         }
         if selected.contains(parent_id.as_str()) {
-            return Ok(true);
+            found_selected_ancestor = true;
         }
         current = node_by_id(transaction, &parent_id)?.and_then(|node| node.parent_id);
     }
-    Ok(false)
+    Ok(found_selected_ancestor)
 }
 
 fn selection_roots(
@@ -6914,6 +6915,43 @@ mod tests {
             },
         )
         .expect_err("an ancestor cycle must be rejected");
+
+        assert!(error.contains("cycle"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&connection), before);
+    }
+
+    #[test]
+    fn batch_duplicate_rejects_selected_ancestor_cycle_without_copying_a_healthy_root() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "healthy selected root");
+        insert_node(&connection, CHILD_ID, None, 2048, "selected cycle A");
+        insert_node(
+            &connection,
+            THIRD_ID,
+            Some(CHILD_ID),
+            1024,
+            "selected cycle B",
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![THIRD_ID, CHILD_ID],
+            )
+            .expect("corrupt selected ancestors into a cycle");
+        let before = persistent_state(&connection);
+
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![
+                    NODE_ID.to_string(),
+                    CHILD_ID.to_string(),
+                    THIRD_ID.to_string(),
+                ],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("a selected ancestor cycle must reject the whole duplicate");
 
         assert!(error.contains("cycle"), "unexpected error: {error}");
         assert_eq!(persistent_state(&connection), before);
