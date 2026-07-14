@@ -26,7 +26,8 @@ describe("NotesImageLightbox", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Close full-screen image" }));
-    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(onOpenChange).toHaveBeenCalledOnce();
+    expect(onOpenChange.mock.calls[0]?.[0]).toBe(false);
   });
 
   it("does not render modal content while closed", () => {
@@ -43,5 +44,46 @@ describe("NotesImageLightbox", () => {
 
     expect(screen.queryByRole("dialog", { name: "diagram.png" })).toBeNull();
   });
-});
 
+  it("closes once when Escape is pressed", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(
+      <NotesImageLightbox
+        open
+        onOpenChange={onOpenChange}
+        originalName="diagram.png"
+        sourceUrl="blob:resident-image"
+        intrinsicWidth={1200}
+        intrinsicHeight={600}
+      />
+    );
+
+    await user.keyboard("{Escape}");
+
+    expect(onOpenChange).toHaveBeenCalledOnce();
+    expect(onOpenChange.mock.calls[0]?.[0]).toBe(false);
+  });
+
+  it("keeps the viewer open for image clicks and closes on empty viewer space", async () => {
+    const user = userEvent.setup();
+    const onOpenChange = vi.fn();
+    render(
+      <NotesImageLightbox
+        open
+        onOpenChange={onOpenChange}
+        originalName="diagram.png"
+        sourceUrl="blob:resident-image"
+        intrinsicWidth={1200}
+        intrinsicHeight={600}
+      />
+    );
+
+    await user.click(screen.getByRole("img", { name: "diagram.png" }));
+    expect(onOpenChange).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("dialog", { name: "diagram.png" }));
+    expect(onOpenChange).toHaveBeenCalledOnce();
+    expect(onOpenChange.mock.calls[0]?.[0]).toBe(false);
+  });
+});

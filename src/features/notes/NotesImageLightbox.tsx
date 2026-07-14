@@ -25,7 +25,11 @@ export function NotesImageLightbox({
         <Dialog.Popup
           className="notes-image-lightbox"
           aria-label={originalName}
-          onClick={() => onOpenChange(false)}
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              onOpenChange(false);
+            }
+          }}
         >
           <Dialog.Close
             type="button"
@@ -48,4 +52,3 @@ export function NotesImageLightbox({
     </Dialog.Root>
   );
 }
-

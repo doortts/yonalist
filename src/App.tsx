@@ -27,6 +27,11 @@ import {
   settingsNeedNormalization,
   type AppSettings
 } from "./appSettings";
+import {
+  AppNavigationContext,
+  type AppNavigation,
+  type SettingsTarget
+} from "./AppNavigationContext";
 import { GithubConnectionContext } from "./GithubConnectionContext";
 import { MarkdownStyleContext } from "./MarkdownStyleContext";
 import { VaultRootContext } from "./VaultRootContext";
@@ -301,6 +306,7 @@ export default function App({ initialOnline }: AppProps) {
   const inboxActive = activeFeatureId === "inbox";
   const showSettings = activeFeatureId === "settings";
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  const [settingsTarget, setSettingsTarget] = useState<SettingsTarget | null>(null);
   // Notifications are the landing view once authentication passes.
   const [showNotifications, setShowNotifications] = useState(true);
   const [loadedItemBodies, setLoadedItemBodies] = useState<Record<string, string>>({});
@@ -334,6 +340,9 @@ export default function App({ initialOnline }: AppProps) {
   function changeActiveFeature(nextFeatureId: FeatureId) {
     if (nextFeatureId !== activeFeatureId && nextFeatureId !== "inbox") {
       outboxSync.setReconnectSyncPrompt(null);
+    }
+    if (nextFeatureId !== "settings") {
+      setSettingsTarget(null);
     }
     setActiveFeatureId(nextFeatureId);
   }
@@ -839,8 +848,10 @@ export default function App({ initialOnline }: AppProps) {
   // openNewIssue keeps a stable identity and ItemListPane's React.memo bailout
   // holds across app-level state churn (e.g. notification polls).
   const setShowSettingsFromDraftIssue = useCallback(
-    (show: boolean) =>
-      changeActiveFeatureRef.current(show ? "settings" : "inbox"),
+    (show: boolean) => {
+      setSettingsTarget(null);
+      changeActiveFeatureRef.current(show ? "settings" : "inbox");
+    },
     []
   );
   const { draftIssue, setDraftIssue, openNewIssue, queueIssue } = useDraftIssue({
@@ -1230,16 +1241,32 @@ export default function App({ initialOnline }: AppProps) {
     workItems.toggleFavorite(selectedItem.path);
   }
 
-  function openSettings(section?: SettingsSection) {
+  const openSettings = useCallback((
+    section?: SettingsSection,
+    target?: SettingsTarget
+  ) => {
     if (section) {
       setSettingsSection(section);
     }
+    setSettingsTarget(target ?? null);
     setRepositoryFilter(null);
     setShowNewIssue(false);
     setShowNotifications(false);
-    changeActiveFeature("settings");
+    changeActiveFeatureRef.current("settings");
     setSettingsStatus("");
-  }
+  }, []);
+  const appNavigation = useMemo<AppNavigation>(() => ({ openSettings }), [openSettings]);
+  const selectSettingsSection = useCallback((section: SettingsSection) => {
+    setSettingsSection(section);
+    setSettingsTarget(null);
+  }, []);
+  const consumeSettingsTarget = useCallback((target: SettingsTarget) => {
+    setSettingsTarget((current) => (current === target ? null : current));
+  }, []);
+  const closeSettings = useCallback(() => {
+    setSettingsTarget(null);
+    changeActiveFeatureRef.current("inbox");
+  }, []);
 
   function openNotifications() {
     setRepositoryFilter(null);
@@ -1598,12 +1625,17 @@ export default function App({ initialOnline }: AppProps) {
   function renderSettingsPanes(): FeaturePanes {
     return {
       middle: (
-        <SettingsCategoryPane section={settingsSection} onSelect={setSettingsSection} />
+        <SettingsCategoryPane
+          section={settingsSection}
+          onSelect={selectSettingsSection}
+        />
       ),
       detail: (
         <Suspense fallback={<div className="detail-loading">Loading settings...</div>}>
           <SettingsPage
             section={settingsSection}
+            target={settingsTarget}
+            onTargetConsumed={consumeSettingsTarget}
             settings={settings}
             status={settingsStatus}
             resetProgress={resetProgress}
@@ -1620,7 +1652,7 @@ export default function App({ initialOnline }: AppProps) {
             onUpdate={updateSetting}
             onSave={saveSettings}
             onResetAll={resetAllSettingsAndCaches}
-            onClose={() => changeActiveFeature("inbox")}
+            onClose={closeSettings}
           />
         </Suspense>
       )
@@ -1677,6 +1709,7 @@ export default function App({ initialOnline }: AppProps) {
     <GithubConnectionContext.Provider value={auth.connection}>
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
+    <AppNavigationContext.Provider value={appNavigation}>
     <main
       className="app-shell"
       aria-label="Yonalist layout"
@@ -1841,6 +1874,7 @@ export default function App({ initialOnline }: AppProps) {
         </Toast.Portal>
       </Toast.Provider>
     </main>
+    </AppNavigationContext.Provider>
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>
     </GithubConnectionContext.Provider>

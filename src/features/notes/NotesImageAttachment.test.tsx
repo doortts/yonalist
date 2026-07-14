@@ -902,9 +902,10 @@ describe("NotesImageAttachment", () => {
     const user = userEvent.setup();
     render(<NotesImageAttachment {...standardProps({ onRemove })} />);
 
-    await user.click(
-      screen.getByRole("button", { name: "Image actions for diagram.png" })
-    );
+    const menuTrigger = screen.getByRole("button", {
+      name: "Image actions for diagram.png"
+    });
+    await user.click(menuTrigger);
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(onRemove).toHaveBeenCalledOnce();
   });
@@ -922,9 +923,10 @@ describe("NotesImageAttachment", () => {
     expect(loadBytes).toHaveBeenCalledOnce();
     expect(createObjectURL).toHaveBeenCalledOnce();
 
-    await user.click(
-      screen.getByRole("button", { name: "Image actions for diagram.png" })
-    );
+    const menuTrigger = screen.getByRole("button", {
+      name: "Image actions for diagram.png"
+    });
+    await user.click(menuTrigger);
     await user.click(screen.getByRole("menuitem", { name: "Show full-screen" }));
 
     expect(screen.getByRole("dialog", { name: "diagram.png" })).toBeVisible();
@@ -938,6 +940,7 @@ describe("NotesImageAttachment", () => {
       screen.getByRole("button", { name: "Close full-screen image" })
     );
     expect(screen.queryByRole("dialog", { name: "diagram.png" })).toBeNull();
+    await waitFor(() => expect(menuTrigger).toHaveFocus());
   });
 
   it("opens the resident image full-screen on double click", async () => {

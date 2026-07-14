@@ -69,6 +69,16 @@ describe("SettingsCategoryPane (Base UI vertical Tabs)", () => {
     expect(onSelect).toHaveBeenCalledWith("reset");
   });
 
+  it("offers Notes as a settings category", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    render(<SettingsCategoryPane section="appearance" onSelect={onSelect} />);
+
+    await user.click(screen.getByRole("tab", { name: /Notes/ }));
+
+    expect(onSelect).toHaveBeenCalledWith("notes");
+  });
+
   it("moves the selection with the arrow keys", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();

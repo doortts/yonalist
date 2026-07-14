@@ -2064,6 +2064,11 @@ button.notes-date-token:hover {
   color: var(--text-1);
 }
 
+.notes-image-menu-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
 .notes-image-menu {
   min-width: 210px;
 }
@@ -2106,6 +2111,12 @@ button.notes-date-token:hover {
   top: 14px;
   right: 14px;
   background: var(--bg-card);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notes-image-menu-trigger {
+    transition: none;
+  }
 }
 
 @media (pointer: coarse) {

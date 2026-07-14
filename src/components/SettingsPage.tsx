@@ -6,12 +6,20 @@ import {
   Check,
   CheckCircle2,
   Circle,
+  Image as ImageIcon,
   Loader2,
   RotateCcw,
   X
 } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
+import {
+  type FormEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState
+} from "react";
 import "./ui/form-controls.css";
+import type { SettingsTarget } from "../AppNavigationContext";
 import type { AppSettings } from "../appSettings";
 import type { UseGithubAuthResult } from "../hooks/useGithubAuth";
 import type { UseGithubServersResult } from "../hooks/useGithubServers";
@@ -27,6 +35,8 @@ import { ConfirmDialog } from "./ui/ConfirmDialog";
 
 interface SettingsPageProps {
   section: SettingsSection;
+  target: SettingsTarget | null;
+  onTargetConsumed: (target: SettingsTarget) => void;
   settings: AppSettings;
   status: string;
   resetProgress: ResetProgressState;
@@ -117,6 +127,8 @@ function SettingsCheck({
 
 export function SettingsPage({
   section,
+  target,
+  onTargetConsumed,
   settings,
   status,
   resetProgress,
@@ -136,8 +148,27 @@ export function SettingsPage({
   onClose
 }: SettingsPageProps) {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [highlightedTarget, setHighlightedTarget] =
+    useState<SettingsTarget | null>(null);
+  const imagesSectionRef = useRef<HTMLElement>(null);
   const meta = settingsSections.find((entry) => entry.key === section);
   const resetRunning = resetProgress.status === "running";
+
+  useEffect(() => {
+    if (section !== "notes") {
+      setHighlightedTarget(null);
+      return;
+    }
+    if (target !== "images" || !imagesSectionRef.current) {
+      return;
+    }
+
+    const imagesSection = imagesSectionRef.current;
+    imagesSection.scrollIntoView({ block: "nearest" });
+    imagesSection.focus({ preventScroll: true });
+    setHighlightedTarget("images");
+    onTargetConsumed("images");
+  }, [onTargetConsumed, section, target]);
 
   return (
     <form className="settings-page" aria-label="Settings page" onSubmit={onSave}>
@@ -313,6 +344,27 @@ export function SettingsPage({
               >
                 Desktop notifications for new items
               </SettingsCheck>
+            </div>
+          </section>
+        )}
+
+        {section === "notes" && (
+          <section
+            ref={imagesSectionRef}
+            className={`settings-section notes-images-settings-section${
+              highlightedTarget === "images" ? " settings-target-highlight" : ""
+            }`}
+            aria-labelledby="notes-images-settings-heading"
+            tabIndex={-1}
+            onAnimationEnd={(event) => {
+              if (event.target === event.currentTarget) {
+                setHighlightedTarget(null);
+              }
+            }}
+          >
+            <div className="settings-section-title">
+              <ImageIcon size={18} />
+              <h3 id="notes-images-settings-heading">Images</h3>
             </div>
           </section>
         )}

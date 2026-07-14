@@ -1,9 +1,17 @@
 import { Tabs } from "@base-ui/react/tabs";
-import { FolderTree, HardDrive, RotateCcw, Server, SunMoon } from "lucide-react";
+import {
+  FolderTree,
+  HardDrive,
+  NotebookPen,
+  RotateCcw,
+  Server,
+  SunMoon
+} from "lucide-react";
 import "./ui/category-tabs.css";
 
 export type SettingsSection =
   | "appearance"
+  | "notes"
   | "servers"
   | "projects"
   | "vault"
@@ -38,6 +46,12 @@ export const settingsSections: Array<{
     label: "Vault and sync",
     description: "볼트 폴더와 동기화",
     icon: HardDrive
+  },
+  {
+    key: "notes",
+    label: "Notes",
+    description: "Images",
+    icon: NotebookPen
   },
   {
     key: "reset",
