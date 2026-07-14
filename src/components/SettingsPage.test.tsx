@@ -1,10 +1,13 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings } from "../appSettings";
 import { SettingsPage } from "./SettingsPage";
 
 const scrollIntoView = vi.fn();
+const appStyles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
 
 function settingsPageProps(): ComponentProps<typeof SettingsPage> {
   return {
@@ -77,6 +80,12 @@ describe("SettingsPage Notes targets", () => {
 
     expect(screen.getByRole("region", { name: "Images" })).not.toHaveClass(
       "settings-target-highlight"
+    );
+  });
+
+  it("disables target highlight animation when reduced motion is requested", () => {
+    expect(appStyles).toMatch(
+      /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.settings-target-highlight\s*{[^}]*animation:\s*none;/s
     );
   });
 });

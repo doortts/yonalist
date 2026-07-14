@@ -2,12 +2,15 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
+  useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from "react";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { NotesImageLightbox } from "./NotesImageLightbox";
 import { NotesImageMenu } from "./NotesImageMenu";
 
@@ -217,6 +220,13 @@ export function NotesImageAttachment({
   readOnly = false,
   embedded = false
 }: NotesImageAttachmentProps) {
+  const appNavigation = useContext(AppNavigationContext);
+  const openImageSettings = useCallback(
+    () => appNavigation?.openSettings("notes", "images"),
+    [appNavigation]
+  );
+  const resolvedOpenSettings =
+    onOpenSettings ?? (appNavigation ? openImageSettings : undefined);
   const metadataValid = isValidAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
@@ -515,7 +525,7 @@ export function NotesImageAttachment({
       onViewOriginal={onViewOriginal}
       onDownload={onDownload}
       onDelete={readOnly ? undefined : onRemove}
-      onOpenSettings={onOpenSettings}
+      onOpenSettings={resolvedOpenSettings}
     />
   );
 

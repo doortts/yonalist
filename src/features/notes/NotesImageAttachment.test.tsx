@@ -8,6 +8,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import {
   NotesImageAttachment,
   type NotesImageAttachmentMetadata
@@ -908,6 +909,24 @@ describe("NotesImageAttachment", () => {
     await user.click(menuTrigger);
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(onRemove).toHaveBeenCalledOnce();
+  });
+
+  it("opens Notes image settings through the app navigation context", async () => {
+    const openSettings = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AppNavigationContext.Provider value={{ openSettings }}>
+        <NotesImageAttachment {...standardProps()} />
+      </AppNavigationContext.Provider>
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Settings" }));
+
+    expect(openSettings).toHaveBeenCalledOnce();
+    expect(openSettings).toHaveBeenCalledWith("notes", "images");
   });
 
   it("opens the resident image full-screen without reading or allocating it again", async () => {

@@ -3257,6 +3257,12 @@ body.is-resizing-pane {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .settings-target-highlight {
+    animation: none;
+  }
+}
+
 .settings-section-title {
   display: flex;
   align-items: center;
