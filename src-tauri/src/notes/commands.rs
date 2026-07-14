@@ -4032,6 +4032,7 @@ mod tests {
                 op: BatchOp::Move {
                     parent_id: Some(BATCH_D_ID.to_string()),
                     after_id: Some(BATCH_A_ID.to_string()),
+                    before_id: None,
                 },
             },
             Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
@@ -4060,6 +4061,190 @@ mod tests {
     }
 
     #[test]
+    fn batch_move_before_first_is_one_atomic_undoable_reorder() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_C_ID, None, Some(BATCH_B_ID));
+        seed_batch_node(&vault_path, BATCH_D_ID, None, Some(BATCH_C_ID));
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_B_ID.to_string(), BATCH_C_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: None,
+                    after_id: None,
+                    before_id: Some(BATCH_A_ID.to_string()),
+                },
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
+        )
+        .expect("move selected block before the first sibling");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(history_entry_count(&vault_path), 1);
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_A_ID.to_string(),
+                BATCH_D_ID.to_string(),
+            ]
+        );
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo before-anchored batch move");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_D_ID.to_string(),
+            ]
+        );
+
+        let redone = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo before-anchored batch move");
+        assert_eq!(
+            redone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_A_ID.to_string(),
+                BATCH_D_ID.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_move_before_existing_position_is_a_true_noop() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_C_ID, None, Some(BATCH_B_ID));
+        seed_batch_node(&vault_path, BATCH_D_ID, None, Some(BATCH_C_ID));
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_B_ID.to_string(), BATCH_C_ID.to_string()],
+                op: BatchOp::Move {
+                    parent_id: None,
+                    after_id: None,
+                    before_id: Some(BATCH_D_ID.to_string()),
+                },
+            },
+            Some(batch_op_context(NOOP_ENTRY_ID, "batchMove")),
+        )
+        .expect("already-positioned block is a no-op");
+
+        assert_eq!(mutation.history_entry_id, None);
+        assert!(!mutation.can_undo);
+        assert_eq!(history_entry_count(&vault_path), 0);
+        assert_eq!(
+            active_child_ids(&vault_path, None),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_C_ID.to_string(),
+                BATCH_D_ID.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn batch_move_before_rejects_selected_descendant_cross_parent_and_missing_anchors_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_batch_node(&vault_path, BATCH_A_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_D_ID, None, Some(BATCH_A_ID));
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_D_ID), None);
+
+        let cases = [
+            (vec![BATCH_A_ID.to_string()], None, BATCH_A_ID, "selection"),
+            (
+                vec![BATCH_A_ID.to_string()],
+                Some(BATCH_D_ID.to_string()),
+                BATCH_B_ID,
+                "descendant",
+            ),
+            (
+                vec![BATCH_B_ID.to_string()],
+                Some(BATCH_D_ID.to_string()),
+                BATCH_A_ID,
+                "sibling",
+            ),
+            (
+                vec![BATCH_B_ID.to_string()],
+                Some(BATCH_D_ID.to_string()),
+                BATCH_MISSING_ID,
+                "sibling",
+            ),
+        ];
+
+        for (node_ids, parent_id, before_id, expected_error) in cases {
+            let error = notes_apply_batch(
+                vault_path.clone(),
+                ApplyBatchInput {
+                    node_ids,
+                    op: BatchOp::Move {
+                        parent_id,
+                        after_id: None,
+                        before_id: Some(before_id.to_string()),
+                    },
+                },
+                Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
+            )
+            .expect_err("invalid before anchor must reject the whole batch");
+            assert!(
+                error.to_lowercase().contains(expected_error),
+                "unexpected error for {before_id}: {error}"
+            );
+            assert_eq!(history_entry_count(&vault_path), 0);
+            assert_eq!(
+                active_child_ids(&vault_path, None),
+                vec![BATCH_A_ID.to_string(), BATCH_D_ID.to_string()]
+            );
+            assert_eq!(
+                active_child_ids(&vault_path, Some(BATCH_A_ID)),
+                vec![BATCH_B_ID.to_string()]
+            );
+            assert_eq!(
+                active_child_ids(&vault_path, Some(BATCH_D_ID)),
+                vec![BATCH_C_ID.to_string()]
+            );
+        }
+    }
+
+    #[test]
     fn batch_move_under_a_live_descendant_rejects_the_whole_batch() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -4078,6 +4263,7 @@ mod tests {
                 op: BatchOp::Move {
                     parent_id: Some(BATCH_C_ID.to_string()),
                     after_id: None,
+                    before_id: None,
                 },
             },
             Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),

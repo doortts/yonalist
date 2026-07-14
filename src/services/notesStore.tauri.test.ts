@@ -1334,6 +1334,13 @@ describe("notesStore in Tauri", () => {
     const inputs = [
       { op: "duplicate", nodeIds: [nodeId, secondNodeId] },
       {
+        op: "move",
+        nodeIds: [secondNodeId],
+        parentId: null,
+        afterId: null,
+        beforeId: nodeId
+      },
+      {
         op: "addTag",
         nodeIds: [nodeId],
         tag: {

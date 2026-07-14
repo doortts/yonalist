@@ -507,7 +507,12 @@ export type NotesBatchOp =
   | { type: "delete" }
   | { type: "indent" }
   | { type: "outdent" }
-  | { type: "move"; parentId: NoteId | null; afterId: NoteId | null };
+  | {
+      type: "move";
+      parentId: NoteId | null;
+      afterId: NoteId | null;
+      beforeId?: NoteId | null;
+    };
 
 /**
  * Build the `notes_apply_batch` transport input for `nodeIds` (already in
@@ -531,7 +536,8 @@ function buildApplyBatchInput(
         op: "move",
         nodeIds,
         parentId: op.parentId,
-        afterId: op.afterId
+        afterId: op.afterId,
+        beforeId: op.beforeId ?? null
       };
   }
 }

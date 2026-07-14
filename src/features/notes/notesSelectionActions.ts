@@ -29,6 +29,7 @@ export type NotesSelectionEligibility = NotesSelectionTargetEligibility;
 export interface NotesSelectionMoveTarget {
   readonly parentId: NoteId | null;
   readonly afterId: NoteId | null;
+  readonly beforeId?: NoteId | null;
 }
 
 export type NotesSelectionReorderEligibility =
@@ -428,12 +429,6 @@ function reorderEligibility(
       reason: "The selection is already first among its siblings."
     });
   }
-  if (direction === "up" && firstIndex === 1) {
-    return Object.freeze({
-      eligible: false,
-      reason: "Moving this selection first is unavailable."
-    });
-  }
   if (direction === "down" && lastIndex === siblings.length - 1) {
     return Object.freeze({
       eligible: false,
@@ -441,13 +436,17 @@ function reorderEligibility(
     });
   }
 
-  const afterId =
-    direction === "up"
+  const beforeId =
+    direction === "up" && firstIndex === 1 ? siblings[0] : undefined;
+  const afterId = beforeId
+    ? null
+    : direction === "up"
       ? (siblings[firstIndex - 2] ?? null)
       : siblings[lastIndex + 1];
   return eligibleReorder(rootIds, {
     parentId: parent.parentId,
-    afterId
+    afterId,
+    ...(beforeId ? { beforeId } : {})
   });
 }
 

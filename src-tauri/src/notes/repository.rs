@@ -3150,11 +3150,13 @@ pub(crate) fn apply_batch_at(
         BatchOp::Move {
             parent_id,
             after_id,
+            before_id,
         } => batch_move(
             transaction,
             &node_ids,
             parent_id.as_deref(),
             after_id.as_deref(),
+            before_id.as_deref(),
         ),
         BatchOp::Indent => batch_indent(transaction, &node_ids),
         BatchOp::Outdent => batch_outdent(transaction, &node_ids),
@@ -3353,8 +3355,10 @@ fn move_node_within_transaction(
     node_id: &str,
     parent_id: Option<&str>,
     after_id: Option<&str>,
+    before_id: Option<&str>,
 ) -> Result<(), String> {
-    let sort_key = next_sort_key_excluding(transaction, parent_id, after_id, None, Some(node_id))?;
+    let sort_key =
+        next_sort_key_excluding(transaction, parent_id, after_id, before_id, Some(node_id))?;
     transaction
         .execute(
             "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
@@ -3367,16 +3371,21 @@ fn move_node_within_transaction(
 }
 
 /// Moves the selected nodes as a contiguous block under `parent_id`, positioned
-/// after `after_id`. Only the roots of the selection move (descendants travel
-/// with their root); they are placed in the order they appear in `node_ids`
-/// (the caller passes them in outline order). All self/descendant guards run up
-/// front so an illegal target rolls the whole batch back before any row moves.
+/// after `after_id` or before `before_id`. Only the roots of the selection move
+/// (descendants travel with their root); they are placed in the order they
+/// appear in `node_ids` (the caller passes them in outline order). All
+/// self/descendant/anchor guards run up front so an illegal target rolls the
+/// whole batch back before any row moves.
 fn batch_move(
     transaction: &Transaction<'_>,
     node_ids: &[String],
     parent_id: Option<&str>,
     after_id: Option<&str>,
+    before_id: Option<&str>,
 ) -> Result<(), String> {
+    if after_id.is_some() && before_id.is_some() {
+        return Err("A batch move cannot specify both afterId and beforeId.".to_string());
+    }
     ensure_live_parent(transaction, parent_id)?;
     for node_id in node_ids {
         require_active_node(transaction, node_id)?;
@@ -3389,7 +3398,24 @@ fn batch_move(
             );
         }
     }
+    if let Some(before_id) = before_id {
+        if selected.contains(before_id) {
+            return Err(
+                "A batch move cannot be anchored before a node in the selection.".to_string(),
+            );
+        }
+    }
     let roots = selection_roots(transaction, node_ids, &selected)?;
+    if let Some(before_id) = before_id {
+        for root in &roots {
+            if live_descendant_exists(transaction, root, before_id)? {
+                return Err(
+                    "A batch move cannot be anchored before a descendant of the selection."
+                        .to_string(),
+                );
+            }
+        }
+    }
     for root in &roots {
         if parent_id == Some(root.as_str()) {
             return Err("A Note node cannot be moved under itself.".to_string());
@@ -3400,12 +3426,62 @@ fn batch_move(
             }
         }
     }
-    // Place each root immediately after the previous one, so the block is
-    // contiguous and keeps its `node_ids` order.
-    let mut anchor = after_id.map(str::to_string);
+
+    // Validate the anchor against the target parent's complete live sibling
+    // order before any row moves. The same projection lets an already
+    // satisfied placement remain a true no-op (no updated_at/history churn).
+    let current_order = sibling_keys(transaction, parent_id, None)?
+        .into_iter()
+        .map(|(node_id, _)| node_id)
+        .collect::<Vec<_>>();
+    let root_set = roots.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let mut desired_order = current_order
+        .iter()
+        .filter(|node_id| !root_set.contains(node_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let insertion_index = if let Some(before_id) = before_id {
+        desired_order
+            .iter()
+            .position(|node_id| node_id == before_id)
+            .ok_or_else(|| {
+                "The requested beforeId must identify a live sibling under the target parent."
+                    .to_string()
+            })?
+    } else if let Some(after_id) = after_id {
+        desired_order
+            .iter()
+            .position(|node_id| node_id == after_id)
+            .map(|index| index + 1)
+            .ok_or_else(|| {
+                "The requested afterId must identify a live sibling under the target parent."
+                    .to_string()
+            })?
+    } else {
+        desired_order.len()
+    };
+    desired_order.splice(insertion_index..insertion_index, roots.iter().cloned());
+    if desired_order == current_order {
+        return Ok(());
+    }
+
+    // The first root honors the submitted placement. Every later root chains
+    // after the prior moved root, keeping the block contiguous and ordered.
+    let mut previous_root: Option<String> = None;
     for root in &roots {
-        move_node_within_transaction(transaction, root, parent_id, anchor.as_deref())?;
-        anchor = Some(root.clone());
+        let first = previous_root.is_none();
+        move_node_within_transaction(
+            transaction,
+            root,
+            parent_id,
+            if first {
+                after_id
+            } else {
+                previous_root.as_deref()
+            },
+            if first { before_id } else { None },
+        )?;
+        previous_root = Some(root.clone());
     }
     Ok(())
 }
@@ -3447,7 +3523,7 @@ fn batch_indent(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<()
     // under the same parent keep their relative order regardless of input order.
     plans.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     for (new_parent, _, node_id) in &plans {
-        move_node_within_transaction(transaction, node_id, Some(new_parent), None)?;
+        move_node_within_transaction(transaction, node_id, Some(new_parent), None, None)?;
     }
     Ok(())
 }
@@ -3508,6 +3584,7 @@ fn batch_outdent(transaction: &Transaction<'_>, node_ids: &[String]) -> Result<(
             &plan.node_id,
             plan.grandparent_id.as_deref(),
             anchor.as_deref(),
+            None,
         )?;
         anchor = Some(plan.node_id.clone());
     }

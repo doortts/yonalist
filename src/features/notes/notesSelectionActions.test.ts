@@ -326,7 +326,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     });
   });
 
-  it("fails closed when moving up would require an unsupported before-first anchor", () => {
+  it("moves a selected block before the first sibling in one step", () => {
     const nodes = [
       node({ id: "parent" }),
       node({ id: "a", parentId: "parent", sortKey: 1 }),
@@ -341,8 +341,9 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.structuralRootIds).toEqual(["b", "c"]);
     expect(result?.eligibility.moveUp).toEqual({
-      eligible: false,
-      reason: "Moving this selection first is unavailable."
+      eligible: true,
+      nodeIds: ["b", "c"],
+      target: { parentId: "parent", afterId: null, beforeId: "a" }
     });
     expect(result?.eligibility.moveDown).toEqual({
       eligible: true,
@@ -497,6 +498,30 @@ describe("deriveNotesSelectionActionSnapshot", () => {
       eligible: true,
       nodeIds: ["b", "c"],
       target: { parentId: null, afterId: "a" }
+    });
+  });
+
+  it("uses an omitted first authoritative sibling as the before anchor", () => {
+    const projectedNodes = [
+      node({ id: "b", sortKey: 2 }),
+      node({ id: "c", sortKey: 3 })
+    ];
+    const projected = normalizeWorkspace({ nodes: projectedNodes });
+    const authoritative = normalizeWorkspace({
+      nodes: [node({ id: "hidden", sortKey: 1 }), ...projectedNodes]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["b", "c"],
+      selection: { anchorId: "b", headId: "c" }
+    });
+
+    expect(result?.eligibility.moveUp).toEqual({
+      eligible: true,
+      nodeIds: ["b", "c"],
+      target: { parentId: null, afterId: null, beforeId: "hidden" }
     });
   });
 

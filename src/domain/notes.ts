@@ -311,6 +311,8 @@ export type ApplyNotesBatchInput =
       nodeIds: readonly NoteId[];
       parentId: NoteId | null;
       afterId: NoteId | null;
+      /** Optional before-anchor; mutually exclusive with a non-null afterId. */
+      beforeId?: NoteId | null;
     }
   | { op: "indent"; nodeIds: readonly NoteId[] }
   | { op: "outdent"; nodeIds: readonly NoteId[] }

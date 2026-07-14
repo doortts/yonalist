@@ -7981,6 +7981,43 @@ describe("useNotesWorkspace multi-node selection", () => {
     expect(result.current.selection).toBeNull();
   });
 
+  it("forwards a before-anchored batch move without rewriting its placement", async () => {
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings()),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.applyBatch(["b", "c"], {
+        type: "move",
+        parentId: null,
+        afterId: null,
+        beforeId: "a"
+      });
+    });
+
+    expect(applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      {
+        op: "move",
+        nodeIds: ["b", "c"],
+        parentId: null,
+        afterId: null,
+        beforeId: "a"
+      },
+      historyContext("batch")
+    );
+  });
+
   it("reverts an applied batch in a single undo step", async () => {
     const applyBatch = vi.fn((_vaultRoot, _input, context) =>
       Promise.resolve({

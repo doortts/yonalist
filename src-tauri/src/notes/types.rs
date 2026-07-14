@@ -388,10 +388,11 @@ pub enum BatchOp {
     /// `deleted_batch_id`).
     Delete,
     /// Move the selected nodes as a contiguous block under `parentId`, after
-    /// `afterId`, preserving their order in `nodeIds`.
+    /// `afterId` or before `beforeId`, preserving their order in `nodeIds`.
     Move {
         parent_id: Option<NoteId>,
         after_id: Option<NoteId>,
+        before_id: Option<NoteId>,
     },
     /// Indent each eligible selected node under its nearest preceding sibling
     /// that is not itself selected.
@@ -472,6 +473,7 @@ enum ApplyBatchWire {
         node_ids: Vec<NoteId>,
         parent_id: Option<NoteId>,
         after_id: Option<NoteId>,
+        before_id: Option<NoteId>,
     },
     Indent {
         node_ids: Vec<NoteId>,
@@ -521,11 +523,13 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
                 node_ids,
                 parent_id,
                 after_id,
+                before_id,
             } => ApplyBatchInput {
                 node_ids,
                 op: BatchOp::Move {
                     parent_id,
                     after_id,
+                    before_id,
                 },
             },
             ApplyBatchWire::Indent { node_ids } => ApplyBatchInput {
@@ -580,10 +584,15 @@ impl ApplyBatchInput {
         if let BatchOp::Move {
             parent_id,
             after_id,
+            before_id,
         } = &self.op
         {
             validate_optional_note_id(parent_id.as_deref())?;
             validate_optional_note_id(after_id.as_deref())?;
+            validate_optional_note_id(before_id.as_deref())?;
+            if after_id.is_some() && before_id.is_some() {
+                return Err("A batch move cannot specify both afterId and beforeId.".to_string());
+            }
         }
         let normalized_tag = match &self.op {
             BatchOp::AddTag { tag } => Some(&tag.normalized_tag),
@@ -836,6 +845,24 @@ mod tests {
             BatchOp::Move {
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
+                before_id: None,
+            }
+        );
+
+        let move_before: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [SECOND_ID, THIRD_ID],
+            "op": "move",
+            "parentId": null,
+            "afterId": null,
+            "beforeId": NODE_ID
+        }))
+        .expect("before-anchored move batch input");
+        assert_eq!(
+            move_before.op,
+            BatchOp::Move {
+                parent_id: None,
+                after_id: None,
+                before_id: Some(NODE_ID.to_string()),
             }
         );
 
@@ -924,9 +951,35 @@ mod tests {
             op: BatchOp::Move {
                 parent_id: Some("not-a-uuid".to_string()),
                 after_id: None,
+                before_id: None,
             },
         };
         assert!(bad_parent.validate().is_err());
+
+        let bad_before = ApplyBatchInput {
+            node_ids: vec![NODE_ID.to_string()],
+            op: BatchOp::Move {
+                parent_id: None,
+                after_id: None,
+                before_id: Some("not-a-uuid".to_string()),
+            },
+        };
+        assert!(bad_before.validate().is_err());
+
+        let conflicting_anchors = ApplyBatchInput {
+            node_ids: vec![NODE_ID.to_string()],
+            op: BatchOp::Move {
+                parent_id: None,
+                after_id: Some(SECOND_ID.to_string()),
+                before_id: Some(THIRD_ID.to_string()),
+            },
+        };
+        assert_eq!(
+            conflicting_anchors
+                .validate()
+                .expect_err("mutually exclusive move anchors"),
+            "A batch move cannot specify both afterId and beforeId."
+        );
 
         let maximum_ids = (0..10_000)
             .map(|index| format!("00000000-0000-4000-8000-{index:012x}"))

@@ -1264,7 +1264,7 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
     });
   });
 
-  it("fails a batch reorder closed when moving first is not representable", () => {
+  it("routes a one-step batch reorder before the first sibling", () => {
     expect(
       resolveOutlineKey(
         batchInput({
@@ -1275,7 +1275,13 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
           selection: { anchorId: "c2", headId: "c3" }
         })
       )
-    ).toBeNull();
+    ).toEqual({
+      type: "batchReorder",
+      nodeIds: ["c2", "c3"],
+      parentId: "root-a",
+      afterId: null,
+      beforeId: "c1"
+    });
   });
 
   it("routes Cmd+Shift+ArrowDown to an exact one-step batch reorder", () => {
@@ -1345,6 +1351,43 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
       nodeIds: ["b", "c"],
       parentId: null,
       afterId: "a"
+    });
+  });
+
+  it("forwards an omitted first authoritative sibling as beforeId", () => {
+    const projected = normalizeWorkspace(
+      workspace([
+        node({ id: "b", sortKey: 2 }),
+        node({ id: "c", sortKey: 3 })
+      ])
+    );
+    const authoritative = normalizeWorkspace(
+      workspace([
+        node({ id: "hidden", sortKey: 1 }),
+        node({ id: "b", sortKey: 2 }),
+        node({ id: "c", sortKey: 3 })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowUp",
+          ctrlKey: true,
+          shiftKey: true,
+          workspace: projected,
+          authoritativeWorkspace: authoritative,
+          visibleNodeIds: ["b", "c"],
+          nodeId: "b",
+          selection: { anchorId: "b", headId: "c" }
+        })
+      )
+    ).toEqual({
+      type: "batchReorder",
+      nodeIds: ["b", "c"],
+      parentId: null,
+      afterId: null,
+      beforeId: "hidden"
     });
   });
 

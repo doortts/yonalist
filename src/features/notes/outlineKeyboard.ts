@@ -149,6 +149,7 @@ export type OutlineKeyResolution =
       nodeIds: readonly NoteId[];
       parentId: NoteId | null;
       afterId: NoteId | null;
+      beforeId?: NoteId | null;
     }
   | { type: "selectionCopy"; nodeIds: readonly NoteId[] }
   | { type: "selectionCut"; nodeIds: readonly NoteId[] };
@@ -320,7 +321,10 @@ export function resolveOutlineKey(
             type: "batchReorder",
             nodeIds: eligibility.nodeIds,
             parentId: eligibility.target.parentId,
-            afterId: eligibility.target.afterId
+            afterId: eligibility.target.afterId,
+            ...(eligibility.target.beforeId
+              ? { beforeId: eligibility.target.beforeId }
+              : {})
           }
         : null;
     }
