@@ -1,7 +1,9 @@
 # Notes Interaction Expansion Final Report
 
-**Date:** 2026-07-12  
-**Branch:** `codex/notes-workflowy`  
+**Date:** 2026-07-12
+
+**Branch:** `codex/notes-workflowy`
+
 **Final implementation commit:** `2486a19`
 
 ## Delivered Scope

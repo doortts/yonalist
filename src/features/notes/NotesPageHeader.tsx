@@ -83,11 +83,16 @@ export function NotesPageHeader({
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
-  const imageDropEnabled =
+  const imageIngestEnabled =
     !disabled &&
     !readOnly &&
-    state.status !== "loading" &&
-    actions.importDroppedImagePaths !== undefined;
+    state.status !== "loading";
+  const imageAttachmentTargetEnabled =
+    imageIngestEnabled &&
+    (actions.importDroppedImagePaths !== undefined ||
+      actions.importClipboardImages !== undefined);
+  const imageDropEnabled =
+    imageIngestEnabled && actions.importDroppedImagePaths !== undefined;
   const titlePresentationLabel =
     readOnly || disabled ? "Page title" : undefined;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
@@ -259,7 +264,9 @@ export function NotesPageHeader({
         className="notes-page-header"
         data-completed={node.completedAt !== null ? "true" : undefined}
         data-selected={state.selectedId === nodeId ? "true" : undefined}
-        data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
+        data-notes-attachment-target={
+          imageAttachmentTargetEnabled ? nodeId : undefined
+        }
         data-image-drop-active={
           imageDropEnabled && imageDropActive ? "true" : undefined
         }

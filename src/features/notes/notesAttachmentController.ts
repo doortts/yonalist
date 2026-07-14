@@ -27,16 +27,39 @@ export type NotesNativeImageDropEvent =
   | { readonly type: "over"; readonly position: NotesLogicalPoint }
   | { readonly type: "leave" };
 
-async function unlistenAll(
+type NotesNativeUnlisten = () => void | Promise<void>;
+
+interface NotesNativeDragPosition {
+  readonly x: number;
+  readonly y: number;
+}
+
+interface NotesNativeDragPathsPayload {
+  readonly paths: string[];
+  readonly position: NotesNativeDragPosition;
+}
+
+interface NotesNativeDragOverPayload {
+  readonly position: NotesNativeDragPosition;
+}
+
+async function settleUnlisteners(
   unlisteners: readonly (() => void | Promise<void>)[]
 ): Promise<void> {
-  const results = await Promise.allSettled(
+  await Promise.allSettled(
     unlisteners.map((unlisten) => Promise.resolve().then(unlisten))
   );
-  const failure = results.find(
-    (result): result is PromiseRejectedResult => result.status === "rejected"
-  );
-  if (failure) throw failure.reason;
+}
+
+function createBestEffortCleanup(
+  unlisteners: readonly NotesNativeUnlisten[]
+): () => Promise<void> {
+  const pendingUnlisteners = [...unlisteners];
+  let cleanup: Promise<void> | undefined;
+  return () => {
+    cleanup ??= settleUnlisteners(pendingUnlisteners);
+    return cleanup;
+  };
 }
 
 function hasSupportedImageExtension(path: string): boolean {
@@ -91,42 +114,93 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
     ) {
       return async () => {};
     }
-    const [{ getCurrentWebview }, { getCurrentWindow }] = await Promise.all([
+    const [
+      { PhysicalPosition },
+      { TauriEvent },
+      { getCurrentWebview },
+      { getCurrentWindow }
+    ] = await Promise.all([
+      import("@tauri-apps/api/dpi"),
+      import("@tauri-apps/api/event"),
       import("@tauri-apps/api/webview"),
       import("@tauri-apps/api/window")
     ]);
     const currentWindow = getCurrentWindow();
-    let currentScaleFactor = await currentWindow.scaleFactor();
+    let currentScaleFactor: number | undefined;
+    let scaleRevision = 0;
     const unlistenScale = await currentWindow.onScaleChanged(({ payload }) => {
+      scaleRevision += 1;
       currentScaleFactor = payload.scaleFactor;
     });
+    const unlisteners: NotesNativeUnlisten[] = [unlistenScale];
+    let setupPhase: "registering" | "ready" | "closed" = "registering";
+    const publishDropEvent = (event: NotesNativeImageDropEvent) => {
+      if (setupPhase === "ready") listener(event);
+    };
     try {
-      const unlistenDrag = await getCurrentWebview().onDragDropEvent(
-        ({ payload }) => {
-          if (payload.type === "leave") {
-            listener({ type: "leave" });
-            return;
-          }
-
-          const { x, y } = payload.position.toLogical(currentScaleFactor);
-          if (payload.type === "over") {
-            listener({ type: "over", position: { x, y } });
-            return;
-          }
-          listener({
-            type: payload.type,
-            paths: payload.paths,
-            position: { x, y }
-          });
-        }
-      );
-      return () => unlistenAll([unlistenDrag, unlistenScale]);
-    } catch (cause) {
-      try {
-        await unlistenScale();
-      } catch {
-        // Preserve the setup failure after making a best-effort cleanup.
+      const baselineRevision = scaleRevision;
+      const baselineScaleFactor = await currentWindow.scaleFactor();
+      if (scaleRevision === baselineRevision) {
+        currentScaleFactor = baselineScaleFactor;
       }
+
+      const toLogicalPoint = (position: NotesNativeDragPosition) => {
+        const { x, y } = new PhysicalPosition(position).toLogical(
+          currentScaleFactor!
+        );
+        return { x, y };
+      };
+      const currentWebview = getCurrentWebview();
+      unlisteners.push(
+        await currentWebview.listen(TauriEvent.DRAG_LEAVE, () => {
+          publishDropEvent({ type: "leave" });
+        })
+      );
+      unlisteners.push(
+        await currentWebview.listen<NotesNativeDragPathsPayload>(
+          TauriEvent.DRAG_DROP,
+          ({ payload }) => {
+            publishDropEvent({
+              type: "drop",
+              paths: payload.paths,
+              position: toLogicalPoint(payload.position)
+            });
+          }
+        )
+      );
+      unlisteners.push(
+        await currentWebview.listen<NotesNativeDragOverPayload>(
+          TauriEvent.DRAG_OVER,
+          ({ payload }) => {
+            publishDropEvent({
+              type: "over",
+              position: toLogicalPoint(payload.position)
+            });
+          }
+        )
+      );
+      unlisteners.push(
+        await currentWebview.listen<NotesNativeDragPathsPayload>(
+          TauriEvent.DRAG_ENTER,
+          ({ payload }) => {
+            publishDropEvent({
+              type: "enter",
+              paths: payload.paths,
+              position: toLogicalPoint(payload.position)
+            });
+          }
+        )
+      );
+
+      setupPhase = "ready";
+      const cleanup = createBestEffortCleanup(unlisteners);
+      return () => {
+        setupPhase = "closed";
+        return cleanup();
+      };
+    } catch (cause) {
+      setupPhase = "closed";
+      await settleUnlisteners(unlisteners);
       throw cause;
     }
   }

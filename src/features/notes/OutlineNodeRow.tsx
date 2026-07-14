@@ -122,21 +122,25 @@ function OutlineNodeRowComponent({
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const readOnly = readOnlyMode !== undefined;
+  const imageIngestEnabled =
+    !disabled &&
+    !readOnly &&
+    state.status !== "loading";
+  // Line B widened the attachment target so a node is a valid drop AND
+  // clipboard-paste target; keep that here while OURS' per-action gates below
+  // still drive the individual import handlers.
+  const imageAttachmentTargetEnabled =
+    imageIngestEnabled &&
+    (actions.importDroppedImagePaths !== undefined ||
+      actions.importClipboardImages !== undefined);
   const imageDropEnabled =
-    !disabled &&
-    !readOnly &&
-    state.status !== "loading" &&
-    actions.importDroppedImagePaths !== undefined;
+    imageIngestEnabled && actions.importDroppedImagePaths !== undefined;
   const clipboardImportEnabled =
-    !disabled &&
-    !readOnly &&
-    state.status !== "loading" &&
-    actions.importClipboardImages !== undefined;
+    imageIngestEnabled && actions.importClipboardImages !== undefined;
   // Paste import (plan Phase 4.4): a multi-line indented plain-text paste
   // becomes a subtree of new children under the focused row instead of a
   // single blob of text. Gated the same way clipboard image import is.
-  const subtreeImportEnabled =
-    !disabled && !readOnly && state.status !== "loading";
+  const subtreeImportEnabled = imageIngestEnabled;
   const {
     attributes,
     isDragging,
@@ -655,7 +659,9 @@ function OutlineNodeRowComponent({
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
       data-range-selected={isSelected ? "true" : undefined}
-      data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
+      data-notes-attachment-target={
+        imageAttachmentTargetEnabled ? nodeId : undefined
+      }
       data-image-drop-active={
         imageDropEnabled && imageDropActive ? "true" : undefined
       }

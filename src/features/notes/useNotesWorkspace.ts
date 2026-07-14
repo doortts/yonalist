@@ -2999,6 +2999,22 @@ export function useNotesWorkspace({
     []
   );
 
+  const discardFailedAttachmentUploadAttempts = useCallback(
+    (nodeId: NoteId): void => {
+      const attempts = attachmentUploadAttemptsByNodeIdRef.current.get(nodeId);
+      if (!attempts) return;
+      for (const [attemptId, attempt] of attempts) {
+        if (attempt.status !== "failed") continue;
+        attempts.delete(attemptId);
+        discardHistoryEntry(attempt.historyContext);
+      }
+      if (attempts.size === 0) {
+        attachmentUploadAttemptsByNodeIdRef.current.delete(nodeId);
+      }
+    },
+    [discardHistoryEntry]
+  );
+
   const createAttachmentUploadAttempt = useCallback(
     (
       nodeId: NoteId,
@@ -3101,6 +3117,7 @@ export function useNotesWorkspace({
               appliedHistoryContext(historyContext, mutation),
               projection.workspace
             );
+            discardFailedAttachmentUploadAttempts(attempt.nodeId);
             removeAttachmentUploadAttempt(attempt);
             publishLatestAttachmentAttemptError(attempt.nodeId);
             return directMutationResult(mutation, projection);
@@ -3109,17 +3126,7 @@ export function useNotesWorkspace({
               removeAttachmentUploadAttempt(attempt);
               return { kind: "skipped" };
             }
-            const attempts =
-              attachmentUploadAttemptsByNodeIdRef.current.get(attempt.nodeId);
-            for (const [attemptId, candidate] of attempts ?? []) {
-              if (
-                candidate !== attempt &&
-                candidate.status === "failed"
-              ) {
-                attempts!.delete(attemptId);
-                discardHistoryEntry(candidate.historyContext);
-              }
-            }
+            discardFailedAttachmentUploadAttempts(attempt.nodeId);
             const message = `Image upload failed: ${errorMessage(cause)}`;
             attempt.status = "failed";
             attempt.error = message;
@@ -3134,7 +3141,7 @@ export function useNotesWorkspace({
       );
     },
     [
-      discardHistoryEntry,
+      discardFailedAttachmentUploadAttempts,
       publishLatestAttachmentAttemptError,
       rememberHistoryAfter,
       removeAttachmentUploadAttempt,

@@ -83,6 +83,174 @@ enum AttachmentBatchFault {
 thread_local! {
     static ATTACHMENT_BATCH_FAULT: std::cell::Cell<Option<AttachmentBatchFault>> = const { std::cell::Cell::new(None) };
     static ATTACHMENT_BATCH_CRASH_INTERRUPTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ATTACHMENT_BATCH_PERFORMANCE_PROBE: std::cell::RefCell<Option<AttachmentBatchPerformanceProbeState>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+struct AttachmentBatchPerformanceSamples {
+    prepare: Vec<std::time::Duration>,
+    publish: Vec<std::time::Duration>,
+    commit: Vec<std::time::Duration>,
+    commit_wrapper_returns: usize,
+}
+
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct AttachmentBatchPerformanceProbeState {
+    samples: AttachmentBatchPerformanceSamples,
+    commit_started: Option<std::time::Instant>,
+    history_wrapper_returned: bool,
+}
+
+#[cfg(test)]
+struct AttachmentBatchPerformanceProbeGuard;
+
+#[cfg(test)]
+impl AttachmentBatchPerformanceProbeGuard {
+    fn enable() -> Self {
+        ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            assert!(probe.is_none(), "attachment batch performance probe leaked");
+            *probe = Some(AttachmentBatchPerformanceProbeState::default());
+        });
+        Self
+    }
+
+    fn samples(&self) -> AttachmentBatchPerformanceSamples {
+        ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+            probe
+                .borrow()
+                .as_ref()
+                .expect("attachment batch performance probe is active")
+                .samples
+                .clone()
+        })
+    }
+
+    fn commit_is_pending(&self) -> bool {
+        ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+            probe
+                .borrow()
+                .as_ref()
+                .expect("attachment batch performance probe is active")
+                .commit_started
+                .is_some()
+        })
+    }
+}
+
+#[cfg(test)]
+impl Drop for AttachmentBatchPerformanceProbeGuard {
+    fn drop(&mut self) {
+        ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+            *probe.borrow_mut() = None;
+        });
+    }
+}
+
+#[cfg(test)]
+fn attachment_batch_performance_probe_is_active() -> bool {
+    ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| probe.borrow().is_some())
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+enum AttachmentBatchPerformanceStage {
+    Prepare,
+    Publish,
+}
+
+#[cfg(test)]
+struct AttachmentBatchPerformanceStageTimer {
+    stage: AttachmentBatchPerformanceStage,
+    started: Option<std::time::Instant>,
+}
+
+#[cfg(test)]
+impl AttachmentBatchPerformanceStageTimer {
+    fn start(stage: AttachmentBatchPerformanceStage) -> Self {
+        let started = attachment_batch_performance_probe_is_active().then(std::time::Instant::now);
+        Self { stage, started }
+    }
+}
+
+#[cfg(test)]
+impl Drop for AttachmentBatchPerformanceStageTimer {
+    fn drop(&mut self) {
+        let Some(started) = self.started else {
+            return;
+        };
+        ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+            let mut probe = probe.borrow_mut();
+            let Some(probe) = probe.as_mut() else {
+                return;
+            };
+            let elapsed = started.elapsed();
+            match self.stage {
+                AttachmentBatchPerformanceStage::Prepare => probe.samples.prepare.push(elapsed),
+                AttachmentBatchPerformanceStage::Publish => probe.samples.publish.push(elapsed),
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+fn start_attachment_batch_commit_stage() {
+    ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+        let mut probe = probe.borrow_mut();
+        let Some(probe) = probe.as_mut() else {
+            return;
+        };
+        assert!(
+            probe.commit_started.is_none(),
+            "attachment batch commit stage was started more than once"
+        );
+        probe.history_wrapper_returned = false;
+        probe.commit_started = Some(std::time::Instant::now());
+    })
+}
+
+#[cfg(test)]
+fn mark_attachment_batch_history_wrapper_returned() {
+    ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+        let mut probe = probe.borrow_mut();
+        let Some(probe) = probe.as_mut() else {
+            return;
+        };
+        if probe.commit_started.is_none() {
+            return;
+        }
+        assert!(
+            !probe.history_wrapper_returned,
+            "attachment batch history wrapper return was recorded more than once"
+        );
+        probe.history_wrapper_returned = true;
+        probe.samples.commit_wrapper_returns += 1;
+    });
+}
+
+#[cfg(test)]
+fn finish_attachment_batch_commit_stage(succeeded: bool) -> Result<(), &'static str> {
+    ATTACHMENT_BATCH_PERFORMANCE_PROBE.with(|probe| {
+        let mut probe = probe.borrow_mut();
+        let Some(probe) = probe.as_mut() else {
+            return Ok(());
+        };
+        let started = probe.commit_started.take();
+        let history_wrapper_returned = std::mem::take(&mut probe.history_wrapper_returned);
+        if succeeded {
+            if !history_wrapper_returned {
+                return Err(
+                    "successful attachment batch commit timing must finish after the history wrapper returns",
+                );
+            }
+            let started = started
+                .ok_or("successful attachment batch commit stage must have started")?;
+            probe.samples.commit.push(started.elapsed());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -1041,6 +1209,13 @@ fn committed_attachment_batch_retry(
     }))
 }
 
+fn prepare_attachment_path_batch(source_paths: &[&str]) -> Result<PreparedAttachmentBatch, String> {
+    #[cfg(test)]
+    let _timer =
+        AttachmentBatchPerformanceStageTimer::start(AttachmentBatchPerformanceStage::Prepare);
+    PreparedAttachmentBatch::from_source_paths(source_paths)
+}
+
 fn import_prepared_attachment_batch(
     node_id: String,
     ids: Vec<String>,
@@ -1102,6 +1277,10 @@ fn import_prepared_attachment_batch(
                 &node_id,
                 attachments,
                 || {
+                    #[cfg(test)]
+                    let _timer = AttachmentBatchPerformanceStageTimer::start(
+                        AttachmentBatchPerformanceStage::Publish,
+                    );
                     for (index, (prepared, expected_path)) in prepared_batch
                         .attachments()
                         .iter()
@@ -1121,12 +1300,22 @@ fn import_prepared_attachment_batch(
                     Ok(())
                 },
                 || {
+                    // Test timing starts at the repository's before-commit callback boundary.
+                    #[cfg(test)]
+                    start_attachment_batch_commit_stage();
                     storage.validate_identity(&identity)?;
                     maybe_inject_attachment_batch_before_commit()
                 },
             )
         },
     );
+    // Finish after the history wrapper returns so commit or rollback work is included.
+    #[cfg(test)]
+    {
+        mark_attachment_batch_history_wrapper_returned();
+        finish_attachment_batch_commit_stage(result.is_ok())
+            .expect("attachment batch commit timing boundary");
+    }
 
     match result {
         Ok(result) => {
@@ -1187,16 +1376,19 @@ pub(crate) fn notes_import_attachment_paths_batch_inner(
     // the per-vault `Mutex` across it would block every read on this vault (e.g.
     // search keystrokes) for the whole import — the exact cross-command blocking
     // task 1.2 aims to avoid ("hold the lock only around the DB work").
-    let prepared_batch =
-        PreparedAttachmentBatch::from_source_paths(&source_paths).map_err(|error| {
-            let names = input
-                .attachments
-                .iter()
-                .map(|attachment| attachment.source_path.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("Could not prepare Notes attachment batch [{names}]: {error}")
-        })?;
+    // `prepare_attachment_path_batch` wraps `PreparedAttachmentBatch::from_source_paths`
+    // with the Line B attachment-batch Prepare-stage timing probe (test-only), so
+    // call the wrapper here to keep that instrumentation while preserving the
+    // prepare-before-lock ordering.
+    let prepared_batch = prepare_attachment_path_batch(&source_paths).map_err(|error| {
+        let names = input
+            .attachments
+            .iter()
+            .map(|attachment| attachment.source_path.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("Could not prepare Notes attachment batch [{names}]: {error}")
+    })?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared);
     reconcile_before_attachment_batch(&storage, &connection)?;
@@ -2185,6 +2377,261 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![SPLIT_ID, EMPTY_ID]
         );
+    }
+
+    #[test]
+    fn attachment_batch_performance_probe_records_each_stage_once_and_resets() {
+        assert!(!attachment_batch_performance_probe_is_active());
+        let probe = AttachmentBatchPerformanceProbeGuard::enable();
+        assert!(attachment_batch_performance_probe_is_active());
+        assert!(
+            !std::thread::spawn(attachment_batch_performance_probe_is_active)
+                .join()
+                .expect("inspect probe on another thread")
+        );
+
+        {
+            let _timer = AttachmentBatchPerformanceStageTimer::start(
+                AttachmentBatchPerformanceStage::Prepare,
+            );
+        }
+        {
+            let _timer = AttachmentBatchPerformanceStageTimer::start(
+                AttachmentBatchPerformanceStage::Publish,
+            );
+        }
+        start_attachment_batch_commit_stage();
+        assert_eq!(
+            finish_attachment_batch_commit_stage(true),
+            Err(
+                "successful attachment batch commit timing must finish after the history wrapper returns"
+            )
+        );
+        assert!(!probe.commit_is_pending());
+        assert!(probe.samples().commit.is_empty());
+
+        start_attachment_batch_commit_stage();
+        finish_attachment_batch_commit_stage(false).expect("clear failed commit timing");
+        assert!(!probe.commit_is_pending());
+        assert!(probe.samples().commit.is_empty());
+
+        start_attachment_batch_commit_stage();
+        mark_attachment_batch_history_wrapper_returned();
+        finish_attachment_batch_commit_stage(true).expect("finish successful commit timing");
+
+        let samples = probe.samples();
+        assert_eq!(samples.prepare.len(), 1);
+        assert_eq!(samples.publish.len(), 1);
+        assert_eq!(samples.commit.len(), 1);
+        assert_eq!(samples.commit_wrapper_returns, 1);
+        assert!(!probe.commit_is_pending());
+        drop(probe);
+        assert!(!attachment_batch_performance_probe_is_active());
+
+        let fresh_probe = AttachmentBatchPerformanceProbeGuard::enable();
+        let fresh_samples = fresh_probe.samples();
+        assert!(fresh_samples.prepare.is_empty());
+        assert!(fresh_samples.publish.is_empty());
+        assert!(fresh_samples.commit.is_empty());
+        assert_eq!(fresh_samples.commit_wrapper_returns, 0);
+        assert!(!fresh_probe.commit_is_pending());
+        drop(fresh_probe);
+        assert!(!attachment_batch_performance_probe_is_active());
+    }
+
+    #[test]
+    #[ignore = "release-only performance measurement"]
+    fn notes_attachment_batch_performance() {
+        const IMAGE_COUNT: usize = 128;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        seed_attachment_batch_node(&vault_path);
+
+        let mut expected_ids = Vec::with_capacity(IMAGE_COUNT);
+        let mut expected_names = Vec::with_capacity(IMAGE_COUNT);
+        let mut attachments = Vec::with_capacity(IMAGE_COUNT);
+        for index in 0..IMAGE_COUNT {
+            let id = format!("10000000-0000-4000-8000-{index:012x}");
+            let original_name = format!("source-{index:03}.png");
+            let source_path = temp_dir.path().join(&original_name);
+            fs::write(&source_path, encoded_png(index as u32 + 1, 1))
+                .expect("write performance image");
+            expected_ids.push(id.clone());
+            expected_names.push(original_name);
+            attachments.push(ImportAttachmentPathItem {
+                id,
+                source_path: source_path.to_string_lossy().into_owned(),
+            });
+        }
+        assert_eq!(attachments.len(), IMAGE_COUNT);
+
+        assert!(!attachment_batch_performance_probe_is_active());
+        let probe = AttachmentBatchPerformanceProbeGuard::enable();
+        let total_started = std::time::Instant::now();
+        let imported = notes_import_attachment_paths_batch(
+            vault_path.clone(),
+            ImportAttachmentPathBatchInput {
+                node_id: ROOT_ID.to_string(),
+                attachments,
+                initial_max_display_width: 480,
+            },
+            Some(batch_history_context()),
+        )
+        .expect("import 128-image path batch");
+        let samples = probe.samples();
+        assert_eq!(samples.prepare.len(), 1, "prepare stage sample count");
+        assert_eq!(samples.publish.len(), 1, "publish stage sample count");
+        assert_eq!(samples.commit.len(), 1, "commit stage sample count");
+        assert_eq!(
+            samples.commit_wrapper_returns, 1,
+            "commit stage wrapper-return boundary count"
+        );
+        assert!(!probe.commit_is_pending());
+        let prepare_elapsed = samples.prepare[0];
+        let publish_elapsed = samples.publish[0];
+        let commit_elapsed = samples.commit[0];
+        drop(probe);
+        assert!(!attachment_batch_performance_probe_is_active());
+
+        let imported_attachments = &imported.workspace.attachments_by_node_id[ROOT_ID];
+        assert_eq!(imported_attachments.len(), IMAGE_COUNT);
+        assert_eq!(
+            imported_attachments
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            expected_ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            imported_attachments
+                .iter()
+                .map(|attachment| attachment.original_name.as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            imported.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(imported.can_undo);
+        assert!(!imported.can_redo);
+
+        let expected_asset_entries = {
+            let mut entries = imported_attachments
+                .iter()
+                .map(|attachment| {
+                    std::path::Path::new(&attachment.relative_path)
+                        .file_name()
+                        .expect("attachment asset filename")
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
+        };
+        assert_eq!(expected_asset_entries.len(), IMAGE_COUNT);
+        assert_eq!(asset_directory_entries(&vault_path), expected_asset_entries);
+
+        let connection = connect_notes_db(&vault_path).expect("inspect imported batch");
+        let metadata_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count imported metadata rows");
+        let history_entries: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
+                row.get(0)
+            })
+            .expect("count committed history entries");
+        assert_eq!(metadata_rows, IMAGE_COUNT as i64);
+        assert_eq!(history_entries, 1);
+        drop(connection);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("inspect import marker");
+        assert!(!storage
+            .reconciliation_needed()
+            .expect("import marker state"));
+        drop(storage);
+
+        let undo_started = std::time::Instant::now();
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo 128-image path batch");
+        let undo_elapsed = undo_started.elapsed();
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert!(undone
+            .workspace
+            .attachments_by_node_id
+            .get(ROOT_ID)
+            .is_none_or(Vec::is_empty));
+        assert!(!undone.can_undo);
+        assert!(undone.can_redo);
+        let connection = connect_notes_db(&vault_path).expect("inspect undone batch");
+        let metadata_rows: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count metadata rows after undo");
+        assert_eq!(metadata_rows, 0);
+        drop(connection);
+        assert_eq!(asset_directory_entries(&vault_path), expected_asset_entries);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("inspect undo marker");
+        assert!(!storage.reconciliation_needed().expect("undo marker state"));
+        drop(storage);
+
+        let redo_started = std::time::Instant::now();
+        let redone = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo 128-image path batch");
+        let redo_elapsed = redo_started.elapsed();
+        assert_eq!(
+            redone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            redone.workspace.attachments_by_node_id[ROOT_ID]
+                .iter()
+                .map(|attachment| attachment.id.as_str())
+                .collect::<Vec<_>>(),
+            expected_ids.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(redone.can_undo);
+        assert!(!redone.can_redo);
+        let connection = connect_notes_db(&vault_path).expect("inspect redone batch");
+        let (metadata_rows, history_entries): (i64, i64) = connection
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM notes_attachments), \
+                        (SELECT COUNT(*) FROM notes_history_entries)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("count restored metadata and history rows");
+        assert_eq!((metadata_rows, history_entries), (IMAGE_COUNT as i64, 1));
+        drop(connection);
+        assert_eq!(asset_directory_entries(&vault_path), expected_asset_entries);
+        let storage = AttachmentStorageLease::acquire(&vault_path).expect("inspect redo marker");
+        assert!(!storage.reconciliation_needed().expect("redo marker state"));
+
+        let total_elapsed = total_started.elapsed();
+        println!("notes_attachment_batch_performance prepare elapsed: {prepare_elapsed:?}");
+        println!("notes_attachment_batch_performance publish elapsed: {publish_elapsed:?}");
+        println!("notes_attachment_batch_performance commit elapsed: {commit_elapsed:?}");
+        println!("notes_attachment_batch_performance undo elapsed: {undo_elapsed:?}");
+        println!("notes_attachment_batch_performance redo elapsed: {redo_elapsed:?}");
+        println!("notes_attachment_batch_performance total elapsed: {total_elapsed:?}");
     }
 
     #[test]

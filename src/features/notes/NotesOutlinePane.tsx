@@ -18,7 +18,9 @@ import {
 import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
 import {
   type CSSProperties,
+  type ClipboardEvent,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -31,12 +33,17 @@ import {
   TooltipProvider
 } from "../../components/ui/Tooltip";
 import type { NoteId } from "../../domain/notes";
+import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
-import { attachmentTargetFromPoint } from "./notesAttachmentTargets";
+import {
+  attachmentTargetFromPaste,
+  attachmentTargetFromPoint
+} from "./notesAttachmentTargets";
+import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { NotesQuickJump } from "./NotesQuickJump";
 import {
@@ -65,6 +72,19 @@ const outlineScreenReaderInstructions = {
   draggable:
     "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
 };
+
+interface ImageIngestError {
+  readonly label: "Image drop failed" | "Image paste failed";
+  readonly message: string;
+}
+
+interface ImagePasteExecutionScope {
+  readonly vaultRoot: string;
+  readonly libraryView: UseNotesWorkspaceResult["libraryView"];
+  readonly status: UseNotesWorkspaceResult["state"]["status"];
+  readonly deletingNotesData: boolean;
+  readonly importClipboardImages: UseNotesWorkspaceResult["actions"]["importClipboardImages"];
+}
 
 interface NotesBreadcrumbProps {
   disabled: boolean;
@@ -199,6 +219,7 @@ const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates };
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const { actions, retryLastFailedWrite } = useNotesActions();
+  const vaultRoot = useContext(VaultRootContext);
   const {
     deletingNotesData,
     libraryView,
@@ -219,12 +240,32 @@ export function NotesOutlinePane() {
   const [showCompleted, setShowCompleted] = useState(true);
   const [imageDropTargetId, setImageDropTargetId] =
     useState<NoteId | null>(null);
-  const [imageDropError, setImageDropError] = useState<string | null>(null);
+  const [imageIngestError, setImageIngestError] =
+    useState<ImageIngestError | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
+  const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
+  const imagePasteExecutionScope = useMemo<ImagePasteExecutionScope>(
+    () => ({
+      vaultRoot,
+      libraryView,
+      status: state.status,
+      deletingNotesData,
+      importClipboardImages: actions.importClipboardImages
+    }),
+    [
+      actions.importClipboardImages,
+      deletingNotesData,
+      libraryView,
+      state.status,
+      vaultRoot
+    ]
+  );
+  const imagePasteExecutionScopeRef = useRef(imagePasteExecutionScope);
+  imagePasteExecutionScopeRef.current = imagePasteExecutionScope;
   const trashView = libraryView === "trash";
   const lifecycleReadOnly = trashView || libraryView === "archive";
   const lifecycleMode =
@@ -238,8 +279,117 @@ export function NotesOutlinePane() {
     !lifecycleReadOnly &&
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
+  const imagePasteAvailable =
+    !imagePasteExecutionScope.deletingNotesData &&
+    !lifecycleReadOnly &&
+    imagePasteExecutionScope.status !== "loading" &&
+    imagePasteExecutionScope.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
   importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
+  useLayoutEffect(() => {
+    setImageIngestError(null);
+  }, [imagePasteExecutionScope]);
+  useEffect(() => {
+    // The lifecycle ref object is created once and never reassigned, so
+    // capturing it here keeps the cleanup pointed at the same instance
+    // (satisfies react-hooks/exhaustive-deps, which OURS enforces).
+    const lifecycle = imagePasteLifecycleRef.current;
+    lifecycle.mounted = true;
+    return () => {
+      lifecycle.mounted = false;
+      lifecycle.generation += 1;
+    };
+  }, []);
+  const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
+    const clipboardItems = event.clipboardData.items;
+    let hasImageCandidate = false;
+    for (let index = 0; index < clipboardItems.length; index += 1) {
+      const item = clipboardItems[index];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        hasImageCandidate = true;
+        break;
+      }
+    }
+    // Only a real image *file* paste is owned by the pane. Plain text — or a
+    // string item merely tagged with an image MIME type — bubbles on to the
+    // row editors' own paste handling (Phase 4.4 subtree import / default).
+    if (!hasImageCandidate) return;
+
+    // The pane owns image-file pastes end to end, so stop the row-level paste
+    // handlers from also processing this event: without this they would
+    // double-import and, on minimal synthetic clipboard events, throw.
+    event.stopPropagation();
+
+    const lifecycle = imagePasteLifecycleRef.current;
+    const executionScope = imagePasteExecutionScopeRef.current;
+    const attemptGeneration = ++lifecycle.generation;
+    const isCurrentAttempt = (): boolean =>
+      lifecycle.mounted &&
+      lifecycle.generation === attemptGeneration &&
+      imagePasteExecutionScopeRef.current === executionScope;
+    const setCurrentPasteError = (message: string): void => {
+      if (!isCurrentAttempt()) return;
+      setImageIngestError({ label: "Image paste failed", message });
+    };
+    const reportCurrentPasteError = (cause: unknown): void => {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setCurrentPasteError(`Image paste failed: ${detail}`);
+    };
+
+    let extraction: ReturnType<typeof extractClipboardImages>;
+    try {
+      extraction = extractClipboardImages(clipboardItems);
+    } catch {
+      // The clipboard items could not be read at all; leave the paste
+      // browser/editor-owned rather than silently swallowing it.
+      return;
+    }
+    if (extraction.kind === "error") {
+      event.preventDefault();
+      setCurrentPasteError(extraction.message);
+      return;
+    }
+    if (extraction.kind === "none") return;
+
+    const pasteTarget = event.target;
+    const targetIsEditableField =
+      pasteTarget instanceof HTMLElement &&
+      (pasteTarget.tagName === "TEXTAREA" ||
+        pasteTarget.tagName === "INPUT" ||
+        pasteTarget.isContentEditable);
+    if (!imagePasteAvailable) {
+      // A blocked image paste on the bare outline surface is claimed so it
+      // does nothing; inside an editor field it stays field/browser-owned.
+      if (!targetIsEditableField) event.preventDefault();
+      return;
+    }
+
+    event.preventDefault();
+    if (isCurrentAttempt()) setImageIngestError(null);
+    const selectedId =
+      state.selectedId !== null && state.nodesById[state.selectedId]
+        ? state.selectedId
+        : null;
+    const targetId = attachmentTargetFromPaste(
+      event.currentTarget,
+      event.target,
+      selectedId
+    );
+    if (targetId === null) {
+      setCurrentPasteError("Select a note before pasting images.");
+      return;
+    }
+
+    const importClipboardImages = executionScope.importClipboardImages;
+    if (!importClipboardImages) return;
+    try {
+      void Promise.resolve(
+        importClipboardImages(targetId, extraction.items)
+      ).catch(reportCurrentPasteError);
+    } catch (cause) {
+      reportCurrentPasteError(cause);
+    }
+  };
   // dnd-kit invokes onDragEnd before its announcement monitor, which omits delta.
   const dragEndProjection = useRef<{
     activeId: NoteId;
@@ -254,6 +404,13 @@ export function NotesOutlinePane() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void | Promise<void>) | undefined;
+    const disposeSubscription = (nextUnlisten: () => void | Promise<void>) => {
+      try {
+        void Promise.resolve(nextUnlisten()).catch(() => {});
+      } catch {
+        // Native subscription teardown is best-effort during React cleanup.
+      }
+    };
     const clearPreview = () => {
       imageDropPathsRef.current = [];
       setImageDropTargetId(null);
@@ -267,7 +424,10 @@ export function NotesOutlinePane() {
     const reportDropError = (cause: unknown) => {
       if (disposed) return;
       const detail = cause instanceof Error ? cause.message : String(cause);
-      setImageDropError(`Image drop failed: ${detail}`);
+      setImageIngestError({
+        label: "Image drop failed",
+        message: `Image drop failed: ${detail}`
+      });
     };
     const listener = (event: NotesNativeImageDropEvent) => {
       if (disposed) return;
@@ -281,7 +441,7 @@ export function NotesOutlinePane() {
       }
       if (event.type === "enter") {
         imageDropPathsRef.current = event.paths;
-        setImageDropError(null);
+        setImageIngestError(null);
         setImageDropTargetId(
           event.paths.length > 0 ? targetFromEvent(event) : null
         );
@@ -297,7 +457,7 @@ export function NotesOutlinePane() {
       const targetId =
         event.paths.length > 0 ? targetFromEvent(event) : null;
       clearPreview();
-      setImageDropError(null);
+      setImageIngestError(null);
       const importDroppedImagePaths = importDroppedImagePathsRef.current;
       if (!targetId || !importDroppedImagePaths) return;
       try {
@@ -310,7 +470,7 @@ export function NotesOutlinePane() {
     void attachmentUi.subscribeToImageDrop(listener).then(
       (nextUnlisten) => {
         if (disposed) {
-          void nextUnlisten();
+          disposeSubscription(nextUnlisten);
           return;
         }
         unlisten = nextUnlisten;
@@ -325,7 +485,7 @@ export function NotesOutlinePane() {
     return () => {
       disposed = true;
       imageDropPathsRef.current = [];
-      if (unlisten) void unlisten();
+      if (unlisten) disposeSubscription(unlisten);
     };
   }, [attachmentUi]);
 
@@ -688,7 +848,11 @@ export function NotesOutlinePane() {
           </div>
         )}
         <div className="notes-outline-rows">
-          <div className="notes-outline-content" ref={contentRef}>
+          <div
+            className="notes-outline-content"
+            ref={contentRef}
+            onPasteCapture={handlePasteCapture}
+          >
           {initialLoading && (
             <p className="notes-pane-state">Loading notes...</p>
           )}
@@ -712,13 +876,13 @@ export function NotesOutlinePane() {
               {state.error}
             </p>
           )}
-          {imageDropError && (
+          {imageIngestError && (
             <p
               className="notes-inline-error"
               role="alert"
-              aria-label="Image drop failed"
+              aria-label={imageIngestError.label}
             >
-              {imageDropError}
+              {imageIngestError.message}
             </p>
           )}
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (

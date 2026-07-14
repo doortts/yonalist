@@ -37,9 +37,9 @@
 }
 
 .comment-composer-dock.is-collapsed {
-  max-height: 67px;
+  max-height: 55px;
   overflow: hidden;
-  padding: 18px 12px calc(0px + env(safe-area-inset-bottom, 0px));
+  padding: 10px 10px calc(0px + env(safe-area-inset-bottom, 0px));
 }
 
 .comment-composer-dock.is-collapsed textarea {

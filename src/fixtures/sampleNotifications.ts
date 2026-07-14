@@ -10,6 +10,17 @@ function iso(offsetMs: number, now: Date): string {
   return new Date(now.valueOf() - offsetMs).toISOString();
 }
 
+/** Milliseconds elapsed since local midnight, used to clamp an offset so a
+ * timestamp never rolls back into the previous calendar day. */
+function msSinceLocalMidnight(now: Date): number {
+  return (
+    now.getHours() * HOUR +
+    now.getMinutes() * MINUTE +
+    now.getSeconds() * 1000 +
+    now.getMilliseconds()
+  );
+}
+
 /** Demo notifications shown until a personal access token is configured. */
 export function sampleNotifications(now: Date = new Date()): GitHubNotification[] {
   return [
@@ -17,8 +28,9 @@ export function sampleNotifications(now: Date = new Date()): GitHubNotification[
       id: "sample-1",
       unread: true,
       reason: "mention",
-      // A few minutes ago so the newest sample always lands in "Today".
-      updated_at: iso(5 * MINUTE, now),
+      // A few minutes ago, but clamped to local midnight so the newest
+      // sample always lands in "Today" even just after midnight.
+      updated_at: iso(Math.min(5 * MINUTE, msSinceLocalMidnight(now)), now),
       last_read_at: null,
       subject: {
         title: "Design offline issue reading",

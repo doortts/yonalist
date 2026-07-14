@@ -345,6 +345,87 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "allocates an exact 64 MiB raw attachment body; run the focused release command"]
+    fn raw_envelope_accepts_exact_64_mib_batch_and_preserves_source_slice_boundaries() {
+        const MIB: u64 = 1024 * 1024;
+        const SOURCE_LENGTHS: [u64; 4] = [20 * MIB, 20 * MIB, 20 * MIB, 4 * MIB];
+
+        let mut metadata = base_metadata();
+        metadata["attachments"] = Value::Array(
+            SOURCE_LENGTHS
+                .iter()
+                .enumerate()
+                .map(|(index, byte_length)| {
+                    metadata_item(
+                        format!("22222222-2222-4222-8222-{index:012x}"),
+                        u32::try_from(index).expect("source ordinal"),
+                        *byte_length,
+                    )
+                })
+                .collect(),
+        );
+        let mut raw_envelope = envelope(&metadata, &[]);
+        let source_start = raw_envelope.len();
+        raw_envelope.resize(
+            source_start + usize::try_from(64 * MIB).expect("exact aggregate byte length"),
+            0,
+        );
+        let mut offset = source_start;
+        for (index, byte_length) in SOURCE_LENGTHS.iter().enumerate() {
+            let end = offset + usize::try_from(*byte_length).expect("source byte length");
+            raw_envelope[offset..end].fill(u8::try_from(index + 1).expect("source marker"));
+            offset = end;
+        }
+
+        let decoded = decode_raw_attachment_envelope(&raw_envelope)
+            .expect("the exact 64 MiB aggregate boundary must decode");
+
+        assert_eq!(decoded.sources.len(), SOURCE_LENGTHS.len());
+        let mut offset = source_start;
+        for (index, (source, byte_length)) in decoded.sources.iter().zip(SOURCE_LENGTHS).enumerate()
+        {
+            let byte_length = usize::try_from(byte_length).expect("source byte length");
+            assert_eq!(source.original_name, format!("image-{index}.png"));
+            assert_eq!(source.bytes.len(), byte_length);
+            assert_eq!(source.bytes[0], u8::try_from(index + 1).unwrap());
+            assert_eq!(
+                source.bytes[byte_length - 1],
+                u8::try_from(index + 1).unwrap()
+            );
+            assert_eq!(source.bytes.as_ptr(), raw_envelope[offset..].as_ptr());
+            offset += byte_length;
+        }
+        assert_eq!(offset, raw_envelope.len());
+    }
+
+    #[test]
+    fn raw_envelope_rejects_exact_64_mib_plus_one_before_publication() {
+        const MIB: u64 = 1024 * 1024;
+        let mut metadata = base_metadata();
+        metadata["attachments"] = Value::Array(
+            [20 * MIB, 20 * MIB, 20 * MIB, 4 * MIB + 1]
+                .into_iter()
+                .enumerate()
+                .map(|(index, byte_length)| {
+                    metadata_item(
+                        format!("22222222-2222-4222-8222-{index:012x}"),
+                        u32::try_from(index).expect("source ordinal"),
+                        byte_length,
+                    )
+                })
+                .collect(),
+        );
+
+        let error = decode_raw_attachment_envelope(&envelope(&metadata, &[]))
+            .expect_err("64 MiB plus one byte must fail from declarations alone");
+
+        assert_eq!(
+            error,
+            "Notes attachment batches must contain at most 67108864 image bytes."
+        );
+    }
+
+    #[test]
     fn raw_envelope_rejects_duplicate_and_invalid_ids() {
         let mut duplicate = base_metadata();
         duplicate["attachments"][1]["id"] = json!(FIRST_ID);
