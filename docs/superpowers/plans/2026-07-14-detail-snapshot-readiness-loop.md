@@ -177,7 +177,7 @@ git commit -m "fix(inbox): isolate live detail readiness"
 - Consumes: `CommentThreadProps.comments: ConversationComment[]` and `COMMENT_MOUNT_BATCH`.
 - Produces: unchanged `CommentThread` props and DOM structure; only the first-batch scheduling behavior changes.
 
-- [ ] **Step 1: Write the failing late-comment test**
+- [x] **Step 1: Write the failing late-comment test**
 
 Add this test to `CommentThread.test.tsx`:
 
@@ -191,13 +191,13 @@ it("renders the first batch immediately when comments arrive after mount", () =>
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- --run src/components/CommentThread.test.tsx`
 
 Expected: FAIL with zero `.comment-item` elements because `mountedCount` initialized to zero.
 
-- [ ] **Step 3: Derive and schedule from the current visible count**
+- [x] **Step 3: Derive and schedule from the current visible count**
 
 Use the current comment length to expose the first batch immediately:
 
@@ -224,13 +224,13 @@ const visibleComments =
     : comments.slice(0, visibleCount);
 ```
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run: `npm test -- --run src/components/CommentThread.test.tsx`
 
 Expected: all tests in the file PASS.
 
-- [ ] **Step 5: Commit the first-batch fix**
+- [x] **Step 5: Commit the first-batch fix**
 
 ```bash
 git add src/components/CommentThread.tsx src/components/CommentThread.test.tsx

@@ -251,6 +251,14 @@ describe("CommentThread", () => {
     const { container } = render(<CommentThread comments={[]} />);
     expect(container).toBeEmptyDOMElement();
   });
+
+  it("renders the first batch immediately when comments arrive after mount", () => {
+    const { container, rerender } = render(<CommentThread comments={[]} />);
+
+    rerender(<CommentThread comments={[comments[0]]} />);
+
+    expect(container.querySelectorAll(".comment-item")).toHaveLength(1);
+  });
 });
 
 describe("OpeningPost", () => {

@@ -309,19 +309,21 @@ export function CommentThread({
   const [mountedCount, setMountedCount] = useState(() =>
     Math.min(COMMENT_MOUNT_BATCH, comments.length)
   );
+  const firstBatchCount = Math.min(COMMENT_MOUNT_BATCH, comments.length);
+  const visibleCount = Math.max(mountedCount, firstBatchCount);
 
   useEffect(() => {
-    if (mountedCount >= comments.length) {
+    if (visibleCount >= comments.length) {
       return;
     }
     return requestMountFrame(() => {
       startMountTransition(() => {
-        setMountedCount((current) =>
-          Math.min(current + COMMENT_MOUNT_BATCH, comments.length)
+        setMountedCount(
+          Math.min(visibleCount + COMMENT_MOUNT_BATCH, comments.length)
         );
       });
     });
-  }, [mountedCount, comments.length, startMountTransition]);
+  }, [visibleCount, comments.length, startMountTransition]);
 
   useEffect(() => {
     if (!replyDraft || !onReplySubmit) {
@@ -500,7 +502,7 @@ export function CommentThread({
     );
   }
   const visibleComments =
-    mountedCount >= comments.length ? comments : comments.slice(0, mountedCount);
+    visibleCount >= comments.length ? comments : comments.slice(0, visibleCount);
   return (
     <section className="comment-thread" aria-label="Comments">
       {visibleComments.map((comment) => renderComment(comment))}
