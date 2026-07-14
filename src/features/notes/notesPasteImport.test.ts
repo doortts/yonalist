@@ -172,11 +172,14 @@ describe("parsePastedOutline", () => {
   it("bounds line collection instead of splitting an over-cap clipboard into an unbounded array", () => {
     const split = vi.spyOn(String.prototype, "split");
     const text = `${"line\n".repeat(MAX_PASTE_IMPORT_NODES)}overflow`;
-
-    expect(parsePastedOutline(text)).toBeNull();
-    expect(
-      split.mock.instances.some((instance) => String(instance) === text)
-    ).toBe(false);
+    try {
+      expect(parsePastedOutline(text)).toBeNull();
+      expect(
+        split.mock.instances.some((instance) => String(instance) === text)
+      ).toBe(false);
+    } finally {
+      split.mockRestore();
+    }
   });
 
   it("applies the node-count cap to Markdown lists", () => {
