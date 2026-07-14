@@ -14,6 +14,7 @@ import type {
   MoveNoteNodeInput,
   NoteAttachment,
   NoteId,
+  NoteImportNode,
   NoteNode,
   NotesHistoryContext,
   NotesHistoryStatus,
@@ -85,6 +86,7 @@ import {
   deleteNodeCommand,
   duplicateNodeCommand,
   emptyTrashCommand,
+  importSubtreeCommand,
   moveNodeCommand,
   removeEmptyNodeCommand,
   restoreNodeCommand,
@@ -199,6 +201,14 @@ export interface NotesWorkspaceActions {
     nodeIds: readonly NoteId[],
     op: NotesBatchOp,
     options?: { focusNodeId?: NoteId | null }
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  // Paste import (plan Phase 4.4): insert `nodes` as one contiguous block
+  // under `parentId` right after `afterId`, one history entry. Focuses the
+  // first imported root on success. Stable identity.
+  importSubtree(
+    parentId: NoteId | null,
+    afterId: NoteId | null,
+    nodes: readonly NoteImportNode[]
   ): Promise<NotesWorkspaceCommandOutcome>;
   toggleComplete(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   toggleCollapsed(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
@@ -423,6 +433,9 @@ export interface UnwrappedNotesMutation {
   historyStatus: NotesHistoryStatus | undefined;
   atomic: boolean;
   delta: RawNotesMutationDelta | null;
+  // Only set by `notes_import_subtree` (plan Phase 4.4, paste import): the new
+  // root ids in caller order, so the command can focus `importedRootIds[0]`.
+  importedRootIds: readonly NoteId[] | undefined;
 }
 
 export function unwrapNotesMutation(
@@ -448,7 +461,8 @@ export function unwrapNotesMutation(
         canRedo: response.canRedo
       },
       atomic: true,
-      delta
+      delta,
+      importedRootIds: response.importedRootIds
     };
   }
   return {
@@ -456,7 +470,8 @@ export function unwrapNotesMutation(
     historyEntryId: undefined,
     historyStatus: undefined,
     atomic: false,
-    delta: null
+    delta: null,
+    importedRootIds: undefined
   };
 }
 
@@ -2694,6 +2709,15 @@ export function useNotesWorkspace({
     [commandCtx]
   );
 
+  const importSubtree = useCallback(
+    (
+      parentId: NoteId | null,
+      afterId: NoteId | null,
+      nodes: readonly NoteImportNode[]
+    ) => importSubtreeCommand(commandCtx, { parentId, afterId, nodes }),
+    [commandCtx]
+  );
+
   const toggleComplete = useCallback(
     (nodeId: NoteId) => toggleCompleteCommand(commandCtx, nodeId),
     [commandCtx]
@@ -3387,6 +3411,7 @@ export function useNotesWorkspace({
           : flushAllDraftsBeforeStructural(),
       moveNode: gateOutcome(moveNode),
       applyBatch: gateOutcome(applyBatch),
+      importSubtree: gateOutcome(importSubtree),
       toggleComplete: gateOutcome(toggleComplete),
       toggleCollapsed: gateOutcome(toggleCollapsed),
       expandAll: gateOutcome(expandAll),
@@ -3436,6 +3461,7 @@ export function useNotesWorkspace({
     flushAllDraftsBeforeStructural,
     moveNode,
     applyBatch,
+    importSubtree,
     toggleComplete,
     toggleCollapsed,
     expandAll,

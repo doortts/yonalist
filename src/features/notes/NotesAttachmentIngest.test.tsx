@@ -68,6 +68,7 @@ function workspaceValue(options: {
         items: readonly PendingNoteAttachmentByteItem[]
       ) => Promise<void>)
     | undefined;
+  importSubtree?: UseNotesWorkspaceResult["actions"]["importSubtree"];
   secondNoteText?: string;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
@@ -98,6 +99,7 @@ function workspaceValue(options: {
     flushAllDrafts: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
     applyBatch: resolved(),
+    importSubtree: options.importSubtree ?? resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
     expandAll: resolved(),
@@ -489,7 +491,7 @@ function pngFile(name: string): File {
   return new File(["png-bytes"], name, { type: "image/png" });
 }
 
-function pasteEventInit(entries: readonly ClipboardEntry[]) {
+function pasteEventInit(entries: readonly ClipboardEntry[], text = "") {
   const items = Object.assign(
     entries.map((entry) => ({
       kind: entry.kind,
@@ -500,7 +502,16 @@ function pasteEventInit(entries: readonly ClipboardEntry[]) {
     })),
     { add: vi.fn(), clear: vi.fn(), remove: vi.fn() }
   );
-  return { clipboardData: { items } };
+  return {
+    clipboardData: {
+      items,
+      getData: (format: string) => (format === "text/plain" ? text : "")
+    }
+  };
+}
+
+function textPasteEventInit(text: string) {
+  return pasteEventInit([], text);
 }
 
 function titleTextarea(id: string): HTMLTextAreaElement {
@@ -651,5 +662,94 @@ describe("clipboard Notes image paste ingest", () => {
     );
 
     expect(notPrevented).toBe(true);
+  });
+});
+
+describe("paste import of indented plain text (plan Phase 4.4b)", () => {
+  it("imports a multi-line indented paste as children of the current node and prevents the default paste", () => {
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(workspaceValue({ importSubtree }), idleSubscribe());
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("second"),
+      textPasteEventInit("Parent\n\tChild")
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importSubtree).toHaveBeenCalledOnce();
+    expect(importSubtree).toHaveBeenCalledWith("second", null, [
+      {
+        title: "Parent",
+        children: [{ title: "Child", children: [] }]
+      }
+    ]);
+  });
+
+  it("imports after the current node's existing children rather than before them", () => {
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(workspaceValue({ importSubtree }), idleSubscribe());
+
+    // "first" already has one child ("child"); the import should land after it.
+    const notPrevented = fireEvent.paste(
+      titleTextarea("first"),
+      textPasteEventInit("Alpha\nBeta")
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importSubtree).toHaveBeenCalledWith("first", "child", [
+      { title: "Alpha", children: [] },
+      { title: "Beta", children: [] }
+    ]);
+  });
+
+  it("leaves a single-line paste to the default browser paste (not an import)", () => {
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(workspaceValue({ importSubtree }), idleSubscribe());
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("second"),
+      textPasteEventInit("Just one line")
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importSubtree).not.toHaveBeenCalled();
+  });
+
+  it("lets a pasted clipboard image take precedence over structural text import", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(
+      workspaceValue({ importClipboardImages, importSubtree }),
+      idleSubscribe()
+    );
+    const file = pngFile("both.png");
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("second"),
+      pasteEventInit(
+        [{ kind: "file", type: "image/png", getAsFile: () => file }],
+        "Parent\n\tChild"
+      )
+    );
+
+    expect(notPrevented).toBe(false);
+    expect(importClipboardImages).toHaveBeenCalledOnce();
+    expect(importSubtree).not.toHaveBeenCalled();
+  });
+
+  it("does not import a subtree while the workspace is gated by a busy load", () => {
+    const importSubtree = vi.fn().mockResolvedValue("committed");
+    renderPane(
+      workspaceValue({ importSubtree, status: "loading" }),
+      idleSubscribe()
+    );
+
+    const notPrevented = fireEvent.paste(
+      titleTextarea("second"),
+      textPasteEventInit("Parent\n\tChild")
+    );
+
+    expect(notPrevented).toBe(true);
+    expect(importSubtree).not.toHaveBeenCalled();
   });
 });

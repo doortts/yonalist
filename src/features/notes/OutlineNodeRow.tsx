@@ -34,6 +34,7 @@ import {
   extractClipboardImages,
   type ClipboardImageExtraction
 } from "./notesClipboardImages";
+import { parsePastedOutline } from "./notesPasteImport";
 import { NoteTextField } from "./NoteTextField";
 import {
   useNotesActions,
@@ -131,6 +132,11 @@ function OutlineNodeRowComponent({
     !readOnly &&
     state.status !== "loading" &&
     actions.importClipboardImages !== undefined;
+  // Paste import (plan Phase 4.4): a multi-line indented plain-text paste
+  // becomes a subtree of new children under the focused row instead of a
+  // single blob of text. Gated the same way clipboard image import is.
+  const subtreeImportEnabled =
+    !disabled && !readOnly && state.status !== "loading";
   const {
     attributes,
     isDragging,
@@ -400,29 +406,76 @@ function OutlineNodeRowComponent({
     void actions.flushNodeDraft(nodeId);
   };
 
-  const handleImagePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+  // Returns true when the paste was handled (clipboard images win — plan
+  // Phase 0.5) so the caller does not also try a subtree import or fall
+  // through to a normal text paste.
+  const handleImagePaste = (
+    event: ClipboardEvent<HTMLTextAreaElement>
+  ): boolean => {
     if (!clipboardImportEnabled) {
-      return;
+      return false;
     }
     const clipboardData = event.clipboardData;
     if (!clipboardData) {
-      return;
+      return false;
     }
     let extraction: ClipboardImageExtraction;
     try {
       extraction = extractClipboardImages(clipboardData.items);
     } catch (cause) {
       console.error("Failed to read pasted clipboard images", cause);
-      return;
+      return false;
     }
     if (extraction.kind !== "images" || extraction.items.length === 0) {
       if (extraction.kind === "error") {
         console.error(extraction.message);
       }
-      return;
+      return false;
     }
     event.preventDefault();
     void actions.importClipboardImages?.(nodeId, extraction.items);
+    return true;
+  };
+
+  // Plan Phase 4.4b: a multi-line indented plain-text paste becomes a
+  // subtree of new children under this row (appended after any existing
+  // children), imported as one undo step. A single line, or text that does
+  // not parse to more than one node, is left to fall through to the normal
+  // text paste. Returns true when handled.
+  const handleSubtreeImportPaste = (
+    event: ClipboardEvent<HTMLTextAreaElement>
+  ): boolean => {
+    if (!subtreeImportEnabled) {
+      return false;
+    }
+    const clipboardData = event.clipboardData;
+    if (!clipboardData) {
+      return false;
+    }
+    const text = clipboardData.getData("text/plain");
+    if (!text) {
+      return false;
+    }
+    const nodes = parsePastedOutline(text);
+    if (!nodes || nodes.length === 0) {
+      return false;
+    }
+    event.preventDefault();
+    const existingChildIds = state.childIdsByParent[nodeId] ?? [];
+    const afterId = existingChildIds.at(-1) ?? null;
+    runStructuralCommand(() => actions.importSubtree(nodeId, afterId, nodes));
+    return true;
+  };
+
+  // Paste dispatch order (plan Phase 4.4b): clipboard image import (0.5)
+  // always wins when the clipboard carries an image, then a multi-line
+  // structural paste is tried, and only then does the event fall through to
+  // the textarea's default text paste.
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (handleImagePaste(event)) {
+      return;
+    }
+    handleSubtreeImportPaste(event);
   };
 
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -833,7 +886,7 @@ function OutlineNodeRowComponent({
             }, "title")
           }}
           onKeyDown={handleTitleKeyDown}
-          onPaste={handleImagePaste}
+          onPaste={handlePaste}
           onSelect={(event) => {
             titleSelectionRef.current = {
               startUtf16: event.currentTarget.selectionStart,
@@ -915,7 +968,7 @@ function OutlineNodeRowComponent({
               note: event.target.value
             }, "note");
           }}
-          onPaste={handleImagePaste}
+          onPaste={handlePaste}
           onBlur={() => {
             if (!datePicker.shouldSuppressBlur()) {
               commitDrafts();

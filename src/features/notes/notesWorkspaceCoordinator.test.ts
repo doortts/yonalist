@@ -45,6 +45,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     splitNode: empty,
     moveNode: empty,
     applyBatch: empty,
+    importSubtree: empty,
     toggleComplete: empty,
     toggleCollapsed: empty,
     toggleStar: empty,

@@ -119,6 +119,7 @@ function workspaceValue(options: {
     flushAllDrafts: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
     applyBatch: resolved(),
+    importSubtree: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
     expandAll: resolved(),

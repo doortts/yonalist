@@ -20,6 +20,7 @@ import type {
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
+  ImportSubtreeInput,
   MoveNoteNodeInput,
   NoteId,
   NoteSearchResult,
@@ -370,6 +371,23 @@ export function notesApplyBatch(
   // step.
   return invokeMutation(
     "notes_apply_batch",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
+}
+
+export function notesImportSubtree(
+  vaultPath: string,
+  input: ImportSubtreeInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  // Reuses the shared mutation transport, exactly like notesApplyBatch: the
+  // result is validated with isNotesMutationResult (normalizeMutationResult),
+  // a rejected IPC is mapped to a structured NotesStoreError, and one backend
+  // transaction / one history entry means one undo step removes the whole
+  // imported subtree.
+  return invokeMutation(
+    "notes_import_subtree",
     { vaultPath, input, historyContext },
     historyContext
   );
@@ -860,6 +878,7 @@ export const notesStore: NotesStore = {
   splitNode: notesSplitNode,
   moveNode: notesMoveNode,
   applyBatch: notesApplyBatch,
+  importSubtree: notesImportSubtree,
   toggleComplete: notesToggleComplete,
   toggleCollapsed: notesToggleCollapsed,
   expandAll: notesExpandAll,
