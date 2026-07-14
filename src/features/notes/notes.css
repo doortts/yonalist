@@ -704,6 +704,10 @@
   transform: translateY(-1px);
 }
 
+.notes-node-title-field > textarea {
+  transform: translateY(-3px);
+}
+
 .notes-tag-token {
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
