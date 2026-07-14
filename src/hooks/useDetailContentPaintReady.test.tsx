@@ -7,12 +7,14 @@ function Harness({
   activeDetailKey = "item:1",
   detailReady = true,
   expectedMarkdownBodies,
-  rendered
+  rendered,
+  snapshotRendered = []
 }: {
   activeDetailKey?: string | null;
   detailReady?: boolean;
   expectedMarkdownBodies: number;
   rendered: boolean[];
+  snapshotRendered?: boolean[];
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const ready = useDetailContentPaintReady(
@@ -24,6 +26,17 @@ function Harness({
   return (
     <>
       <div ref={ref}>
+        {snapshotRendered.length > 0 && (
+          <div data-detail-render-snapshot-overlay="true">
+            {snapshotRendered.map((isRendered, index) => (
+              <div
+                data-markdown-body="true"
+                data-markdown-rendered={isRendered ? "true" : "false"}
+                key={index}
+              />
+            ))}
+          </div>
+        )}
         {rendered.map((isRendered, index) => (
           <div
             data-markdown-body="true"
@@ -73,6 +86,18 @@ describe("useDetailContentPaintReady", () => {
         activeDetailKey="item:2"
         expectedMarkdownBodies={1}
         rendered={[false]}
+      />
+    );
+
+    expect(screen.getByLabelText("content-ready")).toHaveTextContent("waiting");
+  });
+
+  it("ignores rendered Markdown inside the snapshot overlay", () => {
+    render(
+      <Harness
+        expectedMarkdownBodies={2}
+        rendered={[true]}
+        snapshotRendered={[true, true]}
       />
     );
 

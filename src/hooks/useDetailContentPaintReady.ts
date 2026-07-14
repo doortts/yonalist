@@ -10,8 +10,13 @@ function hasRenderedExpectedMarkdownBodies(
   if (!root) {
     return false;
   }
-  const renderedBodies = root.querySelectorAll(
-    '[data-markdown-body="true"][data-markdown-rendered="true"]'
+  const renderedBodies = Array.from(
+    root.querySelectorAll(
+      '[data-markdown-body="true"][data-markdown-rendered="true"]'
+    )
+  ).filter(
+    (body) =>
+      !body.closest('[data-detail-render-snapshot-overlay="true"]')
   );
   return renderedBodies.length >= expectedMarkdownBodies;
 }

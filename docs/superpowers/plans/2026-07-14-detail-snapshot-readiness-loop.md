@@ -67,7 +67,7 @@ git commit -m "test(app): isolate detail render snapshots"
 - Consumes: `useDetailContentPaintReady(ref, activeDetailKey, detailReady, expectedMarkdownBodies): boolean`
 - Produces: the same public hook signature with snapshot-overlay descendants excluded from its internal count.
 
-- [ ] **Step 1: Write the failing overlay-isolation test**
+- [x] **Step 1: Write the failing overlay-isolation test**
 
 Extend the existing test harness with an optional snapshot body list and add this test:
 
@@ -132,13 +132,13 @@ it("ignores rendered Markdown inside the snapshot overlay", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
 Run: `npm test -- --run src/hooks/useDetailContentPaintReady.test.tsx`
 
 Expected: FAIL because the hook returns `ready` after counting the two snapshot Markdown bodies.
 
-- [ ] **Step 3: Exclude snapshot descendants from the count**
+- [x] **Step 3: Exclude snapshot descendants from the count**
 
 Replace the raw `NodeList.length` check with:
 
@@ -154,13 +154,13 @@ const renderedBodies = Array.from(
 return renderedBodies.length >= expectedMarkdownBodies;
 ```
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
 Run: `npm test -- --run src/hooks/useDetailContentPaintReady.test.tsx`
 
 Expected: all tests in the file PASS.
 
-- [ ] **Step 5: Commit the readiness fix**
+- [x] **Step 5: Commit the readiness fix**
 
 ```bash
 git add src/hooks/useDetailContentPaintReady.ts src/hooks/useDetailContentPaintReady.test.tsx
