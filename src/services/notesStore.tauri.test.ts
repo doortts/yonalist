@@ -5,6 +5,7 @@ import {
   MAX_NOTE_ATTACHMENT_BYTES
 } from "../domain/notes";
 import type {
+  ApplyNotesBatchInput,
   CreateNoteNodeInput,
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
@@ -25,6 +26,7 @@ import type {
 import {
   notesCreateNode,
   notesArchiveNode,
+  notesApplyBatch,
   notesCollapseAll,
   notesDeleteDatabase,
   notesDuplicateNode,
@@ -74,6 +76,10 @@ const secondNodeId = "22222222-2222-4222-8222-222222222222";
 const attachmentId = "33333333-3333-4333-8333-333333333333";
 const secondAttachmentId = "44444444-4444-4444-8444-444444444444";
 const contentHash = "a".repeat(64);
+
+function indexedNodeId(index: number): string {
+  return `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+}
 const attachment: NoteAttachment = {
   id: attachmentId,
   nodeId,
@@ -1320,6 +1326,116 @@ describe("notesStore in Tauri", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(4, "notes_move_node", {
       vaultPath,
       input: moveInput,
+      historyContext: null
+    });
+  });
+
+  it("maps the new batch variants to their exact camelCase native payloads", async () => {
+    const inputs = [
+      { op: "duplicate", nodeIds: [nodeId, secondNodeId] },
+      {
+        op: "addTag",
+        nodeIds: [nodeId],
+        tag: {
+          prefix: "#",
+          normalizedTag: "roadmap",
+          displayTag: "Roadmap"
+        }
+      },
+      {
+        op: "removeTag",
+        nodeIds: [secondNodeId],
+        tag: { prefix: "@", normalizedTag: "minji" }
+      }
+    ] as const satisfies readonly ApplyNotesBatchInput[];
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    for (const input of inputs) {
+      await expect(notesApplyBatch(vaultPath, input)).resolves.toEqual(
+        normalizedUnjournaledMutationResult
+      );
+    }
+
+    inputs.forEach((input, index) => {
+      expect(invokeMock).toHaveBeenNthCalledWith(index + 1, "notes_apply_batch", {
+        vaultPath,
+        input,
+        historyContext: null
+      });
+    });
+  });
+
+  it("preserves duplicated root ids without fabricating them when omitted", async () => {
+    const duplicatedRootIds = [secondNodeId, attachmentId];
+    invokeMock
+      .mockResolvedValueOnce({ ...mutationResult, duplicatedRootIds })
+      .mockResolvedValueOnce(mutationResult);
+
+    await expect(
+      notesApplyBatch(
+        vaultPath,
+        { op: "duplicate", nodeIds: [nodeId] },
+        historyContext
+      )
+    ).resolves.toEqual({ ...normalizedMutationResult, duplicatedRootIds });
+    const omitted = await notesApplyBatch(
+      vaultPath,
+      { op: "duplicate", nodeIds: [nodeId] },
+      historyContext
+    );
+    expect(omitted).toEqual(normalizedMutationResult);
+    expect(omitted).not.toHaveProperty("duplicatedRootIds");
+  });
+
+  it("rejects more than 10,000 submitted batch ids before invoking native code", async () => {
+    const nodeIds = Array.from({ length: 10_000 }, (_, index) =>
+      indexedNodeId(index)
+    );
+    nodeIds.push(nodeIds[0]);
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds })
+    ).rejects.toThrow("10,000");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts exactly 10,000 submitted batch ids", async () => {
+    const nodeIds = Array.from({ length: 10_000 }, (_, index) =>
+      indexedNodeId(index)
+    );
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds })
+    ).resolves.toEqual(normalizedUnjournaledMutationResult);
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock.mock.calls[0]?.[1]).toMatchObject({
+      input: { nodeIds }
+    });
+  });
+
+  it("rejects an empty batch selection before invoking native code", async () => {
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds: [] })
+    ).rejects.toThrow("at least one node");
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates batch ids without changing first-seen order", async () => {
+    invokeMock.mockResolvedValue(unjournaledMutationResult);
+
+    await expect(
+      notesApplyBatch(vaultPath, {
+        op: "delete",
+        nodeIds: [secondNodeId, nodeId, secondNodeId]
+      })
+    ).resolves.toEqual(normalizedUnjournaledMutationResult);
+    expect(invokeMock).toHaveBeenCalledWith("notes_apply_batch", {
+      vaultPath,
+      input: { op: "delete", nodeIds: [secondNodeId, nodeId] },
       historyContext: null
     });
   });

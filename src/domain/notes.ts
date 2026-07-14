@@ -8,6 +8,7 @@ export const MAX_NOTE_ATTACHMENT_PIXELS = 40_000_000;
 export const MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH = 160;
 export const MAX_NOTE_ATTACHMENTS_PER_NODE = 128;
 export const MAX_NOTE_ATTACHMENTS_PER_WORKSPACE = 512;
+export const MAX_NOTES_BATCH_NODE_IDS = 10_000;
 
 export interface NoteNode {
   id: NoteId;
@@ -84,6 +85,11 @@ export interface NotesMutationResult extends NotesHistoryStatus {
    * `importedRootIds[0]` to focus the first imported node.
    */
   importedRootIds?: NoteId[];
+  /**
+   * New root ids created by a batch duplicate, in source order. Present only
+   * on that mutation's result; every other mutation omits it.
+   */
+  duplicatedRootIds?: NoteId[];
 }
 
 export type NotesMutationResponse = NotesWorkspace | NotesMutationResult;
@@ -307,7 +313,18 @@ export type ApplyNotesBatchInput =
       afterId: NoteId | null;
     }
   | { op: "indent"; nodeIds: readonly NoteId[] }
-  | { op: "outdent"; nodeIds: readonly NoteId[] };
+  | { op: "outdent"; nodeIds: readonly NoteId[] }
+  | { op: "duplicate"; nodeIds: readonly NoteId[] }
+  | {
+      op: "addTag";
+      nodeIds: readonly NoteId[];
+      tag: NoteSearchTag;
+    }
+  | {
+      op: "removeTag";
+      nodeIds: readonly NoteId[];
+      tag: NoteTagFilter;
+    };
 
 /**
  * One node in a `notes_import_subtree` payload (plan Phase 4.4, paste
@@ -679,7 +696,8 @@ const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
   "changedNodes",
   "removedNodeIds",
   "changedAttachments",
-  "importedRootIds"
+  "importedRootIds",
+  "duplicatedRootIds"
 ] as const;
 
 const NOTES_MUTATION_RESULT_ALLOWED_KEYS = new Set<string>([
@@ -735,6 +753,15 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
     !(
       isDenseArray(value.importedRootIds) &&
       value.importedRootIds.every((id) => typeof id === "string")
+    )
+  ) {
+    return false;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "duplicatedRootIds") &&
+    !(
+      isDenseArray(value.duplicatedRootIds) &&
+      value.duplicatedRootIds.every((id) => typeof id === "string")
     )
   ) {
     return false;

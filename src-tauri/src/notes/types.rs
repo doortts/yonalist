@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+
+use crate::notes::tags::is_canonical_tag_body;
 
 pub type NoteId = String;
 pub(crate) const MAX_NOTE_ATTACHMENTS_PER_NODE: i64 = 128;
 pub(crate) const MAX_NOTE_ATTACHMENTS_PER_VAULT: i64 = 512;
 pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
+pub(crate) const MAX_BATCH_NODE_IDS: usize = 10_000;
 
 /// Bounds for `notes_import_subtree` (paste import). The whole import runs as a
 /// single transaction + single history entry, so it is bounded to a sane node
@@ -163,6 +166,10 @@ pub struct NotesMutationResult {
     /// `changedNodes`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imported_root_ids: Option<Vec<NoteId>>,
+    /// New root ids created by a batch duplicate, in source order. Every other
+    /// mutation leaves this `None`, so it is omitted from the wire payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicated_root_ids: Option<Vec<NoteId>>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -391,6 +398,12 @@ pub enum BatchOp {
     Indent,
     /// Outdent each eligible selected node up one level (after its old parent).
     Outdent,
+    /// Duplicate the selected forest roots as one contiguous copied block.
+    Duplicate,
+    /// Add one canonical display tag to every explicitly selected node.
+    AddTag { tag: NoteSearchTag },
+    /// Remove every exact occurrence of one canonical tag from each selected node.
+    RemoveTag { tag: NoteTagFilter },
 }
 
 /// Input to `notes_apply_batch`: a set of node ids plus the operation to apply
@@ -402,12 +415,51 @@ pub struct ApplyBatchInput {
     pub op: BatchOp,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyBatchSearchTagWire {
+    prefix: NoteTagPrefix,
+    normalized_tag: String,
+    display_tag: String,
+}
+
+impl From<ApplyBatchSearchTagWire> for NoteSearchTag {
+    fn from(tag: ApplyBatchSearchTagWire) -> Self {
+        Self {
+            prefix: tag.prefix,
+            normalized_tag: tag.normalized_tag,
+            display_tag: tag.display_tag,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyBatchTagFilterWire {
+    prefix: NoteTagPrefix,
+    normalized_tag: String,
+}
+
+impl From<ApplyBatchTagFilterWire> for NoteTagFilter {
+    fn from(tag: ApplyBatchTagFilterWire) -> Self {
+        Self {
+            prefix: tag.prefix,
+            normalized_tag: tag.normalized_tag,
+        }
+    }
+}
+
 /// Wire representation of [`ApplyBatchInput`]: an internally-tagged enum with the
 /// op-specific fields at the top level. This shape deserializes reliably, whereas
 /// a `#[serde(flatten)]` `BatchOp` silently drops fields — serde flatten and
 /// internally tagged enums do not compose.
 #[derive(Deserialize)]
-#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "op",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum ApplyBatchWire {
     Complete {
         node_ids: Vec<NoteId>,
@@ -427,6 +479,25 @@ enum ApplyBatchWire {
     Outdent {
         node_ids: Vec<NoteId>,
     },
+    Duplicate {
+        node_ids: Vec<NoteId>,
+    },
+    AddTag {
+        node_ids: Vec<NoteId>,
+        tag: ApplyBatchSearchTagWire,
+    },
+    RemoveTag {
+        node_ids: Vec<NoteId>,
+        tag: ApplyBatchTagFilterWire,
+    },
+}
+
+fn dedup_batch_node_ids(node_ids: Vec<NoteId>) -> Vec<NoteId> {
+    let mut seen = BTreeSet::new();
+    node_ids
+        .into_iter()
+        .filter(|node_id| seen.insert(node_id.clone()))
+        .collect()
 }
 
 impl<'de> Deserialize<'de> for ApplyBatchInput {
@@ -434,7 +505,7 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match ApplyBatchWire::deserialize(deserializer)? {
+        let input = match ApplyBatchWire::deserialize(deserializer)? {
             ApplyBatchWire::Complete {
                 node_ids,
                 completed,
@@ -465,6 +536,27 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
                 node_ids,
                 op: BatchOp::Outdent,
             },
+            ApplyBatchWire::Duplicate { node_ids } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::Duplicate,
+            },
+            ApplyBatchWire::AddTag { node_ids, tag } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::AddTag { tag: tag.into() },
+            },
+            ApplyBatchWire::RemoveTag { node_ids, tag } => ApplyBatchInput {
+                node_ids,
+                op: BatchOp::RemoveTag { tag: tag.into() },
+            },
+        };
+        if input.node_ids.len() > MAX_BATCH_NODE_IDS {
+            return Err(serde::de::Error::custom(
+                "A batch operation can contain at most 10,000 node IDs.",
+            ));
+        }
+        Ok(ApplyBatchInput {
+            node_ids: dedup_batch_node_ids(input.node_ids),
+            op: input.op,
         })
     }
 }
@@ -473,6 +565,9 @@ impl ApplyBatchInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         if self.node_ids.is_empty() {
             return Err("A batch operation requires at least one node.".to_string());
+        }
+        if self.node_ids.len() > MAX_BATCH_NODE_IDS {
+            return Err("A batch operation can contain at most 10,000 node IDs.".to_string());
         }
         for id in &self.node_ids {
             validate_note_id(id)?;
@@ -484,6 +579,17 @@ impl ApplyBatchInput {
         {
             validate_optional_note_id(parent_id.as_deref())?;
             validate_optional_note_id(after_id.as_deref())?;
+        }
+        let normalized_tag = match &self.op {
+            BatchOp::AddTag { tag } => Some(&tag.normalized_tag),
+            BatchOp::RemoveTag { tag } => Some(&tag.normalized_tag),
+            _ => None,
+        };
+        if normalized_tag.is_some_and(|tag| !is_canonical_tag_body(tag)) {
+            return Err(
+                "Structured Notes search tag normalizedTag must be a canonical tag body."
+                    .to_string(),
+            );
         }
         Ok(())
     }
@@ -696,7 +802,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_batch_input_deserializes_the_flattened_op_wire_shape() {
+    fn apply_batch_input_deserializes_the_exact_camel_case_wire_shapes() {
         let complete: ApplyBatchInput = serde_json::from_value(json!({
             "nodeIds": [NODE_ID, SECOND_ID],
             "op": "complete",
@@ -741,10 +847,58 @@ mod tests {
         }))
         .expect("outdent batch input");
         assert_eq!(outdent.op, BatchOp::Outdent);
+
+        let duplicate: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID, SECOND_ID],
+            "op": "duplicate"
+        }))
+        .expect("duplicate batch input");
+        assert_eq!(duplicate.node_ids, vec![NODE_ID, SECOND_ID]);
+        assert_eq!(duplicate.op, BatchOp::Duplicate);
+
+        let add_tag: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [NODE_ID],
+            "op": "addTag",
+            "tag": {
+                "prefix": "#",
+                "normalizedTag": "roadmap",
+                "displayTag": "Roadmap"
+            }
+        }))
+        .expect("add-tag batch input");
+        assert_eq!(
+            add_tag.op,
+            BatchOp::AddTag {
+                tag: NoteSearchTag {
+                    prefix: NoteTagPrefix::Hash,
+                    normalized_tag: "roadmap".to_string(),
+                    display_tag: "Roadmap".to_string(),
+                }
+            }
+        );
+
+        let remove_tag: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [SECOND_ID],
+            "op": "removeTag",
+            "tag": {
+                "prefix": "@",
+                "normalizedTag": "minji"
+            }
+        }))
+        .expect("remove-tag batch input");
+        assert_eq!(
+            remove_tag.op,
+            BatchOp::RemoveTag {
+                tag: NoteTagFilter {
+                    prefix: NoteTagPrefix::Mention,
+                    normalized_tag: "minji".to_string(),
+                }
+            }
+        );
     }
 
     #[test]
-    fn apply_batch_input_validation_rejects_empty_and_malformed_selections() {
+    fn apply_batch_input_validation_rejects_empty_malformed_and_oversized_selections() {
         let empty = ApplyBatchInput {
             node_ids: Vec::new(),
             op: BatchOp::Delete,
@@ -768,6 +922,117 @@ mod tests {
             },
         };
         assert!(bad_parent.validate().is_err());
+
+        let maximum_ids = (0..10_000)
+            .map(|index| format!("00000000-0000-4000-8000-{index:012x}"))
+            .collect::<Vec<_>>();
+        let maximum = ApplyBatchInput {
+            node_ids: maximum_ids.clone(),
+            op: BatchOp::Delete,
+        };
+        assert!(maximum.validate().is_ok());
+
+        let oversized = ApplyBatchInput {
+            node_ids: maximum_ids
+                .into_iter()
+                .chain(["00000000-0000-4000-8000-000000002710".to_string()])
+                .collect(),
+            op: BatchOp::Delete,
+        };
+        assert_eq!(
+            oversized.validate().expect_err("10,001 submitted node ids"),
+            "A batch operation can contain at most 10,000 node IDs."
+        );
+    }
+
+    #[test]
+    fn apply_batch_input_deduplicates_ids_without_reordering() {
+        let input: ApplyBatchInput = serde_json::from_value(json!({
+            "nodeIds": [SECOND_ID, NODE_ID, SECOND_ID, THIRD_ID, NODE_ID],
+            "op": "delete"
+        }))
+        .expect("deduplicated batch input");
+
+        assert_eq!(input.node_ids, vec![SECOND_ID, NODE_ID, THIRD_ID]);
+
+        let mut submitted_ids = (0..10_000)
+            .map(|index| format!("00000000-0000-4000-8000-{index:012x}"))
+            .collect::<Vec<_>>();
+        submitted_ids.push(submitted_ids[0].clone());
+        let error = serde_json::from_value::<ApplyBatchInput>(json!({
+            "nodeIds": submitted_ids,
+            "op": "delete"
+        }))
+        .expect_err("10,001 submitted ids must reject before deduplication");
+        assert!(error.to_string().contains("at most 10,000 node IDs"));
+    }
+
+    #[test]
+    fn apply_batch_input_validates_canonical_tags() {
+        for value in [
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "addTag",
+                "tag": {
+                    "prefix": "#",
+                    "normalizedTag": "#Roadmap",
+                    "displayTag": "Roadmap"
+                }
+            }),
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "removeTag",
+                "tag": {
+                    "prefix": "@",
+                    "normalizedTag": "Minji"
+                }
+            }),
+        ] {
+            let input: ApplyBatchInput =
+                serde_json::from_value(value).expect("typed batch tag input");
+            assert_eq!(
+                input.validate().expect_err("noncanonical batch tag"),
+                "Structured Notes search tag normalizedTag must be a canonical tag body."
+            );
+        }
+    }
+
+    #[test]
+    fn apply_batch_input_rejects_unknown_fields() {
+        assert!(serde_json::from_value::<ApplyBatchInput>(json!({
+            "nodeIds": [NODE_ID],
+            "op": "complete",
+            "completed": true,
+            "unexpected": true
+        }))
+        .is_err());
+
+        for value in [
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "addTag",
+                "tag": {
+                    "prefix": "#",
+                    "normalizedTag": "roadmap",
+                    "displayTag": "Roadmap",
+                    "unexpected": true
+                }
+            }),
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "removeTag",
+                "tag": {
+                    "prefix": "@",
+                    "normalizedTag": "minji",
+                    "unexpected": true
+                }
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<ApplyBatchInput>(value).is_err(),
+                "nested batch tag fields must be exact"
+            );
+        }
     }
 
     #[test]
@@ -936,6 +1201,7 @@ mod tests {
             removed_node_ids: None,
             changed_attachments: None,
             imported_root_ids: None,
+            duplicated_root_ids: None,
         };
         assert_eq!(
             serde_json::to_value(mutation).expect("mutation result"),
@@ -944,6 +1210,31 @@ mod tests {
                 "historyEntryId": SECOND_ID,
                 "canUndo": true,
                 "canRedo": false
+            })
+        );
+
+        let duplicated = NotesMutationResult {
+            workspace: NotesWorkspace {
+                nodes: Vec::new(),
+                attachments_by_node_id: std::collections::BTreeMap::new(),
+            },
+            history_entry_id: Some(SECOND_ID.to_string()),
+            can_undo: true,
+            can_redo: false,
+            changed_nodes: None,
+            removed_node_ids: None,
+            changed_attachments: None,
+            imported_root_ids: None,
+            duplicated_root_ids: Some(vec![NODE_ID.to_string(), THIRD_ID.to_string()]),
+        };
+        assert_eq!(
+            serde_json::to_value(duplicated).expect("duplicate mutation result"),
+            json!({
+                "workspace": { "nodes": [], "attachmentsByNodeId": {} },
+                "historyEntryId": SECOND_ID,
+                "canUndo": true,
+                "canRedo": false,
+                "duplicatedRootIds": [NODE_ID, THIRD_ID]
             })
         );
     }
@@ -995,6 +1286,7 @@ mod tests {
             removed_node_ids: Some(vec![THIRD_ID.to_string()]),
             changed_attachments: Some(vec![attachment]),
             imported_root_ids: None,
+            duplicated_root_ids: None,
         };
 
         assert_eq!(

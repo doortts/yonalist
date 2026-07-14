@@ -1205,6 +1205,7 @@ fn committed_attachment_batch_retry(
         removed_node_ids: deltas_available.then(Vec::new),
         changed_attachments: deltas_available.then(|| existing.clone()),
         imported_root_ids: None,
+        duplicated_root_ids: None,
     }))
 }
 

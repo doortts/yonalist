@@ -6,6 +6,7 @@ import {
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
   MAX_NOTE_ATTACHMENTS_PER_NODE,
+  MAX_NOTES_BATCH_NODE_IDS,
   normalizeNotesWorkspace,
   parseNotesError
 } from "../domain/notes";
@@ -394,6 +395,25 @@ export function notesApplyBatch(
   input: ApplyNotesBatchInput,
   historyContext: NotesHistoryContext | null = null
 ): Promise<NotesMutationResult> {
+  if (input.nodeIds.length === 0) {
+    return Promise.reject(
+      new Error("A batch operation requires at least one node.")
+    );
+  }
+  if (input.nodeIds.length > MAX_NOTES_BATCH_NODE_IDS) {
+    return Promise.reject(
+      new Error("A batch operation can contain at most 10,000 node IDs.")
+    );
+  }
+  const seenNodeIds = new Set<NoteId>();
+  const nodeIds = input.nodeIds.filter((nodeId) => {
+    if (seenNodeIds.has(nodeId)) {
+      return false;
+    }
+    seenNodeIds.add(nodeId);
+    return true;
+  });
+  const normalizedInput = { ...input, nodeIds } as ApplyNotesBatchInput;
   // Reuses the shared mutation transport: the result is validated with
   // isNotesMutationResult (normalizeMutationResult) and a rejected IPC is mapped
   // to a structured NotesStoreError via parseNotesError (notesStoreError). One
@@ -401,7 +421,7 @@ export function notesApplyBatch(
   // step.
   return invokeMutation(
     "notes_apply_batch",
-    { vaultPath, input, historyContext },
+    { vaultPath, input: normalizedInput, historyContext },
     historyContext
   );
 }

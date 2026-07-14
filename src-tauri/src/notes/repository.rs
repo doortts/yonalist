@@ -3048,6 +3048,9 @@ pub(crate) fn apply_batch(
         ),
         BatchOp::Indent => batch_indent(transaction, &node_ids),
         BatchOp::Outdent => batch_outdent(transaction, &node_ids),
+        BatchOp::Duplicate => Err("Batch duplicate is not implemented yet.".to_string()),
+        BatchOp::AddTag { .. } => Err("Batch tag addition is not implemented yet.".to_string()),
+        BatchOp::RemoveTag { .. } => Err("Batch tag removal is not implemented yet.".to_string()),
     })
 }
 

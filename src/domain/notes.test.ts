@@ -16,6 +16,7 @@ import {
 } from "./notes";
 import type { NotesErrorCode } from "./notes";
 import type {
+  ApplyNotesBatchInput,
   NoteAttachment,
   ImportNoteAttachmentByteItem,
   ImportNoteAttachmentBytesBatchInput,
@@ -377,6 +378,53 @@ describe("Notes domain contract", () => {
     ).toBe(false);
     // Unknown keys outside the additive delta contract remain rejected.
     expect(isNotesMutationResult({ ...result, bogus: 1 })).toBe(false);
+  });
+
+  it("accepts only well-formed optional duplicated root ids", () => {
+    const result: NotesMutationResult = {
+      workspace: { nodes: [makeNoteNode()] },
+      historyEntryId: UUID,
+      canUndo: true,
+      canRedo: false
+    };
+
+    expect(
+      isNotesMutationResult({
+        ...result,
+        duplicatedRootIds: [UUID, ATTACHMENT_UUID]
+      })
+    ).toBe(true);
+    expect(isNotesMutationResult(result)).toBe(true);
+    expect(
+      isNotesMutationResult({ ...result, duplicatedRootIds: [42] })
+    ).toBe(false);
+  });
+
+  it("exposes the exact typed batch action wire variants", () => {
+    expectTypeOf<
+      Extract<ApplyNotesBatchInput, { op: "duplicate" }>
+    >().toEqualTypeOf<{
+      op: "duplicate";
+      nodeIds: readonly string[];
+    }>();
+    expectTypeOf<
+      Extract<ApplyNotesBatchInput, { op: "addTag" }>
+    >().toEqualTypeOf<{
+      op: "addTag";
+      nodeIds: readonly string[];
+      tag: {
+        prefix: "#" | "@";
+        normalizedTag: string;
+        displayTag: string;
+      };
+    }>();
+    expectTypeOf<
+      Extract<ApplyNotesBatchInput, { op: "removeTag" }>
+    >().toEqualTypeOf<{
+      op: "removeTag";
+      nodeIds: readonly string[];
+      tag: { prefix: "#" | "@"; normalizedTag: string };
+    }>();
   });
 
   it("recognizes only strict history replay result payloads", () => {

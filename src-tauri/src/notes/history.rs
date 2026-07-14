@@ -230,6 +230,9 @@ impl HistoryTransactionResult {
             // Set by `notes_import_subtree` after this result is built; every
             // other mutation leaves it unset.
             imported_root_ids: None,
+            // Set by batch duplicate after this result is built; every other
+            // mutation leaves it unset.
+            duplicated_root_ids: None,
         }
     }
 }
@@ -570,6 +573,16 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
             [&context.1],
         )
         .map_err(|error| format!("Could not estimate Notes history payload: {error}"))?;
+    let current_entry_bytes: i64 = transaction
+        .query_row(
+            "SELECT estimated_bytes FROM notes_history_entries WHERE id = ?1",
+            [&context.1],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not measure the new Notes history entry: {error}"))?;
+    if current_entry_bytes > HISTORY_MAX_BYTES {
+        return Err("A Notes history entry cannot exceed 50 MiB.".to_string());
+    }
     enforce_limits(transaction)?;
     record_mutation_result(transaction, &context.0, &context.1)
 }
@@ -2468,6 +2481,70 @@ mod tests {
                 .expect("retained second session status")
                 .can_undo
         );
+    }
+
+    #[test]
+    fn notes_history_rejects_oversized_single_entry_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let large_body = "a".repeat((HISTORY_MAX_BYTES / 2) as usize);
+        let original_title = format!("Before #before 07/11/2026 {large_body}");
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, &original_title),
+        )
+        .expect("seed oversized-history node");
+        let replacement_title = format!(
+            "After #after 07/12/2026 {}",
+            "b".repeat((HISTORY_MAX_BYTES / 2) as usize)
+        );
+        let context = history_context(1, "updateText");
+
+        let result = journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: replacement_title,
+                    note: String::new(),
+                },
+            )
+        });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("one history entry above 50 MiB must reject its mutation"),
+        };
+
+        assert_eq!(error, "A Notes history entry cannot exceed 50 MiB.");
+        let workspace = active(&connection);
+        let node = workspace
+            .nodes
+            .iter()
+            .find(|node| node.id == NODE_ID)
+            .expect("rolled-back node");
+        assert_eq!(node.title, original_title);
+        assert_eq!(
+            list_tags(&connection).expect("rolled-back tags"),
+            vec!["before".to_string()]
+        );
+        let search_title: String = connection
+            .query_row(
+                "SELECT substr(title, 1, 6) FROM notes_search WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("rolled-back search row");
+        assert_eq!(search_title, "Before");
+        let date_token: String = connection
+            .query_row(
+                "SELECT token_text FROM notes_dates WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("rolled-back date row");
+        assert_eq!(date_token, "07/11/2026");
+        assert_eq!(entry_count(&connection), 0);
     }
 
     #[test]
