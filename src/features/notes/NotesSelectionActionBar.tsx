@@ -24,6 +24,7 @@ import {
   useState
 } from "react";
 import type {
+  NotesSelectionActionIntent,
   NotesSelectionActionSnapshot,
   NotesSelectionEligibility
 } from "./notesSelectionActions";
@@ -31,18 +32,7 @@ import type {
 const COMPACT_ACTIONS_QUERY = "(max-width: 720px)";
 const BUSY_REASON = "Another selection action is in progress.";
 
-export type NotesSelectionActionBarAction =
-  | "toggleComplete"
-  | "moveTo"
-  | "moveUp"
-  | "moveDown"
-  | "indent"
-  | "outdent"
-  | "duplicate"
-  | "tags"
-  | "copy"
-  | "cut"
-  | "delete";
+export type NotesSelectionActionBarAction = NotesSelectionActionIntent;
 
 export interface NotesSelectionActionBarProps {
   readonly snapshot: NotesSelectionActionSnapshot;

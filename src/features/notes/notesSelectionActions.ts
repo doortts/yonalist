@@ -8,6 +8,20 @@ import {
 
 export type NotesSelectionCompletion = "none" | "mixed" | "all";
 
+/** Semantic selection requests shared by every selection-action surface. */
+export type NotesSelectionActionIntent =
+  | "toggleComplete"
+  | "moveTo"
+  | "moveUp"
+  | "moveDown"
+  | "indent"
+  | "outdent"
+  | "duplicate"
+  | "tags"
+  | "copy"
+  | "cut"
+  | "delete";
+
 export type NotesSelectionUnavailable = Readonly<{
   eligible: false;
   reason: string;

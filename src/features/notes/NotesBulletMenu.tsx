@@ -1,6 +1,8 @@
 import { Menu } from "@base-ui/react/menu";
 import {
+  ArrowDown,
   ArrowDownAZ,
+  ArrowUp,
   ArrowUpZA,
   Calendar,
   Check,
@@ -10,17 +12,22 @@ import {
   ChevronsUpDown,
   Clock3,
   Copy,
+  CopyPlus,
   Download,
   FileDown,
   FileText,
   FolderInput,
   ImageUp,
+  IndentDecrease,
+  IndentIncrease,
   MessageSquareOff,
   MessageSquareText,
   MoreHorizontal,
   RotateCcw,
+  Scissors,
   Search,
   Star,
+  Tags,
   Trash2
 } from "lucide-react";
 import {
@@ -33,11 +40,17 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  useSyncExternalStore
 } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 import type { NotesExportFormat } from "../../domain/notesExport";
 import type { NotesMoveDestination } from "./notesMoveTargets";
+import type {
+  NotesSelectionActionIntent,
+  NotesSelectionActionSnapshot,
+  NotesSelectionEligibility
+} from "./notesSelectionActions";
 
 export {
   buildNotesMoveDestinations,
@@ -84,6 +97,27 @@ export interface NotesBulletMenuProps {
   onRetrySave?(): void;
   onRestore?(): void;
   onUnarchive?(): void;
+  onOpenChange?(open: boolean): void;
+  selectionBridge?: NotesBulletMenuSelectionBridge;
+}
+
+export interface NotesBulletMenuSelectionState {
+  readonly snapshot: NotesSelectionActionSnapshot;
+  readonly busy?: boolean;
+  readonly mutationDisabledReason?: string | null;
+}
+
+export interface NotesBulletMenuSelectionBridge {
+  /**
+   * Keep this bridge object stable across selection-state changes. The snapshot
+   * itself must be cached between reads and replaced before subscribers run.
+   */
+  readonly getSnapshot: () => NotesBulletMenuSelectionState;
+  readonly subscribe: (onStoreChange: () => void) => () => void;
+  readonly execute: (
+    action: NotesSelectionActionIntent
+  ) => void | Promise<unknown>;
+  readonly requestChooser: (chooser: "move" | "tags") => void;
 }
 
 export type NotesMoveCommitOutcome =
@@ -105,6 +139,7 @@ interface CommandItemProps {
   children: ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  disabledReason?: string | null;
   icon: ReactNode;
   closeOnClick?: boolean;
   itemRef?: Ref<HTMLElement>;
@@ -115,24 +150,71 @@ function CommandItem({
   children,
   danger = false,
   disabled = false,
+  disabledReason = null,
   icon,
   closeOnClick = true,
   itemRef,
   onClick
 }: CommandItemProps) {
+  const disabledReasonId = useId();
+
   return (
-    <Menu.Item
-      ref={itemRef}
-      className="notes-bullet-menu-item"
-      data-danger={danger ? "true" : undefined}
-      disabled={disabled}
-      closeOnClick={closeOnClick}
-      onClick={onClick}
-    >
-      {icon}
-      <span>{children}</span>
-    </Menu.Item>
+    <>
+      <Menu.Item
+        ref={itemRef}
+        className="notes-bullet-menu-item"
+        data-danger={danger ? "true" : undefined}
+        disabled={disabled}
+        aria-describedby={disabledReason ? disabledReasonId : undefined}
+        title={disabledReason ?? undefined}
+        closeOnClick={closeOnClick}
+        onClick={onClick}
+      >
+        {icon}
+        <span>{children}</span>
+      </Menu.Item>
+      {disabledReason && (
+        <span id={disabledReasonId} className="notes-selection-visually-hidden">
+          {disabledReason}
+        </span>
+      )}
+    </>
   );
+}
+
+interface SelectionActionAvailability {
+  readonly available: boolean;
+  readonly reason: string | null;
+}
+
+const SELECTION_BUSY_REASON = "Another selection action is in progress.";
+const NO_SELECTION_STATE = null;
+const getNoSelectionState = () => NO_SELECTION_STATE;
+const subscribeNoSelection = () => () => undefined;
+
+function selectionEligibilityAvailability(
+  eligibility: NotesSelectionEligibility
+): SelectionActionAvailability {
+  return eligibility.eligible
+    ? { available: true, reason: null }
+    : { available: false, reason: eligibility.reason };
+}
+
+function selectionDisabledBy(
+  reason: string | null | undefined
+): SelectionActionAvailability {
+  return reason
+    ? { available: false, reason }
+    : { available: true, reason: null };
+}
+
+function combineSelectionAvailability(
+  ...values: readonly SelectionActionAvailability[]
+): SelectionActionAvailability {
+  return values.find((value) => !value.available) ?? {
+    available: true,
+    reason: null
+  };
 }
 
 export function NotesBulletMenu({
@@ -166,7 +248,9 @@ export function NotesBulletMenu({
   onDelete,
   onRetrySave,
   onRestore,
-  onUnarchive
+  onUnarchive,
+  onOpenChange,
+  selectionBridge
 }: NotesBulletMenuProps) {
   const [open, setOpen] = useState(false);
   const [exportView, setExportView] = useState(false);
@@ -184,7 +268,10 @@ export function NotesBulletMenu({
   const moveCommandRef = useRef<HTMLElement>(null);
   const moveSearchRef = useRef<HTMLInputElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
-  const handoffPendingRef = useRef<"note" | "date" | null>(null);
+  const handoffPendingRef = useRef<
+    "note" | "date" | "selection-move" | "selection-tags" | null
+  >(null);
+  const selectionSubmissionRef = useRef(false);
   const moveRequestRef = useRef(0);
   const moveListboxId = useId();
   const normalizedMoveQuery = moveQuery.trim().toLocaleLowerCase();
@@ -195,6 +282,127 @@ export function NotesBulletMenu({
       ),
     [availableMoveDestinations, normalizedMoveQuery]
   );
+  const selectionState = useSyncExternalStore(
+    selectionBridge?.subscribe ?? subscribeNoSelection,
+    selectionBridge?.getSnapshot ?? getNoSelectionState,
+    selectionBridge?.getSnapshot ?? getNoSelectionState
+  );
+  const selectionBusyAvailability = selectionDisabledBy(
+    selectionState?.busy || actionBusy ? SELECTION_BUSY_REASON : null
+  );
+  const selectionMutationAvailability = selectionDisabledBy(
+    selectionState?.mutationDisabledReason
+  );
+  const selectionAvailability: Record<
+    NotesSelectionActionIntent,
+    SelectionActionAvailability
+  > | null = selectionState
+    ? {
+        toggleComplete: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability
+        ),
+        moveTo: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.moveTo
+          )
+        ),
+        moveUp: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.moveUp
+          )
+        ),
+        moveDown: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.moveDown
+          )
+        ),
+        indent: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.indent
+          )
+        ),
+        outdent: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.outdent
+          )
+        ),
+        duplicate: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.duplicate
+          )
+        ),
+        tags: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability
+        ),
+        copy: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.copy
+          )
+        ),
+        cut: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.cut
+          )
+        ),
+        delete: combineSelectionAvailability(
+          selectionBusyAvailability,
+          selectionMutationAvailability,
+          selectionEligibilityAvailability(
+            selectionState.snapshot.eligibility.delete
+          )
+        )
+      }
+    : null;
+
+  const invokeSelectionAction = (action: NotesSelectionActionIntent) => {
+    if (
+      !selectionAvailability?.[action].available ||
+      selectionSubmissionRef.current ||
+      !selectionBridge
+    ) {
+      return;
+    }
+    selectionSubmissionRef.current = true;
+    void (async () => {
+      try {
+        await selectionBridge.execute(action);
+      } catch {
+        // The shared semantic router owns user-facing selection errors.
+      } finally {
+        selectionSubmissionRef.current = false;
+      }
+    })();
+  };
+
+  const handoffSelectionChooser = (chooser: "move" | "tags") => {
+    const action = chooser === "move" ? "moveTo" : "tags";
+    if (
+      !selectionAvailability?.[action].available ||
+      selectionSubmissionRef.current
+    ) {
+      return;
+    }
+    selectionSubmissionRef.current = true;
+    handoffPendingRef.current =
+      chooser === "move" ? "selection-move" : "selection-tags";
+  };
 
   useLayoutEffect(() => {
     if (viewFocusTargetRef.current === "back" && exportView) {
@@ -296,6 +504,7 @@ export function NotesBulletMenu({
           setMoveError(null);
           moveRequestRef.current += 1;
         }
+        onOpenChange?.(nextOpen);
       }}
       onOpenChangeComplete={(nextOpen) => {
         if (!nextOpen && handoffPendingRef.current) {
@@ -303,8 +512,13 @@ export function NotesBulletMenu({
           handoffPendingRef.current = null;
           if (handoff === "note") {
             onOpenNote?.();
-          } else {
+          } else if (handoff === "date") {
             onAddDate?.();
+          } else {
+            selectionSubmissionRef.current = false;
+            selectionBridge?.requestChooser(
+              handoff === "selection-move" ? "move" : "tags"
+            );
           }
         }
       }}
@@ -325,7 +539,101 @@ export function NotesBulletMenu({
             className="notes-bullet-menu"
             finalFocus={handoffPendingRef.current ? false : undefined}
           >
-            {mode === "trash" ? (
+            {selectionState && selectionAvailability ? (
+              <>
+                <CommandItem
+                  disabled={!selectionAvailability.toggleComplete.available}
+                  disabledReason={selectionAvailability.toggleComplete.reason}
+                  icon={<Check size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("toggleComplete")}
+                >
+                  {selectionState.snapshot.completion === "all"
+                    ? "Uncomplete"
+                    : "Complete"}
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.moveTo.available}
+                  disabledReason={selectionAvailability.moveTo.reason}
+                  icon={<FolderInput size={15} aria-hidden="true" />}
+                  onClick={() => handoffSelectionChooser("move")}
+                >
+                  Move To
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.moveUp.available}
+                  disabledReason={selectionAvailability.moveUp.reason}
+                  icon={<ArrowUp size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("moveUp")}
+                >
+                  Move up
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.moveDown.available}
+                  disabledReason={selectionAvailability.moveDown.reason}
+                  icon={<ArrowDown size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("moveDown")}
+                >
+                  Move down
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.indent.available}
+                  disabledReason={selectionAvailability.indent.reason}
+                  icon={<IndentIncrease size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("indent")}
+                >
+                  Indent
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.outdent.available}
+                  disabledReason={selectionAvailability.outdent.reason}
+                  icon={<IndentDecrease size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("outdent")}
+                >
+                  Outdent
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.duplicate.available}
+                  disabledReason={selectionAvailability.duplicate.reason}
+                  icon={<CopyPlus size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("duplicate")}
+                >
+                  Duplicate
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.tags.available}
+                  disabledReason={selectionAvailability.tags.reason}
+                  icon={<Tags size={15} aria-hidden="true" />}
+                  onClick={() => handoffSelectionChooser("tags")}
+                >
+                  Tags
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.copy.available}
+                  disabledReason={selectionAvailability.copy.reason}
+                  icon={<Copy size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("copy")}
+                >
+                  Copy
+                </CommandItem>
+                <CommandItem
+                  disabled={!selectionAvailability.cut.available}
+                  disabledReason={selectionAvailability.cut.reason}
+                  icon={<Scissors size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("cut")}
+                >
+                  Cut
+                </CommandItem>
+                <CommandItem
+                  danger
+                  disabled={!selectionAvailability.delete.available}
+                  disabledReason={selectionAvailability.delete.reason}
+                  icon={<Trash2 size={15} aria-hidden="true" />}
+                  onClick={() => invokeSelectionAction("delete")}
+                >
+                  Delete
+                </CommandItem>
+              </>
+            ) : mode === "trash" ? (
               <CommandItem
                 icon={<RotateCcw size={15} aria-hidden="true" />}
                 onClick={onRestore}

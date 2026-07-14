@@ -1,4 +1,11 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -7,8 +14,11 @@ import {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
   type NotesMoveDestination,
-  NotesBulletMenu
+  NotesBulletMenu,
+  type NotesBulletMenuSelectionBridge,
+  type NotesBulletMenuSelectionState
 } from "./NotesBulletMenu";
+import type { NotesSelectionActionSnapshot } from "./notesSelectionActions";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -71,6 +81,79 @@ async function openMenu(user = userEvent.setup()) {
   });
   await user.click(trigger);
   return { menu: await screen.findByRole("menu"), trigger, user };
+}
+
+function eligible(nodeIds: readonly string[] = ["a"]) {
+  return { eligible: true as const, nodeIds };
+}
+
+function selectionSnapshot(
+  overrides: Partial<NotesSelectionActionSnapshot> = {}
+): NotesSelectionActionSnapshot {
+  const nodeIds = ["a"];
+  return {
+    selection: { anchorId: "a", headId: "a" },
+    selectedNodeIds: nodeIds,
+    structuralRootIds: nodeIds,
+    completion: "none",
+    deleteFocusNodeId: "tail",
+    eligibility: {
+      copy: eligible(nodeIds),
+      cut: eligible(nodeIds),
+      delete: eligible(nodeIds),
+      duplicate: eligible(nodeIds),
+      indent: eligible(nodeIds),
+      outdent: eligible(nodeIds),
+      moveUp: {
+        ...eligible(nodeIds),
+        target: { parentId: null, afterId: null, beforeId: "previous" }
+      },
+      moveDown: {
+        ...eligible(nodeIds),
+        target: { parentId: null, afterId: "next" }
+      },
+      moveTo: eligible(nodeIds)
+    },
+    ...overrides
+  };
+}
+
+function createSelectionBridge(
+  initialState: NotesBulletMenuSelectionState = {
+    snapshot: selectionSnapshot()
+  },
+  handlers: {
+    execute?: NotesBulletMenuSelectionBridge["execute"];
+    requestChooser?: NotesBulletMenuSelectionBridge["requestChooser"];
+  } = {}
+) {
+  let state = initialState;
+  const listeners = new Set<() => void>();
+  const execute = vi.fn(handlers.execute ?? (() => undefined));
+  const requestChooser = vi.fn(
+    handlers.requestChooser ?? (() => undefined)
+  );
+  const bridge: NotesBulletMenuSelectionBridge = {
+    getSnapshot: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    execute,
+    requestChooser
+  };
+
+  return {
+    bridge,
+    execute,
+    requestChooser,
+    update(nextState: NotesBulletMenuSelectionState) {
+      state = nextState;
+      act(() => {
+        listeners.forEach((listener) => listener());
+      });
+    }
+  };
 }
 
 describe("NotesBulletMenu", () => {
@@ -530,5 +613,232 @@ describe("NotesBulletMenu", () => {
     expect(
       screen.getByRole("button", { name: "More actions for Project" })
     ).toBeDisabled();
+  });
+
+  it("shows only selected-range commands for a one-row range and uses the aggregate completion label", async () => {
+    const snapshot = selectionSnapshot({ completion: "all" });
+    const selection = createSelectionBridge({ snapshot });
+    render(
+      <NotesBulletMenu
+        {...standardProps()}
+        selectionBridge={selection.bridge}
+      />
+    );
+
+    const { menu } = await openMenu();
+
+    expect(
+      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+    ).toEqual([
+      "Uncomplete",
+      "Move To",
+      "Move up",
+      "Move down",
+      "Indent",
+      "Outdent",
+      "Duplicate",
+      "Tags",
+      "Copy",
+      "Cut",
+      "Delete"
+    ]);
+    expect(within(menu).queryByRole("menuitem", { name: "Star" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Add note" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Add date" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Upload image" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Sort A-Z" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Expand all" })).toBeNull();
+    expect(within(menu).queryByRole("menuitem", { name: "Export subtree" })).toBeNull();
+    expect(within(menu).queryByText(/^Created /)).toBeNull();
+  });
+
+  it("uses snapshot eligibility reasons as accessible disabled explanations", async () => {
+    const moveReason = "The selection is already first among its siblings.";
+    const cutReason = "Cut would remove supporting notes. Use Move To instead.";
+    const base = selectionSnapshot();
+    const selection = createSelectionBridge({
+      snapshot: {
+        ...base,
+        eligibility: {
+          ...base.eligibility,
+          moveUp: { eligible: false, reason: moveReason },
+          cut: { eligible: false, reason: cutReason }
+        }
+      }
+    });
+    render(
+      <NotesBulletMenu
+        label="Project"
+        selectionBridge={selection.bridge}
+      />
+    );
+
+    const { menu } = await openMenu();
+    const moveUp = within(menu).getByRole("menuitem", { name: "Move up" });
+    const cut = within(menu).getByRole("menuitem", { name: "Cut" });
+
+    expect(moveUp).toHaveAttribute("aria-disabled", "true");
+    expect(moveUp).toHaveAccessibleDescription(moveReason);
+    expect(cut).toHaveAttribute("aria-disabled", "true");
+    expect(cut).toHaveAccessibleDescription(cutReason);
+  });
+
+  it("maps every direct selected-range command to the stable bridge executor", async () => {
+    const selection = createSelectionBridge();
+    const user = userEvent.setup();
+    render(
+      <NotesBulletMenu
+        label="Project"
+        selectionBridge={selection.bridge}
+      />
+    );
+    const commands = [
+      ["Complete", "toggleComplete"],
+      ["Move up", "moveUp"],
+      ["Move down", "moveDown"],
+      ["Indent", "indent"],
+      ["Outdent", "outdent"],
+      ["Duplicate", "duplicate"],
+      ["Copy", "copy"],
+      ["Cut", "cut"],
+      ["Delete", "delete"]
+    ] as const;
+
+    for (const [label, action] of commands) {
+      const { menu } = await openMenu(user);
+      await user.click(within(menu).getByRole("menuitem", { name: label }));
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      expect(selection.execute).toHaveBeenLastCalledWith(action);
+    }
+    expect(selection.execute).toHaveBeenCalledTimes(commands.length);
+  });
+
+  it.each([
+    ["Move To", "move"],
+    ["Tags", "tags"]
+  ] as const)(
+    "closes before handing %s focus to the parent chooser",
+    async (label, chooser) => {
+      const onOpenChange = vi.fn();
+      const chooserFocus = vi.fn(() => {
+        expect(screen.getByRole("menu")).toHaveAttribute("data-closed");
+        screen.getByRole("button", { name: "Chooser focus" }).focus();
+      });
+      const selection = createSelectionBridge(undefined, {
+        requestChooser: chooserFocus
+      });
+      const user = userEvent.setup();
+      render(
+        <>
+          <NotesBulletMenu
+            label="Project"
+            selectionBridge={selection.bridge}
+            onOpenChange={onOpenChange}
+          />
+          <button type="button">Chooser focus</button>
+        </>
+      );
+
+      const { menu } = await openMenu(user);
+      await user.click(within(menu).getByRole("menuitem", { name: label }));
+
+      await waitFor(() =>
+        expect(selection.requestChooser).toHaveBeenCalledWith(chooser)
+      );
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+      expect(selection.execute).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Chooser focus" })).toHaveFocus();
+    }
+  );
+
+  it("updates selected-range presentation through one stable bridge without rerendering its parent", async () => {
+    const selection = createSelectionBridge();
+    const bridgeIdentity = selection.bridge;
+    const parentRender = vi.fn();
+    const moveReason = "The selection is already first among its siblings.";
+    const updatedBase = selectionSnapshot({ completion: "all" });
+    const updatedSnapshot: NotesSelectionActionSnapshot = {
+      ...updatedBase,
+      eligibility: {
+        ...updatedBase.eligibility,
+        moveUp: { eligible: false, reason: moveReason }
+      }
+    };
+    function StableBridgeParent() {
+      parentRender();
+      return (
+        <NotesBulletMenu
+          label="Project"
+          selectionBridge={selection.bridge}
+        />
+      );
+    }
+
+    render(<StableBridgeParent />);
+    const { menu } = await openMenu();
+    expect(within(menu).getByRole("menuitem", { name: "Complete" }))
+      .not.toHaveAttribute("aria-disabled", "true");
+
+    selection.update({ snapshot: updatedSnapshot });
+
+    expect(selection.bridge).toBe(bridgeIdentity);
+    expect(parentRender).toHaveBeenCalledOnce();
+    expect(within(menu).getByRole("menuitem", { name: "Uncomplete" }))
+      .toBeVisible();
+    expect(within(menu).getByRole("menuitem", { name: "Move up" }))
+      .toHaveAccessibleDescription(moveReason);
+
+    selection.update({ snapshot: updatedSnapshot, busy: true });
+
+    expect(
+      within(menu)
+        .getAllByRole("menuitem")
+        .every((item) => item.getAttribute("aria-disabled") === "true")
+    ).toBe(true);
+    expect(parentRender).toHaveBeenCalledOnce();
+  });
+
+  it("blocks selected-range activation while externally busy", async () => {
+    const selection = createSelectionBridge({
+      snapshot: selectionSnapshot(),
+      busy: true
+    });
+    render(
+      <NotesBulletMenu
+        label="Project"
+        selectionBridge={selection.bridge}
+      />
+    );
+
+    const { menu } = await openMenu();
+    const items = within(menu).getAllByRole("menuitem");
+    expect(items).toHaveLength(11);
+    expect(items.every((item) => item.getAttribute("aria-disabled") === "true"))
+      .toBe(true);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Complete" }));
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Move To" }));
+    expect(selection.execute).not.toHaveBeenCalled();
+    expect(selection.requestChooser).not.toHaveBeenCalled();
+  });
+
+  it("submits a direct selected-range command once before the busy snapshot can settle", async () => {
+    let resolveAction!: () => void;
+    const selection = createSelectionBridge(undefined, {
+      execute: () => new Promise<void>((resolve) => { resolveAction = resolve; })
+    });
+    render(
+      <NotesBulletMenu
+        label="Project"
+        selectionBridge={selection.bridge}
+      />
+    );
+
+    const { menu } = await openMenu();
+    const complete = within(menu).getByRole("menuitem", { name: "Complete" });
+    fireEvent.click(complete);
+    fireEvent.click(complete);
+
+    expect(selection.execute).toHaveBeenCalledOnce();
+    resolveAction();
   });
 });
