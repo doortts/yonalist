@@ -159,6 +159,7 @@ type PendingPaneSelectionDragPreparation = {
 };
 type PendingPaneSelectionDragSession = Readonly<{
   kind: "selected-pending";
+  attemptEpoch: number;
   activeId: NoteId;
   selectedNodeIds: readonly NoteId[];
   selectionRevision: number;
@@ -450,6 +451,7 @@ export function NotesOutlinePane() {
   const selectionDragContextRequestRef = useRef(0);
   const selectionDragContextRef =
     useRef<OutlineSelectionDragFrozenContext | null>(null);
+  const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
@@ -1815,6 +1817,7 @@ export function NotesOutlinePane() {
   }, [state.nodesById]);
 
   const handleDragStart = (event: DragStartEvent) => {
+    const attemptEpoch = ++outlineDragAttemptEpochRef.current;
     const id = String(event.active.id);
     dragEndProjection.current = null;
     setDropPreview(null);
@@ -1974,6 +1977,7 @@ export function NotesOutlinePane() {
         );
         outlineDragSessionRef.current = Object.freeze({
           kind: "selected-pending",
+          attemptEpoch,
           activeId: id,
           selectedNodeIds,
           selectionRevision: live.revision,
@@ -2045,6 +2049,9 @@ export function NotesOutlinePane() {
       const overId = String(event.over.id);
       const horizontalOffset = event.delta.x;
       void droppedSession.preparation.promise.then(() => {
+        if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
+          return;
+        }
         const readySession = promotePendingSelectionDrag(droppedSession);
         if (readySession.kind !== "selected-ready") {
           return;
@@ -2056,6 +2063,9 @@ export function NotesOutlinePane() {
           outlineIndentPx
         );
         if (lateProjection.kind !== "selected-move") {
+          return;
+        }
+        if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
           return;
         }
         void executeSelectionCommand(
@@ -2252,6 +2262,7 @@ export function NotesOutlinePane() {
             onDragMove={handleDragMove}
             onDragOver={handleDragMove}
             onDragCancel={() => {
+              outlineDragAttemptEpochRef.current += 1;
               outlineDragSessionRef.current = null;
               setActiveDragId(null);
               setDropPreview(null);

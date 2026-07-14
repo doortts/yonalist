@@ -442,6 +442,35 @@ function dispatchClipboardEvent(
   return { event, setData, values };
 }
 
+function installNavigatorClipboard(clipboard: {
+  write?: (items: ClipboardItem[]) => Promise<void>;
+  writeText?: (text: string) => Promise<void>;
+}): () => void {
+  const original = Object.getOwnPropertyDescriptor(
+    window.navigator,
+    "clipboard"
+  );
+  Object.defineProperty(window.navigator, "clipboard", {
+    configurable: true,
+    value: clipboard
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(window.navigator, "clipboard", original);
+    } else {
+      Reflect.deleteProperty(window.navigator, "clipboard");
+    }
+  };
+}
+
+function selectedOutlineIds(): string[] {
+  return Array.from(
+    document.querySelectorAll<HTMLElement>(
+      '[data-outline-id][data-range-selected="true"]'
+    )
+  ).map((row) => row.dataset.outlineId ?? "");
+}
+
 function mockOutlineRowRects() {
   const rectangle = (top: number, left = 0, width = 640, height = 28) =>
     ({
@@ -2634,6 +2663,101 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
+    it("duplicates a toolbar-selected range once and selects the returned copied roots", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      notesStoreMock.applyBatch.mockImplementationOnce(
+        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+          if (input.op !== "duplicate") {
+            throw new Error("Expected a duplicate batch");
+          }
+          confirmedNodes = [
+            ...confirmedNodes,
+            node({ id: "copy-a", sortKey: 4, title: "Alpha copy" }),
+            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" })
+          ];
+          return {
+            workspace: workspace(confirmedNodes),
+            historyEntryId: null,
+            canUndo: false,
+            canRedo: false,
+            duplicatedRootIds: ["copy-a", "copy-b"]
+          };
+        }
+      );
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Duplicate" })
+      );
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "duplicate",
+        nodeIds: ["a", "b"]
+      });
+      expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
+      );
+      expect(
+        screen.getByRole("toolbar", {
+          name: "Actions for 2 selected notes"
+        })
+      ).toBeVisible();
+    });
+
+    it("routes Cmd+Shift+D through one selected duplicate batch and selects the copies", async () => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+      configureRepository(threeRoots());
+      notesStoreMock.applyBatch.mockImplementationOnce(
+        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+          if (input.op !== "duplicate") {
+            throw new Error("Expected a duplicate batch");
+          }
+          confirmedNodes = [
+            ...confirmedNodes,
+            node({ id: "copy-a", sortKey: 4, title: "Alpha copy" }),
+            node({ id: "copy-b", sortKey: 5, title: "Bravo copy" })
+          ];
+          return {
+            workspace: workspace(confirmedNodes),
+            historyEntryId: null,
+            canUndo: false,
+            canRedo: false,
+            duplicatedRootIds: ["copy-a", "copy-b"]
+          };
+        }
+      );
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      alpha.focus();
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+
+      expect(
+        fireEvent.keyDown(alpha, {
+          key: "D",
+          metaKey: true,
+          shiftKey: true
+        })
+      ).toBe(false);
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "duplicate",
+        nodeIds: ["a", "b"]
+      });
+      expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
+      );
+    });
+
     it("hydrates full Active authority without hiding the materializable toolbar", async () => {
       const user = userEvent.setup();
       const activeNodes = [
@@ -2875,6 +2999,141 @@ describe("Notes workspace", () => {
       expect(paneCopy.values.get("text/plain")).toBe("- Alpha\n- Bravo");
     });
 
+    it("falls back to plain text for toolbar More Copy and preserves the selected range", async () => {
+      const user = userEvent.setup();
+      const write = vi.fn(async () => {
+        throw new Error("rich clipboard denied");
+      });
+      const writeText = vi.fn(async () => undefined);
+      const restoreClipboard = installNavigatorClipboard({ write, writeText });
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(_items: Record<string, Blob>) {}
+        }
+      );
+      try {
+        configureRepository(threeRoots());
+        renderNotesWorkspace();
+        const alpha = await findTitleInput("Alpha");
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+        const toolbar = screen.getByRole("toolbar", {
+          name: "Actions for 2 selected notes"
+        });
+
+        await user.click(
+          within(toolbar).getByRole("button", { name: "More actions" })
+        );
+        await user.click(
+          screen.getByRole("menuitem", { name: "Copy" })
+        );
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+        expect(write).toHaveBeenCalledOnce();
+        expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
+        expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+        expect(selectedOutlineIds()).toEqual(["a", "b"]);
+        expect(await within(toolbar).findByText("Copied.")).toBeVisible();
+      } finally {
+        restoreClipboard();
+      }
+    });
+
+    it("falls back to plain text before toolbar More Cut deletes the selection", async () => {
+      const user = userEvent.setup();
+      const write = vi.fn(async () => {
+        throw new Error("rich clipboard denied");
+      });
+      const plainWrite = deferred<void>();
+      const writeText = vi.fn(() => plainWrite.promise);
+      const restoreClipboard = installNavigatorClipboard({ write, writeText });
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(_items: Record<string, Blob>) {}
+        }
+      );
+      try {
+        configureRepository(threeRoots());
+        renderNotesWorkspace();
+        const alpha = await findTitleInput("Alpha");
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+        const toolbar = screen.getByRole("toolbar", {
+          name: "Actions for 2 selected notes"
+        });
+
+        await user.click(
+          within(toolbar).getByRole("button", { name: "More actions" })
+        );
+        await user.click(screen.getByRole("menuitem", { name: "Cut" }));
+
+        await waitFor(() => expect(writeText).toHaveBeenCalledOnce());
+        expect(write).toHaveBeenCalledOnce();
+        expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
+        expect(write.mock.invocationCallOrder[0]).toBeLessThan(
+          writeText.mock.invocationCallOrder[0]
+        );
+        expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+        await act(async () => plainWrite.resolve());
+        await waitFor(() =>
+          expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+        );
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+          op: "delete",
+          nodeIds: ["a", "b"]
+        });
+        expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(
+          notesStoreMock.applyBatch.mock.invocationCallOrder[0]
+        );
+        await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
+      } finally {
+        restoreClipboard();
+      }
+    });
+
+    it("preserves the selected range when toolbar More Cut cannot write the clipboard", async () => {
+      const user = userEvent.setup();
+      const write = vi.fn(async () => {
+        throw new Error("rich clipboard denied");
+      });
+      const writeText = vi.fn(async () => {
+        throw new Error("plain clipboard denied");
+      });
+      const restoreClipboard = installNavigatorClipboard({ write, writeText });
+      vi.stubGlobal(
+        "ClipboardItem",
+        class {
+          constructor(_items: Record<string, Blob>) {}
+        }
+      );
+      try {
+        configureRepository(threeRoots());
+        renderNotesWorkspace();
+        const alpha = await findTitleInput("Alpha");
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+        const toolbar = screen.getByRole("toolbar", {
+          name: "Actions for 2 selected notes"
+        });
+
+        await user.click(
+          within(toolbar).getByRole("button", { name: "More actions" })
+        );
+        await user.click(screen.getByRole("menuitem", { name: "Cut" }));
+
+        expect(
+          await within(toolbar).findByText(
+            "The clipboard could not be written."
+          )
+        ).toBeVisible();
+        expect(write).toHaveBeenCalledOnce();
+        expect(writeText).toHaveBeenCalledOnce();
+        expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+        expect(selectedOutlineIds()).toEqual(["a", "b"]);
+      } finally {
+        restoreClipboard();
+      }
+    });
+
     it("reuses hydrated clipboard authority across pane state and draft lifecycle refreshes", async () => {
       configureRepository(threeRoots());
       renderNotesWorkspace();
@@ -3018,7 +3277,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
-    it("promotes a selected drag that starts while its frozen authority is hydrating", async () => {
+    it("executes only the latest selected drop while frozen authority is hydrating", async () => {
       const user = userEvent.setup();
       const activeNodes = threeRoots();
       const hydration = deferred<NotesWorkspace>();
@@ -3048,6 +3307,9 @@ describe("Notes workspace", () => {
           ).length
         ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
+      const activeLoadsBeforeFirstDrag = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
       const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
       const charlie = screen.getByRole("button", {
         name: "Zoom into Charlie"
@@ -3063,6 +3325,11 @@ describe("Notes workspace", () => {
         target: charlie,
         coords: { clientX: 14, clientY: 70 }
       });
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        ).length
+      ).toBe(activeLoadsBeforeFirstDrag + 1);
       expect(bravo.closest(".notes-node")).toHaveAttribute(
         "data-dragging",
         "true"
@@ -3078,6 +3345,31 @@ describe("Notes workspace", () => {
         coords: { clientX: 14, clientY: 74 }
       });
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      await act(async () => undefined);
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+      await user.pointer({
+        target: alpha,
+        coords: { clientX: 14, clientY: 14 }
+      });
+      expect(bravo.closest(".notes-node")).toHaveAttribute(
+        "data-dragging",
+        "true"
+      );
+      await user.pointer({
+        target: alpha,
+        coords: { clientX: 14, clientY: 10 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: alpha,
+        coords: { clientX: 14, clientY: 10 }
+      });
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
 
       await act(async () => {
         hydration.resolve(workspace(activeNodes));
@@ -3089,8 +3381,8 @@ describe("Notes workspace", () => {
         op: "move",
         nodeIds: ["b"],
         parentId: null,
-        afterId: "c",
-        beforeId: null
+        afterId: null,
+        beforeId: "a"
       });
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
@@ -3409,6 +3701,36 @@ describe("Notes workspace", () => {
       });
     });
 
+    it("adds a canonical tag payload to every row selected from the toolbar", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit tags" });
+      await user.type(
+        within(dialog).getByRole("combobox", { name: "Tag to add" }),
+        "#Straße{Enter}"
+      );
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "addTag",
+        nodeIds: ["a", "b"],
+        tag: {
+          prefix: "#",
+          normalizedTag: "strasse",
+          displayTag: "Straße"
+        }
+      });
+      expect(selectedOutlineIds()).toEqual(["a", "b"]);
+    });
+
     it("publishes chooser preparation busy to every selected-row action surface", async () => {
       const user = userEvent.setup();
       configureRepository(threeRoots());
@@ -3661,6 +3983,91 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
+    it.each([
+      {
+        label: "Ctrl+Shift+ArrowUp",
+        platform: "Win32",
+        modifier: { ctrlKey: true },
+        key: "ArrowUp",
+        expected: {
+          op: "move",
+          nodeIds: ["b", "c"],
+          parentId: null,
+          afterId: null,
+          beforeId: "a"
+        }
+      },
+      {
+        label: "Cmd+Shift+ArrowUp",
+        platform: "MacIntel",
+        modifier: { metaKey: true },
+        key: "ArrowUp",
+        expected: {
+          op: "move",
+          nodeIds: ["b", "c"],
+          parentId: null,
+          afterId: null,
+          beforeId: "a"
+        }
+      },
+      {
+        label: "Ctrl+Shift+ArrowDown",
+        platform: "Win32",
+        modifier: { ctrlKey: true },
+        key: "ArrowDown",
+        expected: {
+          op: "move",
+          nodeIds: ["b", "c"],
+          parentId: null,
+          afterId: "d",
+          beforeId: null
+        }
+      },
+      {
+        label: "Cmd+Shift+ArrowDown",
+        platform: "MacIntel",
+        modifier: { metaKey: true },
+        key: "ArrowDown",
+        expected: {
+          op: "move",
+          nodeIds: ["b", "c"],
+          parentId: null,
+          afterId: "d",
+          beforeId: null
+        }
+      }
+    ])("routes $label as one exact selection move", async ({
+      platform,
+      modifier,
+      key,
+      expected
+    }) => {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+      configureRepository([
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
+        node({ id: "d", sortKey: 4, title: "Delta" })
+      ]);
+      renderNotesWorkspace();
+      const bravo = await findTitleInput("Bravo");
+      bravo.focus();
+      fireEvent.keyDown(bravo, { key: "ArrowDown", shiftKey: true });
+      expect(selectedOutlineIds()).toEqual(["b", "c"]);
+
+      expect(
+        fireEvent.keyDown(bravo, { key, ...modifier, shiftKey: true })
+      ).toBe(false);
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
+        "/vault",
+        expected
+      );
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(selectedOutlineIds()).toEqual(["b", "c"]);
+    });
+
     it("soft-deletes a keyboard-selected range as one batch", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
@@ -3808,7 +4215,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
 
-    it("surfaces a paused notice when a selection batch is dropped by a failed draft flush", async () => {
+    it("preserves selection and focus when a batch is dropped by a failed draft flush", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
       notesStoreMock.updateNode.mockRejectedValue(new Error("save failed"));
@@ -3820,6 +4227,7 @@ describe("Notes workspace", () => {
       fireEvent.change(title, { target: { value: "Alpha edited" } });
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
       fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
       await waitFor(() =>
@@ -3830,6 +4238,52 @@ describe("Notes workspace", () => {
       // ...and the shared semantic router explains the pause instead of
       // silently swallowing it.
       await screen.findByText(/Save pending changes before continuing/i);
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
+      expect(title).toHaveFocus();
+
+      // Settle the failed draft before unmount so its shutdown retry cannot
+      // write "Alpha edited" into the next test's shared repository fixture.
+      const callsBeforeRetry = notesStoreMock.updateNode.mock.calls.length;
+      notesStoreMock.updateNode.mockImplementation(
+        async (_vaultRoot: string, input: UpdateNoteNodeInput) => {
+          confirmedNodes = confirmedNodes.map((current) =>
+            current.id === input.id
+              ? { ...current, title: input.title, note: input.note }
+              : current
+          );
+          return workspace(confirmedNodes);
+        }
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(
+          callsBeforeRetry + 1
+        )
+      );
+      await waitFor(() =>
+        expect(
+          screen.queryByText(/editing commands are paused/i)
+        ).toBeNull()
+      );
+    });
+
+    it("preserves selection and focus when applyBatch rejects", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      notesStoreMock.applyBatch.mockRejectedValueOnce(new Error("batch failed"));
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      title.focus();
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      expect(selectedOutlineIds()).toEqual(["a", "b"]);
+
+      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(await screen.findByText(/couldn't be completed/i)).toBeVisible();
+      expect(selectedOutlineIds()).toEqual(["a", "b"]);
+      expect(title).toHaveFocus();
+      expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
   });
 
