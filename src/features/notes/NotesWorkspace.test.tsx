@@ -4127,7 +4127,7 @@ describe("Notes workspace", () => {
       /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row \.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
     );
     expect(notesStyles).toMatch(
-      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-node\[data-selected="true"\] \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:hover \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header:focus-within \.notes-bullet-menu-trigger,[\s\S]*\.notes-page-header\[data-selected="true"\] \.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
+      /@media \(hover:\s*hover\) and \(pointer:\s*fine\)\s*{[\s\S]*\.notes-node-main:hover\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-node-main:focus-within\s*>\s*\.notes-node-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:hover\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-page-title-row:focus-within\s*>\s*\.notes-page-menu-slot\s+\.notes-bullet-menu-trigger,[\s\S]*\.notes-bullet-menu-trigger:focus-visible,[\s\S]*\.notes-bullet-menu-trigger\[data-popup-open\]\s*{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s
     );
     expect(notesStyles).toMatch(
       /@media \(hover:\s*none\), \(pointer:\s*coarse\)\s*{[\s\S]*\.notes-bullet-menu-trigger,[\s\S]*\.notes-child-composer-button\s*{[^}]*opacity:\s*0\.68;[^}]*pointer-events:\s*auto;[^}]*}[\s\S]*\.notes-bullet-menu-trigger:disabled,[\s\S]*\.notes-child-composer-button:disabled\s*{[^}]*opacity:\s*0\.34;/s
@@ -4179,6 +4179,21 @@ describe("Notes workspace", () => {
     );
     expect(notesStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.notes-node\s*{[^}]*transition:\s*none !important;/s
+    );
+  });
+
+  it("shows only the highest-priority desktop note menu trigger", () => {
+    expect(notesStyles).not.toContain(
+      '.notes-node[data-selected="true"] .notes-bullet-menu-trigger'
+    );
+    expect(notesStyles).not.toContain(
+      '.notes-page-header[data-selected="true"] .notes-bullet-menu-trigger'
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s+\.notes-bullet-menu-trigger:not\(\[data-popup-open\]\)\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-outline:not\(\s*:has\(\.notes-bullet-menu-trigger\[data-popup-open\]\)\s*\):has\(\s*\.notes-node-main:hover,\s*\.notes-page-title-row:hover\s*\)\s+:is\(\.notes-node-main,\s*\.notes-page-title-row\):not\(:hover\)\s+\.notes-bullet-menu-trigger\s*{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s
     );
   });
 

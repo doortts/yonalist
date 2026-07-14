@@ -1654,16 +1654,37 @@ button.notes-date-token:hover {
     pointer-events: none;
   }
 
-  .notes-node-main:hover .notes-bullet-menu-trigger,
-  .notes-node-main:focus-within .notes-bullet-menu-trigger,
-  .notes-node[data-selected="true"] .notes-bullet-menu-trigger,
-  .notes-page-header:hover .notes-bullet-menu-trigger,
-  .notes-page-header:focus-within .notes-bullet-menu-trigger,
-  .notes-page-header[data-selected="true"] .notes-bullet-menu-trigger,
+  .notes-node-main:hover
+    > .notes-node-menu-slot
+    .notes-bullet-menu-trigger,
+  .notes-node-main:focus-within
+    > .notes-node-menu-slot
+    .notes-bullet-menu-trigger,
+  .notes-page-title-row:hover
+    > .notes-page-menu-slot
+    .notes-bullet-menu-trigger,
+  .notes-page-title-row:focus-within
+    > .notes-page-menu-slot
+    .notes-bullet-menu-trigger,
   .notes-bullet-menu-trigger:focus-visible,
   .notes-bullet-menu-trigger[data-popup-open] {
     opacity: 1;
     pointer-events: auto;
+  }
+
+  .notes-outline:has(.notes-bullet-menu-trigger[data-popup-open])
+    .notes-bullet-menu-trigger:not([data-popup-open]) {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .notes-outline:not(
+      :has(.notes-bullet-menu-trigger[data-popup-open])
+    ):has(.notes-node-main:hover, .notes-page-title-row:hover)
+    :is(.notes-node-main, .notes-page-title-row):not(:hover)
+    .notes-bullet-menu-trigger {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .notes-child-composer[data-has-children="true"]
