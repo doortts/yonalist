@@ -78,6 +78,7 @@ import {
   type NotesWorkspaceSessionRecord
 } from "./notesDraftEngine";
 import {
+  applyBatchCommand,
   commitPreparedMoveCommand,
   createChildCommand,
   createRootCommand,
@@ -94,6 +95,7 @@ import {
   toggleCompleteCommand,
   toggleStarCommand,
   updateNodeCommand,
+  type NotesBatchOp,
   type NotesCommandContext
 } from "./notesCommands";
 
@@ -189,6 +191,14 @@ export interface NotesWorkspaceActions {
     input: MoveNoteNodeInput,
     focusNodeId?: NoteId | null,
     options?: NotesWorkspaceCompoundOptions
+  ): Promise<NotesWorkspaceCommandOutcome>;
+  // Apply one structural op to a whole multi-node selection (plan Phase 4.1) as
+  // a single history entry. `options.focusNodeId` lets a batch delete hand focus
+  // to a surviving neighbor. Stable identity.
+  applyBatch(
+    nodeIds: readonly NoteId[],
+    op: NotesBatchOp,
+    options?: { focusNodeId?: NoteId | null }
   ): Promise<NotesWorkspaceCommandOutcome>;
   toggleComplete(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
   toggleCollapsed(nodeId: NoteId): Promise<NotesWorkspaceCommandOutcome>;
@@ -2669,6 +2679,21 @@ export function useNotesWorkspace({
     [commandCtx]
   );
 
+  const applyBatch = useCallback(
+    (
+      nodeIds: readonly NoteId[],
+      op: NotesBatchOp,
+      options?: { focusNodeId?: NoteId | null }
+    ) =>
+      applyBatchCommand(
+        commandCtx,
+        nodeIds,
+        op,
+        focusedUiUpdate(options?.focusNodeId)
+      ),
+    [commandCtx]
+  );
+
   const toggleComplete = useCallback(
     (nodeId: NoteId) => toggleCompleteCommand(commandCtx, nodeId),
     [commandCtx]
@@ -3361,6 +3386,7 @@ export function useNotesWorkspace({
           ? Promise.resolve(false)
           : flushAllDraftsBeforeStructural(),
       moveNode: gateOutcome(moveNode),
+      applyBatch: gateOutcome(applyBatch),
       toggleComplete: gateOutcome(toggleComplete),
       toggleCollapsed: gateOutcome(toggleCollapsed),
       expandAll: gateOutcome(expandAll),
@@ -3409,6 +3435,7 @@ export function useNotesWorkspace({
     flushNodeDraft,
     flushAllDraftsBeforeStructural,
     moveNode,
+    applyBatch,
     toggleComplete,
     toggleCollapsed,
     expandAll,

@@ -864,3 +864,203 @@ describe("resolveOutlineKey selection", () => {
     ).toBeNull();
   });
 });
+
+// A flat sibling tree so a range can span several siblings that share one
+// parent — the common batch shape. Visible order: root-a, c1, c2, c3, c4, root-b.
+const batchTree = normalizeWorkspace(
+  workspace([
+    node({ id: "root-a", sortKey: 1 }),
+    node({ id: "c1", parentId: "root-a", sortKey: 1 }),
+    node({ id: "c2", parentId: "root-a", sortKey: 2 }),
+    node({ id: "c3", parentId: "root-a", sortKey: 3 }),
+    node({ id: "c4", parentId: "root-a", sortKey: 4 }),
+    node({ id: "root-b", sortKey: 2 })
+  ])
+);
+const batchVisibleIds = ["root-a", "c1", "c2", "c3", "c4", "root-b"];
+
+function batchInput(
+  overrides: Partial<ResolveOutlineKeyInput> = {}
+): ResolveOutlineKeyInput {
+  return input({
+    workspace: batchTree,
+    visibleNodeIds: batchVisibleIds,
+    nodeId: "c2",
+    title: "c2",
+    selection: { anchorId: "c2", headId: "c4" },
+    ...overrides
+  });
+}
+
+describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
+  it("Cmd/Ctrl+Enter completes the whole selection when the focused row is open", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({ key: "Enter", ctrlKey: true, selectionStart: 2, selectionEnd: 2 })
+      )
+    ).toEqual({
+      type: "batchComplete",
+      nodeIds: ["c2", "c3", "c4"],
+      completed: true
+    });
+  });
+
+  it("Cmd/Ctrl+Enter uncompletes the whole selection when the focused row is done", () => {
+    const withDone = normalizeWorkspace(
+      workspace([
+        node({ id: "root-a", sortKey: 1 }),
+        node({
+          id: "c2",
+          parentId: "root-a",
+          sortKey: 2,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({ id: "c3", parentId: "root-a", sortKey: 3 }),
+        node({ id: "c4", parentId: "root-a", sortKey: 4 })
+      ])
+    );
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Enter",
+          ctrlKey: true,
+          workspace: withDone,
+          visibleNodeIds: ["root-a", "c2", "c3", "c4"]
+        })
+      )
+    ).toEqual({
+      type: "batchComplete",
+      nodeIds: ["c2", "c3", "c4"],
+      completed: false
+    });
+  });
+
+  it("Cmd/Ctrl+Shift+Backspace deletes the whole selection and focuses the next row", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({ key: "Backspace", ctrlKey: true, shiftKey: true })
+      )
+    ).toEqual({
+      type: "batchDelete",
+      nodeIds: ["c2", "c3", "c4"],
+      focusNodeId: "root-b"
+    });
+  });
+
+  it("batch delete falls back to the row before the range when nothing follows", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Backspace",
+          ctrlKey: true,
+          shiftKey: true,
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "root-b" }
+        })
+      )
+    ).toEqual({
+      type: "batchDelete",
+      nodeIds: ["root-a", "c1", "c2", "c3", "c4", "root-b"],
+      focusNodeId: null
+    });
+  });
+
+  it("Tab indents the whole selection under the first non-selected visible sibling", () => {
+    expect(
+      resolveOutlineKey(batchInput({ key: "Tab" }))
+    ).toEqual({ type: "batchIndent", nodeIds: ["c2", "c3", "c4"] });
+  });
+
+  it("Tab is a no-op when every child of the parent is selected", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          nodeId: "c1",
+          selection: { anchorId: "c1", headId: "c4" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("Tab refuses to indent the selection under a hidden completed sibling (0.3)", () => {
+    const withHiddenDone = normalizeWorkspace(
+      workspace([
+        node({ id: "a", sortKey: 1 }),
+        node({
+          id: "done",
+          sortKey: 2,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({ id: "s1", sortKey: 3 }),
+        node({ id: "s2", sortKey: 4 })
+      ])
+    );
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          nodeId: "s1",
+          title: "s1",
+          workspace: withHiddenDone,
+          visibleNodeIds: ["a", "s1", "s2"],
+          selection: { anchorId: "s1", headId: "s2" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("Shift+Tab outdents the whole selection", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "c1",
+          selection: { anchorId: "c1", headId: "c3" }
+        })
+      )
+    ).toEqual({ type: "batchOutdent", nodeIds: ["c1", "c2", "c3"] });
+  });
+
+  it("Shift+Tab refuses to outdent the zoom root's direct children out of the zoom (0.3)", () => {
+    const zoomed = { ...batchTree, zoomRootId: "root-a" };
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          shiftKey: true,
+          workspace: zoomed,
+          visibleNodeIds: ["c1", "c2", "c3", "c4"],
+          nodeId: "c1",
+          selection: { anchorId: "c1", headId: "c3" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("resolves nothing to batch when the range endpoints are not both visible", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Enter",
+          ctrlKey: true,
+          selection: { anchorId: "c2", headId: "not-visible" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("keeps single-node behavior when there is no selection", () => {
+    expect(
+      resolveOutlineKey(batchInput({ key: "Enter", ctrlKey: true, selection: null }))
+    ).toEqual({ type: "toggleComplete" });
+    expect(
+      resolveOutlineKey(batchInput({ key: "Tab", selection: null }))
+    ).toEqual({
+      type: "move",
+      input: { id: "c2", parentId: "c1", afterId: null },
+      focusNodeId: "c2"
+    });
+  });
+});

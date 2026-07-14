@@ -117,6 +117,7 @@ function repository(nodes: NoteNode[]): NotesStore {
     updateNode: empty,
     splitNode: empty,
     moveNode: empty,
+    applyBatch: empty,
     toggleComplete: empty,
     toggleCollapsed: empty,
     toggleStar: empty,

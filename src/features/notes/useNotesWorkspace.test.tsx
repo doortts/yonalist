@@ -112,6 +112,7 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     updateNode: empty,
     splitNode: empty,
     moveNode: empty,
+    applyBatch: empty,
     toggleComplete: empty,
     toggleCollapsed: empty,
     toggleStar: empty,
@@ -7636,6 +7637,21 @@ describe("useNotesWorkspace multi-node selection", () => {
     });
   }
 
+  function threeSiblings(completedAt: string | null = null): NoteNode[] {
+    return [
+      node({ id: "a", sortKey: 1, completedAt }),
+      node({ id: "b", sortKey: 2, completedAt }),
+      node({ id: "c", sortKey: 3, completedAt })
+    ];
+  }
+
+  function threeNodeStore(overrides: Partial<NotesStore> = {}): NotesStore {
+    return repository({
+      loadWorkspace: vi.fn().mockResolvedValue(workspace(threeSiblings())),
+      ...overrides
+    });
+  }
+
   async function withSelectedRange(store: NotesStore = twoNodeStore()) {
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -7722,5 +7738,158 @@ describe("useNotesWorkspace multi-node selection", () => {
       anchorId: "root",
       headId: "second"
     });
+  });
+
+  it("applies a completion batch to the whole selection as a single history entry", async () => {
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("c");
+    });
+
+    let outcome: string | undefined;
+    await act(async () => {
+      outcome = await result.current.actions.applyBatch(["a", "b", "c"], {
+        type: "complete",
+        completed: true
+      });
+    });
+
+    expect(outcome).toBe("committed");
+    expect(applyBatch).toHaveBeenCalledTimes(1);
+    expect(applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      { op: "complete", nodeIds: ["a", "b", "c"], completed: true },
+      historyContext("batch")
+    );
+    // One backend call carrying one history entry id: undo will revert it in one
+    // step.
+    expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
+    // The command's loading dispatch collapses the live selection.
+    expect(result.current.selection).toBeNull();
+  });
+
+  it("reverts an applied batch in a single undo step", async () => {
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const undo = vi.fn().mockResolvedValue({
+      workspace: workspace(threeSiblings()),
+      replayedEntryId: null,
+      canUndo: false,
+      canRedo: true
+    });
+    const store = threeNodeStore({ applyBatch, undo });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("c");
+    });
+    await act(async () => {
+      await result.current.actions.applyBatch(["a", "b", "c"], {
+        type: "complete",
+        completed: true
+      });
+    });
+    expect(result.current.state.nodesById.a.completedAt).not.toBeNull();
+
+    await act(async () => result.current.actions.undo!());
+
+    // A single undo replays the one batch entry, restoring every node at once.
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(result.current.state.nodesById.a.completedAt).toBeNull();
+    expect(result.current.state.nodesById.b.completedAt).toBeNull();
+    expect(result.current.state.nodesById.c.completedAt).toBeNull();
+  });
+
+  it("soft-deletes the whole selection and focuses a surviving neighbor", async () => {
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace([node({ id: "c", sortKey: 3 })]),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+
+    await act(async () => {
+      await result.current.actions.applyBatch(
+        ["a", "b"],
+        { type: "delete" },
+        { focusNodeId: "c" }
+      );
+    });
+
+    expect(applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      { op: "delete", nodeIds: ["a", "b"] },
+      historyContext("batch")
+    );
+    expect(result.current.state.rootIds).toEqual(["c"]);
+    expect(result.current.state).toMatchObject({
+      selectedId: "c",
+      pendingFocusId: "c"
+    });
+  });
+
+  it("skips the batch and reports it when the pre-structural draft flush fails", async () => {
+    const store = threeNodeStore({
+      updateNode: vi.fn().mockRejectedValue(new Error("save failed"))
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    // A dirty draft whose flush fails is the barrier the structural batch must
+    // clear; establish the selection afterward (typing collapses it).
+    act(() =>
+      result.current.actions.updateNodeDraft("a", { title: "typed", note: "" })
+    );
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("c");
+    });
+
+    let outcome: string | undefined;
+    await act(async () => {
+      outcome = await result.current.actions.applyBatch(["a", "b", "c"], {
+        type: "complete",
+        completed: true
+      });
+    });
+
+    // Phase 3.5: the caller learns the command was dropped (so the row surfaces
+    // its "Command paused" notice) and the batch never reached the backend.
+    expect(outcome).toBe("skipped");
+    expect(store.applyBatch).not.toHaveBeenCalled();
   });
 });

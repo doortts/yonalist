@@ -9,6 +9,7 @@ const notesStoreMock = vi.hoisted(() => ({
   updateNode: vi.fn().mockResolvedValue({ nodes: [] }),
   splitNode: vi.fn().mockResolvedValue({ nodes: [] }),
   moveNode: vi.fn().mockResolvedValue({ nodes: [] }),
+  applyBatch: vi.fn().mockResolvedValue({ nodes: [] }),
   toggleComplete: vi.fn().mockResolvedValue({ nodes: [] }),
   toggleCollapsed: vi.fn().mockResolvedValue({ nodes: [] }),
   duplicateNode: vi.fn().mockResolvedValue({ nodes: [] }),

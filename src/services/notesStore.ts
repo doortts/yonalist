@@ -15,6 +15,7 @@ import {
   validateAndCanonicalizeNoteSearchQuery
 } from "../features/notes/noteSearchQuery";
 import type {
+  ApplyNotesBatchInput,
   CreateNoteNodeInput,
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
@@ -355,6 +356,23 @@ export function notesMoveNode(
   historyContext: NotesHistoryContext | null = null
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_move_node", { vaultPath, input, historyContext }, historyContext);
+}
+
+export function notesApplyBatch(
+  vaultPath: string,
+  input: ApplyNotesBatchInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  // Reuses the shared mutation transport: the result is validated with
+  // isNotesMutationResult (normalizeMutationResult) and a rejected IPC is mapped
+  // to a structured NotesStoreError via parseNotesError (notesStoreError). One
+  // backend transaction / one history entry, so undo reverts the batch in one
+  // step.
+  return invokeMutation(
+    "notes_apply_batch",
+    { vaultPath, input, historyContext },
+    historyContext
+  );
 }
 
 async function invokeMutation(
@@ -841,6 +859,7 @@ export const notesStore: NotesStore = {
   updateNode: notesUpdateNode,
   splitNode: notesSplitNode,
   moveNode: notesMoveNode,
+  applyBatch: notesApplyBatch,
   toggleComplete: notesToggleComplete,
   toggleCollapsed: notesToggleCollapsed,
   expandAll: notesExpandAll,

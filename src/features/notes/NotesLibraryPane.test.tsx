@@ -53,6 +53,7 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     flushNodeDraft: vi.fn().mockResolvedValue(true),
     flushAllDrafts: vi.fn().mockResolvedValue(true),
     moveNode: resolved(),
+    applyBatch: resolved(),
     toggleComplete: resolved(),
     toggleCollapsed: resolved(),
     expandAll: resolved(),

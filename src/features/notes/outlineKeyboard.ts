@@ -1,7 +1,8 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
-import type {
-  NormalizedNotesWorkspace,
-  NotesSelection
+import {
+  selectionRangeIds,
+  type NormalizedNotesWorkspace,
+  type NotesSelection
 } from "./notesWorkspaceReducer";
 import { visibleNodeIds } from "./outlineTree";
 
@@ -86,7 +87,95 @@ export type OutlineKeyResolution =
   | { type: "toggleCollapsed" }
   | { type: "remove"; focusNodeId: NoteId | null }
   | { type: "extendSelection"; headId: NoteId }
-  | { type: "clearSelection" };
+  | { type: "clearSelection" }
+  // Whole-selection structural ops (plan Phase 4.1c). Each carries the
+  // materialized selection range in outline order so the caller forwards it to
+  // notes_apply_batch as one transaction / one undo step.
+  | { type: "batchComplete"; nodeIds: readonly NoteId[]; completed: boolean }
+  | { type: "batchDelete"; nodeIds: readonly NoteId[]; focusNodeId: NoteId | null }
+  | { type: "batchIndent"; nodeIds: readonly NoteId[] }
+  | { type: "batchOutdent"; nodeIds: readonly NoteId[] };
+
+/**
+ * The first visible row after a to-be-deleted range, falling back to the row
+ * before it, so a batch delete can hand focus to a surviving neighbor. The range
+ * is a contiguous slice of `visibleIds`; the reducer reconciles the target if it
+ * turns out to be inside a deleted subtree.
+ */
+function neighborAfterRange(
+  visibleIds: readonly NoteId[],
+  rangeIds: readonly NoteId[]
+): NoteId | null {
+  if (rangeIds.length === 0) {
+    return null;
+  }
+  const first = visibleIds.indexOf(rangeIds[0]);
+  const last = visibleIds.indexOf(rangeIds[rangeIds.length - 1]);
+  if (first < 0 || last < 0) {
+    return null;
+  }
+  return visibleIds[last + 1] ?? visibleIds[first - 1] ?? null;
+}
+
+/**
+ * Batch indent (plan Phase 4.1c). Eligible when at least one selected node's
+ * indent target — its nearest preceding sibling that is NOT itself selected,
+ * which is exactly the sibling the backend would reparent it under — is visible.
+ * Requiring a visible target mirrors the single-node Phase 0.3 rule so the batch
+ * never indents a row under a hidden (e.g. completed) sibling. The full range is
+ * forwarded; the backend reduces it to its roots and leaves ineligible nodes in
+ * place.
+ */
+function resolveBatchIndent(
+  input: ResolveOutlineKeyInput,
+  rangeIds: readonly NoteId[],
+  visibleIds: readonly NoteId[]
+): OutlineKeyResolution | null {
+  if (rangeIds.length === 0) {
+    return null;
+  }
+  const selected = new Set(rangeIds);
+  const eligible = rangeIds.some((id) => {
+    const node = input.workspace.nodesById[id];
+    if (!node) {
+      return false;
+    }
+    const siblings =
+      node.parentId === null
+        ? input.workspace.rootIds
+        : (input.workspace.childIdsByParent[node.parentId] ?? []);
+    const index = siblings.indexOf(id);
+    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+      if (!selected.has(siblings[cursor])) {
+        return visibleIds.includes(siblings[cursor]);
+      }
+    }
+    return false;
+  });
+  return eligible ? { type: "batchIndent", nodeIds: rangeIds } : null;
+}
+
+/**
+ * Batch outdent (plan Phase 4.1c). Confined to the zoomed subtree (Phase 0.3):
+ * a selected node at the top level, or directly under the zoom root, cannot
+ * outdent without escaping the zoom, so it is dropped from the batch. If nothing
+ * survives the shortcut is a no-op.
+ */
+function resolveBatchOutdent(
+  input: ResolveOutlineKeyInput,
+  rangeIds: readonly NoteId[]
+): OutlineKeyResolution | null {
+  const zoomRootId = input.workspace.zoomRootId;
+  const eligible = rangeIds.filter((id) => {
+    const node = input.workspace.nodesById[id];
+    return Boolean(
+      node && node.parentId !== null && node.parentId !== zoomRootId
+    );
+  });
+  return eligible.length > 0
+    ? { type: "batchOutdent", nodeIds: eligible }
+    : null;
+}
 
 export function resolveOutlineKey(
   input: ResolveOutlineKeyInput
@@ -139,6 +228,64 @@ export function resolveOutlineKey(
     input.platform === "mac"
       ? input.metaKey && !input.altKey && !input.ctrlKey
       : input.altKey && !input.metaKey && !input.ctrlKey;
+
+  // With a live multi-node selection, the structural shortcuts act on the WHOLE
+  // range as one batch (one undo step) instead of the focused node (plan Phase
+  // 4.1c). These branches own their keys entirely: an ineligible batch resolves
+  // to null (a no-op, matching an ineligible single-node command) and never
+  // falls through to the single-node path, so the selection is never torn.
+  // Extend/clear were already handled above; other keys (Enter split, arrows,
+  // typing) keep single-node behavior and collapse the selection elsewhere.
+  if (input.selection) {
+    const selectionVisibleIds =
+      input.visibleNodeIds ??
+      visibleNodeIds(input.workspace, input.workspace.zoomRootId);
+    const rangeIds = selectionRangeIds(input.selection, selectionVisibleIds);
+    if (
+      !input.repeat &&
+      input.key === "Enter" &&
+      !input.shiftKey &&
+      !input.altKey &&
+      primaryModifierPressed
+    ) {
+      if (rangeIds.length === 0) {
+        return null;
+      }
+      const focused = input.workspace.nodesById[input.nodeId];
+      return {
+        type: "batchComplete",
+        nodeIds: rangeIds,
+        completed: focused ? focused.completedAt === null : true
+      };
+    }
+    if (
+      !input.repeat &&
+      input.key === "Backspace" &&
+      input.shiftKey &&
+      !input.altKey &&
+      primaryModifierPressed
+    ) {
+      return rangeIds.length === 0
+        ? null
+        : {
+            type: "batchDelete",
+            nodeIds: rangeIds,
+            focusNodeId: neighborAfterRange(selectionVisibleIds, rangeIds)
+          };
+    }
+    if (
+      !input.repeat &&
+      input.key === "Tab" &&
+      !input.altKey &&
+      !input.ctrlKey &&
+      !input.metaKey
+    ) {
+      return input.shiftKey
+        ? resolveBatchOutdent(input, rangeIds)
+        : resolveBatchIndent(input, rangeIds, selectionVisibleIds);
+    }
+  }
+
   if (!input.repeat) {
     if (
       input.key === "Enter" &&

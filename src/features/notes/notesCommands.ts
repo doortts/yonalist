@@ -1,6 +1,7 @@
 import type { MutableRefObject } from "react";
 import { createNoteId } from "../../domain/notes";
 import type {
+  ApplyNotesBatchInput,
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
@@ -492,6 +493,90 @@ export async function moveNodeCommand(
       );
     }
     return result;
+  });
+}
+
+/**
+ * A structural operation to apply to a whole multi-node selection (plan Phase
+ * 4.1). Mirrors the backend `BatchOp`; the caller supplies the target node set
+ * separately (see {@link applyBatchCommand}).
+ */
+export type NotesBatchOp =
+  | { type: "complete"; completed: boolean }
+  | { type: "delete" }
+  | { type: "indent" }
+  | { type: "outdent" }
+  | { type: "move"; parentId: NoteId | null; afterId: NoteId | null };
+
+/**
+ * Build the `notes_apply_batch` transport input for `nodeIds` (already in
+ * outline order) and `op`.
+ */
+function buildApplyBatchInput(
+  nodeIds: readonly NoteId[],
+  op: NotesBatchOp
+): ApplyNotesBatchInput {
+  switch (op.type) {
+    case "complete":
+      return { op: "complete", nodeIds, completed: op.completed };
+    case "delete":
+      return { op: "delete", nodeIds };
+    case "indent":
+      return { op: "indent", nodeIds };
+    case "outdent":
+      return { op: "outdent", nodeIds };
+    case "move":
+      return {
+        op: "move",
+        nodeIds,
+        parentId: op.parentId,
+        afterId: op.afterId
+      };
+  }
+}
+
+/**
+ * Apply one structural operation to a whole selection as a single transaction /
+ * single history entry (undo reverts the batch in one step). The command runs
+ * through the same structural pipeline as the single-node commands — so it
+ * reports the Phase 3.5 settlement outcome, clears the live selection via the
+ * "pending"→setLoading path, and projects the mutation into the active scope.
+ *
+ * Only ids still present in the confirmed workspace are forwarded; if none
+ * survive (all vanished before the command ran) the command is skipped rather
+ * than issuing an empty batch. `uiUpdate` lets a delete hand focus to a
+ * surviving neighbor.
+ */
+export async function applyBatchCommand(
+  ctx: NotesCommandContext,
+  nodeIds: readonly NoteId[],
+  op: NotesBatchOp,
+  uiUpdate?: NotesWorkspaceUiUpdate
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("batch", async (context, historyContext) => {
+    const before = confirmedState(context);
+    const ids = nodeIds.filter((id) => Boolean(before.nodesById[id]));
+    if (ids.length === 0) {
+      return { kind: "skipped" };
+    }
+    const mutation = unwrapNotesMutation(
+      await context.repository.applyBatch(
+        context.vaultRoot,
+        buildApplyBatchInput(ids, op),
+        ...historyArguments(historyContext)
+      )
+    );
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
   });
 }
 

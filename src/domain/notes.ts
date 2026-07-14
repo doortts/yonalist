@@ -280,6 +280,26 @@ export interface ResizeNoteAttachmentInput {
   displayWidth: number;
 }
 
+/**
+ * Transport shape for `notes_apply_batch` (plan Phase 4.1): one structural
+ * operation applied to a whole set of nodes in a single transaction / single
+ * history entry. This is the internally-tagged wire form the Rust
+ * `ApplyBatchInput` deserializes — the op-specific fields sit at the top level
+ * alongside `op` and `nodeIds`. `nodeIds` is expected in outline order so the
+ * backend can place a moved block contiguously.
+ */
+export type ApplyNotesBatchInput =
+  | { op: "complete"; nodeIds: readonly NoteId[]; completed: boolean }
+  | { op: "delete"; nodeIds: readonly NoteId[] }
+  | {
+      op: "move";
+      nodeIds: readonly NoteId[];
+      parentId: NoteId | null;
+      afterId: NoteId | null;
+    }
+  | { op: "indent"; nodeIds: readonly NoteId[] }
+  | { op: "outdent"; nodeIds: readonly NoteId[] };
+
 export interface NotesStore {
   initialize(vaultPath: string): Promise<void>;
   loadWorkspace(vaultPath: string, scope: NotesWorkspaceScope): Promise<NotesWorkspace>;
@@ -287,6 +307,9 @@ export interface NotesStore {
   updateNode(vaultPath: string, input: UpdateNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   splitNode(vaultPath: string, input: SplitNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   moveNode(vaultPath: string, input: MoveNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
+  // Structural batch (plan Phase 4.1): one operation applied to a whole node set
+  // as a single transaction / single history entry (one undo step).
+  applyBatch(vaultPath: string, input: ApplyNotesBatchInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   toggleComplete(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   toggleCollapsed(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
   expandAll?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;

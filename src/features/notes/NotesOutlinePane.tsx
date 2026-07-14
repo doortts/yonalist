@@ -552,6 +552,28 @@ export function NotesOutlinePane() {
       return;
     }
     const { expandNodeId, ...input } = projection;
+    // Dragging a row that belongs to a live multi-node selection moves the WHOLE
+    // selection as one block (plan Phase 4.1c) — one applyBatch call, one undo
+    // step. Skip the block path when the drop would anchor after (or under) a
+    // node inside the selection, which the backend rejects; that falls back to
+    // the single-node move.
+    const selectedIds = selectionRangeIds(
+      selection ?? null,
+      structuralVisibleIds
+    );
+    if (
+      selectedIds.length > 1 &&
+      selectedIds.includes(activeId) &&
+      (input.afterId === null || !selectedIds.includes(input.afterId)) &&
+      (input.parentId === null || !selectedIds.includes(input.parentId))
+    ) {
+      void actions.applyBatch(selectedIds, {
+        type: "move",
+        parentId: input.parentId ?? null,
+        afterId: input.afterId ?? null
+      });
+      return;
+    }
     void actions.moveNode(
       { id: activeId, ...input },
       undefined,

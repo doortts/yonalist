@@ -19,7 +19,10 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
-import type { NotesSelection } from "./notesWorkspaceReducer";
+import {
+  selectionRangeIds,
+  type NotesSelection
+} from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
@@ -524,6 +527,36 @@ function OutlineNodeRowComponent({
       case "clearSelection":
         actions.clearSelection();
         return;
+      case "batchComplete":
+        // Whole-selection batch (plan Phase 4.1c): one applyBatch call, one undo
+        // step. The selection clears automatically via the command's loading
+        // dispatch. The materialized ids were captured at keydown time.
+        runStructuralCommand(() =>
+          actions.applyBatch(resolution.nodeIds, {
+            type: "complete",
+            completed: resolution.completed
+          })
+        );
+        return;
+      case "batchDelete":
+        runStructuralCommand(() =>
+          actions.applyBatch(
+            resolution.nodeIds,
+            { type: "delete" },
+            { focusNodeId: resolution.focusNodeId }
+          )
+        );
+        return;
+      case "batchIndent":
+        runStructuralCommand(() =>
+          actions.applyBatch(resolution.nodeIds, { type: "indent" })
+        );
+        return;
+      case "batchOutdent":
+        runStructuralCommand(() =>
+          actions.applyBatch(resolution.nodeIds, { type: "outdent" })
+        );
+        return;
       case "focusNote":
         openAndFocusNote();
         return;
@@ -625,6 +658,37 @@ function OutlineNodeRowComponent({
                 : undefined
             }
             onMoveTo={(destinationId) => {
+              // With a live multi-node selection that includes this row, Move To
+              // relocates the WHOLE selection as one block (plan Phase 4.1c):
+              // every selected root becomes a child of the destination, appended
+              // after its last non-selected child. One applyBatch call, one undo
+              // step.
+              const selection = getSelection();
+              const rangeIds = selection
+                ? selectionRangeIds(selection, getVisibleNodeIds())
+                : [];
+              if (rangeIds.length > 1 && rangeIds.includes(nodeId)) {
+                const selected = new Set(rangeIds);
+                const destinationChildren =
+                  destinationId === null
+                    ? state.rootIds
+                    : (state.childIdsByParent[destinationId] ?? []);
+                let afterId: NoteId | null = null;
+                for (let i = destinationChildren.length - 1; i >= 0; i -= 1) {
+                  if (!selected.has(destinationChildren[i])) {
+                    afterId = destinationChildren[i];
+                    break;
+                  }
+                }
+                runStructuralCommand(() =>
+                  actions.applyBatch(rangeIds, {
+                    type: "move",
+                    parentId: destinationId,
+                    afterId
+                  })
+                );
+                return { ok: true } as const;
+              }
               if (preparedMoveRef.current && commitPreparedMove) {
                 return commitPreparedMove(
                   preparedMoveRef.current,

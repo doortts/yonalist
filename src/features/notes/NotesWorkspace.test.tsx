@@ -13,6 +13,7 @@ import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
+  ApplyNotesBatchInput,
   CreateNoteNodeInput,
   NoteAttachment,
   NoteAttachmentsByNodeId,
@@ -29,6 +30,7 @@ const notesStoreMock = vi.hoisted(() => ({
   updateNode: vi.fn(),
   splitNode: vi.fn(),
   moveNode: vi.fn(),
+  applyBatch: vi.fn(),
   toggleComplete: vi.fn(),
   toggleCollapsed: vi.fn(),
   toggleStar: vi.fn(),
@@ -300,6 +302,29 @@ function configureRepository(
   );
   notesStoreMock.moveNode.mockImplementation(async () =>
     workspace(confirmedNodes)
+  );
+  notesStoreMock.applyBatch.mockImplementation(
+    async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+      const ids = new Set(input.nodeIds);
+      if (input.op === "complete") {
+        confirmedNodes = confirmedNodes.map((current) =>
+          ids.has(current.id)
+            ? {
+                ...current,
+                completedAt: input.completed ? "2026-07-10T01:00:00Z" : null
+              }
+            : current
+        );
+      } else if (input.op === "delete") {
+        confirmedNodes = confirmedNodes.filter(
+          (current) => !ids.has(current.id)
+        );
+      }
+      // indent/outdent/move batch semantics are covered by the keyboard
+      // resolution tests; the integration harness only needs completion and
+      // deletion to reflect in the rendered tree.
+      return workspace(confirmedNodes);
+    }
   );
   notesStoreMock.emptyTrash.mockImplementation(async () =>
     workspace(confirmedNodes)
@@ -2445,6 +2470,108 @@ describe("Notes workspace", () => {
     await screen.findByText(/Command paused/i);
     // ...and hands focus back to the title so the caret is not stranded.
     await waitFor(() => expect(title).toHaveFocus());
+  });
+
+  describe("multi-node batch operations (Phase 4.1c)", () => {
+    function threeRoots(): NoteNode[] {
+      return [
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" })
+      ];
+    }
+
+    function useCtrlPlatform(): void {
+      vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
+    }
+
+    it("completes a keyboard-selected range with a single applyBatch call", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      title.focus();
+      // Shift+ArrowDown twice extends the live selection across all three
+      // siblings without moving the caret off Alpha.
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+      );
+      // History is not wired in this harness, so no history-context arg trails
+      // the call (parity with the single-node commands here).
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "complete",
+        nodeIds: ["a", "b", "c"],
+        completed: true
+      });
+      // The whole-selection path fully replaces the single-node command.
+      expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+    });
+
+    it("soft-deletes a keyboard-selected range as one batch", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      title.focus();
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(title, {
+        key: "Backspace",
+        ctrlKey: true,
+        shiftKey: true
+      });
+
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce()
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "delete",
+        nodeIds: ["a", "b"]
+      });
+      // The surviving neighbor takes focus.
+      await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
+      expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    });
+
+    it("keeps the single-node completion path when no selection is active", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      title.focus();
+      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "a")
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a paused notice when a selection batch is dropped by a failed draft flush", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      notesStoreMock.updateNode.mockRejectedValue(new Error("save failed"));
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      title.focus();
+      // The dirty draft is the barrier the batch must clear; typing collapses
+      // the selection, so rebuild it with Shift+ArrowDown afterward.
+      fireEvent.change(title, { target: { value: "Alpha edited" } });
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
+
+      await waitFor(() =>
+        expect(notesStoreMock.updateNode).toHaveBeenCalled()
+      );
+      // The batch never reached the backend (Phase 3.5)...
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      // ...and the row explains the pause instead of silently swallowing it.
+      await screen.findByText(/Command paused/i);
+    });
   });
 
   it("saves a dirty draft before Tab move and focuses after the move response", async () => {
