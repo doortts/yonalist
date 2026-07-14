@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MAX_PASTE_IMPORT_DEPTH,
   MAX_PASTE_IMPORT_NODES,
@@ -167,6 +167,16 @@ describe("parsePastedOutline", () => {
       (_unused, index) => `line-${index}`
     );
     expect(parsePastedOutline(lines.join("\n"))).toBeNull();
+  });
+
+  it("bounds line collection instead of splitting an over-cap clipboard into an unbounded array", () => {
+    const split = vi.spyOn(String.prototype, "split");
+    const text = `${"line\n".repeat(MAX_PASTE_IMPORT_NODES)}overflow`;
+
+    expect(parsePastedOutline(text)).toBeNull();
+    expect(
+      split.mock.instances.some((instance) => String(instance) === text)
+    ).toBe(false);
   });
 
   it("applies the node-count cap to Markdown lists", () => {

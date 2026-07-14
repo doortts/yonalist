@@ -80,10 +80,6 @@ describe("writeNotesClipboardText", () => {
       writtenItems.push(items);
     });
     const writeText = vi.fn(async () => {});
-    const notesState = Object.freeze({
-      nodes: Object.freeze([{ id: "private-id", title: "Parent" }])
-    });
-    const before = JSON.stringify(notesState);
 
     const outcome = await writeNotesClipboardText("- Parent", globalsWith({
       write,
@@ -104,7 +100,6 @@ describe("writeNotesClipboardText", () => {
       parts: ["- Parent"],
       type: "text/markdown"
     });
-    expect(JSON.stringify(notesState)).toBe(before);
   });
 
   it("uses writeText when the multi-MIME path is unsupported", async () => {

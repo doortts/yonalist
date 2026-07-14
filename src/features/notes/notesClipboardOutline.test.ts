@@ -98,6 +98,38 @@ describe("serializeNotesClipboardOutline", () => {
     ).toBeNull();
   });
 
+  it("rejects an over-cap forest before reading or scheduling any node", () => {
+    const roots = new Proxy([] as NotesClipboardOutlineNode[], {
+      get(_target, property) {
+        if (property === "length") {
+          return MAX_PASTE_IMPORT_NODES + 1;
+        }
+        throw new Error(`read over-cap root ${String(property)}`);
+      }
+    });
+
+    expect(() => serializeNotesClipboardOutline(roots)).not.toThrow();
+    expect(serializeNotesClipboardOutline(roots)).toBeNull();
+  });
+
+  it("rejects over-cap children before reading or scheduling the wide level", () => {
+    const children = new Proxy([] as NotesClipboardOutlineNode[], {
+      get(_target, property) {
+        if (property === "length") {
+          return MAX_PASTE_IMPORT_NODES;
+        }
+        throw new Error(`read over-cap child ${String(property)}`);
+      }
+    });
+
+    expect(() =>
+      serializeNotesClipboardOutline([outlineNode("root", children)])
+    ).not.toThrow();
+    expect(
+      serializeNotesClipboardOutline([outlineNode("root", children)])
+    ).toBeNull();
+  });
+
   it("accepts the maximum depth and rejects a forest one level deeper", () => {
     const buildChain = (levels: number): NotesClipboardOutlineNode => {
       let current = outlineNode(`level-${levels - 1}`);

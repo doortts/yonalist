@@ -139,8 +139,7 @@ function parseRawLines(lines: readonly string[]): {
   rawLines: RawImportLine[];
   isMarkdown: boolean;
 } | null {
-  const contentLines = lines.filter((line) => line.trim().length > 0);
-  const markdownLines = contentLines.map(parseMarkdownLine);
+  const markdownLines = lines.map(parseMarkdownLine);
   const hasMarkdownCandidate = markdownLines.some(
     (line) => line.isMarkdownCandidate
   );
@@ -157,7 +156,7 @@ function parseRawLines(lines: readonly string[]): {
 
   return {
     isMarkdown: false,
-    rawLines: contentLines.map((line) => {
+    rawLines: lines.map((line) => {
       const { depth, contentStart } = leadingIndentDepth(line);
       return {
         depth,
@@ -167,6 +166,46 @@ function parseRawLines(lines: readonly string[]): {
   };
 }
 
+function collectBoundedContentLines(text: string): {
+  readonly contentLines: string[];
+  readonly hadLineBreak: boolean;
+} | null {
+  const contentLines: string[] = [];
+  let lineStart = 0;
+  let hadLineBreak = false;
+
+  const appendLine = (lineEnd: number): boolean => {
+    const line = text.slice(lineStart, lineEnd);
+    if (line.trim().length === 0) {
+      return true;
+    }
+    if (contentLines.length === MAX_PASTE_IMPORT_NODES) {
+      return false;
+    }
+    contentLines.push(line);
+    return true;
+  };
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character !== "\n" && character !== "\r") {
+      continue;
+    }
+    hadLineBreak = true;
+    if (!appendLine(index)) {
+      return null;
+    }
+    if (character === "\r" && text[index + 1] === "\n") {
+      index += 1;
+    }
+    lineStart = index + 1;
+  }
+  if (!appendLine(text.length)) {
+    return null;
+  }
+  return { contentLines, hadLineBreak };
+}
+
 /**
  * Parses `text` into a forest of `ImportNode`s, or returns `null` when the
  * text is not a multi-line structural paste (single line, no structural
@@ -174,10 +213,11 @@ function parseRawLines(lines: readonly string[]): {
  * module doc comment).
  */
 export function parsePastedOutline(text: string): ImportNode[] | null {
-  const normalized = text.replace(/\r\n?/g, "\n");
-  const lines = normalized.split("\n");
-
-  const parsed = parseRawLines(lines);
+  const collected = collectBoundedContentLines(text);
+  if (collected === null) {
+    return null;
+  }
+  const parsed = parseRawLines(collected.contentLines);
   if (parsed === null) {
     return null;
   }
@@ -186,8 +226,7 @@ export function parsePastedOutline(text: string): ImportNode[] | null {
   if (
     rawLines.length === 0 ||
     (!isMarkdown &&
-      (rawLines.length < 2 || !normalized.includes("\n"))) ||
-    rawLines.length > MAX_PASTE_IMPORT_NODES
+      (rawLines.length < 2 || !collected.hadLineBreak))
   ) {
     return null;
   }

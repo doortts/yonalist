@@ -50,6 +50,9 @@ export function serializeNotesClipboardOutline(
   if (roots.length === 0) {
     return null;
   }
+  if (roots.length > MAX_PASTE_IMPORT_NODES) {
+    return null;
+  }
 
   const pending: PendingOutlineNode[] = [];
   for (let index = roots.length - 1; index >= 0; index -= 1) {
@@ -58,6 +61,7 @@ export function serializeNotesClipboardOutline(
 
   const lines: string[] = [];
   let nodeCount = 0;
+  let scheduledNodeCount = roots.length;
 
   while (pending.length > 0) {
     const current = pending.pop()!;
@@ -77,11 +81,12 @@ export function serializeNotesClipboardOutline(
     const marker = title.length === 0 ? "-" : `- ${title}`;
     lines.push(`${"  ".repeat(current.depth)}${marker}`);
 
-    for (
-      let index = current.node.children.length - 1;
-      index >= 0;
-      index -= 1
-    ) {
+    const childCount = current.node.children.length;
+    if (scheduledNodeCount + childCount > MAX_PASTE_IMPORT_NODES) {
+      return null;
+    }
+    scheduledNodeCount += childCount;
+    for (let index = childCount - 1; index >= 0; index -= 1) {
       pending.push({
         node: current.node.children[index],
         depth: current.depth + 1
