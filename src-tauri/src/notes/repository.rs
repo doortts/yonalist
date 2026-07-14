@@ -2367,7 +2367,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
             "WITH RECURSIVE subtree(id) AS (\
                SELECT id FROM notes_nodes WHERE id = ?1 AND deleted_at IS NULL \
                  AND archived_at IS NULL \
-               UNION ALL \
+               UNION \
                SELECT child.id FROM notes_nodes child \
                JOIN subtree parent ON child.parent_id = parent.id \
                WHERE child.deleted_at IS NULL AND child.archived_at IS NULL\
@@ -2410,36 +2410,26 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
         });
     }
 
-    fn visit(
-        node_id: &str,
-        by_id: &mut HashMap<String, StoredNode>,
-        children: &HashMap<String, Vec<String>>,
-        visited: &mut HashSet<String>,
-        ordered: &mut Vec<StoredNode>,
-    ) -> Result<(), String> {
-        if !visited.insert(node_id.to_string()) {
+    let mut visited = HashSet::new();
+    let mut ordered = Vec::with_capacity(by_id.len());
+    let mut stack = vec![root_id.to_string()];
+    while let Some(node_id) = stack.pop() {
+        if !visited.insert(node_id.clone()) {
             return Err("The Notes tree contains a cycle and cannot be duplicated.".to_string());
         }
         let node = by_id
-            .remove(node_id)
+            .remove(&node_id)
             .ok_or_else(|| format!("Note node {node_id} disappeared while duplicating."))?;
-        ordered.push(node);
-        if let Some(child_ids) = children.get(node_id) {
-            for child_id in child_ids {
-                visit(child_id, by_id, children, visited, ordered)?;
+        if let Some(child_ids) = children.get(&node_id) {
+            for child_id in child_ids.iter().rev() {
+                stack.push(child_id.clone());
             }
         }
-        Ok(())
+        ordered.push(node);
     }
-
-    let mut ordered = Vec::new();
-    visit(
-        root_id,
-        &mut by_id,
-        &children,
-        &mut HashSet::new(),
-        &mut ordered,
-    )?;
+    if !by_id.is_empty() {
+        return Err("The Note subtree could not be assembled safely.".to_string());
+    }
     Ok(ordered)
 }
 
@@ -2510,29 +2500,143 @@ pub(crate) fn duplicate_node_at(
     today: LocalDate,
 ) -> Result<NotesWorkspace, String> {
     validate_note_id(node_id)?;
+    let submitted_ids = vec![node_id.to_string()];
     with_workspace_transaction(connection, |transaction| {
-        let source = require_active_node(transaction, node_id)?;
-        let subtree = active_subtree(transaction, node_id)?;
-        let root_sort_key = next_sort_key(
-            transaction,
-            source.parent_id.as_deref(),
-            Some(source.id.as_str()),
-        )?;
+        let copied_root_ids = duplicate_forest_in_transaction(transaction, &submitted_ids, today)?;
+        if copied_root_ids.len() != 1 {
+            return Err("Could not identify the duplicated Note root.".to_string());
+        }
+        Ok(())
+    })
+}
 
-        let mut reserved = HashSet::new();
-        let mut copied_ids = HashMap::new();
-        for original in &subtree {
+/// Copies normalized active selection roots inside the caller's transaction.
+/// All validation, source loading, and attachment-capacity checks happen before
+/// the first write (including a possible sort-key rebalance). Returned ids are
+/// copied roots in authoritative stored sibling order.
+fn duplicate_forest_in_transaction(
+    transaction: &Transaction<'_>,
+    submitted_ids: &[NoteId],
+    today: LocalDate,
+) -> Result<Vec<NoteId>, String> {
+    let node_ids = dedup_preserving_order(submitted_ids);
+    if node_ids.is_empty() {
+        return Err("A duplicate operation requires at least one node.".to_string());
+    }
+    for node_id in &node_ids {
+        validate_note_id(node_id)?;
+        require_active_node(transaction, node_id)?;
+    }
+
+    let selected: BTreeSet<&str> = node_ids.iter().map(String::as_str).collect();
+    let normalized_roots = selection_roots(transaction, &node_ids, &selected)?;
+    let first_root = normalized_roots
+        .first()
+        .ok_or_else(|| "Could not identify any active duplicate roots.".to_string())?;
+    let common_parent_id = require_active_node(transaction, first_root)?.parent_id;
+    for root_id in &normalized_roots[1..] {
+        if require_active_node(transaction, root_id)?.parent_id != common_parent_id {
+            return Err("Batch duplicate roots must share the same parent.".to_string());
+        }
+    }
+
+    let root_set = normalized_roots
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let ordered_root_ids = sibling_keys(transaction, common_parent_id.as_deref(), None)?
+        .into_iter()
+        .filter_map(|(node_id, _)| root_set.contains(node_id.as_str()).then_some(node_id))
+        .collect::<Vec<_>>();
+    if ordered_root_ids.len() != normalized_roots.len() {
+        return Err("Could not order every active duplicate root.".to_string());
+    }
+
+    let mut forests = Vec::with_capacity(ordered_root_ids.len());
+    let mut original_ids = HashSet::new();
+    let mut attachment_copy_count = 0_i64;
+    for root_id in &ordered_root_ids {
+        let mut forest = Vec::new();
+        for original in active_subtree(transaction, root_id)? {
+            if !original_ids.insert(original.id.clone()) {
+                return Err("Duplicate source subtrees must not overlap.".to_string());
+            }
+            let attachments = node_attachments(transaction, &original.id)?;
+            let attachment_count = i64::try_from(attachments.len())
+                .map_err(|_| "Could not measure duplicated Notes attachments.".to_string())?;
+            if attachment_count > MAX_NOTE_ATTACHMENTS_PER_NODE {
+                return Err(format!(
+                    "A Note node can contain at most {MAX_NOTE_ATTACHMENTS_PER_NODE} attachments."
+                ));
+            }
+            attachment_copy_count = attachment_copy_count
+                .checked_add(attachment_count)
+                .ok_or_else(|| "Could not measure duplicated Notes attachments.".to_string())?;
+            forest.push((original, attachments));
+        }
+        forests.push(forest);
+    }
+
+    if attachment_copy_count > 0 {
+        let vault_attachment_count: i64 = transaction
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| {
+                format!("Could not inspect duplicated Notes attachment capacity: {error}")
+            })?;
+        if vault_attachment_count
+            .checked_add(attachment_copy_count)
+            .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
+        {
+            return Err(format!(
+                "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+            ));
+        }
+    }
+
+    let mut reserved = HashSet::new();
+    let mut copied_ids = HashMap::with_capacity(original_ids.len());
+    for forest in &forests {
+        for (original, _) in forest {
             let copied_id = fresh_uuid_v4(transaction, &reserved)?;
             reserved.insert(copied_id.clone());
             copied_ids.insert(original.id.clone(), copied_id);
         }
+    }
+    let mut copied_attachment_ids = HashMap::new();
+    for forest in &forests {
+        for (_, attachments) in forest {
+            for source in attachments {
+                let copied_id = fresh_attachment_id(transaction, &reserved)?;
+                reserved.insert(copied_id.clone());
+                copied_attachment_ids.insert(source.id.clone(), copied_id);
+            }
+        }
+    }
 
-        for original in &subtree {
+    let mut copied_root_ids = Vec::with_capacity(forests.len());
+    let mut previous_root_id = ordered_root_ids.last().cloned();
+    for forest in &forests {
+        let (source_root, _) = forest
+            .first()
+            .ok_or_else(|| "Could not load a duplicate source subtree.".to_string())?;
+        let root_sort_key = next_sort_key(
+            transaction,
+            common_parent_id.as_deref(),
+            previous_root_id.as_deref(),
+        )?;
+        let copied_root_id = copied_ids
+            .get(&source_root.id)
+            .expect("every duplicated root has a generated ID")
+            .clone();
+
+        for (original, _) in forest {
             let copied_id = copied_ids
                 .get(&original.id)
                 .expect("every duplicated node has a generated ID");
-            let copied_parent_id = if original.id == source.id {
-                source.parent_id.as_deref()
+            let copied_parent_id = if original.id == source_root.id {
+                common_parent_id.as_deref()
             } else {
                 original
                     .parent_id
@@ -2540,7 +2644,7 @@ pub(crate) fn duplicate_node_at(
                     .and_then(|parent_id| copied_ids.get(parent_id))
                     .map(String::as_str)
             };
-            let sort_key = if original.id == source.id {
+            let sort_key = if original.id == source_root.id {
                 root_sort_key
             } else {
                 original.sort_key
@@ -2577,26 +2681,22 @@ pub(crate) fn duplicate_node_at(
             )?;
         }
 
-        // Clone attachment metadata onto the copied nodes. Attachment files are
-        // content-addressed, so the copies keep the source's relative_path /
-        // content_hash and no bytes are written: the reconcile contract treats a
-        // path as reachable while any active row (or history entry) references
-        // it, so the shared file stays live and nothing is orphaned. Fresh ids
-        // and current timestamps keep each copy independent from its source under
-        // history/undo. Sort keys are preserved so the copies list in source
-        // order (each copied node starts empty, so there is no collision).
-        for original in &subtree {
-            let source_attachments = node_attachments(transaction, &original.id)?;
-            if source_attachments.is_empty() {
-                continue;
-            }
+        copied_root_ids.push(copied_root_id.clone());
+        previous_root_id = Some(copied_root_id);
+    }
+
+    // Attachments are content-addressed. Copies get fresh metadata ids while
+    // retaining the source path/hash, so no file bytes are copied or published.
+    for forest in forests {
+        for (original, attachments) in forest {
             let copied_node_id = copied_ids
                 .get(&original.id)
                 .expect("every duplicated node has a generated ID")
                 .clone();
-            for source in source_attachments {
-                let attachment_id = fresh_attachment_id(transaction, &reserved)?;
-                reserved.insert(attachment_id.clone());
+            for source in attachments {
+                let attachment_id = copied_attachment_ids
+                    .remove(&source.id)
+                    .expect("every duplicated attachment has a generated ID");
                 let sort_key = source.sort_key;
                 insert_new_attachment_at_sort_key(
                     transaction,
@@ -2616,13 +2716,9 @@ pub(crate) fn duplicate_node_at(
                 )?;
             }
         }
+    }
 
-        if copied_ids.contains_key(node_id) {
-            Ok(())
-        } else {
-            Err("Could not identify the duplicated Note root.".to_string())
-        }
-    })
+    Ok(copied_root_ids)
 }
 
 // ---- Paste import (nested subtree) -------------------------------------------
@@ -3017,9 +3113,9 @@ pub(crate) fn restore_node_at(
     })
 }
 
-// ---- Batch (multi-select) structural operations ------------------------------
+// ---- Batch (multi-select) operations -----------------------------------------
 //
-// `apply_batch` applies ONE structural operation to a SET of selected nodes.
+// `apply_batch_at` applies ONE operation to a SET of selected nodes.
 // Everything runs inside a single `with_workspace_transaction`, so when a
 // history context is active `finalize_transaction` records exactly ONE history
 // entry from the audit rows every mutation in the batch accumulates — the whole
@@ -3028,13 +3124,24 @@ pub(crate) fn restore_node_at(
 // untouched (no history entry, no partial changes). This mirrors the atomic
 // multi-image ingest's transaction+history discipline.
 
+#[cfg(test)]
 pub(crate) fn apply_batch(
     connection: &mut Connection,
     input: ApplyBatchInput,
 ) -> Result<NotesWorkspace, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    apply_batch_at(connection, input, today).map(|(workspace, _)| workspace)
+}
+
+pub(crate) fn apply_batch_at(
+    connection: &mut Connection,
+    input: ApplyBatchInput,
+    today: LocalDate,
+) -> Result<(NotesWorkspace, Option<Vec<NoteId>>), String> {
     input.validate()?;
     let node_ids = dedup_preserving_order(&input.node_ids);
-    with_workspace_transaction(connection, |transaction| match &input.op {
+    let mut duplicated_root_ids = None;
+    let workspace = with_workspace_transaction(connection, |transaction| match &input.op {
         BatchOp::Complete { completed } => batch_set_completed(transaction, &node_ids, *completed),
         BatchOp::Delete => batch_soft_delete(transaction, &node_ids),
         BatchOp::Move {
@@ -3048,10 +3155,18 @@ pub(crate) fn apply_batch(
         ),
         BatchOp::Indent => batch_indent(transaction, &node_ids),
         BatchOp::Outdent => batch_outdent(transaction, &node_ids),
-        BatchOp::Duplicate => Err("Batch duplicate is not implemented yet.".to_string()),
+        BatchOp::Duplicate => {
+            duplicated_root_ids = Some(duplicate_forest_in_transaction(
+                transaction,
+                &node_ids,
+                today,
+            )?);
+            Ok(())
+        }
         BatchOp::AddTag { .. } => Err("Batch tag addition is not implemented yet.".to_string()),
         BatchOp::RemoveTag { .. } => Err("Batch tag removal is not implemented yet.".to_string()),
-    })
+    })?;
+    Ok((workspace, duplicated_root_ids))
 }
 
 fn dedup_preserving_order(ids: &[String]) -> Vec<String> {
@@ -3140,8 +3255,14 @@ fn has_selected_ancestor(
     node_id: &str,
     selected: &BTreeSet<&str>,
 ) -> Result<bool, String> {
+    let mut visited = HashSet::from([node_id.to_string()]);
     let mut current = node_by_id(transaction, node_id)?.and_then(|node| node.parent_id);
     while let Some(parent_id) = current {
+        if !visited.insert(parent_id.clone()) {
+            return Err(
+                "The Notes tree contains a cycle and cannot be changed in a batch.".to_string(),
+            );
+        }
         if selected.contains(parent_id.as_str()) {
             return Ok(true);
         }
@@ -3823,25 +3944,25 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        archive_node, collapse_all, connect_notes_db, create_attachment,
-        create_attachments_coordinated_for_node, create_node, create_node_at, delete_database,
-        duplicate_node, duplicate_node_at, empty_trash, expand_all, import_subtree_at,
-        initialize_notes_db, list_tags, list_tags_with_counts, load_workspace, move_node,
-        node_attachments, notes_db_path, observe_next_initialization_busy, open_notes_export_db,
-        remove_empty_node, restore_attachment, restore_node, restore_node_at, search_nodes,
-        search_nodes_at, search_nodes_structured, seed_notes_onboarding, soft_delete_node,
-        sort_subtree_ascending, sort_subtree_descending, split_node, split_node_at,
-        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
+        apply_batch, apply_batch_at, archive_node, collapse_all, connect_notes_db,
+        create_attachment, create_attachments_coordinated_for_node, create_node, create_node_at,
+        delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
+        import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
+        move_node, node_attachments, notes_db_path, observe_next_initialization_busy,
+        open_notes_export_db, remove_empty_node, restore_attachment, restore_node, restore_node_at,
+        search_nodes, search_nodes_at, search_nodes_structured, seed_notes_onboarding,
+        soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
+        split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
         update_node_at, NewAttachment, NoteAttachment, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
     use crate::notes::types::{
-        validate_note_id, CreateNodeInput, ImportNode, ImportSubtreeInput, MoveNodeInput,
-        NoteSearchMatchedField, NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery,
-        NoteTagFilter, NoteTagPrefix, NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput,
-        UpdateNodeInput, MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE,
-        MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
+        ImportSubtreeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NotesHistoryContext,
+        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_IMPORT_SUBTREE_NODES,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::HashMap;
@@ -6401,6 +6522,620 @@ mod tests {
             distinct_paths, 2,
             "duplication must not introduce new asset files"
         );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn batch_duplicate_normalizes_descendants_and_copies_ordered_forest_state() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "parent", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            None,
+            "A #Alpha 2026-07-20",
+            "A note #Details",
+        );
+        create_test_node(
+            &mut connection,
+            FIFTH_ID,
+            Some(CHILD_ID),
+            None,
+            "A child #Nested",
+            "child note",
+        );
+        create_test_node(
+            &mut connection,
+            THIRD_ID,
+            Some(NODE_ID),
+            Some(CHILD_ID),
+            "B #Beta",
+            "B note",
+        );
+        create_test_node(
+            &mut connection,
+            FOURTH_ID,
+            Some(NODE_ID),
+            Some(THIRD_ID),
+            "C",
+            "",
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET is_collapsed = 1, is_starred = 1, \
+                   completed_at = '2026-07-10T01:00:00.000Z' WHERE id = ?1",
+                [CHILD_ID],
+            )
+            .expect("set source state");
+        insert_test_attachment(&connection, 900, CHILD_ID);
+        insert_test_attachment(&connection, 901, THIRD_ID);
+
+        // Submission order is deliberately reversed, and A's selected child is
+        // deliberately redundant. Normalization must produce roots A then B in
+        // stored sibling order, not caller order.
+        let workspace = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![
+                    THIRD_ID.to_string(),
+                    FIFTH_ID.to_string(),
+                    CHILD_ID.to_string(),
+                ],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect("batch duplicate");
+
+        let children = active_children(&connection, Some(NODE_ID));
+        assert_eq!(children.len(), 5);
+        let copied_a = children[2].0.clone();
+        let copied_b = children[3].0.clone();
+        assert_eq!(
+            children
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec![CHILD_ID, THIRD_ID, &copied_a, &copied_b, FOURTH_ID]
+        );
+        for copied_id in [&copied_a, &copied_b] {
+            validate_note_id(copied_id).expect("fresh copied root id");
+            assert!(workspace.nodes.iter().any(|node| &node.id == copied_id));
+        }
+
+        let copied_a_state: (String, String, String, i64, i64, Option<String>) = connection
+            .query_row(
+                "SELECT title, note, layout_mode, is_collapsed, is_starred, completed_at \
+                 FROM notes_nodes WHERE id = ?1",
+                [&copied_a],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("copied A state");
+        assert_eq!(
+            copied_a_state,
+            (
+                "A #Alpha 2026-07-20".to_string(),
+                "A note #Details".to_string(),
+                "bullets".to_string(),
+                1,
+                1,
+                Some("2026-07-10T01:00:00.000Z".to_string()),
+            )
+        );
+        let copied_a_children = active_children(&connection, Some(&copied_a));
+        assert_eq!(copied_a_children.len(), 1);
+        assert_ne!(copied_a_children[0].0, FIFTH_ID);
+        assert_eq!(
+            node_shape(&connection, &copied_a_children[0].0).2,
+            "A child #Nested"
+        );
+
+        let copied_search: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_search WHERE node_id = ?1",
+                [&copied_a],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("copied search row");
+        assert_eq!(
+            copied_search,
+            (
+                "A #Alpha 2026-07-20".to_string(),
+                "A note #Details".to_string()
+            )
+        );
+        let copied_tags = connection
+            .prepare(
+                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
+                 ORDER BY normalized_tag",
+            )
+            .expect("prepare copied tags")
+            .query_map([&copied_a], |row| row.get::<_, String>(0))
+            .expect("query copied tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect copied tags");
+        assert_eq!(
+            copied_tags,
+            vec!["alpha".to_string(), "details".to_string()]
+        );
+        assert_eq!(
+            date_rows(&connection, &copied_a),
+            date_rows(&connection, CHILD_ID)
+        );
+
+        for (source_id, copied_id) in [(CHILD_ID, &copied_a), (THIRD_ID, &copied_b)] {
+            let source = node_attachments(&connection, source_id).expect("source attachment");
+            let copied = node_attachments(&connection, copied_id).expect("copied attachment");
+            assert_eq!(source.len(), 1);
+            assert_eq!(copied.len(), 1);
+            assert_ne!(copied[0].id, source[0].id);
+            validate_note_id(&copied[0].id).expect("fresh copied attachment id");
+            assert_eq!(copied[0].relative_path, source[0].relative_path);
+            assert_eq!(copied[0].content_hash, source[0].content_hash);
+        }
+        let distinct_paths: i64 = connection
+            .query_row(
+                "SELECT COUNT(DISTINCT relative_path) FROM notes_attachments",
+                [],
+                |row| row.get(0),
+            )
+            .expect("distinct attachment paths");
+        assert_eq!(distinct_paths, 2, "duplication must not copy asset bytes");
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn batch_duplicate_accepts_nonconsecutive_same_parent_roots() {
+        let mut connection = test_connection();
+        for (id, sort_key, title) in [
+            (NODE_ID, 1024, "A"),
+            (CHILD_ID, 2048, "B"),
+            (THIRD_ID, 3072, "C"),
+            (FOURTH_ID, 4096, "D"),
+        ] {
+            insert_node(&connection, id, None, sort_key, title);
+        }
+
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![THIRD_ID.to_string(), NODE_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect("nonconsecutive same-parent duplicate");
+
+        let roots = active_children(&connection, None);
+        assert_eq!(roots.len(), 6);
+        assert_eq!(
+            roots
+                .iter()
+                .map(|(id, _)| node_shape(&connection, id).2)
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "C", "A", "C", "D"]
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn batch_duplicate_rebalances_an_exhausted_placement_gap() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "A");
+        insert_node(&connection, CHILD_ID, None, 1025, "B");
+        insert_node(&connection, THIRD_ID, None, 1026, "C");
+
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect("duplicate across an exhausted sort-key gap");
+
+        assert_eq!(
+            active_children(&connection, None)
+                .iter()
+                .map(|(id, _)| node_shape(&connection, id).2)
+                .collect::<Vec<_>>(),
+            vec!["A", "B", "A", "B", "C"]
+        );
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn batch_duplicate_rebuilds_relative_dates_from_the_injected_local_day() {
+        let mut connection = test_connection();
+        create_node_at(
+            &mut connection,
+            CreateNodeInput {
+                id: NODE_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "today".to_string(),
+                note: String::new(),
+            },
+            fixed_today(),
+        )
+        .expect("create relative-date source");
+        assert_eq!(date_rows(&connection, NODE_ID)[0].3, "2026-07-11");
+        let duplicate_today = LocalDate::new(2026, 8, 20).expect("duplicate local day");
+
+        let (_, duplicated_root_ids) = apply_batch_at(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+            duplicate_today,
+        )
+        .expect("dated batch duplicate");
+        let copied_root = duplicated_root_ids
+            .expect("duplicate root result")
+            .into_iter()
+            .next()
+            .expect("one copied root");
+
+        assert_eq!(date_rows(&connection, &copied_root)[0].3, "2026-08-20");
+        assert_eq!(date_rows(&connection, NODE_ID)[0].3, "2026-07-11");
+    }
+
+    #[test]
+    fn batch_duplicate_rejects_mixed_parent_deleted_archived_and_missing_roots() {
+        let mut mixed = test_connection();
+        insert_node(&mixed, NODE_ID, None, 1024, "parent");
+        insert_node(&mixed, CHILD_ID, Some(NODE_ID), 1024, "child");
+        insert_node(&mixed, THIRD_ID, None, 2048, "other root");
+        let before = persistent_state(&mixed);
+        let error = apply_batch(
+            &mut mixed,
+            ApplyBatchInput {
+                node_ids: vec![CHILD_ID.to_string(), THIRD_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("mixed parents");
+        assert!(error.contains("same parent"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&mixed), before);
+
+        let mut deleted = test_connection();
+        insert_node(&deleted, NODE_ID, None, 1024, "deleted");
+        soft_delete_node(&mut deleted, NODE_ID).expect("delete source");
+        let before = persistent_state(&deleted);
+        let error = apply_batch(
+            &mut deleted,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("deleted source");
+        assert!(error.contains("trash"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&deleted), before);
+
+        let mut archived = test_connection();
+        insert_node(&archived, NODE_ID, None, 1024, "archived");
+        archive_node(&mut archived, NODE_ID).expect("archive source");
+        let before = persistent_state(&archived);
+        let error = apply_batch(
+            &mut archived,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("archived source");
+        assert!(error.contains("archived"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&archived), before);
+
+        let mut missing = test_connection();
+        let before = persistent_state(&missing);
+        let error = apply_batch(
+            &mut missing,
+            ApplyBatchInput {
+                node_ids: vec![EIGHTH_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("cross-vault source");
+        assert!(
+            error.contains("does not exist"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(persistent_state(&missing), before);
+    }
+
+    #[test]
+    fn batch_duplicate_rejects_a_cycle_through_the_selected_root_without_writes() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "cycle root");
+        insert_node(&connection, CHILD_ID, Some(NODE_ID), 1024, "cycle child");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, NODE_ID],
+            )
+            .expect("corrupt source into a cycle");
+        let before = persistent_state(&connection);
+
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("cyclic source must be rejected");
+
+        assert!(error.contains("cycle"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&connection), before);
+    }
+
+    #[test]
+    fn batch_duplicate_rejects_an_ancestor_cycle_above_the_selected_root_without_writes() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "cycle ancestor A");
+        insert_node(
+            &connection,
+            CHILD_ID,
+            Some(NODE_ID),
+            1024,
+            "cycle ancestor B",
+        );
+        insert_node(
+            &connection,
+            THIRD_ID,
+            Some(NODE_ID),
+            2048,
+            "selected descendant",
+        );
+        connection
+            .execute(
+                "UPDATE notes_nodes SET parent_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, NODE_ID],
+            )
+            .expect("corrupt ancestors into a cycle");
+        let before = persistent_state(&connection);
+
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![THIRD_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("an ancestor cycle must be rejected");
+
+        assert!(error.contains("cycle"), "unexpected error: {error}");
+        assert_eq!(persistent_state(&connection), before);
+    }
+
+    #[test]
+    fn batch_duplicate_rolls_back_an_earlier_root_after_later_index_failure() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "A #Safe", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            None,
+            Some(NODE_ID),
+            "B #Reject",
+            "",
+        );
+        let before = persistent_state(&connection);
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_later_duplicate_tag BEFORE INSERT ON notes_tags \
+                 WHEN NEW.normalized_tag = 'reject' \
+                 BEGIN SELECT RAISE(ABORT, 'later duplicate index rejected'); END;",
+            )
+            .expect("later-root index failure trigger");
+
+        let error = apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect_err("later copied root must roll back the forest");
+
+        assert!(
+            error.contains("later duplicate index rejected"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(persistent_state(&connection), before);
+        assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn duplicate_node_rejects_attachment_vault_overflow_before_any_write() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        let nodes = [NODE_ID, CHILD_ID, THIRD_ID, FOURTH_ID];
+        for index in 0..usize::try_from(MAX_NOTE_ATTACHMENTS_PER_VAULT).expect("vault limit") {
+            let node_index =
+                index / usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE).expect("node limit");
+            insert_test_attachment(&connection, index, nodes[node_index]);
+        }
+        let before_nodes = active_node_ids(&connection);
+        let before_attachments = connection
+            .prepare(
+                "SELECT id, node_id, relative_path, content_hash FROM notes_attachments \
+                 ORDER BY id",
+            )
+            .expect("prepare attachment state")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .expect("query attachment state")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect attachment state");
+        let context = import_context("duplicate");
+
+        let error = match with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&context),
+            |connection| duplicate_node(connection, NODE_ID),
+        ) {
+            Ok(_) => panic!("vault attachment overflow must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        assert_eq!(active_node_ids(&connection), before_nodes);
+        let after_attachments = connection
+            .prepare(
+                "SELECT id, node_id, relative_path, content_hash FROM notes_attachments \
+                 ORDER BY id",
+            )
+            .expect("prepare attachment state after rejection")
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .expect("query attachment state after rejection")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect attachment state after rejection");
+        assert_eq!(after_attachments, before_attachments);
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn batch_duplicate_preflights_the_full_forest_attachment_capacity() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+            (SIXTH_ID, 6144),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        insert_test_attachment(&connection, 0, NODE_ID);
+        insert_test_attachment(&connection, 1, CHILD_ID);
+        let fillers = [THIRD_ID, FOURTH_ID, FIFTH_ID, SIXTH_ID];
+        let mut index = 2_usize;
+        for (filler_index, node_id) in fillers.into_iter().enumerate() {
+            let count = if filler_index < 3 {
+                usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE).expect("node limit")
+            } else {
+                125
+            };
+            for _ in 0..count {
+                insert_test_attachment(&connection, index, node_id);
+                index += 1;
+            }
+        }
+        assert_eq!(index, 511);
+        let before_nodes = active_node_ids(&connection);
+        let before_attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count before overflow");
+        let context = import_context("batchDuplicate");
+
+        let error = match with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&context),
+            |connection| {
+                apply_batch(
+                    connection,
+                    ApplyBatchInput {
+                        node_ids: vec![CHILD_ID.to_string(), NODE_ID.to_string()],
+                        op: BatchOp::Duplicate,
+                    },
+                )
+            },
+        ) {
+            Ok(_) => panic!("full forest attachment overflow must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error, "A Notes vault can contain at most 512 attachments.");
+        assert_eq!(active_node_ids(&connection), before_nodes);
+        let after_attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count after overflow");
+        assert_eq!(after_attachment_count, before_attachment_count);
+        assert_eq!(history_entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn batch_duplicate_allows_attachment_copies_at_the_exact_vault_limit() {
+        let mut connection = test_connection();
+        for (id, sort_key) in [
+            (NODE_ID, 1024),
+            (CHILD_ID, 2048),
+            (THIRD_ID, 3072),
+            (FOURTH_ID, 4096),
+            (FIFTH_ID, 5120),
+            (SIXTH_ID, 6144),
+        ] {
+            insert_node(&connection, id, None, sort_key, id);
+        }
+        insert_test_attachment(&connection, 0, NODE_ID);
+        insert_test_attachment(&connection, 1, CHILD_ID);
+        let fillers = [THIRD_ID, FOURTH_ID, FIFTH_ID, SIXTH_ID];
+        let mut index = 2_usize;
+        for (filler_index, node_id) in fillers.into_iter().enumerate() {
+            let count = if filler_index < 3 {
+                usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE).expect("node limit")
+            } else {
+                124
+            };
+            for _ in 0..count {
+                insert_test_attachment(&connection, index, node_id);
+                index += 1;
+            }
+        }
+        assert_eq!(index, 510);
+
+        apply_batch(
+            &mut connection,
+            ApplyBatchInput {
+                node_ids: vec![NODE_ID.to_string(), CHILD_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+        )
+        .expect("exact attachment capacity remains legal");
+
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count at capacity");
+        assert_eq!(attachment_count, MAX_NOTE_ATTACHMENTS_PER_VAULT);
         assert_tree_invariants(&connection);
     }
 

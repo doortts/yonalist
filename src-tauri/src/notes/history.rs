@@ -1273,17 +1273,17 @@ mod tests {
         with_history_transaction_and_prunes, HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
-        archive_node, connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
-        create_node, delete_database, duplicate_node, empty_trash, list_tags, load_workspace,
-        move_node, remove_attachment, restore_node, search_nodes, search_nodes_structured,
-        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
-        unarchive_node, update_node, NewAttachment,
+        apply_batch, archive_node, connect_notes_db, create_attachment,
+        create_attachments_coordinated_for_node, create_node, delete_database, duplicate_node,
+        empty_trash, list_tags, load_workspace, move_node, remove_attachment, restore_node,
+        search_nodes, search_nodes_structured, soft_delete_node, split_node, toggle_collapsed,
+        toggle_complete, toggle_star, unarchive_node, update_node, NewAttachment,
     };
     use crate::notes::types::{
-        CreateNodeInput, MoveNodeInput, NoteSearchTag, NoteStructuredSearchQuery, NoteTagPrefix,
-        NotesHistoryContext, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
-        SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
-        MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        ApplyBatchInput, BatchOp, CreateNodeInput, MoveNodeInput, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagPrefix, NotesHistoryContext, NotesMutationResult,
+        NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
 
@@ -1765,6 +1765,153 @@ mod tests {
             redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo command");
         }
         assert_eq!(active(&connection).nodes.len(), 4);
+    }
+
+    #[test]
+    fn notes_history_replays_batch_duplicate_with_identical_forest_and_attachment_ids() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, "A #Root"),
+        )
+        .expect("first root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "A child #Nested"),
+        )
+        .expect("child");
+        create_node(
+            &mut connection,
+            create_input(THIRD_ID, None, Some(NODE_ID), "B #Root"),
+        )
+        .expect("second root");
+        insert_history_attachment(&connection, 1, NODE_ID);
+        insert_history_attachment(&connection, 2, CHILD_ID);
+        insert_history_attachment(&connection, 3, THIRD_ID);
+        let context = history_context(1, "batchDuplicate");
+
+        let duplicated = journal(&mut connection, &context, |connection| {
+            apply_batch(
+                connection,
+                ApplyBatchInput {
+                    node_ids: vec![
+                        THIRD_ID.to_string(),
+                        CHILD_ID.to_string(),
+                        NODE_ID.to_string(),
+                    ],
+                    op: BatchOp::Duplicate,
+                },
+            )
+        })
+        .expect("batch duplicate");
+
+        let root_ids = connection
+            .prepare(
+                "SELECT id FROM notes_nodes WHERE parent_id IS NULL AND deleted_at IS NULL \
+                 AND archived_at IS NULL ORDER BY sort_key, id",
+            )
+            .expect("prepare roots")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query roots")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect roots");
+        assert_eq!(root_ids.len(), 4);
+        let copied_root_ids = [root_ids[2].clone(), root_ids[3].clone()];
+        let copied_child_id = duplicated
+            .nodes
+            .iter()
+            .find(|node| node.parent_id.as_deref() == Some(copied_root_ids[0].as_str()))
+            .expect("copied child")
+            .id
+            .clone();
+        let copied_node_ids = [
+            copied_root_ids[0].clone(),
+            copied_child_id.clone(),
+            copied_root_ids[1].clone(),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let mut node_snapshot = duplicated
+            .nodes
+            .iter()
+            .filter(|node| copied_node_ids.contains(&node.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        node_snapshot.sort_by(|left, right| left.id.cmp(&right.id));
+        let attachment_snapshot = connection
+            .prepare(
+                "SELECT id, node_id, sort_key, relative_path, content_hash \
+                 FROM notes_attachments \
+                 WHERE node_id IN (?1, ?2, ?3) ORDER BY id",
+            )
+            .expect("prepare copied attachment snapshot")
+            .query_map(
+                params![&copied_root_ids[0], &copied_child_id, &copied_root_ids[1]],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .expect("query copied attachment snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect copied attachment snapshot");
+        assert_eq!(attachment_snapshot.len(), 3);
+        assert_eq!(entry_count(&connection), 1);
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo batch duplicate");
+        assert!(active(&connection)
+            .nodes
+            .iter()
+            .all(|node| !copied_node_ids.contains(&node.id)));
+        let attachment_count_after_undo: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("attachment count after undo");
+        assert_eq!(attachment_count_after_undo, 3);
+
+        let redone = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("redo batch duplicate");
+        let mut restored_nodes = redone
+            .workspace
+            .nodes
+            .iter()
+            .filter(|node| copied_node_ids.contains(&node.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        restored_nodes.sort_by(|left, right| left.id.cmp(&right.id));
+        assert_eq!(restored_nodes, node_snapshot);
+        let restored_attachments = connection
+            .prepare(
+                "SELECT id, node_id, sort_key, relative_path, content_hash \
+                 FROM notes_attachments \
+                 WHERE node_id IN (?1, ?2, ?3) ORDER BY id",
+            )
+            .expect("prepare restored attachment snapshot")
+            .query_map(
+                params![&copied_root_ids[0], &copied_child_id, &copied_root_ids[1]],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .expect("query restored attachment snapshot")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect restored attachment snapshot");
+        assert_eq!(restored_attachments, attachment_snapshot);
+        assert_eq!(entry_count(&connection), 1);
     }
 
     #[test]

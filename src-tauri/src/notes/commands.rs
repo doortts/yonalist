@@ -17,7 +17,7 @@ use crate::notes::history::{
     undo_with_attachment_storage_at, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
-    apply_batch, archive_node, attachment_by_id, collapse_all,
+    apply_batch_at, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
     empty_trash, expand_all, import_subtree_at, list_tags, list_tags_with_counts, load_workspace,
     move_node, open_notes_export_db, remove_attachment, remove_empty_node,
@@ -541,12 +541,21 @@ pub(crate) fn notes_apply_batch_inner(
     input: ApplyBatchInput,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, String> {
-    // Batch ops are structural only (no title/note edits), so no date rebuild is
-    // needed — a plain `run_mutation` gives us the single-transaction /
-    // single-history-entry / delta behavior for free.
-    run_mutation(&vault_path, history_context, |connection| {
-        apply_batch(connection, input)
-    })
+    // Duplicate copies title/note content, so every batch runs through the dated
+    // path. The repository still returns `None` for every non-duplicate op.
+    let mut duplicated_root_ids = None;
+    let mut result = run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| {
+            let (workspace, root_ids) = apply_batch_at(connection, input, today)?;
+            duplicated_root_ids = root_ids;
+            Ok(workspace)
+        },
+    )?;
+    result.duplicated_root_ids = duplicated_root_ids;
+    Ok(result)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -3453,6 +3462,204 @@ mod tests {
     }
 
     #[test]
+    fn batch_duplicate_returns_ordered_roots_and_replays_one_atomic_history_entry() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        seed_batch_node(&vault_path, BATCH_D_ID, None, None);
+        seed_batch_node(&vault_path, BATCH_A_ID, Some(BATCH_D_ID), None);
+        seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
+        seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_D_ID), Some(BATCH_A_ID));
+        seed_batch_node(
+            &vault_path,
+            BATCH_MISSING_ID,
+            Some(BATCH_D_ID),
+            Some(BATCH_B_ID),
+        );
+
+        let mutation = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![
+                    BATCH_B_ID.to_string(),
+                    BATCH_C_ID.to_string(),
+                    BATCH_A_ID.to_string(),
+                ],
+                op: BatchOp::Duplicate,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchDuplicate")),
+        )
+        .expect("batch duplicate");
+
+        assert_eq!(
+            mutation.history_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(history_entry_count(&vault_path), 1);
+        let children = active_child_ids(&vault_path, Some(BATCH_D_ID));
+        assert_eq!(children.len(), 5);
+        let copied_root_ids = vec![children[2].clone(), children[3].clone()];
+        assert_eq!(
+            children,
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                copied_root_ids[0].clone(),
+                copied_root_ids[1].clone(),
+                BATCH_MISSING_ID.to_string(),
+            ]
+        );
+        assert_eq!(
+            mutation.duplicated_root_ids.as_ref(),
+            Some(&copied_root_ids),
+            "the result reports only copied roots in stored source order"
+        );
+        let copied_a_children = active_child_ids(&vault_path, Some(&copied_root_ids[0]));
+        assert_eq!(copied_a_children.len(), 1);
+        let copied_node_ids = [
+            copied_root_ids[0].clone(),
+            copied_a_children[0].clone(),
+            copied_root_ids[1].clone(),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        let mut copied_snapshot = mutation
+            .workspace
+            .nodes
+            .iter()
+            .filter(|node| copied_node_ids.contains(&node.id))
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    node.parent_id.clone(),
+                    node.sort_key,
+                    node.title.clone(),
+                    node.note.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        copied_snapshot.sort();
+        assert_eq!(copied_snapshot.len(), 3);
+
+        let undone = notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo batch duplicate");
+        assert_eq!(
+            undone.replayed_entry_id.as_deref(),
+            Some(REPLACEMENT_ENTRY_ID)
+        );
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_D_ID)),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                BATCH_MISSING_ID.to_string(),
+            ]
+        );
+        assert!(undone
+            .workspace
+            .nodes
+            .iter()
+            .all(|node| !copied_node_ids.contains(&node.id)));
+
+        let redone = notes_redo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo batch duplicate");
+        assert_eq!(
+            active_child_ids(&vault_path, Some(BATCH_D_ID)),
+            vec![
+                BATCH_A_ID.to_string(),
+                BATCH_B_ID.to_string(),
+                copied_root_ids[0].clone(),
+                copied_root_ids[1].clone(),
+                BATCH_MISSING_ID.to_string(),
+            ]
+        );
+        let mut restored_snapshot = redone
+            .workspace
+            .nodes
+            .iter()
+            .filter(|node| copied_node_ids.contains(&node.id))
+            .map(|node| {
+                (
+                    node.id.clone(),
+                    node.parent_id.clone(),
+                    node.sort_key,
+                    node.title.clone(),
+                    node.note.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        restored_snapshot.sort();
+        assert_eq!(restored_snapshot, copied_snapshot);
+        assert_eq!(history_entry_count(&vault_path), 1);
+    }
+
+    #[test]
+    fn batch_duplicate_later_root_failure_leaves_no_copies_or_history() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: BATCH_A_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "A #Safe".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("first source");
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: BATCH_B_ID.to_string(),
+                parent_id: None,
+                after_id: Some(BATCH_A_ID.to_string()),
+                title: "B #Reject".to_string(),
+                note: String::new(),
+            },
+            None,
+        )
+        .expect("second source");
+        let connection = connect_notes_db(&vault_path).expect("open failure fixture");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_command_duplicate_tag BEFORE INSERT ON notes_tags \
+                 WHEN NEW.normalized_tag = 'reject' \
+                 BEGIN SELECT RAISE(ABORT, 'command duplicate index rejected'); END;",
+            )
+            .expect("later-root index failure trigger");
+        drop(connection);
+        let before = active_child_ids(&vault_path, None);
+
+        let error = notes_apply_batch(
+            vault_path.clone(),
+            ApplyBatchInput {
+                node_ids: vec![BATCH_A_ID.to_string(), BATCH_B_ID.to_string()],
+                op: BatchOp::Duplicate,
+            },
+            Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchDuplicate")),
+        )
+        .expect_err("later-root failure");
+
+        assert!(
+            error.contains("command duplicate index rejected"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(active_child_ids(&vault_path, None), before);
+        assert_eq!(history_entry_count(&vault_path), 0);
+    }
+
+    #[test]
     fn batch_complete_sets_every_node_in_one_history_entry_and_undo_reverts_all() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
@@ -3479,6 +3686,7 @@ mod tests {
             mutation.history_entry_id.as_deref(),
             Some(REPLACEMENT_ENTRY_ID)
         );
+        assert_eq!(mutation.duplicated_root_ids, None);
         assert!(mutation.can_undo);
         assert!(mutation
             .workspace
@@ -3741,6 +3949,8 @@ mod tests {
         )
         .expect("indent first child is a no-op");
         assert_eq!(noop.history_entry_id, None);
+        assert_eq!(noop.duplicated_root_ids, None);
+        assert_eq!(history_entry_count(&vault_path), 0);
         assert_eq!(
             active_child_ids(&vault_path, Some(BATCH_D_ID)),
             vec![
