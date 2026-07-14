@@ -1,7 +1,7 @@
 # Notes current-schema reset design
 
 **Date:** 2026-07-14  
-**Status:** Review
+**Status:** Approved
 
 ## Goal
 
