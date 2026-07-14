@@ -19,6 +19,7 @@ import { ChevronRight, Home, ListChecks, Trash2 } from "lucide-react";
 import {
   type CSSProperties,
   type ClipboardEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   useCallback,
   useContext,
   useEffect,
@@ -64,6 +65,7 @@ import {
   useNotesState
 } from "./NotesWorkspaceContext";
 import { writeNotesClipboardText } from "./notesClipboard";
+import { createNotesSelectionNativeClipboardController } from "./notesSelectionNativeClipboard";
 import {
   deriveNotesSelectionActionSnapshot,
   type NotesSelectionActionSnapshot
@@ -383,6 +385,7 @@ export function NotesOutlinePane() {
   const selectionAuthorityRequestRef = useRef(0);
   const selectionChooserPreparationRequestRef = useRef(0);
   const selectionChooserPreparingRef = useRef(false);
+  const selectionClipboardLifecycleRef = useRef(0);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -1018,6 +1021,118 @@ export function NotesOutlinePane() {
   const executeSelectionCommand = selectionRouter.execute;
   const invalidatePreparedSelectionClipboard =
     selectionRouter.invalidatePreparedClipboard;
+  const selectionNativeClipboard = useMemo(
+    () =>
+      createNotesSelectionNativeClipboardController({
+        prepareClipboard: selectionRouter.prepareClipboard,
+        commitPreparedClipboardEvent:
+          selectionRouter.commitPreparedClipboardEvent,
+        invalidatePreparedClipboard:
+          selectionRouter.invalidatePreparedClipboard
+      }),
+    [
+      selectionRouter.commitPreparedClipboardEvent,
+      selectionRouter.invalidatePreparedClipboard,
+      selectionRouter.prepareClipboard
+    ]
+  );
+  const selectionClipboardReady =
+    materializedSelectionIds.length > 0 &&
+    selectionSnapshot?.eligibility.copy.eligible === true &&
+    exactNoteIds(selectionSnapshot.selectedNodeIds, materializedSelectionIds) &&
+    (libraryView === "all" || currentPreparedAuthority !== null);
+  useEffect(() => {
+    if (
+      selectionClipboardReady &&
+      !selectionRouter.busy &&
+      !selectionChooserFeedback.busy &&
+      !deletingNotesData
+    ) {
+      void selectionNativeClipboard.refresh();
+      return;
+    }
+    selectionNativeClipboard.invalidate();
+  }, [
+    bodyVisibleIds,
+    deletingNotesData,
+    draftsByNodeId,
+    libraryView,
+    selectionChooserFeedback.busy,
+    selectionClipboardReady,
+    selectionNativeClipboard,
+    selectionRevision,
+    selectionRouter.busy,
+    state,
+    vaultRoot
+  ]);
+  useEffect(() => {
+    selectionClipboardLifecycleRef.current += 1;
+    return () => {
+      const cleanupGeneration = selectionClipboardLifecycleRef.current + 1;
+      selectionClipboardLifecycleRef.current = cleanupGeneration;
+      queueMicrotask(() => {
+        if (
+          selectionClipboardLifecycleRef.current === cleanupGeneration
+        ) {
+          selectionNativeClipboard.dispose();
+        }
+      });
+    };
+  }, [selectionNativeClipboard]);
+  const handleSelectionClipboardEvent = useCallback(
+    (
+      intent: "copy" | "cut",
+      event: ClipboardEvent<HTMLDivElement>
+    ): void => {
+      const textControlTarget =
+        event.target instanceof HTMLInputElement ||
+        event.target instanceof HTMLTextAreaElement;
+      if (
+        !textControlTarget &&
+        typeof window.getSelection === "function" &&
+        window.getSelection()?.isCollapsed === false
+      ) {
+        return;
+      }
+      const options = { allowNonTextTarget: !textControlTarget };
+      const outcome =
+        intent === "copy"
+          ? selectionNativeClipboard.handleCopy(event, options)
+          : selectionNativeClipboard.handleCut(event, options);
+      if (outcome.kind === "committed") {
+        event.stopPropagation();
+      }
+    },
+    [selectionNativeClipboard]
+  );
+  const handleSelectionCopyCapture = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) =>
+      handleSelectionClipboardEvent("copy", event),
+    [handleSelectionClipboardEvent]
+  );
+  const handleSelectionCutCapture = useCallback(
+    (event: ClipboardEvent<HTMLDivElement>) =>
+      handleSelectionClipboardEvent("cut", event),
+    [handleSelectionClipboardEvent]
+  );
+  const handleSelectionClipboardKeyDownCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      selectionNativeClipboard.handleKeyDown(event);
+    },
+    [selectionNativeClipboard]
+  );
+  const handleSelectionClipboardKeyUpCapture = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      selectionNativeClipboard.handleKeyUp(event);
+    },
+    [selectionNativeClipboard]
+  );
+  const handleSelectionCompositionStartCapture = useCallback((): void => {
+    selectionNativeClipboard.handleCompositionStart();
+  }, [selectionNativeClipboard]);
+  const handleSelectionCompositionEndCapture = useCallback((): void => {
+    selectionNativeClipboard.handleCompositionEnd();
+  }, [selectionNativeClipboard]);
   useEffect(() => {
     if (!selection || materializedSelectionIds.length > 0) {
       return;
@@ -1522,6 +1637,12 @@ export function NotesOutlinePane() {
           <div
             className="notes-outline-content"
             ref={contentRef}
+            onCompositionEndCapture={handleSelectionCompositionEndCapture}
+            onCompositionStartCapture={handleSelectionCompositionStartCapture}
+            onCopyCapture={handleSelectionCopyCapture}
+            onCutCapture={handleSelectionCutCapture}
+            onKeyDownCapture={handleSelectionClipboardKeyDownCapture}
+            onKeyUpCapture={handleSelectionClipboardKeyUpCapture}
             onPasteCapture={handlePasteCapture}
           >
           {initialLoading && (

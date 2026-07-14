@@ -1,5 +1,6 @@
 import {
   act,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -412,6 +413,33 @@ async function openNodeMenu(label: string, user = userEvent.setup()) {
     await screen.findByRole("button", { name: `More actions for ${label}` })
   );
   return screen.findByRole("menu");
+}
+
+function dispatchClipboardEvent(
+  kind: "copy" | "cut",
+  target: Element,
+  order?: string[]
+) {
+  const values = new Map<string, string>();
+  const setData = vi.fn((type: string, value: string) => {
+    order?.push(type);
+    values.set(type, value);
+  });
+  const clipboardData = { setData } as unknown as DataTransfer;
+  const event =
+    kind === "copy"
+      ? createEvent.copy(target, {
+          bubbles: true,
+          cancelable: true,
+          clipboardData
+        })
+      : createEvent.cut(target, {
+          bubbles: true,
+          cancelable: true,
+          clipboardData
+        });
+  fireEvent(target, event);
+  return { event, setData, values };
 }
 
 function mockOutlineRowRects() {
@@ -2632,6 +2660,67 @@ describe("Notes workspace", () => {
       );
     });
 
+    it("leaves native Copy unowned until a filtered selection has full authority", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
+        node({ id: "b", sortKey: 2, title: "Hidden sibling" })
+      ];
+      configureRepository(activeNodes);
+      const hydration = deferred<NotesWorkspace>();
+      let deferActiveAuthority = false;
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (scope.kind === "starred") {
+            return workspace(activeNodes.filter((current) => current.isStarred));
+          }
+          if (deferActiveAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() => expect(queryTitleInput("Hidden sibling")).toBeNull());
+
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferActiveAuthority = true;
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Alpha" }),
+        { shiftKey: true }
+      );
+      const title = getTitleInput("Alpha");
+      title.setSelectionRange(0, 0);
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBe(activeLoadsBeforeSelection + 1)
+      );
+
+      const provisional = dispatchClipboardEvent("copy", title);
+      expect(provisional.event.defaultPrevented).toBe(false);
+      expect(provisional.setData).not.toHaveBeenCalled();
+
+      await act(async () => hydration.resolve(workspace(activeNodes)));
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+      );
+      await act(async () => undefined);
+
+      const authoritative = dispatchClipboardEvent("copy", title);
+      expect(authoritative.event.defaultPrevented).toBe(true);
+      expect(authoritative.values.get("text/plain")).toBe("- Alpha");
+    });
+
     it("consumes repeated selection shortcuts without mutating or clearing the range", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
@@ -2680,6 +2769,118 @@ describe("Notes workspace", () => {
           )
         ).map((row) => row.dataset.outlineId)
       ).toEqual(["a", "b"]);
+    });
+
+    it("owns prepared native Copy while preserving browser text, repeat, and composition events", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+      );
+      await act(async () => undefined);
+
+      title.focus();
+      title.setSelectionRange(0, 0);
+      const committed = dispatchClipboardEvent("copy", title);
+      expect(committed.event.defaultPrevented).toBe(true);
+      expect(committed.setData.mock.calls).toEqual([
+        ["text/plain", "- Alpha\n- Bravo"],
+        ["text/markdown", "- Alpha\n- Bravo"]
+      ]);
+
+      title.setSelectionRange(0, 2);
+      const nativeText = dispatchClipboardEvent("copy", title);
+      expect(nativeText.event.defaultPrevented).toBe(false);
+      expect(nativeText.setData).not.toHaveBeenCalled();
+
+      title.setSelectionRange(0, 0);
+      fireEvent.keyDown(title, { key: "c", ctrlKey: true, repeat: true });
+      const repeated = dispatchClipboardEvent("copy", title);
+      expect(repeated.event.defaultPrevented).toBe(false);
+      expect(repeated.setData).not.toHaveBeenCalled();
+      fireEvent.keyUp(title, { key: "c" });
+
+      fireEvent.compositionStart(title);
+      const composing = dispatchClipboardEvent("copy", title);
+      expect(composing.event.defaultPrevented).toBe(false);
+      expect(composing.setData).not.toHaveBeenCalled();
+      fireEvent.compositionEnd(title);
+
+      const content = document.querySelector(".notes-outline-content");
+      if (!(content instanceof HTMLElement)) {
+        throw new Error("Outline content did not render");
+      }
+      const getSelection = vi
+        .spyOn(window, "getSelection")
+        .mockReturnValue({ isCollapsed: false } as Selection);
+      const selectedPageText = dispatchClipboardEvent("copy", content);
+      expect(selectedPageText.event.defaultPrevented).toBe(false);
+      expect(selectedPageText.setData).not.toHaveBeenCalled();
+      getSelection.mockRestore();
+
+      const paneCopy = dispatchClipboardEvent("copy", content);
+      expect(paneCopy.event.defaultPrevented).toBe(true);
+      expect(paneCopy.values.get("text/plain")).toBe("- Alpha\n- Bravo");
+    });
+
+    it("commits a prepared native Cut synchronously and mutates the range once", async () => {
+      useCtrlPlatform();
+      const order: string[] = [];
+      configureRepository(threeRoots());
+      notesStoreMock.applyBatch.mockImplementation(
+        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+          order.push("batch");
+          const ids = new Set(input.nodeIds);
+          confirmedNodes = confirmedNodes.filter(
+            (current) => input.op !== "delete" || !ids.has(current.id)
+          );
+          return workspace(confirmedNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+      );
+      await act(async () => undefined);
+
+      title.focus();
+      title.setSelectionRange(0, 0);
+      const committed = dispatchClipboardEvent("cut", title, order);
+      expect(committed.event.defaultPrevented).toBe(true);
+      expect(committed.setData.mock.calls).toEqual([
+        ["text/plain", "- Alpha\n- Bravo"],
+        ["text/markdown", "- Alpha\n- Bravo"]
+      ]);
+      expect(order.slice(0, 2)).toEqual(["text/plain", "text/markdown"]);
+
+      const repeated = dispatchClipboardEvent("cut", title, order);
+      expect(repeated.event.defaultPrevented).toBe(false);
+      expect(repeated.setData).not.toHaveBeenCalled();
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(order).toEqual(["text/plain", "text/markdown", "batch"]);
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "delete",
+        nodeIds: ["a", "b"]
+      });
+      expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 
     it("routes a selected row menu through the full-range command bridge", async () => {
