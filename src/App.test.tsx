@@ -36,6 +36,7 @@ import { clearWorkItemsCache } from "./hooks/useWorkItems";
 import { activeFeatureStorageKey } from "./features/core/featureSelection";
 import { notesFeature } from "./features/notes/NotesFeature";
 import { notesStore } from "./services/notesStore";
+import { clearDetailRenderSnapshots } from "./services/detailRenderCache";
 import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
@@ -98,6 +99,7 @@ describe("Yonalist app shell", () => {
     notificationDetailInputs.mockClear();
     loadVaultStateOverride.mockReset();
     clearWorkItemsCache();
+    clearDetailRenderSnapshots();
     clearNotificationCache();
     clearNotificationDetailCache();
     // Existing shell tests assume the app is past the startup login gate.

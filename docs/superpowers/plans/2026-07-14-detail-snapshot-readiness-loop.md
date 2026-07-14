@@ -18,6 +18,45 @@
 
 ---
 
+### Task 0: Restore App test cache isolation
+
+**Files:**
+- Modify: `src/App.test.tsx`
+
+**Interfaces:**
+- Consumes: `clearDetailRenderSnapshots(): void` from `src/services/detailRenderCache.ts`.
+- Produces: an App-test `beforeEach` that starts without snapshots captured by earlier tests.
+
+- [x] **Step 1: Confirm the baseline failure pattern**
+
+Run the full suite and the failing test in isolation. The full suite must show duplicate `Write a comment` inputs while the isolated test passes, demonstrating leaked timing-sensitive module cache rather than a deterministic component duplicate.
+
+- [x] **Step 2: Clear detail snapshots in App test setup**
+
+Import `clearDetailRenderSnapshots` and call it with the other cache resets:
+
+```ts
+import { clearDetailRenderSnapshots } from "./services/detailRenderCache";
+
+beforeEach(() => {
+  // existing setup
+  clearDetailRenderSnapshots();
+});
+```
+
+- [x] **Step 3: Run the full suite**
+
+Run: `npm test`
+
+Expected: the previously failing online-return test and the complete suite PASS.
+
+- [x] **Step 4: Commit the isolation fix**
+
+```bash
+git add src/App.test.tsx docs/superpowers/plans/2026-07-14-detail-snapshot-readiness-loop.md
+git commit -m "test(app): isolate detail render snapshots"
+```
+
 ### Task 1: Isolate live Markdown readiness
 
 **Files:**
