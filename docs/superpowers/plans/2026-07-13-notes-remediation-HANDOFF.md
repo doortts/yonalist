@@ -67,6 +67,31 @@
 > - **속도 방침(2026-07-14 사용자 지시):** 저위험 태스크는 코더를 sonnet+medium으로 (복잡·
 >   위험한 것만 opus xHigh). 4.4/4.5/이월 정리에 적용.
 > - 다음: **4.4 붙여넣기 임포트(OPML 제외) → 4.5 Cmd+K 팔레트.**
+>
+> **2026-07-14 갱신 5 (Phase 4 전체 완료):** `notes-remediation` @ `0b6e44a`.
+> - 4.4 붙여넣기 임포트: 4.4a `notes_import_subtree`(한 트랜잭션+한 히스토리, duplicate_node
+>   패턴, depth/count 상한) [opus] + 4.4b 들여쓰기 파서+붙여넣기 배선 [sonnet]. 병합 전
+>   후속 수정(sonnet): depth 상한 백엔드와 정합(treeDepth>=64 거부), **서브트리 임포트는
+>   제목 필드에서만**(노트 본문은 일반 여러 줄 텍스트, 이미지 붙여넣기는 양쪽 유지).
+> - 4.5 Cmd+K 빠른 이동 팔레트(기존 FTS 재사용, Enter→zoomTo) [sonnet].
+> - 전부 fable 적대 리뷰 승인(재작업 0). 게이트: tsc/eslint clean, **vitest 2429 pass/21 skip,
+>   cargo 378 pass/1 ignored.**
+> - 4.4/4.5 minor 이월(비블로킹): 임포트 검증 실패가 generic 'internal' 코드로 표면화(전용
+>   validation 코드 없음); 4.5 Enter가 zoomTo만 호출(아카이브/트래시 스코프로 점프 시
+>   scope 전환 없음 — openSearchResult 대비 얕음). 둘 다 후속.
+>
+> ## Phase 4 (Workflowy Parity) 전체 완료 — 사용자 최우선 요청 충족
+> 다중선택 · 인라인서식 · URL링크 · 붙여넣기 임포트 · Cmd+K 팔레트 모두 병합됨.
+> (4.6 미러/백링크·보드·타임라인은 로드맵 방침대로 별도 승인 대기.)
+>
+> ## 남은 선택적 이월 정리 (블로킹 아님, 원하면 진행)
+> - Gate 3 정량 목표: useNotesWorkspace.ts ≤1500줄(현 ~3500) 추가 분해, 훅 테스트의
+>   mock 호출순서 assertion(~66곳) 정리.
+> - Phase 3 이월: 3.3 `Scope` 값객체 클래스 미사용 정리, scope 3중화 완전 단일소스화,
+>   3.4 delta 프로덕션 검증 fallback.
+> - Phase 4 이월: 위 4.2~4.5 minor 항목들(리치 export, 서식 span 내 태그 FTS 정합,
+>   임포트 validation 에러 코드, Cmd+K openSearchResult 정합).
+> - 전역: `cargo fmt`, Phase 0 후속(Cmd+Shift+Backspace delete 첨부 가드 확인).
 
 **통합 브랜치 `notes-remediation` @ `73b839c`** (이하 계정 전환 시점 기록) 에 다음이 모두 병합·인증됨:
 - Phase R: main 병합(`5b3d65b`) + ESLint 도입(`8c83a4b`)
