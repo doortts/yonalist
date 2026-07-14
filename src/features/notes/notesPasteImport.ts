@@ -1,9 +1,8 @@
 /**
- * Pure parser for Phase 4.4b's paste-import: turn multi-line indented plain
- * text (e.g. copied from another outliner, or hand-typed with a text editor)
- * into the `ImportNode` forest `notes_import_subtree` expects. No IO, no
- * Tauri, no React — this module only reads a string and returns a tree or
- * `null`.
+ * Pure parser for Phase 4.4b's paste-import: turn a Markdown list or
+ * multi-line indented plain text into the `ImportNode` forest
+ * `notes_import_subtree` expects. No IO, no Tauri, no React — this module only
+ * reads a string and returns a tree or `null`.
  *
  * Indentation rules (documented, not just implemented, since there is no
  * single universally "correct" convention for plain-text outlines):
@@ -33,11 +32,19 @@
  *    is preserved as part of the title (only the *recognized* indent prefix
  *    is consumed).
  *
+ * Markdown list rules:
+ *  - Every non-blank line is `-`, `- title`, or the same marker indented by
+ *    exactly two spaces per raw depth.
+ *  - A single Markdown item is structural, including `-` for an empty title.
+ *  - Tabs, odd indentation, and a mix of Markdown and legacy lines are
+ *    rejected instead of being reinterpreted as a different tree.
+ *
  * Not an import:
- *  - Text with no newline at all (a single line) — this is normal text
- *    paste, never a subtree import, regardless of its content.
- *  - Text that, once blank lines are skipped, yields zero or exactly one
- *    node — a lone line is just a normal paste, not a "structure".
+ *  - Legacy text with no newline at all (a single line) — this is normal text
+ *    paste, never a subtree import.
+ *  - Text that yields zero nodes, or legacy text that yields exactly one
+ *    node after blank-line skipping. Markdown's explicit marker makes one
+ *    item structural.
  *  - Text that would blow the defensive caps below — this rejects to `null`
  *    so the caller falls back to plain paste rather than sending an
  *    oversized/degenerate payload to the backend (which enforces the same
@@ -67,6 +74,11 @@ interface RawImportLine {
   title: string;
 }
 
+interface ParsedMarkdownLine extends RawImportLine {
+  isMarkdownCandidate: boolean;
+  isValid: boolean;
+}
+
 function leadingIndentDepth(line: string): { depth: number; contentStart: number } {
   let index = 0;
   let tabCount = 0;
@@ -90,6 +102,71 @@ function utf8ByteLength(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
+function parseMarkdownLine(line: string): ParsedMarkdownLine {
+  let indentEnd = 0;
+  let hasTab = false;
+  while (indentEnd < line.length) {
+    if (line[indentEnd] === " ") {
+      indentEnd += 1;
+      continue;
+    }
+    if (line[indentEnd] === "\t") {
+      hasTab = true;
+      indentEnd += 1;
+      continue;
+    }
+    break;
+  }
+
+  const marker = line[indentEnd];
+  const afterMarker = line[indentEnd + 1];
+  const isMarkdownCandidate =
+    marker === "-" && (afterMarker === undefined || afterMarker === " ");
+  const isValid =
+    isMarkdownCandidate && !hasTab && indentEnd % 2 === 0;
+  const title =
+    afterMarker === undefined ? "" : line.slice(indentEnd + 2);
+
+  return {
+    depth: indentEnd / 2,
+    title,
+    isMarkdownCandidate,
+    isValid
+  };
+}
+
+function parseRawLines(lines: readonly string[]): {
+  rawLines: RawImportLine[];
+  isMarkdown: boolean;
+} | null {
+  const contentLines = lines.filter((line) => line.trim().length > 0);
+  const markdownLines = contentLines.map(parseMarkdownLine);
+  const hasMarkdownCandidate = markdownLines.some(
+    (line) => line.isMarkdownCandidate
+  );
+
+  if (hasMarkdownCandidate) {
+    if (!markdownLines.every((line) => line.isValid)) {
+      return null;
+    }
+    return {
+      isMarkdown: true,
+      rawLines: markdownLines.map(({ depth, title }) => ({ depth, title }))
+    };
+  }
+
+  return {
+    isMarkdown: false,
+    rawLines: contentLines.map((line) => {
+      const { depth, contentStart } = leadingIndentDepth(line);
+      return {
+        depth,
+        title: line.slice(contentStart).replace(/\s+$/, "")
+      };
+    })
+  };
+}
+
 /**
  * Parses `text` into a forest of `ImportNode`s, or returns `null` when the
  * text is not a multi-line structural paste (single line, no structural
@@ -97,24 +174,21 @@ function utf8ByteLength(text: string): number {
  * module doc comment).
  */
 export function parsePastedOutline(text: string): ImportNode[] | null {
-  if (!text.includes("\n")) {
-    return null;
-  }
-
   const normalized = text.replace(/\r\n?/g, "\n");
   const lines = normalized.split("\n");
 
-  const rawLines: RawImportLine[] = [];
-  for (const line of lines) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    const { depth, contentStart } = leadingIndentDepth(line);
-    const title = line.slice(contentStart).replace(/\s+$/, "");
-    rawLines.push({ depth, title });
+  const parsed = parseRawLines(lines);
+  if (parsed === null) {
+    return null;
   }
+  const { rawLines, isMarkdown } = parsed;
 
-  if (rawLines.length < 2 || rawLines.length > MAX_PASTE_IMPORT_NODES) {
+  if (
+    rawLines.length === 0 ||
+    (!isMarkdown &&
+      (rawLines.length < 2 || !normalized.includes("\n"))) ||
+    rawLines.length > MAX_PASTE_IMPORT_NODES
+  ) {
     return null;
   }
 

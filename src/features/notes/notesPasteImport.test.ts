@@ -10,6 +10,47 @@ describe("parsePastedOutline", () => {
     expect(parsePastedOutline("Just one line")).toBeNull();
   });
 
+  it("recognizes one Markdown item, including an empty title, as a structural import", () => {
+    expect(parsePastedOutline("- One item")).toEqual([
+      { title: "One item", children: [] }
+    ]);
+    expect(parsePastedOutline("-")).toEqual([{ title: "", children: [] }]);
+  });
+
+  it("parses a Markdown list with two-space depth, empty items, and Unicode", () => {
+    expect(
+      parsePastedOutline(
+        [
+          "- 부모 😀",
+          "  - Child",
+          "    - café",
+          "  -",
+          "- Sibling"
+        ].join("\n")
+      )
+    ).toEqual([
+      {
+        title: "부모 😀",
+        children: [
+          {
+            title: "Child",
+            children: [{ title: "café", children: [] }]
+          },
+          { title: "", children: [] }
+        ]
+      },
+      { title: "Sibling", children: [] }
+    ]);
+  });
+
+  it.each([
+    ["odd spaces", "- Root\n   - Child"],
+    ["tab indentation", "- Root\n\t- Child"],
+    ["mixed Markdown and legacy lines", "- Root\n  Child"]
+  ])("rejects malformed Markdown indentation: %s", (_case, text) => {
+    expect(parsePastedOutline(text)).toBeNull();
+  });
+
   it("returns null when only one non-blank line survives blank skipping", () => {
     expect(parsePastedOutline("Just one line\n\n   \n")).toBeNull();
   });
@@ -124,6 +165,14 @@ describe("parsePastedOutline", () => {
     const lines = Array.from(
       { length: MAX_PASTE_IMPORT_NODES + 1 },
       (_unused, index) => `line-${index}`
+    );
+    expect(parsePastedOutline(lines.join("\n"))).toBeNull();
+  });
+
+  it("applies the node-count cap to Markdown lists", () => {
+    const lines = Array.from(
+      { length: MAX_PASTE_IMPORT_NODES + 1 },
+      (_unused, index) => `- line-${index}`
     );
     expect(parsePastedOutline(lines.join("\n"))).toBeNull();
   });
