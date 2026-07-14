@@ -7,8 +7,11 @@ import type {
 import {
   applyWorkspaceDelta,
   normalizeWorkspace,
+  notesSelectionReducer,
   notesWorkspaceReducer,
+  selectionRangeIds,
   setNotesDeltaVerificationEnabled,
+  type NotesSelection,
   type NotesWorkspaceDelta
 } from "./notesWorkspaceReducer";
 
@@ -745,5 +748,74 @@ describe("notesWorkspaceReducer delta transition safety", () => {
     });
     expect(settled.nodesById.root.title).toBe("WRONG");
     expect(consoleError).not.toHaveBeenCalled();
+  });
+});
+
+describe("notesSelectionReducer", () => {
+  it("setSelectionAnchor starts a single-node selection", () => {
+    expect(
+      notesSelectionReducer(null, { type: "setSelectionAnchor", anchorId: "b" })
+    ).toEqual({ anchorId: "b", headId: "b" });
+  });
+
+  it("extendSelectionTo pins the anchor and moves the head", () => {
+    const anchored: NotesSelection = { anchorId: "b", headId: "b" };
+    expect(
+      notesSelectionReducer(anchored, { type: "extendSelectionTo", headId: "d" })
+    ).toEqual({ anchorId: "b", headId: "d" });
+  });
+
+  it("extendSelectionTo with no live anchor degenerates to a single node", () => {
+    expect(
+      notesSelectionReducer(null, { type: "extendSelectionTo", headId: "d" })
+    ).toEqual({ anchorId: "d", headId: "d" });
+  });
+
+  it("clearSelection drops the selection", () => {
+    expect(
+      notesSelectionReducer({ anchorId: "b", headId: "d" }, {
+        type: "clearSelection"
+      })
+    ).toBeNull();
+  });
+
+  it("returns the same null reference when clearing an empty selection (React bail-out)", () => {
+    expect(notesSelectionReducer(null, { type: "clearSelection" })).toBeNull();
+  });
+});
+
+describe("selectionRangeIds", () => {
+  const visible = ["a", "b", "c", "d", "e"];
+
+  it("returns the inclusive range when the anchor is above the head", () => {
+    expect(selectionRangeIds({ anchorId: "b", headId: "d" }, visible)).toEqual([
+      "b",
+      "c",
+      "d"
+    ]);
+  });
+
+  it("returns the inclusive range when the anchor is below the head", () => {
+    expect(selectionRangeIds({ anchorId: "d", headId: "b" }, visible)).toEqual([
+      "b",
+      "c",
+      "d"
+    ]);
+  });
+
+  it("returns a single id when anchor and head coincide", () => {
+    expect(selectionRangeIds({ anchorId: "c", headId: "c" }, visible)).toEqual([
+      "c"
+    ]);
+  });
+
+  it("returns an empty range for no selection", () => {
+    expect(selectionRangeIds(null, visible)).toEqual([]);
+  });
+
+  it("returns an empty range when an endpoint is not currently visible", () => {
+    expect(
+      selectionRangeIds({ anchorId: "b", headId: "gone" }, visible)
+    ).toEqual([]);
   });
 });

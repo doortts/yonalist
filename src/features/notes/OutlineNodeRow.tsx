@@ -19,6 +19,7 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
+import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
@@ -56,6 +57,14 @@ interface OutlineNodeRowProps {
   // value — passing the array as a prop would churn its identity every render
   // and defeat this component's memo.
   getVisibleNodeIds(): readonly NoteId[];
+  // Stable accessor for the live multi-node selection, read at keydown/click time
+  // to extend the head. The row never subscribes to the selection (it rides the
+  // drafts slice the row does not read), so this preserves the row's memo.
+  getSelection(): NotesSelection | null;
+  // Atomic membership flag for the multi-node selection range, derived in the
+  // pane from a stable id Set. A plain boolean so a range change re-renders only
+  // the rows whose membership actually flipped.
+  isSelected?: boolean;
   // Atomic drafts-slice reads, hoisted to props so the row does NOT subscribe to
   // the high-volatility drafts context. A keystroke in another row therefore
   // leaves these props referentially unchanged and the memo bails out.
@@ -86,6 +95,8 @@ function OutlineNodeRowComponent({
   ancestorGuideDepths,
   visibleDescendantEndId,
   getVisibleNodeIds,
+  getSelection,
+  isSelected = false,
   draft,
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
@@ -267,6 +278,7 @@ function OutlineNodeRowComponent({
         data-outline-id={nodeId}
         data-guide-end-id={visibleDescendantEndId ?? undefined}
         data-selected={state.selectedId === nodeId ? "true" : undefined}
+        data-range-selected={isSelected ? "true" : undefined}
         style={rowStyle}
       >
         {guides}
@@ -441,7 +453,8 @@ function OutlineNodeRowComponent({
       nodeId,
       platform: detectOutlineShortcutPlatform(),
       workspace: state,
-      visibleNodeIds: getVisibleNodeIds()
+      visibleNodeIds: getVisibleNodeIds(),
+      selection: getSelection()
     });
     if (!resolution) {
       if (event.key === "Enter" && !event.nativeEvent.isComposing) {
@@ -451,8 +464,12 @@ function OutlineNodeRowComponent({
     }
 
     event.preventDefault();
+    // Selection edits and caret moves are cheap and safe mid-command; only
+    // structural commands must wait for the in-flight one to settle.
     if (
       resolution.type !== "focus" &&
+      resolution.type !== "extendSelection" &&
+      resolution.type !== "clearSelection" &&
       structuralCommandInFlightRef.current
     ) {
       return;
@@ -496,6 +513,17 @@ function OutlineNodeRowComponent({
         suppressHandledBlur();
         void actions.focusNode(resolution.nodeId);
         return;
+      case "extendSelection":
+        // Anchor the range at this row (the caret's node) the first time it is
+        // extended; subsequent extensions pin that anchor and only move the head.
+        if (!getSelection()) {
+          actions.setSelectionAnchor(nodeId);
+        }
+        actions.extendSelectionTo(resolution.headId);
+        return;
+      case "clearSelection":
+        actions.clearSelection();
+        return;
       case "focusNote":
         openAndFocusNote();
         return;
@@ -532,6 +560,7 @@ function OutlineNodeRowComponent({
       data-dragging={isDragging ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
+      data-range-selected={isSelected ? "true" : undefined}
       data-notes-attachment-target={imageDropEnabled ? nodeId : undefined}
       data-image-drop-active={
         imageDropEnabled && imageDropActive ? "true" : undefined
@@ -677,7 +706,20 @@ function OutlineNodeRowComponent({
           disabled={disabled}
           data-collapsed={hasChildren && isCollapsed ? "true" : undefined}
           data-sortable-activator={dragEnabled ? "true" : undefined}
-          onClick={() => void actions.zoomTo(nodeId)}
+          onClick={(event) => {
+            // Shift+Click extends the multi-node selection to this row (head),
+            // anchoring at the current caret node the first time. A plain click
+            // still zooms.
+            if (event.shiftKey) {
+              event.preventDefault();
+              if (!getSelection()) {
+                actions.setSelectionAnchor(state.selectedId ?? nodeId);
+              }
+              actions.extendSelectionTo(nodeId);
+              return;
+            }
+            void actions.zoomTo(nodeId);
+          }}
         >
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>

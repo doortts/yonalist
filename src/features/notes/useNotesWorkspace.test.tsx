@@ -7612,3 +7612,115 @@ describe("useNotesWorkspace incremental delta wiring", () => {
     );
   });
 });
+
+describe("useNotesWorkspace multi-node selection", () => {
+  beforeEach(() => {
+    createNoteIdMock.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  function twoNodeStore(overrides: Partial<NotesStore> = {}): NotesStore {
+    return repository({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(
+          workspace([
+            node({ id: "root", sortKey: 1 }),
+            node({ id: "second", sortKey: 2 })
+          ])
+        ),
+      ...overrides
+    });
+  }
+
+  async function withSelectedRange(store: NotesStore = twoNodeStore()) {
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("root");
+      result.current.actions.extendSelectionTo("second");
+    });
+    expect(result.current.selection).toEqual({
+      anchorId: "root",
+      headId: "second"
+    });
+    return { result, store };
+  }
+
+  it("clears the selection when the caret moves (focusNode)", async () => {
+    const { result } = await withSelectedRange();
+    await act(async () => result.current.actions.focusNode("second"));
+    expect(result.current.selection).toBeNull();
+  });
+
+  it("clears the selection on zoom", async () => {
+    const { result } = await withSelectedRange();
+    await act(async () => result.current.actions.zoomTo("second"));
+    expect(result.current.selection).toBeNull();
+  });
+
+  it("clears the selection on a structural mutation", async () => {
+    const { result } = await withSelectedRange();
+    await act(async () => result.current.actions.toggleComplete("root"));
+    expect(result.current.selection).toBeNull();
+  });
+
+  it("clears the selection when typing into a node", async () => {
+    const { result } = await withSelectedRange();
+    act(() =>
+      result.current.actions.updateNodeDraft("root", {
+        title: "typed",
+        note: ""
+      })
+    );
+    expect(result.current.selection).toBeNull();
+  });
+
+  it("preserves the selection across a silent draft autosave", async () => {
+    const store = twoNodeStore({
+      updateNode: vi.fn().mockResolvedValue({
+        workspace: workspace([
+          node({ id: "root", sortKey: 1, title: "typed" }),
+          node({ id: "second", sortKey: 2 })
+        ]),
+        historyEntryId: null,
+        canUndo: false,
+        canRedo: false
+      })
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    // Typing schedules a draft AND collapses any prior selection; establish the
+    // range only afterward so the pending autosave post-dates it.
+    act(() =>
+      result.current.actions.updateNodeDraft("root", {
+        title: "typed",
+        note: ""
+      })
+    );
+    act(() => {
+      result.current.actions.setSelectionAnchor("root");
+      result.current.actions.extendSelectionTo("second");
+    });
+    expect(result.current.selection).not.toBeNull();
+
+    // A silent draft flush settles the authoritative workspace but must not
+    // disturb the selection reducer (no "pending" event, no clear).
+    await act(async () => {
+      await result.current.actions.flushNodeDraft("root");
+    });
+    expect(store.updateNode).toHaveBeenCalled();
+    expect(result.current.selection).toEqual({
+      anchorId: "root",
+      headId: "second"
+    });
+  });
+});

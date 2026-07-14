@@ -933,6 +933,13 @@ button.notes-date-token:hover {
   opacity: 0.72;
 }
 
+/* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
+   row's title line, in the spirit of Workflowy's range highlight. */
+.notes-node[data-range-selected="true"] > .notes-node-main {
+  background: var(--accent-soft);
+  border-radius: 4px;
+}
+
 .notes-node-guides {
   position: absolute;
   z-index: 0;

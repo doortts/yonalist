@@ -51,6 +51,7 @@ import {
   projectOutlineDrop,
   type OutlineDropPreview
 } from "./outlineDrag";
+import { selectionRangeIds } from "./notesWorkspaceReducer";
 import {
   deriveOutlineBodyRows,
   flattenVisibleOutlineRows,
@@ -207,6 +208,7 @@ export function NotesOutlinePane() {
     attachmentUploadErrorsByNodeId,
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
+    selection,
     writeError
   } = useNotesDrafts();
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
@@ -413,6 +415,22 @@ export function NotesOutlinePane() {
     () => structuralVisibleIdsRef.current,
     []
   );
+  // The multi-node selection range materialized against the SAME visible-row
+  // ordering keyboard nav uses, then handed to each row as an atomic `isSelected`
+  // boolean. Deriving a stable Set here (rather than passing the selection object
+  // down) keeps OutlineNodeRow's memo intact: only rows whose membership flips
+  // get a changed prop. Selection lives on the drafts slice, so rows — which read
+  // the state slice but not drafts — never re-render merely because it changed.
+  const selectedIdSet = useMemo(
+    () => new Set(selectionRangeIds(selection ?? null, structuralVisibleIds)),
+    [selection, structuralVisibleIds]
+  );
+  // Rows read the live selection at keydown time (to extend the head) through
+  // this stable accessor, mirroring getVisibleNodeIds — the row never subscribes
+  // to the selection, so its memo is preserved.
+  const selectionRef = useRef(selection ?? null);
+  selectionRef.current = selection ?? null;
+  const getSelection = useCallback(() => selectionRef.current, []);
   const bodyVisibleIds = useMemo(
     () => bodyRows.map((row) => row.id),
     [bodyRows]
@@ -703,6 +721,8 @@ export function NotesOutlinePane() {
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
                       getVisibleNodeIds={getVisibleNodeIds}
+                      getSelection={getSelection}
+                      isSelected={selectedIdSet.has(row.id)}
                       draft={draftsByNodeId[row.id]}
                       attachmentUploadError={
                         attachmentUploadErrorsByNodeId?.[row.id]

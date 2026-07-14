@@ -49,9 +49,11 @@ import {
 } from "./notesHistory";
 import {
   normalizeWorkspace,
+  notesSelectionReducer,
   notesWorkspaceReducer,
   reconcileUiState,
   type NormalizedNotesWorkspace,
+  type NotesSelection,
   type NotesWorkspaceDelta,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
@@ -230,6 +232,10 @@ export interface NotesWorkspaceActions {
   undo?(): Promise<void>;
   redo?(): Promise<void>;
   setImageImportMaxDisplayWidth(displayWidth: number | null): void;
+  // Multi-node selection (Phase 4.1). Stable identity.
+  setSelectionAnchor(anchorId: NoteId): void;
+  extendSelectionTo(headId: NoteId): void;
+  clearSelection(): void;
 }
 
 export type NotesLibraryView =
@@ -293,6 +299,13 @@ export interface NotesDraftsSlice {
   writeError: NotesStoreError | null;
   attachmentUploadErrorsByNodeId?: Readonly<Record<NoteId, string>>;
   attachmentUploadRetryAttemptIdsByNodeId?: Readonly<Record<NoteId, string>>;
+  // The live multi-node selection (Phase 4.1). It rides the high-volatility
+  // drafts slice — NOT the state slice the memoized rows subscribe to — so
+  // extending the range re-renders only the pane, which fans out per-row
+  // `isSelected` booleans. See NotesSelection's doc comment. Optional so the
+  // many hand-built test workspace fixtures need not spell it out; the hook
+  // always populates it and consumers coalesce a missing value to `null`.
+  selection?: NotesSelection | null;
 }
 
 /**
@@ -1098,6 +1111,13 @@ export function useNotesWorkspace({
       status: "loading"
     })
   );
+  // Multi-node selection lives in its own reducer, off the workspace projection,
+  // so extending the range never re-renders the memoized rows (which read the
+  // workspace off the state context but never the selection). It is exposed
+  // through the high-volatility drafts slice; see NotesSelection's doc comment.
+  const [selection, dispatchSelection] = useReducer(notesSelectionReducer, null);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
   const libraryViewRef = useRef(libraryView);
   libraryViewRef.current = libraryView;
@@ -1189,6 +1209,21 @@ export function useNotesWorkspace({
         editingFocusRef.current = null;
       }
       dispatch(action);
+      // A navigation edit or structural mutation invalidates any live selection
+      // range: caret moves (focusNode), zoom (setZoomRoot), scope reload/init
+      // (startWorkspaceLoad), and every non-silent command (setLoading, emitted
+      // on the coordinator "pending" event) all drop it. Silent draft autosaves
+      // never route through here, so a range survives a background save.
+      if (
+        selectionRef.current !== null &&
+        (action.type === "setLoading" ||
+          action.type === "focusNode" ||
+          action.type === "setZoomRoot" ||
+          action.type === "startWorkspaceLoad")
+      ) {
+        selectionRef.current = null;
+        dispatchSelection({ type: "clearSelection" });
+      }
     },
     []
   );
@@ -2008,6 +2043,32 @@ export function useNotesWorkspace({
     []
   );
 
+  // Stable selection actions (Phase 4.1). `setSelectionAnchor`/`extendSelectionTo`
+  // mirror onto `selectionRef` synchronously — like `applyAction` does for the
+  // workspace reducer — so an event handler that anchors then extends within one
+  // turn (shift+arrow, shift+click) reads its own just-written selection.
+  const setSelectionAnchor = useCallback((anchorId: NoteId): void => {
+    selectionRef.current = notesSelectionReducer(selectionRef.current, {
+      type: "setSelectionAnchor",
+      anchorId
+    });
+    dispatchSelection({ type: "setSelectionAnchor", anchorId });
+  }, []);
+  const extendSelectionTo = useCallback((headId: NoteId): void => {
+    selectionRef.current = notesSelectionReducer(selectionRef.current, {
+      type: "extendSelectionTo",
+      headId
+    });
+    dispatchSelection({ type: "extendSelectionTo", headId });
+  }, []);
+  const clearSelection = useCallback((): void => {
+    if (selectionRef.current === null) {
+      return;
+    }
+    selectionRef.current = null;
+    dispatchSelection({ type: "clearSelection" });
+  }, []);
+
   // The draft pipeline lives in NotesDraftEngine; these are thin, stable
   // delegators onto the currently active engine so action identity never churns.
   const updateNodeDraft = useCallback(
@@ -2016,6 +2077,13 @@ export function useNotesWorkspace({
       patch: Pick<NoteNode, "title" | "note">,
       field: NotesHistoryFocusField = "title"
     ): void => {
+      // Typing into a node collapses any live multi-node selection (parity with
+      // Workflowy). Guarded so only the first keystroke after a selection pays
+      // the dispatch; subsequent keystrokes are no-ops.
+      if (selectionRef.current !== null) {
+        selectionRef.current = null;
+        dispatchSelection({ type: "clearSelection" });
+      }
       draftEngineRef.current?.updateNodeDraft(nodeId, patch, field);
     },
     []
@@ -3325,7 +3393,10 @@ export function useNotesWorkspace({
       resizeImage: gate(resizeImage),
       removeImage: gate(removeImage),
       undo: gate(undo),
-      redo: gate(redo)
+      redo: gate(redo),
+      setSelectionAnchor,
+      extendSelectionTo,
+      clearSelection
     };
   }, [
     acknowledgeFocus,
@@ -3367,7 +3438,10 @@ export function useNotesWorkspace({
     resizeImage,
     removeImage,
     undo,
-    redo
+    redo,
+    setSelectionAnchor,
+    extendSelectionTo,
+    clearSelection
   ]);
 
   const loadActiveNodesForMove = useCallback(
@@ -3451,13 +3525,15 @@ export function useNotesWorkspace({
       draftsByNodeId,
       writeError: currentWriteError,
       attachmentUploadErrorsByNodeId,
-      attachmentUploadRetryAttemptIdsByNodeId
+      attachmentUploadRetryAttemptIdsByNodeId,
+      selection
     }),
     [
       draftsByNodeId,
       currentWriteError,
       attachmentUploadErrorsByNodeId,
-      attachmentUploadRetryAttemptIdsByNodeId
+      attachmentUploadRetryAttemptIdsByNodeId,
+      selection
     ]
   );
 

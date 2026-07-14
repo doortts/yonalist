@@ -75,7 +75,10 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     zoomTo: resolved(),
     setImageImportMaxDisplayWidth: vi.fn(),
     undo: resolved(),
-    redo: resolved()
+    redo: resolved(),
+    setSelectionAnchor: vi.fn(),
+    extendSelectionTo: vi.fn(),
+    clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
 
   return {

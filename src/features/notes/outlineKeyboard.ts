@@ -1,5 +1,8 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
-import type { NormalizedNotesWorkspace } from "./notesWorkspaceReducer";
+import type {
+  NormalizedNotesWorkspace,
+  NotesSelection
+} from "./notesWorkspaceReducer";
 import { visibleNodeIds } from "./outlineTree";
 
 export type OutlineShortcutPlatform = "mac" | "other";
@@ -61,6 +64,10 @@ export interface ResolveOutlineKeyInput {
   platform: OutlineShortcutPlatform;
   workspace: NormalizedNotesWorkspace;
   visibleNodeIds?: readonly NoteId[];
+  // The live multi-node selection, if any. Shift+Arrow extends the head from
+  // here; Escape clears only when a selection exists (so a bare Escape keeps its
+  // default behaviour).
+  selection?: NotesSelection | null;
 }
 
 export type OutlineKeyResolution =
@@ -77,7 +84,9 @@ export type OutlineKeyResolution =
   | { type: "duplicate" }
   | { type: "delete" }
   | { type: "toggleCollapsed" }
-  | { type: "remove"; focusNodeId: NoteId | null };
+  | { type: "remove"; focusNodeId: NoteId | null }
+  | { type: "extendSelection"; headId: NoteId }
+  | { type: "clearSelection" };
 
 export function resolveOutlineKey(
   input: ResolveOutlineKeyInput
@@ -88,6 +97,38 @@ export function resolveOutlineKey(
     input.key === "Process"
   ) {
     return null;
+  }
+
+  // Selection controls are resolved before the modifier guard below (which
+  // rejects any Shift chord other than Tab) so Shift+Arrow can extend the range.
+  // Escape only resolves when a selection is live, leaving a bare Escape to its
+  // default behaviour. Both require no other modifiers.
+  const selectionModifiersClear =
+    !input.altKey && !input.ctrlKey && !input.metaKey;
+  if (
+    selectionModifiersClear &&
+    input.shiftKey &&
+    (input.key === "ArrowUp" || input.key === "ArrowDown")
+  ) {
+    const selectionVisibleIds =
+      input.visibleNodeIds ??
+      visibleNodeIds(input.workspace, input.workspace.zoomRootId);
+    const currentHead = input.selection?.headId ?? input.nodeId;
+    const headIndex = selectionVisibleIds.indexOf(currentHead);
+    if (headIndex < 0) {
+      return null;
+    }
+    const nextHead =
+      selectionVisibleIds[headIndex + (input.key === "ArrowUp" ? -1 : 1)];
+    return nextHead ? { type: "extendSelection", headId: nextHead } : null;
+  }
+  if (
+    selectionModifiersClear &&
+    !input.shiftKey &&
+    input.key === "Escape" &&
+    input.selection
+  ) {
+    return { type: "clearSelection" };
   }
 
   const primaryModifierPressed =

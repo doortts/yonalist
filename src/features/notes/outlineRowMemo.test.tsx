@@ -278,4 +278,91 @@ describe("outline row memoization", () => {
     }
     expect(churned).toEqual([]);
   });
+
+  it("re-renders only the rows whose selection membership flips (Phase 2.2 memo preserved)", async () => {
+    const store = repository(seededNodes());
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]").length).toBe(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+      );
+    });
+
+    // Visible order starts p-0, c-0-0, c-0-1, c-0-2, ...; a range from p-0 to
+    // c-0-1 covers exactly those three rows.
+    const range = ["p-0", "c-0-0", "c-0-1"];
+    const before = new Map(rowRenderCounts);
+
+    await act(async () => {
+      captured!.actions.setSelectionAnchor("p-0");
+      captured!.actions.extendSelectionTo("c-0-1");
+    });
+
+    // The selection actually landed on the drafts slice.
+    expect(captured?.draftsSlice?.selection).toEqual({
+      anchorId: "p-0",
+      headId: "c-0-1"
+    });
+    // The three in-range rows re-rendered (their isSelected flipped true)...
+    for (const nodeId of range) {
+      expect(rowRenderCounts.get(nodeId)!).toBeGreaterThan(before.get(nodeId)!);
+    }
+    // ...and no other row's counter moved: selection rides the drafts slice, so
+    // the state-context object the rows subscribe to never changed.
+    const churned: string[] = [];
+    for (const [nodeId, count] of rowRenderCounts) {
+      if (range.includes(nodeId)) {
+        continue;
+      }
+      if (count !== before.get(nodeId)) {
+        churned.push(nodeId);
+      }
+    }
+    expect(churned).toEqual([]);
+  });
+
+  it("Shift+Click on a bullet selects the range from the caret node to the clicked row", async () => {
+    const store = repository(seededNodes());
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]").length).toBe(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+      );
+    });
+
+    // Place the caret (single-select anchor source) on p-0, then Shift+Click the
+    // bullet on c-0-1.
+    await act(async () => {
+      await captured!.actions.focusNode("p-0");
+    });
+    const bullet = document
+      .querySelector('[data-outline-id="c-0-1"]')
+      ?.querySelector<HTMLButtonElement>('button[aria-label^="Zoom into"]');
+    expect(bullet).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(bullet!, { shiftKey: true });
+    });
+
+    expect(captured?.draftsSlice?.selection).toEqual({
+      anchorId: "p-0",
+      headId: "c-0-1"
+    });
+    for (const nodeId of ["p-0", "c-0-0", "c-0-1"]) {
+      expect(
+        document
+          .querySelector(`[data-outline-id="${nodeId}"]`)
+          ?.getAttribute("data-range-selected")
+      ).toBe("true");
+    }
+    // A row just outside the range is not highlighted, and the plain-click zoom
+    // did not fire (still at the root).
+    expect(
+      document
+        .querySelector('[data-outline-id="c-0-2"]')
+        ?.getAttribute("data-range-selected")
+    ).toBeNull();
+    expect(captured?.state.zoomRootId).toBeNull();
+  });
 });

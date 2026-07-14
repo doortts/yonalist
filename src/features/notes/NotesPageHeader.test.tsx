@@ -146,7 +146,10 @@ function workspaceValue(options: {
     resizeImage: resolved(),
     removeImage: resolved(),
     undo: resolved(),
-    redo: resolved()
+    redo: resolved(),
+    setSelectionAnchor: vi.fn(),
+    extendSelectionTo: vi.fn(),
+    clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
 
   return {

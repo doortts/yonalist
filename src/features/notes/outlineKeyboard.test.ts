@@ -714,7 +714,11 @@ describe("resolveOutlineKey", () => {
     expect(
       resolveOutlineKey(input({ key: "ArrowDown", ctrlKey: true }))
     ).toBeNull();
-    expect(resolveOutlineKey(input({ key: "ArrowDown", shiftKey: true }))).toBeNull();
+    // Shift+Arrow now extends the selection (see the selection suite); a Shift
+    // chord carrying an extra modifier stays unsupported.
+    expect(
+      resolveOutlineKey(input({ key: "ArrowDown", shiftKey: true, ctrlKey: true }))
+    ).toBeNull();
     expect(
       resolveOutlineKey(input({ selectionStart: null, selectionEnd: null }))
     ).toBeNull();
@@ -761,6 +765,101 @@ describe("resolveNotesHistoryShortcut", () => {
         historyShortcutInput(
           overrides as Partial<ResolveNotesHistoryShortcutInput>
         )
+      )
+    ).toBeNull();
+  });
+});
+
+// Visible-row order of `tree`: root-a, child-a, grandchild, child-b, root-b,
+// root-c (root-c is collapsed so hidden-child is not visible).
+describe("resolveOutlineKey selection", () => {
+  it("Shift+ArrowDown starts a range at the caret row and moves the head down", () => {
+    expect(
+      resolveOutlineKey(
+        input({ key: "ArrowDown", shiftKey: true, nodeId: "root-a" })
+      )
+    ).toEqual({ type: "extendSelection", headId: "child-a" });
+  });
+
+  it("Shift+ArrowDown extends an existing range from its current head", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowDown",
+          shiftKey: true,
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "child-a" }
+        })
+      )
+    ).toEqual({ type: "extendSelection", headId: "grandchild" });
+  });
+
+  it("Shift+ArrowUp moves the head up from the current head", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowUp",
+          shiftKey: true,
+          nodeId: "child-b",
+          selection: { anchorId: "child-b", headId: "child-a" }
+        })
+      )
+    ).toEqual({ type: "extendSelection", headId: "root-a" });
+  });
+
+  it("Shift+ArrowDown at the last visible row is a no-op", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowDown",
+          shiftKey: true,
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "root-c" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("ArrowDown without Shift collapses to a caret move (focus), not a range", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "ArrowDown",
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "child-b" }
+        })
+      )
+    ).toEqual({ type: "focus", nodeId: "child-a" });
+  });
+
+  it("Escape clears an active selection", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "Escape",
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "child-b" }
+        })
+      )
+    ).toEqual({ type: "clearSelection" });
+  });
+
+  it("Escape with no selection falls through to default handling", () => {
+    expect(resolveOutlineKey(input({ key: "Escape", nodeId: "root-a" }))).toBeNull();
+  });
+
+  it("ignores Shift+Arrow while composing (IME guard)", () => {
+    expect(
+      resolveOutlineKey(
+        input({ key: "ArrowDown", shiftKey: true, isComposing: true })
+      )
+    ).toBeNull();
+  });
+
+  it("ignores Shift+Arrow when another modifier is held", () => {
+    expect(
+      resolveOutlineKey(
+        input({ key: "ArrowDown", shiftKey: true, metaKey: true })
       )
     ).toBeNull();
   });

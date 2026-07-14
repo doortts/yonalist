@@ -30,6 +30,81 @@ export type UiState = Pick<
   | "pendingFocusField"
 >;
 
+/**
+ * Multi-node selection anchor/head pair (plan Phase 4.1). The selection is the
+ * inclusive range between `anchorId` and `headId` computed against the visible
+ * outline row ordering — see {@link selectionRangeIds}. Storing only the two
+ * endpoints (rather than the materialized id set) keeps the range live: it is
+ * re-derived against the current visible rows whenever those change.
+ *
+ * Selection is deliberately NOT a field of {@link NormalizedNotesWorkspace}. The
+ * memoized outline rows (Phase 2.2) read the workspace projection off the state
+ * context but never read selection, so keeping selection in its own reducer
+ * (owned by the workspace hook, exposed through the high-volatility drafts
+ * slice) means a shift+arrow extension re-renders only the pane and the rows
+ * whose membership actually flipped — the state-context object the rows
+ * subscribe to is untouched. It is also settle-agnostic: background draft
+ * autosaves re-normalize the workspace but never disturb the selection reducer,
+ * so a live range survives an autosave that happens to land mid-selection.
+ */
+export interface NotesSelection {
+  anchorId: NoteId;
+  headId: NoteId;
+}
+
+export type NotesSelectionAction =
+  | { type: "setSelectionAnchor"; anchorId: NoteId }
+  | { type: "extendSelectionTo"; headId: NoteId }
+  | { type: "clearSelection" };
+
+/**
+ * The selection reducer. `setSelectionAnchor` starts a single-node selection at
+ * `anchorId`; `extendSelectionTo` moves the head while pinning the anchor (or
+ * degenerates to a single node when there is no live anchor); `clearSelection`
+ * drops the selection. Returning the identical `null` reference for a clear of
+ * an already-empty selection lets React bail out of the dispatch without a
+ * re-render.
+ */
+export function notesSelectionReducer(
+  state: NotesSelection | null,
+  action: NotesSelectionAction
+): NotesSelection | null {
+  switch (action.type) {
+    case "setSelectionAnchor":
+      return { anchorId: action.anchorId, headId: action.anchorId };
+    case "extendSelectionTo":
+      return {
+        anchorId: state ? state.anchorId : action.headId,
+        headId: action.headId
+      };
+    case "clearSelection":
+      return null;
+  }
+}
+
+/**
+ * Materialize the selected ids as the inclusive slice of `visibleNodeIds`
+ * between the anchor and head (in either order). An empty selection, or one
+ * whose endpoints are not both currently visible (e.g. a collapsed or filtered
+ * row), yields an empty range rather than a partial guess.
+ */
+export function selectionRangeIds(
+  selection: NotesSelection | null,
+  visibleNodeIds: readonly NoteId[]
+): NoteId[] {
+  if (!selection) {
+    return [];
+  }
+  const anchorIndex = visibleNodeIds.indexOf(selection.anchorId);
+  const headIndex = visibleNodeIds.indexOf(selection.headId);
+  if (anchorIndex < 0 || headIndex < 0) {
+    return [];
+  }
+  const start = Math.min(anchorIndex, headIndex);
+  const end = Math.max(anchorIndex, headIndex);
+  return visibleNodeIds.slice(start, end + 1);
+}
+
 export type NotesWorkspaceReducerAction =
   | { type: "startWorkspaceLoad" }
   | { type: "setLoading" }
