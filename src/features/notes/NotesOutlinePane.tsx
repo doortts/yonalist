@@ -373,11 +373,16 @@ export function NotesOutlinePane() {
     useState<NotesPreparedSelectionAuthority | null>(null);
   const [selectionChooser, setSelectionChooser] =
     useState<SelectionChooserSession | null>(null);
+  const [selectionChooserFeedback, setSelectionChooserFeedback] = useState({
+    busy: false,
+    error: null as string | null
+  });
   const contentRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const lastSelectionHeadRef = useRef<NoteId | null>(null);
   const selectionAuthorityRequestRef = useRef(0);
   const selectionChooserPreparationRequestRef = useRef(0);
+  const selectionChooserPreparingRef = useRef(false);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -1032,7 +1037,9 @@ export function NotesOutlinePane() {
     if (actions.replaceSelection?.(null, live.revision)) {
       invalidatePreparedSelectionClipboard();
       selectionChooserPreparationRequestRef.current += 1;
+      selectionChooserPreparingRef.current = false;
       setSelectionChooser(null);
+      setSelectionChooserFeedback({ busy: false, error: null });
     }
   }, [
     actions,
@@ -1044,83 +1051,115 @@ export function NotesOutlinePane() {
   ]);
   const requestSelectionChooser = useCallback(
     async (kind: "move" | "tags"): Promise<void> => {
+      if (selectionChooserPreparingRef.current) {
+        return;
+      }
+      selectionChooserPreparingRef.current = true;
       const requestId = ++selectionChooserPreparationRequestRef.current;
       setSelectionChooser(null);
-      const openingSnapshot = getLiveSelectionActionSnapshot();
-      const openingLive = getLiveSelectionSnapshot?.() ?? {
-        selection: selectionRef.current,
-        revision: selectionRevisionRef.current
+      setSelectionChooserFeedback({ busy: true, error: null });
+      const failCurrent = (error: string) => {
+        if (selectionChooserPreparationRequestRef.current === requestId) {
+          setSelectionChooserFeedback({ busy: true, error });
+        }
       };
-      const targetIds =
-        kind === "move"
-          ? openingSnapshot?.eligibility.moveTo.eligible
-            ? openingSnapshot.eligibility.moveTo.nodeIds
-            : []
-          : (openingSnapshot?.selectedNodeIds ?? []);
-      if (
-        !openingSnapshot ||
-        targetIds.length === 0 ||
-        !prepareSelectionAuthority ||
-        !isPreparedSelectionAuthorityCurrent ||
-        !(await actions.flushAllDrafts()) ||
-        selectionChooserPreparationRequestRef.current !== requestId
-      ) {
-        return;
-      }
-      const afterFlushLive = getLiveSelectionSnapshot?.() ?? {
-        selection: selectionRef.current,
-        revision: selectionRevisionRef.current
-      };
-      if (afterFlushLive.revision !== openingLive.revision) {
-        return;
-      }
-      const authority = await prepareSelectionAuthority(targetIds);
-      const currentLive = getLiveSelectionSnapshot?.() ?? {
-        selection: selectionRef.current,
-        revision: selectionRevisionRef.current
-      };
-      if (
-        selectionChooserPreparationRequestRef.current !== requestId ||
-        currentLive.revision !== openingLive.revision ||
-        authority.selectionRevision !== openingLive.revision ||
-        !exactNoteIds(authority.selectedNodeIds, targetIds) ||
-        !isPreparedSelectionAuthorityCurrent(authority)
-      ) {
-        return;
-      }
-      const actionSnapshot = deriveNotesSelectionActionSnapshot({
-        selection: currentLive.selection,
-        visibleNodeIds: bodyVisibleIdsRef.current,
-        workspace: stateRef.current,
-        authoritativeWorkspace: authority.workspace
-      });
-      if (
-        !actionSnapshot ||
-        !exactNoteIds(
+      try {
+        const openingSnapshot = getLiveSelectionActionSnapshot();
+        const openingLive = getLiveSelectionSnapshot?.() ?? {
+          selection: selectionRef.current,
+          revision: selectionRevisionRef.current
+        };
+        const targetIds =
           kind === "move"
-            ? actionSnapshot.structuralRootIds
-            : actionSnapshot.selectedNodeIds,
-          targetIds
-        )
-      ) {
-        return;
+            ? openingSnapshot?.eligibility.moveTo.eligible
+              ? openingSnapshot.eligibility.moveTo.nodeIds
+              : []
+            : (openingSnapshot?.selectedNodeIds ?? []);
+        if (!openingSnapshot || targetIds.length === 0) {
+          failCurrent("The selected range is no longer available.");
+          return;
+        }
+        if (!prepareSelectionAuthority || !isPreparedSelectionAuthorityCurrent) {
+          failCurrent("Couldn't open the selection chooser. Try again.");
+          return;
+        }
+        if (!(await actions.flushAllDrafts())) {
+          failCurrent("Save pending changes before continuing.");
+          return;
+        }
+        if (selectionChooserPreparationRequestRef.current !== requestId) {
+          return;
+        }
+        const afterFlushLive = getLiveSelectionSnapshot?.() ?? {
+          selection: selectionRef.current,
+          revision: selectionRevisionRef.current
+        };
+        if (afterFlushLive.revision !== openingLive.revision) {
+          failCurrent("The selection changed. Try again.");
+          return;
+        }
+        const authority = await prepareSelectionAuthority(targetIds);
+        if (selectionChooserPreparationRequestRef.current !== requestId) {
+          return;
+        }
+        const currentLive = getLiveSelectionSnapshot?.() ?? {
+          selection: selectionRef.current,
+          revision: selectionRevisionRef.current
+        };
+        if (
+          currentLive.revision !== openingLive.revision ||
+          authority.selectionRevision !== openingLive.revision ||
+          !exactNoteIds(authority.selectedNodeIds, targetIds) ||
+          !isPreparedSelectionAuthorityCurrent(authority)
+        ) {
+          failCurrent("The selection changed. Try again.");
+          return;
+        }
+        const actionSnapshot = deriveNotesSelectionActionSnapshot({
+          selection: currentLive.selection,
+          visibleNodeIds: bodyVisibleIdsRef.current,
+          workspace: stateRef.current,
+          authoritativeWorkspace: authority.workspace
+        });
+        if (
+          !actionSnapshot ||
+          !exactNoteIds(
+            kind === "move"
+              ? actionSnapshot.structuralRootIds
+              : actionSnapshot.selectedNodeIds,
+            targetIds
+          )
+        ) {
+          failCurrent("The selection changed. Try again.");
+          return;
+        }
+        const snapshot: SelectionChooserSnapshot = Object.freeze({
+          nodeIds: Object.freeze([...targetIds]),
+          ownership: Object.freeze({ actionSnapshot, authority })
+        });
+        setSelectionChooser(
+          kind === "move"
+            ? Object.freeze({ kind, snapshot })
+            : Object.freeze({
+                kind,
+                snapshot,
+                selectedTagUnion: selectedTagUnion(
+                  authority.workspace,
+                  targetIds
+                )
+              })
+        );
+      } catch {
+        failCurrent("Couldn't open the selection chooser. Try again.");
+      } finally {
+        if (selectionChooserPreparationRequestRef.current === requestId) {
+          selectionChooserPreparingRef.current = false;
+          setSelectionChooserFeedback((current) => ({
+            ...current,
+            busy: false
+          }));
+        }
       }
-      const snapshot: SelectionChooserSnapshot = Object.freeze({
-        nodeIds: Object.freeze([...targetIds]),
-        ownership: Object.freeze({ actionSnapshot, authority })
-      });
-      setSelectionChooser(
-        kind === "move"
-          ? Object.freeze({ kind, snapshot })
-          : Object.freeze({
-              kind,
-              snapshot,
-              selectedTagUnion: selectedTagUnion(
-                authority.workspace,
-                targetIds
-              )
-            })
-      );
     },
     [
       actions,
@@ -1133,6 +1172,9 @@ export function NotesOutlinePane() {
 
   const executeSelectionAction = useCallback(
     async (action: NotesSelectionActionBarAction): Promise<void> => {
+      setSelectionChooserFeedback((current) =>
+        current.error ? { ...current, error: null } : current
+      );
       let intent: NotesSelectionCommandIntent | null = null;
       switch (action) {
         case "toggleComplete":
@@ -1179,13 +1221,14 @@ export function NotesOutlinePane() {
       selectionSnapshot
         ? {
             snapshot: selectionSnapshot,
-            busy: selectionRouter.busy,
+            busy: selectionRouter.busy || selectionChooserFeedback.busy,
             mutationDisabledReason: selectionMutationDisabledReason
           }
         : null,
     [
       selectionMutationDisabledReason,
       selectionRouter.busy,
+      selectionChooserFeedback.busy,
       selectionSnapshot
     ]
   );
@@ -1406,10 +1449,10 @@ export function NotesOutlinePane() {
           <NotesSelectionActionBar
             ref={selectionToolbarRef}
             snapshot={selectionSnapshot}
-            busy={selectionRouter.busy}
+            busy={selectionRouter.busy || selectionChooserFeedback.busy}
             mutationDisabledReason={selectionMutationDisabledReason}
             status={selectionRouter.status}
-            error={selectionRouter.error}
+            error={selectionChooserFeedback.error ?? selectionRouter.error}
             onAction={executeSelectionAction}
             onClearSelection={actions.clearSelection}
             onReturnFocus={returnFocusToSelectionHead}

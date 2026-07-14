@@ -2817,6 +2817,77 @@ describe("Notes workspace", () => {
       });
     });
 
+    it("publishes chooser preparation busy to every selected-row action surface", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const chooserAuthority = deferred<NotesWorkspace>();
+      notesStoreMock.loadWorkspace.mockImplementationOnce(
+        () => chooserAuthority.promise
+      );
+
+      const openingMenu = await openNodeMenu("Bravo", user);
+      await user.click(
+        within(openingMenu).getByRole("menuitem", { name: "Tags" })
+      );
+      await waitFor(() =>
+        expect(notesStoreMock.loadWorkspace).toHaveBeenLastCalledWith(
+          "/vault",
+          { kind: "active" }
+        )
+      );
+
+      const busyMenu = await openNodeMenu("Alpha", user);
+      expect(
+        within(busyMenu)
+          .getAllByRole("menuitem")
+          .every((item) => item.getAttribute("aria-disabled") === "true")
+      ).toBe(true);
+      await act(async () => chooserAuthority.resolve(workspace(threeRoots())));
+      expect(
+        await screen.findByRole("dialog", { name: "Edit tags" })
+      ).toBeVisible();
+    });
+
+    it("reports a current chooser preparation failure on the shared toolbar", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      notesStoreMock.loadWorkspace.mockRejectedValueOnce(
+        new Error("authority unavailable")
+      );
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+
+      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
+    });
+
     it("clears a range whose endpoints leave the body projection", async () => {
       const user = userEvent.setup();
       configureRepository([
