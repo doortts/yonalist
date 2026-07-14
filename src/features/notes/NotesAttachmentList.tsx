@@ -12,6 +12,7 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesImageAttachment } from "./NotesImageAttachment";
+import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
 import { useNotesActions } from "./NotesWorkspaceContext";
 
 interface NotesAttachmentListProps {
@@ -23,25 +24,23 @@ interface NotesAttachmentListProps {
   readonly readOnly?: boolean;
 }
 
-const maxResidentImages = 8;
 const offscreenReleaseDelayMs = 240;
 
 function DeferredNotesImage({
   attachment,
-  active,
-  onActivate,
-  onDeactivate,
   onRequestRemove,
   readOnly
 }: {
   readonly attachment: NoteAttachment;
-  readonly active: boolean;
-  readonly onActivate: (attachmentId: string) => void;
-  readonly onDeactivate: (attachmentId: string) => void;
   readonly onRequestRemove?: () => void;
   readonly readOnly: boolean;
 }) {
   const { actions } = useNotesActions();
+  const {
+    active,
+    activate: activateResidency,
+    deactivate: deactivateResidency
+  } = useNotesImageResidencyLease();
   const slotRef = useRef<HTMLDivElement>(null);
   const manualFocusPendingRef = useRef(false);
   const observerGenerationRef = useRef(0);
@@ -71,13 +70,13 @@ function DeferredNotesImage({
         if (!entry) return;
         if (entry.isIntersecting) {
           cancelPendingRelease();
-          onActivate(attachment.id);
+          activateResidency();
           return;
         }
         cancelPendingRelease();
         releaseTimerRef.current = setTimeout(() => {
           releaseTimerRef.current = null;
-          if (isCurrent()) onDeactivate(attachment.id);
+          if (isCurrent()) deactivateResidency();
         }, offscreenReleaseDelayMs);
       },
       { rootMargin: "160px 0px" }
@@ -91,7 +90,12 @@ function DeferredNotesImage({
       cancelPendingRelease();
       observer.disconnect();
     };
-  }, [attachment.id, cancelPendingRelease, onActivate, onDeactivate]);
+  }, [
+    attachment.id,
+    activateResidency,
+    cancelPendingRelease,
+    deactivateResidency
+  ]);
 
   useLayoutEffect(() => {
     if (!active) return;
@@ -147,7 +151,7 @@ function DeferredNotesImage({
             onClick={() => {
               cancelPendingRelease();
               manualFocusPendingRef.current = true;
-              onActivate(attachment.id);
+              activateResidency();
             }}
           >
             Load image
@@ -169,23 +173,6 @@ export function NotesAttachmentList({
   const { actions } = useNotesActions();
   const [pendingRemoval, setPendingRemoval] =
     useState<NoteAttachment | null>(null);
-  const [residentAttachmentIds, setResidentAttachmentIds] = useState<
-    readonly string[]
-  >([]);
-  const activateAttachment = useCallback((attachmentId: string) => {
-    setResidentAttachmentIds((current) => {
-      const next = current.filter((currentId) => currentId !== attachmentId);
-      next.push(attachmentId);
-      return next.slice(-maxResidentImages);
-    });
-  }, []);
-  const deactivateAttachment = useCallback((attachmentId: string) => {
-    setResidentAttachmentIds((current) =>
-      current.includes(attachmentId)
-        ? current.filter((currentId) => currentId !== attachmentId)
-        : current
-    );
-  }, []);
   const classes = ["notes-attachment-list", className]
     .filter(Boolean)
     .join(" ");
@@ -193,21 +180,6 @@ export function NotesAttachmentList({
     0,
     MAX_NOTE_ATTACHMENTS_PER_NODE
   );
-
-  useEffect(() => {
-    const currentAttachmentIds = new Set(
-      boundedAttachments.map((attachment) => attachment.id)
-    );
-    setResidentAttachmentIds((current) => {
-      const next = current.filter((attachmentId) =>
-        currentAttachmentIds.has(attachmentId)
-      );
-      return next.length === current.length ? current : next;
-    });
-    // boundedAttachments is a fresh slice of attachments each render; depend on
-    // the source prop so this prune runs on real changes, not every render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attachments]);
 
   if (attachments.length === 0 && !uploadError) {
     return null;
@@ -219,11 +191,8 @@ export function NotesAttachmentList({
         <div className={classes}>
           {boundedAttachments.map((attachment) => (
             <DeferredNotesImage
-              active={residentAttachmentIds.includes(attachment.id)}
               attachment={attachment}
               key={attachment.id}
-              onActivate={activateAttachment}
-              onDeactivate={deactivateAttachment}
               readOnly={readOnly}
               onRequestRemove={
                 readOnly ? undefined : () => setPendingRemoval(attachment)

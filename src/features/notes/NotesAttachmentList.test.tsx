@@ -1,11 +1,13 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { PropsWithChildren, ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   MAX_NOTE_ATTACHMENTS_PER_NODE,
   type NoteAttachment
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 
 const workspaceActions = vi.hoisted(() => ({
   loadAttachmentBytes: vi.fn(),
@@ -85,6 +87,18 @@ function installIntersectionObserver() {
   );
 }
 
+function ResidencyWrapper({ children }: PropsWithChildren) {
+  return (
+    <NotesImageResidencyProvider scopeKey="attachment-list-test">
+      {children}
+    </NotesImageResidencyProvider>
+  );
+}
+
+function renderWithResidency(ui: ReactElement) {
+  return render(ui, { wrapper: ResidencyWrapper });
+}
+
 beforeEach(() => {
   intersectionCallbacks.clear();
   intersectionOptions.length = 0;
@@ -130,7 +144,7 @@ afterEach(() => {
 describe("NotesAttachmentList", () => {
   it("binds retry to the visible failed attempt and suppresses it for validation errors", async () => {
     const user = userEvent.setup();
-    const view = render(
+    const view = renderWithResidency(
       <NotesAttachmentList
         nodeId="node-1"
         attachments={[]}
@@ -161,7 +175,7 @@ describe("NotesAttachmentList", () => {
 
   it("releases an offscreen image after hysteresis and reloads it on return", async () => {
     installIntersectionObserver();
-    const view = render(
+    const view = renderWithResidency(
       <NotesAttachmentList
         nodeId="node-1"
         attachments={[attachment(1), attachment(2)]}
@@ -255,7 +269,7 @@ describe("NotesAttachmentList", () => {
 
   it("uses a small observation margin and bounds concurrently resident images", async () => {
     installIntersectionObserver();
-    render(
+    renderWithResidency(
       <NotesAttachmentList
         nodeId="node-1"
         attachments={Array.from({ length: 10 }, (_, index) =>
@@ -288,9 +302,47 @@ describe("NotesAttachmentList", () => {
     );
   });
 
+  it("shares the resident image limit across independent attachment lists", async () => {
+    installIntersectionObserver();
+    renderWithResidency(
+      <>
+        <NotesAttachmentList
+          nodeId="node-1"
+          attachments={Array.from({ length: 6 }, (_, index) =>
+            attachment(index + 1)
+          )}
+        />
+        <NotesAttachmentList
+          nodeId="node-2"
+          attachments={Array.from({ length: 6 }, (_, index) =>
+            attachment(index + 7)
+          )}
+        />
+      </>
+    );
+
+    for (const group of screen.getAllByRole("group", { name: /^Image:/ })) {
+      act(() => {
+        intersectionCallbacks.get(group)?.(
+          [
+            {
+              target: group,
+              isIntersecting: true
+            } as unknown as IntersectionObserverEntry
+          ],
+          {} as IntersectionObserver
+        );
+      });
+    }
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(12));
+    expect(screen.getAllByRole("img")).toHaveLength(8);
+    expect(revokeObjectURL).toHaveBeenCalledTimes(4);
+  });
+
   it("ignores a retained observer callback after replacement without evicting a live image", async () => {
     installIntersectionObserver();
-    const view = render(
+    const view = renderWithResidency(
       <NotesAttachmentList
         nodeId="node-1"
         attachments={Array.from({ length: 8 }, (_, index) =>
@@ -359,7 +411,7 @@ describe("NotesAttachmentList", () => {
 
   it("prunes resident identity when an attachment leaves the metadata set", async () => {
     installIntersectionObserver();
-    const view = render(
+    const view = renderWithResidency(
       <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
     );
     const first = screen.getByRole("group", { name: "Image: image-1.png" });
@@ -392,9 +444,48 @@ describe("NotesAttachmentList", () => {
     expect(workspaceActions.loadAttachmentBytes).toHaveBeenCalledOnce();
   });
 
+  it("revokes resident image URLs when the workspace scope changes", async () => {
+    installIntersectionObserver();
+    const view = render(
+      <NotesImageResidencyProvider scopeKey="vault-1">
+        <NotesAttachmentList
+          nodeId="node-1"
+          attachments={[attachment(1)]}
+        />
+      </NotesImageResidencyProvider>
+    );
+    const first = screen.getByRole("group", { name: "Image: image-1.png" });
+    act(() => {
+      intersectionCallbacks.get(first)?.(
+        [
+          {
+            target: first,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await screen.findByRole("img", { name: "image-1.png" });
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="vault-2">
+        <NotesAttachmentList
+          nodeId="node-1"
+          attachments={[attachment(1)]}
+        />
+      </NotesImageResidencyProvider>
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Load image image-1.png" })
+    ).toBeVisible();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:attachment");
+  });
+
   it("offers a manual accessible loader when viewport observation is unavailable", async () => {
     const user = userEvent.setup();
-    render(
+    renderWithResidency(
       <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
     );
     const group = screen.getByRole("group", { name: "Image: image-1.png" });
@@ -414,7 +505,7 @@ describe("NotesAttachmentList", () => {
   it("cancels a pending offscreen release when keyboard loading manually", async () => {
     installIntersectionObserver();
     const user = userEvent.setup();
-    render(
+    renderWithResidency(
       <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
     );
     const group = screen.getByRole("group", { name: "Image: image-1.png" });
@@ -448,7 +539,7 @@ describe("NotesAttachmentList", () => {
 
   it("disconnects a dormant observer without loading bytes on cleanup", () => {
     installIntersectionObserver();
-    const view = render(
+    const view = renderWithResidency(
       <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
     );
 
@@ -460,7 +551,7 @@ describe("NotesAttachmentList", () => {
   });
 
   it("bounds defensive list rendering to the per-node metadata limit", () => {
-    render(
+    renderWithResidency(
       <NotesAttachmentList
         nodeId="node-1"
         attachments={Array.from(
@@ -481,7 +572,7 @@ describe("NotesAttachmentList", () => {
     workspaceActions.loadAttachmentBytes.mockRejectedValueOnce(
       new Error("read failed")
     );
-    render(
+    renderWithResidency(
       <NotesAttachmentList nodeId="node-1" attachments={[attachment(1)]} />
     );
 

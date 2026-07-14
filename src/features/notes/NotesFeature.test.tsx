@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 
@@ -22,6 +22,16 @@ const notesStoreMock = vi.hoisted(() => ({
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 
 import { NotesFeatureProvider, notesFeature } from "./NotesFeature";
+import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
+
+function ResidencyProbe() {
+  const lease = useNotesImageResidencyLease();
+  return (
+    <button type="button" aria-pressed={lease.active} onClick={lease.activate}>
+      Residency probe
+    </button>
+  );
+}
 
 describe("NotesFeature", () => {
   it("renders its working panes through the registry provider", async () => {
@@ -33,6 +43,7 @@ describe("NotesFeature", () => {
     render(
       <VaultRootContext.Provider value="/feature-vault">
         <NotesFeatureProvider>
+          <ResidencyProbe />
           {panes.middle}
           {panes.detail}
         </NotesFeatureProvider>
@@ -50,5 +61,11 @@ describe("NotesFeature", () => {
       "/feature-vault",
       { kind: "active" }
     );
+    const residencyProbe = screen.getByRole("button", {
+      name: "Residency probe"
+    });
+    expect(residencyProbe).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(residencyProbe);
+    expect(residencyProbe).toHaveAttribute("aria-pressed", "true");
   });
 });

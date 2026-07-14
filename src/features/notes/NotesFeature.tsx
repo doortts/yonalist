@@ -9,6 +9,7 @@ import {
   NotesAttachmentUiContext,
   useNotesAttachmentUi
 } from "./NotesAttachmentUiContext";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import {
   NotesActionsContext,
   NotesDraftsContext,
@@ -61,10 +62,13 @@ export function NotesFeatureProvider({
   children,
   attachmentUi
 }: NotesWorkspaceProviderProps) {
+  const vaultRoot = useContext(VaultRootContext);
   const resolvedAttachmentUi = attachmentUi ?? nativeNotesAttachmentUi;
   return (
     <NotesAttachmentUiContext.Provider value={resolvedAttachmentUi}>
-      <NotesWorkspaceProvider>{children}</NotesWorkspaceProvider>
+      <NotesImageResidencyProvider scopeKey={vaultRoot}>
+        <NotesWorkspaceProvider>{children}</NotesWorkspaceProvider>
+      </NotesImageResidencyProvider>
     </NotesAttachmentUiContext.Provider>
   );
 }
