@@ -87,7 +87,7 @@ export type NotesWorkspaceQueueWork = (
 ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
 
 export type NotesWorkspaceCoordinatorEvent =
-  | { type: "pending" }
+  | { type: "pending"; preserveSelection?: boolean }
   | {
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
@@ -119,7 +119,8 @@ export interface NotesWorkspaceCoordinatorSession {
     options?: { silent?: boolean }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
-    work: NotesWorkspaceQueueWork
+    work: NotesWorkspaceQueueWork,
+    options?: { preserveSelection?: boolean }
   ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
 }
@@ -624,7 +625,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const activationCompletion = activation.completion.then(() => undefined);
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
-        silent = false
+        silent = false,
+        preserveSelection = false
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active) {
           return Promise.resolve("skipped");
@@ -649,7 +651,12 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         entry.queue.push(item);
         if (!silent) {
-          notify(session, { type: "pending" });
+          notify(
+            session,
+            preserveSelection
+              ? { type: "pending", preserveSelection: true }
+              : { type: "pending" }
+          );
         }
         pump(entry);
         return item.completion;
@@ -664,7 +671,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           return enqueueCommand(work, options?.silent ?? false);
         },
         enqueueStructural(
-          work: NotesWorkspaceQueueWork
+          work: NotesWorkspaceQueueWork,
+          options?: { preserveSelection?: boolean }
         ): Promise<NotesWorkspaceCommandOutcome> {
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
@@ -720,7 +728,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                     }
                   }
                 }
-                const structural = enqueueCommand(work);
+                const structural = enqueueCommand(
+                  work,
+                  false,
+                  options?.preserveSelection ?? false
+                );
                 finalizeParticipants();
                 return await structural;
               } finally {

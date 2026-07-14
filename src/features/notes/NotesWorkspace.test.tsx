@@ -2549,6 +2549,114 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 
+    it.each([
+      {
+        shortcut: "Tab",
+        shiftKey: false,
+        op: "indent" as const,
+        expectedDepth: "1",
+        before: [
+          node({ id: "parent", sortKey: 1, title: "Parent" }),
+          node({ id: "a", sortKey: 2, title: "Alpha" }),
+          node({ id: "b", sortKey: 3, title: "Bravo" })
+        ],
+        after: [
+          node({ id: "parent", sortKey: 1, title: "Parent" }),
+          node({
+            id: "a",
+            parentId: "parent",
+            sortKey: 1,
+            title: "Alpha"
+          }),
+          node({
+            id: "b",
+            parentId: "parent",
+            sortKey: 2,
+            title: "Bravo"
+          })
+        ]
+      },
+      {
+        shortcut: "Shift+Tab",
+        shiftKey: true,
+        op: "outdent" as const,
+        expectedDepth: "0",
+        before: [
+          node({ id: "parent", sortKey: 1, title: "Parent" }),
+          node({
+            id: "a",
+            parentId: "parent",
+            sortKey: 1,
+            title: "Alpha"
+          }),
+          node({
+            id: "b",
+            parentId: "parent",
+            sortKey: 2,
+            title: "Bravo"
+          })
+        ],
+        after: [
+          node({ id: "parent", sortKey: 1, title: "Parent" }),
+          node({ id: "a", sortKey: 2, title: "Alpha" }),
+          node({ id: "b", sortKey: 3, title: "Bravo" })
+        ]
+      }
+    ])(
+      "keeps the selected rows selected after batch $shortcut",
+      async ({ shiftKey, op, expectedDepth, before, after }) => {
+        configureRepository(before);
+        const batch = deferred<NotesWorkspace>();
+        notesStoreMock.applyBatch.mockReturnValueOnce(batch.promise);
+        renderNotesWorkspace();
+        const alpha = await findTitleInput("Alpha");
+        act(() => alpha.focus());
+
+        const selectedOutlineIds = () =>
+          Array.from(
+            document.querySelectorAll(
+              '[data-outline-id][data-range-selected="true"]'
+            )
+          ).map((row) => row.getAttribute("data-outline-id"));
+
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+        expect(selectedOutlineIds()).toEqual(["a", "b"]);
+
+        fireEvent.keyDown(alpha, { key: "Tab", shiftKey });
+
+        await waitFor(() =>
+          expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+            op,
+            nodeIds: ["a", "b"]
+          })
+        );
+        expect(selectedOutlineIds()).toEqual(["a", "b"]);
+        await act(async () => batch.resolve(workspace(after)));
+        await waitFor(() =>
+          expect(selectedOutlineIds()).toEqual(["a", "b"])
+        );
+        const alphaRow = document.querySelector<HTMLElement>(
+          '[data-outline-id="a"]'
+        );
+        await waitFor(() =>
+          expect(alphaRow?.style.getPropertyValue("--notes-depth")).toBe(
+            expectedDepth
+          )
+        );
+        const focusedAlpha = await findTitleInput("Alpha");
+        expect(focusedAlpha).toHaveFocus();
+
+        // The selection direction also survives the structural refresh:
+        // anchor stays on Alpha and head stays on Bravo, so moving the head
+        // upward collapses the range back to Alpha.
+        fireEvent.keyDown(focusedAlpha, {
+          key: "ArrowUp",
+          shiftKey: true
+        });
+        expect(selectedOutlineIds()).toEqual(["a"]);
+      }
+    );
+
     it("keeps the single-node completion path when no selection is active", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());

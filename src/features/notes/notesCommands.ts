@@ -540,8 +540,10 @@ function buildApplyBatchInput(
  * Apply one structural operation to a whole selection as a single transaction /
  * single history entry (undo reverts the batch in one step). The command runs
  * through the same structural pipeline as the single-node commands — so it
- * reports the Phase 3.5 settlement outcome, clears the live selection via the
- * "pending"→setLoading path, and projects the mutation into the active scope.
+ * reports the Phase 3.5 settlement outcome and projects the mutation into the
+ * active scope. Indent/outdent retain the stable anchor/head selection while
+ * the block moves; every other batch operation keeps the default pending-time
+ * selection clear.
  *
  * Only ids still present in the confirmed workspace are forwarded; if none
  * survive (all vanished before the command ran) the command is skipped rather
@@ -554,31 +556,36 @@ export async function applyBatchCommand(
   op: NotesBatchOp,
   uiUpdate?: NotesWorkspaceUiUpdate
 ): Promise<NotesWorkspaceCommandOutcome> {
-  return ctx.runStructuralCommand("batch", async (context, historyContext) => {
-    const before = confirmedState(context);
-    const ids = nodeIds.filter((id) => Boolean(before.nodesById[id]));
-    if (ids.length === 0) {
-      return { kind: "skipped" };
-    }
-    const mutation = unwrapNotesMutation(
-      await context.repository.applyBatch(
-        context.vaultRoot,
-        buildApplyBatchInput(ids, op),
-        ...historyArguments(historyContext)
-      )
-    );
-    const projection = await projectNotesMutation(
-      context,
-      mutation,
-      ctx.activeScopeRef.current
-    );
-    ctx.rememberHistoryAfter(
-      appliedHistoryContext(historyContext, mutation),
-      projection.workspace,
-      uiUpdate
-    );
-    return directMutationResult(mutation, projection, uiUpdate);
-  });
+  const preserveSelection = op.type === "indent" || op.type === "outdent";
+  return ctx.runStructuralCommand(
+    "batch",
+    async (context, historyContext) => {
+      const before = confirmedState(context);
+      const ids = nodeIds.filter((id) => Boolean(before.nodesById[id]));
+      if (ids.length === 0) {
+        return { kind: "skipped" };
+      }
+      const mutation = unwrapNotesMutation(
+        await context.repository.applyBatch(
+          context.vaultRoot,
+          buildApplyBatchInput(ids, op),
+          ...historyArguments(historyContext)
+        )
+      );
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      ctx.rememberHistoryAfter(
+        appliedHistoryContext(historyContext, mutation),
+        projection.workspace,
+        uiUpdate
+      );
+      return directMutationResult(mutation, projection, uiUpdate);
+    },
+    { preserveSelection }
+  );
 }
 
 /**

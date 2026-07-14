@@ -393,6 +393,7 @@ interface AttachmentUploadAttempt {
 export interface StructuralCommandOptions {
   readonly historyContext?: NotesHistoryContext | null;
   readonly retainHistoryOnFailure?: boolean;
+  readonly preserveSelection?: boolean;
 }
 
 export function authoritative(
@@ -684,6 +685,7 @@ export interface NotesWorkspaceQueueStep {
 interface BufferedWorkspaceCommand {
   work: NotesWorkspaceQueueWork;
   structural?: boolean;
+  preserveSelection?: boolean;
   resolve(outcome: NotesWorkspaceCommandOutcome): void;
 }
 
@@ -728,7 +730,9 @@ function enqueueBufferedCommands(
     let completion: Promise<NotesWorkspaceCommandOutcome>;
     try {
       completion = command.structural
-        ? session.enqueueStructural(command.work)
+        ? session.enqueueStructural(command.work, {
+            preserveSelection: command.preserveSelection
+          })
         : session.enqueue(command.work);
     } catch {
       command.resolve("skipped");
@@ -1234,15 +1238,13 @@ export function useNotesWorkspace({
         editingFocusRef.current = null;
       }
       dispatch(action);
-      // A navigation edit or structural mutation invalidates any live selection
-      // range: caret moves (focusNode), zoom (setZoomRoot), scope reload/init
-      // (startWorkspaceLoad), and every non-silent command (setLoading, emitted
-      // on the coordinator "pending" event) all drop it. Silent draft autosaves
-      // never route through here, so a range survives a background save.
+      // Navigation invalidates any live selection range: caret moves
+      // (focusNode), zoom (setZoomRoot), and scope reload/init
+      // (startWorkspaceLoad) all drop it. Structural-command loading applies
+      // its command-specific selection policy in the coordinator event handler.
       if (
         selectionRef.current !== null &&
-        (action.type === "setLoading" ||
-          action.type === "focusNode" ||
+        (action.type === "focusNode" ||
           action.type === "setZoomRoot" ||
           action.type === "startWorkspaceLoad")
       ) {
@@ -1464,6 +1466,13 @@ export function useNotesWorkspace({
         }
         if (event.type === "pending") {
           applyAction({ type: "setLoading" });
+          if (
+            !event.preserveSelection &&
+            selectionRef.current !== null
+          ) {
+            selectionRef.current = null;
+            dispatchSelection({ type: "clearSelection" });
+          }
           return;
         }
         if (
@@ -1960,12 +1969,15 @@ export function useNotesWorkspace({
         record.repository === repository &&
         record.vaultRoot === vaultRoot
       ) {
-        return record.session.enqueueStructural(queueWork);
+        return record.session.enqueueStructural(queueWork, {
+          preserveSelection: options?.preserveSelection
+        });
       }
       return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
         bufferedCommandsRef.current.push({
           work: queueWork,
           structural: true,
+          preserveSelection: options?.preserveSelection,
           resolve
         });
       });
