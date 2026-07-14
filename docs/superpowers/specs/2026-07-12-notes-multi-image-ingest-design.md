@@ -1,5 +1,11 @@
 # Notes Multi-Image Ingest Design
 
+> **Superseded for new-image placement and image viewing:**
+> `2026-07-14-independent-image-nodes-design.md` keeps this document's native
+> picker/drop/paste transport and validation rules, but new images now become
+> independent image nodes and an image lightbox is in scope. Existing legacy
+> attachments continue to follow this document.
+
 ## 목적
 
 Notes 블릿 메뉴의 이미지 선택 오류를 해결하고, 이미지 파일을 파일 선택기, 드래그 앤 드롭, 클립보드 붙여넣기로 안정적으로 추가한다. 여러 이미지가 한 번에 들어오면 입력 순서를 유지한 채 모두 저장하며, 전체 작업은 하나의 원자적 저장 및 `Undo` 단위로 처리한다.

@@ -40,6 +40,7 @@
 - `src/features/notes/imageNodeInsertion.ts`: pure target-to-anchor and ordered-ID construction helpers.
 - `src/features/notes/useNotesWorkspace.ts`: picker/drop/paste image-node attempts and retry projection.
 - `src/features/notes/NotesImageAttachment.tsx`: reusable image frame, hover menu, full-screen trigger, and resize behavior.
+- `src/features/notes/NotesImageResidencyContext.tsx`: workspace-wide eight-image lazy residency coordinator shared by primary and legacy images.
 - `src/features/notes/NotesImageMenu.tsx`: accessible image action menu.
 - `src/features/notes/NotesImageLightbox.tsx`: in-app full-screen viewer.
 - `src/features/notes/NotesAttachmentList.tsx`: legacy attachment compatibility and attachment-only deletion.
@@ -104,6 +105,9 @@ Expected: FAIL because schema version 5 and `node_kind` do not exist.
 Add the enum/type, update `NOTE_NODE_KEYS`, row mapping, audit JSON mapping,
 node INSERT/SELECT lists, history snapshots, and every canonical test fixture.
 Use `DEFAULT 'text'`; do not inspect attachment rows during migration.
+Normalize retained v4 node history snapshots with `nodeKind: "text"` and
+recompute their byte accounting so exact-state Undo/Redo comparison remains
+valid; leave attachment history rows unchanged.
 
 - [ ] **Step 6: Run focused and compatibility tests**
 
@@ -265,6 +269,10 @@ read-only modes, drop-preview cleanup, and first-node focus.
 **Files:**
 - Modify: `src/features/notes/NotesImageAttachment.tsx`
 - Modify: `src/features/notes/NotesImageAttachment.test.tsx`
+- Create: `src/features/notes/NotesImageResidencyContext.tsx`
+- Create: `src/features/notes/NotesImageResidencyContext.test.tsx`
+- Modify: `src/features/notes/NotesFeature.tsx`
+- Modify: `src/features/notes/NotesAttachmentList.tsx`
 - Modify: `src/features/notes/OutlineNodeRow.tsx`
 - Modify: `src/features/notes/NotesPageHeader.tsx`
 - Modify: `src/features/notes/OutlineNodeRow.test.tsx` if present, otherwise `NotesWorkspace.test.tsx`
@@ -283,6 +291,10 @@ Assert an image node renders its single image in the title/content slot, does
 not render the filename as visible title text, retains standard bullet/menu and
 child controls, and renders `Image unavailable` if the attachment is absent.
 Assert a text node with legacy attachments renders exactly as before.
+
+Add a 512-image mixed legacy/new residency fixture. Intersect more than eight
+images and assert at most eight object URLs stay live globally, evicted URLs are
+revoked, and menu focus does not cause a byte read.
 
 - [ ] **Step 2: Add failing keyboard tests**
 
@@ -303,6 +315,11 @@ Branch only at the primary-content boundary. Keep selection, drag handles,
 guides, menu slot, draft persistence, date/tag note behavior, and row memo
 inputs shared. Render `NotesAttachmentList` only for text nodes; render the
 single owned attachment through `NotesImageAttachment` for image nodes.
+
+Move lazy residency ownership from each `NotesAttachmentList` into one provider
+mounted by `NotesFeatureProvider`. Both primary image rows and legacy lists
+register visibility with it; the provider grants at most eight leases across
+the workspace.
 
 - [ ] **Step 5: Implement image description focus**
 
@@ -386,6 +403,9 @@ Resolve the attachment through the existing repository and asset-root lease,
 canonicalize and verify the owned path, then call `open::that` for original.
 Download copies through a destination sibling temp file, fsyncs, and atomically
 renames after the Save dialog's overwrite confirmation.
+View original must not open the Vault asset path directly: read and hash-verify
+the owned file, create a read-only temporary copy outside the Vault, open that
+copy, and reconcile stale view copies later.
 
 - [ ] **Step 7: Run Task 5 suites**
 
@@ -477,7 +497,8 @@ accessibility, and absence of unrelated Settings state changes.
 Assert Markdown and PDF place an image-node image at the node position and its
 description beneath it without a duplicate visible filename title. Assert
 legacy text-node attachments retain existing filename captions. Assert filename
-search matches `title` and tag/date search matches image-node `note`.
+search matches `title` and tag/date search matches image-node `note`. A filename
+containing tag/date syntax must not create structured tag or date matches.
 
 - [ ] **Step 2: Add failing lifecycle and performance tests**
 
@@ -531,4 +552,3 @@ finding, rerun covering tests, and request a second review.
 Write exact commands, pass counts, manual scenarios, screenshots, performance
 measurements, remaining deferred items, and any residual risk to
 `docs/superpowers/reports/2026-07-14-independent-image-nodes-verification.md`.
-

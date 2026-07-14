@@ -75,6 +75,11 @@ The default marks every existing node as text without inspecting or changing
 its attachments. This is a schema compatibility migration, not an attachment
 migration.
 
+Version 4 node history snapshots are normalized to add
+`nodeKind: "text"`, and their stored byte accounting is recomputed. This is
+required because history replay compares exact canonical node states. Only node
+snapshot JSON changes; attachment history rows and asset files remain intact.
+
 ### Image Node Invariants
 
 - New image nodes are created only through the image-node batch import command.
@@ -87,6 +92,13 @@ migration.
   attachments.
 - The database does not add a global one-attachment constraint because that
   would invalidate legacy text-node attachments and retained history rows.
+- Generic create, split, and subtree-import commands always produce text nodes.
+- Duplicate preserves node kind and attachment ownership.
+- Generic title updates cannot change an image node's hidden filename, split is
+  rejected for image nodes, and generic attachment add/remove is rejected for
+  image-node owners. Resize remains valid.
+- A loaded image node with zero attachments is treated as a recoverable damaged
+  state and stays actionable; newly created image nodes must have exactly one.
 
 ## Image Insertion Contract
 
@@ -220,6 +232,9 @@ target after it has been consumed.
 - Filename search works through the hidden `title` value.
 - Tags and dates in the image description work through the existing `note`
   index and structured search parser.
+- Structured tag/date indexing ignores an image node's filename title, so a
+  filename such as `#urgent 2026-07-14.png` is searchable text but does not
+  create a tag or date match. Add Date edits the description for image nodes.
 - Markdown export emits the image at the node's outline position and emits the
   description as supporting text without duplicating the hidden filename as a
   visible bullet title.
@@ -231,6 +246,10 @@ target after it has been consumed.
 
 - View original and Download resolve paths from attachment metadata inside the
   Notes asset root; caller-provided filesystem paths are never opened.
+- View original verifies bytes and hash through the owned-file reader, writes a
+  read-only temporary copy outside the Vault, and opens that copy. It never
+  passes the content-addressed Vault asset to another application. Stale view
+  copies are reconciled on a later Notes startup/open.
 - Existing canonical-path, symlink, hash, MIME, decoded-pixel, and byte-size
   checks remain authoritative.
 - Save cancellation is a quiet no-op. Existing destinations require the native
@@ -242,7 +261,9 @@ target after it has been consumed.
 
 ## Performance Constraints
 
-- Keep the existing maximum of eight resident decoded image object URLs.
+- Introduce one workspace-level image residency coordinator shared by primary
+  image nodes and legacy attachment lists. At most eight decoded image object
+  URLs may be live across the complete Notes workspace, not eight per row.
 - The hover menu must not load image bytes by itself.
 - Full-screen reuses the resident object URL while mounted and releases any
   modal-owned URL on close.
@@ -282,6 +303,8 @@ target after it has been consumed.
 - Settings opens `Notes > Images`, scrolls, focuses, and outlines the target.
 - Image residency remains capped and menu interaction does not trigger extra
   byte reads.
+- A 512-image mixed legacy/new fixture never exceeds eight live object URLs and
+  revokes URLs on eviction, scope change, and unmount.
 
 ### Manual And Visual
 
@@ -303,4 +326,3 @@ target after it has been consumed.
   semantics.
 - Settings reaches and highlights `Notes > Images`.
 - Search, export, trash, history, and large-outline performance remain valid.
-
