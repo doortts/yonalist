@@ -2883,6 +2883,115 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 
+    it("routes a one-row selected drag through the frozen batch command", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Bravo");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Bravo" }),
+        { shiftKey: true }
+      );
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+      );
+      await act(async () => undefined);
+      const bullet = screen.getByRole("button", { name: "Zoom into Bravo" });
+      mockOutlineRowRects();
+
+      bullet.focus();
+      await user.keyboard("[Space][ArrowDown][Space]");
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["b"],
+        parentId: null,
+        afterId: "c",
+        beforeId: null
+      });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("keeps an invalid selected drag inside the range a no-op", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+      );
+      await act(async () => undefined);
+      const bullet = screen.getByRole("button", { name: "Zoom into Alpha" });
+      mockOutlineRowRects();
+
+      bullet.focus();
+      await user.keyboard("[Space][ArrowDown][Space]");
+
+      await waitFor(() =>
+        expect(document.body).toHaveTextContent("No move was made for Alpha.")
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(
+        Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-outline-id][data-range-selected="true"]'
+          )
+        ).map((row) => row.dataset.outlineId)
+      ).toEqual(["a", "b"]);
+    });
+
+    it("normalizes an ancestor selected drag to one frozen structural root", async () => {
+      const user = userEvent.setup();
+      configureRepository([
+        node({ id: "parent", sortKey: 1, title: "Parent" }),
+        node({ id: "child", parentId: "parent", title: "Child" }),
+        node({ id: "tail", sortKey: 2, title: "Tail" })
+      ]);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Parent");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 3)
+      );
+      await act(async () => undefined);
+      const bullet = screen.getByRole("button", { name: "Zoom into Child" });
+      mockOutlineRowRects();
+
+      bullet.focus();
+      await user.keyboard("[Space][ArrowDown][Space]");
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["parent"],
+        parentId: null,
+        afterId: "tail",
+        beforeId: null
+      });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("routes a selected row menu through the full-range command bridge", async () => {
       const user = userEvent.setup();
       configureRepository(threeRoots());

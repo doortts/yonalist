@@ -73,13 +73,22 @@ import {
 import { buildNotesMoveDestinations } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import {
+  derivePreparedOutlineSelectionDropPreview,
   deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
   OUTLINE_NARROW_INDENT_PX,
   OUTLINE_NARROW_MEDIA_QUERY,
   projectOutlineDrop,
+  type OutlineDropProjection,
   type OutlineDropPreview
 } from "./outlineDrag";
+import {
+  projectOutlineSelectionDragSession,
+  startOutlineSelectionDragSession,
+  type OutlineSelectionDragFrozenContext,
+  type OutlineSelectionDragProjection,
+  type OutlineSelectionDragSession
+} from "./outlineSelectionDragSession";
 import {
   selectionRangeIds,
   type NormalizedNotesWorkspace
@@ -134,6 +143,13 @@ type SelectionChooserSession =
       snapshot: SelectionChooserSnapshot;
       selectedTagUnion: readonly NoteSearchTag[];
     }>;
+
+type PaneDragProjection =
+  | Readonly<{
+      kind: "ordinary-move";
+      projection: OutlineDropProjection;
+    }>
+  | OutlineSelectionDragProjection;
 
 function exactNoteIds(
   left: readonly NoteId[],
@@ -386,6 +402,12 @@ export function NotesOutlinePane() {
   const selectionChooserPreparationRequestRef = useRef(0);
   const selectionChooserPreparingRef = useRef(false);
   const selectionClipboardLifecycleRef = useRef(0);
+  const selectionDragContextRequestRef = useRef(0);
+  const selectionDragContextRef =
+    useRef<OutlineSelectionDragFrozenContext | null>(null);
+  const outlineDragSessionRef = useRef<OutlineSelectionDragSession | null>(
+    null
+  );
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -537,7 +559,7 @@ export function NotesOutlinePane() {
   const dragEndProjection = useRef<{
     activeId: NoteId;
     overId: NoteId | null;
-    projection: ReturnType<typeof projectOutlineDrop>;
+    projection: PaneDragProjection | null;
   } | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, pointerSensorOptions),
@@ -1134,6 +1156,97 @@ export function NotesOutlinePane() {
     selectionNativeClipboard.handleCompositionEnd();
   }, [selectionNativeClipboard]);
   useEffect(() => {
+    const requestId = ++selectionDragContextRequestRef.current;
+    selectionDragContextRef.current = null;
+    if (
+      !selectionSnapshot ||
+      !selectionSnapshot.eligibility.copy.eligible ||
+      !currentPreparedAuthority ||
+      !prepareSelectionAuthority ||
+      !isPreparedSelectionAuthorityCurrent
+    ) {
+      return;
+    }
+    const expectedRevision = selectionRevision;
+    const expectedSelectedIds = [...selectionSnapshot.selectedNodeIds];
+    const expectedRootIds = [...selectionSnapshot.structuralRootIds];
+    if (expectedRootIds.length === 0) {
+      return;
+    }
+    const installContext = (
+      authority: NotesPreparedSelectionAuthority
+    ): void => {
+      const live = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      const liveSelectedIds = selectionRangeIds(
+        live.selection,
+        bodyVisibleIdsRef.current
+      );
+      if (
+        selectionDragContextRequestRef.current !== requestId ||
+        live.revision !== expectedRevision ||
+        !exactNoteIds(liveSelectedIds, expectedSelectedIds) ||
+        authority.selectionRevision !== expectedRevision ||
+        !exactNoteIds(authority.selectedNodeIds, expectedRootIds) ||
+        !isPreparedSelectionAuthorityCurrent(authority)
+      ) {
+        return;
+      }
+      const actionSnapshot = deriveNotesSelectionActionSnapshot({
+        selection: live.selection,
+        visibleNodeIds: bodyVisibleIdsRef.current,
+        workspace: stateRef.current,
+        authoritativeWorkspace: authority.workspace
+      });
+      if (
+        !actionSnapshot ||
+        !exactNoteIds(actionSnapshot.selectedNodeIds, expectedSelectedIds) ||
+        !exactNoteIds(actionSnapshot.structuralRootIds, expectedRootIds)
+      ) {
+        return;
+      }
+      selectionDragContextRef.current = Object.freeze({
+        nodeIds: Object.freeze([...expectedRootIds]),
+        ownership: Object.freeze({ actionSnapshot, authority })
+      });
+    };
+
+    if (
+      exactNoteIds(
+        currentPreparedAuthority.selectedNodeIds,
+        expectedRootIds
+      )
+    ) {
+      installContext(currentPreparedAuthority);
+      return;
+    }
+
+    void (async () => {
+      if (!(await actions.flushAllDrafts())) {
+        return;
+      }
+      if (
+        selectionDragContextRequestRef.current !== requestId ||
+        selectionRevisionRef.current !== expectedRevision
+      ) {
+        return;
+      }
+      installContext(await prepareSelectionAuthority(expectedRootIds));
+    })().catch(() => {
+      // A selected drag with no current frozen authority remains a no-op.
+    });
+  }, [
+    actions,
+    currentPreparedAuthority,
+    getLiveSelectionSnapshot,
+    isPreparedSelectionAuthorityCurrent,
+    prepareSelectionAuthority,
+    selectionRevision,
+    selectionSnapshot
+  ]);
+  useEffect(() => {
     if (!selection || materializedSelectionIds.length > 0) {
       return;
     }
@@ -1407,7 +1520,9 @@ export function NotesOutlinePane() {
     state.status === "loading" ||
     bodyRows.length === 0;
   const projectDrag = useCallback(
-    (event: Pick<DragMoveEvent, "active" | "delta" | "over">) => {
+    (
+      event: Pick<DragMoveEvent, "active" | "delta" | "over">
+    ): PaneDragProjection | null => {
       const activeId = String(event.active.id);
       if (
         dragUnavailable ||
@@ -1417,8 +1532,22 @@ export function NotesOutlinePane() {
       ) {
         return null;
       }
-
-      return projectOutlineDrop(
+      const session = outlineDragSessionRef.current;
+      if (!session) {
+        return null;
+      }
+      if (session.kind !== "ordinary") {
+        return projectOutlineSelectionDragSession(
+          session,
+          String(event.over.id),
+          event.delta.x,
+          outlineIndentPx
+        );
+      }
+      if (session.activeId !== activeId) {
+        return null;
+      }
+      const projection = projectOutlineDrop(
         activeId,
         String(event.over.id),
         event.delta.x,
@@ -1430,6 +1559,9 @@ export function NotesOutlinePane() {
         },
         outlineIndentPx
       );
+      return projection
+        ? Object.freeze({ kind: "ordinary-move", projection })
+        : null;
     },
     [
       activeDragId,
@@ -1457,11 +1589,14 @@ export function NotesOutlinePane() {
         const result = dragEndProjection.current;
         const activeId = String(active.id);
         const overId = over ? String(over.id) : null;
+        const projectedMove =
+          result?.projection?.kind === "ordinary-move" ||
+          result?.projection?.kind === "selected-move";
         if (
           over &&
           result?.activeId === activeId &&
           result.overId === overId &&
-          result.projection
+          projectedMove
         ) {
           return `Queued move for ${labelFor(active.id)} at ${labelFor(over.id)}.`;
         }
@@ -1480,21 +1615,84 @@ export function NotesOutlinePane() {
       id === state.zoomRootId ||
       !structuralRows.some((row) => row.id === id)
     ) {
+      outlineDragSessionRef.current = null;
       setActiveDragId(null);
       return;
+    }
+    const live = getLiveSelectionSnapshot?.() ?? {
+      selection: selectionRef.current,
+      revision: selectionRevisionRef.current
+    };
+    const selectedIds = selectionRangeIds(
+      live.selection,
+      bodyVisibleIdsRef.current
+    );
+    if (selectedIds.includes(id)) {
+      const frozenContext = selectionDragContextRef.current;
+      const contextCurrent =
+        frozenContext !== null &&
+        frozenContext.ownership.authority.selectionRevision === live.revision &&
+        exactNoteIds(
+          frozenContext.ownership.actionSnapshot.selectedNodeIds,
+          selectedIds
+        ) &&
+        (isPreparedSelectionAuthorityCurrent?.(
+          frozenContext.ownership.authority
+        ) ?? false);
+      outlineDragSessionRef.current = contextCurrent
+        ? startOutlineSelectionDragSession({
+            activeId: id,
+            selectedNodeIds: selectedIds,
+            rows: structuralRows,
+            order: {
+              rootIds: state.rootIds,
+              childIdsByParent: state.childIdsByParent,
+              zoomRootId: state.zoomRootId
+            },
+            frozenContext
+          })
+        : Object.freeze({
+            kind: "selected-invalid",
+            reason: "selection-authority-mismatch"
+          });
+    } else {
+      outlineDragSessionRef.current = Object.freeze({
+        kind: "ordinary",
+        activeId: id
+      });
     }
     setActiveDragId(id);
   };
 
   const handleDragMove = (event: DragMoveEvent) => {
     const projection = projectDrag(event);
+    if (!projection || projection.kind === "selected-invalid") {
+      setDropPreview(null);
+      return;
+    }
+    if (projection.kind === "ordinary-move") {
+      setDropPreview(
+        deriveOutlineDropPreview(
+          String(event.active.id),
+          structuralRows,
+          projection.projection
+        )
+      );
+      return;
+    }
+    const session = outlineDragSessionRef.current;
     setDropPreview(
-      projection
-        ? deriveOutlineDropPreview(
-            String(event.active.id),
-            structuralRows,
-            projection
-          )
+      session?.kind === "selected-ready"
+        ? derivePreparedOutlineSelectionDropPreview(session.prepared, {
+            kind: "valid",
+            nodeIds: session.prepared.nodeIds,
+            projection: {
+              ...projection.target,
+              ...(projection.expandNodeId === undefined
+                ? {}
+                : { expandNodeId: projection.expandNodeId })
+            }
+          })
         : null
     );
   };
@@ -1507,34 +1705,26 @@ export function NotesOutlinePane() {
       overId: event.over ? String(event.over.id) : null,
       projection
     };
+    outlineDragSessionRef.current = null;
     setActiveDragId(null);
     setDropPreview(null);
-    if (!projection) {
+    if (!projection || projection.kind === "selected-invalid") {
       return;
     }
-    const { expandNodeId, ...input } = projection;
-    // Dragging a row that belongs to a live multi-node selection moves the WHOLE
-    // selection as one block (plan Phase 4.1c) — one applyBatch call, one undo
-    // step. Skip the block path when the drop would anchor after (or under) a
-    // node inside the selection, which the backend rejects; that falls back to
-    // the single-node move.
-    const selectedIds = selectionRangeIds(
-      selection ?? null,
-      structuralVisibleIds
-    );
-    if (
-      selectedIds.length > 1 &&
-      selectedIds.includes(activeId) &&
-      (input.afterId === null || !selectedIds.includes(input.afterId)) &&
-      (input.parentId === null || !selectedIds.includes(input.parentId))
-    ) {
-      void actions.applyBatch(selectedIds, {
-        type: "move",
-        parentId: input.parentId ?? null,
-        afterId: input.afterId ?? null
-      });
+    if (projection.kind === "selected-move") {
+      void executeSelectionCommand(
+        {
+          type: "reorder",
+          target: projection.target,
+          ...(projection.expandNodeId === undefined
+            ? {}
+            : { expandNodeId: projection.expandNodeId })
+        },
+        projection.frozenContext
+      );
       return;
     }
+    const { expandNodeId, ...input } = projection.projection;
     void actions.moveNode(
       { id: activeId, ...input },
       undefined,
@@ -1699,6 +1889,7 @@ export function NotesOutlinePane() {
             onDragMove={handleDragMove}
             onDragOver={handleDragMove}
             onDragCancel={() => {
+              outlineDragSessionRef.current = null;
               setActiveDragId(null);
               setDropPreview(null);
             }}
