@@ -246,7 +246,7 @@ git commit -m "fix(inbox): render late first comment batch"
 - Consumes: the two fixes and the existing project scripts.
 - Produces: verification evidence; no new production API.
 
-- [ ] **Step 1: Run focused regression tests together**
+- [x] **Step 1: Run focused regression tests together**
 
 Run:
 
@@ -260,13 +260,13 @@ npm test -- --run \
 
 Expected: all focused tests PASS.
 
-- [ ] **Step 2: Run the full test suite**
+- [x] **Step 2: Run the full test suite**
 
 Run: `npm test`
 
 Expected: zero failed test files and zero failed tests.
 
-- [ ] **Step 3: Run lint and production build**
+- [x] **Step 3: Run lint and production build**
 
 Run: `npm run lint && npm run build`
 
