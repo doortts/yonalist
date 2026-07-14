@@ -130,6 +130,7 @@ interface ImageDropPreview {
 type SelectionChooserOwnership = NotesSelectionCommandOwnership<
   NotesPreparedSelectionAuthority
 >;
+type SelectionChooserRequestOrigin = "menu" | "toolbar";
 type SelectionChooserSnapshot = NotesFrozenSelectionSnapshot<
   SelectionChooserOwnership
 >;
@@ -361,6 +362,7 @@ export function NotesOutlinePane() {
   } = useNotesActions();
   const vaultRoot = useContext(VaultRootContext);
   const {
+    activeTagFilters,
     deletingNotesData,
     libraryView,
     locallyExpandedNodeIds,
@@ -375,6 +377,10 @@ export function NotesOutlinePane() {
     selectionRevision = 0,
     writeError
   } = useNotesDrafts();
+  const selectionChooserScopeKey = `${vaultRoot}\u0000${libraryView}\u0000${activeTagFilters
+    .map((filter) => `${filter.prefix}\u0000${filter.normalizedTag}`)
+    .join("\u0001")}`;
+  const selectionChooserLifecycleKey = `${selectionRevision}\u0002${selectionChooserScopeKey}`;
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
@@ -401,6 +407,7 @@ export function NotesOutlinePane() {
   const selectionAuthorityRequestRef = useRef(0);
   const selectionChooserPreparationRequestRef = useRef(0);
   const selectionChooserPreparingRef = useRef(false);
+  const selectionChooserLifecycleRef = useRef(selectionChooserLifecycleKey);
   const selectionClipboardLifecycleRef = useRef(0);
   const selectionDragContextRequestRef = useRef(0);
   const selectionDragContextRef =
@@ -1051,6 +1058,33 @@ export function NotesOutlinePane() {
   const executeSelectionCommand = selectionRouter.execute;
   const invalidatePreparedSelectionClipboard =
     selectionRouter.invalidatePreparedClipboard;
+  const selectionChooserAuthorityCurrent =
+    selectionChooser === null ||
+    (isPreparedSelectionAuthorityCurrent?.(
+      selectionChooser.snapshot.ownership.authority
+    ) ?? false);
+  useLayoutEffect(() => {
+    const lifecycleChanged =
+      selectionChooserLifecycleRef.current !== selectionChooserLifecycleKey;
+    const openAuthorityStale =
+      selectionChooser !== null && !selectionChooserAuthorityCurrent;
+    if (!lifecycleChanged && !openAuthorityStale) {
+      return;
+    }
+    selectionChooserLifecycleRef.current = selectionChooserLifecycleKey;
+    selectionChooserPreparationRequestRef.current += 1;
+    selectionChooserPreparingRef.current = false;
+    setSelectionChooser((current) => (current === null ? current : null));
+    setSelectionChooserFeedback((current) =>
+      current.busy || current.error
+        ? { busy: false, error: null }
+        : current
+    );
+  }, [
+    selectionChooser,
+    selectionChooserAuthorityCurrent,
+    selectionChooserLifecycleKey
+  ]);
   const selectionNativeClipboard = useMemo(
     () =>
       createNotesSelectionNativeClipboardController({
@@ -1286,7 +1320,10 @@ export function NotesOutlinePane() {
     selectionRevision
   ]);
   const requestSelectionChooser = useCallback(
-    async (kind: "move" | "tags"): Promise<void> => {
+    async (
+      kind: "move" | "tags",
+      origin: SelectionChooserRequestOrigin
+    ): Promise<void> => {
       if (selectionChooserPreparingRef.current) {
         return;
       }
@@ -1297,6 +1334,18 @@ export function NotesOutlinePane() {
       const failCurrent = (error: string) => {
         if (selectionChooserPreparationRequestRef.current === requestId) {
           setSelectionChooserFeedback({ busy: true, error });
+          if (origin === "menu") {
+            queueMicrotask(() => {
+              if (
+                selectionChooserPreparationRequestRef.current === requestId
+              ) {
+                const headId = lastSelectionHeadRef.current;
+                if (headId !== null) {
+                  focusBodyTitle(headId);
+                }
+              }
+            });
+          }
         }
       };
       try {
@@ -1399,6 +1448,7 @@ export function NotesOutlinePane() {
     },
     [
       actions,
+      focusBodyTitle,
       getLiveSelectionActionSnapshot,
       getLiveSelectionSnapshot,
       isPreparedSelectionAuthorityCurrent,
@@ -1427,10 +1477,10 @@ export function NotesOutlinePane() {
           intent = { type: action };
           break;
         case "moveTo":
-          await requestSelectionChooser("move");
+          await requestSelectionChooser("move", "toolbar");
           return;
         case "tags":
-          await requestSelectionChooser("tags");
+          await requestSelectionChooser("tags", "toolbar");
           return;
       }
       if (intent) {
@@ -1483,7 +1533,7 @@ export function NotesOutlinePane() {
     () => undefined
   );
   selectionChooserHandoffRef.current = (chooser) => {
-    void requestSelectionChooser(chooser);
+    void requestSelectionChooser(chooser, "menu");
   };
   const selectionMenuBridge = useMemo<NotesBulletMenuSelectionBridge>(
     () => ({

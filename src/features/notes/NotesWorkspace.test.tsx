@@ -3262,6 +3262,131 @@ describe("Notes workspace", () => {
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
 
+    it("cancels stale chooser preparation when the selection revision changes", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      const chooserAuthority = deferred<NotesWorkspace>();
+      notesStoreMock.loadWorkspace.mockImplementationOnce(
+        () => chooserAuthority.promise
+      );
+      const activeLoadsBeforeChooser = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+
+      const menu = await openNodeMenu("Bravo", user);
+      await user.click(within(menu).getByRole("menuitem", { name: "Tags" }));
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeChooser)
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Charlie" }),
+        { shiftKey: true }
+      );
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 3 selected notes"
+      });
+      await waitFor(() =>
+        expect(
+          within(toolbar).getByRole("button", { name: "Tags" })
+        ).toHaveAttribute("aria-disabled", "false")
+      );
+      const charlie = queryTitleInput("Charlie");
+      if (!charlie) {
+        throw new Error("Charlie title did not render");
+      }
+      charlie.focus();
+
+      await act(async () =>
+        chooserAuthority.reject(new Error("stale authority failure"))
+      );
+      expect(within(toolbar).queryByText(/couldn't open|selection changed/i)).toBeNull();
+      expect(charlie).toHaveFocus();
+
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      expect(
+        await screen.findByRole("dialog", { name: "Edit tags" })
+      ).toBeVisible();
+    });
+
+    it("returns focus to the selected head after a current menu chooser failure", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      notesStoreMock.loadWorkspace.mockRejectedValueOnce(
+        new Error("authority unavailable")
+      );
+      const bravo = queryTitleInput("Bravo");
+      if (!bravo) {
+        throw new Error("Bravo title did not render");
+      }
+
+      const menu = await openNodeMenu("Bravo", user);
+      await user.click(within(menu).getByRole("menuitem", { name: "Tags" }));
+
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      await waitFor(() => expect(bravo).toHaveFocus());
+    });
+
+    it("closes an open chooser when its workspace scope becomes stale", async () => {
+      const user = userEvent.setup();
+      configureRepository([
+        node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
+        node({ id: "b", sortKey: 2, title: "Bravo" })
+      ]);
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      const starredView = screen.getByRole("button", { name: "Starred" });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Alpha" }),
+        { shiftKey: true }
+      );
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      });
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      expect(
+        await screen.findByRole("dialog", { name: "Edit tags" })
+      ).toBeVisible();
+
+      fireEvent.click(starredView);
+
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull()
+      );
+    });
+
     it("clears a range whose endpoints leave the body projection", async () => {
       const user = userEvent.setup();
       configureRepository([
