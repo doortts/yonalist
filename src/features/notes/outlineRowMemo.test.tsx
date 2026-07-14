@@ -1,9 +1,17 @@
-import { act, fireEvent, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import {
   createElement,
   memo,
   Profiler,
-  type ComponentProps
+  type ComponentProps,
+  useMemo
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
@@ -13,6 +21,7 @@ import {
   NotesStateContext
 } from "./NotesWorkspaceContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
   useNotesWorkspace,
   type UseNotesWorkspaceResult
@@ -73,6 +82,16 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 
 function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
 }
 
 // 10 roots × 4 children = 50 nested nodes. Nesting is deliberate: children carry
@@ -142,11 +161,30 @@ function repository(nodes: NoteNode[]): NotesStore {
 
 let captured: UseNotesWorkspaceResult | null = null;
 
-function Harness({ store }: { store: NotesStore }) {
+function Harness({
+  store,
+  applyPreparedSelectionBatch
+}: {
+  store: NotesStore;
+  applyPreparedSelectionBatch?: NonNullable<
+    UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
+  >;
+}) {
   const value = useNotesWorkspace({ vaultRoot: "/vault", repository: store });
   captured = value;
+  const baseActions = value.actionsSlice ?? value;
+  const actionsValue = useMemo(
+    () =>
+      applyPreparedSelectionBatch
+        ? {
+            ...baseActions,
+            applyPreparedSelectionBatch
+          }
+        : baseActions,
+    [applyPreparedSelectionBatch, baseActions]
+  );
   return (
-    <NotesActionsContext.Provider value={value.actionsSlice ?? value}>
+    <NotesActionsContext.Provider value={actionsValue}>
       <NotesStateContext.Provider value={value.stateSlice ?? value}>
         <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
           <NotesOutlinePane />
@@ -322,6 +360,63 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("keeps unselected row props stable while a selection command is busy and fails", async () => {
+    const nodes = seededNodes();
+    const store = repository(nodes);
+    const batch = deferred<NotesBatchCommandSettlement>();
+    const applyPreparedSelectionBatch: NonNullable<
+      UseNotesWorkspaceResult["applyPreparedSelectionBatch"]
+    > = vi.fn(() => batch.promise);
+    render(
+      <Harness
+        store={store}
+        applyPreparedSelectionBatch={applyPreparedSelectionBatch}
+      />
+    );
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => {
+      expect(document.querySelectorAll("[data-outline-id]").length).toBe(
+        PARENT_COUNT + PARENT_COUNT * CHILDREN_PER_PARENT
+      );
+    });
+
+    await act(async () => {
+      captured!.actions.setSelectionAnchor("p-0");
+      captured!.actions.extendSelectionTo("c-0-1");
+    });
+    const toolbar = await screen.findByRole("toolbar", {
+      name: "Actions for 3 selected notes"
+    });
+    const complete = within(toolbar).getByRole("button", { name: "Complete" });
+    await waitFor(() =>
+      expect(complete).toHaveAttribute("aria-disabled", "false")
+    );
+    const before = new Map(rowRenderCounts);
+
+    fireEvent.click(complete);
+    await waitFor(() =>
+      expect(complete).toHaveAttribute("aria-disabled", "true")
+    );
+    const selectedIds = ["p-0", "c-0-0", "c-0-1"];
+    const busyChurn = [...before].flatMap(([nodeId, count]) =>
+      !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
+        ? [nodeId]
+        : []
+    );
+    expect(busyChurn).toEqual([]);
+
+    await act(async () => batch.reject(new Error("batch failed")));
+    expect(
+      await within(toolbar).findByText(/command couldn't be completed/i)
+    ).toBeVisible();
+    const errorChurn = [...before].flatMap(([nodeId, count]) =>
+      !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
+        ? [nodeId]
+        : []
+    );
+    expect(errorChurn).toEqual([]);
   });
 
   it("Shift+Click on a bullet selects the range from the caret node to the clicked row", async () => {
