@@ -96,7 +96,8 @@ import {
 import {
   deriveOutlineBodyRows,
   flattenVisibleOutlineRows,
-  parentTrail
+  parentTrail,
+  type FlattenedOutlineRow
 } from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
 import {
@@ -151,6 +152,43 @@ type PaneDragProjection =
       projection: OutlineDropProjection;
     }>
   | OutlineSelectionDragProjection;
+type PendingPaneSelectionDragPreparation = {
+  /** `undefined` is still loading, `null` is a rejected/stale ownership. */
+  current: OutlineSelectionDragFrozenContext | null | undefined;
+  promise: Promise<OutlineSelectionDragFrozenContext | null>;
+};
+type PendingPaneSelectionDragSession = Readonly<{
+  kind: "selected-pending";
+  activeId: NoteId;
+  selectedNodeIds: readonly NoteId[];
+  selectionRevision: number;
+  rows: readonly FlattenedOutlineRow[];
+  zoomRootId: NoteId | null;
+  preparation: PendingPaneSelectionDragPreparation;
+}>;
+type PaneDragSession =
+  | OutlineSelectionDragSession
+  | PendingPaneSelectionDragSession;
+
+function trackPendingSelectionDragPreparation(
+  promise: Promise<OutlineSelectionDragFrozenContext | null>
+): PendingPaneSelectionDragPreparation {
+  const preparation: PendingPaneSelectionDragPreparation = {
+    current: undefined,
+    promise: Promise.resolve(null)
+  };
+  preparation.promise = promise.then(
+    (context) => {
+      preparation.current = context;
+      return context;
+    },
+    () => {
+      preparation.current = null;
+      return null;
+    }
+  );
+  return preparation;
+}
 
 function exactNoteIds(
   left: readonly NoteId[],
@@ -412,9 +450,7 @@ export function NotesOutlinePane() {
   const selectionDragContextRequestRef = useRef(0);
   const selectionDragContextRef =
     useRef<OutlineSelectionDragFrozenContext | null>(null);
-  const outlineDragSessionRef = useRef<OutlineSelectionDragSession | null>(
-    null
-  );
+  const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -1044,11 +1080,37 @@ export function NotesOutlinePane() {
     },
     isAuthorityCurrent: (authority) =>
       isPreparedSelectionAuthorityCurrent?.(authority) ?? false,
-    applyBatch: (authority, op, options) => {
+    applyBatch: async (authority, op, options) => {
       if (!applyPreparedSelectionBatch) {
         return Promise.reject(new Error("Selection batch actions are unavailable."));
       }
-      return applyPreparedSelectionBatch(authority, op, options);
+      const settlement = await applyPreparedSelectionBatch(
+        authority,
+        op,
+        options
+      );
+      const expandNodeId = options?.expandNodeId;
+      if (
+        expandNodeId !== undefined &&
+        settlement.projectedWorkspace?.nodesById[expandNodeId]?.isCollapsed
+      ) {
+        // The workspace command installs this local expansion before it
+        // returns, but React has not rendered the new hook state yet. Publish
+        // the same projection to the pane ref synchronously so the router's
+        // immediate endpoint-visibility check retains the moved selection.
+        const visibility = projectionVisibilityRef.current;
+        if (!visibility.locallyExpandedNodeIds.has(expandNodeId)) {
+          const locallyExpandedNodeIds = new Set(
+            visibility.locallyExpandedNodeIds
+          );
+          locallyExpandedNodeIds.add(expandNodeId);
+          projectionVisibilityRef.current = {
+            ...visibility,
+            locallyExpandedNodeIds
+          };
+        }
+      }
+      return settlement;
     },
     replaceSelection: (nextSelection, expectedRevision) =>
       actions.replaceSelection?.(nextSelection, expectedRevision) ?? false,
@@ -1181,6 +1243,26 @@ export function NotesOutlinePane() {
   );
   const handleSelectionClipboardKeyDownCapture = useCallback(
     (event: ReactKeyboardEvent<HTMLDivElement>): void => {
+      const editor =
+        event.target instanceof HTMLTextAreaElement
+          ? event.target.closest<HTMLElement>("[data-outline-id]")
+          : null;
+      if (
+        event.key === "F6" &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        !event.repeat &&
+        !event.nativeEvent.isComposing &&
+        editor !== null &&
+        selectionToolbarRef.current !== null
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        selectionToolbarRef.current.focus();
+        return;
+      }
       selectionNativeClipboard.handleKeyDown(event);
     },
     [selectionNativeClipboard]
@@ -1577,6 +1659,68 @@ export function NotesOutlinePane() {
     lifecycleReadOnly ||
     state.status === "loading" ||
     bodyRows.length === 0;
+  const promotePendingSelectionDrag = useCallback(
+    (session: PaneDragSession): PaneDragSession => {
+      if (session.kind !== "selected-pending") {
+        return session;
+      }
+      const live = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      const selectedNodeIds = selectionRangeIds(
+        live.selection,
+        bodyVisibleIdsRef.current
+      );
+      if (
+        live.revision !== session.selectionRevision ||
+        !exactNoteIds(selectedNodeIds, session.selectedNodeIds) ||
+        !selectedNodeIds.includes(session.activeId)
+      ) {
+        return Object.freeze({
+          kind: "selected-invalid",
+          reason: "selection-authority-mismatch"
+        });
+      }
+      const frozenContext = session.preparation.current;
+      if (frozenContext === undefined) {
+        return session;
+      }
+      if (
+        frozenContext === null ||
+        frozenContext.ownership.authority.selectionRevision !==
+          session.selectionRevision ||
+        !exactNoteIds(
+          frozenContext.ownership.actionSnapshot.selectedNodeIds,
+          session.selectedNodeIds
+        ) ||
+        !(isPreparedSelectionAuthorityCurrent?.(
+          frozenContext.ownership.authority
+        ) ?? false)
+      ) {
+        return Object.freeze({
+          kind: "selected-invalid",
+          reason: "selection-authority-mismatch"
+        });
+      }
+      return startOutlineSelectionDragSession({
+        activeId: session.activeId,
+        selectedNodeIds: session.selectedNodeIds,
+        rows: session.rows,
+        order: {
+          rootIds: frozenContext.ownership.authority.workspace.rootIds,
+          childIdsByParent:
+            frozenContext.ownership.authority.workspace.childIdsByParent,
+          zoomRootId: session.zoomRootId
+        },
+        frozenContext
+      });
+    },
+    [
+      getLiveSelectionSnapshot,
+      isPreparedSelectionAuthorityCurrent
+    ]
+  );
   const projectDrag = useCallback(
     (
       event: Pick<DragMoveEvent, "active" | "delta" | "over">
@@ -1590,8 +1734,13 @@ export function NotesOutlinePane() {
       ) {
         return null;
       }
-      const session = outlineDragSessionRef.current;
+      let session = outlineDragSessionRef.current;
       if (!session) {
+        return null;
+      }
+      session = promotePendingSelectionDrag(session);
+      outlineDragSessionRef.current = session;
+      if (session.kind === "selected-pending") {
         return null;
       }
       if (session.kind !== "ordinary") {
@@ -1625,6 +1774,7 @@ export function NotesOutlinePane() {
       activeDragId,
       dragUnavailable,
       outlineIndentPx,
+      promotePendingSelectionDrag,
       structuralRows,
       state.childIdsByParent,
       state.rootIds,
@@ -1686,33 +1836,152 @@ export function NotesOutlinePane() {
       bodyVisibleIdsRef.current
     );
     if (selectedIds.includes(id)) {
-      const frozenContext = selectionDragContextRef.current;
-      const contextCurrent =
-        frozenContext !== null &&
-        frozenContext.ownership.authority.selectionRevision === live.revision &&
+      const visibleNodeIds = Object.freeze([...bodyVisibleIdsRef.current]);
+      const projectedWorkspace = stateRef.current;
+      const openedSnapshot = deriveNotesSelectionActionSnapshot({
+        selection: live.selection,
+        visibleNodeIds,
+        workspace: projectedWorkspace,
+        authoritativeWorkspace:
+          currentPreparedAuthorityRef.current?.workspace
+      });
+      const selectedNodeIds = Object.freeze([...selectedIds]);
+      const existingContext = selectionDragContextRef.current;
+      const existingContextCurrent =
+        openedSnapshot !== null &&
+        exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) &&
+        existingContext !== null &&
         exactNoteIds(
-          frozenContext.ownership.actionSnapshot.selectedNodeIds,
-          selectedIds
+          existingContext.ownership.actionSnapshot.selectedNodeIds,
+          selectedNodeIds
         ) &&
+        exactNoteIds(
+          existingContext.nodeIds,
+          existingContext.ownership.actionSnapshot.structuralRootIds
+        ) &&
+        existingContext.ownership.authority.selectionRevision ===
+          live.revision &&
         (isPreparedSelectionAuthorityCurrent?.(
-          frozenContext.ownership.authority
+          existingContext.ownership.authority
         ) ?? false);
-      outlineDragSessionRef.current = contextCurrent
-        ? startOutlineSelectionDragSession({
-            activeId: id,
-            selectedNodeIds: selectedIds,
-            rows: structuralRows,
-            order: {
-              rootIds: state.rootIds,
-              childIdsByParent: state.childIdsByParent,
-              zoomRootId: state.zoomRootId
-            },
-            frozenContext
+      if (existingContextCurrent) {
+        outlineDragSessionRef.current = startOutlineSelectionDragSession({
+          activeId: id,
+          selectedNodeIds,
+          rows: structuralRows,
+          order: {
+            rootIds: existingContext.ownership.authority.workspace.rootIds,
+            childIdsByParent:
+              existingContext.ownership.authority.workspace.childIdsByParent,
+            zoomRootId: state.zoomRootId
+          },
+          frozenContext: existingContext
+        });
+      } else if (
+        openedSnapshot === null ||
+        !exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) ||
+        !prepareSelectionAuthority ||
+        !isPreparedSelectionAuthorityCurrent
+      ) {
+        outlineDragSessionRef.current = Object.freeze({
+          kind: "selected-invalid",
+          reason: "selection-authority-mismatch"
+        });
+      } else {
+        // Calling preparation now captures the workspace/session generation
+        // synchronously, before its Active read awaits. The pending drag can
+        // therefore wait for this exact ownership proof after pointer-up but
+        // can never adopt an authority from a later scope or generation.
+        const authorityPromise = prepareSelectionAuthority(selectedNodeIds);
+        const preparation = trackPendingSelectionDragPreparation(
+          authorityPromise.then(async (selectionAuthority) => {
+            if (
+              selectionAuthority.selectionRevision !== live.revision ||
+              !exactNoteIds(
+                selectionAuthority.selectedNodeIds,
+                selectedNodeIds
+              ) ||
+              !isPreparedSelectionAuthorityCurrent(selectionAuthority)
+            ) {
+              return null;
+            }
+            const selectionSnapshot = deriveNotesSelectionActionSnapshot({
+              selection: live.selection,
+              visibleNodeIds,
+              workspace: projectedWorkspace,
+              authoritativeWorkspace: selectionAuthority.workspace
+            });
+            const structuralRootIds = selectionSnapshot
+              ? Object.freeze([...selectionSnapshot.structuralRootIds])
+              : Object.freeze([] as NoteId[]);
+            if (
+              selectionSnapshot === null ||
+              !exactNoteIds(
+                selectionSnapshot.selectedNodeIds,
+                selectedNodeIds
+              ) ||
+              structuralRootIds.length === 0
+            ) {
+              return null;
+            }
+            const authority = exactNoteIds(
+              selectionAuthority.selectedNodeIds,
+              structuralRootIds
+            )
+              ? selectionAuthority
+              : await prepareSelectionAuthority(structuralRootIds);
+            const current = getLiveSelectionSnapshot?.() ?? {
+              selection: selectionRef.current,
+              revision: selectionRevisionRef.current
+            };
+            const currentSelectedIds = selectionRangeIds(
+              current.selection,
+              bodyVisibleIdsRef.current
+            );
+            if (
+              current.revision !== live.revision ||
+              !exactNoteIds(currentSelectedIds, selectedNodeIds) ||
+              authority.selectionRevision !== live.revision ||
+              !exactNoteIds(authority.selectedNodeIds, structuralRootIds) ||
+              !isPreparedSelectionAuthorityCurrent(authority)
+            ) {
+              return null;
+            }
+            const actionSnapshot = deriveNotesSelectionActionSnapshot({
+              selection: live.selection,
+              visibleNodeIds,
+              workspace: projectedWorkspace,
+              authoritativeWorkspace: authority.workspace
+            });
+            if (
+              actionSnapshot === null ||
+              !exactNoteIds(
+                actionSnapshot.selectedNodeIds,
+                selectedNodeIds
+              ) ||
+              !exactNoteIds(
+                actionSnapshot.structuralRootIds,
+                structuralRootIds
+              )
+            ) {
+              return null;
+            }
+            return Object.freeze({
+              nodeIds: structuralRootIds,
+              ownership: Object.freeze({ actionSnapshot, authority })
+            });
           })
-        : Object.freeze({
-            kind: "selected-invalid",
-            reason: "selection-authority-mismatch"
-          });
+        );
+        outlineDragSessionRef.current = Object.freeze({
+          kind: "selected-pending",
+          activeId: id,
+          selectedNodeIds,
+          selectionRevision: live.revision,
+          rows: Object.freeze([...structuralRows]),
+          zoomRootId: state.zoomRootId,
+          preparation
+        });
+      }
     } else {
       outlineDragSessionRef.current = Object.freeze({
         kind: "ordinary",
@@ -1757,6 +2026,7 @@ export function NotesOutlinePane() {
 
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
+    const droppedSession = outlineDragSessionRef.current;
     const projection = projectDrag(event);
     dragEndProjection.current = {
       activeId,
@@ -1766,6 +2036,41 @@ export function NotesOutlinePane() {
     outlineDragSessionRef.current = null;
     setActiveDragId(null);
     setDropPreview(null);
+    if (
+      droppedSession?.kind === "selected-pending" &&
+      event.over !== null &&
+      !dragUnavailable &&
+      droppedSession.activeId === activeId
+    ) {
+      const overId = String(event.over.id);
+      const horizontalOffset = event.delta.x;
+      void droppedSession.preparation.promise.then(() => {
+        const readySession = promotePendingSelectionDrag(droppedSession);
+        if (readySession.kind !== "selected-ready") {
+          return;
+        }
+        const lateProjection = projectOutlineSelectionDragSession(
+          readySession,
+          overId,
+          horizontalOffset,
+          outlineIndentPx
+        );
+        if (lateProjection.kind !== "selected-move") {
+          return;
+        }
+        void executeSelectionCommand(
+          {
+            type: "reorder",
+            target: lateProjection.target,
+            ...(lateProjection.expandNodeId === undefined
+              ? {}
+              : { expandNodeId: lateProjection.expandNodeId })
+          },
+          lateProjection.frozenContext
+        );
+      });
+      return;
+    }
     if (!projection || projection.kind === "selected-invalid") {
       return;
     }

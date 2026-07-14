@@ -2548,6 +2548,40 @@ describe("Notes workspace", () => {
       ).toBeNull();
     });
 
+    it("moves focus between an outline editor and the selection toolbar with F6", async () => {
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      expect(fireEvent.keyDown(alpha, { key: "F6" })).toBe(false);
+      const clear = within(toolbar).getByRole("button", {
+        name: "Clear selection"
+      });
+      expect(clear).toHaveFocus();
+
+      expect(
+        fireEvent.keyDown(clear, { key: "F6", shiftKey: true })
+      ).toBe(false);
+      const bravo = getTitleInput("Bravo");
+      expect(bravo).toHaveFocus();
+
+      expect(fireEvent.keyDown(bravo, { key: "F6" })).toBe(false);
+      expect(clear).toHaveFocus();
+      expect(fireEvent.keyDown(clear, { key: "Escape" })).toBe(false);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("toolbar", {
+            name: "Actions for 2 selected notes"
+          })
+        ).toBeNull()
+      );
+      expect(bravo).toHaveFocus();
+    });
+
     it("starts a zoomed Shift+Click range at the body row instead of the page header", async () => {
       const user = userEvent.setup();
       configureRepository(initialNodes());
@@ -2654,7 +2688,10 @@ describe("Notes workspace", () => {
         ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
 
-      await act(async () => hydration.resolve(workspace(activeNodes)));
+      await act(async () => {
+        hydration.resolve(workspace(activeNodes));
+        deferActiveAuthority = false;
+      });
       await waitFor(() =>
         expect(moveDown).toHaveAttribute("aria-disabled", "false")
       );
@@ -2706,7 +2743,10 @@ describe("Notes workspace", () => {
       expect(provisional.event.defaultPrevented).toBe(false);
       expect(provisional.setData).not.toHaveBeenCalled();
 
-      await act(async () => hydration.resolve(workspace(activeNodes)));
+      await act(async () => {
+        hydration.resolve(workspace(activeNodes));
+        deferActiveAuthority = false;
+      });
       await act(async () => undefined);
       expect(
         notesStoreMock.loadWorkspace.mock.calls.filter(
@@ -2976,6 +3016,184 @@ describe("Notes workspace", () => {
         beforeId: null
       });
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("promotes a selected drag that starts while its frozen authority is hydrating", async () => {
+      const user = userEvent.setup();
+      const activeNodes = threeRoots();
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Bravo");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Bravo" }),
+        { shiftKey: true }
+      );
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
+      const charlie = screen.getByRole("button", {
+        name: "Zoom into Charlie"
+      });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+      await user.pointer({
+        target: charlie,
+        coords: { clientX: 14, clientY: 70 }
+      });
+      expect(bravo.closest(".notes-node")).toHaveAttribute(
+        "data-dragging",
+        "true"
+      );
+
+      await user.pointer({
+        target: charlie,
+        coords: { clientX: 14, clientY: 74 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: charlie,
+        coords: { clientX: 14, clientY: 74 }
+      });
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      await act(async () => {
+        hydration.resolve(workspace(activeNodes));
+        deferAuthority = false;
+      });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["b"],
+        parentId: null,
+        afterId: "c",
+        beforeId: null
+      });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("appends a filtered selected drag after hidden children from frozen Active order", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({
+          id: "moving",
+          sortKey: 1,
+          title: "Moving",
+          isStarred: true
+        }),
+        node({
+          id: "parent",
+          sortKey: 2,
+          title: "Parent",
+          isCollapsed: true,
+          isStarred: true
+        }),
+        node({
+          id: "hidden",
+          parentId: "parent",
+          sortKey: 1,
+          title: "Hidden"
+        })
+      ];
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) =>
+          scope.kind === "starred"
+            ? workspace(confirmedNodes.filter((current) => current.isStarred))
+            : workspace(confirmedNodes)
+      );
+      notesStoreMock.applyBatch.mockImplementation(
+        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+          if (input.op === "move") {
+            confirmedNodes = confirmedNodes.map((current) =>
+              current.id === "moving"
+                ? { ...current, parentId: "parent", sortKey: 2 }
+                : current
+            );
+          }
+          return workspace(confirmedNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Moving");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() => expect(queryTitleInput("Hidden")).toBeNull());
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Moving" }),
+        { shiftKey: true }
+      );
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      });
+      await waitFor(() =>
+        expect(
+          within(toolbar).getByRole("button", { name: "Move To" })
+        ).toHaveAttribute("aria-disabled", "false")
+      );
+      const moving = screen.getByRole("button", { name: "Zoom into Moving" });
+      const parent = screen.getByRole("button", { name: "Zoom into Parent" });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 9, clientY: 14 }
+      });
+      await user.pointer({
+        target: parent,
+        coords: { clientX: 14, clientY: 20 }
+      });
+      await user.pointer({
+        target: parent,
+        coords: { clientX: 36, clientY: 42 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: parent,
+        coords: { clientX: 36, clientY: 42 }
+      });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["moving"],
+        parentId: "parent",
+        afterId: "hidden",
+        beforeId: null
+      });
+      await waitFor(() =>
+        expect(
+          document.querySelector('[data-outline-id="moving"]')
+        ).toHaveAttribute("data-range-selected", "true")
+      );
+      expect(
+        screen.getByRole("toolbar", {
+          name: "Actions for 1 selected notes"
+        })
+      ).toBeVisible();
     });
 
     it("keeps an invalid selected drag inside the range a no-op", async () => {
