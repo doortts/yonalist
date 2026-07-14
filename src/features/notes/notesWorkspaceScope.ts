@@ -1,4 +1,5 @@
 import type { NotesWorkspaceScope, NoteTagFilter } from "../../domain/notes";
+import { normalizeNoteTagIdentity } from "./noteTagIdentity";
 
 /**
  * Single source of truth for comparing {@link NotesWorkspaceScope} values.
@@ -22,7 +23,25 @@ const FILTER_SEP = String.fromCharCode(1);
 const KIND_SEP = String.fromCharCode(2);
 
 export function tagFilterKey(filter: NoteTagFilter): string {
-  return `${filter.prefix}${FIELD_SEP}${filter.normalizedTag}`;
+  return `${filter.prefix}${FIELD_SEP}${normalizeNoteTagIdentity(filter.normalizedTag)}`;
+}
+
+/**
+ * Translate the retired hash-only tag scope into the typed filter used by the
+ * current workspace. Legacy callers may omit `#`; storage also trims the value
+ * and accepts repeated leading hash markers.
+ */
+export function noteTagFilterFromLegacyScope(
+  tag: string
+): NoteTagFilter | null {
+  const body = tag.trim().replace(/^#+/u, "");
+  if (!body) {
+    return null;
+  }
+  return {
+    prefix: "#",
+    normalizedTag: normalizeNoteTagIdentity(body)
+  };
 }
 
 /**
@@ -34,13 +53,13 @@ export function canonicalizeTagFilters(
   filters: readonly NoteTagFilter[]
 ): NoteTagFilter[] {
   const uniqueFilters = new Map(
-    filters.map((filter) => [
-      tagFilterKey(filter),
-      {
+    filters.map((filter) => {
+      const canonicalFilter = {
         prefix: filter.prefix,
-        normalizedTag: filter.normalizedTag
-      }
-    ])
+        normalizedTag: normalizeNoteTagIdentity(filter.normalizedTag)
+      };
+      return [tagFilterKey(canonicalFilter), canonicalFilter] as const;
+    })
   );
   return [...uniqueFilters.values()].sort(
     (left, right) =>
@@ -61,8 +80,10 @@ export function scopeKey(scope: NotesWorkspaceScope): string {
     case "archive":
     case "trash":
       return scope.kind;
-    case "tag":
-      return `tag${KIND_SEP}${scope.tag}`;
+    case "tag": {
+      const filter = noteTagFilterFromLegacyScope(scope.tag);
+      return `tag${KIND_SEP}${filter?.normalizedTag ?? ""}`;
+    }
     case "tags":
       return `tags${KIND_SEP}${canonicalizeTagFilters(scope.tags)
         .map(tagFilterKey)

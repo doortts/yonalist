@@ -3,6 +3,7 @@ import type {
   NoteStructuredSearchQuery,
   NoteTagPrefix
 } from "../../domain/notes";
+import { normalizeNoteTagIdentity } from "./noteTagIdentity";
 import { tokenizeNoteText } from "./noteTokens";
 
 export const NOTE_SEARCH_QUERY_LIMITS = {
@@ -45,10 +46,11 @@ function normalizeDisplay(displayTag: string, normalizedTag: string): string {
 }
 
 function canonicalTag(tag: NoteSearchTag): NoteSearchTag {
+  const normalizedTag = normalizeNoteTagIdentity(tag.normalizedTag);
   return {
     prefix: tag.prefix,
-    normalizedTag: tag.normalizedTag,
-    displayTag: normalizeDisplay(tag.displayTag, tag.normalizedTag)
+    normalizedTag,
+    displayTag: normalizeDisplay(tag.displayTag, normalizedTag)
   };
 }
 
@@ -100,7 +102,10 @@ export function canonicalizeNoteSearchQuery(
 }
 
 export function isCanonicalNoteTagBody(normalizedTag: string): boolean {
-  if (!normalizedTag || normalizedTag !== normalizedTag.toLowerCase()) {
+  if (
+    !normalizedTag ||
+    normalizedTag !== normalizeNoteTagIdentity(normalizedTag)
+  ) {
     return false;
   }
   const source = `#${normalizedTag}`;

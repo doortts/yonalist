@@ -17,6 +17,16 @@ describe("canonical typed tag bodies", () => {
   it.each(tagFilterFixtures)("validates $normalizedTag", (fixture) => {
     expect(isCanonicalNoteTagBody(fixture.normalizedTag)).toBe(fixture.valid);
   });
+
+  it.each([
+    ["strasse", true],
+    ["straße", false],
+    ["STRASSE", false],
+    ["ff", true],
+    ["ﬀ", false]
+  ])("recognizes full-fold canonical body %j", (normalizedTag, expected) => {
+    expect(isCanonicalNoteTagBody(normalizedTag)).toBe(expected);
+  });
 });
 
 describe("note tokenizer shared parity fixtures", () => {
@@ -84,12 +94,24 @@ describe("parseNoteSearchQuery", () => {
     });
   });
 
-  it("uses Unicode lowercase normalization for Korean, astral, and combining tags", () => {
+  it("uses Unicode case-fold normalization for Korean, astral, and combining tags", () => {
     expect(parseNoteSearchQuery("#프로젝트 @𐐏 #CAFE\u0301").requiredTags).toEqual([
       { prefix: "#", normalizedTag: "caf\u00e9", displayTag: "CAF\u00c9" },
       { prefix: "#", normalizedTag: "프로젝트", displayTag: "프로젝트" },
       { prefix: "@", normalizedTag: "𐐷", displayTag: "𐐏" }
     ]);
+  });
+
+  it("collapses full-fold equivalents into one semantic tag per prefix", () => {
+    expect(parseNoteSearchQuery("#Straße #STRASSE @ﬀ @ff")).toEqual({
+      text: "",
+      requiredTags: [
+        { prefix: "#", normalizedTag: "strasse", displayTag: "STRASSE" },
+        { prefix: "@", normalizedTag: "ff", displayTag: "ff" }
+      ],
+      excludedTags: [],
+      orGroups: []
+    });
   });
 
   it("matches a decomposed stored tag when searching by its composed spelling", () => {
@@ -173,6 +195,25 @@ describe("canonicalizeNoteSearchQuery", () => {
     expect(canonicalNoteSearchQueryKey(left)).toBe(
       canonicalNoteSearchQueryKey(right)
     );
+  });
+
+  it("canonicalizes externally supplied full-fold tag identities before deduping", () => {
+    expect(
+      canonicalizeNoteSearchQuery({
+        text: "",
+        requiredTags: [
+          { prefix: "#", normalizedTag: "Straße", displayTag: "Straße" },
+          { prefix: "#", normalizedTag: "STRASSE", displayTag: "STRASSE" },
+          { prefix: "@", normalizedTag: "ﬀ", displayTag: "ﬀ" },
+          { prefix: "@", normalizedTag: "ff", displayTag: "ff" }
+        ],
+        excludedTags: [],
+        orGroups: []
+      }).requiredTags
+    ).toEqual([
+      { prefix: "#", normalizedTag: "strasse", displayTag: "STRASSE" },
+      { prefix: "@", normalizedTag: "ff", displayTag: "ff" }
+    ]);
   });
 });
 

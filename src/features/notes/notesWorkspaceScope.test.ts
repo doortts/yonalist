@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NotesWorkspaceScope, NoteTagFilter } from "../../domain/notes";
 import {
   canonicalizeTagFilters,
+  noteTagFilterFromLegacyScope,
   sameScope,
   Scope,
   scopeKey
@@ -55,6 +56,30 @@ describe("scopeKey / sameScope", () => {
     expect(sameScope(withDupes, deduped)).toBe(true);
   });
 
+  it("treats full-fold-equivalent tag filters as the same scope", () => {
+    expect(
+      sameScope(
+        { kind: "tags", tags: [hash("Straße"), at("ﬀ")] },
+        { kind: "tags", tags: [at("ff"), hash("STRASSE")] }
+      )
+    ).toBe(true);
+  });
+
+  it("normalizes legacy tag scope identities with full Unicode folding", () => {
+    expect(
+      sameScope(
+        { kind: "tag", tag: "#Straße" },
+        { kind: "tag", tag: "  STRASSE  " }
+      )
+    ).toBe(true);
+    expect(
+      sameScope(
+        { kind: "tag", tag: "ﬀ" },
+        { kind: "tag", tag: " #ff " }
+      )
+    ).toBe(true);
+  });
+
   it("keeps distinct tag sets distinct", () => {
     expect(
       sameScope(
@@ -98,5 +123,28 @@ describe("canonicalizeTagFilters", () => {
     expect(
       canonicalizeTagFilters([at("beta"), hash("gamma"), hash("alpha"), at("beta")])
     ).toEqual([hash("alpha"), hash("gamma"), at("beta")]);
+  });
+
+  it("full-folds identities before deduping and sorting", () => {
+    expect(
+      canonicalizeTagFilters([
+        at("ﬀ"),
+        hash("Straße"),
+        at("ff"),
+        hash("STRASSE")
+      ])
+    ).toEqual([hash("strasse"), at("ff")]);
+  });
+});
+
+describe("noteTagFilterFromLegacyScope", () => {
+  it.each([
+    ["roadmap", hash("roadmap")],
+    [" #Straße ", hash("strasse")],
+    ["##ﬀ", hash("ff")],
+    ["  ", null],
+    ["###", null]
+  ])("translates the legacy hash-tag value %j", (tag, expected) => {
+    expect(noteTagFilterFromLegacyScope(tag)).toEqual(expected);
   });
 });

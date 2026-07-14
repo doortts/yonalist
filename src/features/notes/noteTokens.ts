@@ -1,3 +1,5 @@
+import { normalizeNoteTagIdentity } from "./noteTagIdentity";
+
 export type NoteTagPrefix = "#" | "@";
 
 interface NoteTokenBase {
@@ -714,16 +716,17 @@ export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
       });
     }
 
-    // Normalize the derived tag VALUE to NFC so decomposed (NFD) and composed
-    // spellings of the same tag unify. macOS routinely emits NFD Hangul/accented
-    // text via drag, paste, and some IMEs. The UTF-16 offsets and `raw` below still
-    // index the ORIGINAL source, whose length may differ from the normalized value.
+    // Keep an NFC display value, while deriving semantic identity through the
+    // shared NFC -> full Unicode fold -> NFC pipeline. macOS routinely emits NFD
+    // Hangul/accented text via drag, paste, and some IMEs. The UTF-16 offsets and
+    // `raw` below still index the ORIGINAL source, whose length may differ from
+    // either derived value.
     const display = source.slice(bodyStartUtf16, bodyEndUtf16).normalize("NFC");
     tokens.push({
       kind: "tag",
       prefix,
       display,
-      normalized: display.toLowerCase(),
+      normalized: normalizeNoteTagIdentity(display),
       raw: source.slice(offsetUtf16, bodyEndUtf16),
       startUtf16: offsetUtf16,
       endUtf16: bodyEndUtf16

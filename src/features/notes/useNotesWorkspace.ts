@@ -62,6 +62,7 @@ import {
 } from "./notesWorkspaceReducer";
 import {
   canonicalizeTagFilters,
+  noteTagFilterFromLegacyScope,
   sameScope,
   tagFilterKey
 } from "./notesWorkspaceScope";
@@ -871,18 +872,13 @@ function libraryStateForScope(scope: NotesWorkspaceScope): {
       return { view: "archive", filters: [] };
     case "trash":
       return { view: "trash", filters: [] };
-    case "tag":
+    case "tag": {
+      const filter = noteTagFilterFromLegacyScope(scope.tag);
       return {
         view: "tags",
-        filters: scope.tag.length > 1
-          ? [
-              {
-                prefix: scope.tag[0] as "#" | "@",
-                normalizedTag: scope.tag.slice(1).toLocaleLowerCase()
-              }
-            ]
-          : []
+        filters: filter ? [filter] : []
       };
+    }
     case "tags":
       return { view: "tags", filters: canonicalizeTagFilters(scope.tags) };
   }

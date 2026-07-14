@@ -2,6 +2,7 @@ use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
+use unicase::UniCase;
 use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
 
@@ -66,6 +67,14 @@ fn is_valid_tag_boundary(previous: Option<char>) -> bool {
     })
 }
 
+pub(crate) fn normalize_tag_identity(source: &str) -> String {
+    let nfc = source.nfc().collect::<String>();
+    UniCase::unicode(nfc.as_str())
+        .to_folded_case()
+        .nfc()
+        .collect()
+}
+
 pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
     let mut characters = source.chars();
     let Some(first) = characters.next() else {
@@ -73,7 +82,7 @@ pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
     };
     is_tag_body_start(first)
         && characters.all(is_tag_body_continuation)
-        && source.to_lowercase() == source
+        && normalize_tag_identity(source) == source
         // Canonical tag bodies are NFC: macOS routinely emits NFD (decomposed)
         // Hangul/accented text, so a decomposed spelling is not canonical even
         // though its scalars all pass the body checks above.
@@ -269,9 +278,10 @@ pub(crate) fn tokenize_note_text(source: &str) -> Vec<NoteTagToken> {
         let display = source[body_start_byte..body_end_byte]
             .nfc()
             .collect::<String>();
+        let normalized = normalize_tag_identity(&display);
         tags.push(NoteTagToken {
             prefix: prefix.expect("tag prefix"),
-            normalized: display.to_lowercase(),
+            normalized,
             display,
             start_byte: scalar.byte_start,
             end_byte: body_end_byte,
@@ -394,10 +404,7 @@ fn exact_tag_candidate_ends(
         let body_end_byte = scalars
             .get(body_end)
             .map_or(source.len(), |next| next.byte_start);
-        let normalized = source[body_start_byte..body_end_byte]
-            .nfc()
-            .collect::<String>()
-            .to_lowercase();
+        let normalized = normalize_tag_identity(&source[body_start_byte..body_end_byte]);
         if prefix == Some(tag.prefix) && normalized == tag.normalized_tag {
             candidate_end_by_start[index] = Some(body_end - 1);
         }
@@ -925,6 +932,24 @@ mod tests {
     }
 
     #[test]
+    fn notes_tag_identity_uses_default_full_unicode_case_folding() {
+        let tokens = tokenize_note_text("#Straße #STRASSE #ﬀ #ff #I #İ #ı #ẛ");
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|token| token.normalized.as_str())
+                .collect::<Vec<_>>(),
+            vec!["strasse", "strasse", "ff", "ff", "i", "i\u{307}", "ı", "ṡ",]
+        );
+        assert!(tokens.iter().all(|token| is_nfc(&token.normalized)));
+
+        assert!(is_canonical_tag_body("strasse"));
+        assert!(!is_canonical_tag_body("straße"));
+        assert!(is_canonical_tag_body("ff"));
+        assert!(!is_canonical_tag_body("ﬀ"));
+    }
+
+    #[test]
     fn notes_tag_tokenizer_matches_shared_typescript_fixtures() {
         let fixtures: Vec<Fixture> = serde_json::from_str(include_str!(
             "../../../src/features/notes/noteTokenizer.fixtures.json"
@@ -987,6 +1012,37 @@ mod tests {
         assert_eq!(
             remove_exact_tag_tokens(source, &hash_tag("café")),
             Some("앞 뒤, 한글 #프로젝트 끝".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_add_and_remove_share_full_case_folded_identity() {
+        assert_eq!(
+            add_exact_tag_to_title(
+                "Plan #Straße",
+                "",
+                &search_tag(NoteTagPrefix::Hash, "strasse", "STRASSE"),
+            )
+            .expect("full-fold equivalent display tag"),
+            None
+        );
+        assert_eq!(
+            add_exact_tag_to_title(
+                "Plan",
+                "support #ﬀ",
+                &search_tag(NoteTagPrefix::Hash, "ff", "FF"),
+            )
+            .expect("full-fold equivalent supporting-note tag"),
+            None
+        );
+
+        assert_eq!(
+            remove_exact_tag_tokens("Plan #Straße and #STRASSE", &hash_tag("strasse")),
+            Some("Plan and".to_string())
+        );
+        assert_eq!(
+            remove_exact_tag_tokens("Ligatures #ﬀ and #ff", &hash_tag("ff")),
+            Some("Ligatures and".to_string())
         );
     }
 

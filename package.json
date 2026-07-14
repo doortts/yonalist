@@ -28,6 +28,7 @@
     "markdown-it-task-lists": "^2.1.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
+    "unicode-case-folding": "1.1.1",
     "yaml": "^2.9.0"
   },
   "devDependencies": {

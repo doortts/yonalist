@@ -4,8 +4,8 @@ use crate::notes::date_index::{
 };
 use crate::notes::history;
 use crate::notes::tags::{
-    add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, remove_exact_tag_tokens,
-    tokenize_note_text,
+    add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, normalize_tag_identity,
+    remove_exact_tag_tokens, tokenize_note_text,
 };
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
@@ -197,11 +197,49 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         };
         let today = SystemLocalTodayProvider.local_today(&transaction)?;
         rebuild_derived_for_nodes_at(&transaction, &node_ids, today)?;
+    } else {
+        rebuild_noncanonical_tag_indexes(&transaction)?;
     }
 
     transaction
         .commit()
         .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
+}
+
+fn rebuild_noncanonical_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
+    let node_ids = {
+        let mut statement = transaction
+            .prepare("SELECT node_id, normalized_tag FROM notes_tags ORDER BY node_id")
+            .map_err(|error| format!("Could not prepare legacy Notes tag identities: {error}"))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| format!("Could not inspect legacy Notes tag identities: {error}"))?;
+        let mut node_ids = BTreeSet::new();
+        for row in rows {
+            let (node_id, normalized_tag) = row
+                .map_err(|error| format!("Could not read a legacy Notes tag identity: {error}"))?;
+            if !is_canonical_tag_body(&normalized_tag) {
+                node_ids.insert(node_id);
+            }
+        }
+        node_ids
+    };
+
+    for node_id in node_ids {
+        let (title, note) = transaction
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [&node_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .map_err(|error| {
+                format!("Could not load Note content for tag identity migration: {error}")
+            })?;
+        replace_tags(transaction, &node_id, &title, &note)?;
+    }
+    Ok(())
 }
 
 fn seed_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -962,7 +1000,7 @@ pub(crate) fn load_workspace(
         NotesWorkspaceScope::Starred => query_workspace(connection, STARRED_SQL, []),
         NotesWorkspaceScope::Recent => query_workspace(connection, RECENT_SQL, []),
         NotesWorkspaceScope::Tag { tag } => {
-            let normalized_tag = tag.trim().trim_start_matches('#').to_lowercase();
+            let normalized_tag = normalize_tag_identity(tag.trim().trim_start_matches('#'));
             if normalized_tag.is_empty() {
                 return Ok(NotesWorkspace {
                     nodes: Vec::new(),
@@ -5727,6 +5765,44 @@ mod tests {
     }
 
     #[test]
+    fn initialization_rebuilds_legacy_lowercase_tag_identities() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        create_test_node(
+            &mut connection,
+            NODE_ID,
+            None,
+            None,
+            "Legacy #Straße #ﬀ",
+            "",
+        );
+        connection
+            .execute(
+                "UPDATE notes_tags SET normalized_tag = CASE normalized_tag \
+                   WHEN 'strasse' THEN 'straße' WHEN 'ff' THEN 'ﬀ' ELSE normalized_tag END \
+                 WHERE node_id = ?1",
+                [NODE_ID],
+            )
+            .expect("simulate legacy lowercase-only tag index");
+        drop(connection);
+
+        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
+        let normalized_tags = connection
+            .prepare(
+                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
+                 ORDER BY normalized_tag",
+            )
+            .expect("prepare rebuilt tag identities")
+            .query_map([NODE_ID], |row| row.get::<_, String>(0))
+            .expect("query rebuilt tag identities")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect rebuilt tag identities");
+
+        assert_eq!(normalized_tags, vec!["ff", "strasse"]);
+    }
+
+    #[test]
     fn onboarding_seeds_a_fresh_database_once() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
@@ -9394,6 +9470,49 @@ mod tests {
         );
         assert_eq!(trash.nodes[0].parent_id, None);
         assert_eq!(list_tags(&connection).expect("live tags"), vec!["élan"]);
+    }
+
+    #[test]
+    fn legacy_tag_scope_uses_full_unicode_case_fold_identity() {
+        let mut connection = test_connection();
+        create_test_node(&mut connection, NODE_ID, None, None, "German #STRASSE", "");
+        create_test_node(
+            &mut connection,
+            CHILD_ID,
+            None,
+            Some(NODE_ID),
+            "ASCII #ff",
+            "",
+        );
+
+        assert_eq!(
+            load_workspace(
+                &connection,
+                NotesWorkspaceScope::Tag {
+                    tag: "#Straße".to_string(),
+                },
+            )
+            .expect("legacy sharp-s tag scope")
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+            vec![NODE_ID]
+        );
+        assert_eq!(
+            load_workspace(
+                &connection,
+                NotesWorkspaceScope::Tag {
+                    tag: "#ﬀ".to_string(),
+                },
+            )
+            .expect("legacy ligature tag scope")
+            .nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>(),
+            vec![CHILD_ID]
+        );
     }
 
     #[test]

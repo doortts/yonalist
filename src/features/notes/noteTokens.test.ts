@@ -209,6 +209,22 @@ describe("tokenizeNoteText", () => {
     expectLosslessCoverage("#Topic, #topic, @ALICE @alice");
   });
 
+  it.each([
+    ["#Straße", "strasse"],
+    ["#STRASSE", "strasse"],
+    ["#ﬀ", "ff"],
+    ["#ff", "ff"]
+  ])("uses full default Unicode folding for tag identity in %j", (source, normalized) => {
+    expect(tokenizeNoteText(source)).toEqual([
+      expect.objectContaining({
+        kind: "tag",
+        display: source.slice(1),
+        normalized
+      })
+    ]);
+    expectLosslessCoverage(source);
+  });
+
   it.each(["cafe\u0301#todo", "नमस्ते#todo"])(
     "treats combining marks as word continuation in %j",
     (source) => {
@@ -228,7 +244,7 @@ describe("tokenizeNoteText", () => {
           // The derived value is NFC-normalized; `raw` and the offsets still index
           // the original (possibly decomposed) source.
           display: source.slice(1).normalize("NFC"),
-          normalized: source.slice(1).normalize("NFC").toLowerCase(),
+          normalized: source.slice(1).normalize("NFC"),
           raw: source,
           startUtf16: 0,
           endUtf16: source.length

@@ -87,5 +87,18 @@
       { "prefix": "#", "display": "ship", "normalized": "ship", "startUtf16": 9, "endUtf16": 14 },
       { "prefix": "@", "display": "lead", "normalized": "lead", "startUtf16": 15, "endUtf16": 20 }
     ]
+  },
+  {
+    "source": "#Straße #STRASSE #ﬀ #ff #I #İ #ı #ẛ",
+    "tags": [
+      { "prefix": "#", "display": "Straße", "normalized": "strasse", "startUtf16": 0, "endUtf16": 7 },
+      { "prefix": "#", "display": "STRASSE", "normalized": "strasse", "startUtf16": 8, "endUtf16": 16 },
+      { "prefix": "#", "display": "ﬀ", "normalized": "ff", "startUtf16": 17, "endUtf16": 19 },
+      { "prefix": "#", "display": "ff", "normalized": "ff", "startUtf16": 20, "endUtf16": 23 },
+      { "prefix": "#", "display": "I", "normalized": "i", "startUtf16": 24, "endUtf16": 26 },
+      { "prefix": "#", "display": "İ", "normalized": "i̇", "startUtf16": 27, "endUtf16": 29 },
+      { "prefix": "#", "display": "ı", "normalized": "ı", "startUtf16": 30, "endUtf16": 32 },
+      { "prefix": "#", "display": "ẛ", "normalized": "ṡ", "startUtf16": 33, "endUtf16": 35 }
+    ]
   }
 ]
