@@ -123,6 +123,70 @@ describe("NoteTokenText", () => {
     );
   });
 
+  it("renders inline formatting spans without altering the source text or tags", () => {
+    const source =
+      "Do **bold** then *slant* also ~~gone~~ plus `mono` #done at https://ex.com/#f";
+    const { container } = render(
+      <NoteTokenText text={source} onTagClick={vi.fn()} />
+    );
+
+    const presentation = container.querySelector(".notes-token-text");
+    // The overlay MUST reproduce the source character-for-character: markers stay
+    // in the flow (dimmed) and only the enclosed content is styled.
+    expect(presentation).toHaveTextContent(source, { normalizeWhitespace: false });
+
+    expect(
+      screen.getAllByRole("button").map((button) => button.textContent)
+    ).toEqual(["#done"]);
+
+    expect(
+      container.querySelector(".notes-format-strong .notes-format-content")
+    ).toHaveTextContent("bold");
+    expect(
+      container.querySelector(".notes-format-em .notes-format-content")
+    ).toHaveTextContent("slant");
+    expect(
+      container.querySelector(".notes-format-strike .notes-format-content")
+    ).toHaveTextContent("gone");
+    expect(
+      container.querySelector(".notes-format-code .notes-format-content")
+    ).toHaveTextContent("mono");
+
+    const markers = Array.from(
+      container.querySelectorAll(".notes-format-marker")
+    ).map((marker) => marker.textContent);
+    expect(markers).toEqual(["**", "**", "*", "*", "~~", "~~", "`", "`"]);
+  });
+
+  it("keeps a date that falls inside a formatting span from becoming a pill", () => {
+    const onDateClick = vi.fn();
+    const source = "**meet today** on 07/13/2026";
+    const { container } = render(
+      <NoteTokenText
+        text={source}
+        today={today}
+        onTagClick={vi.fn()}
+        onDateClick={onDateClick}
+      />
+    );
+
+    expect(container.querySelector(".notes-token-text")).toHaveTextContent(
+      source,
+      { normalizeWhitespace: false }
+    );
+    // The natural-language date inside the bold span stays styled text (the span
+    // renders non-recursively); only the date outside the span is interactive.
+    expect(
+      screen.queryByRole("button", { name: "Edit date today" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit date 07/13/2026" })
+    ).toBeVisible();
+    expect(
+      container.querySelector(".notes-format-strong .notes-format-content")
+    ).toHaveTextContent("meet today");
+  });
+
   it("keeps a resting date pill visible without exposing token interactivity", () => {
     const { container } = render(
       <NoteTokenText

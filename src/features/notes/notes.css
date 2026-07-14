@@ -753,6 +753,41 @@ button.notes-date-token:hover {
   outline-offset: 1px;
 }
 
+/*
+ * Inline formatting (Workflowy-style markdown subset). Markers stay in the flow
+ * so the overlay text matches the source character-for-character; they are only
+ * visually dimmed. Only the enclosed content carries the style.
+ */
+.notes-format-marker {
+  color: var(--text-3);
+  opacity: 0.65;
+}
+
+.notes-format-strong > .notes-format-content {
+  font-weight: 700;
+}
+
+.notes-format-em > .notes-format-content {
+  font-style: italic;
+}
+
+.notes-format-strike > .notes-format-content {
+  text-decoration: line-through;
+}
+
+.notes-format-code > .notes-format-content {
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--bg-active);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+.notes-format-code > .notes-format-marker {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
 .notes-date-picker-host > .notes-date-picker {
   width: 100% !important;
   max-width: 100%;

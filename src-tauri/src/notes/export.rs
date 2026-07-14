@@ -3537,6 +3537,31 @@ mod tests {
     }
 
     #[test]
+    fn markdown_renderer_preserves_inline_formatting_markers() {
+        // Inline formatting (the Workflowy-style markdown subset from Phase 4.2)
+        // is stored as PLAIN TEXT. Every marker character survives the export;
+        // it is backslash-escaped for markdown safety, exactly like any other
+        // punctuation (see the escaping-consistency test above). Emitting the
+        // markers as *live* markdown formatting on export is a deliberate
+        // follow-up, tracked alongside rich PDF styling.
+        let source = "**bold** *italic* ~~strike~~ `code`";
+        let snapshot = snapshot(export_node(ROOT_ID, "Formats", source, false, Vec::new()));
+
+        let rendered = String::from_utf8(render_markdown(&snapshot).expect("render Markdown"))
+            .expect("UTF-8 Markdown");
+
+        let escaped = r#"\*\*bold\*\* \*italic\* \~\~strike\~\~ \`code\`"#;
+        assert!(
+            rendered.contains(&format!("  > {escaped}\n")),
+            "rendered: {rendered}"
+        );
+        // No marker character is dropped from the exported payload.
+        assert_eq!(source.matches('*').count(), rendered.matches(r"\*").count());
+        assert_eq!(source.matches('~').count(), rendered.matches(r"\~").count());
+        assert_eq!(source.matches('`').count(), rendered.matches(r"\`").count());
+    }
+
+    #[test]
     fn markdown_renderer_normalizes_crlf_and_preserves_blank_multiline_note_lines() {
         let snapshot = snapshot(export_node(
             ROOT_ID,

@@ -16,6 +16,10 @@ import {
 } from "react";
 import type { LocalDate, NoteDateMatch } from "./noteDates";
 import type { NoteTagToken } from "./noteTokens";
+import {
+  resolveInlineFormatShortcut,
+  toggleInlineFormat
+} from "./inlineFormat";
 import { NoteTokenText } from "./NoteTokenText";
 
 export interface NoteTextFieldProps
@@ -117,6 +121,7 @@ export const NoteTextField = forwardRef<
     onChange,
     onCompositionStart,
     onCompositionEnd,
+    onKeyDown,
     onPaste,
     tabIndex,
     "aria-hidden": ariaHidden,
@@ -226,6 +231,45 @@ export const NoteTextField = forwardRef<
     );
   };
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    const kind =
+      composingRef.current ||
+      disabled ||
+      readOnly ||
+      event.nativeEvent.isComposing
+        ? null
+        : resolveInlineFormatShortcut({
+            key: event.key,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            shiftKey: event.shiftKey,
+            altKey: event.altKey
+          });
+    if (kind === null) {
+      onKeyDown?.(event);
+      return;
+    }
+
+    // Handle the wrap/unwrap as a normal text edit: mutate the native value
+    // through the tracked setter and dispatch `input` so the controlled
+    // onChange (draft-update path) fires, then restore the mapped selection.
+    event.preventDefault();
+    const textarea = event.currentTarget;
+    const edit = toggleInlineFormat(
+      textarea.value,
+      textarea.selectionStart ?? textarea.value.length,
+      textarea.selectionEnd ?? textarea.value.length,
+      kind
+    );
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set;
+    valueSetter?.call(textarea, edit.value);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    textarea.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+  };
+
   const revealAndFocusTextarea = () => {
     if (nonEditable) {
       return;
@@ -316,6 +360,7 @@ export const NoteTextField = forwardRef<
         onChange={handleChange}
         onCompositionStart={handleCompositionStart}
         onCompositionEnd={handleCompositionEnd}
+        onKeyDown={handleKeyDown}
         onPaste={onPaste}
       />
     </span>

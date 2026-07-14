@@ -70,5 +70,22 @@
     "tags": [
       { "prefix": "#", "display": "한글", "normalized": "한글", "startUtf16": 0, "endUtf16": 7 }
     ]
+  },
+  {
+    "source": "a **bold** b *italic* c",
+    "tags": []
+  },
+  {
+    "source": "see ~~old~~ and `code` #done",
+    "tags": [
+      { "prefix": "#", "display": "done", "normalized": "done", "startUtf16": 23, "endUtf16": 28 }
+    ]
+  },
+  {
+    "source": "**done** #ship @lead",
+    "tags": [
+      { "prefix": "#", "display": "ship", "normalized": "ship", "startUtf16": 9, "endUtf16": 14 },
+      { "prefix": "@", "display": "lead", "normalized": "lead", "startUtf16": 15, "endUtf16": 20 }
+    ]
   }
 ]

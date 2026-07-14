@@ -6,6 +6,8 @@ import {
 } from "react";
 import {
   tokenizeNoteText,
+  type NoteFormatKind,
+  type NoteFormatToken,
   type NoteTagToken
 } from "./noteTokens";
 import {
@@ -47,9 +49,31 @@ const tagStyle: CSSProperties = {
   whiteSpace: "inherit"
 };
 
-type InteractiveToken =
+// Each formatting kind maps to a stable class pair so notes.css owns the visual
+// treatment. The markers keep flowing through the DOM (dimmed, not removed) so
+// the overlay's text content stays character-for-character identical to source.
+const FORMAT_TOKEN_CLASS: Record<NoteFormatKind, string> = {
+  strong: "notes-format-token notes-format-strong",
+  em: "notes-format-token notes-format-em",
+  strike: "notes-format-token notes-format-strike",
+  code: "notes-format-token notes-format-code"
+};
+
+type RenderToken =
   | { readonly kind: "tag"; readonly token: NoteTagToken }
-  | { readonly kind: "date"; readonly token: NoteDateMatch };
+  | { readonly kind: "date"; readonly token: NoteDateMatch }
+  | { readonly kind: "format"; readonly token: NoteFormatToken };
+
+function isFormatToken(
+  token: { kind: string }
+): token is NoteFormatToken {
+  return (
+    token.kind === "strong" ||
+    token.kind === "em" ||
+    token.kind === "strike" ||
+    token.kind === "code"
+  );
+}
 
 export function NoteTokenText({
   text,
@@ -66,17 +90,33 @@ export function NoteTokenText({
     .join(" ");
   // tokenizeNoteText / findNoteDateMatches re-scan the whole string; memoize so
   // an unrelated re-render (or a keystroke in another row) does not re-parse.
-  const interactiveTokens = useMemo<InteractiveToken[]>(() => {
-    const tokens: InteractiveToken[] = tokenizeNoteText(text)
+  const renderTokens = useMemo<RenderToken[]>(() => {
+    const parsed = tokenizeNoteText(text);
+    // Formatting spans are top-level and non-overlapping; the tokenizer already
+    // suppresses tags inside them, so tag tokens never collide with a span.
+    const formatTokens = parsed.filter(isFormatToken);
+    const tokens: RenderToken[] = parsed
       .filter((token): token is NoteTagToken => token.kind === "tag")
       .map((token) => ({ kind: "tag", token }));
+    for (const token of formatTokens) {
+      tokens.push({ kind: "format", token });
+    }
     if (today) {
-      tokens.push(
-        ...findNoteDateMatches(text, { today }).map((token) => ({
-          kind: "date" as const,
-          token
-        }))
-      );
+      // Dates are matched independently of the tokenizer, so a date that falls
+      // inside a formatting span must be dropped: the span renders
+      // non-recursively (its inner content is plain styled text), matching the
+      // tokenizer's own no-recursion rule for tags.
+      const overlapsFormatSpan = (match: NoteDateMatch) =>
+        formatTokens.some(
+          (span) =>
+            match.startUtf16 < span.endUtf16 &&
+            match.endUtf16 > span.startUtf16
+        );
+      for (const token of findNoteDateMatches(text, { today })) {
+        if (!overlapsFormatSpan(token)) {
+          tokens.push({ kind: "date", token });
+        }
+      }
     }
     tokens.sort(
       (left, right) => left.token.startUtf16 - right.token.startUtf16
@@ -86,14 +126,14 @@ export function NoteTokenText({
 
   const content: ReactNode[] = [];
   let textStartUtf16 = 0;
-  for (const interactiveToken of interactiveTokens) {
-    const { token } = interactiveToken;
+  for (const renderToken of renderTokens) {
+    const { token } = renderToken;
     if (textStartUtf16 < token.startUtf16) {
       content.push(text.slice(textStartUtf16, token.startUtf16));
     }
 
-    if (interactiveToken.kind === "date") {
-      const dateToken = interactiveToken.token;
+    if (renderToken.kind === "date") {
+      const dateToken = renderToken.token;
       if (onDateClick) {
         content.push(
           <button
@@ -117,8 +157,29 @@ export function NoteTokenText({
           </span>
         );
       }
+    } else if (renderToken.kind === "format") {
+      const formatToken = renderToken.token;
+      // Split the raw slice into dimmed markers + styled content. All three
+      // slices concatenate back to the exact source substring, so the overlay
+      // never gains or loses a character (caret/pointer mapping depends on it).
+      content.push(
+        <span
+          className={FORMAT_TOKEN_CLASS[formatToken.kind]}
+          key={`format:${formatToken.startUtf16}:${formatToken.endUtf16}`}
+        >
+          <span className="notes-format-marker">
+            {text.slice(formatToken.startUtf16, formatToken.innerStartUtf16)}
+          </span>
+          <span className="notes-format-content">
+            {text.slice(formatToken.innerStartUtf16, formatToken.innerEndUtf16)}
+          </span>
+          <span className="notes-format-marker">
+            {text.slice(formatToken.innerEndUtf16, formatToken.endUtf16)}
+          </span>
+        </span>
+      );
     } else {
-      const tagToken = interactiveToken.token;
+      const tagToken = renderToken.token;
       const active = isTagActive?.(tagToken) ?? false;
       content.push(
         <button

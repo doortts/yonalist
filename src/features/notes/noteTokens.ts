@@ -17,7 +17,26 @@ export interface NoteTagToken extends NoteTokenBase {
   normalized: string;
 }
 
-export type NoteTextToken = NotePlainTextToken | NoteTagToken;
+export type NoteFormatKind = "strong" | "em" | "strike" | "code";
+
+/**
+ * A Workflowy-style inline formatting span stored as PLAIN TEXT. The marker
+ * characters (`**`, `*`, `~~`, `` ` ``) remain part of {@link raw} so the
+ * rendered overlay reproduces the source character-for-character (the caret /
+ * selection mapping in NoteTextField/NoteTokenText depends on identical
+ * length); `innerStartUtf16`/`innerEndUtf16` bound only the styled content
+ * between the markers.
+ */
+export interface NoteFormatToken extends NoteTokenBase {
+  kind: NoteFormatKind;
+  innerStartUtf16: number;
+  innerEndUtf16: number;
+}
+
+export type NoteTextToken =
+  | NotePlainTextToken
+  | NoteTagToken
+  | NoteFormatToken;
 
 const unicodeLetterOrNumber = /^[\p{L}\p{N}]$/u;
 const unicodeMark = /^\p{M}$/u;
@@ -266,14 +285,150 @@ function readSegmentContext(
   };
 }
 
+interface FormatMarker {
+  readonly text: string;
+  readonly kind: NoteFormatKind;
+}
+
+// Two-character markers precede their one-character prefixes so `**` wins over
+// `*` when both could open at the same offset.
+const FORMAT_MARKERS: readonly FormatMarker[] = [
+  { text: "**", kind: "strong" },
+  { text: "~~", kind: "strike" },
+  { text: "*", kind: "em" },
+  { text: "`", kind: "code" }
+];
+
+function matchFormatOpen(
+  source: string,
+  offsetUtf16: number
+): FormatMarker | null {
+  for (const marker of FORMAT_MARKERS) {
+    if (source.startsWith(marker.text, offsetUtf16)) {
+      return marker;
+    }
+  }
+  return null;
+}
+
+interface FormatSpan {
+  readonly kind: NoteFormatKind;
+  readonly startUtf16: number;
+  readonly endUtf16: number;
+  readonly innerStartUtf16: number;
+  readonly innerEndUtf16: number;
+}
+
+// Find the closing marker for an opener. The content must be non-empty and the
+// closer must be right-flanking (preceded by a non-whitespace scalar), mirroring
+// the left-flanking opener rule so prose like "a * b *" never turns into
+// emphasis. Whitespace-preceded candidates are skipped, not treated as failures.
+function findFormatClose(
+  source: string,
+  markerText: string,
+  innerStartUtf16: number
+): number | null {
+  let searchFromUtf16 = innerStartUtf16;
+  while (searchFromUtf16 < source.length) {
+    const closeUtf16 = source.indexOf(markerText, searchFromUtf16);
+    if (closeUtf16 === -1) {
+      return null;
+    }
+    if (
+      closeUtf16 > innerStartUtf16 &&
+      !unicodeWhitespace.test(scalarBefore(source, closeUtf16))
+    ) {
+      return closeUtf16;
+    }
+    searchFromUtf16 = closeUtf16 + 1;
+  }
+  return null;
+}
+
+// Formatting is tokenized at the TOP LEVEL and never recurses: a span's inner
+// content is treated as plain styled text, so tags and dates inside a span are
+// NOT separately recognized (they render as ordinary formatted characters).
+// Spans are returned sorted by start and are guaranteed non-overlapping.
+function findFormatSpans(source: string): readonly FormatSpan[] {
+  const spans: FormatSpan[] = [];
+  let offsetUtf16 = 0;
+
+  while (offsetUtf16 < source.length) {
+    const marker = matchFormatOpen(source, offsetUtf16);
+    if (marker === null) {
+      offsetUtf16 += 1;
+      continue;
+    }
+
+    const innerStartUtf16 = offsetUtf16 + marker.text.length;
+    // Left-flanking opener: the first content scalar must be non-whitespace.
+    if (
+      innerStartUtf16 >= source.length ||
+      unicodeWhitespace.test(scalarAt(source, innerStartUtf16))
+    ) {
+      offsetUtf16 += 1;
+      continue;
+    }
+
+    const closeUtf16 = findFormatClose(source, marker.text, innerStartUtf16);
+    if (closeUtf16 === null) {
+      offsetUtf16 += 1;
+      continue;
+    }
+
+    spans.push({
+      kind: marker.kind,
+      startUtf16: offsetUtf16,
+      endUtf16: closeUtf16 + marker.text.length,
+      innerStartUtf16,
+      innerEndUtf16: closeUtf16
+    });
+    offsetUtf16 = closeUtf16 + marker.text.length;
+  }
+
+  return spans;
+}
+
 export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
   const tokens: NoteTextToken[] = [];
+  const formatSpans = findFormatSpans(source);
+  let nextSpanIndex = 0;
   let textStartUtf16 = 0;
   let offsetUtf16 = 0;
   let segmentEndUtf16 = 0;
   let segmentUrlEvidenceEndUtf16: number | null = null;
 
   while (offsetUtf16 < source.length) {
+    // A formatting span consumes its whole range (markers + inner content) as a
+    // single non-recursive token; tag scanning resumes only after it.
+    const span =
+      nextSpanIndex < formatSpans.length &&
+      formatSpans[nextSpanIndex].startUtf16 === offsetUtf16
+        ? formatSpans[nextSpanIndex]
+        : null;
+    if (span) {
+      if (textStartUtf16 < offsetUtf16) {
+        tokens.push({
+          kind: "text",
+          raw: source.slice(textStartUtf16, offsetUtf16),
+          startUtf16: textStartUtf16,
+          endUtf16: offsetUtf16
+        });
+      }
+      tokens.push({
+        kind: span.kind,
+        raw: source.slice(span.startUtf16, span.endUtf16),
+        startUtf16: span.startUtf16,
+        endUtf16: span.endUtf16,
+        innerStartUtf16: span.innerStartUtf16,
+        innerEndUtf16: span.innerEndUtf16
+      });
+      nextSpanIndex += 1;
+      textStartUtf16 = span.endUtf16;
+      offsetUtf16 = span.endUtf16;
+      continue;
+    }
+
     const character = scalarAt(source, offsetUtf16);
     if (offsetUtf16 >= segmentEndUtf16) {
       if (unicodeWhitespace.test(character)) {

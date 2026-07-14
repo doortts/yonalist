@@ -5,7 +5,7 @@ import {
   screen
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
+import { createRef, useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { NoteTextField } from "./NoteTextField";
 
@@ -788,5 +788,94 @@ describe("NoteTextField", () => {
 
     expect(onPaste).toHaveBeenCalledOnce();
     expect(onPaste.mock.calls[0][0].target).toBe(textarea);
+  });
+
+  function EditableField({ initialValue }: { initialValue: string }) {
+    const [value, setValue] = useState(initialValue);
+    return (
+      <NoteTextField
+        value={value}
+        aria-label="Edit node title"
+        onChange={(event) => setValue(event.target.value)}
+        onTagClick={vi.fn()}
+      />
+    );
+  }
+
+  function editableTextarea(initialValue: string): HTMLTextAreaElement {
+    const { container } = render(<EditableField initialValue={initialValue} />);
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    act(() => textarea.focus());
+    return textarea;
+  }
+
+  it("wraps a selection in ** on Cmd+B and unwraps it on a second press", () => {
+    const textarea = editableTextarea("hello world");
+    act(() => textarea.setSelectionRange(6, 11));
+
+    fireEvent.keyDown(textarea, { key: "b", metaKey: true });
+
+    // The wrap flows through the normal controlled onChange (draft-update) path,
+    // and the selection tracks the original content between the new markers.
+    expect(textarea.value).toBe("hello **world**");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([8, 13]);
+
+    fireEvent.keyDown(textarea, { key: "b", metaKey: true });
+
+    expect(textarea.value).toBe("hello world");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([6, 11]);
+  });
+
+  it("unwraps a selection that captures its own markers", () => {
+    const textarea = editableTextarea("**bold**");
+    act(() => textarea.setSelectionRange(0, 8));
+
+    fireEvent.keyDown(textarea, { key: "b", metaKey: true });
+
+    expect(textarea.value).toBe("bold");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([0, 4]);
+  });
+
+  it("inserts an empty ** pair at the caret when there is no selection", () => {
+    const textarea = editableTextarea("hello ");
+    act(() => textarea.setSelectionRange(6, 6));
+
+    fireEvent.keyDown(textarea, { key: "b", metaKey: true });
+
+    expect(textarea.value).toBe("hello ****");
+    expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([8, 8]);
+  });
+
+  it("wraps with * on Cmd+I and ~~ on Cmd+Shift+X", () => {
+    const italic = editableTextarea("note");
+    act(() => italic.setSelectionRange(0, 4));
+    fireEvent.keyDown(italic, { key: "i", metaKey: true });
+    expect(italic.value).toBe("*note*");
+    expect([italic.selectionStart, italic.selectionEnd]).toEqual([1, 5]);
+
+    const strike = editableTextarea("old");
+    act(() => strike.setSelectionRange(0, 3));
+    fireEvent.keyDown(strike, { key: "x", metaKey: true, shiftKey: true });
+    expect(strike.value).toBe("~~old~~");
+    expect([strike.selectionStart, strike.selectionEnd]).toEqual([2, 5]);
+  });
+
+  it("supports the Ctrl variant of the formatting shortcut", () => {
+    const textarea = editableTextarea("done");
+    act(() => textarea.setSelectionRange(0, 4));
+
+    fireEvent.keyDown(textarea, { key: "b", ctrlKey: true });
+
+    expect(textarea.value).toBe("**done**");
+  });
+
+  it("ignores the formatting shortcut during IME composition", () => {
+    const textarea = editableTextarea("한글");
+    act(() => textarea.setSelectionRange(0, 2));
+    fireEvent.compositionStart(textarea);
+
+    fireEvent.keyDown(textarea, { key: "b", metaKey: true });
+
+    expect(textarea.value).toBe("한글");
   });
 });

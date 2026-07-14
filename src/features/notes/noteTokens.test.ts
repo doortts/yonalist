@@ -280,6 +280,114 @@ describe("tokenizeNoteText", () => {
     expectLosslessCoverage("");
   });
 
+  it.each([
+    ["**bold**", "strong", 2, 6],
+    ["*slanted*", "em", 1, 8],
+    ["~~struck~~", "strike", 2, 8],
+    ["`code`", "code", 1, 5]
+  ])(
+    "recognizes the %j inline span keeping markers in raw",
+    (source, kind, innerStartUtf16, innerEndUtf16) => {
+      expect(tokenizeNoteText(source)).toEqual([
+        {
+          kind,
+          raw: source,
+          startUtf16: 0,
+          endUtf16: source.length,
+          innerStartUtf16,
+          innerEndUtf16
+        }
+      ]);
+      expectLosslessCoverage(source);
+    }
+  );
+
+  it("splits surrounding prose from an inline span", () => {
+    expect(tokenizeNoteText("say **hi** now")).toEqual([
+      { kind: "text", raw: "say ", startUtf16: 0, endUtf16: 4 },
+      {
+        kind: "strong",
+        raw: "**hi**",
+        startUtf16: 4,
+        endUtf16: 10,
+        innerStartUtf16: 6,
+        innerEndUtf16: 8
+      },
+      { kind: "text", raw: " now", startUtf16: 10, endUtf16: 14 }
+    ]);
+    expectLosslessCoverage("say **hi** now");
+  });
+
+  it("prefers the two-character strong marker over emphasis", () => {
+    const tokens = tokenizeNoteText("**bold** *italic*");
+
+    expect(tokens.map((token) => [token.kind, token.raw])).toEqual([
+      ["strong", "**bold**"],
+      ["text", " "],
+      ["em", "*italic*"]
+    ]);
+    expectLosslessCoverage("**bold** *italic*");
+  });
+
+  it.each([
+    "**unclosed bold",
+    "trailing marker*",
+    "a * b * c",
+    "space after ** bold**",
+    "*bold *",
+    "empty pair ****",
+    "lone `backtick",
+    "~~half strike"
+  ])("keeps one-sided or whitespace-flanked markers literal in %j", (source) => {
+    expect(
+      tokenizeNoteText(source).filter((token) => token.kind !== "text")
+    ).toHaveLength(0);
+    expectLosslessCoverage(source);
+  });
+
+  it("does not recurse: a tag inside a span is plain styled content", () => {
+    // The FE overlay renders spans non-recursively, so `#alice` inside `**…**`
+    // stays part of the strong token (no separate tag token). NOTE: the Rust
+    // FTS tokenizer is formatting-unaware and still indexes this tag; that
+    // divergence is intentional and documented as a follow-up.
+    expect(tokenizeNoteText("**owner #alice**")).toEqual([
+      {
+        kind: "strong",
+        raw: "**owner #alice**",
+        startUtf16: 0,
+        endUtf16: 16,
+        innerStartUtf16: 2,
+        innerEndUtf16: 14
+      }
+    ]);
+    expectLosslessCoverage("**owner #alice**");
+  });
+
+  it("recognizes a tag that sits outside an inline span", () => {
+    const tokens = tokenizeNoteText("**done** #ship");
+
+    expect(tokens.map((token) => [token.kind, token.raw])).toEqual([
+      ["strong", "**done**"],
+      ["text", " "],
+      ["tag", "#ship"]
+    ]);
+    expectLosslessCoverage("**done** #ship");
+  });
+
+  it("keeps emoji inside a span without splitting surrogate pairs", () => {
+    expect(tokenizeNoteText("**😀ok**")).toEqual([
+      {
+        kind: "strong",
+        raw: "**😀ok**",
+        startUtf16: 0,
+        endUtf16: 8,
+        innerStartUtf16: 2,
+        innerEndUtf16: 6
+      }
+    ]);
+    expectLosslessCoverage("**😀ok**");
+  });
+
   it("scans long input without losing or duplicating source", () => {
     const source = `${"word#not-a-tag ".repeat(20_000)}😀#끝`;
     const tokens = tokenizeNoteText(source);
