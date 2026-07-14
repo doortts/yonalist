@@ -1963,6 +1963,14 @@ mod tests {
         assert!(workspace.nodes.iter().all(|node| node.deleted_at.is_none()));
     }
 
+    fn initialize_empty_test_vault(vault_path: &str) {
+        notes_initialize(vault_path.to_string()).expect("initialize test vault");
+        let connection = connect_notes_db(vault_path).expect("open initialized test vault");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("remove onboarding fixture nodes");
+    }
+
     const BATCH_A_ID: &str = "44444444-4444-4444-8444-444444444444";
     const BATCH_B_ID: &str = "55555555-5555-4555-8555-555555555555";
     const BATCH_C_ID: &str = "66666666-6666-4666-8666-666666666666";
@@ -3156,7 +3164,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
 
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         assert!(
             notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
                 .expect("initial active workspace")
@@ -3295,7 +3303,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
 
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         let created = notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
@@ -3450,7 +3458,7 @@ mod tests {
     fn batch_complete_sets_every_node_in_one_history_entry_and_undo_reverts_all() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         for id in [BATCH_A_ID, BATCH_B_ID, BATCH_C_ID] {
             seed_batch_node(&vault_path, id, None, None);
         }
@@ -3520,7 +3528,7 @@ mod tests {
     fn batch_delete_shares_one_trash_batch_and_undo_restores_all() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         // Two independent subtrees: A>A_child and B>B_child.
         seed_batch_node(&vault_path, BATCH_A_ID, None, None);
         seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
@@ -3582,7 +3590,7 @@ mod tests {
     fn batch_delete_restore_is_scoped_to_the_restored_subtree() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         seed_batch_node(&vault_path, BATCH_A_ID, None, None);
         seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
         seed_batch_node(&vault_path, BATCH_B_ID, None, Some(BATCH_A_ID));
@@ -3621,7 +3629,7 @@ mod tests {
     fn batch_move_places_the_selection_as_a_contiguous_ordered_block() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         // Target parent D already holds one child (A) so we can prove the moved
         // block lands contiguously after it.
         seed_batch_node(&vault_path, BATCH_D_ID, None, None);
@@ -3673,7 +3681,7 @@ mod tests {
     fn batch_move_under_a_live_descendant_rejects_the_whole_batch() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         // A has a live descendant A_child; B is an unrelated root.
         seed_batch_node(&vault_path, BATCH_A_ID, None, None);
         seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_A_ID), None);
@@ -3769,7 +3777,7 @@ mod tests {
     fn batch_outdent_lifts_each_node_after_its_old_parent() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
-        notes_initialize(vault_path.clone()).expect("initialize");
+        initialize_empty_test_vault(&vault_path);
         // Grandparent A > parent B > children C, (missing-id).
         seed_batch_node(&vault_path, BATCH_A_ID, None, None);
         seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_A_ID), None);
@@ -4458,6 +4466,7 @@ mod tests {
     fn discovery_commands_return_typed_local_results_and_delete_notes_data() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {
@@ -4736,6 +4745,7 @@ mod tests {
     fn archive_commands_apply_native_scopes_and_counted_tag_visibility() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
         notes_create_node(
             vault_path.clone(),
             CreateNodeInput {

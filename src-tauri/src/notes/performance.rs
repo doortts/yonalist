@@ -349,6 +349,9 @@ impl PerfVault {
                 .expect("performance vault path must be UTF-8"),
         )
         .expect("initialize performance vault schema");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("remove onboarding fixture nodes");
         let transaction = connection
             .transaction()
             .expect("start performance fixture transaction");

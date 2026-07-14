@@ -1846,8 +1846,11 @@ mod tests {
 
         let notes = connect_notes_db(&vault_path).expect("reopen notes");
         let workspace = load_workspace(&notes, NotesWorkspaceScope::Active).expect("load notes");
-        assert_eq!(workspace.nodes.len(), 1);
-        assert_eq!(workspace.nodes[0].title, "Persistent note");
+        assert_eq!(workspace.nodes.len(), 8);
+        assert!(workspace
+            .nodes
+            .iter()
+            .any(|node| node.title == "Persistent note"));
     }
 
     #[test]

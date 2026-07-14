@@ -1933,6 +1933,9 @@ mod tests {
 
     fn seed_node(vault_path: &str) {
         let mut connection = connect_notes_db(vault_path).expect("connect");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("remove onboarding fixture nodes");
         create_node(
             &mut connection,
             CreateNodeInput {

@@ -1328,6 +1328,14 @@ mod tests {
             .expect("history entry count")
     }
 
+    fn connect_empty_history_db(vault_path: &str) -> Connection {
+        let connection = connect_notes_db(vault_path).expect("connect");
+        connection
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("remove onboarding fixture nodes");
+        connection
+    }
+
     fn insert_history_attachment(connection: &Connection, index: i64, node_id: &str) -> String {
         let id = format!("{index:08x}-dddd-4ddd-8ddd-{index:012x}");
         let content_hash = format!("{index:064x}");
@@ -1504,7 +1512,7 @@ mod tests {
     fn notes_history_create_undo_redo_and_forward_mutation_ordering_are_authoritative() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         let create_context = history_context(1, "create");
 
         journal(&mut connection, &create_context, |connection| {
@@ -1555,7 +1563,7 @@ mod tests {
     fn notes_history_coalesces_text_updates_with_the_same_entry_id() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let context = history_context(1, "updateText");
 
@@ -1604,7 +1612,7 @@ mod tests {
     fn notes_history_replays_split_and_move_with_sibling_rebalance() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(
             &mut connection,
             create_input(NODE_ID, None, None, "AlphaBeta"),
@@ -1693,7 +1701,7 @@ mod tests {
     fn notes_history_replays_toggles_and_duplicate_in_reverse_then_forward_order() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
         create_node(
             &mut connection,
@@ -1751,7 +1759,7 @@ mod tests {
     fn notes_history_replays_trash_restore_archive_and_unarchive() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
         create_node(
             &mut connection,
@@ -1816,7 +1824,7 @@ mod tests {
     fn notes_history_trash_persists_command_kind() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         let has_command_kind: bool = connection
             .query_row(
                 "SELECT EXISTS(\
@@ -2049,7 +2057,7 @@ mod tests {
     fn notes_history_invalidates_cross_session_redo_after_a_forward_mutation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let first = history_context(1, "updateText");
         journal(&mut connection, &first, |connection| {
@@ -2354,7 +2362,7 @@ mod tests {
     fn notes_history_rejects_coalescing_across_an_intervening_session_mutation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
-            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let first = history_context(1, "updateText");
         journal(&mut connection, &first, |connection| {
