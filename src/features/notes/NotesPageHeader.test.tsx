@@ -16,6 +16,7 @@ import type {
 } from "../../domain/notes";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -27,6 +28,7 @@ import type {
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
+    nodeKind: "text",
     parentId: null,
     sortKey: 1,
     title: overrides.id,
@@ -183,9 +185,11 @@ function zoomedOutline(workspace: UseNotesWorkspaceResult) {
   return (
     <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 11 }}>
       <VaultRootContext.Provider value="/vault">
-        <NotesWorkspaceContext.Provider value={workspace}>
-          <NotesOutlinePane />
-        </NotesWorkspaceContext.Provider>
+        <NotesImageResidencyProvider scopeKey="/vault">
+          <NotesWorkspaceContext.Provider value={workspace}>
+            <NotesOutlinePane />
+          </NotesWorkspaceContext.Provider>
+        </NotesImageResidencyProvider>
       </VaultRootContext.Provider>
     </NotesDateTodayProvider>
   );
