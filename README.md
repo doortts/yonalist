@@ -85,6 +85,10 @@ on issues and pull requests from a local Markdown vault.
 
 ## Commands
 
+Yonalist requires Rust 1.88 or later. `npm run tauri:dev` and
+`npm run tauri:build` use the repository-pinned rustup toolchain when rustup
+is installed.
+
 ```bash
 npm install
 npm test

@@ -9,9 +9,9 @@
     "lint": "eslint src",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri": "node scripts/tauri.mjs",
+    "tauri:dev": "node scripts/tauri.mjs dev",
+    "tauri:build": "node scripts/tauri.mjs build"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
