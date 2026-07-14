@@ -1022,6 +1022,14 @@ export function NotesOutlinePane() {
     getVisibleNodeIds: getProjectedSelectionVisibleIds,
     flushDrafts: actions.flushAllDrafts,
     prepareAuthority: (nodeIds) => {
+      const cached = currentPreparedAuthorityRef.current;
+      if (
+        cached &&
+        exactNoteIds(cached.selectedNodeIds, nodeIds) &&
+        (isPreparedSelectionAuthorityCurrent?.(cached) ?? false)
+      ) {
+        return Promise.resolve(cached);
+      }
       if (!prepareSelectionAuthority) {
         return Promise.reject(new Error("Selection authority is unavailable."));
       }
@@ -1062,7 +1070,7 @@ export function NotesOutlinePane() {
     materializedSelectionIds.length > 0 &&
     selectionSnapshot?.eligibility.copy.eligible === true &&
     exactNoteIds(selectionSnapshot.selectedNodeIds, materializedSelectionIds) &&
-    (libraryView === "all" || currentPreparedAuthority !== null);
+    currentPreparedAuthority !== null;
   useEffect(() => {
     if (
       selectionClipboardReady &&

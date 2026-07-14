@@ -2707,14 +2707,12 @@ describe("Notes workspace", () => {
       expect(provisional.setData).not.toHaveBeenCalled();
 
       await act(async () => hydration.resolve(workspace(activeNodes)));
-      await waitFor(() =>
-        expect(
-          notesStoreMock.loadWorkspace.mock.calls.filter(
-            ([, scope]) => scope.kind === "active"
-          ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
-      );
       await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       const authoritative = dispatchClipboardEvent("copy", title);
       expect(authoritative.event.defaultPrevented).toBe(true);
@@ -2784,9 +2782,14 @@ describe("Notes workspace", () => {
           notesStoreMock.loadWorkspace.mock.calls.filter(
             ([, scope]) => scope.kind === "active"
           ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
       await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       title.focus();
       title.setSelectionRange(0, 0);
@@ -2832,6 +2835,52 @@ describe("Notes workspace", () => {
       expect(paneCopy.values.get("text/plain")).toBe("- Alpha\n- Bravo");
     });
 
+    it("reuses hydrated clipboard authority across pane state and draft lifecycle refreshes", async () => {
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      const preparedLoadCount = activeLoadsBeforeSelection + 1;
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(preparedLoadCount);
+
+      const bravo = getTitleInput("Bravo");
+      bravo.setSelectionRange(0, 0);
+      await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(preparedLoadCount);
+      expect(
+        dispatchClipboardEvent("copy", bravo).event.defaultPrevented
+      ).toBe(true);
+
+      fireEvent.change(bravo, { target: { value: "Bravo!" } });
+      await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(preparedLoadCount);
+      const afterDraftChange = dispatchClipboardEvent("copy", bravo);
+      expect(afterDraftChange.event.defaultPrevented).toBe(false);
+      expect(afterDraftChange.setData).not.toHaveBeenCalled();
+    });
+
     it("commits a prepared native Cut synchronously and mutates the range once", async () => {
       useCtrlPlatform();
       const order: string[] = [];
@@ -2856,9 +2905,14 @@ describe("Notes workspace", () => {
           notesStoreMock.loadWorkspace.mock.calls.filter(
             ([, scope]) => scope.kind === "active"
           ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
       await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(activeLoadsBeforeSelection + 1);
 
       title.focus();
       title.setSelectionRange(0, 0);
@@ -2899,9 +2953,14 @@ describe("Notes workspace", () => {
           notesStoreMock.loadWorkspace.mock.calls.filter(
             ([, scope]) => scope.kind === "active"
           ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
       await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(activeLoadsBeforeSelection + 1);
       const bullet = screen.getByRole("button", { name: "Zoom into Bravo" });
       mockOutlineRowRects();
 
@@ -2932,9 +2991,14 @@ describe("Notes workspace", () => {
           notesStoreMock.loadWorkspace.mock.calls.filter(
             ([, scope]) => scope.kind === "active"
           ).length
-        ).toBeGreaterThanOrEqual(activeLoadsBeforeSelection + 2)
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
       );
       await act(async () => undefined);
+      expect(
+        notesStoreMock.loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope.kind === "active"
+        )
+      ).toHaveLength(activeLoadsBeforeSelection + 1);
       const bullet = screen.getByRole("button", { name: "Zoom into Alpha" });
       mockOutlineRowRects();
 
