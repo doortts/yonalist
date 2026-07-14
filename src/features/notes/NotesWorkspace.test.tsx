@@ -4082,6 +4082,9 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
+      /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(-1px\);/s
+    );
+    expect(notesStyles).toMatch(
       /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;/s
     );
     expect(notesStyles).not.toMatch(

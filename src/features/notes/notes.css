@@ -700,6 +700,10 @@
   box-sizing: border-box;
 }
 
+.notes-text-field > textarea {
+  transform: translateY(-1px);
+}
+
 .notes-tag-token {
   text-decoration-thickness: 1px;
   text-underline-offset: 2px;
