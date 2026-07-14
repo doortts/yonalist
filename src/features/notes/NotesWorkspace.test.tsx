@@ -2951,6 +2951,46 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
   });
 
+  it("starts row notes at one line and exits from selection boundaries during composition", async () => {
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const note = getTextareaByName("Supporting note: Project");
+    expect(note).toHaveAttribute("rows", "1");
+
+    note.setSelectionRange(0, 3);
+    expect(
+      fireEvent.keyDown(note, { key: "ArrowUp", isComposing: true })
+    ).toBe(false);
+    await waitFor(() => expect(queryTitleInput("Project")).toHaveFocus());
+
+    fireEvent.focus(note);
+    fireEvent.change(note, { target: { value: "Project note revised" } });
+    note.setSelectionRange(note.value.length, note.value.length);
+    expect(fireEvent.keyDown(note, { key: "ArrowDown" })).toBe(false);
+    await waitFor(() => expect(queryTitleInput("Plan")).toHaveFocus());
+    await waitFor(() =>
+      expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
+        id: "project",
+        title: "Project",
+        note: "Project note revised"
+      })
+    );
+  });
+
+  it("keeps modified supporting-note arrows native", async () => {
+    renderNotesWorkspace();
+    await findTitleInput("Project");
+    const note = getTextareaByName("Supporting note: Project");
+    note.focus();
+    note.setSelectionRange(note.value.length, note.value.length);
+
+    expect(note).toHaveFocus();
+    expect(
+      fireEvent.keyDown(note, { key: "ArrowDown", ctrlKey: true })
+    ).toBe(true);
+    expect(note).toHaveFocus();
+  });
+
   it("opens and focuses an empty row note with Shift+Enter", async () => {
     renderNotesWorkspace();
     const title = await findTitleInput("Outside branch");

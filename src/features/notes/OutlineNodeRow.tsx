@@ -49,7 +49,9 @@ import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
-  resolveOutlineKey
+  resolveOutlineKey,
+  resolveSupportingNoteKey,
+  supportingNoteFocusTarget
 } from "./outlineKeyboard";
 
 interface OutlineNodeRowProps {
@@ -932,7 +934,7 @@ function OutlineNodeRowComponent({
           containerClassName="notes-node-note-field"
           value={noteValue}
           aria-label={`Supporting note: ${label}`}
-          rows={2}
+          rows={1}
           disabled={disabled}
           today={datePicker.today}
           onDateClick={
@@ -973,7 +975,35 @@ function OutlineNodeRowComponent({
             if (historyShortcut) {
               event.preventDefault();
               void actions[historyShortcut]?.();
+              return;
             }
+            const resolution = resolveSupportingNoteKey({
+              key: event.key,
+              altKey: event.altKey,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+              shiftKey: event.shiftKey,
+              selectionStart: event.currentTarget.selectionStart,
+              selectionEnd: event.currentTarget.selectionEnd,
+              value: event.currentTarget.value
+            });
+            if (!resolution) {
+              return;
+            }
+            event.preventDefault();
+            actions.updateNodeDraft(
+              nodeId,
+              { title: titleValue, note: event.currentTarget.value },
+              "note"
+            );
+            void actions.flushNodeDraft(nodeId);
+            void actions.focusNode(
+              supportingNoteFocusTarget(
+                resolution,
+                nodeId,
+                getVisibleNodeIds()
+              )
+            );
           }}
           onChange={(event) => {
             resizeTextarea(event.currentTarget);

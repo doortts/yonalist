@@ -358,6 +358,37 @@ describe("NotesPageHeader", () => {
     expect(workspace.actions.redo).toHaveBeenCalledTimes(2);
   });
 
+  it("exits the page note to the next visible title with its live value", () => {
+    const workspace = renderZoomedOutline();
+    const note = editTextareaByName("Supporting note: Project");
+    expect(note).toHaveAttribute("rows", "1");
+    Object.getOwnPropertyDescriptor(
+      HTMLTextAreaElement.prototype,
+      "value"
+    )?.set?.call(note, "Revised context");
+    note.setSelectionRange(note.value.length, note.value.length);
+
+    expect(fireEvent.keyDown(note, { key: "ArrowDown" })).toBe(false);
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      { title: "Project", note: "Revised context" },
+      "note"
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    expect(workspace.actions.focusNode).toHaveBeenCalledWith("child");
+  });
+
+  it("exits the page note to its own title with Escape", () => {
+    const workspace = renderZoomedOutline();
+    const note = editTextareaByName("Supporting note: Project");
+
+    expect(fireEvent.keyDown(note, { key: "Escape" })).toBe(false);
+
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+    expect(workspace.actions.focusNode).toHaveBeenCalledWith("project");
+  });
+
   it("keeps native composition history and suppresses Process shortcuts", () => {
     const workspace = renderZoomedOutline();
     const title = editTextareaByName("Edit page title");

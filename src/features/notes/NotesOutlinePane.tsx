@@ -941,6 +941,7 @@ export function NotesOutlinePane() {
             <NotesPageHeader
               key={state.zoomRootId}
               nodeId={state.zoomRootId}
+              getVisibleNodeIds={getVisibleNodeIds}
               disabled={deletingNotesData}
               mode={lifecycleMode}
               imageDropActive={imageDropTargetId === state.zoomRootId}

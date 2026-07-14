@@ -26,11 +26,14 @@ import { resizeTextarea, useAutoGrowTextarea } from "./autoGrowTextarea";
 import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
-  resolveOutlineKey
+  resolveOutlineKey,
+  resolveSupportingNoteKey,
+  supportingNoteFocusTarget
 } from "./outlineKeyboard";
 
 interface NotesPageHeaderProps {
   nodeId: NoteId;
+  getVisibleNodeIds(): readonly NoteId[];
   disabled?: boolean;
   mode?: "standard" | "archive" | "trash";
   imageDropActive?: boolean;
@@ -43,6 +46,7 @@ function pageLabel(title: string): string {
 
 export function NotesPageHeader({
   nodeId,
+  getVisibleNodeIds,
   disabled = false,
   mode = "standard",
   imageDropActive = false,
@@ -502,7 +506,35 @@ export function NotesPageHeader({
                     if (historyShortcut) {
                       event.preventDefault();
                       void actions[historyShortcut]?.();
+                      return;
                     }
+                    const resolution = resolveSupportingNoteKey({
+                      key: event.key,
+                      altKey: event.altKey,
+                      ctrlKey: event.ctrlKey,
+                      metaKey: event.metaKey,
+                      shiftKey: event.shiftKey,
+                      selectionStart: event.currentTarget.selectionStart,
+                      selectionEnd: event.currentTarget.selectionEnd,
+                      value: event.currentTarget.value
+                    });
+                    if (!resolution) {
+                      return;
+                    }
+                    event.preventDefault();
+                    actions.updateNodeDraft(
+                      nodeId,
+                      { title: titleValue, note: event.currentTarget.value },
+                      "note"
+                    );
+                    void actions.flushNodeDraft(nodeId);
+                    void actions.focusNode(
+                      supportingNoteFocusTarget(
+                        resolution,
+                        nodeId,
+                        getVisibleNodeIds()
+                      )
+                    );
                   }
             }
             onFocus={() => setRevealedNoteNodeId(nodeId)}
