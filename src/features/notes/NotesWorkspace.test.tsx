@@ -2498,6 +2498,190 @@ describe("Notes workspace", () => {
       vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
     }
 
+    it("treats a one-row range as selection mode and swaps in the contextual toolbar", async () => {
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Alpha" }),
+        { shiftKey: true }
+      );
+
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      });
+      expect(within(toolbar).getByLabelText("1 notes selected")).toBeVisible();
+      expect(
+        document.querySelector('[data-outline-id="a"]')
+      ).toHaveAttribute("data-range-selected", "true");
+      expect(
+        screen.queryByRole("navigation", { name: "Notes breadcrumb" })
+      ).toBeNull();
+    });
+
+    it("starts a zoomed Shift+Click range at the body row instead of the page header", async () => {
+      const user = userEvent.setup();
+      configureRepository(initialNodes());
+      renderNotesWorkspace();
+      await findTitleInput("Project");
+      await user.click(
+        screen.getByRole("button", { name: "Zoom into Project" })
+      );
+      await activatePageTitle();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Plan" }),
+        { shiftKey: true }
+      );
+
+      expect(
+        await screen.findByRole("toolbar", {
+          name: "Actions for 1 selected notes"
+        })
+      ).toBeVisible();
+      expect(
+        document.querySelector('[data-outline-id="plan"]')
+      ).toHaveAttribute("data-range-selected", "true");
+      expect(
+        document.querySelector('[data-outline-id="milestone"]')
+      ).not.toHaveAttribute("data-range-selected");
+    });
+
+    it("routes contextual Complete through one authoritative selection batch", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Alpha" }),
+        { shiftKey: true }
+      );
+
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      });
+      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "complete",
+        nodeIds: ["a"],
+        completed: true
+      });
+      expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+    });
+
+    it("hydrates full Active authority without hiding the materializable toolbar", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
+        node({ id: "b", sortKey: 2, title: "Hidden sibling" })
+      ];
+      configureRepository(activeNodes);
+      const hydration = deferred<NotesWorkspace>();
+      let deferActiveAuthority = false;
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (scope.kind === "starred") {
+            return workspace(activeNodes.filter((current) => current.isStarred));
+          }
+          if (deferActiveAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() =>
+        expect(queryTitleInput("Hidden sibling")).toBeNull()
+      );
+
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferActiveAuthority = true;
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Alpha" }),
+        { shiftKey: true }
+      );
+
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 1 selected notes"
+      });
+      const moveDown = within(toolbar).getByRole("button", {
+        name: "Move down"
+      });
+      expect(moveDown).toHaveAttribute("aria-disabled", "true");
+      expect(moveDown).toHaveAttribute(
+        "title",
+        "This action requires the complete active workspace."
+      );
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+
+      await act(async () => hydration.resolve(workspace(activeNodes)));
+      await waitFor(() =>
+        expect(moveDown).toHaveAttribute("aria-disabled", "false")
+      );
+    });
+
+    it("consumes repeated selection shortcuts without mutating or clearing the range", async () => {
+      useCtrlPlatform();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+
+      const repeatedShortcuts = [
+        { key: "Enter", ctrlKey: true },
+        { key: "Backspace", ctrlKey: true, shiftKey: true },
+        { key: "Tab" },
+        { key: "Tab", shiftKey: true },
+        { key: "D", altKey: true, shiftKey: true },
+        { key: "ArrowUp", ctrlKey: true, shiftKey: true },
+        { key: "ArrowDown", ctrlKey: true, shiftKey: true }
+      ] as const;
+
+      for (const shortcut of repeatedShortcuts) {
+        expect(
+          fireEvent.keyDown(title, { ...shortcut, repeat: true })
+        ).toBe(false);
+      }
+      expect(
+        fireEvent.keyDown(title, { key: "c", ctrlKey: true, repeat: true })
+      ).toBe(true);
+      expect(
+        fireEvent.keyDown(title, { key: "x", ctrlKey: true, repeat: true })
+      ).toBe(true);
+      expect(
+        fireEvent.keyDown(title, {
+          key: "Enter",
+          ctrlKey: true,
+          isComposing: true
+        })
+      ).toBe(true);
+
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+      expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      expect(
+        Array.from(
+          document.querySelectorAll<HTMLElement>(
+            '[data-outline-id][data-range-selected="true"]'
+          )
+        ).map((row) => row.dataset.outlineId)
+      ).toEqual(["a", "b"]);
+    });
+
     it("completes a keyboard-selected range with a single applyBatch call", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
@@ -2690,8 +2874,9 @@ describe("Notes workspace", () => {
       );
       // The batch never reached the backend (Phase 3.5)...
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
-      // ...and the row explains the pause instead of silently swallowing it.
-      await screen.findByText(/Command paused/i);
+      // ...and the shared semantic router explains the pause instead of
+      // silently swallowing it.
+      await screen.findByText(/Save pending changes before continuing/i);
     });
   });
 

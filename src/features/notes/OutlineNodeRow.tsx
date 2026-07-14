@@ -19,6 +19,7 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
+import type { NotesSelectionActionIntent } from "./notesSelectionActions";
 import {
   selectionRangeIds,
   type NotesSelection
@@ -63,10 +64,17 @@ interface OutlineNodeRowProps {
   // value — passing the array as a prop would churn its identity every render
   // and defeat this component's memo.
   getVisibleNodeIds(): readonly NoteId[];
+  // Selection intentionally has a narrower visible domain while zoomed: the
+  // page header participates in ordinary caret navigation but is not an
+  // ordinary selectable body row. Keep this accessor stable for row memo.
+  getSelectionVisibleNodeIds(): readonly NoteId[];
   // Stable accessor for the live multi-node selection, read at keydown/click time
   // to extend the head. The row never subscribes to the selection (it rides the
   // drafts slice the row does not read), so this preserves the row's memo.
   getSelection(): NotesSelection | null;
+  // Stable pane-owned semantic bridge. Keyboard selection shortcuts never
+  // decide targets or mutate the workspace inside a row.
+  onSelectionAction(action: NotesSelectionActionIntent): void;
   // Atomic membership flag for the multi-node selection range, derived in the
   // pane from a stable id Set. A plain boolean so a range change re-renders only
   // the rows whose membership actually flipped.
@@ -101,7 +109,9 @@ function OutlineNodeRowComponent({
   ancestorGuideDepths,
   visibleDescendantEndId,
   getVisibleNodeIds,
+  getSelectionVisibleNodeIds,
   getSelection,
+  onSelectionAction,
   isSelected = false,
   draft,
   attachmentUploadError,
@@ -525,6 +535,7 @@ function OutlineNodeRowComponent({
       workspace: state,
       authoritativeWorkspace: libraryView === "all" ? state : undefined,
       visibleNodeIds: getVisibleNodeIds(),
+      selectionVisibleNodeIds: getSelectionVisibleNodeIds(),
       selection: getSelection()
     });
     if (!resolution) {
@@ -595,35 +606,12 @@ function OutlineNodeRowComponent({
       case "clearSelection":
         actions.clearSelection();
         return;
-      case "batchComplete":
-        // Whole-selection batch (plan Phase 4.1c): one applyBatch call, one undo
-        // step. The selection clears automatically via the command's loading
-        // dispatch. The materialized ids were captured at keydown time.
-        runStructuralCommand(() =>
-          actions.applyBatch(resolution.nodeIds, {
-            type: "complete",
-            completed: resolution.completed
-          })
-        );
+      case "selectionAction":
+        onSelectionAction(resolution.action);
         return;
-      case "batchDelete":
-        runStructuralCommand(() =>
-          actions.applyBatch(
-            resolution.nodeIds,
-            { type: "delete" },
-            { focusNodeId: resolution.focusNodeId }
-          )
-        );
-        return;
-      case "batchIndent":
-        runStructuralCommand(() =>
-          actions.applyBatch(resolution.nodeIds, { type: "indent" })
-        );
-        return;
-      case "batchOutdent":
-        runStructuralCommand(() =>
-          actions.applyBatch(resolution.nodeIds, { type: "outdent" })
-        );
+      case "consumeSelectionShortcut":
+        // Repeated structural selection chords are owned by the selection
+        // layer, but deliberately do not enqueue another command.
         return;
       case "focusNote":
         openAndFocusNote();
@@ -735,7 +723,7 @@ function OutlineNodeRowComponent({
               // step.
               const selection = getSelection();
               const rangeIds = selection
-                ? selectionRangeIds(selection, getVisibleNodeIds())
+                ? selectionRangeIds(selection, getSelectionVisibleNodeIds())
                 : [];
               if (rangeIds.length > 1 && rangeIds.includes(nodeId)) {
                 const selected = new Set(rangeIds);
@@ -847,7 +835,13 @@ function OutlineNodeRowComponent({
             if (event.shiftKey) {
               event.preventDefault();
               if (!getSelection()) {
-                actions.setSelectionAnchor(state.selectedId ?? nodeId);
+                const selectionVisibleIds = getSelectionVisibleNodeIds();
+                actions.setSelectionAnchor(
+                  state.selectedId !== null &&
+                    selectionVisibleIds.includes(state.selectedId)
+                    ? state.selectedId
+                    : nodeId
+                );
               }
               actions.extendSelectionTo(nodeId);
               return;

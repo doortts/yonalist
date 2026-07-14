@@ -48,10 +48,19 @@ import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { NotesQuickJump } from "./NotesQuickJump";
 import {
+  NotesSelectionActionBar,
+  type NotesSelectionActionBarAction
+} from "./NotesSelectionActionBar";
+import {
   useNotesActions,
   useNotesDrafts,
   useNotesState
 } from "./NotesWorkspaceContext";
+import { writeNotesClipboardText } from "./notesClipboard";
+import {
+  deriveNotesSelectionActionSnapshot,
+  type NotesSelectionActionSnapshot
+} from "./notesSelectionActions";
 import {
   deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
@@ -67,7 +76,14 @@ import {
   parentTrail
 } from "./outlineTree";
 import { OutlineNodeRow } from "./OutlineNodeRow";
-import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
+import {
+  useNotesSelectionCommandRouter,
+  type NotesSelectionCommandIntent
+} from "./useNotesSelectionCommandRouter";
+import type {
+  NotesPreparedSelectionAuthority,
+  UseNotesWorkspaceResult
+} from "./useNotesWorkspace";
 
 const outlineScreenReaderInstructions = {
   draggable:
@@ -85,6 +101,16 @@ interface ImageDropPreview {
     NotesNativeImageDropEvent,
     { position: unknown }
   >["position"];
+}
+
+function exactNoteIds(
+  left: readonly NoteId[],
+  right: readonly NoteId[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((nodeId, index) => nodeId === right[index])
+  );
 }
 
 interface ImagePasteExecutionScope {
@@ -227,7 +253,13 @@ const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates };
 
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
-  const { actions, retryLastFailedWrite } = useNotesActions();
+  const {
+    actions,
+    applyPreparedSelectionBatch,
+    isPreparedSelectionAuthorityCurrent,
+    prepareSelectionAuthority,
+    retryLastFailedWrite
+  } = useNotesActions();
   const vaultRoot = useContext(VaultRootContext);
   const {
     deletingNotesData,
@@ -240,8 +272,10 @@ export function NotesOutlinePane() {
     attachmentUploadRetryAttemptIdsByNodeId,
     draftsByNodeId,
     selection,
+    selectionRevision = 0,
     writeError
   } = useNotesDrafts();
+  const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
@@ -253,7 +287,12 @@ export function NotesOutlinePane() {
     useState<ImageDropPreview | null>(null);
   const [imageIngestError, setImageIngestError] =
     useState<ImageIngestError | null>(null);
+  const [preparedSelectionAuthority, setPreparedSelectionAuthority] =
+    useState<NotesPreparedSelectionAuthority | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const selectionToolbarRef = useRef<HTMLDivElement>(null);
+  const lastSelectionHeadRef = useRef<NoteId | null>(null);
+  const selectionAuthorityRequestRef = useRef(0);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -656,26 +695,273 @@ export function NotesOutlinePane() {
     () => structuralVisibleIdsRef.current,
     []
   );
-  // The multi-node selection range materialized against the SAME visible-row
-  // ordering keyboard nav uses, then handed to each row as an atomic `isSelected`
-  // boolean. Deriving a stable Set here (rather than passing the selection object
-  // down) keeps OutlineNodeRow's memo intact: only rows whose membership flips
-  // get a changed prop. Selection lives on the drafts slice, so rows — which read
-  // the state slice but not drafts — never re-render merely because it changed.
+  // Selection is a body-row concept. While zoomed, the page header remains in
+  // the structural order for ordinary Arrow navigation and drag geometry, but
+  // it must never become an invisible member of a selected range.
+  const bodyVisibleIds = useMemo(
+    () => bodyRows.map((row) => row.id),
+    [bodyRows]
+  );
+  const bodyVisibleIdsRef = useRef(bodyVisibleIds);
+  bodyVisibleIdsRef.current = bodyVisibleIds;
+  const getSelectionVisibleNodeIds = useCallback(
+    () => bodyVisibleIdsRef.current,
+    []
+  );
+  const materializedSelectionIds = useMemo(
+    () => selectionRangeIds(selection ?? null, bodyVisibleIds),
+    [bodyVisibleIds, selection]
+  );
+  // Hand each memoized row only an atomic membership bit. Rows that stay in or
+  // out of the range retain every prop identity across a selection update.
   const selectedIdSet = useMemo(
-    () => new Set(selectionRangeIds(selection ?? null, structuralVisibleIds)),
-    [selection, structuralVisibleIds]
+    () => new Set(materializedSelectionIds),
+    [materializedSelectionIds]
   );
   // Rows read the live selection at keydown time (to extend the head) through
   // this stable accessor, mirroring getVisibleNodeIds — the row never subscribes
   // to the selection, so its memo is preserved.
   const selectionRef = useRef(selection ?? null);
   selectionRef.current = selection ?? null;
-  const getSelection = useCallback(() => selectionRef.current, []);
-  const bodyVisibleIds = useMemo(
-    () => bodyRows.map((row) => row.id),
-    [bodyRows]
+  const getSelection = useCallback(
+    () => getLiveSelectionSnapshot?.().selection ?? selectionRef.current,
+    [getLiveSelectionSnapshot]
   );
+
+  const provisionalSelectionSnapshot = useMemo(
+    () =>
+      deriveNotesSelectionActionSnapshot({
+        selection: selection ?? null,
+        visibleNodeIds: bodyVisibleIds,
+        workspace: state,
+        authoritativeWorkspace: libraryView === "all" ? state : undefined
+      }),
+    [bodyVisibleIds, libraryView, selection, state]
+  );
+  const currentPreparedAuthority =
+    preparedSelectionAuthority &&
+    exactNoteIds(
+      preparedSelectionAuthority.selectedNodeIds,
+      materializedSelectionIds
+    ) &&
+    isPreparedSelectionAuthorityCurrent?.(preparedSelectionAuthority)
+      ? preparedSelectionAuthority
+      : null;
+  const selectionSnapshot = useMemo(
+    () =>
+      deriveNotesSelectionActionSnapshot({
+        selection: selection ?? null,
+        visibleNodeIds: bodyVisibleIds,
+        workspace: state,
+        authoritativeWorkspace:
+          libraryView === "all"
+            ? state
+            : currentPreparedAuthority?.workspace
+      }),
+    [bodyVisibleIds, currentPreparedAuthority, libraryView, selection, state]
+  );
+  if (selectionSnapshot) {
+    lastSelectionHeadRef.current = selectionSnapshot.selection.headId;
+  }
+
+  // The preparation API intentionally allows overlapping callers. This pane
+  // adds latest-request ownership so a late result for an older visible range
+  // can never hydrate the current toolbar.
+  useEffect(() => {
+    const requestId = ++selectionAuthorityRequestRef.current;
+    setPreparedSelectionAuthority(null);
+    if (
+      !provisionalSelectionSnapshot ||
+      materializedSelectionIds.length === 0 ||
+      !prepareSelectionAuthority ||
+      !isPreparedSelectionAuthorityCurrent
+    ) {
+      return;
+    }
+    const expectedIds = [...materializedSelectionIds];
+    const expectedRevision = selectionRevision;
+    void (async () => {
+      if (!(await actions.flushAllDrafts())) {
+        return;
+      }
+      if (
+        selectionAuthorityRequestRef.current !== requestId ||
+        selectionRevisionRef.current !== expectedRevision ||
+        !exactNoteIds(selectionIdsRef.current, expectedIds)
+      ) {
+        return;
+      }
+      const prepared = await prepareSelectionAuthority(expectedIds);
+      if (
+        selectionAuthorityRequestRef.current === requestId &&
+        selectionRevisionRef.current === expectedRevision &&
+        exactNoteIds(selectionIdsRef.current, expectedIds) &&
+        exactNoteIds(prepared.selectedNodeIds, expectedIds) &&
+        prepared.selectionRevision === expectedRevision &&
+        isPreparedSelectionAuthorityCurrent(prepared)
+      ) {
+        setPreparedSelectionAuthority(prepared);
+      }
+    })().catch(() => {
+      // The provisional snapshot remains mounted with explicit disabled
+      // reasons. The shared router reports command-time failures.
+    });
+  }, [
+    actions,
+    isPreparedSelectionAuthorityCurrent,
+    materializedSelectionIds,
+    prepareSelectionAuthority,
+    provisionalSelectionSnapshot,
+    selectionRevision
+  ]);
+
+  const selectionIdsRef = useRef(materializedSelectionIds);
+  selectionIdsRef.current = materializedSelectionIds;
+  const selectionRevisionRef = useRef(selectionRevision);
+  selectionRevisionRef.current = selectionRevision;
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const libraryViewRef = useRef(libraryView);
+  libraryViewRef.current = libraryView;
+  const currentPreparedAuthorityRef = useRef(currentPreparedAuthority);
+  currentPreparedAuthorityRef.current = currentPreparedAuthority;
+  const projectionVisibilityRef = useRef({
+    locallyExpandedNodeIds,
+    showCompleted,
+    zoomRootId: state.zoomRootId
+  });
+  projectionVisibilityRef.current = {
+    locallyExpandedNodeIds,
+    showCompleted,
+    zoomRootId: state.zoomRootId
+  };
+  const getProjectedSelectionVisibleIds = useCallback(
+    (projectedWorkspace: UseNotesWorkspaceResult["state"]): readonly NoteId[] => {
+      const visibility = projectionVisibilityRef.current;
+      const zoomRootId =
+        visibility.zoomRootId !== null &&
+        projectedWorkspace.nodesById[visibility.zoomRootId]
+          ? visibility.zoomRootId
+          : null;
+      const allRows = flattenVisibleOutlineRows(
+        projectedWorkspace,
+        zoomRootId,
+        visibility.locallyExpandedNodeIds
+      );
+      const rows = visibility.showCompleted
+        ? allRows
+        : hideCompletedSubtrees(
+            allRows,
+            projectedWorkspace.nodesById,
+            zoomRootId
+          );
+      return deriveOutlineBodyRows(rows, zoomRootId).map((row) => row.id);
+    },
+    []
+  );
+  const focusBodyTitle = useCallback((nodeId: NoteId): void => {
+    const row = Array.from(
+      contentRef.current?.querySelectorAll<HTMLElement>("[data-outline-id]") ??
+        []
+    ).find((candidate) => candidate.dataset.outlineId === nodeId);
+    row?.querySelector<HTMLTextAreaElement>("textarea.notes-node-title")?.focus();
+  }, []);
+  const writeSelectionClipboard = useCallback(
+    (text: string) =>
+      writeNotesClipboardText(text, {
+        clipboard: navigator.clipboard,
+        ClipboardItem:
+          typeof ClipboardItem === "undefined" ? undefined : ClipboardItem,
+        Blob: typeof Blob === "undefined" ? undefined : Blob
+      }),
+    []
+  );
+  const selectionRouter = useNotesSelectionCommandRouter({
+    getSnapshot: () => {
+      const live = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      const visibleNodeIds = bodyVisibleIdsRef.current;
+      const selectedNodeIds = selectionRangeIds(
+        live.selection,
+        visibleNodeIds
+      );
+      const prepared = currentPreparedAuthorityRef.current;
+      const authoritativeWorkspace =
+        libraryViewRef.current === "all"
+          ? stateRef.current
+          : prepared &&
+              prepared.selectionRevision === live.revision &&
+              exactNoteIds(prepared.selectedNodeIds, selectedNodeIds) &&
+              (isPreparedSelectionAuthorityCurrent?.(prepared) ?? false)
+            ? prepared.workspace
+            : undefined;
+      return deriveNotesSelectionActionSnapshot({
+        selection: live.selection,
+        visibleNodeIds,
+        workspace: stateRef.current,
+        authoritativeWorkspace
+      });
+    },
+    getSelectionRevision: () =>
+      getLiveSelectionSnapshot?.().revision ?? selectionRevisionRef.current,
+    getVisibleNodeIds: getProjectedSelectionVisibleIds,
+    flushDrafts: actions.flushAllDrafts,
+    prepareAuthority: (nodeIds) => {
+      if (!prepareSelectionAuthority) {
+        return Promise.reject(new Error("Selection authority is unavailable."));
+      }
+      return prepareSelectionAuthority(nodeIds);
+    },
+    isAuthorityCurrent: (authority) =>
+      isPreparedSelectionAuthorityCurrent?.(authority) ?? false,
+    applyBatch: (authority, op, options) => {
+      if (!applyPreparedSelectionBatch) {
+        return Promise.reject(new Error("Selection batch actions are unavailable."));
+      }
+      return applyPreparedSelectionBatch(authority, op, options);
+    },
+    replaceSelection: (nextSelection, expectedRevision) =>
+      actions.replaceSelection?.(nextSelection, expectedRevision) ?? false,
+    focusNode: focusBodyTitle,
+    writeClipboard: writeSelectionClipboard
+  });
+  const executeSelectionCommand = selectionRouter.execute;
+
+  const executeSelectionAction = useCallback(
+    async (action: NotesSelectionActionBarAction): Promise<void> => {
+      let intent: NotesSelectionCommandIntent | null = null;
+      switch (action) {
+        case "toggleComplete":
+          intent = { type: "complete" };
+          break;
+        case "moveUp":
+        case "moveDown":
+        case "indent":
+        case "outdent":
+        case "duplicate":
+        case "copy":
+        case "cut":
+        case "delete":
+          intent = { type: action };
+          break;
+        case "moveTo":
+        case "tags":
+          break;
+      }
+      if (intent) {
+        await executeSelectionCommand(intent);
+      }
+    },
+    [executeSelectionCommand]
+  );
+  const returnFocusToSelectionHead = useCallback(() => {
+    const headId = lastSelectionHeadRef.current;
+    if (headId !== null) {
+      focusBodyTitle(headId);
+    }
+  }, [focusBodyTitle]);
   const bodyDropPreview =
     dropPreview && state.zoomRootId !== null
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
@@ -840,47 +1126,69 @@ export function NotesOutlinePane() {
         }
       >
         <TooltipProvider>
-        <div className="notes-outline-toolbar">
-          <NotesBreadcrumb
-            disabled={deletingNotesData}
-            trashView={trashView}
-            onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+        {selectionSnapshot ? (
+          <NotesSelectionActionBar
+            ref={selectionToolbarRef}
+            snapshot={selectionSnapshot}
+            busy={selectionRouter.busy}
+            mutationDisabledReason={
+              deletingNotesData
+                ? "Notes data is being deleted."
+                : lifecycleReadOnly
+                  ? "Selection actions are unavailable in Archive or Trash."
+                  : writeError
+                    ? "Retry the failed save before changing notes."
+                    : null
+            }
+            status={selectionRouter.status}
+            error={selectionRouter.error}
+            onAction={executeSelectionAction}
+            onClearSelection={actions.clearSelection}
+            onReturnFocus={returnFocusToSelectionHead}
           />
-          <IconTooltip
-            label={showCompleted ? "Hide completed" : "Show completed"}
-            side="bottom"
-          >
-            <button
-              className="notes-completed-toggle"
-              type="button"
-              aria-label="Completed items"
-              aria-pressed={showCompleted}
-              disabled={deletingNotesData || lifecycleReadOnly}
-              onClick={() => setShowCompleted((visible) => !visible)}
+        ) : (
+          <div className="notes-outline-toolbar">
+            <NotesBreadcrumb
+              disabled={deletingNotesData}
+              trashView={trashView}
+              onRequestEmptyTrash={() => setEmptyTrashConfirmOpen(true)}
+            />
+            <IconTooltip
+              label={showCompleted ? "Hide completed" : "Show completed"}
+              side="bottom"
             >
-              <ListChecks size={16} aria-hidden="true" />
-            </button>
-          </IconTooltip>
-          <NotesExportMenu
-            selectedNodeId={state.selectedId}
-            selectedNodeTitle={
-              state.selectedId === null
-                ? undefined
-                : (draftsByNodeId[state.selectedId]?.title ??
-                  state.nodesById[state.selectedId]?.title)
-            }
-            zoomRootId={state.zoomRootId}
-            zoomRootTitle={
-              state.zoomRootId === null
-                ? undefined
-                : (draftsByNodeId[state.zoomRootId]?.title ??
-                  state.nodesById[state.zoomRootId]?.title)
-            }
-            onFlushDrafts={actions.flushAllDrafts}
-            disabled={deletingNotesData || lifecycleReadOnly}
-            loading={state.status === "loading"}
-          />
-        </div>
+              <button
+                className="notes-completed-toggle"
+                type="button"
+                aria-label="Completed items"
+                aria-pressed={showCompleted}
+                disabled={deletingNotesData || lifecycleReadOnly}
+                onClick={() => setShowCompleted((visible) => !visible)}
+              >
+                <ListChecks size={16} aria-hidden="true" />
+              </button>
+            </IconTooltip>
+            <NotesExportMenu
+              selectedNodeId={state.selectedId}
+              selectedNodeTitle={
+                state.selectedId === null
+                  ? undefined
+                  : (draftsByNodeId[state.selectedId]?.title ??
+                    state.nodesById[state.selectedId]?.title)
+              }
+              zoomRootId={state.zoomRootId}
+              zoomRootTitle={
+                state.zoomRootId === null
+                  ? undefined
+                  : (draftsByNodeId[state.zoomRootId]?.title ??
+                    state.nodesById[state.zoomRootId]?.title)
+              }
+              onFlushDrafts={actions.flushAllDrafts}
+              disabled={deletingNotesData || lifecycleReadOnly}
+              loading={state.status === "loading"}
+            />
+          </div>
+        )}
         {writeError && (
           <div
             className="notes-inline-error notes-write-error-banner"
@@ -989,7 +1297,9 @@ export function NotesOutlinePane() {
                       ancestorGuideDepths={row.ancestorGuideDepths}
                       visibleDescendantEndId={row.visibleDescendantEndId}
                       getVisibleNodeIds={getVisibleNodeIds}
+                      getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
                       getSelection={getSelection}
+                      onSelectionAction={executeSelectionAction}
                       isSelected={selectedIdSet.has(row.id)}
                       draft={draftsByNodeId[row.id]}
                       attachmentUploadError={

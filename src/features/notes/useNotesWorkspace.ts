@@ -264,6 +264,11 @@ export interface NotesWorkspaceActions {
     selection: NotesSelection | null,
     expectedRevision?: number
   ): boolean;
+  /** Synchronous ownership read for same-turn selection commands. */
+  getSelectionSnapshot?(): Readonly<{
+    selection: NotesSelection | null;
+    revision: number;
+  }>;
 }
 
 export type NotesLibraryView =
@@ -2224,6 +2229,13 @@ export function useNotesWorkspace({
       ),
     [updateSelection]
   );
+  const getSelectionSnapshot = useCallback(
+    () => ({
+      selection: selectionRef.current,
+      revision: selectionRevisionRef.current
+    }),
+    []
+  );
 
   // The draft pipeline lives in NotesDraftEngine; these are thin, stable
   // delegators onto the currently active engine so action identity never churns.
@@ -3587,7 +3599,8 @@ export function useNotesWorkspace({
       setSelectionAnchor,
       extendSelectionTo,
       clearSelection,
-      replaceSelection
+      replaceSelection,
+      getSelectionSnapshot
     };
   }, [
     acknowledgeFocus,
@@ -3635,7 +3648,8 @@ export function useNotesWorkspace({
     setSelectionAnchor,
     extendSelectionTo,
     clearSelection,
-    replaceSelection
+    replaceSelection,
+    getSelectionSnapshot
   ]);
 
   const isPreparedSelectionAuthorityCurrent = useCallback(
