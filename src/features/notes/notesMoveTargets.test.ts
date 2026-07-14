@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { NoteNode } from "../../domain/notes";
-import { buildNotesMoveDestinations } from "./notesMoveTargets";
+import {
+  buildNotesMoveDestinations,
+  hasValidNotesMoveDestination
+} from "./notesMoveTargets";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -64,5 +67,42 @@ describe("buildNotesMoveDestinations", () => {
       { id: null, label: "Top level", depth: 0 },
       { id: "available", label: "Available", depth: 0 }
     ]);
+  });
+});
+
+describe("hasValidNotesMoveDestination", () => {
+  it("rejects the no-op top-level destination for the sole selected subtree", () => {
+    const nodes = [
+      node({ id: "only", sortKey: 1 }),
+      node({ id: "child", parentId: "only", sortKey: 1 })
+    ];
+    const nodesById = Object.fromEntries(nodes.map((item) => [item.id, item]));
+
+    expect(hasValidNotesMoveDestination(nodesById, "only")).toBe(false);
+    expect(hasValidNotesMoveDestination(nodesById, ["only"])).toBe(false);
+  });
+
+  it("treats an already-last contiguous top-level block as a no-op", () => {
+    const nodes = [
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "b", sortKey: 2 })
+    ];
+    const nodesById = Object.fromEntries(nodes.map((item) => [item.id, item]));
+
+    expect(hasValidNotesMoveDestination(nodesById, ["a", "b"])).toBe(false);
+  });
+
+  it("accepts selections whose roots currently have mixed parents", () => {
+    const nodes = [
+      node({ id: "left-parent", sortKey: 1 }),
+      node({ id: "left", parentId: "left-parent" }),
+      node({ id: "right-parent", sortKey: 2 }),
+      node({ id: "right", parentId: "right-parent" })
+    ];
+    const nodesById = Object.fromEntries(nodes.map((item) => [item.id, item]));
+
+    expect(hasValidNotesMoveDestination(nodesById, ["left", "right"])).toBe(
+      true
+    );
   });
 });

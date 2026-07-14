@@ -110,6 +110,8 @@ export interface ResolveOutlineKeyInput {
   nodeId: NoteId;
   platform: OutlineShortcutPlatform;
   workspace: NormalizedNotesWorkspace;
+  /** Explicit complete active workspace for every selection structural action. */
+  authoritativeWorkspace?: NormalizedNotesWorkspace;
   visibleNodeIds?: readonly NoteId[];
   // The live multi-node selection, if any. Shift+Arrow extends the head from
   // here; Escape clears only when a selection exists (so a bare Escape keeps its
@@ -218,7 +220,8 @@ export function resolveOutlineKey(
       deriveNotesSelectionActionSnapshot({
         selection: input.selection ?? null,
         visibleNodeIds: selectionVisibleIds,
-        workspace: input.workspace
+        workspace: input.workspace,
+        authoritativeWorkspace: input.authoritativeWorkspace
       });
     if (
       !input.repeat &&
@@ -245,11 +248,15 @@ export function resolveOutlineKey(
       primaryModifierPressed
     ) {
       const snapshot = selectionSnapshot();
-      return !snapshot
+      if (!snapshot) {
+        return null;
+      }
+      const targets = snapshot.eligibility.delete;
+      return !targets.eligible
         ? null
         : {
             type: "batchDelete",
-            nodeIds: snapshot.structuralRootIds,
+            nodeIds: targets.nodeIds,
             focusNodeId: snapshot.deleteFocusNodeId
           };
     }
@@ -266,17 +273,18 @@ export function resolveOutlineKey(
       }
       if (!input.shiftKey) {
         return snapshot.eligibility.indent.eligible
-          ? { type: "batchIndent", nodeIds: snapshot.structuralRootIds }
+          ? {
+              type: "batchIndent",
+              nodeIds: snapshot.eligibility.indent.nodeIds
+            }
           : null;
       }
-      if (!snapshot.eligibility.outdent.eligible) {
-        return null;
-      }
-      const eligibleRootIds = snapshot.structuralRootIds.filter((nodeId) => {
-        const parentId = input.workspace.nodesById[nodeId].parentId;
-        return parentId !== null && parentId !== input.workspace.zoomRootId;
-      });
-      return { type: "batchOutdent", nodeIds: eligibleRootIds };
+      return snapshot.eligibility.outdent.eligible
+        ? {
+            type: "batchOutdent",
+            nodeIds: snapshot.eligibility.outdent.nodeIds
+          }
+        : null;
     }
     if (
       !input.repeat &&
@@ -288,7 +296,7 @@ export function resolveOutlineKey(
       return snapshot?.eligibility.duplicate.eligible
         ? {
             type: "batchDuplicate",
-            nodeIds: snapshot.structuralRootIds
+            nodeIds: snapshot.eligibility.duplicate.nodeIds
           }
         : null;
     }
@@ -310,7 +318,7 @@ export function resolveOutlineKey(
       return eligibility.eligible
         ? {
             type: "batchReorder",
-            nodeIds: snapshot.structuralRootIds,
+            nodeIds: eligibility.nodeIds,
             parentId: eligibility.target.parentId,
             afterId: eligibility.target.afterId
           }
@@ -335,13 +343,15 @@ export function resolveOutlineKey(
         return null;
       }
       if (input.key.toLowerCase() === "c") {
-        return {
-          type: "selectionCopy",
-          nodeIds: snapshot.structuralRootIds
-        };
+        return snapshot.eligibility.copy.eligible
+          ? {
+              type: "selectionCopy",
+              nodeIds: snapshot.eligibility.copy.nodeIds
+            }
+          : null;
       }
       return snapshot.eligibility.cut.eligible
-        ? { type: "selectionCut", nodeIds: snapshot.structuralRootIds }
+        ? { type: "selectionCut", nodeIds: snapshot.eligibility.cut.nodeIds }
         : null;
     }
   }

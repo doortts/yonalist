@@ -1,4 +1,5 @@
-import type { NoteId } from "../../domain/notes";
+import type { NoteId, NoteNode } from "../../domain/notes";
+import { hasValidNotesMoveDestination } from "./notesMoveTargets";
 import {
   selectionRangeIds,
   type NormalizedNotesWorkspace,
@@ -7,9 +8,23 @@ import {
 
 export type NotesSelectionCompletion = "none" | "mixed" | "all";
 
-export type NotesSelectionEligibility =
-  | Readonly<{ eligible: true }>
-  | Readonly<{ eligible: false; reason: string }>;
+export type NotesSelectionUnavailable = Readonly<{
+  eligible: false;
+  reason: string;
+}>;
+
+export type NotesSelectionTargetEligibility<
+  Details extends object = Record<never, never>
+> =
+  | Readonly<
+      {
+        eligible: true;
+        nodeIds: readonly NoteId[];
+      } & Details
+    >
+  | NotesSelectionUnavailable;
+
+export type NotesSelectionEligibility = NotesSelectionTargetEligibility;
 
 export interface NotesSelectionMoveTarget {
   readonly parentId: NoteId | null;
@@ -17,14 +32,14 @@ export interface NotesSelectionMoveTarget {
 }
 
 export type NotesSelectionReorderEligibility =
-  | Readonly<{
-      eligible: true;
-      target: Readonly<NotesSelectionMoveTarget>;
-    }>
-  | Readonly<{ eligible: false; reason: string }>;
+  NotesSelectionTargetEligibility<{
+    readonly target: Readonly<NotesSelectionMoveTarget>;
+  }>;
 
 export interface NotesSelectionActionEligibility {
+  readonly copy: NotesSelectionEligibility;
   readonly cut: NotesSelectionEligibility;
+  readonly delete: NotesSelectionEligibility;
   readonly duplicate: NotesSelectionEligibility;
   readonly indent: NotesSelectionEligibility;
   readonly outdent: NotesSelectionEligibility;
@@ -51,12 +66,165 @@ export interface DeriveNotesSelectionActionSnapshotInput {
   readonly selection: NotesSelection | null;
   readonly visibleNodeIds: readonly NoteId[];
   readonly workspace: NormalizedNotesWorkspace;
+  /**
+   * Explicit complete active-tree source. A filtered/scoped projection is
+   * never assumed complete when this value is absent.
+   */
+  readonly authoritativeWorkspace?: NormalizedNotesWorkspace;
 }
 
-const ELIGIBLE: NotesSelectionEligibility = Object.freeze({ eligible: true });
+const COMPLETE_STRUCTURE_REASON =
+  "This action requires the complete active workspace.";
 
-function unavailable(reason: string): NotesSelectionEligibility {
+function unavailable(reason: string): NotesSelectionUnavailable {
   return Object.freeze({ eligible: false, reason });
+}
+
+function eligibleTargets(
+  nodeIds: readonly NoteId[]
+): NotesSelectionEligibility {
+  return Object.freeze({
+    eligible: true,
+    nodeIds: Object.freeze([...nodeIds])
+  });
+}
+
+function eligibleReorder(
+  nodeIds: readonly NoteId[],
+  target: NotesSelectionMoveTarget
+): NotesSelectionReorderEligibility {
+  return Object.freeze({
+    eligible: true,
+    nodeIds: Object.freeze([...nodeIds]),
+    target: Object.freeze({ ...target })
+  });
+}
+
+function compareNodes(left: NoteNode, right: NoteNode): number {
+  return left.sortKey - right.sortKey || left.id.localeCompare(right.id);
+}
+
+function sameIds(
+  actual: readonly NoteId[],
+  expected: readonly NoteId[]
+): boolean {
+  return (
+    actual.length === expected.length &&
+    actual.every((nodeId, index) => nodeId === expected[index])
+  );
+}
+
+function isCompleteActiveAuthority(
+  projection: NormalizedNotesWorkspace,
+  authority: NormalizedNotesWorkspace | undefined
+): authority is NormalizedNotesWorkspace {
+  if (!authority || authority.status !== "ready") {
+    return false;
+  }
+
+  const nodes = Object.values(authority.nodesById);
+  const expectedRootIds = nodes
+    .filter((node) => node.parentId === null)
+    .sort(compareNodes)
+    .map((node) => node.id);
+  if (!sameIds(authority.rootIds, expectedRootIds)) {
+    return false;
+  }
+
+  const expectedChildren = new Map<NoteId, NoteNode[]>();
+  for (const node of nodes) {
+    if (
+      node.deletedAt !== null ||
+      node.archivedAt !== null ||
+      node.archiveRootId !== null
+    ) {
+      return false;
+    }
+    if (node.parentId === null) {
+      continue;
+    }
+    if (!authority.nodesById[node.parentId]) {
+      return false;
+    }
+    const siblings = expectedChildren.get(node.parentId) ?? [];
+    siblings.push(node);
+    expectedChildren.set(node.parentId, siblings);
+  }
+
+  const actualParentIds = Object.keys(authority.childIdsByParent);
+  if (actualParentIds.length !== expectedChildren.size) {
+    return false;
+  }
+  for (const [parentId, children] of expectedChildren) {
+    const expectedIds = children.sort(compareNodes).map((node) => node.id);
+    if (!sameIds(authority.childIdsByParent[parentId] ?? [], expectedIds)) {
+      return false;
+    }
+  }
+
+  const resolved = new Set<NoteId>();
+  for (const node of nodes) {
+    const path = new Set<NoteId>();
+    let current: NoteNode | undefined = node;
+    while (current && !resolved.has(current.id)) {
+      if (path.has(current.id)) {
+        return false;
+      }
+      path.add(current.id);
+      current =
+        current.parentId === null
+          ? undefined
+          : authority.nodesById[current.parentId];
+    }
+    for (const nodeId of path) {
+      resolved.add(nodeId);
+    }
+  }
+
+  for (const projected of Object.values(projection.nodesById)) {
+    const authoritative = authority.nodesById[projected.id];
+    if (
+      !authoritative ||
+      authoritative.parentId !== projected.parentId ||
+      authoritative.sortKey !== projected.sortKey ||
+      authoritative.title !== projected.title ||
+      authoritative.note !== projected.note ||
+      authoritative.deletedAt !== projected.deletedAt ||
+      authoritative.archivedAt !== projected.archivedAt ||
+      authoritative.archiveRootId !== projected.archiveRootId
+    ) {
+      return false;
+    }
+  }
+
+  for (const [nodeId, projectedAttachments] of Object.entries(
+    projection.attachmentsByNodeId
+  )) {
+    const authoritativeIds = new Set(
+      (authority.attachmentsByNodeId[nodeId] ?? []).map(
+        (attachment) => attachment.id
+      )
+    );
+    if (
+      projectedAttachments.some(
+        (attachment) => !authoritativeIds.has(attachment.id)
+      )
+    ) {
+      return false;
+    }
+  }
+  for (const [nodeId, attachments] of Object.entries(
+    authority.attachmentsByNodeId
+  )) {
+    if (
+      !authority.nodesById[nodeId] ||
+      attachments.some((attachment) => attachment.nodeId !== nodeId)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function hasSelectedAncestor(
@@ -135,6 +303,7 @@ function deleteFocusCandidate(
 }
 
 function cutEligibility(
+  rootIds: readonly NoteId[],
   subtreeIds: ReadonlySet<NoteId>,
   workspace: NormalizedNotesWorkspace
 ): NotesSelectionEligibility {
@@ -156,7 +325,7 @@ function cutEligibility(
       );
     }
   }
-  return ELIGIBLE;
+  return eligibleTargets(rootIds);
 }
 
 function sharedParentId(
@@ -176,7 +345,7 @@ function duplicateEligibility(
   workspace: NormalizedNotesWorkspace
 ): NotesSelectionEligibility {
   return sharedParentId(rootIds, workspace).shared
-    ? ELIGIBLE
+    ? eligibleTargets(rootIds)
     : unavailable("Duplicate requires selected roots that share one parent.");
 }
 
@@ -187,7 +356,7 @@ function indentEligibility(
 ): NotesSelectionEligibility {
   const selectedRoots = new Set(rootIds);
   const visible = new Set(visibleNodeIds);
-  const canIndent = rootIds.some((nodeId) => {
+  const eligibleRootIds = rootIds.filter((nodeId) => {
     const node = workspace.nodesById[nodeId];
     const siblings =
       node.parentId === null
@@ -199,8 +368,8 @@ function indentEligibility(
     }
     return index >= 0 && visible.has(siblings[index]);
   });
-  return canIndent
-    ? ELIGIBLE
+  return eligibleRootIds.length > 0
+    ? eligibleTargets(eligibleRootIds)
     : unavailable(
         "Indent requires a visible preceding sibling outside the selection."
       );
@@ -208,14 +377,15 @@ function indentEligibility(
 
 function outdentEligibility(
   rootIds: readonly NoteId[],
-  workspace: NormalizedNotesWorkspace
+  workspace: NormalizedNotesWorkspace,
+  zoomRootId: NoteId | null
 ): NotesSelectionEligibility {
-  const canOutdent = rootIds.some((nodeId) => {
+  const eligibleRootIds = rootIds.filter((nodeId) => {
     const parentId = workspace.nodesById[nodeId].parentId;
-    return parentId !== null && parentId !== workspace.zoomRootId;
+    return parentId !== null && parentId !== zoomRootId;
   });
-  return canOutdent
-    ? ELIGIBLE
+  return eligibleRootIds.length > 0
+    ? eligibleTargets(eligibleRootIds)
     : unavailable(
         "Outdent cannot move the selected roots outside the current zoom."
       );
@@ -258,6 +428,12 @@ function reorderEligibility(
       reason: "The selection is already first among its siblings."
     });
   }
+  if (direction === "up" && firstIndex === 1) {
+    return Object.freeze({
+      eligible: false,
+      reason: "Moving this selection first is unavailable."
+    });
+  }
   if (direction === "down" && lastIndex === siblings.length - 1) {
     return Object.freeze({
       eligible: false,
@@ -269,9 +445,9 @@ function reorderEligibility(
     direction === "up"
       ? (siblings[firstIndex - 2] ?? null)
       : siblings[lastIndex + 1];
-  return Object.freeze({
-    eligible: true,
-    target: Object.freeze({ parentId: parent.parentId, afterId })
+  return eligibleReorder(rootIds, {
+    parentId: parent.parentId,
+    afterId
   });
 }
 
@@ -290,33 +466,86 @@ export function deriveNotesSelectionActionSnapshot(
     return null;
   }
 
+  const completion = completionAggregate(selectedNodeIds, input.workspace);
+  const authoritativeWorkspace = input.authoritativeWorkspace;
+  if (!isCompleteActiveAuthority(input.workspace, authoritativeWorkspace)) {
+    const eligibility = Object.freeze({
+      copy: unavailable(COMPLETE_STRUCTURE_REASON),
+      cut: unavailable(COMPLETE_STRUCTURE_REASON),
+      delete: unavailable(COMPLETE_STRUCTURE_REASON),
+      duplicate: unavailable(COMPLETE_STRUCTURE_REASON),
+      indent: unavailable(COMPLETE_STRUCTURE_REASON),
+      outdent: unavailable(COMPLETE_STRUCTURE_REASON),
+      moveUp: unavailable(COMPLETE_STRUCTURE_REASON),
+      moveDown: unavailable(COMPLETE_STRUCTURE_REASON),
+      moveTo: unavailable(COMPLETE_STRUCTURE_REASON)
+    });
+    return Object.freeze({
+      selection: Object.freeze({ ...input.selection }),
+      selectedNodeIds: Object.freeze([...selectedNodeIds]),
+      structuralRootIds: Object.freeze([]),
+      completion,
+      deleteFocusNodeId: null,
+      eligibility
+    });
+  }
+
   const selectedSet = new Set(selectedNodeIds);
   const structuralRootIds = selectedNodeIds.filter(
-    (nodeId) => !hasSelectedAncestor(nodeId, selectedSet, input.workspace)
+    (nodeId) =>
+      !hasSelectedAncestor(nodeId, selectedSet, authoritativeWorkspace)
   );
   const deletedSubtreeIds = collectSubtreeIds(
     structuralRootIds,
-    input.workspace
+    authoritativeWorkspace
   );
   const eligibility = Object.freeze({
-    cut: cutEligibility(deletedSubtreeIds, input.workspace),
-    duplicate: duplicateEligibility(structuralRootIds, input.workspace),
+    copy: eligibleTargets(structuralRootIds),
+    cut: cutEligibility(
+      structuralRootIds,
+      deletedSubtreeIds,
+      authoritativeWorkspace
+    ),
+    delete: eligibleTargets(structuralRootIds),
+    duplicate: duplicateEligibility(
+      structuralRootIds,
+      authoritativeWorkspace
+    ),
     indent: indentEligibility(
       structuralRootIds,
       input.visibleNodeIds,
-      input.workspace
+      authoritativeWorkspace
     ),
-    outdent: outdentEligibility(structuralRootIds, input.workspace),
-    moveUp: reorderEligibility(structuralRootIds, input.workspace, "up"),
-    moveDown: reorderEligibility(structuralRootIds, input.workspace, "down"),
-    moveTo: ELIGIBLE
+    outdent: outdentEligibility(
+      structuralRootIds,
+      authoritativeWorkspace,
+      input.workspace.zoomRootId
+    ),
+    moveUp: reorderEligibility(
+      structuralRootIds,
+      authoritativeWorkspace,
+      "up"
+    ),
+    moveDown: reorderEligibility(
+      structuralRootIds,
+      authoritativeWorkspace,
+      "down"
+    ),
+    moveTo: hasValidNotesMoveDestination(
+      authoritativeWorkspace.nodesById,
+      structuralRootIds
+    )
+      ? eligibleTargets(structuralRootIds)
+      : unavailable(
+          "Move To requires a destination that would change the selection."
+        )
   });
 
   return Object.freeze({
     selection: Object.freeze({ ...input.selection }),
     selectedNodeIds: Object.freeze([...selectedNodeIds]),
     structuralRootIds: Object.freeze([...structuralRootIds]),
-    completion: completionAggregate(selectedNodeIds, input.workspace),
+    completion,
     deleteFocusNodeId: deleteFocusCandidate(
       selectedNodeIds,
       input.visibleNodeIds,

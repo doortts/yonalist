@@ -42,12 +42,26 @@ function insideAnySubtree(
   return false;
 }
 
+function movingRootIds(
+  movingNodeIds: NoteId | readonly NoteId[]
+): readonly NoteId[] {
+  return typeof movingNodeIds === "string" ? [movingNodeIds] : movingNodeIds;
+}
+
+function activeChildren(
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  parentId: NoteId | null
+): NoteNode[] {
+  return Object.values(nodesById)
+    .filter((node) => isActiveMoveNode(node) && node.parentId === parentId)
+    .sort(compareMoveNodes);
+}
+
 export function buildNotesMoveDestinations(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
   movingNodeIds: NoteId | readonly NoteId[]
 ): NotesMoveDestination[] {
-  const movingRoots =
-    typeof movingNodeIds === "string" ? [movingNodeIds] : movingNodeIds;
+  const movingRoots = movingRootIds(movingNodeIds);
   const movingRootSet = new Set(movingRoots);
   const childrenByParent = new Map<NoteId | null, NoteNode[]>();
   for (const node of Object.values(nodesById)) {
@@ -92,6 +106,45 @@ export function buildNotesMoveDestinations(
   return destinations;
 }
 
+/**
+ * Returns whether the destination picker can offer at least one legal target
+ * that changes parent or stored sibling order. The selected roots and all of
+ * their descendants are excluded through {@link buildNotesMoveDestinations};
+ * moving an already-last contiguous block back to the same parent is a no-op.
+ */
+export function hasValidNotesMoveDestination(
+  nodesById: Readonly<Record<NoteId, NoteNode>>,
+  movingNodeIds: NoteId | readonly NoteId[]
+): boolean {
+  const roots = [...movingRootIds(movingNodeIds)];
+  const rootSet = new Set(roots);
+  if (
+    roots.length === 0 ||
+    rootSet.size !== roots.length ||
+    roots.some((nodeId) => !isActiveMoveNode(nodesById[nodeId]))
+  ) {
+    return false;
+  }
+
+  return buildNotesMoveDestinations(nodesById, roots).some((destination) => {
+    if (roots.some((nodeId) => nodesById[nodeId].parentId !== destination.id)) {
+      return true;
+    }
+
+    const currentOrder = activeChildren(nodesById, destination.id).map(
+      (node) => node.id
+    );
+    const resultingOrder = [
+      ...currentOrder.filter((nodeId) => !rootSet.has(nodeId)),
+      ...roots
+    ];
+    return (
+      currentOrder.length !== resultingOrder.length ||
+      currentOrder.some((nodeId, index) => nodeId !== resultingOrder[index])
+    );
+  });
+}
+
 export function buildNotesMoveNodeInput(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
   movingNodeId: NoteId,
@@ -110,11 +163,7 @@ export function buildNotesMoveNodeInput(
   ) {
     return null;
   }
-  const siblings = Object.values(nodesById)
-    .filter(
-      (node) => isActiveMoveNode(node) && node.parentId === destinationId
-    )
-    .sort(compareMoveNodes);
+  const siblings = activeChildren(nodesById, destinationId);
   if (
     moving.parentId === destinationId &&
     siblings[siblings.length - 1]?.id === movingNodeId

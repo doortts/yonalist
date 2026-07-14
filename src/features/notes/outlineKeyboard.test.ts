@@ -50,6 +50,7 @@ const tree = normalizeWorkspace(
 function input(
   overrides: Partial<ResolveOutlineKeyInput> = {}
 ): ResolveOutlineKeyInput {
+  const workspace = overrides.workspace ?? tree;
   return {
     target: "title",
     key: "Enter",
@@ -65,7 +66,8 @@ function input(
     note: "",
     nodeId: "root-a",
     platform: "other",
-    workspace: tree,
+    workspace,
+    authoritativeWorkspace: workspace,
     ...overrides
   };
 }
@@ -1167,6 +1169,75 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
     ).toBeNull();
   });
 
+  it("Tab submits only the model's eligible roots across mixed parents", () => {
+    const projected = normalizeWorkspace(
+      workspace([
+        node({ id: "right-prior", parentId: "right-parent", sortKey: 1 }),
+        node({ id: "left-selected", parentId: "left-parent" }),
+        node({ id: "right-selected", parentId: "right-parent", sortKey: 2 })
+      ])
+    );
+    const authoritative = normalizeWorkspace(
+      workspace([
+        node({ id: "left-parent", sortKey: 1 }),
+        node({ id: "left-selected", parentId: "left-parent" }),
+        node({ id: "right-parent", sortKey: 2 }),
+        node({ id: "right-prior", parentId: "right-parent", sortKey: 1 }),
+        node({ id: "right-selected", parentId: "right-parent", sortKey: 2 })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          workspace: projected,
+          authoritativeWorkspace: authoritative,
+          visibleNodeIds: ["right-prior", "left-selected", "right-selected"],
+          nodeId: "left-selected",
+          selection: {
+            anchorId: "left-selected",
+            headId: "right-selected"
+          }
+        })
+      )
+    ).toEqual({ type: "batchIndent", nodeIds: ["right-selected"] });
+  });
+
+  it("Shift+Tab submits only roots that stay inside the zoom", () => {
+    const projected = {
+      ...normalizeWorkspace(
+        workspace([
+          node({ id: "at-boundary", parentId: "zoom" }),
+          node({ id: "deep", parentId: "branch" })
+        ])
+      ),
+      zoomRootId: "zoom"
+    };
+    const authoritative = normalizeWorkspace(
+      workspace([
+        node({ id: "zoom" }),
+        node({ id: "at-boundary", parentId: "zoom" }),
+        node({ id: "branch", parentId: "zoom" }),
+        node({ id: "deep", parentId: "branch" })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Tab",
+          shiftKey: true,
+          workspace: projected,
+          authoritativeWorkspace: authoritative,
+          visibleNodeIds: ["at-boundary", "deep"],
+          nodeId: "at-boundary",
+          selection: { anchorId: "at-boundary", headId: "deep" }
+        })
+      )
+    ).toEqual({ type: "batchOutdent", nodeIds: ["deep"] });
+  });
+
   it.each([
     {
       label: "Alt+Shift+D on other platforms",
@@ -1193,42 +1264,36 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
     });
   });
 
-  it.each([
-    {
-      label: "Ctrl+Shift+ArrowUp",
-      overrides: {
-        key: "ArrowUp",
-        ctrlKey: true,
-        shiftKey: true,
-        platform: "other" as const
-      },
-      target: { parentId: "root-a", afterId: null }
-    },
-    {
-      label: "Cmd+Shift+ArrowDown",
-      overrides: {
-        key: "ArrowDown",
-        metaKey: true,
-        shiftKey: true,
-        platform: "mac" as const
-      },
-      target: { parentId: "root-a", afterId: "c4" }
-    }
-  ])("routes $label to an exact one-step batch reorder", ({
-    overrides,
-    target
-  }) => {
+  it("fails a batch reorder closed when moving first is not representable", () => {
     expect(
       resolveOutlineKey(
         batchInput({
-          ...overrides,
+          key: "ArrowUp",
+          ctrlKey: true,
+          shiftKey: true,
+          platform: "other",
+          selection: { anchorId: "c2", headId: "c3" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("routes Cmd+Shift+ArrowDown to an exact one-step batch reorder", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowDown",
+          metaKey: true,
+          shiftKey: true,
+          platform: "mac",
           selection: { anchorId: "c2", headId: "c3" }
         })
       )
     ).toEqual({
       type: "batchReorder",
       nodeIds: ["c2", "c3"],
-      ...target
+      parentId: "root-a",
+      afterId: "c4"
     });
   });
 
@@ -1243,6 +1308,44 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
         })
       )
     ).toBeNull();
+  });
+
+  it("reorders across exactly one authoritative sibling omitted by the projection", () => {
+    const projected = normalizeWorkspace(
+      workspace([
+        node({ id: "a", sortKey: 1 }),
+        node({ id: "b", sortKey: 3 }),
+        node({ id: "c", sortKey: 4 })
+      ])
+    );
+    const authoritative = normalizeWorkspace(
+      workspace([
+        node({ id: "a", sortKey: 1 }),
+        node({ id: "hidden", sortKey: 2 }),
+        node({ id: "b", sortKey: 3 }),
+        node({ id: "c", sortKey: 4 })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowUp",
+          ctrlKey: true,
+          shiftKey: true,
+          workspace: projected,
+          authoritativeWorkspace: authoritative,
+          visibleNodeIds: ["a", "b", "c"],
+          nodeId: "b",
+          selection: { anchorId: "b", headId: "c" }
+        })
+      )
+    ).toEqual({
+      type: "batchReorder",
+      nodeIds: ["b", "c"],
+      parentId: null,
+      afterId: "a"
+    });
   });
 
   it.each([
@@ -1325,6 +1428,73 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
       nodeIds: ["c2", "c3"]
     });
     expect(resolveOutlineKey(batchInput({ ...shared, key: "x" }))).toBeNull();
+  });
+
+  it("rejects Cut when rich content exists only in an authoritative omitted descendant", () => {
+    const projected = normalizeWorkspace(workspace([node({ id: "selected" })]));
+    const authoritative = normalizeWorkspace(
+      workspace([
+        node({ id: "selected" }),
+        node({
+          id: "hidden-rich",
+          parentId: "selected",
+          note: "omitted supporting note"
+        })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "x",
+          ctrlKey: true,
+          selectionStart: 0,
+          selectionEnd: 0,
+          workspace: projected,
+          authoritativeWorkspace: authoritative,
+          visibleNodeIds: ["selected"],
+          nodeId: "selected",
+          selection: { anchorId: "selected", headId: "selected" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("keeps projected completion available without authoritative structure", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Enter",
+          ctrlKey: true,
+          authoritativeWorkspace: undefined
+        })
+      )
+    ).toEqual({
+      type: "batchComplete",
+      nodeIds: ["c2", "c3", "c4"],
+      completed: true
+    });
+  });
+
+  it.each([
+    ["Delete", { key: "Backspace", ctrlKey: true, shiftKey: true }],
+    ["Indent", { key: "Tab" }],
+    ["Outdent", { key: "Tab", shiftKey: true }],
+    ["Duplicate", { key: "D", altKey: true, shiftKey: true }],
+    ["Reorder", { key: "ArrowUp", ctrlKey: true, shiftKey: true }],
+    ["Copy", { key: "c", ctrlKey: true }],
+    ["Cut", { key: "x", ctrlKey: true }]
+  ])("fails selection %s closed without authoritative structure", (_label, key) => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          ...key,
+          authoritativeWorkspace: undefined,
+          selectionStart: 0,
+          selectionEnd: 0
+        })
+      )
+    ).toBeNull();
   });
 
   it.each([

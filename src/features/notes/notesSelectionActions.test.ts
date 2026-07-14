@@ -57,10 +57,12 @@ function snapshot(
   selection: NotesSelection,
   attachmentsByNodeId: NotesWorkspace["attachmentsByNodeId"] = {}
 ): NotesSelectionActionSnapshot | null {
+  const normalized = normalizeWorkspace({ nodes, attachmentsByNodeId });
   return deriveNotesSelectionActionSnapshot({
     selection,
     visibleNodeIds,
-    workspace: normalizeWorkspace({ nodes, attachmentsByNodeId })
+    workspace: normalized,
+    authoritativeWorkspace: normalized
   });
 }
 
@@ -92,6 +94,10 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     expect(Object.isFrozen(result?.selection)).toBe(true);
     expect(Object.isFrozen(result?.selectedNodeIds)).toBe(true);
     expect(Object.isFrozen(result?.structuralRootIds)).toBe(true);
+    expect(Object.isFrozen(result?.eligibility.cut)).toBe(true);
+    if (result?.eligibility.cut.eligible) {
+      expect(Object.isFrozen(result.eligibility.cut.nodeIds)).toBe(true);
+    }
 
     visibleNodeIds.reverse();
     selection.anchorId = "b";
@@ -263,7 +269,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
         anchorId: "a",
         headId: "b"
       })?.eligibility.cut
-    ).toEqual({ eligible: true });
+    ).toEqual({ eligible: true, nodeIds: ["a", "b"] });
   });
 
   it("disables Duplicate and reorder for mixed-parent structural roots", () => {
@@ -306,7 +312,10 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     });
 
     expect(result?.structuralRootIds).toEqual(["b", "d"]);
-    expect(result?.eligibility.duplicate).toEqual({ eligible: true });
+    expect(result?.eligibility.duplicate).toEqual({
+      eligible: true,
+      nodeIds: ["b", "d"]
+    });
     expect(result?.eligibility.moveUp).toEqual({
       eligible: false,
       reason: "Reorder requires contiguous selected siblings."
@@ -317,7 +326,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     });
   });
 
-  it("resolves one-step reorder targets across exactly one sibling", () => {
+  it("fails closed when moving up would require an unsupported before-first anchor", () => {
     const nodes = [
       node({ id: "parent" }),
       node({ id: "a", parentId: "parent", sortKey: 1 }),
@@ -332,11 +341,12 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.structuralRootIds).toEqual(["b", "c"]);
     expect(result?.eligibility.moveUp).toEqual({
-      eligible: true,
-      target: { parentId: "parent", afterId: null }
+      eligible: false,
+      reason: "Moving this selection first is unavailable."
     });
     expect(result?.eligibility.moveDown).toEqual({
       eligible: true,
+      nodeIds: ["b", "c"],
       target: { parentId: "parent", afterId: "d" }
     });
   });
@@ -382,6 +392,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     };
     const result = deriveNotesSelectionActionSnapshot({
       workspace,
+      authoritativeWorkspace: normalizeWorkspace({ nodes }),
       visibleNodeIds: ["first", "second"],
       selection: { anchorId: "first", headId: "first" }
     });
@@ -408,7 +419,260 @@ describe("deriveNotesSelectionActionSnapshot", () => {
       headId: "selected"
     });
 
-    expect(result?.eligibility.indent).toEqual({ eligible: true });
-    expect(result?.eligibility.outdent).toEqual({ eligible: true });
+    expect(result?.eligibility.indent).toEqual({
+      eligible: true,
+      nodeIds: ["selected"]
+    });
+    expect(result?.eligibility.outdent).toEqual({
+      eligible: true,
+      nodeIds: ["selected"]
+    });
+  });
+
+  it.each([
+    {
+      label: "a supporting note",
+      richNode: node({
+        id: "hidden-rich",
+        parentId: "selected",
+        note: "not present in the projection"
+      }),
+      attachments: {} as NonNullable<NotesWorkspace["attachmentsByNodeId"]>
+    },
+    {
+      label: "an attachment",
+      richNode: node({ id: "hidden-rich", parentId: "selected" }),
+      attachments: { "hidden-rich": [attachment("hidden-rich")] }
+    }
+  ])(
+    "uses an omitted descendant with $label to reject lossy Cut",
+    ({ richNode, attachments }) => {
+      const projectedNodes = [node({ id: "selected" }), node({ id: "next" })];
+      const projected = normalizeWorkspace({ nodes: projectedNodes });
+      const authoritative = normalizeWorkspace({
+        nodes: [projectedNodes[0], richNode, projectedNodes[1]],
+        attachmentsByNodeId: attachments
+      });
+
+      const result = deriveNotesSelectionActionSnapshot({
+        workspace: projected,
+        authoritativeWorkspace: authoritative,
+        visibleNodeIds: ["selected", "next"],
+        selection: { anchorId: "selected", headId: "selected" }
+      });
+
+      expect(result?.structuralRootIds).toEqual(["selected"]);
+      expect(result?.eligibility.cut.eligible).toBe(false);
+    }
+  );
+
+  it("uses authoritative stored siblings for indent and one-step reorder", () => {
+    const projectedNodes = [
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "b", sortKey: 3 }),
+      node({ id: "c", sortKey: 4 })
+    ];
+    const projected = normalizeWorkspace({ nodes: projectedNodes });
+    const authoritative = normalizeWorkspace({
+      nodes: [
+        projectedNodes[0],
+        node({ id: "hidden", sortKey: 2 }),
+        projectedNodes[1],
+        projectedNodes[2]
+      ]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["a", "b", "c"],
+      selection: { anchorId: "b", headId: "c" }
+    });
+
+    expect(result?.eligibility.indent).toEqual({
+      eligible: false,
+      reason: "Indent requires a visible preceding sibling outside the selection."
+    });
+    expect(result?.eligibility.moveUp).toEqual({
+      eligible: true,
+      nodeIds: ["b", "c"],
+      target: { parentId: null, afterId: "a" }
+    });
+  });
+
+  it("returns only action-eligible indent roots across mixed parents", () => {
+    const projectedNodes = [
+      node({ id: "right-prior", parentId: "right-parent" }),
+      node({ id: "left-selected", parentId: "left-parent" }),
+      node({ id: "right-selected", parentId: "right-parent" })
+    ];
+    const projected = normalizeWorkspace({ nodes: projectedNodes });
+    const authoritative = normalizeWorkspace({
+      nodes: [
+        node({ id: "left-parent", sortKey: 1 }),
+        projectedNodes[1],
+        node({ id: "right-parent", sortKey: 2 }),
+        projectedNodes[0],
+        projectedNodes[2]
+      ]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["right-prior", "left-selected", "right-selected"],
+      selection: { anchorId: "left-selected", headId: "right-selected" }
+    });
+
+    expect(result?.structuralRootIds).toEqual([
+      "left-selected",
+      "right-selected"
+    ]);
+    expect(result?.eligibility.indent).toEqual({
+      eligible: true,
+      nodeIds: ["right-selected"]
+    });
+  });
+
+  it("returns only outdent roots that stay inside the visible zoom", () => {
+    const projectedNodes = [
+      node({ id: "at-boundary", parentId: "zoom" }),
+      node({ id: "deep", parentId: "branch" })
+    ];
+    const projected = {
+      ...normalizeWorkspace({ nodes: projectedNodes }),
+      zoomRootId: "zoom"
+    };
+    const authoritative = normalizeWorkspace({
+      nodes: [
+        node({ id: "zoom" }),
+        projectedNodes[0],
+        node({ id: "branch", parentId: "zoom" }),
+        projectedNodes[1]
+      ]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["at-boundary", "deep"],
+      selection: { anchorId: "at-boundary", headId: "deep" }
+    });
+
+    expect(result?.eligibility.outdent).toEqual({
+      eligible: true,
+      nodeIds: ["deep"]
+    });
+  });
+
+  it.each([
+    ["is absent", undefined],
+    [
+      "omits one selected node",
+      normalizeWorkspace({ nodes: [node({ id: "a" })] })
+    ],
+    [
+      "is still loading",
+      {
+        ...normalizeWorkspace({ nodes: [node({ id: "a" }), node({ id: "b" })] }),
+        status: "loading" as const
+      }
+    ]
+  ])(
+    "fails structural actions closed when the authoritative workspace %s",
+    (_label, authoritativeWorkspace) => {
+      const projected = normalizeWorkspace({
+        nodes: [
+          node({ id: "a" }),
+          node({ id: "b", completedAt: "2026-07-10T00:00:00Z" })
+        ]
+      });
+      const result = deriveNotesSelectionActionSnapshot({
+        workspace: projected,
+        authoritativeWorkspace,
+        visibleNodeIds: ["a", "b"],
+        selection: { anchorId: "a", headId: "b" }
+      });
+
+      expect(result?.selectedNodeIds).toEqual(["a", "b"]);
+      expect(result?.completion).toBe("mixed");
+      expect(result?.structuralRootIds).toEqual([]);
+      expect(result?.deleteFocusNodeId).toBeNull();
+      expect(
+        Object.values(result?.eligibility ?? {}).every(
+          (eligibility) => !eligibility.eligible
+        )
+      ).toBe(true);
+    }
+  );
+
+  it.each([
+    {
+      label: "omits a projected unselected descendant",
+      projected: normalizeWorkspace({
+        nodes: [
+          node({ id: "selected" }),
+          node({ id: "known-rich", parentId: "selected", note: "known" })
+        ]
+      }),
+      authoritative: normalizeWorkspace({ nodes: [node({ id: "selected" })] })
+    },
+    {
+      label: "omits projected attachment metadata",
+      projected: normalizeWorkspace({
+        nodes: [node({ id: "selected" })],
+        attachmentsByNodeId: { selected: [attachment("selected")] }
+      }),
+      authoritative: normalizeWorkspace({ nodes: [node({ id: "selected" })] })
+    },
+    {
+      label: "has an incomplete child index",
+      projected: normalizeWorkspace({ nodes: [node({ id: "selected" })] }),
+      authoritative: (() => {
+        const workspace = normalizeWorkspace({
+          nodes: [
+            node({ id: "selected" }),
+            node({ id: "hidden-rich", parentId: "selected", note: "hidden" })
+          ]
+        });
+        return { ...workspace, childIdsByParent: {} };
+      })()
+    }
+  ])(
+    "fails structural actions closed when authority $label",
+    ({ projected, authoritative }) => {
+      const result = deriveNotesSelectionActionSnapshot({
+        workspace: projected,
+        authoritativeWorkspace: authoritative,
+        visibleNodeIds: ["selected"],
+        selection: { anchorId: "selected", headId: "selected" }
+      });
+
+      expect(result?.selectedNodeIds).toEqual(["selected"]);
+      expect(result?.structuralRootIds).toEqual([]);
+      expect(result?.deleteFocusNodeId).toBeNull();
+      expect(
+        Object.values(result?.eligibility ?? {}).every(
+          (eligibility) => !eligibility.eligible
+        )
+      ).toBe(true);
+    }
+  );
+
+  it("disables Move To when the sole selected top subtree has no real destination", () => {
+    const nodes = [
+      node({ id: "only", sortKey: 1 }),
+      node({ id: "child", parentId: "only", sortKey: 1 })
+    ];
+
+    expect(
+      snapshot(nodes, ["only"], {
+        anchorId: "only",
+        headId: "only"
+      })?.eligibility.moveTo
+    ).toEqual({
+      eligible: false,
+      reason: "Move To requires a destination that would change the selection."
+    });
   });
 });

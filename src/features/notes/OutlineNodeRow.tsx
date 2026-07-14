@@ -120,7 +120,7 @@ function OutlineNodeRowComponent({
     prepareMoveNode,
     retryFailedDraft
   } = useNotesActions();
-  const { activeTagFilters, state } = useNotesState();
+  const { activeTagFilters, libraryView, state } = useNotesState();
   const exportController = useNotesExportController();
   const node = state.nodesById[nodeId];
   const readOnly = readOnlyMode !== undefined;
@@ -523,6 +523,7 @@ function OutlineNodeRowComponent({
       nodeId,
       platform: detectOutlineShortcutPlatform(),
       workspace: state,
+      authoritativeWorkspace: libraryView === "all" ? state : undefined,
       visibleNodeIds: getVisibleNodeIds(),
       selection: getSelection()
     });
