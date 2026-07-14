@@ -1,7 +1,29 @@
 use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
+#[cfg(test)]
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
+
+#[cfg(test)]
+thread_local! {
+    static REMOVE_EXACT_TAG_SCAN_WORK: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn record_remove_exact_tag_scan_work(work: usize) {
+    REMOVE_EXACT_TAG_SCAN_WORK.with(|total| total.set(total.get() + work));
+}
+
+#[cfg(test)]
+fn reset_remove_exact_tag_scan_work() {
+    REMOVE_EXACT_TAG_SCAN_WORK.with(|total| total.set(0));
+}
+
+#[cfg(test)]
+fn remove_exact_tag_scan_work() -> usize {
+    REMOVE_EXACT_TAG_SCAN_WORK.with(Cell::get)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NoteTagToken {
@@ -36,6 +58,12 @@ fn is_tag_body_start(character: char) -> bool {
 
 fn is_tag_body_continuation(character: char) -> bool {
     is_tag_body_start(character) || is_mark(character)
+}
+
+fn is_valid_tag_boundary(previous: Option<char>) -> bool {
+    !previous.is_some_and(|character| {
+        is_tag_body_continuation(character) || matches!(character, '/' | '#' | '@')
+    })
 }
 
 pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
@@ -208,9 +236,11 @@ pub(crate) fn tokenize_note_text(source: &str) -> Vec<NoteTagToken> {
             '@' => Some(NoteTagPrefix::Mention),
             _ => None,
         };
-        let invalid_boundary = index > 0
-            && (is_tag_body_continuation(scalars[index - 1].character)
-                || matches!(scalars[index - 1].character, '/' | '#' | '@'));
+        let invalid_boundary = !is_valid_tag_boundary(
+            index
+                .checked_sub(1)
+                .map(|previous| scalars[previous].character),
+        );
         if prefix.is_none()
             || url_evidence_end.is_some_and(|evidence| scalar.byte_start >= evidence)
             || invalid_boundary
@@ -300,6 +330,9 @@ pub(crate) fn add_exact_tag_to_title(
 }
 
 fn remove_exact_tag_tokens_once(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(source.chars().count());
+
     let bytes = source.as_bytes();
     let ranges = tokenize_note_text(source)
         .into_iter()
@@ -331,17 +364,461 @@ fn remove_exact_tag_tokens_once(source: &str, tag: &NoteTagFilter) -> Option<Str
     Some(result)
 }
 
+fn exact_tag_candidate_ends(
+    source: &str,
+    scalars: &[Scalar],
+    tag: &NoteTagFilter,
+) -> Vec<Option<usize>> {
+    let mut candidate_end_by_start = vec![None; scalars.len()];
+    let mut index = 0;
+    while index < scalars.len() {
+        let prefix = match scalars[index].character {
+            '#' => Some(NoteTagPrefix::Hash),
+            '@' => Some(NoteTagPrefix::Mention),
+            _ => None,
+        };
+        let body_start = index + 1;
+        if prefix.is_none()
+            || body_start >= scalars.len()
+            || !is_tag_body_start(scalars[body_start].character)
+        {
+            index += 1;
+            continue;
+        }
+
+        let mut body_end = body_start + 1;
+        while body_end < scalars.len() && is_tag_body_continuation(scalars[body_end].character) {
+            body_end += 1;
+        }
+        let body_start_byte = scalars[body_start].byte_start;
+        let body_end_byte = scalars
+            .get(body_end)
+            .map_or(source.len(), |next| next.byte_start);
+        let normalized = source[body_start_byte..body_end_byte]
+            .nfc()
+            .collect::<String>()
+            .to_lowercase();
+        if prefix == Some(tag.prefix) && normalized == tag.normalized_tag {
+            candidate_end_by_start[index] = Some(body_end - 1);
+        }
+        index = body_end;
+    }
+    candidate_end_by_start
+}
+
+fn contains_url_evidence(source: &str) -> bool {
+    let mut offset = 0;
+    while offset < source.len() {
+        let character = source[offset..].chars().next().expect("source scalar");
+        if character.is_whitespace() {
+            offset += character.len_utf8();
+            continue;
+        }
+        let segment_start = offset;
+        offset += character.len_utf8();
+        while offset < source.len() {
+            let character = source[offset..].chars().next().expect("segment scalar");
+            if character.is_whitespace() {
+                break;
+            }
+            offset += character.len_utf8();
+        }
+        if find_url_evidence_end(source, segment_start, offset).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fast-forwards isolated adjacent chains even when unrelated URL punctuation
+/// appears elsewhere. Canonical tokenization must recognize exactly the first
+/// candidate in each chain. Multiple chains are accelerated only when their
+/// cleanup ranges consume no spaces and their simultaneous removal leaves no
+/// URL evidence, so intermediate round timing cannot change surviving bytes.
+///
+/// A single chain may consume its preceding ASCII-space runway in one step.
+/// While at least one runway space remains, the chain is a tokenizer segment
+/// independent from its left context. If the runway ends before the chain, the
+/// caller retokenizes the surviving suffix against the newly joined context.
+/// With no runway, join-created URL evidence can appear only after the last
+/// adjacent target marker is gone.
+fn remove_isolated_exact_tag_chains(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    let scalars = source
+        .char_indices()
+        .map(|(byte_start, character)| Scalar {
+            character,
+            byte_start,
+            utf16_start: 0,
+        })
+        .collect::<Vec<_>>();
+    if scalars.is_empty() {
+        return None;
+    }
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+
+    let candidates = exact_tag_candidate_ends(source, &scalars, tag);
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+    let starts = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(start, end)| end.map(|end| (start, end)))
+        .collect::<Vec<_>>();
+    if starts.len() < 2 {
+        return None;
+    }
+
+    let mut chains = Vec::new();
+    let mut chain_start = starts[0].0;
+    let mut chain_end = starts[0].1;
+    let mut chain_count = 1;
+    for &(start, end) in &starts[1..] {
+        if chain_end + 1 == start {
+            chain_end = end;
+            chain_count += 1;
+        } else {
+            chains.push((chain_start, chain_end, chain_count));
+            chain_start = start;
+            chain_end = end;
+            chain_count = 1;
+        }
+    }
+    chains.push((chain_start, chain_end, chain_count));
+    if !chains.iter().any(|(_, _, count)| *count >= 2) {
+        return None;
+    }
+
+    let multiple_chains = chains.len() > 1;
+    let mut single_chain_leading_spaces = 0;
+    for &(start, end, _) in &chains {
+        let leading_spaces = scalars[..start]
+            .iter()
+            .rev()
+            .take_while(|scalar| scalar.character == ' ')
+            .count();
+        if leading_spaces > 0 {
+            if multiple_chains {
+                return None;
+            }
+            single_chain_leading_spaces = leading_spaces;
+        }
+        if multiple_chains
+            && scalars
+                .get(end + 1)
+                .is_some_and(|scalar| scalar.character == ' ')
+        {
+            return None;
+        }
+    }
+
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len() * 2);
+    let canonical_starts = tokenize_note_text(source)
+        .into_iter()
+        .filter(|token| token.prefix == tag.prefix && token.normalized == tag.normalized_tag)
+        .map(|token| token.start_byte)
+        .collect::<Vec<_>>();
+    let expected_starts = chains
+        .iter()
+        .map(|(start, _, _)| scalars[*start].byte_start)
+        .collect::<Vec<_>>();
+    if canonical_starts != expected_starts {
+        return None;
+    }
+
+    let mut ranges = Vec::with_capacity(chains.len());
+    for &(start, end, count) in &chains {
+        let (range_start, range_end, consumes_following_space) =
+            if !multiple_chains && single_chain_leading_spaces > 0 {
+                let removed_tokens = single_chain_leading_spaces.min(count);
+                let removed_end = starts[removed_tokens - 1].1;
+                (start - removed_tokens, removed_end, false)
+            } else {
+                (start, end, !multiple_chains)
+            };
+        let start_byte = scalars[range_start].byte_start;
+        let mut end_byte = scalars
+            .get(range_end + 1)
+            .map_or(source.len(), |next| next.byte_start);
+        if consumes_following_space && source.as_bytes().get(end_byte) == Some(&b' ') {
+            end_byte += 1;
+        }
+        ranges.push((start_byte, end_byte));
+    }
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+    let removed_bytes = ranges.iter().map(|(start, end)| end - start).sum::<usize>();
+    let mut result = String::with_capacity(source.len() - removed_bytes);
+    let mut cursor = 0;
+    for (start, end) in ranges {
+        result.push_str(&source[cursor..start]);
+        cursor = end;
+    }
+    result.push_str(&source[cursor..]);
+    if multiple_chains && contains_url_evidence(&result) {
+        return None;
+    }
+    Some(result)
+}
+
+fn live_successor(successors: &mut [usize], index: usize) -> usize {
+    let mut root = index;
+    while successors[root] != root {
+        #[cfg(test)]
+        record_remove_exact_tag_scan_work(1);
+        root = successors[root];
+    }
+
+    let mut cursor = index;
+    while successors[cursor] != cursor {
+        let next = successors[cursor];
+        successors[cursor] = root;
+        cursor = next;
+    }
+    root
+}
+
+/// Removes exact tokens without rescanning the shrinking string. Callers must
+/// prove that URL evidence cannot affect token visibility for the supplied
+/// source before accepting this speculative result.
+///
+/// Each round freezes every cleanup range before mutating the live scalar
+/// links. That preserves the existing simultaneous-pass whitespace semantics
+/// while an adjacent chain such as `#x#x...` visits each scalar only once.
+fn remove_boundary_exact_tag_tokens(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    let scalars = source
+        .char_indices()
+        .map(|(byte_start, character)| Scalar {
+            character,
+            byte_start,
+            utf16_start: 0,
+        })
+        .collect::<Vec<_>>();
+    if scalars.is_empty() {
+        return None;
+    }
+
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+
+    // Record every lexical occurrence of the requested identity, including
+    // occurrences whose current left boundary is invalid. Deletion cannot
+    // shorten a maximal body into a new identity; it can only expose the first
+    // marker immediately to the right of a frozen deletion range.
+    let candidate_end_by_start = exact_tag_candidate_ends(source, &scalars, tag);
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+
+    let mut previous = (0..scalars.len())
+        .map(|scalar_index| scalar_index.checked_sub(1))
+        .collect::<Vec<_>>();
+    let mut next = (0..scalars.len())
+        .map(|scalar_index| (scalar_index + 1 < scalars.len()).then_some(scalar_index + 1))
+        .collect::<Vec<_>>();
+    let mut alive = vec![true; scalars.len()];
+    let mut queued = vec![false; scalars.len()];
+    let mut round = candidate_end_by_start
+        .iter()
+        .enumerate()
+        .filter_map(|(start, end)| {
+            end.and_then(|_| {
+                is_valid_tag_boundary(previous[start].map(|index| scalars[index].character))
+                    .then_some(start)
+            })
+        })
+        .collect::<Vec<_>>();
+    for start in &round {
+        queued[*start] = true;
+    }
+    if round.is_empty() {
+        return None;
+    }
+
+    let mut deletion_epoch = vec![0_usize; scalars.len()];
+    let mut live_successors = (0..=scalars.len()).collect::<Vec<_>>();
+    let mut epoch = 0_usize;
+    while !round.is_empty() {
+        epoch += 1;
+        let mut marked = Vec::new();
+        let mut right_probes = Vec::with_capacity(round.len());
+
+        for start in round.drain(..) {
+            queued[start] = false;
+            if !alive[start] {
+                continue;
+            }
+            let end = candidate_end_by_start[start].expect("queued exact-tag candidate");
+            debug_assert!(alive[end]);
+
+            let mut range_start = start;
+            let mut range_end = end;
+            if previous[start].is_some_and(|index| scalars[index].character == ' ') {
+                range_start = previous[start].expect("preceding ASCII space");
+            } else if next[end].is_some_and(|index| scalars[index].character == ' ') {
+                range_end = next[end].expect("following ASCII space");
+            }
+            right_probes.push(next[range_end]);
+
+            let mut cursor = range_start;
+            loop {
+                if deletion_epoch[cursor] != epoch {
+                    deletion_epoch[cursor] = epoch;
+                    marked.push(cursor);
+                }
+                if cursor == range_end {
+                    break;
+                }
+                cursor = next[cursor].expect("frozen cleanup range remains live");
+            }
+        }
+        #[cfg(test)]
+        record_remove_exact_tag_scan_work(marked.len());
+
+        // Apply the union of all ranges only after every range has been frozen.
+        for deleted in marked {
+            if !alive[deleted] {
+                continue;
+            }
+            let left = previous[deleted];
+            let right = next[deleted];
+            if let Some(left) = left {
+                next[left] = right;
+            }
+            if let Some(right) = right {
+                previous[right] = left;
+            }
+            alive[deleted] = false;
+            live_successors[deleted] = live_successor(&mut live_successors, deleted + 1);
+        }
+
+        for probe in right_probes {
+            let Some(probe) = probe else {
+                continue;
+            };
+            let start = live_successor(&mut live_successors, probe);
+            if start == scalars.len() {
+                continue;
+            }
+            if candidate_end_by_start[start].is_some()
+                && !queued[start]
+                && is_valid_tag_boundary(previous[start].map(|index| scalars[index].character))
+            {
+                queued[start] = true;
+                round.push(start);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    record_remove_exact_tag_scan_work(scalars.len());
+    let result = scalars
+        .iter()
+        .zip(alive)
+        .filter_map(|(scalar, alive)| alive.then_some(scalar.character))
+        .collect::<String>();
+    Some(result)
+}
+
+/// Uses the boundary-only engine when URL evidence is impossible by
+/// construction. The outer option distinguishes an intentionally skipped
+/// source from a handled source that contains no removable token.
+fn remove_url_inert_exact_tag_tokens(source: &str, tag: &NoteTagFilter) -> Option<Option<String>> {
+    // Every URL form recognized by `find_url_evidence_end` requires at least
+    // one of these scalars. Being deliberately conservative keeps this path
+    // independent from URL-detector details and sends ambiguous text through
+    // the canonical fallback below.
+    if source
+        .chars()
+        .any(|character| matches!(character, '/' | '.' | ':' | '?'))
+    {
+        return None;
+    }
+
+    Some(remove_boundary_exact_tag_tokens(source, tag))
+}
+
+fn push_accelerated_url_free_window(
+    output: &mut String,
+    window: &str,
+    tag: &NoteTagFilter,
+) -> bool {
+    if contains_url_evidence(window) {
+        output.push_str(window);
+        return false;
+    }
+
+    let Some(candidate) = remove_boundary_exact_tag_tokens(window, tag) else {
+        output.push_str(window);
+        return false;
+    };
+    // A deletion that creates URL evidence could hide a token in a later
+    // canonical pass. Reject that speculation and preserve the tokenizer as
+    // the authority for this window.
+    if contains_url_evidence(&candidate) {
+        output.push_str(window);
+        return false;
+    }
+
+    debug_assert!(candidate.len() < window.len());
+    output.push_str(&candidate);
+    true
+}
+
+/// Accelerates only independently mutable windows. Exact-tag cleanup can
+/// consume ASCII spaces, but never tabs, newlines, or other whitespace; those
+/// hard separators therefore prevent both cleanup ranges and URL evidence from
+/// crossing into the neighboring window.
+fn remove_url_free_windows(source: &str, tag: &NoteTagFilter) -> Option<String> {
+    let mut output = String::with_capacity(source.len());
+    let mut window_start = 0;
+    let mut changed = false;
+
+    for (offset, character) in source.char_indices() {
+        if !character.is_whitespace() || character == ' ' {
+            continue;
+        }
+        changed |=
+            push_accelerated_url_free_window(&mut output, &source[window_start..offset], tag);
+        let separator_end = offset + character.len_utf8();
+        output.push_str(&source[offset..separator_end]);
+        window_start = separator_end;
+    }
+    changed |= push_accelerated_url_free_window(&mut output, &source[window_start..], tag);
+
+    changed.then_some(output)
+}
+
 /// Removes every tokenizer-exact occurrence and, for each occurrence, consumes
 /// one immediately preceding ASCII space when present or otherwise one
 /// immediately following ASCII space. All ranges are UTF-8 byte ranges derived
 /// alongside the tokenizer's UTF-16 display offsets.
 pub(crate) fn remove_exact_tag_tokens(source: &str, tag: &NoteTagFilter) -> Option<String> {
-    let mut result = remove_exact_tag_tokens_once(source, tag)?;
+    let window_accelerated = remove_url_free_windows(source, tag);
+    let window_source = window_accelerated.as_deref().unwrap_or(source);
+    let chain_accelerated = remove_isolated_exact_tag_chains(window_source, tag);
+    let working = chain_accelerated.as_deref().unwrap_or(window_source);
+
+    if let Some(result) = remove_url_inert_exact_tag_tokens(working, tag) {
+        return result.or(chain_accelerated).or(window_accelerated);
+    }
+
+    let Some(mut result) = remove_exact_tag_tokens_once(working, tag) else {
+        return chain_accelerated.or(window_accelerated);
+    };
     // A deletion can expose a marker that was not a token in the original
     // source (`#x#x` -> `#x`). Continue to the tokenizer's fixed point so a
     // successful RemoveTag is idempotent while every pass still honors the
     // canonical boundary, URL, prefix, and normalized-identity rules.
-    while let Some(next) = remove_exact_tag_tokens_once(&result, tag) {
+    loop {
+        if let Some(next) = remove_isolated_exact_tag_chains(&result, tag) {
+            debug_assert!(next.len() < result.len());
+            result = next;
+            continue;
+        }
+        let Some(next) = remove_exact_tag_tokens_once(&result, tag) else {
+            break;
+        };
         debug_assert!(next.len() < result.len());
         result = next;
     }
@@ -365,7 +842,8 @@ pub(crate) fn extract_note_tags(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_exact_tag_to_title, is_canonical_tag_body, is_nfc, remove_exact_tag_tokens,
+        add_exact_tag_to_title, is_canonical_tag_body, is_nfc, remove_exact_tag_scan_work,
+        remove_exact_tag_tokens, remove_exact_tag_tokens_once, reset_remove_exact_tag_scan_work,
         tokenize_note_text,
     };
     use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
@@ -542,6 +1020,8 @@ mod tests {
             ("#x#X", ""),
             ("#x#xy", "#xy"),
             ("a #x#x", "a#x"),
+            ("a  #x#x#x", "a#x"),
+            ("#x #x ", " "),
         ] {
             let removed = remove_exact_tag_tokens(source, &tag);
             assert_eq!(removed, Some(expected.to_string()), "source: {source:?}");
@@ -549,6 +1029,187 @@ mod tests {
                 remove_exact_tag_tokens(removed.as_deref().expect("changed source"), &tag),
                 None,
                 "result was not idempotent for source: {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_tag_remove_adjacent_chain_has_linear_scan_work() {
+        let token_count = 2_048;
+        for (source, expected) in [
+            ("#x".repeat(token_count), String::new()),
+            (
+                format!("{}{}", " ".repeat(token_count), "#x".repeat(token_count)),
+                String::new(),
+            ),
+            ("#x ".repeat(token_count), " ".to_string()),
+            (format!("{}.", "#x".repeat(token_count)), ".".to_string()),
+            (
+                format!("{}.,#x", "#x".repeat(token_count)),
+                ".,".to_string(),
+            ),
+            (
+                format!("{},{}.", "#x".repeat(token_count), "#x".repeat(token_count)),
+                ",.".to_string(),
+            ),
+            (
+                format!("{};{}/", "#x".repeat(token_count), "#x".repeat(token_count)),
+                ";/".to_string(),
+            ),
+            (
+                format!("{};{}?", "#x".repeat(token_count), "#x".repeat(token_count)),
+                ";?".to_string(),
+            ),
+            (
+                format!("{}.a#x", "#x".repeat(token_count)),
+                ".a#x".to_string(),
+            ),
+            (
+                format!("{}{}.", " ".repeat(token_count), "#x".repeat(token_count)),
+                ".".to_string(),
+            ),
+            (
+                format!(
+                    "{}\thttps://example.com/#x\t{}",
+                    "#x".repeat(token_count),
+                    "#x".repeat(token_count)
+                ),
+                "\thttps://example.com/#x\t".to_string(),
+            ),
+            (
+                format!(
+                    "https://example.com/{}{}",
+                    " ".repeat(token_count),
+                    "#x".repeat(token_count)
+                ),
+                "https://example.com/".to_string(),
+            ),
+            (
+                format!(
+                    "https://example.com/{}{}",
+                    " ".repeat(token_count / 2),
+                    "#x".repeat(token_count)
+                ),
+                format!("https://example.com/{}", "#x".repeat(token_count / 2)),
+            ),
+            (
+                format!(
+                    "prefix:{}{}",
+                    " ".repeat(token_count / 2),
+                    "#x".repeat(token_count)
+                ),
+                "prefix:".to_string(),
+            ),
+        ] {
+            reset_remove_exact_tag_scan_work();
+
+            assert_eq!(
+                remove_exact_tag_tokens(&source, &hash_tag("x")),
+                Some(expected)
+            );
+
+            let scan_work = remove_exact_tag_scan_work();
+            let scalar_count = source.chars().count();
+            assert!(
+                scan_work <= scalar_count * 16,
+                "adjacent-chain removal used {scan_work} work units for {scalar_count} scalars"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_tag_remove_preserves_snapshot_semantics_when_deletion_creates_url_evidence() {
+        let tag = hash_tag("x");
+
+        assert_eq!(
+            remove_exact_tag_tokens("http: #x//:#x", &tag),
+            Some("http://:".to_string())
+        );
+        assert_eq!(
+            remove_exact_tag_tokens("http://  #x#x,#x#x#x", &tag),
+            Some("http://,#x".to_string())
+        );
+        assert_eq!(
+            remove_exact_tag_tokens("#x.com:#x", &tag),
+            Some(".com:".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_fast_path_preserves_unicode_and_prefix_identity() {
+        assert_eq!(
+            remove_exact_tag_tokens("#CAFE\u{301}#café", &hash_tag("café")),
+            Some(String::new())
+        );
+        assert_eq!(
+            remove_exact_tag_tokens("#x@x @X", &hash_tag("x")),
+            Some("@x @X".to_string())
+        );
+    }
+
+    #[test]
+    fn batch_tag_remove_fast_path_matches_the_canonical_fixed_point() {
+        fn canonical_remove(source: &str, tag: &NoteTagFilter) -> Option<String> {
+            let mut result = remove_exact_tag_tokens_once(source, tag)?;
+            while let Some(next) = remove_exact_tag_tokens_once(&result, tag) {
+                result = next;
+            }
+            Some(result)
+        }
+
+        let alphabet = [
+            'a', ' ', '#', '@', 'x', 'X', ',', '\t', '\n', 'é', '.', '/', ':', '?',
+        ];
+        let tag = hash_tag("x");
+        let mut seed = 0x5eed_u64;
+        for case in 0..10_000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let length = (seed as usize % 13) + 1;
+            let mut source = String::with_capacity(length);
+            for _ in 0..length {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                source.push(alphabet[seed as usize % alphabet.len()]);
+            }
+
+            assert_eq!(
+                remove_exact_tag_tokens(&source, &tag),
+                canonical_remove(&source, &tag),
+                "case {case}, source: {source:?}"
+            );
+        }
+
+        for prefix in [
+            "",
+            ",",
+            "http:",
+            "www.",
+            "./",
+            "example.com:",
+            "a ",
+            "\t",
+            "(",
+        ] {
+            for suffix in ["", ".", "/", "//:#x", " .", "@x", "#y", ",#x"] {
+                let source = format!("{prefix}#x#X#x{suffix}");
+                assert_eq!(
+                    remove_exact_tag_tokens(&source, &tag),
+                    canonical_remove(&source, &tag),
+                    "isolated chain source: {source:?}"
+                );
+            }
+        }
+        for source in [
+            "#x#x,#x#x.",
+            "#x,#x#x#x.",
+            "#x#x,#x#x/",
+            "www #x.,#x#x",
+            "http:#x//#x#x",
+            "http:#x#x//:#x#x#x",
+        ] {
+            assert_eq!(
+                remove_exact_tag_tokens(source, &tag),
+                canonical_remove(source, &tag),
+                "multiple chain source: {source:?}"
             );
         }
     }
