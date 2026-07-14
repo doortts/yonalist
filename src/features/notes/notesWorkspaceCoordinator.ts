@@ -86,8 +86,10 @@ export type NotesWorkspaceQueueWork = (
   context: NotesWorkspaceQueueContext
 ) => Promise<NotesWorkspaceQueueResult> | NotesWorkspaceQueueResult;
 
+export type NotesPendingSelectionPolicy = "clear" | "preserve";
+
 export type NotesWorkspaceCoordinatorEvent =
-  | { type: "pending"; preserveSelection?: boolean }
+  | { type: "pending"; selectionPolicy: NotesPendingSelectionPolicy }
   | {
       type: "synchronized";
       result: NotesWorkspaceQueueSettlement;
@@ -120,7 +122,7 @@ export interface NotesWorkspaceCoordinatorSession {
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
-    options?: { preserveSelection?: boolean }
+    options?: { selectionPolicy?: NotesPendingSelectionPolicy }
   ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
 }
@@ -626,7 +628,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
         silent = false,
-        preserveSelection = false
+        selectionPolicy: NotesPendingSelectionPolicy = "clear"
       ): Promise<NotesWorkspaceCommandOutcome> => {
         if (!session.active) {
           return Promise.resolve("skipped");
@@ -651,12 +653,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         }
         entry.queue.push(item);
         if (!silent) {
-          notify(
-            session,
-            preserveSelection
-              ? { type: "pending", preserveSelection: true }
-              : { type: "pending" }
-          );
+          notify(session, { type: "pending", selectionPolicy });
         }
         pump(entry);
         return item.completion;
@@ -672,7 +669,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         enqueueStructural(
           work: NotesWorkspaceQueueWork,
-          options?: { preserveSelection?: boolean }
+          options?: { selectionPolicy?: NotesPendingSelectionPolicy }
         ): Promise<NotesWorkspaceCommandOutcome> {
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
@@ -731,7 +728,7 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 const structural = enqueueCommand(
                   work,
                   false,
-                  options?.preserveSelection ?? false
+                  options?.selectionPolicy ?? "clear"
                 );
                 finalizeParticipants();
                 return await structural;

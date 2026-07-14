@@ -6,6 +6,7 @@ import type {
   MoveNoteNodeInput,
   NoteId,
   NoteNode,
+  NoteSearchTag,
   NotesHistoryContext,
   NotesWorkspace,
   NotesWorkspaceScope,
@@ -14,6 +15,8 @@ import type {
 import type { NotesHistoryFocus } from "./notesHistory";
 import {
   normalizeWorkspace,
+  settledUiState,
+  settleWorkspaceStore,
   type NormalizedNotesWorkspace
 } from "./notesWorkspaceReducer";
 import type {
@@ -50,6 +53,7 @@ import {
   type NotesLifecycleNavigationTransition,
   type NotesPreparedMove,
   type NotesPreparedMoveCommitResult,
+  type NotesPreparedSelectionAuthority,
   type NotesWorkspaceCompoundOptions,
   type NotesWorkspaceQueueStep,
   type StructuralCommandOptions,
@@ -83,6 +87,8 @@ export interface NotesCommandContext {
   readonly stateRef: MutableRefObject<NormalizedNotesWorkspace>;
   readonly requestedTagFiltersRef: MutableRefObject<readonly NoteTagFilter[]>;
   readonly movePreparationTokenRef: MutableRefObject<number>;
+  readonly selectionPreparationTokenRef: MutableRefObject<number>;
+  readonly selectionRevisionRef: MutableRefObject<number>;
   readonly vaultRootRef: MutableRefObject<string>;
   readonly libraryViewRef: MutableRefObject<NotesLibraryView>;
   readonly activeWorkspaceGenerationRef: MutableRefObject<number>;
@@ -503,10 +509,13 @@ export async function moveNodeCommand(
  * separately (see {@link applyBatchCommand}).
  */
 export type NotesBatchOp =
-  | { type: "complete"; completed: boolean }
+  | { type: "complete"; completed?: boolean }
   | { type: "delete" }
   | { type: "indent" }
   | { type: "outdent" }
+  | { type: "duplicate" }
+  | { type: "addTag"; tag: NoteSearchTag }
+  | { type: "removeTag"; tag: NoteTagFilter }
   | {
       type: "move";
       parentId: NoteId | null;
@@ -524,13 +533,23 @@ function buildApplyBatchInput(
 ): ApplyNotesBatchInput {
   switch (op.type) {
     case "complete":
-      return { op: "complete", nodeIds, completed: op.completed };
+      return {
+        op: "complete",
+        nodeIds,
+        completed: op.completed ?? false
+      };
     case "delete":
       return { op: "delete", nodeIds };
     case "indent":
       return { op: "indent", nodeIds };
     case "outdent":
       return { op: "outdent", nodeIds };
+    case "duplicate":
+      return { op: "duplicate", nodeIds };
+    case "addTag":
+      return { op: "addTag", nodeIds, tag: op.tag };
+    case "removeTag":
+      return { op: "removeTag", nodeIds, tag: op.tag };
     case "move":
       return {
         op: "move",
@@ -556,42 +575,318 @@ function buildApplyBatchInput(
  * than issuing an empty batch. `uiUpdate` lets a delete hand focus to a
  * surviving neighbor.
  */
+export interface NotesBatchCommandSettlement {
+  readonly outcome: NotesWorkspaceCommandOutcome;
+  /** True once the repository returned, even if projecting the committed
+   * mutation back into the active scope subsequently failed. */
+  readonly mutationCommitted: boolean;
+  readonly duplicatedRootIds?: readonly NoteId[];
+  /** Present only when the committed mutation was successfully projected into
+   * the active UI scope. Router postconditions must use this snapshot rather
+   * than waiting for a React render to refresh pane refs. */
+  readonly projectedWorkspace?: NormalizedNotesWorkspace;
+}
+
+function resolvedBatchOp(
+  workspace: NormalizedNotesWorkspace,
+  nodeIds: readonly NoteId[],
+  op: NotesBatchOp
+): NotesBatchOp {
+  return op.type === "complete"
+    ? {
+        type: "complete",
+        completed: nodeIds.some(
+          (nodeId) => workspace.nodesById[nodeId].completedAt === null
+        )
+      }
+    : op;
+}
+
+function isInsideSelectedForest(
+  nodeId: NoteId,
+  selectedIds: ReadonlySet<NoteId>,
+  workspace: NormalizedNotesWorkspace
+): boolean {
+  const visited = new Set<NoteId>();
+  let currentId: NoteId | null = nodeId;
+  while (currentId !== null && !visited.has(currentId)) {
+    if (selectedIds.has(currentId)) {
+      return true;
+    }
+    visited.add(currentId);
+    currentId = workspace.nodesById[currentId]?.parentId ?? null;
+  }
+  return false;
+}
+
+function isPreparedBatchMoveSafe(
+  workspace: NormalizedNotesWorkspace,
+  nodeIds: readonly NoteId[],
+  op: NotesBatchOp
+): boolean {
+  if (op.type !== "move") {
+    return true;
+  }
+  if (
+    (op.afterId !== null && op.beforeId != null) ||
+    (op.parentId !== null && workspace.nodesById[op.parentId] === undefined) ||
+    (op.afterId !== null && workspace.nodesById[op.afterId] === undefined) ||
+    (op.beforeId != null && workspace.nodesById[op.beforeId] === undefined)
+  ) {
+    return false;
+  }
+  const selectedIds = new Set(nodeIds);
+  for (const dependencyId of [op.parentId, op.afterId, op.beforeId ?? null]) {
+    if (
+      dependencyId !== null &&
+      isInsideSelectedForest(dependencyId, selectedIds, workspace)
+    ) {
+      return false;
+    }
+  }
+  const after = op.afterId === null ? undefined : workspace.nodesById[op.afterId];
+  const before =
+    op.beforeId == null ? undefined : workspace.nodesById[op.beforeId];
+  return (
+    (after === undefined || after.parentId === op.parentId) &&
+    (before === undefined || before.parentId === op.parentId)
+  );
+}
+
+function sameAuthorityValue(left: unknown, right: unknown): boolean {
+  if (left === right) {
+    return true;
+  }
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) =>
+        sameAuthorityValue(value, right[index])
+      )
+    );
+  }
+  if (
+    typeof left !== "object" ||
+    left === null ||
+    typeof right !== "object" ||
+    right === null
+  ) {
+    return false;
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] &&
+        sameAuthorityValue(leftRecord[key], rightRecord[key])
+    )
+  );
+}
+
+function preparedSelectionOwnerIsCurrent(
+  ctx: NotesCommandContext,
+  prepared: NotesPreparedSelectionAuthority,
+  context: NotesWorkspaceQueueContext,
+  record: NotesWorkspaceSessionRecord
+): boolean {
+  return (
+    prepared.token === ctx.selectionPreparationTokenRef.current &&
+    prepared.vaultRoot === ctx.vaultRootRef.current &&
+    prepared.vaultRoot === context.vaultRoot &&
+    sameScope(prepared.scope, ctx.activeScopeRef.current) &&
+    prepared.generation === ctx.activeWorkspaceGenerationRef.current &&
+    prepared.selectionRevision === ctx.selectionRevisionRef.current &&
+    prepared.session === record.session &&
+    prepared.session === ctx.sessionRef.current &&
+    ownerStillActive(ctx, record)
+  );
+}
+
+function projectedSettlementWorkspace(
+  ctx: NotesCommandContext,
+  result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
+): NormalizedNotesWorkspace {
+  const workspace = settleWorkspaceStore(
+    ctx.stateRef.current,
+    result.workspace,
+    result.delta
+  );
+  return {
+    ...workspace,
+    ...settledUiState(workspace, ctx.stateRef.current, result.uiUpdate)
+  };
+}
+
 export async function applyBatchCommand(
   ctx: NotesCommandContext,
   nodeIds: readonly NoteId[],
   op: NotesBatchOp,
   uiUpdate?: NotesWorkspaceUiUpdate
-): Promise<NotesWorkspaceCommandOutcome> {
+): Promise<NotesBatchCommandSettlement> {
   const preserveSelection = op.type === "indent" || op.type === "outdent";
-  return ctx.runStructuralCommand(
+  let mutationCommitted = false;
+  let duplicatedRootIds: readonly NoteId[] | undefined;
+  let projectedWorkspace: NormalizedNotesWorkspace | undefined;
+  const outcome = await ctx.runStructuralCommand(
     "batch",
     async (context, historyContext) => {
       const before = confirmedState(context);
-      const ids = nodeIds.filter((id) => Boolean(before.nodesById[id]));
-      if (ids.length === 0) {
+      const ids = [...nodeIds];
+      if (
+        ids.length === 0 ||
+        ids.some((id) => before.nodesById[id] === undefined)
+      ) {
         return { kind: "skipped" };
       }
+      const resolvedOp = resolvedBatchOp(before, ids, op);
       const mutation = unwrapNotesMutation(
         await context.repository.applyBatch(
           context.vaultRoot,
-          buildApplyBatchInput(ids, op),
+          buildApplyBatchInput(ids, resolvedOp),
           ...historyArguments(historyContext)
         )
       );
+      mutationCommitted = true;
+      duplicatedRootIds = mutation.duplicatedRootIds
+        ? Object.freeze([...mutation.duplicatedRootIds])
+        : undefined;
       const projection = await projectNotesMutation(
         context,
         mutation,
         ctx.activeScopeRef.current
       );
+      const result = directMutationResult(mutation, projection, uiUpdate);
+      if (result.kind === "authoritative") {
+        projectedWorkspace = projectedSettlementWorkspace(ctx, result);
+      }
       ctx.rememberHistoryAfter(
         appliedHistoryContext(historyContext, mutation),
         projection.workspace,
         uiUpdate
       );
-      return directMutationResult(mutation, projection, uiUpdate);
+      return result;
     },
-    { preserveSelection }
+    { selectionPolicy: preserveSelection ? "preserve" : "clear" }
   );
+  return {
+    outcome,
+    mutationCommitted,
+    ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
+    ...(projectedWorkspace ? { projectedWorkspace } : {})
+  };
+}
+
+/**
+ * Applies a frozen selected-range authority. Unlike the compatibility
+ * `applyBatch` path, this refreshes the complete Active workspace inside the
+ * structural queue and revalidates ownership and every target immediately
+ * before the one repository mutation.
+ */
+export async function applyPreparedSelectionBatchCommand(
+  ctx: NotesCommandContext,
+  prepared: NotesPreparedSelectionAuthority,
+  op: NotesBatchOp,
+  uiUpdate?: NotesWorkspaceUiUpdate,
+  expandNodeId?: NoteId
+): Promise<NotesBatchCommandSettlement> {
+  let mutationCommitted = false;
+  let duplicatedRootIds: readonly NoteId[] | undefined;
+  let projectedWorkspace: NormalizedNotesWorkspace | undefined;
+  const outcome = await ctx.runStructuralCommand(
+    "batch",
+    async (context, historyContext, record) => {
+      if (!preparedSelectionOwnerIsCurrent(ctx, prepared, context, record)) {
+        return { kind: "skipped" };
+      }
+      const activeWorkspace = normalizeWorkspace(
+        await context.repository.loadWorkspace(context.vaultRoot, {
+          kind: "active"
+        })
+      );
+      if (!preparedSelectionOwnerIsCurrent(ctx, prepared, context, record)) {
+        return { kind: "skipped" };
+      }
+      const ids = [...prepared.selectedNodeIds];
+      if (
+        ids.length === 0 ||
+        ids.some(
+          (nodeId) =>
+            prepared.workspace.nodesById[nodeId] === undefined ||
+            activeWorkspace.nodesById[nodeId] === undefined
+        ) ||
+        (expandNodeId !== undefined &&
+          (op.type !== "move" ||
+            op.parentId !== expandNodeId ||
+            prepared.workspace.nodesById[expandNodeId] === undefined ||
+            activeWorkspace.nodesById[expandNodeId] === undefined)) ||
+        !sameAuthorityValue(prepared.workspace, activeWorkspace) ||
+        !isPreparedBatchMoveSafe(activeWorkspace, ids, op)
+      ) {
+        return { kind: "skipped" };
+      }
+      const mutation = unwrapNotesMutation(
+        await context.repository.applyBatch(
+          context.vaultRoot,
+          buildApplyBatchInput(
+            ids,
+            resolvedBatchOp(activeWorkspace, ids, op)
+          ),
+          ...historyArguments(historyContext)
+        )
+      );
+      mutationCommitted = true;
+      duplicatedRootIds = mutation.duplicatedRootIds
+        ? Object.freeze([...mutation.duplicatedRootIds])
+        : undefined;
+      const projection = await projectNotesMutation(
+        context,
+        mutation,
+        ctx.activeScopeRef.current
+      );
+      const result = directMutationResult(mutation, projection, uiUpdate);
+      if (result.kind === "authoritative") {
+        projectedWorkspace = projectedSettlementWorkspace(ctx, result);
+      }
+      let expandedNodeIds: ReadonlySet<NoteId> | undefined;
+      if (
+        result.kind === "authoritative" &&
+        expandNodeId !== undefined &&
+        activeWorkspace.nodesById[expandNodeId].isCollapsed &&
+        preparedSelectionOwnerIsCurrent(ctx, prepared, context, record)
+      ) {
+        const current = ctx.locallyExpandedNodeIdsRef.current;
+        if (current.has(expandNodeId)) {
+          expandedNodeIds = current;
+        } else {
+          const next = new Set(current);
+          next.add(expandNodeId);
+          ctx.replaceLocalExpansions(next);
+          expandedNodeIds = next;
+        }
+      }
+      ctx.rememberHistoryAfter(
+        appliedHistoryContext(historyContext, mutation),
+        projection.workspace,
+        uiUpdate,
+        undefined,
+        expandedNodeIds
+      );
+      return result;
+    },
+    { selectionPolicy: "preserve" }
+  );
+  return {
+    outcome,
+    mutationCommitted,
+    ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
+    ...(projectedWorkspace ? { projectedWorkspace } : {})
+  };
 }
 
 /**

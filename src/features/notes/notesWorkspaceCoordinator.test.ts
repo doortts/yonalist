@@ -79,6 +79,72 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
 }
 
 describe("notesWorkspaceCoordinator registry", () => {
+  it("emits an explicit clear selection policy for ordinary queued work", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/ordinary-selection-policy",
+      onEvent: events
+    });
+    await session.activation;
+    events.mockClear();
+
+    await session.enqueue(() => ({ kind: "skipped" as const }));
+
+    expect(events).toHaveBeenCalledWith({
+      type: "pending",
+      selectionPolicy: "clear"
+    });
+    session.close();
+  });
+
+  it("defaults structural queued work to the clear selection policy", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/default-structural-selection-policy",
+      onEvent: events
+    });
+    await session.activation;
+    events.mockClear();
+
+    await session.enqueueStructural(() => ({ kind: "skipped" as const }));
+
+    expect(events).toHaveBeenCalledWith({
+      type: "pending",
+      selectionPolicy: "clear"
+    });
+    session.close();
+  });
+
+  it("forwards an explicit preserve policy for structural queued work", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/preserved-structural-selection-policy",
+      onEvent: events
+    });
+    await session.activation;
+    events.mockClear();
+
+    await session.enqueueStructural(
+      () => ({ kind: "skipped" as const }),
+      { selectionPolicy: "preserve" }
+    );
+
+    expect(events).toHaveBeenCalledWith({
+      type: "pending",
+      selectionPolicy: "preserve"
+    });
+    session.close();
+  });
+
   it("ignores a failed drain from a participant that departed during the pass", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

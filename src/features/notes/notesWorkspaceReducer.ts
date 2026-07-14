@@ -55,6 +55,7 @@ export interface NotesSelection {
 export type NotesSelectionAction =
   | { type: "setSelectionAnchor"; anchorId: NoteId }
   | { type: "extendSelectionTo"; headId: NoteId }
+  | { type: "replaceSelection"; selection: NotesSelection | null }
   | { type: "clearSelection" };
 
 /**
@@ -77,6 +78,8 @@ export function notesSelectionReducer(
         anchorId: state ? state.anchorId : action.headId,
         headId: action.headId
       };
+    case "replaceSelection":
+      return action.selection;
     case "clearSelection":
       return null;
   }

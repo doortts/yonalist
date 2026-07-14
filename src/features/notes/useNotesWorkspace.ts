@@ -34,6 +34,7 @@ import {
 } from "../../services/notesWriteQueue";
 import {
   notesWorkspaceCoordinatorRegistry,
+  type NotesPendingSelectionPolicy,
   type NotesWorkspaceCommandOutcome,
   type NotesWorkspaceCoordinatorSession,
   type NotesWorkspaceQueueContext,
@@ -55,6 +56,7 @@ import {
   reconcileUiState,
   type NormalizedNotesWorkspace,
   type NotesSelection,
+  type NotesSelectionAction,
   type NotesWorkspaceDelta,
   type NotesWorkspaceReducerAction
 } from "./notesWorkspaceReducer";
@@ -80,6 +82,7 @@ import {
 } from "./notesDraftEngine";
 import {
   applyBatchCommand,
+  applyPreparedSelectionBatchCommand,
   commitPreparedMoveCommand,
   createChildCommand,
   createRootCommand,
@@ -98,6 +101,7 @@ import {
   toggleStarCommand,
   updateNodeCommand,
   type NotesBatchOp,
+  type NotesBatchCommandSettlement,
   type NotesCommandContext
 } from "./notesCommands";
 
@@ -256,6 +260,10 @@ export interface NotesWorkspaceActions {
   setSelectionAnchor(anchorId: NoteId): void;
   extendSelectionTo(headId: NoteId): void;
   clearSelection(): void;
+  replaceSelection?(
+    selection: NotesSelection | null,
+    expectedRevision?: number
+  ): boolean;
 }
 
 export type NotesLibraryView =
@@ -285,6 +293,23 @@ export interface NotesPreparedMove {
   readonly generation: number;
   readonly sourceId: NoteId;
   readonly nodes: readonly NoteNode[];
+}
+
+/**
+ * Frozen ownership proof for one selected-range operation. `workspace` is a
+ * complete Active projection (never the current filtered/library projection)
+ * and is deeply frozen at the node/attachment/ordering boundaries used by the
+ * router.
+ */
+export interface NotesPreparedSelectionAuthority {
+  readonly token: number;
+  readonly vaultRoot: string;
+  readonly scope: NotesWorkspaceScope;
+  readonly generation: number;
+  readonly session: NotesWorkspaceCoordinatorSession;
+  readonly selectionRevision: number;
+  readonly selectedNodeIds: readonly NoteId[];
+  readonly workspace: NormalizedNotesWorkspace;
 }
 
 export type NotesPreparedMoveCommitResult =
@@ -326,6 +351,8 @@ export interface NotesDraftsSlice {
   // many hand-built test workspace fixtures need not spell it out; the hook
   // always populates it and consumers coalesce a missing value to `null`.
   selection?: NotesSelection | null;
+  /** Monotonic ownership version for late selected-range postconditions. */
+  selectionRevision?: number;
 }
 
 /**
@@ -343,6 +370,23 @@ export interface NotesActionsSlice {
     prepared: NotesPreparedMove,
     destinationId: NoteId | null
   ): Promise<NotesPreparedMoveCommitResult>;
+  prepareSelectionAuthority?(
+    selectedNodeIds: readonly NoteId[]
+  ): Promise<NotesPreparedSelectionAuthority>;
+  isPreparedSelectionAuthorityCurrent?(
+    prepared: NotesPreparedSelectionAuthority
+  ): boolean;
+  applyPreparedSelectionBatch?(
+    prepared: NotesPreparedSelectionAuthority,
+    op: NotesBatchOp,
+    options?: NotesPreparedSelectionBatchOptions
+  ): Promise<NotesBatchCommandSettlement>;
+}
+
+export interface NotesPreparedSelectionBatchOptions {
+  readonly focusNodeId?: NoteId | null;
+  /** Client-only expansion applied only after an authoritative prepared move. */
+  readonly expandNodeId?: NoteId;
 }
 
 export interface UseNotesWorkspaceResult
@@ -393,7 +437,7 @@ interface AttachmentUploadAttempt {
 export interface StructuralCommandOptions {
   readonly historyContext?: NotesHistoryContext | null;
   readonly retainHistoryOnFailure?: boolean;
-  readonly preserveSelection?: boolean;
+  readonly selectionPolicy?: NotesPendingSelectionPolicy;
 }
 
 export function authoritative(
@@ -437,6 +481,8 @@ export interface UnwrappedNotesMutation {
   // Only set by `notes_import_subtree` (plan Phase 4.4, paste import): the new
   // root ids in caller order, so the command can focus `importedRootIds[0]`.
   importedRootIds: readonly NoteId[] | undefined;
+  // Only set by a batch duplicate: fresh copied roots in source order.
+  duplicatedRootIds: readonly NoteId[] | undefined;
 }
 
 export function unwrapNotesMutation(
@@ -463,7 +509,8 @@ export function unwrapNotesMutation(
       },
       atomic: true,
       delta,
-      importedRootIds: response.importedRootIds
+      importedRootIds: response.importedRootIds,
+      duplicatedRootIds: response.duplicatedRootIds
     };
   }
   return {
@@ -472,7 +519,8 @@ export function unwrapNotesMutation(
     historyStatus: undefined,
     atomic: false,
     delta: null,
-    importedRootIds: undefined
+    importedRootIds: undefined,
+    duplicatedRootIds: undefined
   };
 }
 
@@ -685,7 +733,7 @@ export interface NotesWorkspaceQueueStep {
 interface BufferedWorkspaceCommand {
   work: NotesWorkspaceQueueWork;
   structural?: boolean;
-  preserveSelection?: boolean;
+  selectionPolicy?: NotesPendingSelectionPolicy;
   resolve(outcome: NotesWorkspaceCommandOutcome): void;
 }
 
@@ -731,7 +779,7 @@ function enqueueBufferedCommands(
     try {
       completion = command.structural
         ? session.enqueueStructural(command.work, {
-            preserveSelection: command.preserveSelection
+            selectionPolicy: command.selectionPolicy
           })
         : session.enqueue(command.work);
     } catch {
@@ -773,6 +821,34 @@ function cloneWorkspaceScope(scope: NotesWorkspaceScope): NotesWorkspaceScope {
   return scope.kind === "tags"
     ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
     : { ...scope };
+}
+
+function freezeActiveAuthorityWorkspace(
+  workspace: NotesWorkspace
+): NormalizedNotesWorkspace {
+  const nodes = workspace.nodes.map((node) => Object.freeze({ ...node }));
+  const attachmentsByNodeId = Object.fromEntries(
+    Object.entries(workspace.attachmentsByNodeId ?? {}).map(
+      ([nodeId, attachments]) => [
+        nodeId,
+        attachments.map((item) => Object.freeze({ ...item }))
+      ]
+    )
+  );
+  const normalized = normalizeWorkspace({ nodes, attachmentsByNodeId });
+  for (const childIds of Object.values(normalized.childIdsByParent)) {
+    Object.freeze(childIds);
+  }
+  for (const attachments of Object.values(
+    normalized.attachmentsByNodeId
+  )) {
+    Object.freeze(attachments);
+  }
+  Object.freeze(normalized.nodesById);
+  Object.freeze(normalized.childIdsByParent);
+  Object.freeze(normalized.rootIds);
+  Object.freeze(normalized.attachmentsByNodeId);
+  return Object.freeze(normalized);
 }
 
 function libraryStateForScope(scope: NotesWorkspaceScope): {
@@ -1147,6 +1223,8 @@ export function useNotesWorkspace({
   const [selection, dispatchSelection] = useReducer(notesSelectionReducer, null);
   const selectionRef = useRef(selection);
   selectionRef.current = selection;
+  const selectionRevisionRef = useRef(0);
+  const selectionPreparationTokenRef = useRef(0);
   const [libraryView, setLibraryView] = useState<NotesLibraryView>("all");
   const libraryViewRef = useRef(libraryView);
   libraryViewRef.current = libraryView;
@@ -1217,6 +1295,35 @@ export function useNotesWorkspace({
   const finalCleanupTokenRef = useRef<object | null>(null);
   const closedRef = useRef(false);
 
+  /**
+   * Single synchronous selection write path. The monotonic revision changes
+   * with every effective selection action, letting an async command apply its
+   * postcondition only if the user has not changed the range meanwhile.
+   */
+  const updateSelection = useCallback(
+    (
+      action: NotesSelectionAction,
+      expectedRevision?: number
+    ): boolean => {
+      if (
+        expectedRevision !== undefined &&
+        selectionRevisionRef.current !== expectedRevision
+      ) {
+        return false;
+      }
+      const previous = selectionRef.current;
+      const next = notesSelectionReducer(previous, action);
+      if (next === previous) {
+        return false;
+      }
+      selectionRef.current = next;
+      selectionRevisionRef.current += 1;
+      dispatchSelection(action);
+      return true;
+    },
+    []
+  );
+
   // Every reducer action flows through here. Running the reducer against the
   // synchronous mirror first (with the same pure reducer React will run on
   // commit) keeps `stateRef` ahead of the render, so navigation reads never
@@ -1248,11 +1355,10 @@ export function useNotesWorkspace({
           action.type === "setZoomRoot" ||
           action.type === "startWorkspaceLoad")
       ) {
-        selectionRef.current = null;
-        dispatchSelection({ type: "clearSelection" });
+        updateSelection({ type: "clearSelection" });
       }
     },
-    []
+    [updateSelection]
   );
 
   // The single derivation of "current navigation": settled reducer state, with
@@ -1440,6 +1546,7 @@ export function useNotesWorkspace({
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
+    selectionPreparationTokenRef.current += 1;
     requestedTagFiltersRef.current = [];
     tagFilterOriginRef.current = null;
     tagFilterRequestRef.current += 1;
@@ -1467,11 +1574,10 @@ export function useNotesWorkspace({
         if (event.type === "pending") {
           applyAction({ type: "setLoading" });
           if (
-            !event.preserveSelection &&
+            event.selectionPolicy === "clear" &&
             selectionRef.current !== null
           ) {
-            selectionRef.current = null;
-            dispatchSelection({ type: "clearSelection" });
+            updateSelection({ type: "clearSelection" });
           }
           return;
         }
@@ -1970,14 +2076,14 @@ export function useNotesWorkspace({
         record.vaultRoot === vaultRoot
       ) {
         return record.session.enqueueStructural(queueWork, {
-          preserveSelection: options?.preserveSelection
+          selectionPolicy: options?.selectionPolicy
         });
       }
       return new Promise<NotesWorkspaceCommandOutcome>((resolve) => {
         bufferedCommandsRef.current.push({
           work: queueWork,
           structural: true,
-          preserveSelection: options?.preserveSelection,
+          selectionPolicy: options?.selectionPolicy,
           resolve
         });
       });
@@ -2002,6 +2108,8 @@ export function useNotesWorkspace({
       stateRef,
       requestedTagFiltersRef,
       movePreparationTokenRef,
+      selectionPreparationTokenRef,
+      selectionRevisionRef,
       vaultRootRef,
       libraryViewRef,
       activeWorkspaceGenerationRef,
@@ -2085,26 +2193,37 @@ export function useNotesWorkspace({
   // workspace reducer — so an event handler that anchors then extends within one
   // turn (shift+arrow, shift+click) reads its own just-written selection.
   const setSelectionAnchor = useCallback((anchorId: NoteId): void => {
-    selectionRef.current = notesSelectionReducer(selectionRef.current, {
+    updateSelection({
       type: "setSelectionAnchor",
       anchorId
     });
-    dispatchSelection({ type: "setSelectionAnchor", anchorId });
-  }, []);
+  }, [updateSelection]);
   const extendSelectionTo = useCallback((headId: NoteId): void => {
-    selectionRef.current = notesSelectionReducer(selectionRef.current, {
+    updateSelection({
       type: "extendSelectionTo",
       headId
     });
-    dispatchSelection({ type: "extendSelectionTo", headId });
-  }, []);
+  }, [updateSelection]);
   const clearSelection = useCallback((): void => {
     if (selectionRef.current === null) {
       return;
     }
-    selectionRef.current = null;
-    dispatchSelection({ type: "clearSelection" });
-  }, []);
+    updateSelection({ type: "clearSelection" });
+  }, [updateSelection]);
+  const replaceSelection = useCallback(
+    (
+      nextSelection: NotesSelection | null,
+      expectedRevision?: number
+    ): boolean =>
+      updateSelection(
+        {
+          type: "replaceSelection",
+          selection: nextSelection ? { ...nextSelection } : null
+        },
+        expectedRevision
+      ),
+    [updateSelection]
+  );
 
   // The draft pipeline lives in NotesDraftEngine; these are thin, stable
   // delegators onto the currently active engine so action identity never churns.
@@ -2118,12 +2237,11 @@ export function useNotesWorkspace({
       // Workflowy). Guarded so only the first keystroke after a selection pays
       // the dispatch; subsequent keystrokes are no-ops.
       if (selectionRef.current !== null) {
-        selectionRef.current = null;
-        dispatchSelection({ type: "clearSelection" });
+        updateSelection({ type: "clearSelection" });
       }
       draftEngineRef.current?.updateNodeDraft(nodeId, patch, field);
     },
-    []
+    [updateSelection]
   );
 
   const flushNodeDraft = useCallback(
@@ -2707,17 +2825,19 @@ export function useNotesWorkspace({
   );
 
   const applyBatch = useCallback(
-    (
+    async (
       nodeIds: readonly NoteId[],
       op: NotesBatchOp,
       options?: { focusNodeId?: NoteId | null }
     ) =>
-      applyBatchCommand(
+      (
+        await applyBatchCommand(
         commandCtx,
         nodeIds,
         op,
         focusedUiUpdate(options?.focusNodeId)
-      ),
+        )
+      ).outcome,
     [commandCtx]
   );
 
@@ -3466,7 +3586,8 @@ export function useNotesWorkspace({
       redo: gate(redo),
       setSelectionAnchor,
       extendSelectionTo,
-      clearSelection
+      clearSelection,
+      replaceSelection
     };
   }, [
     acknowledgeFocus,
@@ -3513,8 +3634,112 @@ export function useNotesWorkspace({
     redo,
     setSelectionAnchor,
     extendSelectionTo,
-    clearSelection
+    clearSelection,
+    replaceSelection
   ]);
+
+  const isPreparedSelectionAuthorityCurrent = useCallback(
+    (prepared: NotesPreparedSelectionAuthority): boolean => {
+      const record = sessionRecordRef.current;
+      return (
+        prepared.token === selectionPreparationTokenRef.current &&
+        prepared.vaultRoot === vaultRootRef.current &&
+        sameScope(prepared.scope, activeScopeRef.current) &&
+        prepared.generation === activeWorkspaceGenerationRef.current &&
+        prepared.selectionRevision === selectionRevisionRef.current &&
+        prepared.session === sessionRef.current &&
+        record !== null &&
+        !record.closing &&
+        record.session === prepared.session &&
+        prepared.selectedNodeIds.length > 0 &&
+        prepared.selectedNodeIds.every(
+          (nodeId) => prepared.workspace.nodesById[nodeId] !== undefined
+        )
+      );
+    },
+    []
+  );
+
+  const prepareSelectionAuthority = useCallback(
+    async (
+      selectedNodeIds: readonly NoteId[]
+    ): Promise<NotesPreparedSelectionAuthority> => {
+      const ids = [...selectedNodeIds];
+      if (ids.length === 0 || new Set(ids).size !== ids.length) {
+        throw new Error("A valid selected range is required.");
+      }
+      const record = sessionRecordRef.current;
+      const session = sessionRef.current;
+      if (
+        !record ||
+        record.closing ||
+        !session ||
+        record.session !== session
+      ) {
+        throw new Error("Notes are not ready.");
+      }
+      // This token is a session/lifecycle epoch, not a "latest request wins"
+      // counter. Preview hydration and command preparation may legitimately
+      // overlap; vault/session resets increment the epoch and invalidate both.
+      const token = selectionPreparationTokenRef.current;
+      const preparedVaultRoot = vaultRoot;
+      const scope = cloneWorkspaceScope(activeScopeRef.current);
+      if (scope.kind === "tags") {
+        for (const filter of scope.tags) {
+          Object.freeze(filter);
+        }
+        Object.freeze(scope.tags);
+      }
+      Object.freeze(scope);
+      const generation = activeWorkspaceGenerationRef.current;
+      const selectionRevision = selectionRevisionRef.current;
+      const activeWorkspace = freezeActiveAuthorityWorkspace(
+        await repository.loadWorkspace(preparedVaultRoot, { kind: "active" })
+      );
+      if (
+        token !== selectionPreparationTokenRef.current ||
+        vaultRootRef.current !== preparedVaultRoot ||
+        !sameScope(activeScopeRef.current, scope) ||
+        activeWorkspaceGenerationRef.current !== generation ||
+        selectionRevisionRef.current !== selectionRevision ||
+        sessionRef.current !== session ||
+        sessionRecordRef.current !== record ||
+        record.closing
+      ) {
+        throw new Error("Notes changed while preparing the selection.");
+      }
+      if (ids.some((nodeId) => activeWorkspace.nodesById[nodeId] === undefined)) {
+        throw new Error("A selected note is no longer active.");
+      }
+      return Object.freeze({
+        token,
+        vaultRoot: preparedVaultRoot,
+        scope,
+        generation,
+        session,
+        selectionRevision,
+        selectedNodeIds: Object.freeze(ids),
+        workspace: activeWorkspace
+      });
+    },
+    [repository, vaultRoot]
+  );
+
+  const applyPreparedSelectionBatch = useCallback(
+    (
+      prepared: NotesPreparedSelectionAuthority,
+      op: NotesBatchOp,
+      options?: NotesPreparedSelectionBatchOptions
+    ): Promise<NotesBatchCommandSettlement> =>
+      applyPreparedSelectionBatchCommand(
+        commandCtx,
+        prepared,
+        op,
+        focusedUiUpdate(options?.focusNodeId),
+        options?.expandNodeId
+      ),
+    [commandCtx]
+  );
 
   const loadActiveNodesForMove = useCallback(
     async (): Promise<readonly NoteNode[]> =>
@@ -3598,7 +3823,8 @@ export function useNotesWorkspace({
       writeError: currentWriteError,
       attachmentUploadErrorsByNodeId,
       attachmentUploadRetryAttemptIdsByNodeId,
-      selection
+      selection,
+      selectionRevision: selectionRevisionRef.current
     }),
     [
       draftsByNodeId,
@@ -3616,7 +3842,10 @@ export function useNotesWorkspace({
       retryLastFailedWrite,
       loadActiveNodesForMove,
       prepareMoveNode,
-      commitPreparedMove
+      commitPreparedMove,
+      prepareSelectionAuthority,
+      isPreparedSelectionAuthorityCurrent,
+      applyPreparedSelectionBatch
     }),
     [
       actions,
@@ -3624,7 +3853,10 @@ export function useNotesWorkspace({
       retryLastFailedWrite,
       loadActiveNodesForMove,
       prepareMoveNode,
-      commitPreparedMove
+      commitPreparedMove,
+      prepareSelectionAuthority,
+      isPreparedSelectionAuthorityCurrent,
+      applyPreparedSelectionBatch
     ]
   );
 

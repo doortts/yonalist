@@ -771,6 +771,27 @@ describe("notesSelectionReducer", () => {
     ).toEqual({ anchorId: "d", headId: "d" });
   });
 
+  it("replaceSelection atomically replaces both endpoints", () => {
+    expect(
+      notesSelectionReducer(
+        { anchorId: "b", headId: "d" },
+        {
+          type: "replaceSelection",
+          selection: { anchorId: "copy-1", headId: "copy-3" }
+        }
+      )
+    ).toEqual({ anchorId: "copy-1", headId: "copy-3" });
+  });
+
+  it("replaceSelection atomically clears the range", () => {
+    expect(
+      notesSelectionReducer(
+        { anchorId: "b", headId: "d" },
+        { type: "replaceSelection", selection: null }
+      )
+    ).toBeNull();
+  });
+
   it("clearSelection drops the selection", () => {
     expect(
       notesSelectionReducer({ anchorId: "b", headId: "d" }, {

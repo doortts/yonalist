@@ -19,12 +19,15 @@ import {
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
   scopedActiveDelta,
+  unwrapNotesMutation,
   useNotesWorkspace,
   type NotesWorkspaceActions,
   type UseNotesWorkspaceResult
 } from "./useNotesWorkspace";
 import { setNotesDeltaVerificationEnabled } from "./notesWorkspaceReducer";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
+import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
+import { createNotesSelectionCommandRouter } from "./useNotesSelectionCommandRouter";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
@@ -7979,6 +7982,953 @@ describe("useNotesWorkspace multi-node selection", () => {
     expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
     // The command's loading dispatch collapses the live selection.
     expect(result.current.selection).toBeNull();
+  });
+
+  it("forwards duplicate and exact tag batch operations without decomposing the selection", async () => {
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings()),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.actions.applyBatch(["a", "b"], {
+        type: "duplicate"
+      });
+      await result.current.actions.applyBatch(["a", "b"], {
+        type: "addTag",
+        tag: {
+          prefix: "#",
+          normalizedTag: "launch",
+          displayTag: "Launch"
+        }
+      });
+      await result.current.actions.applyBatch(["a", "b"], {
+        type: "removeTag",
+        tag: { prefix: "@", normalizedTag: "owner" }
+      });
+    });
+
+    expect(applyBatch).toHaveBeenCalledTimes(3);
+    expect(applyBatch).toHaveBeenNthCalledWith(
+      1,
+      "/vault",
+      { op: "duplicate", nodeIds: ["a", "b"] },
+      historyContext("batch")
+    );
+    expect(applyBatch).toHaveBeenNthCalledWith(
+      2,
+      "/vault",
+      {
+        op: "addTag",
+        nodeIds: ["a", "b"],
+        tag: {
+          prefix: "#",
+          normalizedTag: "launch",
+          displayTag: "Launch"
+        }
+      },
+      historyContext("batch")
+    );
+    expect(applyBatch).toHaveBeenNthCalledWith(
+      3,
+      "/vault",
+      {
+        op: "removeTag",
+        nodeIds: ["a", "b"],
+        tag: { prefix: "@", normalizedTag: "owner" }
+      },
+      historyContext("batch")
+    );
+  });
+
+  it("recomputes aggregate completion from the confirmed workspace at batch execution", async () => {
+    const completedAt = "2026-07-10T01:00:00Z";
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings()),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({
+      loadWorkspace: vi
+        .fn()
+        .mockResolvedValue(workspace(threeSiblings(completedAt))),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    await act(async () => {
+      // The stale caller hint deliberately says "complete". All confirmed
+      // targets are already complete, so queue-time aggregate resolution must
+      // send completed:false instead.
+      await result.current.actions.applyBatch(["a", "b", "c"], {
+        type: "complete",
+        completed: true
+      });
+    });
+
+    expect(applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      {
+        op: "complete",
+        nodeIds: ["a", "b", "c"],
+        completed: false
+      },
+      historyContext("batch")
+    );
+  });
+
+  it("recomputes completion after earlier queued work changes the confirmed workspace", async () => {
+    const earlier = deferred<NotesMutationResult>();
+    const updateNode = vi.fn().mockReturnValue(earlier.promise);
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: workspace(threeSiblings()),
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false
+      })
+    );
+    const store = threeNodeStore({ updateNode, applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    let earlierCompletion!: Promise<unknown>;
+    let batchCompletion!: Promise<unknown>;
+    act(() => {
+      earlierCompletion = result.current.actions.updateNode("a", {
+        title: "updated",
+        note: ""
+      });
+      batchCompletion = result.current.actions.applyBatch(["a", "b", "c"], {
+        type: "complete",
+        completed: true
+      });
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      earlier.resolve({
+        workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
+        historyEntryId: "earlier-entry",
+        canUndo: true,
+        canRedo: false
+      });
+      await earlierCompletion;
+      await batchCompletion;
+    });
+
+    expect(applyBatch).toHaveBeenCalledWith(
+      "/vault",
+      {
+        op: "complete",
+        nodeIds: ["a", "b", "c"],
+        completed: false
+      },
+      historyContext("batch")
+    );
+  });
+
+  it("skips the whole batch when any frozen target has vanished", async () => {
+    const applyBatch = vi.fn();
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+
+    let outcome: string | undefined;
+    await act(async () => {
+      outcome = await result.current.actions.applyBatch(["a", "missing"], {
+        type: "delete"
+      });
+    });
+
+    expect(outcome).toBe("skipped");
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("preserves duplicatedRootIds while unwrapping a batch mutation", () => {
+    expect(
+      unwrapNotesMutation({
+        workspace: workspace(threeSiblings()),
+        historyEntryId: "entry",
+        canUndo: true,
+        canRedo: false,
+        duplicatedRootIds: ["copy-a", "copy-b"]
+      }).duplicatedRootIds
+    ).toEqual(["copy-a", "copy-b"]);
+  });
+
+  it("prepares an immutable full Active selection authority including attachments", async () => {
+    const selectedAttachment = attachment({ id: "image-a", nodeId: "a" });
+    const activeWorkspace: NotesWorkspace = {
+      nodes: threeSiblings(),
+      attachmentsByNodeId: { a: [selectedAttachment] }
+    };
+    const store = threeNodeStore({
+      loadWorkspace: vi.fn().mockResolvedValue(activeWorkspace)
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    expect(prepared).toMatchObject({
+      vaultRoot: "/vault",
+      scope: { kind: "active" },
+      selectedNodeIds: ["a", "b"]
+    });
+    expect(prepared.workspace.rootIds).toEqual(["a", "b", "c"]);
+    expect(prepared.workspace.attachmentsByNodeId.a).toEqual([
+      selectedAttachment
+    ]);
+    expect(Object.isFrozen(prepared)).toBe(true);
+    expect(Object.isFrozen(prepared.selectedNodeIds)).toBe(true);
+    expect(Object.isFrozen(prepared.workspace)).toBe(true);
+    expect(Object.isFrozen(prepared.workspace.nodesById.a)).toBe(true);
+    expect(
+      Object.isFrozen(prepared.workspace.attachmentsByNodeId.a)
+    ).toBe(true);
+    expect(result.current.isPreparedSelectionAuthorityCurrent!(prepared)).toBe(
+      true
+    );
+  });
+
+  it("prepares full Active authority while the visible workspace is filtered", async () => {
+    const selectedAttachment = attachment({ id: "image-a", nodeId: "a" });
+    const all: NotesWorkspace = {
+      nodes: threeSiblings(),
+      attachmentsByNodeId: { a: [selectedAttachment] }
+    };
+    const starred = workspace([
+      node({ id: "a", sortKey: 1, isStarred: true })
+    ]);
+    const loadWorkspace = vi.fn(
+      async (_vaultRoot: string, scope = { kind: "active" }) =>
+        scope.kind === "starred" ? starred : all
+    );
+    const store = threeNodeStore({ loadWorkspace });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    act(() => result.current.actions.setSelectionAnchor("a"));
+
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a"])
+    );
+
+    expect(prepared.scope).toEqual({ kind: "starred" });
+    expect(prepared.workspace.rootIds).toEqual(["a", "b", "c"]);
+    expect(prepared.workspace.attachmentsByNodeId.a).toEqual([
+      selectedAttachment
+    ]);
+    expect(loadWorkspace).toHaveBeenLastCalledWith("/vault", {
+      kind: "active"
+    });
+  });
+
+  it("revalidates every prepared target inside the queue and skips atomically when one vanished", async () => {
+    const full = workspace(threeSiblings());
+    const withoutB = workspace([
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "c", sortKey: 3 })
+    ]);
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(full) // activation
+      .mockResolvedValueOnce(full) // preparation
+      .mockResolvedValueOnce(withoutB); // queue-time authority refresh
+    const applyBatch = vi.fn();
+    const store = threeNodeStore({ loadWorkspace, applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let settlement:
+      | Awaited<
+          ReturnType<
+            NonNullable<
+              typeof result.current.applyPreparedSelectionBatch
+            >
+          >
+        >
+      | undefined;
+    await act(async () => {
+      settlement = await result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "delete" }
+      );
+    });
+
+    expect(settlement).toEqual({
+      outcome: "skipped",
+      mutationCommitted: false
+    });
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("skips a prepared mutation when full Active content changed outside the coordinator generation", async () => {
+    const original = workspace([
+      node({ id: "a", sortKey: 1, title: "before" }),
+      node({ id: "b", sortKey: 2 })
+    ]);
+    const externallyChanged = workspace([
+      node({ id: "a", sortKey: 1, title: "changed elsewhere" }),
+      node({ id: "b", sortKey: 2 })
+    ]);
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(original) // activation
+      .mockResolvedValueOnce(original) // preparation
+      .mockResolvedValueOnce(externallyChanged); // queue-time refresh
+    const applyBatch = vi.fn();
+    const store = twoNodeStore({ loadWorkspace, applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    await expect(
+      result.current.applyPreparedSelectionBatch!(prepared, {
+        type: "delete"
+      })
+    ).resolves.toEqual({
+      outcome: "skipped",
+      mutationCommitted: false
+    });
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("copies but performs zero delete calls when Active content changes externally after the clipboard write", async () => {
+    const original = workspace([
+      node({ id: "a", sortKey: 1, title: "Copy me" }),
+      node({ id: "b", sortKey: 2, title: "Survivor" })
+    ]);
+    const externallyChanged = workspace([
+      node({ id: "a", sortKey: 1, title: "Changed after copy" }),
+      node({ id: "b", sortKey: 2, title: "Survivor" })
+    ]);
+    let active = original;
+    const applyBatch = vi.fn();
+    const writeClipboard = vi.fn(async () => {
+      active = externallyChanged;
+      return { kind: "success" as const, method: "plainText" as const };
+    });
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => result.current.actions.setSelectionAnchor("a"));
+
+    const router = createNotesSelectionCommandRouter({
+      getSnapshot: () =>
+        deriveNotesSelectionActionSnapshot({
+          selection: result.current.selection ?? null,
+          visibleNodeIds: result.current.state.rootIds,
+          workspace: result.current.state,
+          authoritativeWorkspace: result.current.state
+        }),
+      getSelectionRevision: () => result.current.selectionRevision!,
+      getVisibleNodeIds: (projectedWorkspace) =>
+        projectedWorkspace.rootIds,
+      flushDrafts: () => result.current.actions.flushAllDrafts(),
+      prepareAuthority: (nodeIds) =>
+        result.current.prepareSelectionAuthority!(nodeIds),
+      isAuthorityCurrent: (prepared) =>
+        result.current.isPreparedSelectionAuthorityCurrent!(prepared),
+      applyBatch: (prepared, op, options) =>
+        result.current.applyPreparedSelectionBatch!(prepared, op, options),
+      replaceSelection: (selection, expectedRevision) =>
+        result.current.actions.replaceSelection!(
+          selection,
+          expectedRevision
+        ),
+      focusNode: (nodeId) => {
+        void result.current.actions.focusNode(nodeId);
+      },
+      writeClipboard
+    });
+
+    let execution: Awaited<ReturnType<typeof router.execute>> | undefined;
+    await act(async () => {
+      execution = await router.execute({ type: "cut" });
+    });
+
+    expect(execution).toEqual({
+      outcome: "skipped",
+      mutationCommitted: false
+    });
+    expect(writeClipboard).toHaveBeenCalledWith("- Copy me");
+    expect(applyBatch).not.toHaveBeenCalled();
+    expect(result.current.selection).toEqual({
+      anchorId: "a",
+      headId: "a"
+    });
+  });
+
+  it("rejects a prepared move whose destination is inside the selected forest", async () => {
+    const tree = workspace([
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "inside", parentId: "a", sortKey: 1 }),
+      node({ id: "tail", sortKey: 2 })
+    ]);
+    const applyBatch = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(tree),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => result.current.actions.setSelectionAnchor("a"));
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a"])
+    );
+
+    let settlement: unknown;
+    await act(async () => {
+      settlement = await result.current.applyPreparedSelectionBatch!(
+        prepared,
+        {
+          type: "move",
+          parentId: "inside",
+          afterId: null
+        }
+      );
+    });
+
+    expect(settlement).toEqual({
+      outcome: "skipped",
+      mutationCommitted: false
+    });
+    expect(applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("invalidates a prepared authority when the selection revision changes", async () => {
+    const store = threeNodeStore();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    act(() => result.current.actions.extendSelectionTo("c"));
+
+    expect(result.current.isPreparedSelectionAuthorityCurrent!(prepared)).toBe(
+      false
+    );
+    await expect(
+      result.current.applyPreparedSelectionBatch!(prepared, {
+        type: "delete"
+      })
+    ).resolves.toMatchObject({
+      outcome: "skipped",
+      mutationCommitted: false
+    });
+    expect(store.applyBatch).not.toHaveBeenCalled();
+  });
+
+  it("does not let concurrent selection preparation calls invalidate each other", async () => {
+    const all = workspace(threeSiblings());
+    const firstLoad = deferred<NotesWorkspace>();
+    const loadWorkspace = vi
+      .fn()
+      .mockResolvedValueOnce(all) // activation
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockResolvedValueOnce(all);
+    const store = threeNodeStore({ loadWorkspace });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+
+    const first = result.current.prepareSelectionAuthority!(["a", "b"]);
+    const second = result.current.prepareSelectionAuthority!(["a", "b"]);
+    const secondPrepared = await second;
+    firstLoad.resolve(all);
+    const firstPrepared = await first;
+
+    expect(firstPrepared.token).toBe(secondPrepared.token);
+    expect(result.current.isPreparedSelectionAuthorityCurrent!(firstPrepared)).toBe(
+      true
+    );
+    expect(
+      result.current.isPreparedSelectionAuthorityCurrent!(secondPrepared)
+    ).toBe(true);
+  });
+
+  it("reports a committed duplicate even when the scoped projection fails", async () => {
+    const all = workspace(threeSiblings());
+    let starredLoads = 0;
+    const loadWorkspace = vi.fn(
+      async (_vaultRoot: string, scope = { kind: "active" }) => {
+        if (scope.kind === "starred") {
+          starredLoads += 1;
+          if (starredLoads > 1) {
+            throw new Error("projection unavailable");
+          }
+        }
+        return all;
+      }
+    );
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: all,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false,
+        duplicatedRootIds: ["copy-a", "copy-b"]
+      })
+    );
+    const store = threeNodeStore({ loadWorkspace, applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    await act(async () => result.current.actions.selectLibraryView("starred"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let settlement:
+      | Awaited<
+          ReturnType<
+            NonNullable<
+              typeof result.current.applyPreparedSelectionBatch
+            >
+          >
+        >
+      | undefined;
+    await act(async () => {
+      settlement = await result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "duplicate" }
+      );
+    });
+
+    expect(settlement).toEqual({
+      outcome: "failed",
+      mutationCommitted: true,
+      duplicatedRootIds: ["copy-a", "copy-b"]
+    });
+    expect(applyBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the successful projected workspace with duplicate settlement", async () => {
+    const before = workspace(threeSiblings());
+    const after = workspace([
+      ...threeSiblings(),
+      node({ id: "copy-a", sortKey: 4 }),
+      node({ id: "copy-b", sortKey: 5 })
+    ]);
+    const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+      Promise.resolve({
+        workspace: after,
+        historyEntryId: context?.entryId ?? null,
+        canUndo: true,
+        canRedo: false,
+        duplicatedRootIds: ["copy-a", "copy-b"]
+      })
+    );
+    const store = threeNodeStore({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let settlement:
+      | Awaited<
+          ReturnType<
+            NonNullable<
+              typeof result.current.applyPreparedSelectionBatch
+            >
+          >
+        >
+      | undefined;
+    await act(async () => {
+      settlement = await result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "duplicate" }
+      );
+    });
+
+    expect(settlement).toMatchObject({
+      outcome: "committed",
+      mutationCommitted: true,
+      duplicatedRootIds: ["copy-a", "copy-b"],
+      projectedWorkspace: {
+        rootIds: ["a", "b", "c", "copy-a", "copy-b"],
+        status: "ready"
+      }
+    });
+    expect(settlement?.projectedWorkspace?.nodesById["copy-b"]).toBeDefined();
+  });
+
+  it.each([
+    ["complete", "root"],
+    ["delete", null]
+  ] as const)(
+    "reconciles projected workspace UI state when %s keeps or removes the zoom root",
+    async (operation, expectedZoomRootId) => {
+      const before = workspace([
+        node({ id: "root", sortKey: 1 }),
+        node({ id: "child", parentId: "root", sortKey: 1 }),
+        node({ id: "sibling", sortKey: 2 })
+      ]);
+      const after =
+        operation === "complete"
+          ? workspace([
+              node({ id: "root", sortKey: 1 }),
+              node({
+                id: "child",
+                parentId: "root",
+                sortKey: 1,
+                completedAt: "2026-07-15T01:00:00Z"
+              }),
+              node({ id: "sibling", sortKey: 2 })
+            ])
+          : workspace([node({ id: "sibling", sortKey: 2 })]);
+      const applyBatch = vi.fn((_vaultRoot, _input, context) =>
+        Promise.resolve({
+          workspace: after,
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false
+        })
+      );
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(before),
+        applyBatch
+      });
+      const { result } = renderHook(() =>
+        useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+      );
+      await waitFor(() => expect(result.current.state.status).toBe("ready"));
+      await act(async () => result.current.actions.zoomTo("root"));
+      act(() =>
+        result.current.actions.setSelectionAnchor(
+          operation === "complete" ? "child" : "root"
+        )
+      );
+      const targetId = operation === "complete" ? "child" : "root";
+      const prepared = await act(async () =>
+        result.current.prepareSelectionAuthority!([targetId])
+      );
+
+      let settlement:
+        | Awaited<
+            ReturnType<
+              NonNullable<
+                typeof result.current.applyPreparedSelectionBatch
+              >
+            >
+          >
+        | undefined;
+      await act(async () => {
+        settlement = await result.current.applyPreparedSelectionBatch!(
+          prepared,
+          operation === "complete"
+            ? { type: "complete" }
+            : { type: "delete" }
+        );
+      });
+
+      expect(settlement?.projectedWorkspace?.zoomRootId).toBe(
+        expectedZoomRootId
+      );
+    }
+  );
+
+  it("locally expands a collapsed prepared reorder target only after success and records it in history", async () => {
+    const before = workspace([
+      node({ id: "moving", sortKey: 1 }),
+      node({ id: "target", sortKey: 2, isCollapsed: true }),
+      node({ id: "existing", parentId: "target", sortKey: 1 })
+    ]);
+    const after = workspace([
+      node({ id: "target", sortKey: 2, isCollapsed: true }),
+      node({ id: "existing", parentId: "target", sortKey: 1 }),
+      node({ id: "moving", parentId: "target", sortKey: 2 })
+    ]);
+    let active = before;
+    let batchEntryId: string | null = null;
+    const applyBatch = vi.fn(async (_vaultRoot, _input, context) => {
+      active = after;
+      batchEntryId = context?.entryId ?? null;
+      return {
+        workspace: after,
+        historyEntryId: batchEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const undo = vi.fn(async () => {
+      active = before;
+      return {
+        workspace: before,
+        replayedEntryId: batchEntryId,
+        canUndo: false,
+        canRedo: true
+      };
+    });
+    const redo = vi.fn(async () => {
+      active = after;
+      return {
+        workspace: after,
+        replayedEntryId: batchEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const toggleCollapsed = vi.fn();
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      applyBatch,
+      undo,
+      redo,
+      toggleCollapsed
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => result.current.actions.setSelectionAnchor("moving"));
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["moving"])
+    );
+
+    await act(async () =>
+      result.current.applyPreparedSelectionBatch!(
+        prepared,
+        {
+          type: "move",
+          parentId: "target",
+          afterId: "existing"
+        },
+        { expandNodeId: "target" }
+      )
+    );
+
+    expect(result.current.locallyExpandedNodeIds).toEqual(
+      new Set(["target"])
+    );
+    expect(toggleCollapsed).not.toHaveBeenCalled();
+    expect(applyBatch).toHaveBeenCalledTimes(1);
+
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.locallyExpandedNodeIds).toEqual(new Set());
+    await act(async () => result.current.actions.redo!());
+    expect(result.current.locallyExpandedNodeIds).toEqual(
+      new Set(["target"])
+    );
+  });
+
+  it("does not expand a prepared reorder target after selection ownership becomes stale", async () => {
+    const before = workspace([
+      node({ id: "moving", sortKey: 1 }),
+      node({ id: "target", sortKey: 2, isCollapsed: true })
+    ]);
+    const after = workspace([
+      node({ id: "target", sortKey: 2, isCollapsed: true }),
+      node({ id: "moving", parentId: "target", sortKey: 1 })
+    ]);
+    const pending = deferred<NotesMutationResult>();
+    const applyBatch = vi.fn().mockReturnValue(pending.promise);
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(before),
+      applyBatch
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => result.current.actions.setSelectionAnchor("moving"));
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["moving"])
+    );
+
+    let completion!: Promise<unknown>;
+    act(() => {
+      completion = result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "move", parentId: "target", afterId: null },
+        { expandNodeId: "target" }
+      );
+    });
+    await waitFor(() => expect(applyBatch).toHaveBeenCalledTimes(1));
+    act(() => result.current.actions.clearSelection());
+    pending.resolve({
+      workspace: after,
+      historyEntryId: "batch-entry",
+      canUndo: true,
+      canRedo: false
+    });
+    await act(async () => completion);
+
+    expect(result.current.locallyExpandedNodeIds).toEqual(new Set());
+  });
+
+  it("keeps a prepared range selected while the batch is pending and after failure", async () => {
+    const pending = deferred<NotesWorkspace>();
+    const applyBatch = vi.fn().mockReturnValue(pending.promise);
+    const store = threeNodeStore({ applyBatch });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let completion!: Promise<unknown>;
+    act(() => {
+      completion = result.current.applyPreparedSelectionBatch!(prepared, {
+        type: "delete"
+      });
+    });
+    await waitFor(() => expect(applyBatch).toHaveBeenCalledTimes(1));
+    expect(result.current.selection).toEqual({
+      anchorId: "a",
+      headId: "b"
+    });
+
+    await act(async () => pending.reject(new Error("batch rejected")));
+    await expect(completion).resolves.toMatchObject({
+      outcome: "failed",
+      mutationCommitted: false
+    });
+    expect(result.current.selection).toEqual({
+      anchorId: "a",
+      headId: "b"
+    });
+  });
+
+  it("applies an atomic selection replacement only at the frozen revision", async () => {
+    const { result } = await withSelectedRange();
+    const frozenRevision = result.current.selectionRevision!;
+
+    act(() => result.current.actions.extendSelectionTo("root"));
+    let staleApplied = true;
+    act(() => {
+      staleApplied = result.current.actions.replaceSelection!(
+        { anchorId: "copy-a", headId: "copy-b" },
+        frozenRevision
+      );
+    });
+
+    expect(staleApplied).toBe(false);
+    expect(result.current.selection).toEqual({
+      anchorId: "root",
+      headId: "root"
+    });
+
+    let currentApplied = false;
+    act(() => {
+      currentApplied = result.current.actions.replaceSelection!(
+        { anchorId: "copy-a", headId: "copy-b" },
+        result.current.selectionRevision
+      );
+    });
+    expect(currentApplied).toBe(true);
+    expect(result.current.selection).toEqual({
+      anchorId: "copy-a",
+      headId: "copy-b"
+    });
+  });
+
+  it("does not advance the selection revision for a reducer identity no-op", async () => {
+    const store = twoNodeStore();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    const initialRevision = result.current.selectionRevision!;
+
+    let applied = true;
+    act(() => {
+      applied = result.current.actions.replaceSelection!(
+        null,
+        initialRevision
+      );
+    });
+    act(() => result.current.actions.setSelectionAnchor("root"));
+
+    expect(applied).toBe(false);
+    expect(result.current.selectionRevision).toBe(initialRevision + 1);
   });
 
   it("forwards a before-anchored batch move without rewriting its placement", async () => {
