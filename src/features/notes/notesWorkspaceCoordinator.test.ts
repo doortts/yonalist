@@ -545,6 +545,29 @@ describe("notesWorkspaceCoordinator registry", () => {
     session.close();
   });
 
+  it("normalizes malformed activation failures before notifying the UI", async () => {
+    const store = repository({
+      initialize: vi.fn().mockRejectedValue({ detail: "opaque" })
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/malformed-activation",
+      onEvent: events
+    });
+
+    await session.activation;
+
+    expect(events).toHaveBeenCalledWith({
+      type: "settled",
+      result: { kind: "failure", error: "Notes request failed." },
+      hasPendingWork: false
+    });
+    expect(JSON.stringify(events.mock.calls)).not.toContain("[object Object]");
+    session.close();
+  });
+
   it("shares one history session per repository and vault coordinator entry", async () => {
     const store = repository();
     const registry = createNotesWorkspaceCoordinatorRegistry();

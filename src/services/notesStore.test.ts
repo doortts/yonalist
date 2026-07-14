@@ -3,6 +3,7 @@ import { Blob as NodeBlob } from "node:buffer";
 import {
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
+  notesInitialize,
   notesLoadWorkspace
 } from "./notesStore";
 
@@ -106,6 +107,32 @@ describe("notesStore structured errors", () => {
       code: "unsupportedSchemaVersion",
       retryable: false,
       message: "This Notes database uses unsupported schema version 99."
+    });
+  });
+
+  it("normalizes structured initialization failures", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({
+      code: "vaultBusy",
+      message: "Notes vault is already open in another window."
+    });
+
+    await expect(notesInitialize("/vault")).rejects.toMatchObject({
+      operation: "load",
+      code: "vaultBusy",
+      retryable: true,
+      message: "Notes vault is already open in another window."
+    });
+  });
+
+  it("never stringifies malformed initialization objects", async () => {
+    Reflect.set(window, "__TAURI_INTERNALS__", {});
+    invokeMock.mockRejectedValue({ detail: "opaque" });
+
+    await expect(notesInitialize("/vault")).rejects.toMatchObject({
+      operation: "load",
+      code: "internal",
+      message: "Notes request failed."
     });
   });
 

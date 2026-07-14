@@ -689,6 +689,17 @@ describe("notes error taxonomy", () => {
     ).toEqual({ code: "internal", message: "boom" });
   });
 
+  it("uses a stable fallback for malformed object causes", () => {
+    expect(parseNotesError({ detail: "opaque transport payload" })).toEqual({
+      code: "internal",
+      message: "Notes request failed."
+    });
+    expect(parseNotesError(null)).toEqual({
+      code: "internal",
+      message: "Notes request failed."
+    });
+  });
+
   it("derives retryability from the code", () => {
     const retryable: NotesErrorCode[] = ["vaultBusy", "internal"];
     const notRetryable: NotesErrorCode[] = [

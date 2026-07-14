@@ -315,8 +315,12 @@ async function invokeNotes<T>(
   return invoke<T>(command, args);
 }
 
-export function notesInitialize(vaultPath: string): Promise<void> {
-  return invokeNotes<void>("notes_initialize", { vaultPath });
+export async function notesInitialize(vaultPath: string): Promise<void> {
+  try {
+    await invokeNotes<void>("notes_initialize", { vaultPath });
+  } catch (cause) {
+    throw notesStoreError("load", cause);
+  }
 }
 
 export async function notesLoadWorkspace(

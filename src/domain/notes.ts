@@ -195,8 +195,10 @@ export function parseNotesError(cause: unknown): NotesStructuredError {
       return { code, message };
     }
   }
-  const message = typeof cause === "string" ? cause : String(cause);
-  return { code: "internal", message };
+  if (typeof cause === "string") {
+    return { code: "internal", message: cause };
+  }
+  return { code: "internal", message: "Notes request failed." };
 }
 
 export function isRetryableNotesErrorCode(code: NotesErrorCode): boolean {

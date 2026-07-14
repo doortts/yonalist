@@ -1,9 +1,10 @@
-import type {
-  NoteId,
-  NotesHistoryStatus,
-  NotesStore,
-  NotesWorkspace,
-  NotesWorkspaceScope
+import {
+  parseNotesError,
+  type NoteId,
+  type NotesHistoryStatus,
+  type NotesStore,
+  type NotesWorkspace,
+  type NotesWorkspaceScope
 } from "../../domain/notes";
 import {
   createNotesHistorySession,
@@ -190,7 +191,7 @@ interface CommandItem extends QueueItemBase {
 type QueueItem = ActivationItem | CommandItem;
 
 function errorMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
+  return parseNotesError(cause).message;
 }
 
 function completionParts<T>(): {
