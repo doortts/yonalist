@@ -228,11 +228,11 @@ describe("ItemListPane", () => {
       />
     );
 
-    expect(screen.getByRole("tab", { name: "Open 3" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: /^Open\s*3$/ })).toHaveAttribute(
       "aria-selected",
       "false"
     );
-    expect(screen.getByRole("tab", { name: "Closed 2" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: /^Closed\s*2$/ })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -396,8 +396,8 @@ describe("ItemListPane", () => {
       />
     );
 
-    const openTab = screen.getByRole("tab", { name: "Open 3" });
-    const closedTab = screen.getByRole("tab", { name: "Closed 2" });
+    const openTab = screen.getByRole("tab", { name: /^Open\s*3$/ });
+    const closedTab = screen.getByRole("tab", { name: /^Closed\s*2$/ });
 
     fireEvent.click(closedTab);
     expect(onStateFilterChange).toHaveBeenCalledWith("closed");

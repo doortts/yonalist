@@ -88,7 +88,7 @@ describe("Sidebar", () => {
       "aria-pressed",
       "false"
     );
-    expect(screen.getByRole("button", { name: /^workflowy 4/ })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: /^workflowy\s*4/ })).toHaveAttribute(
       "aria-pressed",
       "false"
     );

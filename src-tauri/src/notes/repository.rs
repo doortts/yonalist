@@ -386,9 +386,7 @@ fn ensure_notes_onboarding(transaction: &Transaction<'_>) -> Result<(), String> 
                         title
                     ],
                 )
-                .map_err(|error| {
-                    format!("Could not create Notes onboarding guidance: {error}")
-                })?;
+                .map_err(|error| format!("Could not create Notes onboarding guidance: {error}"))?;
         }
     }
 
@@ -1461,10 +1459,7 @@ fn attachments_for_nodes(
 
 /// Loads a single node's attachment metadata rows in stored order. Used by
 /// `duplicate_node_at` to clone attachment rows onto the copied nodes.
-fn node_attachments(
-    connection: &Connection,
-    node_id: &str,
-) -> Result<Vec<NoteAttachment>, String> {
+fn node_attachments(connection: &Connection, node_id: &str) -> Result<Vec<NoteAttachment>, String> {
     let mut statement = connection
         .prepare(
             "SELECT id, node_id, sort_key, relative_path, content_hash, original_name, \
@@ -2258,7 +2253,10 @@ fn search_nodes_by_date(
         .map_err(|error| format!("Could not search Note dates: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
-    let node_ids = matches.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>();
+    let node_ids = matches
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
     Ok(matches
         .into_iter()
@@ -2311,7 +2309,10 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not search Notes: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
-    let node_ids = matches.iter().map(|(id, _, _)| id.as_str()).collect::<Vec<_>>();
+    let node_ids = matches
+        .iter()
+        .map(|(id, _, _)| id.as_str())
+        .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
 
     Ok(matches
@@ -2554,7 +2555,10 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
-    let node_ids = matches.iter().map(|(id, _, _, _)| id.as_str()).collect::<Vec<_>>();
+    let node_ids = matches
+        .iter()
+        .map(|(id, _, _, _)| id.as_str())
+        .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
 
     Ok(matches
@@ -4046,9 +4050,7 @@ pub(crate) fn apply_batch(
     input.validate()?;
     let node_ids = dedup_preserving_order(&input.node_ids);
     with_workspace_transaction(connection, |transaction| match &input.op {
-        BatchOp::Complete { completed } => {
-            batch_set_completed(transaction, &node_ids, *completed)
-        }
+        BatchOp::Complete { completed } => batch_set_completed(transaction, &node_ids, *completed),
         BatchOp::Delete => batch_soft_delete(transaction, &node_ids),
         BatchOp::Move {
             parent_id,
@@ -4182,8 +4184,7 @@ fn move_node_within_transaction(
     parent_id: Option<&str>,
     after_id: Option<&str>,
 ) -> Result<(), String> {
-    let sort_key =
-        next_sort_key_excluding(transaction, parent_id, after_id, None, Some(node_id))?;
+    let sort_key = next_sort_key_excluding(transaction, parent_id, after_id, None, Some(node_id))?;
     transaction
         .execute(
             "UPDATE notes_nodes SET parent_id = ?1, sort_key = ?2, \
@@ -4213,7 +4214,9 @@ fn batch_move(
     let selected: BTreeSet<&str> = node_ids.iter().map(String::as_str).collect();
     if let Some(after_id) = after_id {
         if selected.contains(after_id) {
-            return Err("A batch move cannot be anchored after a node in the selection.".to_string());
+            return Err(
+                "A batch move cannot be anchored after a node in the selection.".to_string(),
+            );
         }
     }
     let roots = selection_roots(transaction, node_ids, &selected)?;
@@ -4570,9 +4573,9 @@ fn create_attachment_coordinated_inner(
     // rejected batch never touches the filesystem (the `*_before_publication`
     // contract tests pin this).
     let (attachments, sort_keys) = {
-        let transaction = connection.transaction().map_err(|error| {
-            format!("Could not start the Notes attachment validation: {error}")
-        })?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Could not start the Notes attachment validation: {error}"))?;
         if let Some((node_id, batch_len)) = capacity_preflight {
             validate_attachment_batch_capacity(&transaction, node_id, batch_len)?;
         }
@@ -4836,15 +4839,13 @@ mod tests {
         create_attachments_coordinated_for_node, create_node, create_node_at,
         create_version_one_schema, delete_database, duplicate_node, duplicate_node_at, empty_trash,
         expand_all, import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts,
-        load_workspace,
-        migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
-        observe_next_migration_busy,
-        open_notes_export_db, preflight_existing_notes_schema, remove_empty_node,
-        restore_attachment, restore_node, restore_node_at, search_nodes, search_nodes_at,
-        search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-        split_node, split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete,
-        toggle_star, unarchive_node, update_node, update_node_at, NewAttachment, NoteAttachment,
-        SORT_KEY_STEP,
+        load_workspace, migrate_version_one_to_two, move_node, node_attachments, notes_db_path,
+        observe_next_migration_busy, open_notes_export_db, preflight_existing_notes_schema,
+        remove_empty_node, restore_attachment, restore_node, restore_node_at, search_nodes,
+        search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
+        sort_subtree_descending, split_node, split_node_at, sqlite_companion_path,
+        toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
+        update_node_at, NewAttachment, NoteAttachment, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
@@ -5610,14 +5611,21 @@ mod tests {
             ImportSubtreeInput {
                 parent_id: Some(NODE_ID.to_string()),
                 after_id: None,
-                nodes: vec![import_leaf("first"), import_leaf("second"), import_leaf("third")],
+                nodes: vec![
+                    import_leaf("first"),
+                    import_leaf("second"),
+                    import_leaf("third"),
+                ],
             },
         );
 
         assert_eq!(roots.len(), 3);
         let children = active_children(&connection, Some(NODE_ID));
         assert_eq!(
-            children.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+            children
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
             roots,
             "imported roots land under the parent in caller order"
         );
@@ -5636,8 +5644,12 @@ mod tests {
             "the whole import is a single history entry"
         );
 
-        undo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
-            .expect("undo import");
+        undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo import");
         assert!(
             active_children(&connection, Some(NODE_ID)).is_empty(),
             "one undo removes every imported node"
@@ -5692,9 +5704,11 @@ mod tests {
         assert_eq!(node_shape(&connection, &grandchildren[0].0).2, "grandchild");
 
         let root_note: String = connection
-            .query_row("SELECT note FROM notes_nodes WHERE id = ?1", [root_id], |row| {
-                row.get(0)
-            })
+            .query_row(
+                "SELECT note FROM notes_nodes WHERE id = ?1",
+                [root_id],
+                |row| row.get(0),
+            )
             .expect("root note");
         assert_eq!(root_note, "body");
     }
@@ -5746,7 +5760,10 @@ mod tests {
             fixed_today(),
         )
         .expect_err("empty import must be rejected");
-        assert!(error.contains("at least one node"), "unexpected error: {error}");
+        assert!(
+            error.contains("at least one node"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -5803,16 +5820,24 @@ mod tests {
             .map(|id| (id.clone(), node_shape(&connection, id)))
             .collect::<Vec<_>>();
 
-        undo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
-            .expect("undo import");
+        undo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo import");
         let after_undo = active_node_ids(&connection);
         assert!(
             imported.iter().all(|id| !after_undo.contains(id)),
             "undo removes every imported node"
         );
 
-        redo(&mut connection, &context.session_id, NotesWorkspaceScope::Active)
-            .expect("redo import");
+        redo(
+            &mut connection,
+            &context.session_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("redo import");
         let restored = imported
             .iter()
             .map(|id| (id.clone(), node_shape(&connection, id)))
@@ -6957,11 +6982,9 @@ mod tests {
             nodes[0].4,
             "이 노트는 자유롭게 수정하거나 삭제할 수 있어요."
         );
-        assert!(
-            nodes[1..]
-                .iter()
-                .all(|node| node.1.as_deref() == Some(nodes[0].0.as_str()))
-        );
+        assert!(nodes[1..]
+            .iter()
+            .all(|node| node.1.as_deref() == Some(nodes[0].0.as_str())));
         assert_eq!(
             nodes[1..]
                 .iter()
@@ -6991,13 +7014,7 @@ mod tests {
         let vault_path = temp_dir.path().to_str().expect("path");
         let mut connection = connect_notes_db(vault_path).expect("connect notes");
         remove_onboarding_for_test(&connection);
-        insert_node(
-            &connection,
-            NODE_ID,
-            None,
-            SORT_KEY_STEP,
-            "Existing note",
-        );
+        insert_node(&connection, NODE_ID, None, SORT_KEY_STEP, "Existing note");
 
         initialize_notes_db(&mut connection).expect("reinitialize notes");
 
@@ -9491,7 +9508,9 @@ mod tests {
             vec![first_id.clone(), second_id.clone()]
         );
         let total_before: i64 = connection
-            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
             .expect("count attachments before");
         assert_eq!(total_before, 2);
 
@@ -9536,7 +9555,9 @@ mod tests {
             source_before
         );
         let total_after: i64 = connection
-            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
             .expect("count attachments after");
         assert_eq!(total_after, 4);
         let distinct_paths: i64 = connection
@@ -10128,7 +10149,11 @@ mod tests {
         assert_eq!(
             tags,
             vec![
-                ("#".to_string(), "caf\u{e9}".to_string(), "caf\u{e9}".to_string()),
+                (
+                    "#".to_string(),
+                    "caf\u{e9}".to_string(),
+                    "caf\u{e9}".to_string()
+                ),
                 ("#".to_string(), "Tag".to_string(), "tag".to_string()),
                 ("#".to_string(), "नमस्ते".to_string(), "नमस्ते".to_string()),
                 ("#".to_string(), "𐐷".to_string(), "𐐷".to_string()),
@@ -10726,7 +10751,10 @@ mod tests {
         .expect("structured nested search");
         assert_eq!(structured.len(), 1);
         assert_eq!(structured[0].node_id, FOURTH_ID);
-        assert_eq!(structured[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+        assert_eq!(
+            structured[0].parent_trail,
+            vec!["Alpha", "Bravo", "Charlie"]
+        );
 
         // Empty result set: no trails to resolve, no panic.
         assert!(search_nodes(&connection, "missing")

@@ -39,6 +39,6 @@ describe("Tauri command runner", () => {
     expect(scripts["tauri:build"]).toBe("node scripts/tauri.mjs build");
 
     const toolchain = readFileSync(join(root, "rust-toolchain.toml"), "utf8");
-    expect(toolchain).toContain('channel = "1.88.0"');
+    expect(toolchain).toContain('channel = "1.97.0"');
   });
 });

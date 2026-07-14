@@ -55,7 +55,7 @@ interface NotesDateTodayProviderProps {
 interface UseNotesDatePickerIntegrationOptions {
   readonly values: Readonly<Record<NotesDateField, string>>;
   readonly refs: Readonly<
-    Record<NotesDateField, RefObject<HTMLTextAreaElement>>
+    Record<NotesDateField, RefObject<HTMLTextAreaElement | null>>
   >;
   readonly onCommit: (field: NotesDateField, value: string) => void;
 }

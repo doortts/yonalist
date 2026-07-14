@@ -41,6 +41,13 @@ pub(crate) const ATTACHMENT_LEASE_BUSY_MESSAGE: &str =
 /// connection manager's (process) lifetime so only one app instance opens a
 /// vault at a time; distinct from the short-lived attachment storage lease.
 pub(crate) const VAULT_APP_LOCK_NAME: &str = "notes.app.lock";
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
 /// User-facing error when another OS-level app instance already holds the
 /// vault application lock.
 pub(crate) const VAULT_APP_LOCK_BUSY_MESSAGE: &str =
@@ -636,7 +643,7 @@ fn validate_image_bytes_with_extension_policy(
         width: dimensions.0,
         height: dimensions.1,
         byte_size,
-        content_hash: format!("{:x}", Sha256::digest(bytes)),
+        content_hash: sha256_hex(bytes),
     })
 }
 
@@ -1192,10 +1199,7 @@ impl AttachmentStorageLease {
     /// `try_lock` (its shared counterpart is `try_lock_shared`) and reports
     /// contention as `TryLockError::WouldBlock`; any other error is a real I/O
     /// failure and is surfaced immediately.
-    fn lock_with_deadline(
-        lock_file: &File,
-        deadline: std::time::Duration,
-    ) -> Result<(), String> {
+    fn lock_with_deadline(lock_file: &File, deadline: std::time::Duration) -> Result<(), String> {
         let started = std::time::Instant::now();
         loop {
             match FileExt::try_lock(lock_file) {
@@ -1412,7 +1416,7 @@ impl AttachmentStorageLease {
         let target_name = safe_owned_file_name(&relative_path)?.to_string();
         if let Ok(existing) = self.open_owned_file(&target_name) {
             let existing = read_bounded(existing, MAX_ATTACHMENT_BYTES)?;
-            if format!("{:x}", Sha256::digest(&existing)) == prepared.image.content_hash {
+            if sha256_hex(&existing) == prepared.image.content_hash {
                 return Ok(relative_path);
             }
         }
@@ -1513,7 +1517,7 @@ impl AttachmentStorageLease {
         // Skipping the per-read decode keeps multi-megabyte reads cheap. The
         // canonical `notes-assets/{hash}.{ext}` path was already checked by
         // `resolve_owned_asset_path`, so a matching digest confirms the bytes.
-        if format!("{:x}", Sha256::digest(&bytes)) != content_hash {
+        if sha256_hex(&bytes) != content_hash {
             return Err(
                 "The Notes attachment file no longer matches its stored content hash.".to_string(),
             );
@@ -1796,8 +1800,9 @@ mod tests {
     use super::{
         canonical_relative_path, inject_cleanup_failure, inject_source_growth,
         prepare_source_attachment, prepare_source_attachment_without_budget,
-        publish_attachment_bytes, resolve_owned_asset_path, validate_decoded_dimensions,
-        validate_image_bytes, AttachmentStorageLease, CleanupFailurePoint, ValidationLimits,
+        publish_attachment_bytes, resolve_owned_asset_path, sha256_hex,
+        validate_decoded_dimensions, validate_image_bytes, AttachmentStorageLease,
+        CleanupFailurePoint, ValidationLimits,
     };
     // Alias each command to its synchronous `_inner` body so these tests keep
     // running the note logic inline (the public commands are now async wrappers
@@ -1809,11 +1814,9 @@ mod tests {
         notes_import_attachment_inner as notes_import_attachment,
         notes_initialize_inner as notes_initialize,
         notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
-        notes_redo_inner as notes_redo,
-        notes_remove_attachment_inner as notes_remove_attachment,
+        notes_redo_inner as notes_redo, notes_remove_attachment_inner as notes_remove_attachment,
         notes_resize_attachment_inner as notes_resize_attachment,
-        notes_restore_attachment_inner as notes_restore_attachment,
-        notes_undo_inner as notes_undo,
+        notes_restore_attachment_inner as notes_restore_attachment, notes_undo_inner as notes_undo,
         notes_update_node_inner as notes_update_node,
     };
     use crate::notes::history::HISTORY_MAX_ENTRIES;
@@ -2001,6 +2004,14 @@ mod tests {
             assert_eq!(validated.byte_size, bytes.len() as u64);
             assert_eq!(validated.content_hash.len(), 64);
         }
+    }
+
+    #[test]
+    fn sha256_hashes_attachment_bytes_as_lowercase_hex() {
+        assert_eq!(
+            sha256_hex(b"yonalist"),
+            "5cd15991da55063f883628051a44e9d5db87c7c70339800606a14f4e92d22d4d"
+        );
     }
 
     #[test]

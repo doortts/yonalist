@@ -1,12 +1,12 @@
 use crate::file_io::write_atomic_file;
 use crate::notes::attachment_ingest::decode_raw_attachment_envelope;
-use crate::notes::error::{NotesError, NotesErrorCode};
 use crate::notes::attachments::{AttachmentStorageLease, PreparedAttachmentBatch};
 use crate::notes::connection::{
     acquire_notes_connection, acquire_vault_app_lock, evict_notes_connection,
     lock_notes_connection, reinitialize_notes_connection,
 };
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
+use crate::notes::error::{NotesError, NotesErrorCode};
 use crate::notes::export::{
     hydrate_export_attachments, load_export_snapshot, markdown_asset_destination,
     preflight_markdown_asset_destination, prepare_markdown_export, publish_markdown_export,
@@ -19,20 +19,19 @@ use crate::notes::history::{
 use crate::notes::repository::{
     apply_batch, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
-    empty_trash, expand_all, import_subtree_at, list_tags,
-    list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
-    remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
-    restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node,
-    sort_subtree_ascending, sort_subtree_descending, split_node_at, toggle_collapsed,
-    toggle_complete, toggle_star, unarchive_node, update_node_at, validate_note_tag_filters,
+    empty_trash, expand_all, import_subtree_at, list_tags, list_tags_with_counts, load_workspace,
+    move_node, open_notes_export_db, remove_attachment, remove_empty_node,
+    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
+    search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
+    sort_subtree_descending, split_node_at, toggle_collapsed, toggle_complete, toggle_star,
+    unarchive_node, update_node_at, validate_note_tag_filters,
     validate_structured_search_query_input, NewAttachment,
 };
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, CreateNodeInput, ImportAttachmentInput,
     ImportAttachmentPathBatchInput, ImportSubtreeInput, MoveNodeInput, NoteAttachment,
-    NoteSearchResult,
-    NoteSearchScope, NoteStructuredSearchQuery,
-    NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
+    NoteSearchResult, NoteSearchScope, NoteStructuredSearchQuery, NoteTagSummary,
+    NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
     NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
     NotesWorkspaceScope, ResizeAttachmentInput, SplitNodeInput, UpdateNodeInput,
 };
@@ -333,8 +332,8 @@ fn arm_delete_database_race() {
 }
 
 #[cfg(test)]
-fn take_delete_database_raced_connection(
-) -> Option<crate::notes::connection::SharedNotesConnection> {
+fn take_delete_database_raced_connection() -> Option<crate::notes::connection::SharedNotesConnection>
+{
     DELETE_DATABASE_RACED_CONNECTION.with(|slot| slot.borrow_mut().take())
 }
 
@@ -1582,10 +1581,8 @@ pub(crate) async fn notes_restore_attachment(
     attachment_id: String,
     history_context: Option<NotesHistoryContext>,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || {
-        notes_restore_attachment_inner(vault_path, attachment_id, history_context)
-    })
-    .await
+    run_blocking(move || notes_restore_attachment_inner(vault_path, attachment_id, history_context))
+        .await
 }
 
 pub(crate) fn notes_restore_attachment_inner(
@@ -1903,23 +1900,19 @@ mod tests {
         notes_create_node_inner as notes_create_node,
         notes_delete_database_inner as notes_delete_database,
         notes_duplicate_node_inner as notes_duplicate_node,
-        notes_empty_trash_inner as notes_empty_trash,
-        notes_expand_all_inner as notes_expand_all,
+        notes_empty_trash_inner as notes_empty_trash, notes_expand_all_inner as notes_expand_all,
         notes_export_markdown_inner as notes_export_markdown,
         notes_export_pdf_inner as notes_export_pdf,
         notes_history_status_inner as notes_history_status,
         notes_import_attachment_inner as notes_import_attachment,
         notes_import_attachment_paths_batch_inner as notes_import_attachment_paths_batch,
-        notes_initialize_inner as notes_initialize,
-        notes_list_tags_inner as notes_list_tags,
+        notes_initialize_inner as notes_initialize, notes_list_tags_inner as notes_list_tags,
         notes_list_tags_with_counts_inner as notes_list_tags_with_counts,
         notes_load_workspace_inner as notes_load_workspace,
-        notes_move_node_inner as notes_move_node,
-        notes_redo_inner as notes_redo,
+        notes_move_node_inner as notes_move_node, notes_redo_inner as notes_redo,
         notes_remove_attachment_inner as notes_remove_attachment,
         notes_remove_empty_node_inner as notes_remove_empty_node,
-        notes_restore_node_inner as notes_restore_node,
-        notes_search_inner as notes_search,
+        notes_restore_node_inner as notes_restore_node, notes_search_inner as notes_search,
         notes_search_structured_inner as notes_search_structured,
         notes_soft_delete_node_inner as notes_soft_delete_node,
         notes_sort_subtree_ascending_inner as notes_sort_subtree_ascending,
@@ -1928,8 +1921,7 @@ mod tests {
         notes_toggle_collapsed_inner as notes_toggle_collapsed,
         notes_toggle_complete_inner as notes_toggle_complete,
         notes_toggle_star_inner as notes_toggle_star,
-        notes_unarchive_node_inner as notes_unarchive_node,
-        notes_undo_inner as notes_undo,
+        notes_unarchive_node_inner as notes_unarchive_node, notes_undo_inner as notes_undo,
         notes_update_node_inner as notes_update_node,
     };
     use crate::notes::date_index::LocalDate;
@@ -1977,7 +1969,12 @@ mod tests {
     const BATCH_D_ID: &str = "77777777-7777-4777-8777-777777777777";
     const BATCH_MISSING_ID: &str = "99999999-9999-4999-8999-999999999999";
 
-    fn seed_batch_node(vault_path: &str, id: &str, parent_id: Option<&str>, after_id: Option<&str>) {
+    fn seed_batch_node(
+        vault_path: &str,
+        id: &str,
+        parent_id: Option<&str>,
+        after_id: Option<&str>,
+    ) {
         notes_create_node(
             vault_path.to_string(),
             CreateNodeInput {
@@ -3617,10 +3614,7 @@ mod tests {
             .map(|node| node.id.clone())
             .collect::<Vec<_>>();
         active.sort();
-        assert_eq!(
-            active,
-            vec![BATCH_A_ID.to_string(), BATCH_C_ID.to_string()]
-        );
+        assert_eq!(active, vec![BATCH_A_ID.to_string(), BATCH_C_ID.to_string()]);
         assert!(deleted_batch_id_of(&vault_path, BATCH_B_ID).is_some());
         assert!(deleted_batch_id_of(&vault_path, BATCH_D_ID).is_some());
     }
@@ -3701,7 +3695,10 @@ mod tests {
             Some(batch_op_context(REPLACEMENT_ENTRY_ID, "batchMove")),
         )
         .expect_err("descendant move must be rejected");
-        assert_eq!(error, "A Note node cannot be moved under a live descendant.");
+        assert_eq!(
+            error,
+            "A Note node cannot be moved under a live descendant."
+        );
 
         // Nothing changed and no history entry was written.
         assert_eq!(
@@ -3725,7 +3722,12 @@ mod tests {
         seed_batch_node(&vault_path, BATCH_A_ID, Some(BATCH_D_ID), None);
         seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_D_ID), Some(BATCH_A_ID));
         seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_D_ID), Some(BATCH_B_ID));
-        seed_batch_node(&vault_path, BATCH_MISSING_ID, Some(BATCH_D_ID), Some(BATCH_C_ID));
+        seed_batch_node(
+            &vault_path,
+            BATCH_MISSING_ID,
+            Some(BATCH_D_ID),
+            Some(BATCH_C_ID),
+        );
 
         // Selecting first child A is ineligible (no prior sibling) -> no-op.
         let noop = notes_apply_batch(
@@ -3782,7 +3784,12 @@ mod tests {
         seed_batch_node(&vault_path, BATCH_A_ID, None, None);
         seed_batch_node(&vault_path, BATCH_B_ID, Some(BATCH_A_ID), None);
         seed_batch_node(&vault_path, BATCH_C_ID, Some(BATCH_B_ID), None);
-        seed_batch_node(&vault_path, BATCH_MISSING_ID, Some(BATCH_B_ID), Some(BATCH_C_ID));
+        seed_batch_node(
+            &vault_path,
+            BATCH_MISSING_ID,
+            Some(BATCH_B_ID),
+            Some(BATCH_C_ID),
+        );
 
         // A root node cannot outdent (no parent) -> no-op.
         let noop = notes_apply_batch(
@@ -3853,7 +3860,10 @@ mod tests {
         let workspace = notes_load_workspace(vault_path.clone(), NotesWorkspaceScope::Active)
             .expect("reload workspace after aborted batch");
         assert!(
-            workspace.nodes.iter().all(|node| node.completed_at.is_none()),
+            workspace
+                .nodes
+                .iter()
+                .all(|node| node.completed_at.is_none()),
             "aborted batch left a node completed"
         );
         assert_eq!(history_entry_count(&vault_path), 0);
@@ -4565,8 +4575,7 @@ mod tests {
         // would see deleted data and writes would vanish because they never reach
         // a file at `notes_db_path`. The fix drops it, so the next acquisition
         // reconnects against a fresh on-disk database instead.
-        let reacquired =
-            acquire_notes_connection(&vault_path).expect("reacquire after deletion");
+        let reacquired = acquire_notes_connection(&vault_path).expect("reacquire after deletion");
         assert!(
             !std::sync::Arc::ptr_eq(&raced, &reacquired),
             "the raced connection to the unlinked inode must not be handed back after deletion"

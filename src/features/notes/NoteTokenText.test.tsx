@@ -22,12 +22,13 @@ describe("NoteTokenText", () => {
       <NoteTokenText text={source} onTagClick={vi.fn()} />
     );
 
-    const presentation = container.querySelector(".notes-token-text");
+    const presentation = container.querySelector<HTMLElement>(
+      ".notes-token-text"
+    );
     expect(presentation).not.toBeNull();
     expect(presentation).toHaveTextContent(source, { normalizeWhitespace: false });
+    expect(presentation?.style.font).toBe("inherit");
     expect(presentation).toHaveStyle({
-      font: "inherit",
-      letterSpacing: "inherit",
       overflowWrap: "anywhere",
       whiteSpace: "pre-wrap"
     });

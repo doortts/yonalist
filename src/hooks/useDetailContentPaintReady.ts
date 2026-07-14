@@ -17,7 +17,7 @@ function hasRenderedExpectedMarkdownBodies(
 }
 
 export function useDetailContentPaintReady(
-  detailRootRef: RefObject<HTMLElement>,
+  detailRootRef: RefObject<HTMLElement | null>,
   activeDetailKey: string | null,
   detailReady: boolean,
   expectedMarkdownBodies: number

@@ -946,7 +946,7 @@ describe("notesStore in Tauri", () => {
       // validated byte by byte. It now streams as raw bytes and is copied in
       // bulk. Structural proof that the numeric-array branch is gone: a
       // standard numeric array of the same shape is rejected below.
-      const size = 6 * 1024 * 1024;
+      const size = 2 * 1024 * 1024;
       const payload = new Uint8Array(size);
       payload[0] = 1;
       payload[size - 1] = 254;

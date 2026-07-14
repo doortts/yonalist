@@ -515,9 +515,13 @@ describe("Notes workspace", () => {
       const notePresentation = screen.getByRole("group", {
         name: "Supporting note: Alpha 😀 omega"
       });
-      const note = document.querySelector<HTMLTextAreaElement>(
-        'textarea[aria-label="Supporting note: Alpha 😀 omega"]'
-      )!;
+      const note = notePresentation.parentElement?.querySelector<HTMLTextAreaElement>(
+        "textarea"
+      );
+      expect(note).not.toBeNull();
+      if (!note) {
+        throw new Error("Expected the note textarea to be rendered.");
+      }
       const setNoteSelection = vi.spyOn(note, "setSelectionRange");
 
       fireEvent.pointerDown(notePresentation, { clientX: 80, clientY: 20 });
@@ -4219,10 +4223,11 @@ describe("Notes workspace", () => {
       .getPropertyValue("--bg-active")
       .trim();
 
-    expect(lightHalo).toBe("rgb(17 24 39 / 5%)");
-    expect(lightHaloStrong).toBe("rgb(17 24 39 / 8%)");
-    expect(darkHalo).toBe("rgb(255 255 255 / 6%)");
-    expect(darkHaloStrong).toBe("rgb(255 255 255 / 10%)");
+      const normalizeColor = (value: string) => value.replace(/\s*\/\s*/gu, "/");
+      expect(normalizeColor(lightHalo)).toBe("rgb(17 24 39/5%)");
+      expect(normalizeColor(lightHaloStrong)).toBe("rgb(17 24 39/8%)");
+      expect(normalizeColor(darkHalo)).toBe("rgb(255 255 255/6%)");
+      expect(normalizeColor(darkHaloStrong)).toBe("rgb(255 255 255/10%)");
     expect(darkHalo).not.toBe(lightHalo);
     expect(darkHaloStrong).not.toBe(lightHaloStrong);
     expect(notesStyles).toMatch(
@@ -4246,9 +4251,8 @@ describe("Notes workspace", () => {
     const titlePresentationFocusRules = Array.from(
       notesStyles.matchAll(
         /\.notes-node-title-field > \.notes-token-text:focus-visible\s*{([^}]*)}/gs
-      ),
-      (match) => match[1]
-    );
+      )
+    ).map((match) => match[1] ?? "");
 
     expect(titlePresentationFocusRules).toHaveLength(1);
     const [titlePresentationFocusRule] = titlePresentationFocusRules;
@@ -4266,9 +4270,8 @@ describe("Notes workspace", () => {
     const titleEditorFocusRules = Array.from(
       notesStyles.matchAll(
         /\.notes-node-title:focus-visible\s*{([^}]*)}/gs
-      ),
-      (match) => match[1]
-    );
+      )
+    ).map((match) => match[1] ?? "");
 
     expect(titleEditorFocusRules).toHaveLength(1);
     const [titleEditorFocusRule] = titleEditorFocusRules;

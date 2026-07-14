@@ -21,6 +21,7 @@ let ioInstance: IntersectionObserver;
 class MockIntersectionObserver implements IntersectionObserver {
   root: Element | Document | null = null;
   rootMargin = "";
+  scrollMargin = "";
   thresholds: ReadonlyArray<number> = [];
   constructor(cb: IntersectionObserverCallback) {
     ioCallback = cb;

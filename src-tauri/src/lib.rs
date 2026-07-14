@@ -15,17 +15,16 @@ mod notes;
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
     notes_apply_batch, notes_archive_node, notes_clear_history, notes_collapse_all,
-    notes_create_node,
-    notes_delete_database, notes_duplicate_node, notes_empty_trash, notes_expand_all,
-    notes_export_markdown, notes_export_pdf, notes_history_status, notes_import_attachment,
-    notes_import_attachment_bytes, notes_import_attachment_paths_batch, notes_import_subtree,
-    notes_initialize,
-    notes_list_tags, notes_list_tags_with_counts, notes_load_workspace, notes_move_node,
-    notes_read_attachment_bytes, notes_redo, notes_remove_attachment, notes_remove_empty_node,
-    notes_resize_attachment, notes_restore_attachment, notes_restore_node, notes_search,
-    notes_search_structured, notes_soft_delete_node, notes_sort_subtree_ascending,
-    notes_sort_subtree_descending, notes_split_node, notes_toggle_collapsed, notes_toggle_complete,
-    notes_toggle_star, notes_unarchive_node, notes_undo, notes_update_node,
+    notes_create_node, notes_delete_database, notes_duplicate_node, notes_empty_trash,
+    notes_expand_all, notes_export_markdown, notes_export_pdf, notes_history_status,
+    notes_import_attachment, notes_import_attachment_bytes, notes_import_attachment_paths_batch,
+    notes_import_subtree, notes_initialize, notes_list_tags, notes_list_tags_with_counts,
+    notes_load_workspace, notes_move_node, notes_read_attachment_bytes, notes_redo,
+    notes_remove_attachment, notes_remove_empty_node, notes_resize_attachment,
+    notes_restore_attachment, notes_restore_node, notes_search, notes_search_structured,
+    notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
+    notes_split_node, notes_toggle_collapsed, notes_toggle_complete, notes_toggle_star,
+    notes_unarchive_node, notes_undo, notes_update_node,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1183,20 +1182,24 @@ fn oauth_exchange_inner(
     if !token_url.starts_with("https://") && !token_url.starts_with("http://") {
         return Err("Token URL must be an http(s) URL.".to_string());
     }
-    let agent = ureq::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build();
-    let response = agent
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .new_agent();
+    let mut response = agent
         .post(&token_url)
-        .set("Accept", "application/json")
-        .send_form(&[
+        .header("Accept", "application/json")
+        .send_form([
             ("client_id", client_id.as_str()),
             ("client_secret", client_secret.as_str()),
             ("code", code.as_str()),
             ("redirect_uri", redirect_uri.as_str()),
         ])
         .map_err(|error| error.to_string())?;
-    response.into_string().map_err(|error| error.to_string())
+    response
+        .body_mut()
+        .read_to_string()
+        .map_err(|error| error.to_string())
 }
 
 const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -1225,14 +1228,23 @@ fn stored_cookies(cookies: Vec<tauri::webview::Cookie<'static>>) -> Vec<StoredCo
         .collect()
 }
 
-fn response_to_image_data_url(response: ureq::Response) -> Result<Option<String>, String> {
-    let content_type = response.content_type().to_string();
+fn response_to_image_data_url(
+    response: ureq::http::Response<ureq::Body>,
+) -> Result<Option<String>, String> {
+    let content_type = response
+        .headers()
+        .get("Content-Type")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string();
     if !content_type.starts_with("image/") {
         return Ok(None);
     }
 
     let mut bytes: Vec<u8> = Vec::new();
-    std::io::Read::take(response.into_reader(), MAX_IMAGE_BYTES)
+    std::io::Read::take(response.into_body().into_reader(), MAX_IMAGE_BYTES)
         .read_to_end(&mut bytes)
         .map_err(|error| error.to_string())?;
 
@@ -1276,12 +1288,17 @@ fn cookie_header(cookies: &[StoredCookie], url: &tauri::Url) -> Option<String> {
     }
 }
 
-fn redirect_target(current: &tauri::Url, response: &ureq::Response) -> Option<tauri::Url> {
-    if !(300..400).contains(&response.status()) {
+fn redirect_target(
+    current: &tauri::Url,
+    response: &ureq::http::Response<ureq::Body>,
+) -> Option<tauri::Url> {
+    if !response.status().is_redirection() {
         return None;
     }
     response
-        .header("Location")
+        .headers()
+        .get("Location")
+        .and_then(|location| location.to_str().ok())
         .and_then(|location| current.join(location).ok())
 }
 
@@ -1290,27 +1307,25 @@ fn fetch_image_attempt(
     url: &str,
     auth_header: Option<&str>,
 ) -> Result<Option<String>, String> {
-    let agent = ureq::builder()
-        .redirects(0)
-        .timeout(std::time::Duration::from_secs(15))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .new_agent();
     let mut current_url = tauri::Url::parse(url).map_err(|error| error.to_string())?;
 
     for _ in 0..=MAX_IMAGE_REDIRECTS {
         let cookie_header = cookie_header(cookies, &current_url);
-        let mut request = agent.get(current_url.as_str()).set("Accept", "*/*");
+        let mut request = agent.get(current_url.as_str()).header("Accept", "*/*");
         if let Some(auth_header) = auth_header {
-            request = request.set("Authorization", auth_header);
+            request = request.header("Authorization", auth_header);
         }
         if let Some(cookie_header) = cookie_header.as_deref() {
-            request = request.set("Cookie", cookie_header);
+            request = request.header("Cookie", cookie_header);
         }
 
-        let response = match request.call() {
-            Ok(response) => response,
-            Err(ureq::Error::Status(_, response)) => response,
-            Err(error) => return Err(error.to_string()),
-        };
+        let response = request.call().map_err(|error| error.to_string())?;
 
         if let Some(next_url) = redirect_target(&current_url, &response) {
             current_url = next_url;
@@ -2051,7 +2066,10 @@ mod tests {
                 }
                 let request = String::from_utf8_lossy(&request);
 
-                if request.contains("Authorization: token ghp_token") {
+                if request
+                    .to_ascii_lowercase()
+                    .contains("authorization: token ghp_token")
+                {
                     stream
                         .write_all(
                             b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\n\x89PNG",

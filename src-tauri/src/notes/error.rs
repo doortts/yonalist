@@ -102,7 +102,10 @@ mod tests {
     fn serialized_code(error: &NotesError) -> String {
         let value = serde_json::to_value(error).expect("serialize NotesError");
         assert_eq!(value["message"], error.message.as_str());
-        value["code"].as_str().expect("code is a string").to_string()
+        value["code"]
+            .as_str()
+            .expect("code is a string")
+            .to_string()
     }
 
     #[test]
@@ -131,9 +134,8 @@ mod tests {
 
     #[test]
     fn classifies_unsupported_schema_version_by_code() {
-        let error = NotesError::from(
-            "This Notes database uses unsupported schema version 99.".to_string(),
-        );
+        let error =
+            NotesError::from("This Notes database uses unsupported schema version 99.".to_string());
         assert_eq!(error.code, NotesErrorCode::UnsupportedSchemaVersion);
         assert_eq!(serialized_code(&error), "unsupportedSchemaVersion");
     }

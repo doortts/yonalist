@@ -324,7 +324,11 @@ mod tests {
         ] {
             let from_decomposed = tokenize_note_text(decomposed);
             let from_composed = tokenize_note_text(composed);
-            assert_eq!(from_decomposed.len(), 1, "decomposed source: {decomposed:?}");
+            assert_eq!(
+                from_decomposed.len(),
+                1,
+                "decomposed source: {decomposed:?}"
+            );
             assert_eq!(from_composed.len(), 1, "composed source: {composed:?}");
 
             let decomposed_tag = &from_decomposed[0];
@@ -337,10 +341,7 @@ mod tests {
             // Offsets still index the ORIGINAL (decomposed) source, so they span the
             // longer NFD scalar run rather than the composed length.
             assert_eq!(decomposed_tag.start_utf16, 0);
-            assert_eq!(
-                decomposed_tag.end_utf16,
-                decomposed.encode_utf16().count()
-            );
+            assert_eq!(decomposed_tag.end_utf16, decomposed.encode_utf16().count());
         }
     }
 

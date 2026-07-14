@@ -58,7 +58,7 @@ function observeWidth(textarea: HTMLTextAreaElement): () => void {
 }
 
 export function useAutoGrowTextarea(
-  ref: RefObject<HTMLTextAreaElement>,
+  ref: RefObject<HTMLTextAreaElement | null>,
   value: string,
   active = true
 ): void {

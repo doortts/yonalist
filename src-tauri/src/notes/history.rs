@@ -2,7 +2,9 @@ use crate::notes::attachments::AttachmentStorageLease;
 use crate::notes::date_index::LocalDate;
 #[cfg(test)]
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
-use crate::notes::repository::{load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at};
+use crate::notes::repository::{
+    load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at,
+};
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NoteId, NoteNode, NotesHistoryContext,
     NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
@@ -269,9 +271,10 @@ fn read_mutation_delta(connection: &Connection) -> Result<MutationDelta, String>
             }
             ("notes_nodes", None) => delta.removed_node_ids.push(row_id),
             ("notes_attachments", Some(after)) => {
-                let attachment = serde_json::from_str::<NoteAttachment>(&after).map_err(|error| {
-                    format!("Could not decode an audited Notes attachment: {error}")
-                })?;
+                let attachment =
+                    serde_json::from_str::<NoteAttachment>(&after).map_err(|error| {
+                        format!("Could not decode an audited Notes attachment: {error}")
+                    })?;
                 delta.changed_attachments.push(attachment);
             }
             _ => {}
@@ -1511,8 +1514,7 @@ mod tests {
     #[test]
     fn notes_history_create_undo_redo_and_forward_mutation_ordering_are_authoritative() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         let create_context = history_context(1, "create");
 
         journal(&mut connection, &create_context, |connection| {
@@ -1562,8 +1564,7 @@ mod tests {
     #[test]
     fn notes_history_coalesces_text_updates_with_the_same_entry_id() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let context = history_context(1, "updateText");
 
@@ -1611,8 +1612,7 @@ mod tests {
     #[test]
     fn notes_history_replays_split_and_move_with_sibling_rebalance() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(
             &mut connection,
             create_input(NODE_ID, None, None, "AlphaBeta"),
@@ -1700,8 +1700,7 @@ mod tests {
     #[test]
     fn notes_history_replays_toggles_and_duplicate_in_reverse_then_forward_order() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
         create_node(
             &mut connection,
@@ -1758,8 +1757,7 @@ mod tests {
     #[test]
     fn notes_history_replays_trash_restore_archive_and_unarchive() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
         create_node(
             &mut connection,
@@ -1823,8 +1821,7 @@ mod tests {
     #[test]
     fn notes_history_trash_persists_command_kind() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         let has_command_kind: bool = connection
             .query_row(
                 "SELECT EXISTS(\
@@ -2056,8 +2053,7 @@ mod tests {
     #[test]
     fn notes_history_invalidates_cross_session_redo_after_a_forward_mutation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let first = history_context(1, "updateText");
         journal(&mut connection, &first, |connection| {
@@ -2361,8 +2357,7 @@ mod tests {
     #[test]
     fn notes_history_rejects_coalescing_across_an_intervening_session_mutation() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
-        let mut connection =
-            connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
         create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
         let first = history_context(1, "updateText");
         journal(&mut connection, &first, |connection| {
@@ -2590,7 +2585,11 @@ mod tests {
                 _ => {}
             }
         }
-        (sorted(&changed_nodes), sorted(&removed_nodes), sorted(&changed_attachments))
+        (
+            sorted(&changed_nodes),
+            sorted(&removed_nodes),
+            sorted(&changed_attachments),
+        )
     }
 
     fn assert_delta_matches_persisted_audit(
@@ -2648,7 +2647,10 @@ mod tests {
 
         let create_child = history_context(2, "createNode");
         let result = run_delta_mutation(&mut connection, &create_child, |connection| {
-            create_node(connection, create_input(CHILD_ID, Some(NODE_ID), None, "Child"))
+            create_node(
+                connection,
+                create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+            )
         });
         assert_delta_matches_persisted_audit(&connection, &create_child.entry_id, &result);
 
@@ -2886,11 +2888,32 @@ mod tests {
         let removed_attachment = attachment_audit_json("attachment-removed", NODE_ID);
 
         // Created/updated node: keeps its full payload.
-        insert_audit_row(&connection, "notes_nodes", NODE_ID, 1, None, Some(&changed_node));
+        insert_audit_row(
+            &connection,
+            "notes_nodes",
+            NODE_ID,
+            1,
+            None,
+            Some(&changed_node),
+        );
         // Hard-deleted node: surfaced as a removed id.
-        insert_audit_row(&connection, "notes_nodes", CHILD_ID, 2, Some(&removed_before), None);
+        insert_audit_row(
+            &connection,
+            "notes_nodes",
+            CHILD_ID,
+            2,
+            Some(&removed_before),
+            None,
+        );
         // No-op update (before == after): skipped.
-        insert_audit_row(&connection, "notes_nodes", THIRD_ID, 3, Some(&noop), Some(&noop));
+        insert_audit_row(
+            &connection,
+            "notes_nodes",
+            THIRD_ID,
+            3,
+            Some(&noop),
+            Some(&noop),
+        );
         // Created-then-deleted within the mutation (before == after == NULL): skipped.
         insert_audit_row(&connection, "notes_nodes", FOURTH_ID, 4, None, None);
         // Created/updated attachment: surfaced.

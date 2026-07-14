@@ -3006,10 +3006,10 @@ describe("Yonalist app shell", () => {
       expect(JSON.stringify(countVariables)).not.toContain("hidden");
       const list = screen.getByLabelText("Items");
       expect(
-        await within(list).findByRole("tab", { name: "Open 3" })
+        await within(list).findByRole("tab", { name: /^Open\s*3$/ })
       ).toBeInTheDocument();
       expect(
-        within(list).getByRole("tab", { name: "Closed 10" })
+        within(list).getByRole("tab", { name: /^Closed\s*10$/ })
       ).toBeInTheDocument();
     } finally {
       vi.unstubAllGlobals();
@@ -3200,15 +3200,15 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: /^All items/ }));
 
     const list = screen.getByLabelText("Items");
-    expect(within(list).getByRole("tab", { name: /^Open \d+$/ })).toHaveAttribute(
+    expect(within(list).getByRole("tab", { name: /^Open\s*\d+$/ })).toHaveAttribute(
       "aria-selected",
       "true"
     );
     expect(within(list).queryByText("Closed local issue")).not.toBeInTheDocument();
 
-    await user.click(within(list).getByRole("tab", { name: /^Closed \d+$/ }));
+    await user.click(within(list).getByRole("tab", { name: /^Closed\s*\d+$/ }));
 
-    expect(within(list).getByRole("tab", { name: /^Closed \d+$/ })).toHaveAttribute(
+    expect(within(list).getByRole("tab", { name: /^Closed\s*\d+$/ })).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -3662,6 +3662,7 @@ describe("Yonalist app shell", () => {
     class MockIntersectionObserver implements IntersectionObserver {
       root: Element | Document | null = null;
       rootMargin = "";
+      scrollMargin = "";
       thresholds: ReadonlyArray<number> = [];
       constructor(cb: IntersectionObserverCallback) {
         ioCallback = cb;

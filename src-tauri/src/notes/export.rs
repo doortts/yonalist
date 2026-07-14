@@ -3227,8 +3227,11 @@ mod tests {
             EXPORT_ASSET_MARKER_CREATED_BY,
         );
         let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
-        root.attachments
-            .push(export_attachment(FIRST_ID, "image.png", Some(vec![9, 8, 7])));
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![9, 8, 7]),
+        ));
         let prepared =
             prepare_markdown_export(&snapshot(root), "owned_assets").expect("prepare export");
 
@@ -3256,8 +3259,11 @@ mod tests {
         std::fs::create_dir(&assets).expect("user directory");
         std::fs::write(assets.join("keepsake.txt"), b"precious").expect("user file");
         let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
-        root.attachments
-            .push(export_attachment(FIRST_ID, "image.png", Some(vec![1, 2, 3])));
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
         let prepared =
             prepare_markdown_export(&snapshot(root), "foreign_assets").expect("prepare export");
 
@@ -3273,7 +3279,9 @@ mod tests {
             b"precious"
         );
         assert_eq!(
-            std::fs::read_dir(&assets).expect("foreign directory").count(),
+            std::fs::read_dir(&assets)
+                .expect("foreign directory")
+                .count(),
             1
         );
         // The pre-existing destination document is byte-identical.
@@ -3305,8 +3313,11 @@ mod tests {
         std::fs::write(assets.join("0001.png"), b"user asset").expect("user asset");
         write_export_asset_marker(&assets, &["0001.png"], "some-other-tool");
         let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
-        root.attachments
-            .push(export_attachment(FIRST_ID, "image.png", Some(vec![1, 2, 3])));
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
         let prepared =
             prepare_markdown_export(&snapshot(root), "impostor_assets").expect("prepare export");
 

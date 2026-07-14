@@ -46,9 +46,11 @@ function fixtureBytes(): Uint8Array {
   if (!/^(?:[0-9a-f]{2})+$/u.test(hex)) {
     throw new Error("Attachment batch fixture must contain lowercase hexadecimal bytes.");
   }
-  return Uint8Array.from(hex.match(/.{2}/gu) ?? [], (byte) =>
-    Number.parseInt(byte, 16)
-  );
+  const bytePairs = hex.match(/.{2}/gu);
+  if (!bytePairs) {
+    throw new Error("Attachment batch fixture must contain complete byte pairs.");
+  }
+  return Uint8Array.from(bytePairs.map((byte) => Number.parseInt(byte, 16)));
 }
 
 function decodeMetadata(envelope: Uint8Array): FixtureMetadata {
@@ -85,7 +87,9 @@ function sizedBlob(size: number, arrayBuffer = vi.fn()): Blob {
 }
 
 function bytesBlob(bytes: Uint8Array, type: string): Blob {
-  return new NodeBlob([bytes], { type }) as Blob;
+  const blobBytes = new Uint8Array(bytes.byteLength);
+  blobBytes.set(bytes);
+  return new NodeBlob([blobBytes], { type }) as Blob;
 }
 
 function input(

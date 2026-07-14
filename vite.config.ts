@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       output: {
         // Split the stable vendor graph out of the App chunk so app-code
         // updates do not invalidate the framework bytes (and the App chunk
@@ -14,8 +14,13 @@ export default defineConfig({
         // purpose: react/base-ui share hoisted deps, so splitting them apart
         // makes Rollup emit circular-chunk warnings. The markdown renderer
         // stays out of this list — it must remain its own lazy chunk.
-        manualChunks: {
-          vendor: ["react", "react-dom", "@base-ui/react", "lucide-react"]
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor",
+              test: /[\\/]node_modules[\\/](?:@base-ui|@floating-ui|lucide-react|react(?:-dom)?|use-sync-external-store)[\\/]/
+            }
+          ]
         }
       }
     }
