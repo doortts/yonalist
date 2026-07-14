@@ -20,6 +20,52 @@ export interface ResolveNotesHistoryShortcutInput {
 
 export type NotesHistoryShortcut = "undo" | "redo";
 
+export interface ResolveSupportingNoteKeyInput {
+  key: string;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  shiftKey: boolean;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  value: string;
+}
+
+export type SupportingNoteKeyResolution = "currentTitle" | "nextTitle";
+
+export function resolveSupportingNoteKey(
+  input: ResolveSupportingNoteKeyInput
+): SupportingNoteKeyResolution | null {
+  if (input.altKey || input.ctrlKey || input.metaKey || input.shiftKey) {
+    return null;
+  }
+  if (input.key === "Escape") {
+    return "currentTitle";
+  }
+  if (input.key === "ArrowUp" && input.selectionStart === 0) {
+    return "currentTitle";
+  }
+  if (
+    input.key === "ArrowDown" &&
+    input.selectionEnd === input.value.length
+  ) {
+    return "nextTitle";
+  }
+  return null;
+}
+
+export function supportingNoteFocusTarget(
+  resolution: SupportingNoteKeyResolution,
+  nodeId: NoteId,
+  visibleIds: readonly NoteId[]
+): NoteId {
+  if (resolution === "currentTitle") {
+    return nodeId;
+  }
+  const index = visibleIds.indexOf(nodeId);
+  return index >= 0 ? visibleIds[index + 1] ?? nodeId : nodeId;
+}
+
 export function detectOutlineShortcutPlatform(
   platform = typeof navigator === "undefined" ? "" : navigator.platform
 ): OutlineShortcutPlatform {

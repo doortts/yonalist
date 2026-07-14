@@ -5,8 +5,11 @@ import {
   detectOutlineShortcutPlatform,
   resolveNotesHistoryShortcut,
   resolveOutlineKey,
+  resolveSupportingNoteKey,
+  supportingNoteFocusTarget,
   type ResolveNotesHistoryShortcutInput,
-  type ResolveOutlineKeyInput
+  type ResolveOutlineKeyInput,
+  type ResolveSupportingNoteKeyInput
 } from "./outlineKeyboard";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
@@ -81,6 +84,90 @@ function historyShortcutInput(
     ...overrides
   };
 }
+
+function supportingNoteInput(
+  overrides: Partial<ResolveSupportingNoteKeyInput> = {}
+): ResolveSupportingNoteKeyInput {
+  return {
+    key: "Escape",
+    altKey: false,
+    ctrlKey: false,
+    metaKey: false,
+    shiftKey: false,
+    selectionStart: 2,
+    selectionEnd: 2,
+    value: "note",
+    ...overrides
+  };
+}
+
+describe("resolveSupportingNoteKey", () => {
+  it("exits to the current title with Escape", () => {
+    expect(resolveSupportingNoteKey(supportingNoteInput())).toBe(
+      "currentTitle"
+    );
+  });
+
+  it("uses selections touching vertical boundaries", () => {
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowUp",
+          selectionStart: 0,
+          selectionEnd: 3
+        })
+      )
+    ).toBe("currentTitle");
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowDown",
+          selectionStart: 1,
+          selectionEnd: 4
+        })
+      )
+    ).toBe("nextTitle");
+  });
+
+  it("keeps mid-text and modifier arrows native", () => {
+    expect(
+      resolveSupportingNoteKey(supportingNoteInput({ key: "ArrowUp" }))
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowDown",
+          ctrlKey: true,
+          selectionEnd: 4
+        })
+      )
+    ).toBeNull();
+    expect(
+      resolveSupportingNoteKey(
+        supportingNoteInput({
+          key: "ArrowUp",
+          shiftKey: true,
+          selectionStart: 0
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("resolves the following visible title with current fallback", () => {
+    expect(
+      supportingNoteFocusTarget("nextTitle", "b", ["a", "b", "c"])
+    ).toBe("c");
+    expect(
+      supportingNoteFocusTarget("nextTitle", "c", ["a", "b", "c"])
+    ).toBe("c");
+    expect(
+      supportingNoteFocusTarget("nextTitle", "missing", ["a", "b", "c"])
+    ).toBe("missing");
+    expect(
+      supportingNoteFocusTarget("currentTitle", "b", ["a", "b", "c"])
+    ).toBe("b");
+  });
+});
 
 describe("resolveOutlineKey", () => {
   it.each([
