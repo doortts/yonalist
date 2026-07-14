@@ -7,6 +7,17 @@ pub(crate) const MAX_NOTE_ATTACHMENTS_PER_NODE: i64 = 128;
 pub(crate) const MAX_NOTE_ATTACHMENTS_PER_VAULT: i64 = 512;
 pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
 
+/// Bounds for `notes_import_subtree` (paste import). The whole import runs as a
+/// single transaction + single history entry, so it is bounded to a sane node
+/// count and nesting depth. The depth cap also lets the validator and the
+/// inserter walk the forest iteratively (no recursion), so a pathologically
+/// deep payload cannot overflow the stack. Field caps stop one absurd
+/// title/note from bloating the payload; content is otherwise stored verbatim
+/// like every other node.
+pub(crate) const MAX_IMPORT_SUBTREE_NODES: usize = 2000;
+pub(crate) const MAX_IMPORT_SUBTREE_DEPTH: usize = 64;
+pub(crate) const MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES: usize = 100_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteNode {
@@ -144,6 +155,14 @@ pub struct NotesMutationResult {
     pub removed_node_ids: Option<Vec<NoteId>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub changed_attachments: Option<Vec<NoteAttachment>>,
+    /// New root ids created by `notes_import_subtree`, in the order the caller
+    /// supplied them. Populated only by that command (every other mutation
+    /// leaves it `None` and the field is omitted from the wire payload); the
+    /// frontend focuses `importedRootIds[0]`. This carries only the imported
+    /// roots — the full imported forest is available via `workspace` /
+    /// `changedNodes`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub imported_root_ids: Option<Vec<NoteId>>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -296,6 +315,34 @@ pub struct CreateNodeInput {
     pub after_id: Option<NoteId>,
     pub title: String,
     pub note: String,
+}
+
+/// One node in a `notes_import_subtree` payload. Ids are generated on the
+/// backend (never supplied by the client) so the store stays authoritative, so
+/// only content + nesting is carried here. `note`/`children` default to
+/// empty when omitted.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportNode {
+    pub title: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub children: Vec<ImportNode>,
+}
+
+/// Input to `notes_import_subtree`: a forest of new nodes inserted as one
+/// contiguous block under `parentId`, right after `afterId`. The whole import
+/// is one transaction + one history entry, so undo removes every imported node
+/// in a single step.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportSubtreeInput {
+    #[serde(default)]
+    pub parent_id: Option<NoteId>,
+    #[serde(default)]
+    pub after_id: Option<NoteId>,
+    pub nodes: Vec<ImportNode>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -485,6 +532,45 @@ impl CreateNodeInput {
 impl UpdateNodeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
         validate_note_id(&self.id)
+    }
+}
+
+impl ImportSubtreeInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_optional_note_id(self.parent_id.as_deref())?;
+        validate_optional_note_id(self.after_id.as_deref())?;
+        if self.nodes.is_empty() {
+            return Err("A subtree import requires at least one node.".to_string());
+        }
+        // Walk the forest iteratively (never recursively) so a pathologically
+        // deep payload cannot overflow the stack here or in the inserter, and
+        // reject absurd sizes / oversized fields before any write begins.
+        let mut total = 0usize;
+        let mut stack: Vec<(&ImportNode, usize)> =
+            self.nodes.iter().map(|node| (node, 1usize)).collect();
+        while let Some((node, depth)) = stack.pop() {
+            total += 1;
+            if total > MAX_IMPORT_SUBTREE_NODES {
+                return Err(format!(
+                    "A subtree import cannot exceed {MAX_IMPORT_SUBTREE_NODES} nodes."
+                ));
+            }
+            if depth > MAX_IMPORT_SUBTREE_DEPTH {
+                return Err(format!(
+                    "A subtree import cannot nest deeper than {MAX_IMPORT_SUBTREE_DEPTH} levels."
+                ));
+            }
+            if node.title.len() > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+                return Err("An imported Note title is too long.".to_string());
+            }
+            if node.note.as_deref().map_or(0, str::len) > MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES {
+                return Err("An imported Note note is too long.".to_string());
+            }
+            for child in &node.children {
+                stack.push((child, depth + 1));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -849,6 +935,7 @@ mod tests {
             changed_nodes: None,
             removed_node_ids: None,
             changed_attachments: None,
+            imported_root_ids: None,
         };
         assert_eq!(
             serde_json::to_value(mutation).expect("mutation result"),
@@ -907,6 +994,7 @@ mod tests {
             changed_nodes: Some(vec![node]),
             removed_node_ids: Some(vec![THIRD_ID.to_string()]),
             changed_attachments: Some(vec![attachment]),
+            imported_root_ids: None,
         };
 
         assert_eq!(

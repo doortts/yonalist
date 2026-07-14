@@ -225,6 +225,9 @@ impl HistoryTransactionResult {
             changed_nodes,
             removed_node_ids,
             changed_attachments,
+            // Set by `notes_import_subtree` after this result is built; every
+            // other mutation leaves it unset.
+            imported_root_ids: None,
         }
     }
 }

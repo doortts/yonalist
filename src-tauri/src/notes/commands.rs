@@ -19,7 +19,7 @@ use crate::notes::history::{
 use crate::notes::repository::{
     apply_batch, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_node_at, delete_database, duplicate_node_at,
-    empty_trash, expand_all, list_tags,
+    empty_trash, expand_all, import_subtree_at, list_tags,
     list_tags_with_counts, load_workspace, move_node, open_notes_export_db, remove_attachment,
     remove_empty_node, removed_attachment_snapshot, resize_attachment, restore_attachment,
     restore_node_at, search_nodes_at, search_nodes_structured, soft_delete_node,
@@ -29,7 +29,8 @@ use crate::notes::repository::{
 };
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, CreateNodeInput, ImportAttachmentInput,
-    ImportAttachmentPathBatchInput, MoveNodeInput, NoteAttachment, NoteSearchResult,
+    ImportAttachmentPathBatchInput, ImportSubtreeInput, MoveNodeInput, NoteAttachment,
+    NoteSearchResult,
     NoteSearchScope, NoteStructuredSearchQuery,
     NoteTagSummary, NotesExportFormat, NotesExportResult, NotesExportSnapshot, NotesHistoryContext,
     NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
@@ -379,6 +380,41 @@ pub(crate) fn notes_apply_batch_inner(
     run_mutation(&vault_path, history_context, |connection| {
         apply_batch(connection, input)
     })
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_import_subtree(
+    vault_path: String,
+    input: ImportSubtreeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, NotesError> {
+    run_blocking(move || notes_import_subtree_inner(vault_path, input, history_context)).await
+}
+
+pub(crate) fn notes_import_subtree_inner(
+    vault_path: String,
+    input: ImportSubtreeInput,
+    history_context: Option<NotesHistoryContext>,
+) -> Result<NotesMutationResult, String> {
+    // Imported content may carry dates/tags, so run through the dated path so
+    // the derived-content rebuild resolves relative phrases against `today`
+    // (like `create_node`). `import_subtree_at` generates the root ids inside
+    // the same transaction; capture them so the result can tell the frontend
+    // which nodes to focus. Every mutation here still produces exactly ONE
+    // history entry via `with_workspace_transaction`.
+    let mut imported_root_ids: Vec<crate::notes::types::NoteId> = Vec::new();
+    let mut result = run_dated_mutation(
+        &vault_path,
+        history_context,
+        &SystemLocalTodayProvider,
+        |connection, today| {
+            let (workspace, root_ids) = import_subtree_at(connection, input, today)?;
+            imported_root_ids = root_ids;
+            Ok(workspace)
+        },
+    )?;
+    result.imported_root_ids = Some(imported_root_ids);
+    Ok(result)
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -1001,6 +1037,7 @@ fn committed_attachment_batch_retry(
         changed_nodes: deltas_available.then(Vec::new),
         removed_node_ids: deltas_available.then(Vec::new),
         changed_attachments: deltas_available.then(|| existing.clone()),
+        imported_root_ids: None,
     }))
 }
 
