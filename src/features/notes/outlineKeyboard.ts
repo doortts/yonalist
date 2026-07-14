@@ -1,6 +1,6 @@
 import type { MoveNoteNodeInput, NoteId } from "../../domain/notes";
+import { deriveNotesSelectionActionSnapshot } from "./notesSelectionActions";
 import {
-  selectionRangeIds,
   type NormalizedNotesWorkspace,
   type NotesSelection
 } from "./notesWorkspaceReducer";
@@ -140,88 +140,16 @@ export type OutlineKeyResolution =
   | { type: "batchComplete"; nodeIds: readonly NoteId[]; completed: boolean }
   | { type: "batchDelete"; nodeIds: readonly NoteId[]; focusNodeId: NoteId | null }
   | { type: "batchIndent"; nodeIds: readonly NoteId[] }
-  | { type: "batchOutdent"; nodeIds: readonly NoteId[] };
-
-/**
- * The first visible row after a to-be-deleted range, falling back to the row
- * before it, so a batch delete can hand focus to a surviving neighbor. The range
- * is a contiguous slice of `visibleIds`; the reducer reconciles the target if it
- * turns out to be inside a deleted subtree.
- */
-function neighborAfterRange(
-  visibleIds: readonly NoteId[],
-  rangeIds: readonly NoteId[]
-): NoteId | null {
-  if (rangeIds.length === 0) {
-    return null;
-  }
-  const first = visibleIds.indexOf(rangeIds[0]);
-  const last = visibleIds.indexOf(rangeIds[rangeIds.length - 1]);
-  if (first < 0 || last < 0) {
-    return null;
-  }
-  return visibleIds[last + 1] ?? visibleIds[first - 1] ?? null;
-}
-
-/**
- * Batch indent (plan Phase 4.1c). Eligible when at least one selected node's
- * indent target — its nearest preceding sibling that is NOT itself selected,
- * which is exactly the sibling the backend would reparent it under — is visible.
- * Requiring a visible target mirrors the single-node Phase 0.3 rule so the batch
- * never indents a row under a hidden (e.g. completed) sibling. The full range is
- * forwarded; the backend reduces it to its roots and leaves ineligible nodes in
- * place.
- */
-function resolveBatchIndent(
-  input: ResolveOutlineKeyInput,
-  rangeIds: readonly NoteId[],
-  visibleIds: readonly NoteId[]
-): OutlineKeyResolution | null {
-  if (rangeIds.length === 0) {
-    return null;
-  }
-  const selected = new Set(rangeIds);
-  const eligible = rangeIds.some((id) => {
-    const node = input.workspace.nodesById[id];
-    if (!node) {
-      return false;
+  | { type: "batchOutdent"; nodeIds: readonly NoteId[] }
+  | { type: "batchDuplicate"; nodeIds: readonly NoteId[] }
+  | {
+      type: "batchReorder";
+      nodeIds: readonly NoteId[];
+      parentId: NoteId | null;
+      afterId: NoteId | null;
     }
-    const siblings =
-      node.parentId === null
-        ? input.workspace.rootIds
-        : (input.workspace.childIdsByParent[node.parentId] ?? []);
-    const index = siblings.indexOf(id);
-    for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-      if (!selected.has(siblings[cursor])) {
-        return visibleIds.includes(siblings[cursor]);
-      }
-    }
-    return false;
-  });
-  return eligible ? { type: "batchIndent", nodeIds: rangeIds } : null;
-}
-
-/**
- * Batch outdent (plan Phase 4.1c). Confined to the zoomed subtree (Phase 0.3):
- * a selected node at the top level, or directly under the zoom root, cannot
- * outdent without escaping the zoom, so it is dropped from the batch. If nothing
- * survives the shortcut is a no-op.
- */
-function resolveBatchOutdent(
-  input: ResolveOutlineKeyInput,
-  rangeIds: readonly NoteId[]
-): OutlineKeyResolution | null {
-  const zoomRootId = input.workspace.zoomRootId;
-  const eligible = rangeIds.filter((id) => {
-    const node = input.workspace.nodesById[id];
-    return Boolean(
-      node && node.parentId !== null && node.parentId !== zoomRootId
-    );
-  });
-  return eligible.length > 0
-    ? { type: "batchOutdent", nodeIds: eligible }
-    : null;
-}
+  | { type: "selectionCopy"; nodeIds: readonly NoteId[] }
+  | { type: "selectionCut"; nodeIds: readonly NoteId[] };
 
 export function resolveOutlineKey(
   input: ResolveOutlineKeyInput
@@ -286,7 +214,12 @@ export function resolveOutlineKey(
     const selectionVisibleIds =
       input.visibleNodeIds ??
       visibleNodeIds(input.workspace, input.workspace.zoomRootId);
-    const rangeIds = selectionRangeIds(input.selection, selectionVisibleIds);
+    const selectionSnapshot = () =>
+      deriveNotesSelectionActionSnapshot({
+        selection: input.selection ?? null,
+        visibleNodeIds: selectionVisibleIds,
+        workspace: input.workspace
+      });
     if (
       !input.repeat &&
       input.key === "Enter" &&
@@ -294,14 +227,14 @@ export function resolveOutlineKey(
       !input.altKey &&
       primaryModifierPressed
     ) {
-      if (rangeIds.length === 0) {
+      const snapshot = selectionSnapshot();
+      if (!snapshot) {
         return null;
       }
-      const focused = input.workspace.nodesById[input.nodeId];
       return {
         type: "batchComplete",
-        nodeIds: rangeIds,
-        completed: focused ? focused.completedAt === null : true
+        nodeIds: snapshot.selectedNodeIds,
+        completed: snapshot.completion !== "all"
       };
     }
     if (
@@ -311,12 +244,13 @@ export function resolveOutlineKey(
       !input.altKey &&
       primaryModifierPressed
     ) {
-      return rangeIds.length === 0
+      const snapshot = selectionSnapshot();
+      return !snapshot
         ? null
         : {
             type: "batchDelete",
-            nodeIds: rangeIds,
-            focusNodeId: neighborAfterRange(selectionVisibleIds, rangeIds)
+            nodeIds: snapshot.structuralRootIds,
+            focusNodeId: snapshot.deleteFocusNodeId
           };
     }
     if (
@@ -326,9 +260,89 @@ export function resolveOutlineKey(
       !input.ctrlKey &&
       !input.metaKey
     ) {
-      return input.shiftKey
-        ? resolveBatchOutdent(input, rangeIds)
-        : resolveBatchIndent(input, rangeIds, selectionVisibleIds);
+      const snapshot = selectionSnapshot();
+      if (!snapshot) {
+        return null;
+      }
+      if (!input.shiftKey) {
+        return snapshot.eligibility.indent.eligible
+          ? { type: "batchIndent", nodeIds: snapshot.structuralRootIds }
+          : null;
+      }
+      if (!snapshot.eligibility.outdent.eligible) {
+        return null;
+      }
+      const eligibleRootIds = snapshot.structuralRootIds.filter((nodeId) => {
+        const parentId = input.workspace.nodesById[nodeId].parentId;
+        return parentId !== null && parentId !== input.workspace.zoomRootId;
+      });
+      return { type: "batchOutdent", nodeIds: eligibleRootIds };
+    }
+    if (
+      !input.repeat &&
+      input.key.toLowerCase() === "d" &&
+      input.shiftKey &&
+      duplicateModifierPressed
+    ) {
+      const snapshot = selectionSnapshot();
+      return snapshot?.eligibility.duplicate.eligible
+        ? {
+            type: "batchDuplicate",
+            nodeIds: snapshot.structuralRootIds
+          }
+        : null;
+    }
+    if (
+      !input.repeat &&
+      input.shiftKey &&
+      !input.altKey &&
+      primaryModifierPressed &&
+      (input.key === "ArrowUp" || input.key === "ArrowDown")
+    ) {
+      const snapshot = selectionSnapshot();
+      if (!snapshot) {
+        return null;
+      }
+      const eligibility =
+        input.key === "ArrowUp"
+          ? snapshot.eligibility.moveUp
+          : snapshot.eligibility.moveDown;
+      return eligibility.eligible
+        ? {
+            type: "batchReorder",
+            nodeIds: snapshot.structuralRootIds,
+            parentId: eligibility.target.parentId,
+            afterId: eligibility.target.afterId
+          }
+        : null;
+    }
+    if (
+      !input.repeat &&
+      !input.shiftKey &&
+      !input.altKey &&
+      primaryModifierPressed &&
+      (input.key.toLowerCase() === "c" || input.key.toLowerCase() === "x")
+    ) {
+      const snapshot = selectionSnapshot();
+      const nativeSelectionIsCollapsed =
+        Number.isInteger(input.selectionStart) &&
+        Number.isInteger(input.selectionEnd) &&
+        input.selectionStart === input.selectionEnd &&
+        input.selectionStart !== null &&
+        input.selectionStart >= 0 &&
+        input.selectionStart <= input.title.length;
+      if (!snapshot || !nativeSelectionIsCollapsed) {
+        return null;
+      }
+      if (input.key.toLowerCase() === "c") {
+        return {
+          type: "selectionCopy",
+          nodeIds: snapshot.structuralRootIds
+        };
+      }
+      return snapshot.eligibility.cut.eligible
+        ? { type: "selectionCut", nodeIds: snapshot.structuralRootIds }
+        : null;
     }
   }
 

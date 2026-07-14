@@ -25,15 +25,15 @@ export function isActiveMoveNode(
   );
 }
 
-function insideSubtree(
+function insideAnySubtree(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
   candidateId: NoteId,
-  rootId: NoteId
+  rootIds: ReadonlySet<NoteId>
 ): boolean {
   let current: NoteNode | undefined = nodesById[candidateId];
   const visited = new Set<NoteId>();
   while (current && !visited.has(current.id)) {
-    if (current.id === rootId) {
+    if (rootIds.has(current.id)) {
       return true;
     }
     visited.add(current.id);
@@ -44,13 +44,16 @@ function insideSubtree(
 
 export function buildNotesMoveDestinations(
   nodesById: Readonly<Record<NoteId, NoteNode>>,
-  movingNodeId: NoteId
+  movingNodeIds: NoteId | readonly NoteId[]
 ): NotesMoveDestination[] {
+  const movingRoots =
+    typeof movingNodeIds === "string" ? [movingNodeIds] : movingNodeIds;
+  const movingRootSet = new Set(movingRoots);
   const childrenByParent = new Map<NoteId | null, NoteNode[]>();
   for (const node of Object.values(nodesById)) {
     if (
       !isActiveMoveNode(node) ||
-      insideSubtree(nodesById, node.id, movingNodeId)
+      insideAnySubtree(nodesById, node.id, movingRootSet)
     ) {
       continue;
     }
@@ -99,7 +102,11 @@ export function buildNotesMoveNodeInput(
     !isActiveMoveNode(moving) ||
     (destinationId !== null &&
       (!isActiveMoveNode(nodesById[destinationId]) ||
-        insideSubtree(nodesById, destinationId, movingNodeId)))
+        insideAnySubtree(
+          nodesById,
+          destinationId,
+          new Set([movingNodeId])
+        )))
   ) {
     return null;
   }

@@ -992,7 +992,7 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
     });
   });
 
-  it("Cmd/Ctrl+Enter uncompletes the whole selection when the focused row is done", () => {
+  it("Cmd/Ctrl+Enter completes a mixed selection even when the focused row is done", () => {
     const withDone = normalizeWorkspace(
       workspace([
         node({ id: "root-a", sortKey: 1 }),
@@ -1012,6 +1012,47 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
           key: "Enter",
           ctrlKey: true,
           workspace: withDone,
+          visibleNodeIds: ["root-a", "c2", "c3", "c4"]
+        })
+      )
+    ).toEqual({
+      type: "batchComplete",
+      nodeIds: ["c2", "c3", "c4"],
+      completed: true
+    });
+  });
+
+  it("Cmd/Ctrl+Enter uncompletes only when every selected row is done", () => {
+    const allDone = normalizeWorkspace(
+      workspace([
+        node({ id: "root-a", sortKey: 1 }),
+        node({
+          id: "c2",
+          parentId: "root-a",
+          sortKey: 2,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({
+          id: "c3",
+          parentId: "root-a",
+          sortKey: 3,
+          completedAt: "2026-07-10T00:00:00Z"
+        }),
+        node({
+          id: "c4",
+          parentId: "root-a",
+          sortKey: 4,
+          completedAt: "2026-07-10T00:00:00Z"
+        })
+      ])
+    );
+
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "Enter",
+          ctrlKey: true,
+          workspace: allDone,
           visibleNodeIds: ["root-a", "c2", "c3", "c4"]
         })
       )
@@ -1047,7 +1088,7 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
       )
     ).toEqual({
       type: "batchDelete",
-      nodeIds: ["root-a", "c1", "c2", "c3", "c4", "root-b"],
+      nodeIds: ["root-a", "root-b"],
       focusNodeId: null
     });
   });
@@ -1124,6 +1165,201 @@ describe("resolveOutlineKey batch selection (Phase 4.1c)", () => {
         })
       )
     ).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "Alt+Shift+D on other platforms",
+      overrides: {
+        key: "D",
+        altKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      }
+    },
+    {
+      label: "Cmd+Shift+D on macOS",
+      overrides: {
+        key: "D",
+        metaKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      }
+    }
+  ])("routes $label to batch duplicate", ({ overrides }) => {
+    expect(resolveOutlineKey(batchInput(overrides))).toEqual({
+      type: "batchDuplicate",
+      nodeIds: ["c2", "c3", "c4"]
+    });
+  });
+
+  it.each([
+    {
+      label: "Ctrl+Shift+ArrowUp",
+      overrides: {
+        key: "ArrowUp",
+        ctrlKey: true,
+        shiftKey: true,
+        platform: "other" as const
+      },
+      target: { parentId: "root-a", afterId: null }
+    },
+    {
+      label: "Cmd+Shift+ArrowDown",
+      overrides: {
+        key: "ArrowDown",
+        metaKey: true,
+        shiftKey: true,
+        platform: "mac" as const
+      },
+      target: { parentId: "root-a", afterId: "c4" }
+    }
+  ])("routes $label to an exact one-step batch reorder", ({
+    overrides,
+    target
+  }) => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          ...overrides,
+          selection: { anchorId: "c2", headId: "c3" }
+        })
+      )
+    ).toEqual({
+      type: "batchReorder",
+      nodeIds: ["c2", "c3"],
+      ...target
+    });
+  });
+
+  it("keeps a reorder shortcut inside the selection branch at a boundary", () => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key: "ArrowDown",
+          ctrlKey: true,
+          shiftKey: true,
+          selection: { anchorId: "c3", headId: "c4" }
+        })
+      )
+    ).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "Ctrl+C",
+      key: "c",
+      type: "selectionCopy",
+      modifiers: { ctrlKey: true, platform: "other" as const }
+    },
+    {
+      label: "Cmd+C",
+      key: "c",
+      type: "selectionCopy",
+      modifiers: { metaKey: true, platform: "mac" as const }
+    },
+    {
+      label: "Ctrl+X",
+      key: "x",
+      type: "selectionCut",
+      modifiers: { ctrlKey: true, platform: "other" as const }
+    },
+    {
+      label: "Cmd+X",
+      key: "x",
+      type: "selectionCut",
+      modifiers: { metaKey: true, platform: "mac" as const }
+    }
+  ] as const)("routes selection $label when the native text selection is collapsed", ({
+    key,
+    type,
+    modifiers
+  }) => {
+    expect(
+      resolveOutlineKey(
+        batchInput({
+          key,
+          ...modifiers,
+          selectionStart: 1,
+          selectionEnd: 1
+        })
+      )
+    ).toEqual({ type, nodeIds: ["c2", "c3", "c4"] });
+  });
+
+  it.each(["c", "x"])(
+    "leaves Ctrl+%s native when the title has a non-collapsed text selection",
+    (key) => {
+      expect(
+        resolveOutlineKey(
+          batchInput({
+            key,
+            ctrlKey: true,
+            selectionStart: 0,
+            selectionEnd: 2
+          })
+        )
+      ).toBeNull();
+    }
+  );
+
+  it("allows Copy but rejects lossy Cut for a rich selected subtree", () => {
+    const rich = normalizeWorkspace(
+      workspace([
+        node({ id: "root-a", sortKey: 1 }),
+        node({ id: "c2", parentId: "root-a", sortKey: 2, note: "rich" }),
+        node({ id: "c3", parentId: "root-a", sortKey: 3 })
+      ])
+    );
+    const shared = {
+      workspace: rich,
+      visibleNodeIds: ["root-a", "c2", "c3"],
+      selection: { anchorId: "c2", headId: "c3" },
+      ctrlKey: true,
+      selectionStart: 0,
+      selectionEnd: 0
+    };
+
+    expect(resolveOutlineKey(batchInput({ ...shared, key: "c" }))).toEqual({
+      type: "selectionCopy",
+      nodeIds: ["c2", "c3"]
+    });
+    expect(resolveOutlineKey(batchInput({ ...shared, key: "x" }))).toBeNull();
+  });
+
+  it.each([
+    ["duplicate repeat", { key: "D", altKey: true, shiftKey: true, repeat: true }],
+    [
+      "reorder repeat",
+      { key: "ArrowUp", ctrlKey: true, shiftKey: true, repeat: true }
+    ],
+    ["copy repeat", { key: "c", ctrlKey: true, repeat: true }],
+    ["cut IME", { key: "x", ctrlKey: true, isComposing: true }]
+  ])("suppresses selection $label", (_label, overrides) => {
+    expect(resolveOutlineKey(batchInput(overrides))).toBeNull();
+  });
+
+  it("routes selected descendants through their stable structural root", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          key: "D",
+          altKey: true,
+          shiftKey: true,
+          workspace: tree,
+          visibleNodeIds: [
+            "root-a",
+            "child-a",
+            "grandchild",
+            "child-b",
+            "root-b",
+            "root-c"
+          ],
+          nodeId: "root-a",
+          selection: { anchorId: "root-a", headId: "grandchild" }
+        })
+      )
+    ).toEqual({ type: "batchDuplicate", nodeIds: ["root-a"] });
   });
 
   it("resolves nothing to batch when the range endpoints are not both visible", () => {
