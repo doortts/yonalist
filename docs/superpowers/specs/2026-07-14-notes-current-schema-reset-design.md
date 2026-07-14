@@ -1,7 +1,7 @@
 # Notes current-schema reset design
 
 **Date:** 2026-07-14  
-**Status:** Approved
+**Status:** Review
 
 ## Goal
 
@@ -56,6 +56,50 @@ The single creation statement defines the final forms of:
 
 `notes_preferences` is not created. The derived tokenizer, date parser, lifecycle index, and onboarding version constants and rows are removed with it.
 
+### Retained-schema usage audit
+
+Keep only persistent structures with a current runtime consumer:
+
+| Structure | Current responsibility |
+| --- | --- |
+| `notes_nodes` | Outline hierarchy, text, layout, collapse, star, completion, trash, and archive state |
+| `notes_tags` | Structured `#` and `@` tag filtering and counts |
+| `notes_dates` | Parsed date-range search results |
+| `notes_attachments` | Image metadata, ordering, sizing, and owned-file reconciliation |
+| `notes_history_entries` | Undo/redo cursor, session ordering, command identity, and history-size accounting |
+| `notes_history_changes` | Before/after audit rows used to replay undo and redo |
+| `notes_search` | Active-workspace full-text search |
+| `notes_search_lifecycle` | Archive and trash full-text search |
+| temporary `notes_history_context` | Per-transaction context consumed by current audit triggers; it is not persistent schema or migration state |
+
+Columns introduced during earlier development migrations are retained only when current code uses them:
+
+- `deleted_batch_id` identifies one trash operation so restore and undo affect the correct subtree;
+- `archived_at` and `archive_root_id` represent current archive membership and ownership;
+- `sequence`, `is_undone`, `estimated_bytes`, and `command_kind` implement current history ordering, replay state, capacity limits, and mutation deltas;
+- normalized tag and date-token columns support current indexed searches;
+- attachment hash, dimensions, and path columns support current validation, deduplication, rendering, and cleanup.
+
+Remove all structures that exist only for compatibility or conversion:
+
+- `notes_preferences` and every schema/parser/tokenizer/onboarding version row;
+- `PRAGMA user_version` and all v1, v2, v3, or v4 concepts;
+- historical history-table shapes, `_legacy` temporary tables, snapshot conversion structs, schema-normalization helpers, and repair branches;
+- migration-only column defaults such as `command_kind DEFAULT 'legacy'`;
+- future-version header inspection and migration rollback tests that have no current-schema behavior to protect.
+
+No currently consumed table or column is removed merely because it was originally introduced by a migration.
+
+## Code structure
+
+Move the authoritative DDL out of the large repository implementation into a small `notes/schema.rs` module. That module has one responsibility: detect the absence of `notes_nodes` and atomically create the current tables, indexes, and triggers. It returns whether creation occurred.
+
+`notes/repository.rs` keeps database path handling, connection configuration, onboarding seed data, and runtime CRUD/query behavior. Its initialization flow calls the schema module and seeds onboarding plus derived rows only when schema creation reports a new database.
+
+Delete migration dispatch, historical schema models, repair validators, normalized-SQL comparison machinery, derived-version gates, and whole-database rebuild helpers that exist only to upgrade old data. Do not replace them with a generic migration abstraction or a schema-version enum.
+
+Keep reusable runtime helpers such as per-node tag/date derivation and SQLite busy handling because normal writes and concurrent startup still use them.
+
 ## Derived data and onboarding
 
 Because a current-schema database starts empty, no startup-wide migration rebuild is required.
@@ -72,9 +116,9 @@ SQLite remains responsible for reporting malformed or unreadable database files.
 
 ## Development data reset
 
-Stop the running desktop app before resetting storage. Move the current Notes database and any SQLite companions out of their active names, and move `notes-assets` out of its active name as a reversible backup. Do not alter the Inbox index, Markdown vault contents, cache, or outbox.
+Stop the running desktop app before resetting storage. Move the current Notes database, SQLite companions, and `notes-assets` out of their active names as a temporary reversible backup. Do not alter the Inbox index, Markdown vault contents, cache, or outbox.
 
-Restarting the app creates the current schema and onboarding content from scratch. After successful verification, the inactive backup can be removed separately if desired.
+Restarting the app creates the current schema and onboarding content from scratch. After the new schema and app behavior are verified, remove the temporary Notes-only backup so no obsolete development database remains.
 
 ## Testing
 
@@ -96,6 +140,8 @@ Remove tests whose only purpose is version-one through version-four migration, d
 - No Notes production code reads or writes `PRAGMA user_version`.
 - No versioned schema, migration, historical repair, or migration-marker code remains.
 - `notes_preferences` is absent from the current schema.
+- Every retained persistent table and column has a current runtime consumer documented by the schema audit.
+- Current DDL is isolated in a small schema module rather than mixed with repository CRUD and migration code.
 - A fresh database contains the exact current tables, indexes, triggers, and onboarding tree.
 - Reopening a current database is idempotent and does not recreate deleted onboarding content.
 - The active development Notes data is reset without changing non-Notes vault data.
