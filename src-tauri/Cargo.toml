@@ -19,6 +19,7 @@ cap-fs-ext = "4.0.2"
 cap-std = "4.0.2"
 fs4 = "1.1.0"
 image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+icu_casemap = "=2.2.0"
 keyring = "4.1.4"
 lopdf = { version = "0.44", default-features = false }
 open = "5.4"
@@ -35,7 +36,7 @@ tauri-runtime = "=2.11.3"
 tempfile = "3"
 unicode-general-category = "1.1.0"
 unicode-normalization = "0.1"
-unicase = "=2.9.0"
+unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 ureq = "3.3"
 uuid = { version = "1", features = ["v4"] }
 

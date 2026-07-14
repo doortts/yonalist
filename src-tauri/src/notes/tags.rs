@@ -1,10 +1,10 @@
 use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
+use icu_casemap::CaseMapper;
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use unicase::UniCase;
-use unicode_general_category::{get_general_category, GeneralCategory};
 use unicode_normalization::{is_nfc, UnicodeNormalization};
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 #[cfg(test)]
 thread_local! {
@@ -44,21 +44,16 @@ struct Scalar {
     utf16_start: usize,
 }
 
-fn is_mark(character: char) -> bool {
-    matches!(
-        get_general_category(character),
-        GeneralCategory::NonspacingMark
-            | GeneralCategory::SpacingMark
-            | GeneralCategory::EnclosingMark
-    )
-}
-
 fn is_tag_body_start(character: char) -> bool {
-    matches!(character, '_' | '-') || character.is_alphanumeric()
+    matches!(character, '_' | '-')
+        || matches!(
+            character.general_category_group(),
+            GeneralCategoryGroup::Letter | GeneralCategoryGroup::Number
+        )
 }
 
 fn is_tag_body_continuation(character: char) -> bool {
-    is_tag_body_start(character) || is_mark(character)
+    is_tag_body_start(character) || character.general_category_group() == GeneralCategoryGroup::Mark
 }
 
 fn is_valid_tag_boundary(previous: Option<char>) -> bool {
@@ -69,10 +64,7 @@ fn is_valid_tag_boundary(previous: Option<char>) -> bool {
 
 pub(crate) fn normalize_tag_identity(source: &str) -> String {
     let nfc = source.nfc().collect::<String>();
-    UniCase::unicode(nfc.as_str())
-        .to_folded_case()
-        .nfc()
-        .collect()
+    CaseMapper::new().fold_string(&nfc).nfc().collect()
 }
 
 pub(crate) fn is_canonical_tag_body(source: &str) -> bool {
@@ -849,9 +841,9 @@ pub(crate) fn extract_note_tags(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_exact_tag_to_title, is_canonical_tag_body, is_nfc, remove_exact_tag_scan_work,
-        remove_exact_tag_tokens, remove_exact_tag_tokens_once, reset_remove_exact_tag_scan_work,
-        tokenize_note_text,
+        add_exact_tag_to_title, is_canonical_tag_body, is_nfc, normalize_tag_identity,
+        remove_exact_tag_scan_work, remove_exact_tag_tokens, remove_exact_tag_tokens_once,
+        reset_remove_exact_tag_scan_work, tokenize_note_text,
     };
     use crate::notes::types::{NoteSearchTag, NoteTagFilter, NoteTagPrefix};
     use serde::Deserialize;
@@ -878,6 +870,29 @@ mod tests {
     struct TagFilterFixture {
         normalized_tag: String,
         valid: bool,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct TagIdentityFixture {
+        source: String,
+        normalized: String,
+    }
+
+    #[test]
+    fn notes_tag_identity_matches_shared_three_scalar_fold_fixtures() {
+        let fixtures: Vec<TagIdentityFixture> = serde_json::from_str(include_str!(
+            "../../../src/features/notes/noteTagIdentity.fixtures.json"
+        ))
+        .expect("shared tag identity fixtures");
+
+        for fixture in fixtures {
+            assert_eq!(
+                normalize_tag_identity(&fixture.source),
+                fixture.normalized,
+                "source: {:?}",
+                fixture.source
+            );
+        }
     }
 
     #[test]

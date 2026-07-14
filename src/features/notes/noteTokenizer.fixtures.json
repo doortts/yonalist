@@ -100,5 +100,20 @@
       { "prefix": "#", "display": "ı", "normalized": "ı", "startUtf16": 30, "endUtf16": 32 },
       { "prefix": "#", "display": "ẛ", "normalized": "ṡ", "startUtf16": 33, "endUtf16": 35 }
     ]
+  },
+  {
+    "source": "#꟎ #a᫏ #ﬃ #ﬄ",
+    "tags": [
+      { "prefix": "#", "display": "꟎", "normalized": "꟏", "startUtf16": 0, "endUtf16": 2 },
+      { "prefix": "#", "display": "a᫏", "normalized": "a᫏", "startUtf16": 3, "endUtf16": 6 },
+      { "prefix": "#", "display": "ﬃ", "normalized": "ffi", "startUtf16": 7, "endUtf16": 9 },
+      { "prefix": "#", "display": "ﬄ", "normalized": "ffl", "startUtf16": 10, "endUtf16": 12 }
+    ]
+  },
+  {
+    "source": "#ְ #aְ",
+    "tags": [
+      { "prefix": "#", "display": "aְ", "normalized": "aְ", "startUtf16": 3, "endUtf16": 6 }
+    ]
   }
 ]

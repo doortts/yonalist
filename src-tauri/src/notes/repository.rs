@@ -2,6 +2,7 @@ use crate::notes::date_index::{
     find_note_date_matches, parse_note_date_expression, LocalDate, LocalTodayProvider,
     SystemLocalTodayProvider, WeekStartsOn,
 };
+use crate::notes::error::UNSUPPORTED_SCHEMA_VERSION_PREFIX;
 use crate::notes::history;
 use crate::notes::tags::{
     add_exact_tag_to_title, extract_note_tags, is_canonical_tag_body, normalize_tag_identity,
@@ -33,6 +34,7 @@ use std::cell::RefCell;
 use std::sync::mpsc::Sender;
 
 const NOTES_ONBOARDING_TITLE: &str = "Yonalist Notes 시작하기";
+const CURRENT_NOTES_SCHEMA_VERSION: i64 = 1;
 const NOTES_ONBOARDING_NOTE: &str = "이 노트는 자유롭게 수정하거나 삭제할 수 있어요.";
 const NOTES_ONBOARDING_CHILDREN: [&str; 6] = [
     "Enter — 새 항목 만들기",
@@ -182,7 +184,17 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start Notes storage initialization: {error}"))?;
-    if crate::notes::schema::create_if_missing(&transaction)? {
+    let created = crate::notes::schema::create_if_missing(&transaction)?;
+    let stored_schema_version = transaction
+        .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+        .map_err(|error| format!("Could not inspect the Notes schema version: {error}"))?;
+    if stored_schema_version > CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {stored_schema_version}."
+        ));
+    }
+
+    if created {
         seed_notes_onboarding(&transaction)?;
         let node_ids = {
             let mut statement = transaction
@@ -197,8 +209,13 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         };
         let today = SystemLocalTodayProvider.local_today(&transaction)?;
         rebuild_derived_for_nodes_at(&transaction, &node_ids, today)?;
-    } else {
-        rebuild_noncanonical_tag_indexes(&transaction)?;
+    } else if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
+        rebuild_all_tag_indexes(&transaction)?;
+    }
+    if stored_schema_version < CURRENT_NOTES_SCHEMA_VERSION {
+        transaction
+            .pragma_update(None, "user_version", CURRENT_NOTES_SCHEMA_VERSION)
+            .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
     }
 
     transaction
@@ -206,25 +223,16 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
         .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
 }
 
-fn rebuild_noncanonical_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
+fn rebuild_all_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
     let node_ids = {
         let mut statement = transaction
-            .prepare("SELECT node_id, normalized_tag FROM notes_tags ORDER BY node_id")
-            .map_err(|error| format!("Could not prepare legacy Notes tag identities: {error}"))?;
+            .prepare("SELECT id FROM notes_nodes ORDER BY id")
+            .map_err(|error| format!("Could not prepare legacy Note IDs: {error}"))?;
         let rows = statement
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(|error| format!("Could not inspect legacy Notes tag identities: {error}"))?;
-        let mut node_ids = BTreeSet::new();
-        for row in rows {
-            let (node_id, normalized_tag) = row
-                .map_err(|error| format!("Could not read a legacy Notes tag identity: {error}"))?;
-            if !is_canonical_tag_body(&normalized_tag) {
-                node_ids.insert(node_id);
-            }
-        }
-        node_ids
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not inspect legacy Note IDs: {error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read a legacy Note ID: {error}"))?
     };
 
     for node_id in node_ids {
@@ -235,7 +243,7 @@ fn rebuild_noncanonical_tag_indexes(transaction: &Transaction<'_>) -> Result<(),
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .map_err(|error| {
-                format!("Could not load Note content for tag identity migration: {error}")
+                format!("Could not load Note content for tag index migration: {error}")
             })?;
         replace_tags(transaction, &node_id, &title, &note)?;
     }
@@ -4129,7 +4137,7 @@ mod tests {
         search_nodes, search_nodes_at, search_nodes_structured, seed_notes_onboarding,
         soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
         split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
-        update_node_at, NewAttachment, NoteAttachment, SORT_KEY_STEP,
+        update_node_at, NewAttachment, NoteAttachment, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
@@ -5785,6 +5793,9 @@ mod tests {
                 [NODE_ID],
             )
             .expect("simulate legacy lowercase-only tag index");
+        connection
+            .pragma_update(None, "user_version", 0)
+            .expect("mark legacy tag index version");
         drop(connection);
 
         let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
@@ -5800,6 +5811,111 @@ mod tests {
             .expect("collect rebuilt tag identities");
 
         assert_eq!(normalized_tags, vec!["ff", "strasse"]);
+    }
+
+    #[test]
+    fn initialization_rebuilds_every_legacy_tag_for_unicode_seventeen_rules() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        create_test_node(&mut connection, NODE_ID, None, None, "Legacy #꟎ #a᫏", "");
+        connection
+            .execute("DELETE FROM notes_tags WHERE node_id = ?1", [NODE_ID])
+            .expect("clear current Unicode tag index");
+        connection
+            .execute(
+                "INSERT INTO notes_tags (node_id, prefix, tag, normalized_tag) \
+                 VALUES (?1, '#', 'a', 'a')",
+                [NODE_ID],
+            )
+            .expect("simulate legacy Unicode 16 tag index");
+        connection
+            .pragma_update(None, "user_version", 0)
+            .expect("mark legacy tag index version");
+        drop(connection);
+
+        let connection = connect_notes_db(vault_path).expect("reopen legacy Notes storage");
+        let normalized_tags = connection
+            .prepare(
+                "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1 \
+                 ORDER BY normalized_tag",
+            )
+            .expect("prepare rebuilt Unicode tags")
+            .query_map([NODE_ID], |row| row.get::<_, String>(0))
+            .expect("query rebuilt Unicode tags")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect rebuilt Unicode tags");
+
+        assert_eq!(normalized_tags, vec!["a᫏", "꟏"]);
+        assert_eq!(
+            connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .expect("current Notes schema version"),
+            CURRENT_NOTES_SCHEMA_VERSION
+        );
+    }
+
+    #[test]
+    fn tag_index_migration_does_not_materialize_later_note_content_early() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        create_test_node(&mut connection, NODE_ID, None, None, "First #tag", "");
+        create_test_node(&mut connection, CHILD_ID, None, None, "Later #tag", "");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET note = X'FF' WHERE id = ?1",
+                [CHILD_ID],
+            )
+            .expect("store invalid later content sentinel");
+        connection
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_first_tag_rebuild \
+                 BEFORE DELETE ON notes_tags \
+                 WHEN OLD.node_id = '{NODE_ID}' \
+                 BEGIN SELECT RAISE(ABORT, 'first tag rebuild sentinel'); END;"
+            ))
+            .expect("install first rebuild sentinel");
+        connection
+            .pragma_update(None, "user_version", 0)
+            .expect("mark legacy tag index version");
+        drop(connection);
+
+        let error = connect_notes_db(vault_path)
+            .err()
+            .expect("first tag rebuild must fail before later content is read");
+        assert!(
+            error.contains("first tag rebuild sentinel"),
+            "migration materialized later content before rebuilding the first row: {error}"
+        );
+    }
+
+    #[test]
+    fn current_tag_index_version_skips_repeat_startup_rebuilds() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_str().expect("path");
+        let mut connection = connect_notes_db(vault_path).expect("connect notes");
+        create_test_node(&mut connection, NODE_ID, None, None, "Current #tag", "");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_repeat_tag_rebuild \
+                 BEFORE DELETE ON notes_tags \
+                 BEGIN SELECT RAISE(ABORT, 'unexpected tag rebuild'); END;",
+            )
+            .expect("install repeat rebuild sentinel");
+        drop(connection);
+
+        let connection = connect_notes_db(vault_path).expect("reopen current Notes storage");
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT normalized_tag FROM notes_tags WHERE node_id = ?1",
+                    [NODE_ID],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("unchanged current tag index"),
+            "tag"
+        );
     }
 
     #[test]
