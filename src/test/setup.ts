@@ -1,5 +1,10 @@
 import "@testing-library/jest-dom/vitest";
-import { beforeEach } from "vitest";
+import { cleanup } from "@testing-library/react";
+import { afterEach, beforeEach } from "vitest";
+
+afterEach(() => {
+  cleanup();
+});
 
 // vitest's jsdom environment ships without a usable localStorage; install a
 // functional in-memory implementation shared by all test files.
