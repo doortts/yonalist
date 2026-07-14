@@ -549,6 +549,11 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
                 op: BatchOp::RemoveTag { tag: tag.into() },
             },
         };
+        if input.node_ids.is_empty() {
+            return Err(serde::de::Error::custom(
+                "A batch operation requires at least one node.",
+            ));
+        }
         if input.node_ids.len() > MAX_BATCH_NODE_IDS {
             return Err(serde::de::Error::custom(
                 "A batch operation can contain at most 10,000 node IDs.",
@@ -943,6 +948,19 @@ mod tests {
             oversized.validate().expect_err("10,001 submitted node ids"),
             "A batch operation can contain at most 10,000 node IDs."
         );
+    }
+
+    #[test]
+    fn apply_batch_input_deserialization_rejects_empty_submissions() {
+        let error = serde_json::from_value::<ApplyBatchInput>(json!({
+            "nodeIds": [],
+            "op": "delete"
+        }))
+        .expect_err("empty submitted selection");
+
+        assert!(error
+            .to_string()
+            .contains("A batch operation requires at least one node."));
     }
 
     #[test]
