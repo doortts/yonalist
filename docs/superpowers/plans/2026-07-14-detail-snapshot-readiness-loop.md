@@ -272,11 +272,11 @@ Run: `npm run lint && npm run build`
 
 Expected: both commands exit zero without new warnings.
 
-- [ ] **Step 4: Verify the running Tauri window**
+- [x] **Step 4: Verify the running Tauri window**
 
 Allow Vite HMR to apply the source changes, then sample the current Yonalist window repeatedly. Confirm that the selected `arc-agent` discussion `#79` no longer alternates between two full-pane render states and that its comment card appears in the live pane.
 
-- [ ] **Step 5: Inspect the final diff and repository state**
+- [x] **Step 5: Inspect the final diff and repository state**
 
 Run: `git status --short && git log -3 --oneline`
 
