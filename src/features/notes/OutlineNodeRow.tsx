@@ -20,14 +20,12 @@ import {
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
 import type { NotesSelectionActionIntent } from "./notesSelectionActions";
-import {
-  selectionRangeIds,
-  type NotesSelection
-} from "./notesWorkspaceReducer";
+import type { NotesSelection } from "./notesWorkspaceReducer";
 import {
   buildNotesMoveDestinations,
   buildNotesMoveNodeInput,
-  NotesBulletMenu
+  NotesBulletMenu,
+  type NotesBulletMenuSelectionBridge
 } from "./NotesBulletMenu";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
@@ -75,6 +73,7 @@ interface OutlineNodeRowProps {
   // Stable pane-owned semantic bridge. Keyboard selection shortcuts never
   // decide targets or mutate the workspace inside a row.
   onSelectionAction(action: NotesSelectionActionIntent): void;
+  selectionBridge?: NotesBulletMenuSelectionBridge;
   // Atomic membership flag for the multi-node selection range, derived in the
   // pane from a stable id Set. A plain boolean so a range change re-renders only
   // the rows whose membership actually flipped.
@@ -112,6 +111,7 @@ function OutlineNodeRowComponent({
   getSelectionVisibleNodeIds,
   getSelection,
   onSelectionAction,
+  selectionBridge,
   isSelected = false,
   draft,
   attachmentUploadError,
@@ -671,6 +671,12 @@ function OutlineNodeRowComponent({
             actionBusy={structuralCommandBusy}
             createdAt={node.createdAt}
             updatedAt={node.updatedAt}
+            selectionBridge={selectionBridge}
+            onOpenChange={(open) => {
+              if (open && !selectionBridge && getSelection()) {
+                actions.clearSelection();
+              }
+            }}
             getMoveDestinations={() => {
               preparedMoveRef.current = null;
               if (prepareMoveNode) {
@@ -716,37 +722,6 @@ function OutlineNodeRowComponent({
                 : undefined
             }
             onMoveTo={(destinationId) => {
-              // With a live multi-node selection that includes this row, Move To
-              // relocates the WHOLE selection as one block (plan Phase 4.1c):
-              // every selected root becomes a child of the destination, appended
-              // after its last non-selected child. One applyBatch call, one undo
-              // step.
-              const selection = getSelection();
-              const rangeIds = selection
-                ? selectionRangeIds(selection, getSelectionVisibleNodeIds())
-                : [];
-              if (rangeIds.length > 1 && rangeIds.includes(nodeId)) {
-                const selected = new Set(rangeIds);
-                const destinationChildren =
-                  destinationId === null
-                    ? state.rootIds
-                    : (state.childIdsByParent[destinationId] ?? []);
-                let afterId: NoteId | null = null;
-                for (let i = destinationChildren.length - 1; i >= 0; i -= 1) {
-                  if (!selected.has(destinationChildren[i])) {
-                    afterId = destinationChildren[i];
-                    break;
-                  }
-                }
-                runStructuralCommand(() =>
-                  actions.applyBatch(rangeIds, {
-                    type: "move",
-                    parentId: destinationId,
-                    afterId
-                  })
-                );
-                return { ok: true } as const;
-              }
               if (preparedMoveRef.current && commitPreparedMove) {
                 return commitPreparedMove(
                   preparedMoveRef.current,

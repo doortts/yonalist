@@ -2682,6 +2682,171 @@ describe("Notes workspace", () => {
       ).toEqual(["a", "b"]);
     });
 
+    it("routes a selected row menu through the full-range command bridge", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+
+      const menu = await openNodeMenu("Bravo", user);
+      expect(within(menu).queryByRole("menuitem", { name: "Star" })).toBeNull();
+      await user.click(
+        within(menu).getByRole("menuitem", { name: "Complete" })
+      );
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "complete",
+        nodeIds: ["a", "b"],
+        completed: true
+      });
+      expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
+    });
+
+    it("keeps the selected menu store safe while Delete clears its range", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+
+      const menu = await openNodeMenu("Bravo", user);
+      await user.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("toolbar", {
+            name: "Actions for 2 selected notes"
+          })
+        ).toBeNull()
+      );
+      expect(screen.queryByRole("menu")).toBeNull();
+    });
+
+    it("clears the range before an unselected row menu performs its ordinary action", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      expect(
+        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" })
+      ).toBeVisible();
+
+      const menu = await openNodeMenu("Charlie", user);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("toolbar", {
+            name: "Actions for 2 selected notes"
+          })
+        ).toBeNull()
+      );
+      await user.click(
+        within(menu).getByRole("menuitem", { name: "Complete" })
+      );
+
+      await waitFor(() =>
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "c")
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+    });
+
+    it("moves a selected ancestor forest through frozen structural-root ownership", async () => {
+      const user = userEvent.setup();
+      configureRepository([
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", parentId: "a", sortKey: 1, title: "Bravo" }),
+        node({ id: "c", sortKey: 2, title: "Charlie" })
+      ]);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+
+      const menu = await openNodeMenu("Bravo", user);
+      await user.click(
+        within(menu).getByRole("menuitem", { name: "Move To" })
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Move selection"
+      });
+      expect(within(dialog).queryByRole("option", { name: "Alpha" })).toBeNull();
+      expect(within(dialog).queryByRole("option", { name: "Bravo" })).toBeNull();
+      await user.click(
+        within(dialog).getByRole("option", { name: "Charlie" })
+      );
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["a"],
+        parentId: "c",
+        afterId: null,
+        beforeId: null
+      });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("removes a frozen selected-row tag union from every explicit selected row", async () => {
+      const user = userEvent.setup();
+      configureRepository([
+        node({ id: "a", sortKey: 1, title: "Alpha #One" }),
+        node({ id: "b", sortKey: 2, title: "Bravo", note: "@Owner" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" })
+      ]);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha #One");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      const dialog = await screen.findByRole("dialog", { name: "Edit tags" });
+      await user.click(within(dialog).getByRole("tab", { name: "Remove" }));
+      expect(within(dialog).getByRole("option", { name: "#One" })).toBeVisible();
+      expect(within(dialog).getByRole("option", { name: "@Owner" })).toBeVisible();
+      await user.click(within(dialog).getByRole("option", { name: "#One" }));
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "removeTag",
+        nodeIds: ["a", "b"],
+        tag: { prefix: "#", normalizedTag: "one" }
+      });
+    });
+
+    it("clears a range whose endpoints leave the body projection", async () => {
+      const user = userEvent.setup();
+      configureRepository([
+        node({ id: "parent", sortKey: 1, title: "Parent" }),
+        node({ id: "a", parentId: "parent", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", parentId: "parent", sortKey: 2, title: "Bravo" })
+      ]);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      expect(
+        screen.getByRole("toolbar", { name: "Actions for 2 selected notes" })
+      ).toBeVisible();
+
+      await user.click(screen.getByRole("button", { name: "Collapse Parent" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("toolbar", { name: /Actions for/ })).toBeNull()
+      );
+      await user.click(screen.getByRole("button", { name: "Expand Parent" }));
+      await findTitleInput("Alpha");
+
+      expect(screen.queryByRole("toolbar", { name: /Actions for/ })).toBeNull();
+      expect(
+        document.querySelector('[data-outline-id="a"]')
+      ).not.toHaveAttribute("data-range-selected");
+      expect(
+        document.querySelector('[data-outline-id="b"]')
+      ).not.toHaveAttribute("data-range-selected");
+    });
+
     it("completes a keyboard-selected range with a single applyBatch call", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());

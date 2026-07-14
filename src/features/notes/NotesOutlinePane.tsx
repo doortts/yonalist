@@ -32,7 +32,7 @@ import {
   IconTooltip,
   TooltipProvider
 } from "../../components/ui/Tooltip";
-import type { NoteId } from "../../domain/notes";
+import type { NoteId, NoteSearchTag } from "../../domain/notes";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
@@ -47,6 +47,13 @@ import {
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
 import { NotesQuickJump } from "./NotesQuickJump";
+import type {
+  NotesBulletMenuSelectionBridge,
+  NotesBulletMenuSelectionState
+} from "./NotesBulletMenu";
+import { NotesMoveChooser } from "./NotesMoveChooser";
+import { NotesTagChooser } from "./NotesTagChooser";
+import type { NotesFrozenSelectionSnapshot } from "./notesSelectionChooser";
 import {
   NotesSelectionActionBar,
   type NotesSelectionActionBarAction
@@ -61,6 +68,8 @@ import {
   deriveNotesSelectionActionSnapshot,
   type NotesSelectionActionSnapshot
 } from "./notesSelectionActions";
+import { buildNotesMoveDestinations } from "./notesMoveTargets";
+import { tokenizeNoteText } from "./noteTokens";
 import {
   deriveOutlineDropPreview,
   OUTLINE_INDENT_PX,
@@ -69,7 +78,10 @@ import {
   projectOutlineDrop,
   type OutlineDropPreview
 } from "./outlineDrag";
-import { selectionRangeIds } from "./notesWorkspaceReducer";
+import {
+  selectionRangeIds,
+  type NormalizedNotesWorkspace
+} from "./notesWorkspaceReducer";
 import {
   deriveOutlineBodyRows,
   flattenVisibleOutlineRows,
@@ -78,6 +90,7 @@ import {
 import { OutlineNodeRow } from "./OutlineNodeRow";
 import {
   useNotesSelectionCommandRouter,
+  type NotesSelectionCommandOwnership,
   type NotesSelectionCommandIntent
 } from "./useNotesSelectionCommandRouter";
 import type {
@@ -103,6 +116,23 @@ interface ImageDropPreview {
   >["position"];
 }
 
+type SelectionChooserOwnership = NotesSelectionCommandOwnership<
+  NotesPreparedSelectionAuthority
+>;
+type SelectionChooserSnapshot = NotesFrozenSelectionSnapshot<
+  SelectionChooserOwnership
+>;
+type SelectionChooserSession =
+  | Readonly<{
+      kind: "move";
+      snapshot: SelectionChooserSnapshot;
+    }>
+  | Readonly<{
+      kind: "tags";
+      snapshot: SelectionChooserSnapshot;
+      selectedTagUnion: readonly NoteSearchTag[];
+    }>;
+
 function exactNoteIds(
   left: readonly NoteId[],
   right: readonly NoteId[]
@@ -111,6 +141,57 @@ function exactNoteIds(
     left.length === right.length &&
     left.every((nodeId, index) => nodeId === right[index])
   );
+}
+
+function selectedTagUnion(
+  workspace: NormalizedNotesWorkspace,
+  nodeIds: readonly NoteId[]
+): readonly NoteSearchTag[] {
+  const tags = new Map<string, NoteSearchTag>();
+  for (const nodeId of nodeIds) {
+    const node = workspace.nodesById[nodeId];
+    if (!node) {
+      continue;
+    }
+    for (const token of tokenizeNoteText(`${node.title}\n${node.note}`)) {
+      if (token.kind !== "tag") {
+        continue;
+      }
+      const key = `${token.prefix}\u0000${token.normalized}`;
+      if (!tags.has(key)) {
+        tags.set(key, {
+          prefix: token.prefix,
+          normalizedTag: token.normalized,
+          displayTag: token.display
+        });
+      }
+    }
+  }
+  return Object.freeze([...tags.values()]);
+}
+
+function frozenMoveTarget(
+  workspace: NormalizedNotesWorkspace,
+  rootIds: readonly NoteId[],
+  destinationId: NoteId | null
+): { parentId: NoteId | null; afterId: NoteId | null } | null {
+  if (
+    !buildNotesMoveDestinations(workspace.nodesById, rootIds).some(
+      (destination) => destination.id === destinationId
+    )
+  ) {
+    return null;
+  }
+  const selected = new Set(rootIds);
+  const siblings =
+    destinationId === null
+      ? workspace.rootIds
+      : (workspace.childIdsByParent[destinationId] ?? []);
+  return {
+    parentId: destinationId,
+    afterId:
+      [...siblings].reverse().find((nodeId) => !selected.has(nodeId)) ?? null
+  };
 }
 
 interface ImagePasteExecutionScope {
@@ -265,7 +346,8 @@ export function NotesOutlinePane() {
     deletingNotesData,
     libraryView,
     locallyExpandedNodeIds,
-    state
+    state,
+    tagSummaries
   } = useNotesState();
   const {
     attachmentUploadErrorsByNodeId,
@@ -289,10 +371,13 @@ export function NotesOutlinePane() {
     useState<ImageIngestError | null>(null);
   const [preparedSelectionAuthority, setPreparedSelectionAuthority] =
     useState<NotesPreparedSelectionAuthority | null>(null);
+  const [selectionChooser, setSelectionChooser] =
+    useState<SelectionChooserSession | null>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const lastSelectionHeadRef = useRef<NoteId | null>(null);
   const selectionAuthorityRequestRef = useRef(0);
+  const selectionChooserPreparationRequestRef = useRef(0);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
@@ -876,34 +961,32 @@ export function NotesOutlinePane() {
       }),
     []
   );
+  const getLiveSelectionActionSnapshot = useCallback(() => {
+    const live = getLiveSelectionSnapshot?.() ?? {
+      selection: selectionRef.current,
+      revision: selectionRevisionRef.current
+    };
+    const visibleNodeIds = bodyVisibleIdsRef.current;
+    const selectedNodeIds = selectionRangeIds(live.selection, visibleNodeIds);
+    const prepared = currentPreparedAuthorityRef.current;
+    const authoritativeWorkspace =
+      libraryViewRef.current === "all"
+        ? stateRef.current
+        : prepared &&
+            prepared.selectionRevision === live.revision &&
+            exactNoteIds(prepared.selectedNodeIds, selectedNodeIds) &&
+            (isPreparedSelectionAuthorityCurrent?.(prepared) ?? false)
+          ? prepared.workspace
+          : undefined;
+    return deriveNotesSelectionActionSnapshot({
+      selection: live.selection,
+      visibleNodeIds,
+      workspace: stateRef.current,
+      authoritativeWorkspace
+    });
+  }, [getLiveSelectionSnapshot, isPreparedSelectionAuthorityCurrent]);
   const selectionRouter = useNotesSelectionCommandRouter({
-    getSnapshot: () => {
-      const live = getLiveSelectionSnapshot?.() ?? {
-        selection: selectionRef.current,
-        revision: selectionRevisionRef.current
-      };
-      const visibleNodeIds = bodyVisibleIdsRef.current;
-      const selectedNodeIds = selectionRangeIds(
-        live.selection,
-        visibleNodeIds
-      );
-      const prepared = currentPreparedAuthorityRef.current;
-      const authoritativeWorkspace =
-        libraryViewRef.current === "all"
-          ? stateRef.current
-          : prepared &&
-              prepared.selectionRevision === live.revision &&
-              exactNoteIds(prepared.selectedNodeIds, selectedNodeIds) &&
-              (isPreparedSelectionAuthorityCurrent?.(prepared) ?? false)
-            ? prepared.workspace
-            : undefined;
-      return deriveNotesSelectionActionSnapshot({
-        selection: live.selection,
-        visibleNodeIds,
-        workspace: stateRef.current,
-        authoritativeWorkspace
-      });
-    },
+    getSnapshot: getLiveSelectionActionSnapshot,
     getSelectionRevision: () =>
       getLiveSelectionSnapshot?.().revision ?? selectionRevisionRef.current,
     getVisibleNodeIds: getProjectedSelectionVisibleIds,
@@ -928,6 +1011,125 @@ export function NotesOutlinePane() {
     writeClipboard: writeSelectionClipboard
   });
   const executeSelectionCommand = selectionRouter.execute;
+  const invalidatePreparedSelectionClipboard =
+    selectionRouter.invalidatePreparedClipboard;
+  useEffect(() => {
+    if (!selection || materializedSelectionIds.length > 0) {
+      return;
+    }
+    const live = getLiveSelectionSnapshot?.() ?? {
+      selection: selectionRef.current,
+      revision: selectionRevisionRef.current
+    };
+    if (
+      !live.selection ||
+      live.revision !== selectionRevision ||
+      live.selection.anchorId !== selection.anchorId ||
+      live.selection.headId !== selection.headId
+    ) {
+      return;
+    }
+    if (actions.replaceSelection?.(null, live.revision)) {
+      invalidatePreparedSelectionClipboard();
+      selectionChooserPreparationRequestRef.current += 1;
+      setSelectionChooser(null);
+    }
+  }, [
+    actions,
+    getLiveSelectionSnapshot,
+    invalidatePreparedSelectionClipboard,
+    materializedSelectionIds.length,
+    selection,
+    selectionRevision
+  ]);
+  const requestSelectionChooser = useCallback(
+    async (kind: "move" | "tags"): Promise<void> => {
+      const requestId = ++selectionChooserPreparationRequestRef.current;
+      setSelectionChooser(null);
+      const openingSnapshot = getLiveSelectionActionSnapshot();
+      const openingLive = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      const targetIds =
+        kind === "move"
+          ? openingSnapshot?.eligibility.moveTo.eligible
+            ? openingSnapshot.eligibility.moveTo.nodeIds
+            : []
+          : (openingSnapshot?.selectedNodeIds ?? []);
+      if (
+        !openingSnapshot ||
+        targetIds.length === 0 ||
+        !prepareSelectionAuthority ||
+        !isPreparedSelectionAuthorityCurrent ||
+        !(await actions.flushAllDrafts()) ||
+        selectionChooserPreparationRequestRef.current !== requestId
+      ) {
+        return;
+      }
+      const afterFlushLive = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      if (afterFlushLive.revision !== openingLive.revision) {
+        return;
+      }
+      const authority = await prepareSelectionAuthority(targetIds);
+      const currentLive = getLiveSelectionSnapshot?.() ?? {
+        selection: selectionRef.current,
+        revision: selectionRevisionRef.current
+      };
+      if (
+        selectionChooserPreparationRequestRef.current !== requestId ||
+        currentLive.revision !== openingLive.revision ||
+        authority.selectionRevision !== openingLive.revision ||
+        !exactNoteIds(authority.selectedNodeIds, targetIds) ||
+        !isPreparedSelectionAuthorityCurrent(authority)
+      ) {
+        return;
+      }
+      const actionSnapshot = deriveNotesSelectionActionSnapshot({
+        selection: currentLive.selection,
+        visibleNodeIds: bodyVisibleIdsRef.current,
+        workspace: stateRef.current,
+        authoritativeWorkspace: authority.workspace
+      });
+      if (
+        !actionSnapshot ||
+        !exactNoteIds(
+          kind === "move"
+            ? actionSnapshot.structuralRootIds
+            : actionSnapshot.selectedNodeIds,
+          targetIds
+        )
+      ) {
+        return;
+      }
+      const snapshot: SelectionChooserSnapshot = Object.freeze({
+        nodeIds: Object.freeze([...targetIds]),
+        ownership: Object.freeze({ actionSnapshot, authority })
+      });
+      setSelectionChooser(
+        kind === "move"
+          ? Object.freeze({ kind, snapshot })
+          : Object.freeze({
+              kind,
+              snapshot,
+              selectedTagUnion: selectedTagUnion(
+                authority.workspace,
+                targetIds
+              )
+            })
+      );
+    },
+    [
+      actions,
+      getLiveSelectionActionSnapshot,
+      getLiveSelectionSnapshot,
+      isPreparedSelectionAuthorityCurrent,
+      prepareSelectionAuthority
+    ]
+  );
 
   const executeSelectionAction = useCallback(
     async (action: NotesSelectionActionBarAction): Promise<void> => {
@@ -947,14 +1149,17 @@ export function NotesOutlinePane() {
           intent = { type: action };
           break;
         case "moveTo":
+          await requestSelectionChooser("move");
+          return;
         case "tags":
-          break;
+          await requestSelectionChooser("tags");
+          return;
       }
       if (intent) {
         await executeSelectionCommand(intent);
       }
     },
-    [executeSelectionCommand]
+    [executeSelectionCommand, requestSelectionChooser]
   );
   const returnFocusToSelectionHead = useCallback(() => {
     const headId = lastSelectionHeadRef.current;
@@ -962,6 +1167,77 @@ export function NotesOutlinePane() {
       focusBodyTitle(headId);
     }
   }, [focusBodyTitle]);
+  const selectionMutationDisabledReason = deletingNotesData
+    ? "Notes data is being deleted."
+    : lifecycleReadOnly
+      ? "Selection actions are unavailable in Archive or Trash."
+      : writeError
+        ? "Retry the failed save before changing notes."
+        : null;
+  const selectionMenuState = useMemo<NotesBulletMenuSelectionState | null>(
+    () =>
+      selectionSnapshot
+        ? {
+            snapshot: selectionSnapshot,
+            busy: selectionRouter.busy,
+            mutationDisabledReason: selectionMutationDisabledReason
+          }
+        : null,
+    [
+      selectionMutationDisabledReason,
+      selectionRouter.busy,
+      selectionSnapshot
+    ]
+  );
+  const selectionMenuStateRef = useRef<NotesBulletMenuSelectionState | null>(
+    selectionMenuState
+  );
+  // Preserve the last published non-null value through selected -> cleared
+  // teardown. A portal subscriber can read once more before it unsubscribes.
+  if (selectionMenuState) {
+    selectionMenuStateRef.current = selectionMenuState;
+  }
+  const selectionMenuSubscribersRef = useRef(new Set<() => void>());
+  const selectionMenuExecuteRef = useRef(executeSelectionAction);
+  selectionMenuExecuteRef.current = executeSelectionAction;
+  const selectionChooserHandoffRef = useRef<(chooser: "move" | "tags") => void>(
+    () => undefined
+  );
+  selectionChooserHandoffRef.current = (chooser) => {
+    void requestSelectionChooser(chooser);
+  };
+  const selectionMenuBridge = useMemo<NotesBulletMenuSelectionBridge>(
+    () => ({
+      // The bridge is only attached after the first non-null publication; the
+      // cache is deliberately retained after detachment for portal teardown.
+      getSnapshot: () => selectionMenuStateRef.current!,
+      subscribe: (onStoreChange) => {
+        selectionMenuSubscribersRef.current.add(onStoreChange);
+        return () => selectionMenuSubscribersRef.current.delete(onStoreChange);
+      },
+      execute: (action) => selectionMenuExecuteRef.current(action),
+      requestChooser: (chooser) =>
+        selectionChooserHandoffRef.current(chooser)
+    }),
+    []
+  );
+  useLayoutEffect(() => {
+    if (!selectionMenuState) {
+      return;
+    }
+    for (const subscriber of selectionMenuSubscribersRef.current) {
+      subscriber();
+    }
+  }, [selectionMenuState]);
+  const tagSuggestions = useMemo<readonly NoteSearchTag[]>(
+    () =>
+      tagSummaries.map(({ prefix, normalizedTag, displayTag }) => ({
+        prefix,
+        normalizedTag,
+        displayTag
+      })),
+    [tagSummaries]
+  );
   const bodyDropPreview =
     dropPreview && state.zoomRootId !== null
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
@@ -1131,15 +1407,7 @@ export function NotesOutlinePane() {
             ref={selectionToolbarRef}
             snapshot={selectionSnapshot}
             busy={selectionRouter.busy}
-            mutationDisabledReason={
-              deletingNotesData
-                ? "Notes data is being deleted."
-                : lifecycleReadOnly
-                  ? "Selection actions are unavailable in Archive or Trash."
-                  : writeError
-                    ? "Retry the failed save before changing notes."
-                    : null
-            }
+            mutationDisabledReason={selectionMutationDisabledReason}
             status={selectionRouter.status}
             error={selectionRouter.error}
             onAction={executeSelectionAction}
@@ -1300,6 +1568,11 @@ export function NotesOutlinePane() {
                       getSelectionVisibleNodeIds={getSelectionVisibleNodeIds}
                       getSelection={getSelection}
                       onSelectionAction={executeSelectionAction}
+                      selectionBridge={
+                        selectedIdSet.has(row.id)
+                          ? selectionMenuBridge
+                          : undefined
+                      }
                       isSelected={selectedIdSet.has(row.id)}
                       draft={draftsByNodeId[row.id]}
                       attachmentUploadError={
@@ -1373,6 +1646,56 @@ export function NotesOutlinePane() {
           onSearch={actions.searchNotes}
           onJump={actions.zoomTo}
         />
+        {selectionChooser?.kind === "move" && (
+          <NotesMoveChooser
+            open
+            snapshot={selectionChooser.snapshot}
+            nodesById={
+              selectionChooser.snapshot.ownership.authority.workspace.nodesById
+            }
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectionChooser(null);
+              }
+            }}
+            onChoose={({ destinationId, snapshot }) => {
+              const target = frozenMoveTarget(
+                snapshot.ownership.authority.workspace,
+                snapshot.nodeIds,
+                destinationId
+              );
+              if (target) {
+                void executeSelectionCommand(
+                  { type: "moveTo", target },
+                  snapshot
+                );
+              }
+            }}
+            onRequestFocusReturn={returnFocusToSelectionHead}
+          />
+        )}
+        {selectionChooser?.kind === "tags" && (
+          <NotesTagChooser
+            open
+            snapshot={selectionChooser.snapshot}
+            suggestions={tagSuggestions}
+            selectedTagUnion={selectionChooser.selectedTagUnion}
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectionChooser(null);
+              }
+            }}
+            onCommit={(commit) => {
+              void executeSelectionCommand(
+                commit.mode === "add"
+                  ? { type: "addTag", tag: commit.tag }
+                  : { type: "removeTag", tag: commit.tag },
+                commit.snapshot
+              );
+            }}
+            onRequestFocusReturn={returnFocusToSelectionHead}
+          />
+        )}
         </TooltipProvider>
       </section>
     </NotesExportControllerProvider>
