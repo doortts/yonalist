@@ -1,5 +1,6 @@
 export type NoteId = string;
 export type NoteLayoutMode = "bullets";
+export type NoteNodeKind = "text" | "image";
 
 export const MAX_NOTE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 export const MAX_NOTE_ATTACHMENT_BATCH_BYTES = 64 * 1024 * 1024;
@@ -12,6 +13,7 @@ export const MAX_NOTES_BATCH_NODE_IDS = 10_000;
 
 export interface NoteNode {
   id: NoteId;
+  nodeKind: NoteNodeKind;
   parentId: NoteId | null;
   sortKey: number;
   title: string;
@@ -566,6 +568,7 @@ export function isNoteAttachment(value: unknown): value is NoteAttachment {
 
 const NOTE_NODE_KEYS = [
   "id",
+  "nodeKind",
   "parentId",
   "sortKey",
   "title",
@@ -592,6 +595,7 @@ export function isNoteNode(value: unknown): value is NoteNode {
     isRecord(value) &&
     hasOwnKeys(value, NOTE_NODE_KEYS) &&
     typeof value.id === "string" &&
+    (value.nodeKind === "text" || value.nodeKind === "image") &&
     isNullableString(value.parentId) &&
     Number.isSafeInteger(value.sortKey) &&
     typeof value.title === "string" &&

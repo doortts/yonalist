@@ -1937,7 +1937,7 @@ mod tests {
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
         ApplyBatchInput, BatchOp, ImportAttachmentInput, ImportAttachmentPathBatchInput,
-        ImportAttachmentPathItem, NoteLayoutMode, NoteNode, NoteSearchMatchedField,
+        ImportAttachmentPathItem, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
         NoteSearchResult, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
         NoteTagSummary, NotesExportFormat, MAX_NOTE_ATTACHMENTS_PER_NODE,
         MAX_NOTE_ATTACHMENTS_PER_VAULT,
@@ -3126,6 +3126,7 @@ mod tests {
         let workspace = NotesWorkspace {
             nodes: vec![NoteNode {
                 id: ROOT_ID.to_string(),
+                node_kind: NoteNodeKind::Text,
                 parent_id: None,
                 sort_key: 1024,
                 title: "Page".to_string(),
@@ -3147,6 +3148,7 @@ mod tests {
             json!({
                 "nodes": [{
                     "id": ROOT_ID,
+                    "nodeKind": "text",
                     "parentId": null,
                     "sortKey": 1024,
                     "title": "Page",

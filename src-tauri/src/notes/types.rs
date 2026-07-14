@@ -21,10 +21,27 @@ pub(crate) const MAX_IMPORT_SUBTREE_NODES: usize = 2000;
 pub(crate) const MAX_IMPORT_SUBTREE_DEPTH: usize = 64;
 pub(crate) const MAX_IMPORT_SUBTREE_FIELD_UTF8_BYTES: usize = 100_000;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteNodeKind {
+    Text,
+    Image,
+}
+
+impl NoteNodeKind {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Image => "image",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteNode {
     pub id: NoteId,
+    pub node_kind: NoteNodeKind,
     pub parent_id: Option<NoteId>,
     pub sort_key: i64,
     pub title: String,
@@ -750,16 +767,37 @@ impl SplitNodeInput {
 mod tests {
     use super::{
         validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput, MoveNodeInput,
-        NoteAttachment, NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchScope,
-        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-        NotesExportFormat, NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult,
-        NotesHistoryStatus, NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+        NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
+        NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
+        NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
+        NotesWorkspaceScope,
     };
     use serde_json::json;
 
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SECOND_ID: &str = "22222222-2222-4222-8222-222222222222";
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn note_node() -> NoteNode {
+        NoteNode {
+            id: NODE_ID.to_string(),
+            node_kind: NoteNodeKind::Text,
+            parent_id: None,
+            sort_key: 1024,
+            title: "Root".to_string(),
+            note: String::new(),
+            layout_mode: NoteLayoutMode::Bullets,
+            is_collapsed: false,
+            is_starred: true,
+            completed_at: None,
+            created_at: "2026-07-11T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-11T00:00:01.000Z".to_string(),
+            deleted_at: None,
+            archived_at: None,
+            archive_root_id: None,
+        }
+    }
 
     #[test]
     fn validates_only_canonical_uuid_v4_ids() {
@@ -1195,6 +1233,36 @@ mod tests {
     }
 
     #[test]
+    fn note_node_kind_is_required_and_uses_the_text_image_wire_contract() {
+        let mut missing_kind = serde_json::to_value(note_node()).expect("serialize node fixture");
+        missing_kind
+            .as_object_mut()
+            .expect("node object")
+            .remove("nodeKind");
+        assert!(serde_json::from_value::<NoteNode>(missing_kind.clone()).is_err());
+
+        for kind in ["text", "image"] {
+            let mut value = missing_kind.clone();
+            value
+                .as_object_mut()
+                .expect("node object")
+                .insert("nodeKind".to_string(), json!(kind));
+            let node: NoteNode = serde_json::from_value(value).expect("valid node kind");
+            assert_eq!(
+                serde_json::to_value(node).expect("serialize typed node")["nodeKind"],
+                json!(kind)
+            );
+        }
+
+        let mut unknown_kind = missing_kind;
+        unknown_kind
+            .as_object_mut()
+            .expect("node object")
+            .insert("nodeKind".to_string(), json!("video"));
+        assert!(serde_json::from_value::<NoteNode>(unknown_kind).is_err());
+    }
+
+    #[test]
     fn archive_and_structured_tag_contracts_use_exact_native_wire_shapes() {
         let archive: NotesWorkspaceScope =
             serde_json::from_value(json!({ "kind": "archive" })).expect("archive scope");
@@ -1368,22 +1436,7 @@ mod tests {
 
     #[test]
     fn mutation_delta_fields_use_the_exact_optional_camel_case_wire_shape() {
-        let node = NoteNode {
-            id: NODE_ID.to_string(),
-            parent_id: None,
-            sort_key: 1024,
-            title: "Root".to_string(),
-            note: String::new(),
-            layout_mode: NoteLayoutMode::Bullets,
-            is_collapsed: false,
-            is_starred: true,
-            completed_at: None,
-            created_at: "2026-07-11T00:00:00.000Z".to_string(),
-            updated_at: "2026-07-11T00:00:01.000Z".to_string(),
-            deleted_at: None,
-            archived_at: None,
-            archive_root_id: None,
-        };
+        let node = note_node();
         let attachment = NoteAttachment {
             id: SECOND_ID.to_string(),
             node_id: NODE_ID.to_string(),
@@ -1422,6 +1475,7 @@ mod tests {
                 "workspace": {
                     "nodes": [{
                         "id": NODE_ID,
+                        "nodeKind": "text",
                         "parentId": null,
                         "sortKey": 1024,
                         "title": "Root",
@@ -1443,6 +1497,7 @@ mod tests {
                 "canRedo": false,
                 "changedNodes": [{
                     "id": NODE_ID,
+                    "nodeKind": "text",
                     "parentId": null,
                     "sortKey": 1024,
                     "title": "Root",

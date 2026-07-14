@@ -6,7 +6,7 @@ use crate::notes::repository::{
     load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at,
 };
 use crate::notes::types::{
-    validate_note_id, NoteAttachment, NoteId, NoteNode, NotesHistoryContext,
+    validate_note_id, NoteAttachment, NoteId, NoteNode, NoteNodeKind, NotesHistoryContext,
     NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
     NotesWorkspaceScope, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
@@ -24,7 +24,7 @@ const NODE_JSON_NEW: &str = "json_object(\
   'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
   'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
   'deleted_batch_id', NEW.deleted_batch_id, 'archived_at', NEW.archived_at, \
-  'archive_root_id', NEW.archive_root_id)";
+  'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind)";
 const NODE_JSON_OLD: &str = "json_object(\
   'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
   'title', OLD.title, 'note', OLD.note, 'layout_mode', OLD.layout_mode, \
@@ -32,7 +32,7 @@ const NODE_JSON_OLD: &str = "json_object(\
   'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
   'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
   'deleted_batch_id', OLD.deleted_batch_id, 'archived_at', OLD.archived_at, \
-  'archive_root_id', OLD.archive_root_id)";
+  'archive_root_id', OLD.archive_root_id, 'nodeKind', OLD.node_kind)";
 const ATTACHMENT_JSON_NEW: &str = "json_object(\
   'id', NEW.id, 'node_id', NEW.node_id, 'sort_key', NEW.sort_key, \
   'relative_path', NEW.relative_path, 'content_hash', NEW.content_hash, \
@@ -709,6 +709,8 @@ pub(crate) fn clear_all_history_in_transaction(
 #[derive(Deserialize)]
 struct NodeSnapshot {
     id: String,
+    #[serde(rename = "nodeKind")]
+    node_kind: NoteNodeKind,
     parent_id: Option<String>,
     sort_key: i64,
     title: String,
@@ -989,20 +991,21 @@ fn apply_node_state(
         .execute(
             "INSERT INTO notes_nodes(\
                id, parent_id, sort_key, title, note, layout_mode, is_collapsed, is_starred, \
-               completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, archive_root_id\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+               completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
+               archive_root_id, node_kind\
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(id) DO UPDATE SET \
                parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
                note = excluded.note, layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
                is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
                created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
                deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
-               archive_root_id = excluded.archive_root_id",
+               archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
             params![
                 node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode,
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at,
                 node.updated_at, node.deleted_at, node.deleted_batch_id, node.archived_at,
-                node.archive_root_id
+                node.archive_root_id, node.node_kind.as_str()
             ],
         )
         .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
@@ -3041,7 +3044,8 @@ mod tests {
               \"is_starred\":{is_starred},\"completed_at\":null,\
               \"created_at\":\"2026-07-10T00:00:00.000Z\",\
               \"updated_at\":\"2026-07-10T00:00:00.000Z\",\"deleted_at\":null,\
-              \"deleted_batch_id\":null,\"archived_at\":null,\"archive_root_id\":null}}"
+              \"deleted_batch_id\":null,\"archived_at\":null,\"archive_root_id\":null,\
+              \"nodeKind\":\"text\"}}"
         )
     }
 

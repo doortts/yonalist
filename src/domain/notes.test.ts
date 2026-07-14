@@ -41,6 +41,7 @@ const CONTENT_HASH = "a".repeat(64);
 function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
   return {
     id: UUID,
+    nodeKind: "text",
     parentId: null,
     sortKey: 1024,
     title: "Page",
@@ -309,6 +310,22 @@ describe("Notes domain contract", () => {
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), layoutMode: "board" })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), updatedAt: null })).toBe(false);
+  });
+
+  it("requires an own text or image node kind", () => {
+    const textNode = makeNoteNode();
+    const imageNode = { ...makeNoteNode(), nodeKind: "image" };
+    const { nodeKind: _missingKind, ...missingKind } = makeNoteNode();
+    const inheritedKind = Object.assign(
+      Object.create({ nodeKind: "text" }),
+      missingKind
+    );
+
+    expect(isNoteNode(textNode)).toBe(true);
+    expect(isNoteNode(imageNode)).toBe(true);
+    expect(isNoteNode(missingKind)).toBe(false);
+    expect(isNoteNode(inheritedKind)).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), nodeKind: "video" })).toBe(false);
   });
 
   it("recognizes only the exact atomic Notes mutation result shape", () => {

@@ -16,7 +16,9 @@ CREATE TABLE notes_nodes (
   deleted_at TEXT,
   deleted_batch_id TEXT,
   archived_at TEXT,
-  archive_root_id TEXT REFERENCES notes_nodes(id)
+  archive_root_id TEXT REFERENCES notes_nodes(id),
+  node_kind TEXT NOT NULL DEFAULT 'text'
+    CHECK (node_kind IN ('text', 'image'))
 );
 
 CREATE INDEX notes_nodes_active_parent_order

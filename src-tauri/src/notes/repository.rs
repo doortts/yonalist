@@ -11,10 +11,11 @@ use crate::notes::tags::{
 use crate::notes::types::{
     validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ExportAttachment, ExportDateSpan,
     ExportNode, ImportNode, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteId,
-    NoteLayoutMode, NoteNode, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope,
-    NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary,
-    NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
+    NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
+    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
+    MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
@@ -356,6 +357,7 @@ struct StoredNode {
     deleted_batch_id: Option<String>,
     archived_at: Option<String>,
     archive_root_id: Option<String>,
+    node_kind: NoteNodeKind,
 }
 
 fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
@@ -373,7 +375,24 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         deleted_batch_id: row.get(10)?,
         archived_at: row.get(11)?,
         archive_root_id: row.get(12)?,
+        node_kind: note_node_kind_from_row(row, 13)?,
     })
+}
+
+fn note_node_kind_from_row(row: &Row<'_>, index: usize) -> rusqlite::Result<NoteNodeKind> {
+    let value: String = row.get(index)?;
+    match value.as_str() {
+        "text" => Ok(NoteNodeKind::Text),
+        "image" => Ok(NoteNodeKind::Image),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Unsupported Notes node kind: {value}"),
+            )),
+        )),
+    }
 }
 
 fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
@@ -394,6 +413,7 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
 
     Ok(NoteNode {
         id: row.get(0)?,
+        node_kind: note_node_kind_from_row(row, 14)?,
         parent_id: row.get(1)?,
         sort_key: row.get(2)?,
         title: row.get(3)?,
@@ -411,10 +431,13 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
 }
 
 /// Column projection of a `notes_nodes` row as it is captured in the history
-/// audit `after_json`/`before_json` payloads (snake_case keys, integer booleans).
+/// audit `after_json`/`before_json` payloads (storage-shaped keys plus the
+/// `nodeKind` wire discriminator, with integer booleans).
 #[derive(Deserialize)]
 struct AuditNodeRow {
     id: String,
+    #[serde(rename = "nodeKind")]
+    node_kind: NoteNodeKind,
     parent_id: Option<String>,
     sort_key: i64,
     title: String,
@@ -442,6 +465,7 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
     };
     Ok(NoteNode {
         id: row.id,
+        node_kind: row.node_kind,
         parent_id: row.parent_id,
         sort_key: row.sort_key,
         title: row.title,
@@ -953,7 +977,7 @@ pub(crate) fn load_workspace(
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id \
+                archived_at, archive_root_id, node_kind \
          FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
     const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
@@ -966,7 +990,8 @@ pub(crate) fn load_workspace(
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
+                node.node_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -985,7 +1010,8 @@ pub(crate) fn load_workspace(
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
+                node.node_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -1001,7 +1027,8 @@ pub(crate) fn load_workspace(
          ) \
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
-                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id \
+                node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
+                node.node_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -1012,7 +1039,7 @@ pub(crate) fn load_workspace(
                 ) THEN node.parent_id ELSE NULL END, \
                 node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
                 node.is_starred, node.completed_at, node.created_at, node.updated_at, \
-                node.deleted_at, node.archived_at, node.archive_root_id \
+                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind \
          FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM notes_nodes parent \
@@ -1021,7 +1048,7 @@ pub(crate) fn load_workspace(
     const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
                 node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
                 node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id \
+                node.archived_at, node.archive_root_id, node.node_kind \
          FROM notes_nodes node \
          WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
            AND node.archive_root_id IS NOT NULL \
@@ -1091,7 +1118,7 @@ fn load_tag_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                 node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
                 node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id \
+                node.archive_root_id, node.node_kind \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id",
@@ -1680,7 +1707,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id \
+                    archive_root_id, node_kind \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -1997,9 +2024,9 @@ pub(crate) fn create_node_at(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, created_at, updated_at\
+                   id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, ?5, \
+                   ?1, ?2, ?3, ?4, ?5, 'text', \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
@@ -2074,9 +2101,9 @@ pub(crate) fn split_node_at(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, created_at, updated_at\
+                   id, parent_id, sort_key, title, node_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, \
+                   ?1, ?2, ?3, ?4, 'text', \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
@@ -2450,7 +2477,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id \
+                    archive_root_id, node_kind \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -2729,9 +2756,9 @@ fn duplicate_forest_in_transaction(
                 .execute(
                     "INSERT INTO notes_nodes (\
                        id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
-                       is_starred, completed_at, created_at, updated_at\
+                       is_starred, completed_at, node_kind, created_at, updated_at\
                      ) VALUES (\
-                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                      )",
@@ -2744,7 +2771,8 @@ fn duplicate_forest_in_transaction(
                         original.layout_mode,
                         original.is_collapsed,
                         original.is_starred,
-                        original.completed_at
+                        original.completed_at,
+                        original.node_kind.as_str()
                     ],
                 )
                 .map_err(|error| format!("Could not duplicate the Note subtree: {error}"))?;
@@ -2824,9 +2852,9 @@ fn insert_import_node(
     transaction
         .execute(
             "INSERT INTO notes_nodes (\
-               id, parent_id, sort_key, title, note, created_at, updated_at\
+               id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
              ) VALUES (\
-               ?1, ?2, ?3, ?4, ?5, \
+               ?1, ?2, ?3, ?4, ?5, 'text', \
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
              )",
@@ -5817,6 +5845,10 @@ mod tests {
         }
         assert!(column_exists(&connection, "notes_nodes", "archived_at"));
         assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
+        assert_eq!(
+            table_column_metadata(&connection, "notes_nodes", "node_kind"),
+            Some(("TEXT".to_string(), 1, Some("'text'".to_string())))
+        );
         assert!(column_exists(&connection, "notes_tags", "prefix"));
         assert!(column_exists(&connection, "notes_dates", "start_utf16"));
         assert!(column_exists(&connection, "notes_dates", "end_utf16"));
@@ -6141,6 +6173,7 @@ mod tests {
         ));
         assert!(column_exists(&connection, "notes_nodes", "archived_at"));
         assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
+        assert!(column_exists(&connection, "notes_nodes", "node_kind"));
     }
 
     #[test]
