@@ -53,6 +53,7 @@ const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
 ];
 
 const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
+  { value: "soft-paper", label: "Soft Paper" },
   { value: "default", label: "Default" },
   { value: "yona", label: "Yona" },
   { value: "yonal-light", label: "Yonal Light" },

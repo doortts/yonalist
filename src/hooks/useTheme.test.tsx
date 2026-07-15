@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTheme } from "./useTheme";
 
@@ -84,6 +84,19 @@ describe("useTheme", () => {
   afterEach(() => {
     document.documentElement.removeAttribute("data-theme");
     vi.restoreAllMocks();
+  });
+
+  it("uses Soft Paper as the fresh light theme", () => {
+    installLocalStorageMock();
+    installMatchMediaMock(false);
+
+    render(<ThemeProbe />);
+
+    expect(screen.getByLabelText("Theme")).toHaveAttribute(
+      "data-light-theme",
+      "soft-paper"
+    );
+    expect(document.documentElement.dataset.theme).toBe("soft-paper");
   });
 
   it("uses the selected light and dark themes when system mode changes", () => {
