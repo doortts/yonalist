@@ -137,4 +137,28 @@ describe("Graphite & Mist CSS contract", () => {
       "var(--border)"
     );
   });
+
+  it("uses shared interactive tokens and restrained motion", () => {
+    expect(styles).toMatch(
+      /\.theme-options\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(112px,\s*1fr\)\)/s
+    );
+    expect(styles).toMatch(
+      /\.theme-option span\s*\{[^}]*white-space:\s*nowrap/s
+    );
+    expect(styles).toMatch(
+      /\.notification-row\.selected\s*\{[^}]*var\(--selection-bg\)[^}]*var\(--selection-rail\)/s
+    );
+    expect(styles).toMatch(
+      /\.notification-reason\s*\{[^}]*width:\s*30px;[^}]*height:\s*30px;[^}]*border:\s*1px solid var\(--notification-reason-border\);[^}]*border-radius:\s*var\(--radius-sm\);[^}]*background:\s*var\(--notification-reason-bg\);[^}]*color:\s*var\(--notification-reason-fg\);/s
+    );
+    expect(styles).toMatch(
+      /\.reason-mention,\s*\.reason-comment,\s*\.reason-author,\s*\.reason-team\s*\{[^}]*color:\s*var\(--notification-reason-fg\);/s
+    );
+    expect(styles).toMatch(
+      /prefers-reduced-motion:\s*reduce[\s\S]*\.avatar-skeleton[\s\S]*animation:\s*none/s
+    );
+    expect(styles).toMatch(
+      /prefers-reduced-motion:\s*reduce[\s\S]*\.spinning\s*\{[^}]*animation:\s*spin/s
+    );
+  });
 });

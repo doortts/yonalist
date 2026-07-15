@@ -69,9 +69,9 @@
   --scrollbar-thumb-hover: rgb(17 24 39 / 45%);
 
   /* Shape */
-  --radius-sm: 8px;
-  --radius: 10px;
-  --radius-lg: 14px;
+  --radius-sm: 4px;
+  --radius: 5px;
+  --radius-lg: 8px;
   --shadow-modal: 0 20px 70px rgb(15 20 30 / 25%);
   --bg-quiet: rgb(17 24 39 / 3%);
 
@@ -846,7 +846,7 @@ body.is-resizing-pane {
 }
 
 .pane-toggle:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -1px;
 }
 
@@ -1144,7 +1144,7 @@ body.is-resizing-pane {
 }
 
 .nav-section-icon-button:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1248,13 +1248,22 @@ body.is-resizing-pane {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
+  min-height: 32px;
   gap: 7px;
   border-radius: var(--radius);
   border: 1px solid transparent;
   font-size: 13.5px;
   font-weight: 600;
   transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.text-button:focus-visible,
+.primary-button:focus-visible,
+.secondary-button:focus-visible,
+.danger-button:focus-visible,
+.icon-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .text-button {
@@ -1303,7 +1312,7 @@ body.is-resizing-pane {
 
 .secondary-button {
   padding: 7px 12px;
-  border-color: var(--border-strong);
+  border-color: var(--control-border);
   background: var(--bg-card);
   color: var(--text-1);
 }
@@ -1314,6 +1323,7 @@ body.is-resizing-pane {
 
 .danger-button {
   justify-self: start;
+  min-height: 40px;
   padding: 7px 12px;
   border-color: var(--danger);
   background: var(--danger);
@@ -1333,7 +1343,7 @@ body.is-resizing-pane {
 .icon-button {
   width: 34px;
   padding: 0;
-  border-color: var(--border-strong);
+  border-color: var(--control-border);
   background: var(--bg-card);
   color: var(--text-2);
 }
@@ -1489,6 +1499,14 @@ body.is-resizing-pane {
   color: var(--text-3);
 }
 
+.search-row,
+.notifications-search,
+.settings-section input[type="text"],
+.settings-section input[type="password"] {
+  min-height: 36px;
+  border-color: var(--control-border);
+}
+
 .search-row input {
   min-width: 0;
   flex: 1;
@@ -1570,7 +1588,7 @@ body.is-resizing-pane {
   min-height: 31px;
   margin-bottom: 4px;
   padding: 4px 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-1);
@@ -1593,7 +1611,7 @@ body.is-resizing-pane {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--bg-card);
-  box-shadow: var(--shadow-modal);
+  box-shadow: var(--shadow-menu);
   color: var(--text-1);
 }
 
@@ -1743,8 +1761,8 @@ body.is-resizing-pane {
 }
 
 .item-card.selected {
-  background: var(--list-selected-bg);
-  box-shadow: var(--list-selected-shadow);
+  background: var(--selection-bg);
+  box-shadow: inset 2px 0 0 var(--selection-rail);
 }
 
 :root[data-theme="yonal-light"] .item-card:hover {
@@ -2963,7 +2981,7 @@ body.is-resizing-pane {
   width: 100%;
   min-height: 108px;
   padding: 12px 14px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--bg-input);
   color: var(--text-1);
@@ -2973,8 +2991,8 @@ body.is-resizing-pane {
 }
 
 .comment-composer textarea:focus {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent-soft);
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
 }
 
 .composer-preview-toggle {
@@ -3255,14 +3273,14 @@ body.is-resizing-pane {
 .issue-create-body input {
   min-height: 52px;
   padding: 4px 0 14px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--control-border);
   font-size: 21px;
   font-weight: 650;
 }
 
 .issue-create-body input:focus,
 .issue-create-body textarea:focus {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--focus-ring);
 }
 
 .issue-create-body .issue-body-field {
@@ -3479,9 +3497,9 @@ body.is-resizing-pane {
 .settings-section input[type="password"],
 .settings-section input:not([type]) {
   width: 100%;
-  min-height: 34px;
+  min-height: 36px;
   padding: 6px 10px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   outline: 0;
   background: var(--bg-input);
@@ -3492,8 +3510,8 @@ body.is-resizing-pane {
 .settings-section input[type="text"]:focus,
 .settings-section input[type="password"]:focus,
 .settings-section input:not([type]):focus {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent-soft);
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
 }
 
 .settings-inline-action {
@@ -3510,7 +3528,7 @@ body.is-resizing-pane {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--bg-card);
 }
@@ -3593,7 +3611,7 @@ body.is-resizing-pane {
 .segmented {
   display: inline-flex;
   overflow: hidden;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   justify-self: start;
 }
@@ -3677,7 +3695,7 @@ body.is-resizing-pane {
 }
 
 .settings-section .project-visibility-search:focus-within {
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--focus-ring);
 }
 
 .settings-section .project-visibility-search input {
@@ -3766,8 +3784,9 @@ body.is-resizing-pane {
 }
 
 .theme-options {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 6px;
 }
 
 .theme-settings-group {
@@ -3794,7 +3813,7 @@ body.is-resizing-pane {
   flex-direction: row;
   gap: 8px;
   padding: 8px 16px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--bg-card);
   cursor: pointer;
@@ -3814,6 +3833,7 @@ body.is-resizing-pane {
   color: var(--text-1);
   font-size: 13.5px;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .theme-option span em {
@@ -3951,7 +3971,7 @@ body.is-resizing-pane {
   gap: 8px;
   margin: 4px 16px 0;
   padding: 6px 12px;
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--bg-input);
   color: var(--text-3);
@@ -3972,8 +3992,8 @@ body.is-resizing-pane {
 }
 
 .notifications-search:focus-within {
-  border-color: var(--accent);
-  outline: 2px solid var(--accent-soft);
+  border-color: var(--focus-ring);
+  outline: 2px solid var(--focus-ring);
 }
 
 .notifications-note,
@@ -4056,8 +4076,8 @@ body.is-resizing-pane {
 }
 
 .notification-row.selected {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--selection-bg);
+  box-shadow: inset 2px 0 0 var(--selection-rail);
 }
 
 .notification-lead {
@@ -4071,29 +4091,22 @@ body.is-resizing-pane {
 
 .notification-reason {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
   width: 30px;
   height: 30px;
-  border-radius: 50%;
-  color: var(--text-3);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--notification-reason-border);
+  border-radius: var(--radius-sm);
+  background: var(--notification-reason-bg);
+  color: var(--notification-reason-fg);
 }
 
-.reason-mention {
-  color: var(--reason-mention);
-}
-
-.reason-comment {
-  color: var(--reason-comment);
-}
-
-.reason-author {
-  color: var(--reason-author);
-}
-
+.reason-mention,
+.reason-comment,
+.reason-author,
 .reason-team {
-  color: var(--reason-team);
+  color: var(--notification-reason-fg);
 }
 
 .notification-main {
@@ -4237,6 +4250,26 @@ body.is-resizing-pane {
   }
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .avatar-skeleton,
+  .comment-author-skeleton {
+    animation: none !important;
+  }
+
+  .spinning {
+    animation: spin 1s linear infinite !important;
+  }
+}
+
 /* ---------- Modal ---------- */
 
 /* Overlay only. With Base UI the Dialog popup is a sibling of the backdrop (not
@@ -4318,7 +4351,7 @@ body.is-resizing-pane {
 }
 
 .outbox-target-button:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
 }
 
