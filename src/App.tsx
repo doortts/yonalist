@@ -1498,7 +1498,7 @@ export default function App({ initialOnline }: AppProps) {
       servers.reset();
       projectVisibility.reset();
       setThemeMode("system");
-      setLightTheme("default");
+      setLightTheme("graphite");
       setDarkTheme("dark");
       setSettings(defaultSettings);
       setDrafts([]);

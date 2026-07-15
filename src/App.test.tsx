@@ -2491,6 +2491,7 @@ describe("Yonalist app shell", () => {
       JSON.stringify({ vaultFolder: "/Users/doortts/CustomVault" })
     );
     window.localStorage.setItem("yonalist.themeMode.v1", "dark");
+    window.localStorage.setItem("yonalist.lightTheme.v1", "yona");
     window.localStorage.setItem("yonalist.repositorySummaries.v1", "{\"cache\":true}");
     window.localStorage.setItem(
       "yonalist.vaultDocuments.v1",
@@ -2510,7 +2511,9 @@ describe("Yonalist app shell", () => {
         name: /Reset/
       })
     );
-    await user.click(screen.getByRole("button", { name: "Reset settings and caches" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Reset settings and caches" })
+    );
     const dialog = await screen.findByRole("alertdialog", {
       name: "Reset all settings and caches?"
     });
@@ -2528,6 +2531,9 @@ describe("Yonalist app shell", () => {
       expect(within(progress).getAllByText("Done")).toHaveLength(5);
       expect(window.localStorage.getItem("yonalist.settings.v1")).toBeNull();
       expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
+      expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("graphite");
+      expect(window.localStorage.getItem("yonalist.darkTheme.v1")).toBe("dark");
+      expect(document.documentElement.dataset.theme).toBe("graphite");
       expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
     });
     expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
@@ -3571,10 +3577,26 @@ describe("Yonalist app shell", () => {
   });
 
   it("switches themes from the settings page and persists the choice", async () => {
+    window.localStorage.setItem("yonalist.lightTheme.v1", "default");
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
+    expect(
+      screen.getByRole("radio", { name: "Graphite light theme" })
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("radio", { name: "Soft Paper light theme" })
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("radio", { name: "Graphite light theme" })
+    );
+    expect(document.documentElement.dataset.theme).toBe("graphite");
+    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe(
+      "graphite"
+    );
+
     await user.click(await screen.findByRole("radio", { name: "Yona light theme" }));
 
     expect(document.documentElement.dataset.theme).toBe("yona");

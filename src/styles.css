@@ -85,7 +85,7 @@
   -webkit-font-smoothing: antialiased;
 }
 
-:root[data-theme="soft-paper"] {
+:root[data-theme="graphite"] {
   color-scheme: light;
 
   --bg-app: #eee9e6;
