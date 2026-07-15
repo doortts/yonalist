@@ -520,6 +520,15 @@ function mockNotesContentWidth(width: number, viewportWidth = 900): void {
 }
 
 describe("Notes workspace", () => {
+  it("styles the completed filter only when aria-pressed is true", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-completed-toggle\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--selection-bg\);[^}]*color:\s*var\(--accent\);/s
+    );
+    expect(notesStyles).not.toContain(
+      '.notes-completed-toggle[aria-pressed="false"]'
+    );
+  });
+
   beforeEach(() => {
     mockNarrowViewport(false);
     configureRepository();

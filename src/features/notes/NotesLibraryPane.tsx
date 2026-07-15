@@ -209,6 +209,17 @@ function NotesLibraryPaneContent() {
         <header className="notes-library-header">
           <h2>Notes</h2>
           <div className="notes-library-header-actions">
+            {libraryView !== "trash" && libraryView !== "archive" && (
+              <button
+                className="primary-button notes-new-page"
+                type="button"
+                disabled={state.status === "loading" || deletingNotesData}
+                onClick={() => void actions.createRoot()}
+              >
+                <Plus size={16} aria-hidden="true" />
+                <span>New page</span>
+              </button>
+            )}
             <IconTooltip label="Notes data settings" side="bottom">
               <button
                 className="notes-library-icon-button"
@@ -224,18 +235,6 @@ function NotesLibraryPaneContent() {
         </header>
 
         <div className="notes-library-discovery">
-          {libraryView !== "trash" && libraryView !== "archive" && (
-            <button
-              className="primary-button notes-new-page"
-              type="button"
-              disabled={state.status === "loading" || deletingNotesData}
-              onClick={() => void actions.createRoot()}
-            >
-              <Plus size={16} aria-hidden="true" />
-              <span>New page</span>
-            </button>
-          )}
-
           <label className="notes-search-field">
             <Search size={15} aria-hidden="true" />
             <input
