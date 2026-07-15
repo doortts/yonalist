@@ -1,201 +1,194 @@
-# Notes Multi-Select Drag and Indent Feedback Design
+# 노트 다중 선택 드래그 및 들여쓰기 안내 설계
 
-**Status:** Approved for implementation
+**상태:** 구현 승인됨
 
-## Goal
+## 목표
 
-Make two existing multi-select interactions explicit and reliable:
+기존의 두 가지 다중 선택 동작을 사용자에게 명확히 알리고 안정적으로 보장한다.
 
-1. When a selected range begins with a sibling that cannot itself be indented,
-   explain why that first item stayed in place after the remaining items were
-   indented.
-2. Dragging the bullet of any selected row moves the normalized selected forest
-   as one ordered, hierarchy-preserving block.
+1. 선택 범위의 첫 항목을 들여쓸 수 없는 경우, 나머지 항목은 들여써졌지만
+   첫 항목은 그대로 남은 이유를 설명한다.
+2. 선택된 어떤 행의 불릿을 드래그하더라도 정규화된 선택 포리스트 전체가
+   순서와 계층을 유지한 하나의 블록으로 이동한다.
 
-The change must retain the existing one-transaction, one-history-entry mutation
-contract and must not introduce a second move implementation.
+이 변경은 기존의 변경 작업당 단일 트랜잭션·단일 실행 취소 이력 계약을
+유지해야 하며, 별도의 두 번째 이동 구현을 추가해서는 안 된다.
 
-## Current Architecture and Gap
+## 현재 아키텍처와 누락된 부분
 
-The selection snapshot already distinguishes every explicitly selected visible
-row from its normalized structural roots. The indent eligibility calculation can
-therefore submit only the trailing roots when the first selected sibling has no
-preceding sibling. The backend treats the retained first root as the preceding
-unsubmitted sibling and reparents the submitted roots beneath it atomically.
+선택 스냅샷은 사용자가 명시적으로 선택한 모든 표시 행과 정규화된 구조
+루트를 이미 구분한다. 따라서 선택한 첫 번째 형제 항목 앞에 다른 형제 항목이
+없을 때, 들여쓰기 가능 여부 계산은 첫 루트를 제외한 뒤쪽 루트만 제출할 수
+있다. 백엔드는 제외된 첫 루트를 제출되지 않은 선행 형제로 간주하고, 제출된
+루트들을 그 아래로 한 번에 재배치한다.
 
-The shared selection command router currently reports every successful indent as
-`Indented selection.`, even when it applied only to the eligible subset. The
-selection action bar already has one neutral, polite, atomic live region for
-status text, so no new toast or notice component is needed.
+현재 공통 선택 명령 라우터는 실제로 적용된 대상이 들여쓰기 가능한 일부
+항목뿐이어도 성공한 모든 들여쓰기를 `Indented selection.`으로 안내한다.
+선택 작업 표시줄에는 중립적이고 정중한 방식으로 알리는 원자적 상태 텍스트용
+라이브 영역이 이미 있으므로, 새로운 토스트나 안내 컴포넌트는 필요하지 않다.
 
-Multi-root drag projection, frozen selection authority, atomic batch move, and
-backend hierarchy preservation also already exist. Pure tests cover multi-root
-projection, and integration tests cover selected single-row drag and invalid
-multi-row drops. The missing product-level guarantee is a valid rendered
-multi-row drag from the selected range to an external destination.
+다중 루트 드래그 투영, 고정된 선택 기준 상태, 원자적 일괄 이동, 백엔드의
+계층 보존 기능도 이미 존재한다. 순수 함수 테스트는 다중 루트 투영을 다루고,
+통합 테스트는 선택된 단일 행의 드래그와 유효하지 않은 다중 행 드롭을 다룬다.
+현재 제품 수준에서 빠진 보장은 렌더링된 다중 선택 범위를 유효한 외부
+목적지로 드래그하는 시나리오다.
 
-## Chosen Approach
+## 선택한 접근법
 
-Reuse the current selection drag session and shared semantic command router.
-First reproduce the reported valid multi-row drag at the rendered workspace
-boundary. Trace any failure through drag activation, frozen authority,
-projection, router execution, and the single batch payload, then make the
-smallest correction at the failing boundary.
+현재의 선택 드래그 세션과 공통 의미 기반 명령 라우터를 재사용한다. 먼저
+렌더링된 워크스페이스 경계에서 보고된 유효한 다중 행 드래그를 재현한다.
+문제가 있다면 드래그 활성화, 고정된 기준 상태, 투영, 라우터 실행, 단일 일괄
+요청 데이터의 흐름을 차례로 추적하고, 실패가 발생한 경계만 최소한으로
+수정한다.
 
-Do not add a parallel group-drag implementation. Do not repeat single-node move
-commands for each selected item: that would permit partial failure and create
-multiple Undo entries.
+별도의 그룹 드래그 구현은 추가하지 않는다. 선택 항목마다 단일 노드 이동
+명령을 반복하지도 않는다. 그렇게 하면 일부 항목만 이동한 채 실패할 수 있고,
+실행 취소 이력이 여러 개 생긴다.
 
-## Indent Feedback Contract
+## 들여쓰기 안내 계약
 
-When the exact leading-retained-root shape is committed:
+다음과 같이 첫 루트만 남기는 정확한 형태가 커밋될 때 적용한다.
 
-- the frozen structural roots are `[first, ...trailing]`;
-- the eligible indent targets are exactly `trailing`;
-- `first` remains in place because it has no preceding sibling;
-- the trailing roots become children of `first` in one batch.
+- 고정된 구조 루트는 `[first, ...trailing]`이다.
+- 들여쓰기 가능한 대상은 정확히 `trailing`이다.
+- `first`는 선행 형제가 없으므로 제자리에 남는다.
+- 뒤쪽 루트들은 한 번의 일괄 작업으로 `first`의 자식이 된다.
 
-After authoritative settlement, the router publishes this neutral status:
+정본 상태 반영이 끝나면 라우터는 다음 중립 상태 메시지를 게시한다.
 
 ```text
 First item stayed: no preceding sibling.
 ```
 
-The message appears in the right-side status region of the sticky selection
-action bar, between the overflow actions and Delete. It uses the existing
-`role="status"`, `aria-live="polite"`, and `aria-atomic="true"` behavior. It is
-not styled as an error because the requested eligible mutation succeeded.
+메시지는 고정형 선택 작업 표시줄의 오른쪽 상태 영역, 즉 더보기 작업과
+Delete 사이에 표시한다. 기존 `role="status"`, `aria-live="polite"`,
+`aria-atomic="true"` 동작을 그대로 사용한다. 사용자가 요청한 범위 중 가능한
+변경은 성공했으므로 오류처럼 표시하지 않는다.
 
-The special message is used only when the eligible IDs equal the structural
-roots with exactly the first root removed. A fully eligible indent retains
-`Indented selection.` Other partial-selection shapes retain their existing
-generic status unless a separately approved message is added later.
+이 특별 메시지는 들여쓰기 가능한 ID가 구조 루트에서 정확히 첫 루트 하나만
+제외한 목록과 같을 때만 사용한다. 모든 항목을 들여쓸 수 있는 경우에는 기존
+`Indented selection.`을 유지한다. 다른 형태의 부분 선택에는 별도로 승인된
+메시지가 추후 추가되지 않는 한 기존의 일반 상태 메시지를 유지한다.
 
-An execution failure, stale authority, or projection failure continues to use
-the existing error path. When both a committed status and a projection error
-exist, the error remains visually dominant.
+실행 실패, 오래된 기준 상태, 투영 실패는 계속 기존 오류 경로를 사용한다.
+커밋된 상태 메시지와 투영 오류가 동시에 존재하면 오류를 시각적으로 우선한다.
 
-## Selected Bullet Drag Contract
+## 선택 항목 불릿 드래그 계약
 
-### Activation
+### 활성화
 
-- The draggable affordance remains the row bullet.
-- If the dragged bullet belongs to the materialized selection, the drag is a
-  selected drag, regardless of whether that row is the range anchor, head, or a
-  middle row.
-- The ellipsis menu and row body do not become additional drag handles.
-- Dragging a row outside the selection retains the existing ordinary single-row
-  behavior.
+- 드래그 가능한 조작점은 계속 행의 불릿이다.
+- 드래그한 불릿이 현재 화면에 구체화된 선택 범위에 속한다면, 그 행이 범위의
+  앵커·헤드·중간 항목 중 어디에 있든 선택 드래그로 처리한다.
+- 줄임표 메뉴와 행 본문을 추가 드래그 핸들로 만들지 않는다.
+- 선택 범위 밖의 행을 드래그하면 기존의 일반 단일 행 동작을 유지한다.
 
-### Source Normalization
+### 이동 출발점 정규화
 
-At drag start, freeze the current selection revision, authoritative workspace,
-and normalized structural roots. If a selected parent and its descendants are
-both visible in the range, only the parent is a move root; its whole subtree
-travels with it. Independent selected roots remain in authoritative outline
-order.
+드래그를 시작할 때 현재 선택 리비전, 정본 워크스페이스 상태, 정규화된 구조
+루트를 고정한다. 선택된 부모와 그 자손이 모두 선택 범위에 보이더라도 부모만
+이동 루트가 되며, 부모의 전체 하위 트리가 함께 이동한다. 서로 독립적인 선택
+루트는 정본 아웃라인의 순서를 유지한다.
 
-The selected drag must never fall back to an ordinary single-row drag after
-activation. If authority preparation fails or the selection changes, the result
-is a selected no-op.
+선택 드래그가 활성화된 뒤에는 일반 단일 행 드래그로 전환되어서는 안 된다.
+기준 상태 준비에 실패하거나 선택이 바뀌면 선택 드래그로서 아무 변경도 하지
+않는다.
 
-### Projection and Drop
+### 투영과 드롭
 
-The existing outline projection calculates the destination parent and sibling
-anchor after removing the entire selected forest from drag geometry. A valid
-drop sends exactly one semantic `reorder` intent containing the frozen
-structural roots and one move target.
+기존 아웃라인 투영은 드래그 계산 구조에서 선택 포리스트 전체를 제거한 뒤
+목적지 부모와 형제 기준점을 계산한다. 유효한 드롭은 고정된 구조 루트와 하나의
+이동 목적지를 담은 의미 기반 `reorder` 의도 하나만 전송한다.
 
-The repository receives one batch move:
+저장소는 다음과 같은 일괄 이동 요청 하나를 받는다.
 
 ```text
 { op: "move", nodeIds: structuralRootIds, parentId, afterId, beforeId }
 ```
 
-It places the roots as one contiguous block, preserves their source order, and
-leaves every moved subtree's internal hierarchy unchanged. A collapsed valid
-destination is locally expanded through the existing expansion option so the
-moved selection remains visible.
+이 요청은 루트들을 하나의 연속된 블록으로 배치하고, 출발지에서의 순서를
+보존하며, 이동한 각 하위 트리의 내부 계층을 그대로 유지한다. 유효한 목적지가
+접혀 있으면 기존 펼치기 옵션을 통해 해당 위치만 펼쳐 이동한 선택 범위가 계속
+보이게 한다.
 
-### Invalid and Stale Drops
+### 유효하지 않거나 오래된 드롭
 
-Dropping on any selected root or selected descendant is an invalid no-op. A
-missing destination, stale selection revision, stale workspace authority,
-invalid geometry, or a superseded pending drag also performs no mutation. These
-paths keep the selection and use the existing accessible drag announcement.
+선택된 루트나 그 자손 위에 놓는 드롭은 유효하지 않으며 아무 변경도 하지
+않는다. 목적지가 없거나, 선택 리비전 또는 워크스페이스 기준 상태가 오래됐거나,
+드래그 계산 구조가 유효하지 않거나, 대기 중이던 드래그가 더 최신 작업으로
+대체된 경우에도 변경하지 않는다. 이 경로에서는 선택을 유지하고 기존의 접근성
+드래그 안내를 사용한다.
 
-After a successful drop, the original stable anchor/head selection remains
-active while both endpoints are visible. If the current projection cannot
-materialize an endpoint, the established selection lifecycle closes the range
-instead of guessing a partial selection.
+드롭에 성공한 뒤에는 양 끝점이 보이는 동안 원래의 안정적인 앵커/헤드 선택을
+활성 상태로 유지한다. 현재 투영에서 어느 한 끝점을 화면에 구체화할 수 없다면,
+일부 선택을 추측하지 않고 기존 선택 수명 주기에 따라 범위를 닫는다.
 
-## Data Flow
+## 데이터 흐름
 
 ```text
-selected bullet drag
-  -> frozen selection drag session
-  -> normalized structural roots
-  -> outline drop projection
-  -> shared selection router (`reorder`)
-  -> one prepared batch move
-  -> one SQLite transaction / one history entry
-  -> authoritative projection and retained selection
+선택 항목 불릿 드래그
+  -> 고정된 선택 드래그 세션
+  -> 정규화된 구조 루트
+  -> 아웃라인 드롭 투영
+  -> 공통 선택 라우터 (`reorder`)
+  -> 준비된 일괄 이동 하나
+  -> SQLite 트랜잭션 하나 / 이력 항목 하나
+  -> 정본 투영 및 선택 유지
 ```
 
-The indent feedback follows the existing shorter path:
+들여쓰기 안내는 기존의 더 짧은 경로를 따른다.
 
 ```text
 Tab
-  -> indent eligibility subset
-  -> shared selection router
-  -> one prepared batch indent
-  -> authoritative settlement
-  -> neutral action-bar status
+  -> 들여쓰기 가능한 하위 집합
+  -> 공통 선택 라우터
+  -> 준비된 일괄 들여쓰기 하나
+  -> 정본 상태 반영
+  -> 중립적인 작업 표시줄 상태 메시지
 ```
 
-## Testing
+## 테스트
 
-Use strict RED/GREEN cycles.
+엄격한 RED/GREEN 주기를 사용한다.
 
-1. Extend the router test for partial indent to assert that a leading retained
-   root produces `First item stayed: no preceding sibling.` with no error. Add a
-   full-eligibility assertion so `Indented selection.` cannot regress.
-2. Extend the rendered workspace Tab scenario to assert the same text in the
-   selection action bar's polite status region after the single batch settles.
-3. Add a rendered workspace pointer-drag regression matching the screenshot:
-   five sibling children are selected, the bullet of a selected row is dragged
-   to an external destination, and one `applyBatch` call contains all five
-   normalized roots in outline order.
-4. Settle the mocked authoritative workspace and assert that selection,
-   relative root order, and subtree hierarchy remain intact at the destination.
-5. Retain the existing invalid-inside-selection, stale authority, reverse range,
-   ancestor normalization, filtered hidden-order, and collapsed-destination
-   coverage.
-6. Run the complete frontend suite, Rust suite, lint, production build, and
-   whitespace validation. No new Rust production code is expected, but the
-   existing backend batch-move and batch-indent contracts remain part of the
-   regression gate.
+1. 부분 들여쓰기 라우터 테스트를 확장해, 첫 루트가 남는 경우 오류 없이
+   `First item stayed: no preceding sibling.`이 생성되는지 검증한다. 모든 항목을
+   들여쓸 수 있을 때 `Indented selection.`이 바뀌지 않는지도 추가로 검증한다.
+2. 렌더링된 워크스페이스의 Tab 시나리오를 확장해, 단일 일괄 작업이 반영된 뒤
+   선택 작업 표시줄의 정중한 상태 라이브 영역에 같은 문구가 표시되는지
+   검증한다.
+3. 스크린샷과 일치하는 렌더링된 워크스페이스 포인터 드래그 회귀 테스트를
+   추가한다. 형제인 자식 항목 다섯 개를 선택하고, 선택된 행의 불릿을 외부
+   목적지로 드래그했을 때 한 번의 `applyBatch` 호출에 정규화된 루트 다섯 개가
+   아웃라인 순서대로 모두 포함되어야 한다.
+4. 모의 정본 워크스페이스 상태를 반영한 뒤, 목적지에서 선택 상태·루트의 상대
+   순서·하위 트리 계층이 모두 그대로 유지되는지 검증한다.
+5. 기존의 선택 범위 내부 드롭 무효화, 오래된 기준 상태, 역방향 범위, 조상
+   정규화, 필터로 숨겨진 항목의 순서, 접힌 목적지 관련 테스트를 유지한다.
+6. 전체 프런트엔드 테스트, Rust 테스트, 린트, 프로덕션 빌드, 공백 검사를
+   실행한다. 새로운 Rust 프로덕션 코드는 필요하지 않을 것으로 예상하지만,
+   기존 백엔드의 일괄 이동 및 일괄 들여쓰기 계약은 계속 회귀 검증 기준에
+   포함한다.
 
-## Alternatives Rejected
+## 제외한 대안
 
-### New Group-Drag System
+### 새로운 그룹 드래그 시스템
 
-A separate overlay and move session could make the group more visually
-prominent, but it would duplicate projection, authority, and mutation logic.
-The current architecture already has the required boundaries, so this adds risk
-without enabling new behavior.
+별도의 오버레이와 이동 세션을 사용하면 그룹을 시각적으로 더 두드러지게 만들
+수 있지만, 투영·기준 상태·변경 로직이 중복된다. 현재 아키텍처에 필요한 경계가
+이미 있으므로 새로운 동작을 가능하게 하지 않으면서 위험만 늘어난다.
 
-### Repeated Single-Node Moves
+### 단일 노드 이동 반복
 
-Moving each selected root one at a time is simpler locally but violates atomic
-failure and single-Undo guarantees. It can also disturb order while later roots
-are still being moved.
+선택된 각 루트를 하나씩 이동하면 개별 구현은 단순하지만, 원자적 실패와 단일
+실행 취소 보장을 위반한다. 뒤쪽 루트가 아직 이동 중인 동안 기존 순서가 흐트러질
+수도 있다.
 
-## Non-Goals
+## 범위에서 제외하는 항목
 
-- Arbitrary non-contiguous selection beyond the current anchor/head range.
-- A new global toast or notification system.
-- New drag handles on the row body or ellipsis menu.
-- A multi-item drag avatar or count badge.
-- Changes to Move To, one-step keyboard reorder, or ordinary single-row drag.
-- New Tauri commands, database schema, or repository mutation types.
+- 현재 앵커/헤드 범위를 벗어난 임의의 비연속 선택.
+- 새로운 전역 토스트 또는 알림 시스템.
+- 행 본문이나 줄임표 메뉴에 새로운 드래그 핸들 추가.
+- 여러 항목용 드래그 아바타 또는 개수 배지.
+- Move To, 한 단계 키보드 순서 이동, 일반 단일 행 드래그의 변경.
+- 새로운 Tauri 명령, 데이터베이스 스키마, 저장소 변경 유형.
