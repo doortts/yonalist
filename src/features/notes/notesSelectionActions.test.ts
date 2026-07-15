@@ -432,6 +432,86 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
   it.each([
     {
+      label: "forward",
+      selection: { anchorId: "a", headId: "e" }
+    },
+    {
+      label: "reverse",
+      selection: { anchorId: "e", headId: "a" }
+    }
+  ])(
+    "uses the leading selected sibling as the indent parent for a $label range that starts first",
+    ({ selection }) => {
+      const nodes = [
+        node({ id: "parent" }),
+        node({ id: "a", parentId: "parent", sortKey: 1 }),
+        node({ id: "b", parentId: "parent", sortKey: 2 }),
+        node({ id: "c", parentId: "parent", sortKey: 3 }),
+        node({ id: "d", parentId: "parent", sortKey: 4 }),
+        node({ id: "e", parentId: "parent", sortKey: 5 }),
+        node({ id: "f", parentId: "parent", sortKey: 6 })
+      ];
+
+      const result = snapshot(nodes, ["a", "b", "c", "d", "e", "f"], selection);
+
+      expect(result?.structuralRootIds).toEqual(["a", "b", "c", "d", "e"]);
+      expect(result?.eligibility.indent).toEqual({
+        eligible: true,
+        nodeIds: ["b", "c", "d", "e"]
+      });
+    }
+  );
+
+  it("keeps every selected root when a visible sibling precedes the range", () => {
+    const nodes = [
+      node({ id: "parent" }),
+      node({ id: "prior", parentId: "parent", sortKey: 1 }),
+      node({ id: "b", parentId: "parent", sortKey: 2 }),
+      node({ id: "c", parentId: "parent", sortKey: 3 }),
+      node({ id: "d", parentId: "parent", sortKey: 4 })
+    ];
+
+    const result = snapshot(nodes, ["prior", "b", "c", "d"], {
+      anchorId: "b",
+      headId: "d"
+    });
+
+    expect(result?.eligibility.indent).toEqual({
+      eligible: true,
+      nodeIds: ["b", "c", "d"]
+    });
+  });
+
+  it("does not cross a hidden sibling when the visible selection starts first", () => {
+    const projectedNodes = [
+      node({ id: "a", parentId: "parent", sortKey: 1 }),
+      node({ id: "c", parentId: "parent", sortKey: 3 })
+    ];
+    const projected = normalizeWorkspace({ nodes: projectedNodes });
+    const authoritative = normalizeWorkspace({
+      nodes: [
+        node({ id: "parent" }),
+        projectedNodes[0],
+        node({ id: "hidden", parentId: "parent", sortKey: 2 }),
+        projectedNodes[1]
+      ]
+    });
+
+    const result = deriveNotesSelectionActionSnapshot({
+      workspace: projected,
+      authoritativeWorkspace: authoritative,
+      visibleNodeIds: ["a", "c"],
+      selection: { anchorId: "a", headId: "c" }
+    });
+
+    expect(result?.eligibility.indent).toEqual({
+      eligible: false,
+      reason: "Indent requires a visible preceding sibling outside the selection."
+    });
+  });
+
+  it.each([
+    {
       label: "a supporting note",
       richNode: node({
         id: "hidden-rich",

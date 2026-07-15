@@ -378,10 +378,14 @@ function indentEligibility(
         ? workspace.rootIds
         : (workspace.childIdsByParent[node.parentId] ?? []);
     let index = siblings.indexOf(nodeId) - 1;
+    let hasPrecedingSelectedRoot = false;
     while (index >= 0 && selectedRoots.has(siblings[index])) {
+      hasPrecedingSelectedRoot = true;
       index -= 1;
     }
-    return index >= 0 && visible.has(siblings[index]);
+    return index >= 0
+      ? visible.has(siblings[index])
+      : hasPrecedingSelectedRoot;
   });
   return eligibleRootIds.length > 0
     ? eligibleTargets(eligibleRootIds)

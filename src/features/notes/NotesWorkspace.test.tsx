@@ -4174,6 +4174,57 @@ describe("Notes workspace", () => {
       expect(queryTitleInput("Charlie")).not.toHaveFocus();
     });
 
+    it("indents the trailing rows beneath a selected first sibling", async () => {
+      const before = [
+        node({ id: "parent", sortKey: 1, title: "Parent" }),
+        node({ id: "a", parentId: "parent", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", parentId: "parent", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", parentId: "parent", sortKey: 3, title: "Charlie" }),
+        node({ id: "d", parentId: "parent", sortKey: 4, title: "Delta" }),
+        node({ id: "e", parentId: "parent", sortKey: 5, title: "Echo" }),
+        node({ id: "f", parentId: "parent", sortKey: 6, title: "Foxtrot" })
+      ];
+      const after = before.map((current) =>
+        ["b", "c", "d", "e"].includes(current.id)
+          ? { ...current, parentId: "a" }
+          : current
+      );
+      configureRepository(before);
+      notesStoreMock.applyBatch.mockImplementationOnce(async () => {
+        confirmedNodes = after;
+        return workspace(after);
+      });
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      act(() => alpha.focus());
+
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      }
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c", "d", "e"]);
+
+      fireEvent.keyDown(alpha, { key: "Tab" });
+
+      await waitFor(() =>
+        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+          op: "indent",
+          nodeIds: ["b", "c", "d", "e"]
+        })
+      );
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["a", "b", "c", "d", "e"])
+      );
+      await waitFor(() =>
+        expect(
+          document
+            .querySelector<HTMLElement>('[data-outline-id="b"]')
+            ?.style.getPropertyValue("--notes-depth")
+        ).toBe("2")
+      );
+      expect(alpha).toHaveFocus();
+    });
+
     it.each([
       {
         shortcut: "Tab",
