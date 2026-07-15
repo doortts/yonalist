@@ -450,6 +450,25 @@ impl From<ApplyBatchTagFilterWire> for NoteTagFilter {
     }
 }
 
+/// A wire field that must be present while still allowing an explicit JSON
+/// `null`. A bare `Option<T>` also treats a missing serde field as `None`, which
+/// would let a malformed move silently default to the root/end destination.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RequiredNullable<T> {
+    Value(T),
+    Null,
+}
+
+impl<T> RequiredNullable<T> {
+    fn into_option(self) -> Option<T> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Null => None,
+        }
+    }
+}
+
 /// Wire representation of [`ApplyBatchInput`]: an internally-tagged enum with the
 /// op-specific fields at the top level. This shape deserializes reliably, whereas
 /// a `#[serde(flatten)]` `BatchOp` silently drops fields — serde flatten and
@@ -471,8 +490,8 @@ enum ApplyBatchWire {
     },
     Move {
         node_ids: Vec<NoteId>,
-        parent_id: Option<NoteId>,
-        after_id: Option<NoteId>,
+        parent_id: RequiredNullable<NoteId>,
+        after_id: RequiredNullable<NoteId>,
         before_id: Option<NoteId>,
     },
     Indent {
@@ -527,8 +546,8 @@ impl<'de> Deserialize<'de> for ApplyBatchInput {
             } => ApplyBatchInput {
                 node_ids,
                 op: BatchOp::Move {
-                    parent_id,
-                    after_id,
+                    parent_id: parent_id.into_option(),
+                    after_id: after_id.into_option(),
                     before_id,
                 },
             },
@@ -1014,6 +1033,43 @@ mod tests {
         assert!(error
             .to_string()
             .contains("A batch operation requires at least one node."));
+    }
+
+    #[test]
+    fn apply_batch_move_requires_nullable_parent_and_after_fields_to_be_present() {
+        for value in [
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "move",
+                "afterId": null
+            }),
+            json!({
+                "nodeIds": [NODE_ID],
+                "op": "move",
+                "parentId": null
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<ApplyBatchInput>(value).is_err(),
+                "missing required-nullable move fields must not default to null"
+            );
+        }
+
+        let explicit_nulls = serde_json::from_value::<ApplyBatchInput>(json!({
+            "nodeIds": [NODE_ID],
+            "op": "move",
+            "parentId": null,
+            "afterId": null
+        }))
+        .expect("explicit null move fields remain valid");
+        assert_eq!(
+            explicit_nulls.op,
+            BatchOp::Move {
+                parent_id: None,
+                after_id: None,
+                before_id: None,
+            }
+        );
     }
 
     #[test]

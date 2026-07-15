@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 #[cfg(test)]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 #[cfg(test)]
 use std::sync::mpsc::Sender;
 
@@ -49,6 +49,9 @@ const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
 const NOTE_SEARCH_MAX_ALTERNATIVES_PER_OR_GROUP: usize = 16;
 const SORT_KEY_STEP: i64 = 1024;
+// Keep every dynamic ancestor query below SQLite's legacy 999-variable limit,
+// even though current bundled SQLite builds allow more.
+const ANCESTOR_CLOSURE_CHUNK_SIZE: usize = 400;
 pub(crate) const MIN_ATTACHMENT_DISPLAY_WIDTH: i64 = 160;
 const NOTES_BUSY_TIMEOUT: Duration = Duration::from_millis(5_000);
 const NOTES_BUSY_RETRY_DELAY: Duration = Duration::from_millis(10);
@@ -63,6 +66,8 @@ struct InitializationBusyObservation {
 thread_local! {
     static NEXT_INITIALIZATION_BUSY_OBSERVATION: RefCell<Option<InitializationBusyObservation>> =
         const { RefCell::new(None) };
+    static NODE_BY_ID_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
+    static ANCESTOR_CLOSURE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -85,6 +90,26 @@ fn initialization_busy_observer(_attempt: i32) -> bool {
         }
     });
     true
+}
+
+#[cfg(test)]
+fn reset_node_by_id_lookup_count() {
+    NODE_BY_ID_LOOKUP_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn node_by_id_lookup_count() -> usize {
+    NODE_BY_ID_LOOKUP_COUNT.with(Cell::get)
+}
+
+#[cfg(test)]
+fn reset_ancestor_closure_query_count() {
+    ANCESTOR_CLOSURE_QUERY_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn ancestor_closure_query_count() -> usize {
+    ANCESTOR_CLOSURE_QUERY_COUNT.with(Cell::get)
 }
 
 #[cfg(test)]
@@ -1649,6 +1674,8 @@ fn with_workspace_transaction(
 }
 
 fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<StoredNode>, String> {
+    #[cfg(test)]
+    NODE_BY_ID_LOOKUP_COUNT.with(|count| count.set(count.get() + 1));
     transaction
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
@@ -3354,30 +3381,83 @@ fn batch_soft_delete(transaction: &Transaction<'_>, node_ids: &[String]) -> Resu
     Ok(())
 }
 
-/// Returns whether any live ancestor of `node_id` is itself in the selection.
-/// Used to reduce a selection to its "roots" — a selected node whose ancestor
-/// is also selected travels inside that ancestor's subtree, so moving it
-/// independently would tear the block apart.
-fn has_selected_ancestor(
+/// Loads the union of every submitted node's parent chain with a bounded number
+/// of recursive SQL queries. `UNION` (rather than `UNION ALL`) guarantees that a
+/// corrupt cycle reaches a fixed point; the in-memory walk below remains the
+/// authority that reports the cycle using the existing error contract.
+fn load_ancestor_parent_map(
     transaction: &Transaction<'_>,
+    node_ids: &[String],
+) -> Result<HashMap<String, Option<String>>, String> {
+    let mut parents = HashMap::new();
+    for chunk in node_ids.chunks(ANCESTOR_CLOSURE_CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (1..=chunk.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "WITH RECURSIVE ancestors(id, parent_id) AS (\
+               SELECT id, parent_id FROM notes_nodes WHERE id IN ({placeholders}) \
+               UNION \
+               SELECT parent.id, parent.parent_id FROM notes_nodes parent \
+               JOIN ancestors child ON parent.id = child.parent_id\
+             ) \
+             SELECT id, parent_id FROM ancestors"
+        );
+        let mut statement = transaction.prepare(&sql).map_err(|error| {
+            format!("Could not prepare the Notes batch ancestor closure: {error}")
+        })?;
+        #[cfg(test)]
+        ANCESTOR_CLOSURE_QUERY_COUNT.with(|count| count.set(count.get() + 1));
+        let rows = statement
+            .query_map(params_from_iter(chunk.iter()), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| format!("Could not load the Notes batch ancestor closure: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not read the Notes batch ancestor closure: {error}"))?;
+        parents.extend(rows);
+    }
+    Ok(parents)
+}
+
+/// Returns whether any ancestor of `node_id` is itself selected. Successful
+/// paths are memoized as "this node or an ancestor is selected", so shared deep
+/// ancestry is traversed once in memory rather than once per submitted row.
+fn has_selected_ancestor_in_map(
     node_id: &str,
+    parents: &HashMap<String, Option<String>>,
     selected: &BTreeSet<&str>,
+    contains_selected_memo: &mut HashMap<String, bool>,
 ) -> Result<bool, String> {
-    let mut visited = HashSet::from([node_id.to_string()]);
-    let mut found_selected_ancestor = false;
-    let mut current = node_by_id(transaction, node_id)?.and_then(|node| node.parent_id);
-    while let Some(parent_id) = current {
-        if !visited.insert(parent_id.clone()) {
+    let Some(mut current_id) = parents.get(node_id).and_then(Clone::clone) else {
+        return Ok(false);
+    };
+    let mut path = Vec::new();
+    let mut path_ids = HashSet::from([node_id.to_string()]);
+    let mut contains_selected = loop {
+        if let Some(cached) = contains_selected_memo.get(&current_id) {
+            break *cached;
+        }
+        if !path_ids.insert(current_id.clone()) {
             return Err(
                 "The Notes tree contains a cycle and cannot be changed in a batch.".to_string(),
             );
         }
-        if selected.contains(parent_id.as_str()) {
-            found_selected_ancestor = true;
-        }
-        current = node_by_id(transaction, &parent_id)?.and_then(|node| node.parent_id);
+        path.push(current_id.clone());
+        let Some(parent_id) = parents.get(&current_id).and_then(Clone::clone) else {
+            break false;
+        };
+        current_id = parent_id;
+    };
+    for ancestor_id in path.into_iter().rev() {
+        contains_selected = selected.contains(ancestor_id.as_str()) || contains_selected;
+        contains_selected_memo.insert(ancestor_id, contains_selected);
     }
-    Ok(found_selected_ancestor)
+    Ok(contains_selected)
 }
 
 fn selection_roots(
@@ -3385,9 +3465,12 @@ fn selection_roots(
     node_ids: &[String],
     selected: &BTreeSet<&str>,
 ) -> Result<Vec<String>, String> {
+    let parents = load_ancestor_parent_map(transaction, node_ids)?;
+    let mut contains_selected_memo = HashMap::new();
     let mut roots = Vec::new();
     for node_id in node_ids {
-        if !has_selected_ancestor(transaction, node_id, selected)? {
+        if !has_selected_ancestor_in_map(node_id, &parents, selected, &mut contains_selected_memo)?
+        {
             roots.push(node_id.clone());
         }
     }
@@ -4128,16 +4211,18 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_batch, apply_batch_at, archive_node, collapse_all, connect_notes_db,
-        create_attachment, create_attachments_coordinated_for_node, create_node, create_node_at,
-        delete_database, duplicate_node, duplicate_node_at, empty_trash, expand_all,
-        import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts, load_workspace,
-        move_node, node_attachments, notes_db_path, observe_next_initialization_busy,
-        open_notes_export_db, remove_empty_node, restore_attachment, restore_node, restore_node_at,
-        search_nodes, search_nodes_at, search_nodes_structured, seed_notes_onboarding,
-        soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
-        split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node,
-        update_node_at, NewAttachment, NoteAttachment, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
+        connect_notes_db, create_attachment, create_attachments_coordinated_for_node, create_node,
+        create_node_at, delete_database, duplicate_node, duplicate_node_at, empty_trash,
+        expand_all, import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts,
+        load_workspace, move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
+        observe_next_initialization_busy, open_notes_export_db, remove_empty_node,
+        reset_ancestor_closure_query_count, reset_node_by_id_lookup_count, restore_attachment,
+        restore_node, restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
+        seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
+        sort_subtree_descending, split_node, split_node_at, toggle_collapsed, toggle_complete,
+        toggle_star, unarchive_node, update_node, update_node_at, NewAttachment, NoteAttachment,
+        ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
@@ -4149,7 +4234,7 @@ mod tests {
         MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -6853,6 +6938,62 @@ mod tests {
             "duplication must not introduce new asset files"
         );
         assert_tree_invariants(&connection);
+    }
+
+    #[test]
+    fn selection_root_normalization_does_not_query_each_selected_ancestor_path() {
+        const DEPTH: usize = 8;
+        const WIDTH: usize = ANCESTOR_CLOSURE_CHUNK_SIZE * 2 + 1;
+
+        let mut connection = test_connection();
+        let mut parent_id: Option<String> = None;
+        for index in 0..DEPTH {
+            let node_id = format!("10000000-0000-4000-8000-{index:012x}");
+            insert_node(
+                &connection,
+                &node_id,
+                parent_id.as_deref(),
+                SORT_KEY_STEP,
+                "ancestor",
+            );
+            parent_id = Some(node_id);
+        }
+        let deepest_parent_id = parent_id.expect("deepest ancestor");
+        let selected_ids = (0..WIDTH)
+            .map(|index| {
+                let node_id = format!("20000000-0000-4000-8000-{index:012x}");
+                insert_node(
+                    &connection,
+                    &node_id,
+                    Some(&deepest_parent_id),
+                    i64::try_from(index + 1).expect("sibling index") * SORT_KEY_STEP,
+                    "selected sibling",
+                );
+                node_id
+            })
+            .collect::<Vec<_>>();
+        let selected = selected_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let transaction = connection.transaction().expect("selection transaction");
+
+        reset_node_by_id_lookup_count();
+        reset_ancestor_closure_query_count();
+        let roots = selection_roots(&transaction, &selected_ids, &selected)
+            .expect("normalize wide deep selection");
+        let lookup_count = node_by_id_lookup_count();
+        let closure_query_count = ancestor_closure_query_count();
+
+        assert_eq!(roots, selected_ids);
+        assert_eq!(
+            closure_query_count, 3,
+            "selection normalization used {closure_query_count} ancestor-closure queries"
+        );
+        assert_eq!(
+            lookup_count, 0,
+            "selection normalization performed {lookup_count} per-node ancestor lookups"
+        );
     }
 
     #[test]
