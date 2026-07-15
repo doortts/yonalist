@@ -315,10 +315,18 @@
   --danger: #ff8b82;
   --danger-hover: #ffaaa4;
   --danger-soft: #432727;
+  --reason-mention: #b39dff;
+  --reason-comment: #4dd0c4;
+  --reason-author: #ff8a65;
+  --reason-team: #8c9eff;
   --warning: #f5c46b;
   --warning-soft: #3a321f;
   --warning-border: #816c3b;
   --success: #78cf9d;
+  --yona-comment: #78cf9d;
+  --yona-code-bg: #18212c;
+  --yona-table-border: #465568;
+  --yona-table-head: #263140;
   --notification-reason-fg: #b8c2ce;
   --notification-reason-bg: #263140;
   --notification-reason-border: #53657a;
@@ -739,6 +747,14 @@ body.is-resizing-pane {
   --bg-hover: var(--sidebar-hover-bg);
   --bg-active: var(--sidebar-active-bg);
   color: var(--sidebar-text-2);
+}
+
+:root[data-theme="graphite"] .app-shell:not([data-sidebar-collapsed="true"]) > .pane-toggle-group[data-position="sidebar-end"] {
+  --text-1: var(--sidebar-text-1);
+  --text-2: var(--sidebar-text-2);
+  --text-3: var(--sidebar-text-3);
+  --bg-hover: var(--sidebar-hover-bg);
+  --bg-active: var(--sidebar-active-bg);
 }
 
 .sidebar-scroll {

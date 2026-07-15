@@ -96,15 +96,38 @@ describe("Graphite & Mist CSS contract", () => {
       "--notification-reason-fg": "#b8c2ce",
       "--notification-reason-bg": "#263140",
       "--notification-reason-border": "#53657a",
+      "--reason-mention": "#b39dff",
+      "--reason-comment": "#4dd0c4",
+      "--reason-author": "#ff8a65",
+      "--reason-team": "#8c9eff",
+      "--yona-comment": "#78cf9d",
+      "--yona-code-bg": "#18212c",
+      "--yona-table-border": "#465568",
+      "--yona-table-head": "#263140",
       "--shadow-pane": "none"
     });
     expect(contrast(dark["--text-3"], dark["--bg-detail"]))
       .toBeGreaterThanOrEqual(4.5);
     expect(contrast(dark["--accent-contrast"], dark["--accent"]))
       .toBeGreaterThanOrEqual(4.5);
+    expect(contrast(dark["--text-1"], dark["--yona-code-bg"]))
+      .toBeGreaterThanOrEqual(4.5);
     expect(styles).not.toMatch(
       /:root\[data-theme="dark"\] \.detail-pane\s*{[^}]*(?:#181818|#080e14)/s
     );
+  });
+
+  it("uses sidebar tokens for the expanded Graphite sidebar toggle only", () => {
+    const toggle = declarations(
+      ':root[data-theme="graphite"] .app-shell:not([data-sidebar-collapsed="true"]) > .pane-toggle-group[data-position="sidebar-end"]'
+    );
+    expect(toggle).toMatchObject({
+      "--text-1": "var(--sidebar-text-1)",
+      "--text-2": "var(--sidebar-text-2)",
+      "--text-3": "var(--sidebar-text-3)",
+      "--bg-hover": "var(--sidebar-hover-bg)",
+      "--bg-active": "var(--sidebar-active-bg)"
+    });
   });
 
   it("uses a one-pixel pane track without shrinking the resize target", () => {
