@@ -4223,6 +4223,16 @@ describe("Notes workspace", () => {
         ).toBe("2")
       );
       expect(alpha).toHaveFocus();
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 5 selected notes"
+      });
+      const status = within(toolbar).getByRole("status");
+      expect(status).toHaveTextContent(
+        /^First item stayed: no preceding sibling\.$/
+      );
+      expect(status).toHaveAttribute("aria-live", "polite");
+      expect(status).toHaveAttribute("aria-atomic", "true");
+      expect(status).toHaveAttribute("data-kind", "status");
     });
 
     it.each([

@@ -642,8 +642,9 @@ describe("createNotesSelectionCommandRouter", () => {
     expect(harness.deps.applyBatch).not.toHaveBeenCalled();
   });
 
-  it("uses the exact partially eligible indent targets rather than expanding to the visible selection", async () => {
-    const harness = dependencies();
+  it("uses the exact partially eligible indent targets and reports why the first root stayed", async () => {
+    const feedback = vi.fn();
+    const harness = dependencies({ onFeedback: feedback });
     vi.mocked(harness.deps.prepareAuthority).mockImplementation(
       async (nodeIds) => authority(nodeIds)
     );
@@ -657,6 +658,38 @@ describe("createNotesSelectionCommandRouter", () => {
       { type: "indent" },
       undefined
     );
+    expect(feedback).toHaveBeenLastCalledWith({
+      status: "First item stayed: no preceding sibling.",
+      error: null
+    });
+  });
+
+  it.each([
+    { label: "every structural root is eligible", nodeIds: ["a", "b", "c"] },
+    { label: "another partial shape is eligible", nodeIds: ["a", "c"] }
+  ])("keeps the general indent status when $label", async ({ nodeIds }) => {
+    const feedback = vi.fn();
+    const targetedSnapshot = snapshot({
+      eligibility: {
+        ...snapshot().eligibility,
+        indent: eligible(nodeIds)
+      }
+    });
+    const harness = dependencies({
+      getSnapshot: () => targetedSnapshot,
+      prepareAuthority: vi.fn(async (targetIds) => authority(targetIds)),
+      onFeedback: feedback
+    });
+
+    await createNotesSelectionCommandRouter(harness.deps).execute({
+      type: "indent"
+    });
+
+    expect(harness.deps.prepareAuthority).toHaveBeenCalledWith(nodeIds);
+    expect(feedback).toHaveBeenLastCalledWith({
+      status: "Indented selection.",
+      error: null
+    });
   });
 
   it.each([

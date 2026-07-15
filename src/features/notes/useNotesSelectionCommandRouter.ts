@@ -257,7 +257,11 @@ function resolveCommand(
         kind: "batch",
         nodeIds,
         op: { type: "indent" },
-        successStatus: "Indented selection."
+        successStatus:
+          snapshot.structuralRootIds.length > 1 &&
+          exactIds(nodeIds, snapshot.structuralRootIds.slice(1))
+            ? "First item stayed: no preceding sibling."
+            : "Indented selection."
       }));
     case "outdent":
       return eligibleCommand(snapshot.eligibility.outdent, (nodeIds) => ({
