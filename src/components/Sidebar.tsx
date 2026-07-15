@@ -80,11 +80,24 @@ export function Sidebar({
     activeFeatureId === undefined
       ? !repositoryFilter && !settingsOpen && !notificationsOpen
       : activeFeatureId === "inbox" && !repositoryFilter && !settingsOpen && !notificationsOpen;
+  const inboxWorkspaceActive =
+    activeFeatureId === undefined
+      ? !settingsOpen && !notificationsOpen
+      : activeFeatureId === "inbox" && !settingsOpen && !notificationsOpen;
+  const showInboxDetails =
+    !settingsOpen &&
+    (activeFeatureId === undefined || activeFeatureId === "inbox");
   const projectsActive =
     activeFeatureId === undefined
       ? !settingsOpen && !notificationsOpen
       : activeFeatureId === "inbox" && !settingsOpen && !notificationsOpen;
   const settingsActive = activeFeatureId === undefined ? settingsOpen : activeFeatureId === "settings";
+  const workspaceTitle =
+    activeFeatureId === "notes"
+      ? "Notes"
+      : settingsActive
+        ? "Settings"
+        : "GitHub Inbox";
 
   return (
     <TooltipProvider>
@@ -94,7 +107,7 @@ export function Sidebar({
       <div className="brand-row">
         <div className="brand-copy">
           <p className="eyebrow">Yonalist</p>
-          <h1>GitHub Inbox</h1>
+          <h1>{workspaceTitle}</h1>
         </div>
         <div className="brand-actions">
           {loginRequired && (
@@ -110,7 +123,7 @@ export function Sidebar({
             </IconTooltip>
           )}
           {!online && (
-            <IconTooltip label="오프라인 — 클릭하면 온라인으로 전환">
+            <IconTooltip label="오프라인 - 클릭하면 온라인으로 전환">
               <button
                 className="icon-button"
                 type="button"
@@ -126,10 +139,20 @@ export function Sidebar({
 
       {!online && <span className="offline-badge">Offline</span>}
 
-      <section className="nav-section">
+      <section className="nav-section nav-section-primary" aria-label="Main navigation">
+        <button
+          className={inboxWorkspaceActive ? "nav-item active" : "nav-item"}
+          type="button"
+          aria-pressed={inboxWorkspaceActive}
+          onClick={() => onFilterChange(filter)}
+        >
+          <Inbox size={16} />
+          <span>GitHub Inbox</span>
+        </button>
         <button
           className={notificationsOpen ? "nav-item active" : "nav-item"}
           type="button"
+          aria-pressed={notificationsOpen}
           onClick={onOpenNotifications}
         >
           <Bell size={16} />
@@ -142,12 +165,8 @@ export function Sidebar({
             )
           )}
         </button>
-      </section>
-
-      {featureNavigationEnabled && (
-        <section className="nav-section">
-          <h2>Workspace</h2>
-          {featureEntries
+        {featureNavigationEnabled &&
+          featureEntries
             .filter((entry) => entry.section === "workspace" && entry.id === "notes")
             .map(({ id, label, icon: Icon }) => (
               <button
@@ -161,71 +180,74 @@ export function Sidebar({
                 <span>{label}</span>
               </button>
             ))}
-        </section>
-      )}
-
-      <section className="nav-section">
-        <h2>Inbox</h2>
-        {filterEntries.map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            className={inboxActive && filter === key ? "nav-item active" : "nav-item"}
-            type="button"
-            aria-pressed={inboxActive && filter === key}
-            onClick={() => onFilterChange(key)}
-          >
-            <Icon size={16} />
-            <span>{label}</span>
-            <strong>{counts[key]}</strong>
-          </button>
-        ))}
       </section>
 
-      <section className="nav-section">
-        <div className="nav-section-heading">
-          <h2>Repository</h2>
-          <IconTooltip label="Repository filter settings">
-            <button
-              className="nav-section-icon-button"
-              type="button"
-              aria-label="Open repository filter settings"
-              onClick={onOpenProjectSettings}
-            >
-              <Settings size={13} />
-            </button>
-          </IconTooltip>
-        </div>
-        {repositoriesLoading && repositoryGroups.length === 0 && (
-          <p className="nav-note">Loading repositories...</p>
-        )}
-        {!repositoriesLoading && repositoryGroups.length === 0 && (
-          <p className="nav-note">No repositories.</p>
-        )}
-        {repositoryGroups.map((group) => (
-          <div className="nav-owner-group" key={group.owner}>
-            <h3 className="nav-owner">{group.owner}</h3>
-            {group.repositories.map((repository) => (
+      {showInboxDetails && (
+        <>
+          <section className="nav-section">
+            <h2>Inbox</h2>
+            {filterEntries.map(({ key, label, icon: Icon }) => (
               <button
-                className={
-                  projectsActive && repositoryFilter === repository.fullName
-                    ? "nav-item active"
-                    : "nav-item"
-                }
+                key={key}
+                className={inboxActive && filter === key ? "nav-item active" : "nav-item"}
                 type="button"
-                aria-pressed={projectsActive && repositoryFilter === repository.fullName}
-                key={repository.fullName}
-                onClick={() => onRepositoryFilterChange(repository.fullName)}
+                aria-pressed={inboxActive && filter === key}
+                onClick={() => onFilterChange(key)}
               >
-                <Folder size={16} />
-                <span>{repository.name}</span>
-                <strong>{repository.openIssuesCount}</strong>
+                <Icon size={16} />
+                <span>{label}</span>
+                <strong>{counts[key]}</strong>
               </button>
             ))}
-          </div>
-        ))}
-      </section>
+          </section>
 
-      <section className="nav-section">
+          <section className="nav-section">
+            <div className="nav-section-heading">
+              <h2>Repository</h2>
+              <IconTooltip label="Repository filter settings">
+                <button
+                  className="nav-section-icon-button"
+                  type="button"
+                  aria-label="Open repository filter settings"
+                  onClick={onOpenProjectSettings}
+                >
+                  <Settings size={13} />
+                </button>
+              </IconTooltip>
+            </div>
+            {repositoriesLoading && repositoryGroups.length === 0 && (
+              <p className="nav-note">Loading repositories...</p>
+            )}
+            {!repositoriesLoading && repositoryGroups.length === 0 && (
+              <p className="nav-note">No repositories.</p>
+            )}
+            {repositoryGroups.map((group) => (
+              <div className="nav-owner-group" key={group.owner}>
+                <h3 className="nav-owner">{group.owner}</h3>
+                {group.repositories.map((repository) => (
+                  <button
+                    className={
+                      projectsActive && repositoryFilter === repository.fullName
+                        ? "nav-item active"
+                        : "nav-item"
+                    }
+                    type="button"
+                    aria-pressed={projectsActive && repositoryFilter === repository.fullName}
+                    key={repository.fullName}
+                    onClick={() => onRepositoryFilterChange(repository.fullName)}
+                  >
+                    <Folder size={16} />
+                    <span>{repository.name}</span>
+                    <strong>{repository.openIssuesCount}</strong>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </section>
+        </>
+      )}
+
+      <section className="nav-section nav-section-app">
         <h2>App</h2>
         <button
           className={settingsActive ? "nav-item active" : "nav-item"}

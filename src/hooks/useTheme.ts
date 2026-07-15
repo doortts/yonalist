@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
-export type LightTheme = "default" | "yona" | "yonal-light" | "base-light";
+export type LightTheme =
+  | "soft-paper"
+  | "default"
+  | "yona"
+  | "yonal-light"
+  | "base-light";
 export type DarkTheme = "dark" | "yona-dark" | "base-dark";
 export type ResolvedTheme = LightTheme | DarkTheme;
 
@@ -39,6 +44,7 @@ function loadThemeMode(): ThemeMode {
 function loadLightTheme(): LightTheme {
   const stored = readStoredValue(lightThemeStorageKey);
   if (
+    stored === "soft-paper" ||
     stored === "default" ||
     stored === "yona" ||
     stored === "yonal-light" ||
@@ -46,7 +52,7 @@ function loadLightTheme(): LightTheme {
   ) {
     return stored;
   }
-  return readStoredValue(themeModeStorageKey) === "yona" ? "yona" : "default";
+  return readStoredValue(themeModeStorageKey) === "yona" ? "yona" : "soft-paper";
 }
 
 function loadDarkTheme(): DarkTheme {

@@ -156,7 +156,7 @@ describe("Yonalist app shell", () => {
     expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
 
-    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
     expect(await screen.findByLabelText("GitHub login")).toBeInTheDocument();
     expect(window.localStorage.getItem("yonalist.auth.skipLogin.v1")).toBeNull();
@@ -263,15 +263,14 @@ describe("Yonalist app shell", () => {
       "aria-pressed",
       "true"
     );
-    expect(screen.getByRole("button", { name: /^All items/ })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
+    expect(
+      screen.queryByRole("button", { name: /^All items/ })
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Notifications/ })).not.toHaveClass(
       "active"
     );
 
-    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
     expect(screen.getByRole("textbox", { name: "Search" })).toHaveValue("Design");
   });
@@ -349,7 +348,7 @@ describe("Yonalist app shell", () => {
     expect(loadsAfterMount).toBeGreaterThan(0);
 
     // Navigate away to Inbox and back to Notes.
-    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
     expect(screen.getByLabelText("Items")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Notes" }));
     expect(screen.getByLabelText("Notes library")).toBeInTheDocument();
@@ -372,7 +371,7 @@ describe("Yonalist app shell", () => {
     render(<App />);
     expect(await screen.findByLabelText("Notes library")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /^All items/ }));
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
     // Inbox is now the visible feature.
     expect(screen.getByLabelText("Items")).toBeInTheDocument();
@@ -522,7 +521,7 @@ describe("Yonalist app shell", () => {
         "yonalist.vaultDocuments.v1"
       );
 
-      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
       await waitFor(() => {
         const resumedTargets = fetchMock.mock.calls.map(([url]) => String(url));
@@ -781,7 +780,7 @@ describe("Yonalist app shell", () => {
       "data-pane-icon",
       "sidebar-collapse"
     );
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("240px");
 
     await user.click(sidebarToggle);
 
@@ -802,7 +801,7 @@ describe("Yonalist app shell", () => {
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
     expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
     // Expanding restores the previous width rather than a hard-coded default.
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("240px");
   });
 
   it("anchors the sidebar toggle to the sidebar edge, then to the frontmost pane", async () => {
@@ -871,8 +870,8 @@ describe("Yonalist app shell", () => {
     expect(shell).not.toHaveAttribute("data-detail-maximized");
     expect(shell).not.toHaveAttribute("data-sidebar-collapsed");
     expect(shell).not.toHaveAttribute("data-list-collapsed");
-    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("280px");
-    expect(shell.style.getPropertyValue("--list-width")).toBe("420px");
+    expect(shell.style.getPropertyValue("--sidebar-width")).toBe("240px");
+    expect(shell.style.getPropertyValue("--list-width")).toBe("340px");
   });
 
   it("restores only the panes collapsed before the detail was maximized", async () => {
@@ -2088,7 +2087,7 @@ describe("Yonalist app shell", () => {
       });
 
       await user.click(screen.getByRole("button", { name: "Go online" }));
-      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
       expect(reconnectProbeCalls(fetchMock)).toHaveLength(0);
       expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
@@ -2194,7 +2193,7 @@ describe("Yonalist app shell", () => {
         expect.anything()
       );
 
-      await user.click(screen.getByRole("button", { name: /^All items/ }));
+      await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
 
       expect(
         await screen.findByRole("alertdialog", { name: "대기 중인 변경 전송" })
@@ -3402,6 +3401,7 @@ describe("Yonalist app shell", () => {
     await user.click(
       within(section).getByRole("checkbox", { name: "Show doortts projects" })
     );
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
     expect(
       within(navigation).getByRole("button", { name: /^blog/ })
     ).toBeInTheDocument();
@@ -3638,7 +3638,7 @@ describe("Yonalist app shell", () => {
       name: "Resize item list pane"
     });
 
-    fireEvent.pointerDown(navigationResizer, { clientX: 280, button: 0 });
+    fireEvent.pointerDown(navigationResizer, { clientX: 240, button: 0 });
     fireEvent.pointerMove(window, { clientX: 340 });
     fireEvent.pointerUp(window);
 

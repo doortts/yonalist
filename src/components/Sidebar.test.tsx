@@ -77,21 +77,16 @@ describe("Sidebar", () => {
     ).toBeTruthy();
   });
 
-  it("renders Notes in the Workspace section and activates it", async () => {
+  it("keeps the main workspaces visible and hides Inbox details while Notes is active", async () => {
     const onFeatureChange = vi.fn();
     renderSidebar({ activeFeatureId: "notes", onFeatureChange });
 
     const notes = screen.getByRole("button", { name: "Notes" });
-    expect(screen.getByRole("heading", { name: "Workspace" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Notes" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "GitHub Inbox" })).toBeInTheDocument();
     expect(notes).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: /^All items/ })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
-    expect(screen.getByRole("button", { name: /^workflowy\s*4/ })).toHaveAttribute(
-      "aria-pressed",
-      "false"
-    );
+    expect(screen.queryByRole("button", { name: /^All items/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^workflowy\s*4/ })).toBeNull();
 
     await userEvent.setup().click(notes);
 

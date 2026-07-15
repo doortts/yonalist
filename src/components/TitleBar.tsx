@@ -72,8 +72,8 @@ export function TitleBar({ paneToggles }: TitleBarProps = {}) {
             // of the now-frontmost pane with a traffic-light-safe fallback.
             style={{
               left: paneToggles.sidebarCollapsed
-                ? "max(78px, calc(var(--list-width, 420px) - 36px))"
-                : "calc(var(--sidebar-width, 280px) - 36px)"
+                ? "max(86px, calc(var(--shell-inset, 8px) + var(--list-width, 340px) - 36px))"
+                : "calc(var(--shell-inset, 8px) + var(--sidebar-width, 240px) - 36px)"
             }}
             // The buttons must not initiate a native window drag; keep pointer
             // events from reaching the surrounding drag regions.

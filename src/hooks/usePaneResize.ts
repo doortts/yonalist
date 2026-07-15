@@ -15,8 +15,8 @@ export interface PaneWidths {
 }
 
 export const defaultPaneWidths: PaneWidths = {
-  sidebar: 280,
-  list: 420
+  sidebar: 240,
+  list: 340
 };
 
 export const paneWidthLimits: Record<ResizablePane, { min: number; max: number }> = {

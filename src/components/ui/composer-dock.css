@@ -12,9 +12,9 @@
 
 .comment-composer-dock {
   position: fixed;
-  right: 0;
+  right: var(--shell-inset, 0px);
   bottom: var(--statusbar-height);
-  left: calc(var(--sidebar-width, 280px) + var(--sidebar-resizer-width, 1px) + var(--list-width, 420px) + var(--list-resizer-width, 1px));
+  left: calc(var(--shell-inset, 0px) + var(--sidebar-width, 240px) + var(--sidebar-resizer-width, 10px) + var(--list-width, 340px) + var(--list-resizer-width, 10px));
   z-index: 5;
   margin: 0;
   background: color-mix(in srgb, var(--bg-detail) 62%, transparent);
@@ -24,7 +24,7 @@
 }
 
 .app-shell[data-detail-maximized="true"] .comment-composer-dock {
-  left: 0;
+  left: var(--shell-inset, 0px);
 }
 
 .comment-composer-dock.is-expanded {

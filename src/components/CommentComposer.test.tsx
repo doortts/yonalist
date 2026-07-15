@@ -619,9 +619,9 @@ describe("CommentComposer", () => {
     expect(dockStyle.position).toBe("fixed");
     expect(dockStyle.bottom).toBe("var(--statusbar-height)");
     expect(dockStyle.left).toBe(
-      "calc(var(--sidebar-width, 280px) + var(--sidebar-resizer-width, 1px) + var(--list-width, 420px) + var(--list-resizer-width, 1px))"
+      "calc(var(--shell-inset, 0px) + var(--sidebar-width, 240px) + var(--sidebar-resizer-width, 10px) + var(--list-width, 340px) + var(--list-resizer-width, 10px))"
     );
-    expect(dockStyle.right).toBe("0");
+    expect(dockStyle.right).toBe("var(--shell-inset, 0px)");
     expect(dockStyle["border-top"]).toBeUndefined();
     expect(dockStyle.background).toBe(
       "color-mix(in srgb, var(--bg-detail) 62%, transparent)"
@@ -630,7 +630,7 @@ describe("CommentComposer", () => {
     expect(dockStyle["-webkit-backdrop-filter"]).toBe(
       "blur(14px) saturate(130%)"
     );
-    expect(maximizedDockStyle.left).toBe("0");
+    expect(maximizedDockStyle.left).toBe("var(--shell-inset, 0px)");
     expect(collapsedDockStyle.overflow).toBe("hidden");
     expect(collapsedDockStyle["max-height"]).toBe("55px");
     expect(collapsedDockStyle.padding).toBe(
