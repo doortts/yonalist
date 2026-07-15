@@ -6300,8 +6300,8 @@ describe("Notes workspace", () => {
       const normalizeColor = (value: string) => value.replace(/\s*\/\s*/gu, "/");
       expect(normalizeColor(lightHalo)).toBe("rgb(17 24 39/5%)");
       expect(normalizeColor(lightHaloStrong)).toBe("rgb(17 24 39/8%)");
-      expect(normalizeColor(darkHalo)).toBe("rgb(255 255 255/6%)");
-      expect(normalizeColor(darkHaloStrong)).toBe("rgb(255 255 255/10%)");
+      expect(normalizeColor(darkHalo)).toBe("rgb(237 242 247/7%)");
+      expect(normalizeColor(darkHaloStrong)).toBe("#2b3a4d");
     expect(darkHalo).not.toBe(lightHalo);
     expect(darkHaloStrong).not.toBe(lightHaloStrong);
     expect(notesStyles).toMatch(

@@ -75,6 +75,30 @@ function systemPrefersDark(): boolean {
   );
 }
 
+function resolveTheme(
+  mode: ThemeMode,
+  lightTheme: LightTheme,
+  darkTheme: DarkTheme,
+  systemDark: boolean
+): ResolvedTheme {
+  return mode === "system"
+    ? systemDark
+      ? darkTheme
+      : lightTheme
+    : mode === "dark"
+      ? darkTheme
+      : lightTheme;
+}
+
+export function loadInitialResolvedTheme(): ResolvedTheme {
+  return resolveTheme(
+    loadThemeMode(),
+    loadLightTheme(),
+    loadDarkTheme(),
+    systemPrefersDark()
+  );
+}
+
 export function useTheme() {
   const [mode, setModeState] = useState<ThemeMode>(() => loadThemeMode());
   const [lightTheme, setLightThemeState] = useState<LightTheme>(() => loadLightTheme());
@@ -97,14 +121,7 @@ export function useTheme() {
     return () => media.removeListener(handleChange);
   }, []);
 
-  const resolvedTheme: ResolvedTheme =
-    mode === "system"
-      ? systemDark
-        ? darkTheme
-        : lightTheme
-      : mode === "dark"
-        ? darkTheme
-        : lightTheme;
+  const resolvedTheme = resolveTheme(mode, lightTheme, darkTheme, systemDark);
 
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;
