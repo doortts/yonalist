@@ -3317,6 +3317,112 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
+    it("moves five selected sibling roots as one pointer-dragged block from a middle bullet", async () => {
+      const user = userEvent.setup();
+      const movingIds = ["a", "b", "c", "d", "e"];
+      configureRepository([
+        node({ id: "parent", sortKey: 1, title: "Parent" }),
+        ...["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"].map(
+          (title, index) =>
+            node({
+              id: String.fromCharCode(97 + index),
+              parentId: "parent",
+              sortKey: index + 1,
+              title,
+              isCollapsed: index === 2
+            })
+        ),
+        node({ id: "c-child", parentId: "c", title: "Charlie child" }),
+        node({ id: "destination", sortKey: 2, title: "Destination" })
+      ]);
+      notesStoreMock.applyBatch.mockImplementationOnce(
+        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+          if (input.op === "move") {
+            confirmedNodes = confirmedNodes.map((current) => {
+              const movedIndex = movingIds.indexOf(current.id);
+              return movedIndex === -1
+                ? current
+                : {
+                    ...current,
+                    parentId: "destination",
+                    sortKey: movedIndex + 1
+                  };
+            });
+          }
+          return workspace(confirmedNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      alpha.focus();
+      for (let index = 0; index < 4; index += 1) {
+        fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      }
+      expect(selectedOutlineIds()).toEqual(movingIds);
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      const active = screen.getByRole("button", { name: "Zoom into Charlie" });
+      const destination = screen.getByRole("button", {
+        name: "Zoom into Destination"
+      });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: active,
+        coords: { clientX: 9, clientY: 98 }
+      });
+      await user.pointer({
+        target: destination,
+        coords: { clientX: 14, clientY: 210 }
+      });
+      await user.pointer({
+        target: destination,
+        coords: { clientX: 50, clientY: 210 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: destination,
+        coords: { clientX: 50, clientY: 210 }
+      });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: movingIds,
+        parentId: "destination",
+        afterId: null,
+        beforeId: null
+      });
+      await waitFor(() => expect(selectedOutlineIds()).toEqual(movingIds));
+      await waitFor(() =>
+        expect(
+          textareasByName("Edit node title").map((input) => input.value)
+        ).toEqual([
+          "Parent",
+          "Foxtrot",
+          "Destination",
+          "Alpha",
+          "Bravo",
+          "Charlie",
+          "Delta",
+          "Echo"
+        ])
+      );
+      expect(confirmedNodes.find(({ id }) => id === "c-child")?.parentId).toBe(
+        "c"
+      );
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("executes only the latest selected drop while frozen authority is hydrating", async () => {
       const user = userEvent.setup();
       const activeNodes = threeRoots();
