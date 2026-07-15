@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-sort-subtree-descending"
+description = "Enables the notes_sort_subtree_descending command without any pre-configured scope."
+commands.allow = ["notes_sort_subtree_descending"]
+
+[[permission]]
+identifier = "deny-notes-sort-subtree-descending"
+description = "Denies the notes_sort_subtree_descending command without any pre-configured scope."
+commands.deny = ["notes_sort_subtree_descending"]

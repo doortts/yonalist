@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import type { NoteNode, NotesStore, NotesWorkspace } from "../../domain/notes";
+import type {
+  NoteNode,
+  NotesStore,
+  NotesWorkspace,
+  NotesWorkspaceScope
+} from "../../domain/notes";
 import { createNotesWorkspaceCoordinatorRegistry } from "./notesWorkspaceCoordinator";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
@@ -272,6 +277,237 @@ describe("notesWorkspaceCoordinator registry", () => {
     expect(cutoffs).toEqual([4]);
     expect(structuralWork).toHaveBeenCalledOnce();
     participant.close();
+  });
+
+  it("gives structural work the same scope captured after draft barriers", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const drain = deferred<boolean>();
+    let scope: NotesWorkspaceScope = { kind: "active" };
+    const ownerEvents = vi.fn();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/structural-scope",
+      onEvent: ownerEvents,
+      beforeStructural: () => drain.promise,
+      getScope: () => scope
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/structural-scope",
+      onEvent: siblingEvents,
+      getScope: () => scope
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    ownerEvents.mockClear();
+    siblingEvents.mockClear();
+
+    const projected = workspace([node({ id: "starred-result", isStarred: true })]);
+    let observedScope: NotesWorkspaceScope | null = null;
+    const completion = owner.enqueueStructural((context) => {
+      observedScope = context.sourceScope;
+      return {
+        kind: "authoritative" as const,
+        workspace: projected
+      };
+    });
+    await Promise.resolve();
+    scope = { kind: "starred" };
+    drain.resolve(true);
+    await completion;
+
+    expect(observedScope).toEqual({ kind: "starred" });
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: { kind: "starred" },
+      result: expect.objectContaining({
+        kind: "authoritative",
+        workspace: projected
+      })
+    });
+    owner.close();
+    sibling.close();
+  });
+
+  it("owns canonical tag scopes and gives work a separate snapshot", async () => {
+    const mutableTags: Extract<
+      NotesWorkspaceScope,
+      { kind: "tags" }
+    >["tags"] = [
+      { prefix: "@", normalizedTag: "alice" },
+      { prefix: "#", normalizedTag: "work" },
+      { prefix: "#", normalizedTag: "work" }
+    ];
+    const ownerScope: NotesWorkspaceScope = {
+      kind: "tags",
+      tags: mutableTags
+    };
+    const expectedScope: NotesWorkspaceScope = {
+      kind: "tags",
+      tags: [
+        { prefix: "#", normalizedTag: "work" },
+        { prefix: "@", normalizedTag: "alice" }
+      ]
+    };
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const siblingEvents = vi.fn();
+    const started = deferred<NotesWorkspaceScope>();
+    const finish = deferred<void>();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/owned-scope",
+      onEvent: vi.fn(),
+      getScope: () => ownerScope
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/owned-scope",
+      onEvent: siblingEvents,
+      getScope: () => expectedScope
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    siblingEvents.mockClear();
+
+    const projected = workspace([node({ id: "canonical-projection" })]);
+    const completion = owner.enqueue(async (context) => {
+      started.resolve(context.sourceScope);
+      await finish.promise;
+      if (context.sourceScope.kind === "tags") {
+        context.sourceScope.tags[0]!.normalizedTag = "changed-by-work";
+        context.sourceScope.tags.reverse();
+      }
+      return { kind: "authoritative" as const, workspace: projected };
+    });
+    const workScope = await started.promise;
+
+    expect(workScope).toEqual(expectedScope);
+    expect(workScope).not.toBe(ownerScope);
+    if (workScope?.kind === "tags") {
+      expect(workScope.tags).not.toBe(mutableTags);
+      expect(workScope.tags[0]).not.toBe(mutableTags[0]);
+    }
+    mutableTags[0]!.normalizedTag = "changed-by-caller";
+    mutableTags.splice(1);
+    owner.close();
+    finish.resolve();
+    await completion;
+
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: expectedScope,
+      result: expect.objectContaining({
+        kind: "authoritative",
+        workspace: projected
+      })
+    });
+    sibling.close();
+  });
+
+  it("prefers an explicit projection scope over a live scope reset", async () => {
+    const filteredScope: NotesWorkspaceScope = {
+      kind: "tags",
+      tags: [{ prefix: "#", normalizedTag: "work" }]
+    };
+    let ownerScope: NotesWorkspaceScope = filteredScope;
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const drain = deferred<boolean>();
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/explicit-projection-scope",
+      onEvent: vi.fn(),
+      beforeStructural: () => drain.promise,
+      getScope: () => ownerScope
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/explicit-projection-scope",
+      onEvent: siblingEvents,
+      getScope: () => filteredScope
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    siblingEvents.mockClear();
+
+    const projected = workspace([node({ id: "filtered-projection" })]);
+    const completion = owner.enqueueStructural(async (context) => {
+      started.resolve();
+      await finish.promise;
+      return {
+        kind: "authoritative" as const,
+        workspace: projected,
+        broadcastScope: context.sourceScope
+      };
+    });
+    await Promise.resolve();
+    drain.resolve(true);
+    await started.promise;
+    ownerScope = { kind: "active" };
+    finish.resolve();
+    await completion;
+
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: filteredScope,
+      result: expect.objectContaining({
+        kind: "authoritative",
+        workspace: projected
+      })
+    });
+    owner.close();
+    sibling.close();
+  });
+
+  it("retains opted-in structural work after its owner closes", async () => {
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const siblingEvents = vi.fn();
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/retained-structural",
+      onEvent: vi.fn()
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/retained-structural",
+      onEvent: siblingEvents
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    siblingEvents.mockClear();
+
+    const projected = workspace([node({ id: "retained-result" })]);
+    const completion = owner.enqueueStructural(
+      async () => {
+        started.resolve();
+        await finish.promise;
+        return { kind: "authoritative" as const, workspace: projected };
+      },
+      { retainAfterClose: true }
+    );
+    await started.promise;
+    owner.close();
+    finish.resolve();
+
+    await expect(completion).resolves.toBe("committed");
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: { kind: "active" },
+      result: expect.objectContaining({
+        kind: "authoritative",
+        workspace: projected
+      })
+    });
+    sibling.close();
   });
 
   it("queries and broadcasts status for partial-authority failures", async () => {
@@ -573,6 +809,128 @@ describe("notesWorkspaceCoordinator registry", () => {
         workspace: confirmed,
         historyStatus: { canUndo: true, canRedo: false },
         historyVersion: 2
+      }
+    });
+    sibling.close();
+  });
+
+  it.each([
+    ["active", { kind: "active" }],
+    ["starred", { kind: "starred" }],
+    [
+      "tags",
+      {
+        kind: "tags",
+        tags: [{ prefix: "#", normalizedTag: "work" }]
+      }
+    ],
+    ["recent", { kind: "recent" }],
+    ["archive", { kind: "archive" }],
+    ["trash", { kind: "trash" }]
+  ] as const)(
+    "broadcasts an unmounted owner's captured %s projection to same-scope siblings",
+    async (_label, capturedScope) => {
+      const running = deferred<NotesWorkspace>();
+      const store = repository();
+      const registry = createNotesWorkspaceCoordinatorRegistry();
+      const siblingEvents = vi.fn();
+      const projected = workspace([node({ id: `${capturedScope.kind}-projected` })]);
+      const getScope = (): NotesWorkspaceScope => {
+        if (capturedScope.kind === "tags") {
+          return {
+            kind: "tags",
+            tags: capturedScope.tags.map((tag) => ({ ...tag }))
+          };
+        }
+        return { ...capturedScope };
+      };
+      const owner = registry.openSession({
+        repository: store,
+        vaultRoot: `/ownerless-${capturedScope.kind}`,
+        onEvent: vi.fn(),
+        getScope
+      });
+      const sibling = registry.openSession({
+        repository: store,
+        vaultRoot: `/ownerless-${capturedScope.kind}`,
+        onEvent: siblingEvents,
+        getScope
+      });
+      await Promise.all([owner.activation, sibling.activation]);
+      siblingEvents.mockClear();
+
+      const completion = owner.enqueue(async () => ({
+        kind: "authoritative" as const,
+        workspace: await running.promise
+      }));
+      owner.close();
+      running.resolve(projected);
+      await completion;
+
+      expect(siblingEvents).toHaveBeenCalledWith({
+        type: "synchronized",
+        hasPendingWork: false,
+        sourceScope: capturedScope,
+        result: {
+          kind: "authoritative",
+          workspace: projected,
+          historyStatus: undefined,
+          historyVersion: undefined
+        }
+      });
+      sibling.close();
+    }
+  );
+
+  it("broadcasts a departed owner's projection failure as a scope invalidation", async () => {
+    const rawActive = workspace([node({ id: "raw-active" })]);
+    const running = deferred<NotesWorkspace>();
+    const store = repository();
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const siblingEvents = vi.fn();
+    const starredScope = { kind: "starred" } as const;
+    const owner = registry.openSession({
+      repository: store,
+      vaultRoot: "/ownerless-projection-failure",
+      onEvent: vi.fn(),
+      getScope: () => starredScope
+    });
+    const sibling = registry.openSession({
+      repository: store,
+      vaultRoot: "/ownerless-projection-failure",
+      onEvent: siblingEvents,
+      getScope: () => starredScope
+    });
+    await Promise.all([owner.activation, sibling.activation]);
+    siblingEvents.mockClear();
+
+    const completion = owner.enqueue(async () => {
+      await running.promise;
+      return {
+        kind: "failure" as const,
+        error: "Projection reload failed",
+        workspace: rawActive,
+        historyStatus: { canUndo: true, canRedo: false },
+        scopeAgnostic: true,
+        committedHistoryEntryIds: ["committed-entry"]
+      };
+    });
+    owner.close();
+    running.resolve(rawActive);
+    await completion;
+
+    expect(siblingEvents).toHaveBeenCalledWith({
+      type: "synchronized",
+      hasPendingWork: false,
+      sourceScope: null,
+      result: {
+        kind: "failure",
+        error: "Projection reload failed",
+        workspace: rawActive,
+        historyStatus: { canUndo: true, canRedo: false },
+        historyVersion: 1,
+        scopeAgnostic: true,
+        committedHistoryEntryIds: ["committed-entry"]
       }
     });
     sibling.close();

@@ -177,6 +177,900 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-update-node`\n- `allow-notes-split-node`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`",
+          "type": "string",
+          "const": "main-window-app-commands",
+          "markdownDescription": "Allows the local main window to invoke Yonalist application commands.\n#### This permission set includes:\n\n- `allow-ensure-vault`\n- `allow-read-text-file`\n- `allow-write-text-file`\n- `allow-delete-text-file`\n- `allow-move-text-file`\n- `allow-list-markdown-files`\n- `allow-list-outbox-markdown-files`\n- `allow-list-vault-item-index`\n- `allow-replace-vault-item-index`\n- `allow-upsert-vault-item-index`\n- `allow-get-vault-document-hash`\n- `allow-upsert-vault-document-hash`\n- `allow-replace-vault-document-hashes`\n- `allow-persist-vault-documents`\n- `allow-delete-vault-document-hash`\n- `allow-move-vault-document-hash`\n- `allow-clear-vault-cache`\n- `allow-store-token`\n- `allow-load-token`\n- `allow-delete-token`\n- `allow-oauth-start`\n- `allow-oauth-wait`\n- `allow-oauth-exchange`\n- `allow-open-url`\n- `allow-open-external-url`\n- `allow-fetch-image`\n- `allow-load-cached-avatar-image`\n- `allow-store-cached-avatar-image`\n- `allow-touch-cached-avatar-image`\n- `allow-record-perf-event`\n- `allow-notes-initialize`\n- `allow-notes-load-workspace`\n- `allow-notes-create-node`\n- `allow-notes-update-node`\n- `allow-notes-split-node`\n- `allow-notes-move-node`\n- `allow-notes-apply-batch`\n- `allow-notes-import-subtree`\n- `allow-notes-toggle-complete`\n- `allow-notes-toggle-collapsed`\n- `allow-notes-expand-all`\n- `allow-notes-collapse-all`\n- `allow-notes-sort-subtree-ascending`\n- `allow-notes-sort-subtree-descending`\n- `allow-notes-toggle-star`\n- `allow-notes-duplicate-node`\n- `allow-notes-remove-empty-node`\n- `allow-notes-soft-delete-node`\n- `allow-notes-restore-node`\n- `allow-notes-archive-node`\n- `allow-notes-unarchive-node`\n- `allow-notes-undo`\n- `allow-notes-redo`\n- `allow-notes-history-status`\n- `allow-notes-clear-history`\n- `allow-notes-empty-trash`\n- `allow-notes-search`\n- `allow-notes-search-structured`\n- `allow-notes-list-tags`\n- `allow-notes-list-tags-with-counts`\n- `allow-notes-import-attachment`\n- `allow-notes-import-attachment-paths-batch`\n- `allow-notes-import-attachment-bytes`\n- `allow-notes-import-image-node-paths-batch`\n- `allow-notes-import-image-node-bytes`\n- `allow-notes-read-attachment-bytes`\n- `allow-notes-open-attachment-original`\n- `allow-notes-download-attachment`\n- `allow-notes-resize-attachment`\n- `allow-notes-remove-attachment`\n- `allow-notes-restore-attachment`\n- `allow-notes-delete-database`\n- `allow-notes-export-markdown`\n- `allow-notes-export-pdf`"
+        },
+        {
+          "description": "Enables the clear_vault_cache command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-vault-cache",
+          "markdownDescription": "Enables the clear_vault_cache command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-text-file",
+          "markdownDescription": "Enables the delete_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-token",
+          "markdownDescription": "Enables the delete_token command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-vault-document-hash",
+          "markdownDescription": "Enables the delete_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ensure_vault command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ensure-vault",
+          "markdownDescription": "Enables the ensure_vault command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the fetch_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-fetch-image",
+          "markdownDescription": "Enables the fetch_image command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-vault-document-hash",
+          "markdownDescription": "Enables the get_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_markdown_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-markdown-files",
+          "markdownDescription": "Enables the list_markdown_files command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_outbox_markdown_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-outbox-markdown-files",
+          "markdownDescription": "Enables the list_outbox_markdown_files command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-vault-item-index",
+          "markdownDescription": "Enables the list_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-cached-avatar-image",
+          "markdownDescription": "Enables the load_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-token",
+          "markdownDescription": "Enables the load_token command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the move_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-move-text-file",
+          "markdownDescription": "Enables the move_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the move_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-move-vault-document-hash",
+          "markdownDescription": "Enables the move_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_apply_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-apply-batch",
+          "markdownDescription": "Enables the notes_apply_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_archive_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-archive-node",
+          "markdownDescription": "Enables the notes_archive_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_clear_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-clear-history",
+          "markdownDescription": "Enables the notes_clear_history command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_collapse_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-collapse-all",
+          "markdownDescription": "Enables the notes_collapse_all command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_create_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-create-node",
+          "markdownDescription": "Enables the notes_create_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_delete_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-delete-database",
+          "markdownDescription": "Enables the notes_delete_database command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_download_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-download-attachment",
+          "markdownDescription": "Enables the notes_download_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_duplicate_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-duplicate-node",
+          "markdownDescription": "Enables the notes_duplicate_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_empty_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-empty-trash",
+          "markdownDescription": "Enables the notes_empty_trash command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_expand_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-expand-all",
+          "markdownDescription": "Enables the notes_expand_all command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_export_markdown command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-export-markdown",
+          "markdownDescription": "Enables the notes_export_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_export_pdf command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-export-pdf",
+          "markdownDescription": "Enables the notes_export_pdf command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_history_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-history-status",
+          "markdownDescription": "Enables the notes_history_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-attachment",
+          "markdownDescription": "Enables the notes_import_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_attachment_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-attachment-bytes",
+          "markdownDescription": "Enables the notes_import_attachment_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_attachment_paths_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-attachment-paths-batch",
+          "markdownDescription": "Enables the notes_import_attachment_paths_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_image_node_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-image-node-bytes",
+          "markdownDescription": "Enables the notes_import_image_node_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_image_node_paths_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-image-node-paths-batch",
+          "markdownDescription": "Enables the notes_import_image_node_paths_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_import_subtree command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-import-subtree",
+          "markdownDescription": "Enables the notes_import_subtree command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_initialize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-initialize",
+          "markdownDescription": "Enables the notes_initialize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_list_tags command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-list-tags",
+          "markdownDescription": "Enables the notes_list_tags command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_list_tags_with_counts command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-list-tags-with-counts",
+          "markdownDescription": "Enables the notes_list_tags_with_counts command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_load_workspace command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-load-workspace",
+          "markdownDescription": "Enables the notes_load_workspace command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_move_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-move-node",
+          "markdownDescription": "Enables the notes_move_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_open_attachment_original command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-open-attachment-original",
+          "markdownDescription": "Enables the notes_open_attachment_original command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_read_attachment_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-read-attachment-bytes",
+          "markdownDescription": "Enables the notes_read_attachment_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_redo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-redo",
+          "markdownDescription": "Enables the notes_redo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_remove_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-remove-attachment",
+          "markdownDescription": "Enables the notes_remove_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_remove_empty_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-remove-empty-node",
+          "markdownDescription": "Enables the notes_remove_empty_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_resize_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-resize-attachment",
+          "markdownDescription": "Enables the notes_resize_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_restore_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-restore-attachment",
+          "markdownDescription": "Enables the notes_restore_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_restore_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-restore-node",
+          "markdownDescription": "Enables the notes_restore_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_search command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-search",
+          "markdownDescription": "Enables the notes_search command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_search_structured command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-search-structured",
+          "markdownDescription": "Enables the notes_search_structured command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_soft_delete_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-soft-delete-node",
+          "markdownDescription": "Enables the notes_soft_delete_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sort_subtree_ascending command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sort-subtree-ascending",
+          "markdownDescription": "Enables the notes_sort_subtree_ascending command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_sort_subtree_descending command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-sort-subtree-descending",
+          "markdownDescription": "Enables the notes_sort_subtree_descending command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_split_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-split-node",
+          "markdownDescription": "Enables the notes_split_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_toggle_collapsed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-toggle-collapsed",
+          "markdownDescription": "Enables the notes_toggle_collapsed command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_toggle_complete command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-toggle-complete",
+          "markdownDescription": "Enables the notes_toggle_complete command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_toggle_star command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-toggle-star",
+          "markdownDescription": "Enables the notes_toggle_star command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_unarchive_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-unarchive-node",
+          "markdownDescription": "Enables the notes_unarchive_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_undo command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-undo",
+          "markdownDescription": "Enables the notes_undo command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the notes_update_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-notes-update-node",
+          "markdownDescription": "Enables the notes_update_node command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-exchange",
+          "markdownDescription": "Enables the oauth_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-start",
+          "markdownDescription": "Enables the oauth_start command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the oauth_wait command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-oauth-wait",
+          "markdownDescription": "Enables the oauth_wait command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_external_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-external-url",
+          "markdownDescription": "Enables the open_external_url command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-url",
+          "markdownDescription": "Enables the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the persist_vault_documents command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-persist-vault-documents",
+          "markdownDescription": "Enables the persist_vault_documents command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the read_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-text-file",
+          "markdownDescription": "Enables the read_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the record_perf_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-record-perf-event",
+          "markdownDescription": "Enables the record_perf_event command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the replace_vault_document_hashes command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-replace-vault-document-hashes",
+          "markdownDescription": "Enables the replace_vault_document_hashes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the replace_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-replace-vault-item-index",
+          "markdownDescription": "Enables the replace_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the store_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-store-cached-avatar-image",
+          "markdownDescription": "Enables the store_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the store_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-store-token",
+          "markdownDescription": "Enables the store_token command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the touch_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-touch-cached-avatar-image",
+          "markdownDescription": "Enables the touch_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the upsert_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-upsert-vault-document-hash",
+          "markdownDescription": "Enables the upsert_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the upsert_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-upsert-vault-item-index",
+          "markdownDescription": "Enables the upsert_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the write_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-write-text-file",
+          "markdownDescription": "Enables the write_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_vault_cache command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-vault-cache",
+          "markdownDescription": "Denies the clear_vault_cache command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-text-file",
+          "markdownDescription": "Denies the delete_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-token",
+          "markdownDescription": "Denies the delete_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-vault-document-hash",
+          "markdownDescription": "Denies the delete_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ensure_vault command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ensure-vault",
+          "markdownDescription": "Denies the ensure_vault command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the fetch_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-fetch-image",
+          "markdownDescription": "Denies the fetch_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-vault-document-hash",
+          "markdownDescription": "Denies the get_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_markdown_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-markdown-files",
+          "markdownDescription": "Denies the list_markdown_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_outbox_markdown_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-outbox-markdown-files",
+          "markdownDescription": "Denies the list_outbox_markdown_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-vault-item-index",
+          "markdownDescription": "Denies the list_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-cached-avatar-image",
+          "markdownDescription": "Denies the load_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-token",
+          "markdownDescription": "Denies the load_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-move-text-file",
+          "markdownDescription": "Denies the move_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-move-vault-document-hash",
+          "markdownDescription": "Denies the move_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_apply_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-apply-batch",
+          "markdownDescription": "Denies the notes_apply_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_archive_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-archive-node",
+          "markdownDescription": "Denies the notes_archive_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_clear_history command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-clear-history",
+          "markdownDescription": "Denies the notes_clear_history command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_collapse_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-collapse-all",
+          "markdownDescription": "Denies the notes_collapse_all command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_create_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-create-node",
+          "markdownDescription": "Denies the notes_create_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_delete_database command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-delete-database",
+          "markdownDescription": "Denies the notes_delete_database command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_download_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-download-attachment",
+          "markdownDescription": "Denies the notes_download_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_duplicate_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-duplicate-node",
+          "markdownDescription": "Denies the notes_duplicate_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_empty_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-empty-trash",
+          "markdownDescription": "Denies the notes_empty_trash command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_expand_all command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-expand-all",
+          "markdownDescription": "Denies the notes_expand_all command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_export_markdown command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-export-markdown",
+          "markdownDescription": "Denies the notes_export_markdown command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_export_pdf command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-export-pdf",
+          "markdownDescription": "Denies the notes_export_pdf command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_history_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-history-status",
+          "markdownDescription": "Denies the notes_history_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-attachment",
+          "markdownDescription": "Denies the notes_import_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_attachment_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-attachment-bytes",
+          "markdownDescription": "Denies the notes_import_attachment_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_attachment_paths_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-attachment-paths-batch",
+          "markdownDescription": "Denies the notes_import_attachment_paths_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_image_node_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-image-node-bytes",
+          "markdownDescription": "Denies the notes_import_image_node_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_image_node_paths_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-image-node-paths-batch",
+          "markdownDescription": "Denies the notes_import_image_node_paths_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_import_subtree command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-import-subtree",
+          "markdownDescription": "Denies the notes_import_subtree command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_initialize command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-initialize",
+          "markdownDescription": "Denies the notes_initialize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_list_tags command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-list-tags",
+          "markdownDescription": "Denies the notes_list_tags command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_list_tags_with_counts command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-list-tags-with-counts",
+          "markdownDescription": "Denies the notes_list_tags_with_counts command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_load_workspace command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-load-workspace",
+          "markdownDescription": "Denies the notes_load_workspace command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_move_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-move-node",
+          "markdownDescription": "Denies the notes_move_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_open_attachment_original command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-open-attachment-original",
+          "markdownDescription": "Denies the notes_open_attachment_original command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_read_attachment_bytes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-read-attachment-bytes",
+          "markdownDescription": "Denies the notes_read_attachment_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_redo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-redo",
+          "markdownDescription": "Denies the notes_redo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_remove_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-remove-attachment",
+          "markdownDescription": "Denies the notes_remove_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_remove_empty_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-remove-empty-node",
+          "markdownDescription": "Denies the notes_remove_empty_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_resize_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-resize-attachment",
+          "markdownDescription": "Denies the notes_resize_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_restore_attachment command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-restore-attachment",
+          "markdownDescription": "Denies the notes_restore_attachment command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_restore_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-restore-node",
+          "markdownDescription": "Denies the notes_restore_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_search command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-search",
+          "markdownDescription": "Denies the notes_search command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_search_structured command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-search-structured",
+          "markdownDescription": "Denies the notes_search_structured command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_soft_delete_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-soft-delete-node",
+          "markdownDescription": "Denies the notes_soft_delete_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sort_subtree_ascending command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sort-subtree-ascending",
+          "markdownDescription": "Denies the notes_sort_subtree_ascending command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_sort_subtree_descending command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-sort-subtree-descending",
+          "markdownDescription": "Denies the notes_sort_subtree_descending command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_split_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-split-node",
+          "markdownDescription": "Denies the notes_split_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_toggle_collapsed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-toggle-collapsed",
+          "markdownDescription": "Denies the notes_toggle_collapsed command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_toggle_complete command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-toggle-complete",
+          "markdownDescription": "Denies the notes_toggle_complete command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_toggle_star command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-toggle-star",
+          "markdownDescription": "Denies the notes_toggle_star command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_unarchive_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-unarchive-node",
+          "markdownDescription": "Denies the notes_unarchive_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_undo command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-undo",
+          "markdownDescription": "Denies the notes_undo command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the notes_update_node command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-notes-update-node",
+          "markdownDescription": "Denies the notes_update_node command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_exchange command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-exchange",
+          "markdownDescription": "Denies the oauth_exchange command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_start command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-start",
+          "markdownDescription": "Denies the oauth_start command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the oauth_wait command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-oauth-wait",
+          "markdownDescription": "Denies the oauth_wait command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_external_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-external-url",
+          "markdownDescription": "Denies the open_external_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_url command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-url",
+          "markdownDescription": "Denies the open_url command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the persist_vault_documents command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-persist-vault-documents",
+          "markdownDescription": "Denies the persist_vault_documents command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-text-file",
+          "markdownDescription": "Denies the read_text_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the record_perf_event command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-record-perf-event",
+          "markdownDescription": "Denies the record_perf_event command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the replace_vault_document_hashes command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-replace-vault-document-hashes",
+          "markdownDescription": "Denies the replace_vault_document_hashes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the replace_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-replace-vault-item-index",
+          "markdownDescription": "Denies the replace_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the store_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-store-cached-avatar-image",
+          "markdownDescription": "Denies the store_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the store_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-store-token",
+          "markdownDescription": "Denies the store_token command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the touch_cached_avatar_image command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-touch-cached-avatar-image",
+          "markdownDescription": "Denies the touch_cached_avatar_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the upsert_vault_document_hash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-upsert-vault-document-hash",
+          "markdownDescription": "Denies the upsert_vault_document_hash command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the upsert_vault_item_index command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-upsert-vault-item-index",
+          "markdownDescription": "Denies the upsert_vault_item_index command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_text_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-write-text-file",
+          "markdownDescription": "Denies the write_text_file command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

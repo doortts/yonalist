@@ -27,7 +27,8 @@ describe("NoteTokenText", () => {
     );
     expect(presentation).not.toBeNull();
     expect(presentation).toHaveTextContent(source, { normalizeWhitespace: false });
-    expect(presentation?.style.font).toBe("inherit");
+    expect(presentation?.style.fontFamily).toBe("inherit");
+    expect(presentation?.style.fontSize).toBe("inherit");
     expect(presentation).toHaveStyle({
       overflowWrap: "anywhere",
       whiteSpace: "pre-wrap"

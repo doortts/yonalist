@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type KeyboardEvent,
   type PointerEvent,
+  type Ref,
   useCallback,
   useContext,
   useEffect,
@@ -11,11 +12,16 @@ import {
   useState
 } from "react";
 import { AppNavigationContext } from "../../AppNavigationContext";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import type { NoteAttachment, NoteId } from "../../domain/notes";
 import { NotesImageLightbox } from "./NotesImageLightbox";
 import { NotesImageMenu } from "./NotesImageMenu";
+import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
+import { useNotesActions } from "./NotesWorkspaceContext";
 
 const preferredMinimumWidth = 160;
 const keyboardResizeStep = 16;
+const offscreenReleaseDelayMs = 240;
 const supportedMimeTypes = new Set([
   "image/png",
   "image/jpeg",
@@ -38,13 +44,29 @@ export interface NotesImageAttachmentProps {
   readonly attachment: NotesImageAttachmentMetadata;
   readonly bytes?: Uint8Array;
   readonly loadBytes?: NotesImageByteLoader;
+  readonly presentationLabel?: string;
+  readonly actionFailureController?: NotesImageActionFailureController;
+  readonly renderActionFailureStatus?: boolean;
   readonly onDisplayWidthCommit: (displayWidth: number) => void;
   readonly onRemove?: () => void;
-  readonly onViewOriginal?: () => void;
-  readonly onDownload?: () => void;
+  readonly onViewOriginal?: () => void | Promise<void>;
+  readonly onDownload?: () => void | Promise<void>;
   readonly onOpenSettings?: () => void;
   readonly readOnly?: boolean;
+  readonly disabled?: boolean;
   readonly embedded?: boolean;
+}
+
+export interface NotesImageNodeContentProps {
+  readonly nodeId: NoteId;
+  readonly attachment: NoteAttachment | undefined;
+  readonly originalName?: string;
+  readonly className?: string;
+  readonly style?: CSSProperties;
+  readonly contentRef?: Ref<HTMLDivElement>;
+  readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+  readonly readOnly?: boolean;
+  readonly disabled?: boolean;
 }
 
 interface WidthLimits {
@@ -80,6 +102,38 @@ type ImageSourceState =
   | { readonly status: "loading" }
   | { readonly status: "ready"; readonly objectUrl: string }
   | { readonly status: "error" };
+
+export type NotesImageAction = () => void | Promise<void>;
+
+export interface NotesImageActionFailure {
+  readonly message: string;
+  readonly retry: () => void;
+}
+
+export interface NotesImageActionFailureController {
+  readonly failure: NotesImageActionFailure | null;
+  readonly bindViewOriginal: (
+    action: NotesImageAction | undefined
+  ) => (() => void) | undefined;
+  readonly bindDownload: (
+    action: NotesImageAction | undefined
+  ) => (() => void) | undefined;
+}
+
+interface DeleteConfirmation {
+  readonly nodeId: NoteId;
+  readonly attachmentId: string | undefined;
+  readonly deleteNode: (nodeId: NoteId) => unknown;
+}
+
+interface NotesImageActionControllerIdentity {
+  readonly identity: string;
+  readonly viewOriginalAction: unknown;
+  readonly downloadAction: unknown;
+}
+
+const viewOriginalFailureMessage = "Could not open the original image.";
+const downloadFailureMessage = "Could not download the image.";
 
 const groupStyle: CSSProperties = {
   position: "relative",
@@ -208,16 +262,133 @@ function releaseCapturedPointer(resize: PointerResize) {
   }
 }
 
+function placeholderSizeStyle(
+  attachment: Pick<
+    NotesImageAttachmentMetadata,
+    "displayWidth" | "intrinsicWidth" | "intrinsicHeight"
+  >
+): CSSProperties {
+  return {
+    width: attachment.displayWidth,
+    maxWidth: "100%",
+    minHeight: 0,
+    aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`
+  };
+}
+
+export function useNotesImageActionFailureController(
+  identity: string,
+  viewOriginalAction: unknown = undefined,
+  downloadAction: unknown = undefined
+): NotesImageActionFailureController {
+  const [failure, setFailure] = useState<NotesImageActionFailure | null>(null);
+  const identityRef = useRef<NotesImageActionControllerIdentity>({
+    identity,
+    viewOriginalAction,
+    downloadAction
+  });
+  const actionGenerationRef = useRef(0);
+  if (
+    identityRef.current.identity !== identity ||
+    identityRef.current.viewOriginalAction !== viewOriginalAction ||
+    identityRef.current.downloadAction !== downloadAction
+  ) {
+    identityRef.current = {
+      identity,
+      viewOriginalAction,
+      downloadAction
+    };
+    actionGenerationRef.current += 1;
+  }
+
+  useEffect(() => {
+    setFailure(null);
+  }, [downloadAction, identity, viewOriginalAction]);
+
+  const bind = useCallback(
+    (
+      action: NotesImageAction | undefined,
+      failureMessage: string
+    ): (() => void) | undefined => {
+      if (!action) return undefined;
+      const actionIdentity = identityRef.current;
+      const run = () => {
+        if (identityRef.current !== actionIdentity) return;
+        const actionGeneration = actionGenerationRef.current + 1;
+        actionGenerationRef.current = actionGeneration;
+        setFailure(null);
+        const reportFailure = () => {
+          if (
+            identityRef.current === actionIdentity &&
+            actionGenerationRef.current === actionGeneration
+          ) {
+            setFailure({ message: failureMessage, retry: run });
+          }
+        };
+        try {
+          void Promise.resolve(action()).catch(reportFailure);
+        } catch {
+          reportFailure();
+        }
+      };
+      return run;
+    },
+    []
+  );
+  const bindViewOriginal = useCallback(
+    (action: NotesImageAction | undefined) =>
+      bind(action, viewOriginalFailureMessage),
+    [bind]
+  );
+  const bindDownload = useCallback(
+    (action: NotesImageAction | undefined) =>
+      bind(action, downloadFailureMessage),
+    [bind]
+  );
+
+  return useMemo(
+    () => ({ failure, bindViewOriginal, bindDownload }),
+    [bindDownload, bindViewOriginal, failure]
+  );
+}
+
+export function NotesImageActionFailureStatus({
+  failure,
+  maxWidth
+}: {
+  readonly failure: NotesImageActionFailure | null;
+  readonly maxWidth?: number;
+}) {
+  if (!failure) return null;
+  return (
+    <div
+      className="notes-attachment-error notes-image-action-error"
+      role="alert"
+      aria-label="Image action failed"
+      style={{ maxWidth }}
+    >
+      <span>{failure.message}</span>
+      <button type="button" className="text-button" onClick={failure.retry}>
+        Retry
+      </button>
+    </div>
+  );
+}
+
 export function NotesImageAttachment({
   attachment,
   bytes,
   loadBytes,
+  presentationLabel,
+  actionFailureController,
+  renderActionFailureStatus = true,
   onDisplayWidthCommit,
   onRemove,
   onViewOriginal,
   onDownload,
   onOpenSettings,
   readOnly = false,
+  disabled = false,
   embedded = false
 }: NotesImageAttachmentProps) {
   const appNavigation = useContext(AppNavigationContext);
@@ -227,6 +398,25 @@ export function NotesImageAttachment({
   );
   const resolvedOpenSettings =
     onOpenSettings ?? (appNavigation ? openImageSettings : undefined);
+  const localActionFailureController = useNotesImageActionFailureController(
+    attachment.id,
+    onViewOriginal,
+    onDownload
+  );
+  const actionController =
+    actionFailureController ?? localActionFailureController;
+  const accessibleLabel =
+    presentationLabel?.trim() || attachment.originalName.trim() || "Image";
+  const neutralPresentation = accessibleLabel === "Image";
+  const groupLabel = neutralPresentation
+    ? "Image"
+    : `Image: ${accessibleLabel}`;
+  const loadingLabel = neutralPresentation
+    ? "Loading image"
+    : `Loading image ${accessibleLabel}`;
+  const unavailableLabel = neutralPresentation
+    ? "Image unavailable"
+    : `Image unavailable: ${accessibleLabel}`;
   const metadataValid = isValidAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
@@ -322,6 +512,7 @@ export function NotesImageAttachment({
 
     const load = async () => {
       const loadedBytes = bytes ?? (await loadBytes?.());
+      if (disposed) return;
       if (!loadedBytes || loadedBytes.byteLength === 0) {
         throw new Error("Image bytes are unavailable");
       }
@@ -518,12 +709,15 @@ export function NotesImageAttachment({
 
   const imageMenu = (
     <NotesImageMenu
-      originalName={attachment.originalName}
+      originalName={accessibleLabel}
+      disabled={disabled}
       onShowFullScreen={
-        source.status === "ready" ? () => setLightboxOpen(true) : undefined
+        source.status === "ready" && !disabled
+          ? () => setLightboxOpen(true)
+          : undefined
       }
-      onViewOriginal={onViewOriginal}
-      onDownload={onDownload}
+      onViewOriginal={actionController.bindViewOriginal(onViewOriginal)}
+      onDownload={actionController.bindDownload(onDownload)}
       onDelete={readOnly ? undefined : onRemove}
       onOpenSettings={resolvedOpenSettings}
     />
@@ -534,16 +728,20 @@ export function NotesImageAttachment({
       <div
         ref={groupRef}
         role={embedded ? undefined : "group"}
-        aria-label={embedded ? undefined : `Image: ${attachment.originalName}`}
+        aria-label={embedded ? undefined : groupLabel}
         aria-busy={embedded ? undefined : "false"}
+        aria-disabled={disabled || undefined}
         style={groupStyle}
       >
         <div className="notes-image-attachment-frame" style={invalidFrameStyle}>
-          <div role="alert" style={fallbackStyle}>
+          <div role="alert" aria-label={unavailableLabel} style={fallbackStyle}>
             Image unavailable
           </div>
           {imageMenu}
         </div>
+        {renderActionFailureStatus && (
+          <NotesImageActionFailureStatus failure={actionController.failure} />
+        )}
       </div>
     );
   }
@@ -558,38 +756,41 @@ export function NotesImageAttachment({
     <div
       ref={groupRef}
       role={embedded ? undefined : "group"}
-      aria-label={embedded ? undefined : `Image: ${attachment.originalName}`}
+      aria-label={embedded ? undefined : groupLabel}
       aria-busy={embedded ? undefined : source.status === "loading"}
+      aria-disabled={disabled || undefined}
       style={groupStyle}
     >
       <div className="notes-image-attachment-frame" style={frameStyle}>
         {source.status === "ready" ? (
           <img
             src={source.objectUrl}
-            alt={attachment.originalName}
+            alt={accessibleLabel}
             width={attachment.intrinsicWidth}
             height={attachment.intrinsicHeight}
             draggable={false}
             style={imageStyle}
-            onDoubleClick={() => setLightboxOpen(true)}
+            onDoubleClick={disabled ? undefined : () => setLightboxOpen(true)}
             onError={() => setSource({ status: "error" })}
           />
         ) : source.status === "loading" ? (
-          <div role="status" style={fallbackStyle}>
+          <div role="status" aria-label={loadingLabel} style={fallbackStyle}>
             Loading image
           </div>
         ) : (
-          <div role="alert" style={fallbackStyle}>
+          <div role="alert" aria-label={unavailableLabel} style={fallbackStyle}>
             Image unavailable
           </div>
         )}
 
         {imageMenu}
 
-        {!readOnly && (
+        {!readOnly && !disabled && (
           <div
             role="separator"
-            aria-label={`Resize ${attachment.originalName}`}
+            aria-label={
+              neutralPresentation ? "Resize image" : `Resize ${accessibleLabel}`
+            }
             aria-orientation="vertical"
             aria-valuemin={limits.minimum}
             aria-valuemax={limits.maximum}
@@ -615,12 +816,375 @@ export function NotesImageAttachment({
         <NotesImageLightbox
           open={lightboxOpen}
           onOpenChange={setLightboxOpen}
-          originalName={attachment.originalName}
+          originalName={accessibleLabel}
           sourceUrl={source.objectUrl}
           intrinsicWidth={attachment.intrinsicWidth}
           intrinsicHeight={attachment.intrinsicHeight}
         />
       )}
+      {renderActionFailureStatus && (
+        <NotesImageActionFailureStatus
+          failure={actionController.failure}
+          maxWidth={renderedWidth}
+        />
+      )}
     </div>
+  );
+}
+
+export function NotesImageNodeContent({
+  nodeId,
+  attachment,
+  originalName,
+  className,
+  style,
+  contentRef,
+  onKeyDown,
+  readOnly = false,
+  disabled = false
+}: NotesImageNodeContentProps) {
+  const appNavigation = useContext(AppNavigationContext);
+  const { actions } = useNotesActions();
+  const {
+    active,
+    activate: activateResidency,
+    deactivate: deactivateResidency
+  } = useNotesImageResidencyLease();
+  const slotRef = useRef<HTMLDivElement | null>(null);
+  const manualFocusPendingRef = useRef(false);
+  const menuCloseObserverRef = useRef<MutationObserver | null>(null);
+  const menuRestoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const observerGenerationRef = useRef(0);
+  const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attachmentId = attachment?.id;
+  const deleteNodeAction = actions.deleteNode;
+  const canDelete = !readOnly && !disabled && Boolean(deleteNodeAction);
+  const [deleteConfirmation, setDeleteConfirmation] =
+    useState<DeleteConfirmation | null>(null);
+  const deleteConfirmationValid =
+    deleteConfirmation !== null &&
+    canDelete &&
+    deleteConfirmation.nodeId === nodeId &&
+    deleteConfirmation.attachmentId === attachmentId &&
+    deleteConfirmation.deleteNode === deleteNodeAction;
+  const actionController = useNotesImageActionFailureController(
+    `${nodeId}:${attachmentId ?? "missing"}:${disabled ? "disabled" : "enabled"}`,
+    actions.viewImageOriginal,
+    actions.downloadImage
+  );
+  const classes = ["notes-image-node-content", className]
+    .filter(Boolean)
+    .join(" ");
+  const accessibleOriginalName =
+    attachment?.originalName.trim() || originalName?.trim() || "";
+  const imageNodeLabel = accessibleOriginalName
+    ? `Image: ${accessibleOriginalName}`
+    : "Image";
+  const loadImageLabel = attachment?.originalName.trim()
+    ? `Load image ${attachment.originalName.trim()}`
+    : "Load image";
+  const setSlotRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      slotRef.current = element;
+      if (typeof contentRef === "function") {
+        contentRef(element);
+      } else if (contentRef) {
+        (contentRef as { current: HTMLDivElement | null }).current = element;
+      }
+    },
+    [contentRef]
+  );
+  const cancelPendingRelease = useCallback(() => {
+    if (releaseTimerRef.current !== null) {
+      clearTimeout(releaseTimerRef.current);
+      releaseTimerRef.current = null;
+    }
+  }, []);
+  const openImageSettings = useCallback(
+    () => appNavigation?.openSettings("notes", "images"),
+    [appNavigation]
+  );
+  const requestDeleteConfirmation = useCallback(() => {
+    if (!deleteNodeAction || readOnly || disabled) return;
+    setDeleteConfirmation({
+      nodeId,
+      attachmentId,
+      deleteNode: deleteNodeAction
+    });
+  }, [attachmentId, deleteNodeAction, disabled, nodeId, readOnly]);
+
+  useEffect(() => {
+    if (deleteConfirmation && !deleteConfirmationValid) {
+      setDeleteConfirmation(null);
+    }
+  }, [deleteConfirmation, deleteConfirmationValid]);
+
+  useEffect(
+    () => () => {
+      menuCloseObserverRef.current?.disconnect();
+      if (menuRestoreTimerRef.current !== null) {
+        clearTimeout(menuRestoreTimerRef.current);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    const slot = slotRef.current;
+    if (!attachmentId || !slot || typeof IntersectionObserver === "undefined") {
+      deactivateResidency();
+      return;
+    }
+
+    const generation = observerGenerationRef.current + 1;
+    observerGenerationRef.current = generation;
+    let disposed = false;
+    const isCurrent = () =>
+      !disposed && observerGenerationRef.current === generation;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!isCurrent()) return;
+        const entry = entries.find((candidate) => candidate.target === slot);
+        if (!entry) return;
+        if (entry.isIntersecting) {
+          cancelPendingRelease();
+          activateResidency();
+          return;
+        }
+        cancelPendingRelease();
+        releaseTimerRef.current = setTimeout(() => {
+          releaseTimerRef.current = null;
+          if (isCurrent()) deactivateResidency();
+        }, offscreenReleaseDelayMs);
+      },
+      { rootMargin: "160px 0px" }
+    );
+    observer.observe(slot);
+    return () => {
+      disposed = true;
+      if (observerGenerationRef.current === generation) {
+        observerGenerationRef.current = generation + 1;
+      }
+      cancelPendingRelease();
+      observer.disconnect();
+    };
+  }, [
+    attachmentId,
+    activateResidency,
+    cancelPendingRelease,
+    deactivateResidency
+  ]);
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    cancelPendingRelease();
+    if (manualFocusPendingRef.current) {
+      manualFocusPendingRef.current = false;
+      slotRef.current?.focus();
+    }
+  }, [active, cancelPendingRelease]);
+
+  const loadBytes = useCallback(() => {
+    if (!attachmentId || !actions.loadAttachmentBytes) {
+      return Promise.reject(new Error("Image loading is unavailable."));
+    }
+    return actions.loadAttachmentBytes(attachmentId);
+  }, [actions, attachmentId]);
+  const commitWidth = useCallback(
+    (displayWidth: number) => {
+      if (attachmentId) void actions.resizeImage?.(attachmentId, displayWidth);
+    },
+    [actions, attachmentId]
+  );
+  const viewOriginal = useCallback(() => {
+    return attachmentId && actions.viewImageOriginal
+      ? actions.viewImageOriginal(attachmentId)
+      : Promise.resolve();
+  }, [actions, attachmentId]);
+  const downloadImage = useCallback(() => {
+    if (attachment && attachmentId) {
+      return actions.downloadImage?.(
+        attachmentId,
+        attachment.originalName,
+        attachment.mimeType
+      ) ?? Promise.resolve();
+    }
+    return Promise.resolve();
+  }, [actions, attachment, attachmentId]);
+
+  const boundViewOriginal = actionController.bindViewOriginal(
+    actions.viewImageOriginal ? viewOriginal : undefined
+  );
+  const boundDownload = actionController.bindDownload(
+    actions.downloadImage ? downloadImage : undefined
+  );
+
+  const openImageActionsFromKeyboard = useCallback(() => {
+    const slot = slotRef.current;
+    const trigger = slotRef.current?.querySelector<HTMLButtonElement>(
+      ".notes-image-menu-trigger"
+    );
+    if (!slot || !trigger || trigger.disabled) return;
+
+    menuCloseObserverRef.current?.disconnect();
+    if (menuRestoreTimerRef.current !== null) {
+      clearTimeout(menuRestoreTimerRef.current);
+      menuRestoreTimerRef.current = null;
+    }
+
+    if (typeof MutationObserver !== "undefined") {
+      let observedOpen = trigger.hasAttribute("data-popup-open");
+      const observer = new MutationObserver(() => {
+        if (trigger.hasAttribute("data-popup-open")) {
+          observedOpen = true;
+          return;
+        }
+        if (!observedOpen) return;
+
+        observer.disconnect();
+        if (menuCloseObserverRef.current === observer) {
+          menuCloseObserverRef.current = null;
+        }
+        menuRestoreTimerRef.current = setTimeout(() => {
+          menuRestoreTimerRef.current = null;
+          const focused = document.activeElement;
+          if (focused === trigger || focused === document.body) {
+            slot.focus({ preventScroll: true });
+          }
+        }, 0);
+      });
+      observer.observe(trigger, {
+        attributes: true,
+        attributeFilter: ["data-popup-open"]
+      });
+      menuCloseObserverRef.current = observer;
+    }
+
+    trigger.click();
+  }, []);
+
+  return (
+    <>
+      <div
+        ref={setSlotRef}
+        className={classes}
+        role="group"
+        aria-label={imageNodeLabel}
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : 0}
+        style={{ width: "100%", minWidth: 0, ...style }}
+        onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
+          if (disabled) return;
+          const opensContextMenu =
+            event.key === "ContextMenu" ||
+            (event.key === "F10" &&
+              event.shiftKey &&
+              !event.altKey &&
+              !event.ctrlKey &&
+              !event.metaKey);
+          if (opensContextMenu) {
+            event.preventDefault();
+            event.stopPropagation();
+            openImageActionsFromKeyboard();
+            return;
+          }
+          if (
+            (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+            event.altKey &&
+            !event.ctrlKey &&
+            !event.metaKey &&
+            !event.shiftKey
+          ) {
+            event.preventDefault();
+          }
+          onKeyDown?.(event);
+        }}
+      >
+        {!attachment ? (
+          <div className="notes-image-attachment-frame" style={invalidFrameStyle}>
+            <div role="alert" aria-label="Image unavailable" style={fallbackStyle}>
+              Image unavailable
+            </div>
+            <NotesImageMenu
+              originalName={accessibleOriginalName || "Image"}
+              disabled={disabled}
+              onDelete={canDelete ? requestDeleteConfirmation : undefined}
+              onOpenSettings={appNavigation ? openImageSettings : undefined}
+            />
+          </div>
+        ) : active ? (
+          <NotesImageAttachment
+            attachment={attachment}
+            embedded
+            loadBytes={loadBytes}
+            actionFailureController={actionController}
+            renderActionFailureStatus={false}
+            onDisplayWidthCommit={commitWidth}
+            onViewOriginal={actions.viewImageOriginal ? viewOriginal : undefined}
+            onDownload={actions.downloadImage ? downloadImage : undefined}
+            onRemove={canDelete ? requestDeleteConfirmation : undefined}
+            readOnly={readOnly}
+            disabled={disabled}
+          />
+        ) : (
+          <div
+            className="notes-image-attachment-placeholder"
+            style={placeholderSizeStyle(attachment)}
+          >
+            <button
+              type="button"
+              className="text-button"
+              aria-label={loadImageLabel}
+              disabled={disabled}
+              onClick={() => {
+                cancelPendingRelease();
+                manualFocusPendingRef.current = true;
+                activateResidency();
+              }}
+            >
+              Load image
+            </button>
+            <NotesImageMenu
+              originalName={attachment.originalName}
+              disabled={disabled}
+              onViewOriginal={boundViewOriginal}
+              onDownload={boundDownload}
+              onDelete={canDelete ? requestDeleteConfirmation : undefined}
+              onOpenSettings={appNavigation ? openImageSettings : undefined}
+            />
+          </div>
+        )}
+        <NotesImageActionFailureStatus
+          failure={actionController.failure}
+          maxWidth={attachment?.displayWidth}
+        />
+      </div>
+      <ConfirmDialog
+        open={deleteConfirmationValid}
+        onOpenChange={(open) => {
+          if (!open) setDeleteConfirmation(null);
+        }}
+        title="Delete image node?"
+        description="Move this image node to Trash?"
+        confirmLabel="Delete image node"
+        cancelLabel="Cancel"
+        danger
+        onConfirm={() => {
+          const confirmation = deleteConfirmation;
+          if (
+            !confirmation ||
+            readOnly ||
+            disabled ||
+            confirmation.nodeId !== nodeId ||
+            confirmation.attachmentId !== attachmentId ||
+            confirmation.deleteNode !== actions.deleteNode
+          ) {
+            return;
+          }
+          void confirmation.deleteNode(confirmation.nodeId);
+        }}
+      />
+    </>
   );
 }

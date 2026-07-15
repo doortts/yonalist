@@ -1,3 +1,5 @@
+import type { NoteAttachment } from "../../domain/notes";
+
 const supportedExtensions = new Set(["png", "jpg", "jpeg", "webp", "gif"]);
 const supportedMimeTypes = new Set([
   "image/png",
@@ -5,9 +7,47 @@ const supportedMimeTypes = new Set([
   "image/webp",
   "image/gif"
 ]);
+const maxSafeFilenameUtf8Bytes = 255;
+const windowsReservedDeviceStemPattern =
+  /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])$/i;
+
+type NotesImageMimeType = NoteAttachment["mimeType"];
+
+interface ImageSaveSpec {
+  readonly canonicalExtension: string;
+  readonly filterName: string;
+  readonly extensions: readonly string[];
+}
+
+const imageSaveSpecs: Record<NotesImageMimeType, ImageSaveSpec> = {
+  "image/png": {
+    canonicalExtension: "png",
+    filterName: "PNG image",
+    extensions: ["png"]
+  },
+  "image/jpeg": {
+    canonicalExtension: "jpg",
+    filterName: "JPEG image",
+    extensions: ["jpg", "jpeg"]
+  },
+  "image/webp": {
+    canonicalExtension: "webp",
+    filterName: "WebP image",
+    extensions: ["webp"]
+  },
+  "image/gif": {
+    canonicalExtension: "gif",
+    filterName: "GIF image",
+    extensions: ["gif"]
+  }
+};
 
 export interface NotesAttachmentUiBoundary {
   openImageFiles(): Promise<readonly string[] | null>;
+  saveImageFile(
+    originalName: string,
+    mimeType: NotesImageMimeType
+  ): Promise<string | null>;
   subscribeToImageDrop(
     listener: (event: NotesNativeImageDropEvent) => void
   ): Promise<() => void | Promise<void>>;
@@ -77,6 +117,89 @@ function nativeDragPositionUsesCssCoordinates(): boolean {
   return platform.startsWith("Mac") || userAgent.includes("Macintosh");
 }
 
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoder = new TextEncoder();
+  let byteLength = 0;
+  let truncated = "";
+  for (const character of value) {
+    const characterBytes = encoder.encode(character).byteLength;
+    if (byteLength + characterBytes > maxBytes) break;
+    truncated += character;
+    byteLength += characterBytes;
+  }
+  return truncated;
+}
+
+function prefixWindowsReservedDeviceStem(value: string): string {
+  const comparisonStem = value.split(".", 1)[0].replace(/[. ]+$/g, "");
+  return windowsReservedDeviceStemPattern.test(comparisonStem)
+    ? `_${value}`
+    : value;
+}
+
+function normalizeFinalImageStem(
+  value: string,
+  maxBytes: number,
+  fallback: string
+): string {
+  const normalizeOnce = (candidate: string): string => {
+    let normalized = truncateUtf8(candidate, maxBytes).replace(/[. ]+$/g, "");
+    if (normalized.length === 0 || normalized === "." || normalized === "..") {
+      normalized = fallback;
+    }
+    return prefixWindowsReservedDeviceStem(normalized);
+  };
+
+  return normalizeOnce(normalizeOnce(value));
+}
+
+function safeImageFilename(
+  originalName: string,
+  mimeType: NotesImageMimeType
+): string {
+  const spec = imageSaveSpecs[mimeType];
+  const fallbackStem = "image";
+  let basename = originalName.split(/[\\/]/).pop()?.trim() ?? "";
+  basename = basename
+    .replace(/[\u0000-\u001f\u007f-\u009f<>:"|?*]+/g, "_")
+    .replace(/[. ]+$/g, "")
+    .replace(/^\.+/g, "");
+
+  if (basename.length === 0 || basename === "." || basename === "..") {
+    basename = fallbackStem;
+  }
+  basename = prefixWindowsReservedDeviceStem(basename);
+
+  const dotIndex = basename.lastIndexOf(".");
+  const originalExtension =
+    dotIndex > 0 ? basename.slice(dotIndex + 1) : "";
+  const preservesOriginalExtension = spec.extensions.includes(
+    originalExtension.toLowerCase()
+  );
+  const extension = preservesOriginalExtension
+    ? originalExtension
+    : spec.canonicalExtension;
+  let stem = dotIndex > 0 ? basename.slice(0, dotIndex) : basename;
+  stem = stem.replace(/[. ]+$/g, "");
+  if (stem.length === 0 || stem === "." || stem === "..") {
+    stem = fallbackStem;
+  }
+
+  const suffix = `.${extension}`;
+  const suffixBytes = new TextEncoder().encode(suffix).byteLength;
+  stem = normalizeFinalImageStem(
+    stem,
+    maxSafeFilenameUtf8Bytes - suffixBytes,
+    fallbackStem
+  );
+  return `${stem}${suffix}`;
+}
+
+function saveFilterForImageMimeType(mimeType: NotesImageMimeType) {
+  const spec = imageSaveSpecs[mimeType];
+  return { name: spec.filterName, extensions: [...spec.extensions] };
+}
+
 export function isSupportedImagePath(path: string): boolean {
   const absoluteLocalPath =
     path.startsWith("/") ||
@@ -108,6 +231,19 @@ export const nativeNotesAttachmentUi: NotesAttachmentUiBoundary = {
       return selected;
     }
     return typeof selected === "string" ? [selected] : null;
+  },
+
+  async saveImageFile(
+    originalName: string,
+    mimeType: NotesImageMimeType
+  ): Promise<string | null> {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const filename = safeImageFilename(originalName, mimeType);
+    const selected = await save({
+      defaultPath: filename,
+      filters: [saveFilterForImageMimeType(mimeType)]
+    });
+    return typeof selected === "string" ? selected : null;
   },
 
   async subscribeToImageDrop(

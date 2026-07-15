@@ -33,7 +33,7 @@ import {
   IconTooltip,
   TooltipProvider
 } from "../../components/ui/Tooltip";
-import type { NoteId, NoteSearchTag } from "../../domain/notes";
+import type { NoteId, NoteNode, NoteSearchTag } from "../../domain/notes";
 import { VaultRootContext } from "../../VaultRootContext";
 import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
@@ -47,6 +47,10 @@ import {
 } from "./notesAttachmentTargets";
 import { extractClipboardImages } from "./notesClipboardImages";
 import { NotesPageHeader } from "./NotesPageHeader";
+import {
+  noteNodeNavigationLabel,
+  noteNodePresentationLabel
+} from "./notesPresentation";
 import { NotesQuickJump } from "./NotesQuickJump";
 import type {
   NotesBulletMenuSelectionBridge,
@@ -270,6 +274,25 @@ interface NotesBreadcrumbProps {
   onRequestEmptyTrash(): void;
 }
 
+interface ImageDropMarkerBoundary {
+  readonly afterId: NoteId;
+  readonly depth: number;
+}
+
+function breadcrumbLabel(node: NoteNode): string {
+  return noteNodeNavigationLabel(node, node.title, "Untitled page");
+}
+
+function optionalNodeLabel(
+  node: NoteNode | undefined,
+  title: string | undefined,
+  emptyLabel = "Untitled node"
+): string | undefined {
+  return node
+    ? noteNodePresentationLabel(node, title ?? node.title, emptyLabel)
+    : undefined;
+}
+
 function NotesBreadcrumb({
   disabled,
   trashView,
@@ -298,7 +321,7 @@ function NotesBreadcrumb({
         if (!node) {
           return null;
         }
-        const label = node.title.trim() || "Untitled page";
+        const label = breadcrumbLabel(node);
         return (
           <span className="notes-breadcrumb-segment" key={nodeId}>
             <ChevronRight size={14} aria-hidden="true" />
@@ -448,6 +471,7 @@ export function NotesOutlinePane() {
     string | null
   >(null);
   const contentRef = useRef<HTMLDivElement>(null);
+  const dropSurfaceRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const lastSelectionHeadRef = useRef<NoteId | null>(null);
   const selectionAuthorityRequestRef = useRef(0);
@@ -462,6 +486,8 @@ export function NotesOutlinePane() {
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
+  const imageDropFallbackTargetIdRef = useRef(state.zoomRootId);
+  const imageDropTargetIdRef = useRef<NoteId | null>(null);
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
   const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
@@ -491,6 +517,7 @@ export function NotesOutlinePane() {
       : trashView
         ? "trash"
         : "standard";
+  const hasVaultRoot = vaultRoot.trim().length > 0;
   const selectionMutationDisabledReason =
     deriveSelectionMutationDisabledReason({
       deletingNotesData,
@@ -504,16 +531,19 @@ export function NotesOutlinePane() {
   selectionMutationDisabledReasonRef.current =
     selectionMutationDisabledReason;
   const imageDropAvailable =
+    hasVaultRoot &&
     !deletingNotesData &&
     !lifecycleReadOnly &&
     state.status !== "loading" &&
     actions.importDroppedImagePaths !== undefined;
   const imagePasteAvailable =
+    hasVaultRoot &&
     !imagePasteExecutionScope.deletingNotesData &&
     !lifecycleReadOnly &&
     imagePasteExecutionScope.status !== "loading" &&
     imagePasteExecutionScope.importClipboardImages !== undefined;
   imageDropAvailableRef.current = imageDropAvailable;
+  imageDropFallbackTargetIdRef.current = state.zoomRootId;
   importDroppedImagePathsRef.current = actions.importDroppedImagePaths;
   useLayoutEffect(() => {
     setImageIngestError(null);
@@ -630,6 +660,8 @@ export function NotesOutlinePane() {
     useSensor(KeyboardSensor, keyboardSensorOptions)
   );
 
+  // Finder image drops stay on the Tauri boundary: browser DragEvents cannot
+  // provide durable native paths or vault-backed storage for this import path.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void | Promise<void>) | undefined;
@@ -642,14 +674,25 @@ export function NotesOutlinePane() {
     };
     const clearPreview = () => {
       imageDropPathsRef.current = [];
+      imageDropTargetIdRef.current = null;
       setImageDropTargetId(null);
       setImageDropPreview(null);
+    };
+    const updateDropTarget = (targetId: NoteId | null) => {
+      imageDropTargetIdRef.current = targetId;
+      setImageDropTargetId(targetId);
     };
     const targetFromEvent = (
       event: Extract<NotesNativeImageDropEvent, { position: unknown }>
     ) => {
-      const root = contentRef.current;
-      return root ? attachmentTargetFromPoint(root, event.position) : null;
+      const surface = dropSurfaceRef.current;
+      return surface
+        ? attachmentTargetFromPoint(
+            surface,
+            event.position,
+            imageDropFallbackTargetIdRef.current
+          )
+        : null;
     };
     const reportDropError = (cause: unknown) => {
       if (disposed) return;
@@ -669,8 +712,8 @@ export function NotesOutlinePane() {
         clearPreview();
         return;
       }
-      const root = contentRef.current;
-      if (!root || root.closest("[hidden]")) {
+      const surface = dropSurfaceRef.current;
+      if (!surface || surface.closest("[hidden]")) {
         clearPreview();
         return;
       }
@@ -682,7 +725,7 @@ export function NotesOutlinePane() {
             ? { paths: event.paths, position: event.position }
             : null
         );
-        setImageDropTargetId(
+        updateDropTarget(
           event.paths.length > 0 ? targetFromEvent(event) : null
         );
         return;
@@ -696,14 +739,16 @@ export function NotesOutlinePane() {
               }
             : null
         );
-        setImageDropTargetId(
+        updateDropTarget(
           imageDropPathsRef.current.length > 0 ? targetFromEvent(event) : null
         );
         return;
       }
 
       const targetId =
-        event.paths.length > 0 ? targetFromEvent(event) : null;
+        event.paths.length > 0
+          ? targetFromEvent(event) ?? imageDropTargetIdRef.current
+          : null;
       clearPreview();
       setImageIngestError(null);
       const importDroppedImagePaths = importDroppedImagePathsRef.current;
@@ -1760,6 +1805,19 @@ export function NotesOutlinePane() {
       })),
     [tagSummaries]
   );
+  const imageDropMarkerBoundary = useMemo<ImageDropMarkerBoundary | null>(() => {
+    if (imageDropTargetId === null || imageDropTargetId === state.zoomRootId) {
+      return null;
+    }
+    const targetRow = bodyRows.find((row) => row.id === imageDropTargetId);
+    if (!targetRow) {
+      return null;
+    }
+    return {
+      afterId: targetRow.visibleDescendantEndId ?? targetRow.id,
+      depth: targetRow.depth
+    };
+  }, [bodyRows, imageDropTargetId, state.zoomRootId]);
   const bodyDropPreview =
     dropPreview && state.zoomRootId !== null
       ? { ...dropPreview, depth: Math.max(0, dropPreview.depth - 1) }
@@ -1894,8 +1952,10 @@ export function NotesOutlinePane() {
   );
   const announcements = useMemo<Announcements>(() => {
     const labelFor = (id: string | number) => {
-      const title = state.nodesById[String(id)]?.title.trim();
-      return title || "Untitled node";
+      const node = state.nodesById[String(id)];
+      return node
+        ? noteNodeNavigationLabel(node, node.title, "Untitled node")
+        : "Untitled node";
     };
 
     return {
@@ -2275,15 +2335,20 @@ export function NotesOutlinePane() {
               selectedNodeTitle={
                 state.selectedId === null
                   ? undefined
-                  : (draftsByNodeId[state.selectedId]?.title ??
-                    state.nodesById[state.selectedId]?.title)
+                  : optionalNodeLabel(
+                      state.nodesById[state.selectedId],
+                      draftsByNodeId[state.selectedId]?.title
+                    )
               }
               zoomRootId={state.zoomRootId}
               zoomRootTitle={
                 state.zoomRootId === null
                   ? undefined
-                  : (draftsByNodeId[state.zoomRootId]?.title ??
-                    state.nodesById[state.zoomRootId]?.title)
+                  : optionalNodeLabel(
+                      state.nodesById[state.zoomRootId],
+                      draftsByNodeId[state.zoomRootId]?.title,
+                      "Untitled page"
+                    )
               }
               onFlushDrafts={actions.flushAllDrafts}
               disabled={deletingNotesData || lifecycleReadOnly}
@@ -2309,7 +2374,7 @@ export function NotesOutlinePane() {
             </button>
           </div>
         )}
-        <div className="notes-outline-rows">
+        <div className="notes-outline-rows" ref={dropSurfaceRef}>
           <div
             className="notes-outline-content"
             ref={contentRef}
@@ -2436,8 +2501,18 @@ export function NotesOutlinePane() {
                         dragUnavailable || row.id === state.zoomRootId
                       }
                       imageDropActive={imageDropTargetId === row.id}
-                      showDropPlaceholder={imageDropTargetId === row.id}
+                      showDropPlaceholder={false}
                     />
+                    {imageDropMarkerBoundary?.afterId === row.id && (
+                      <span
+                        className="notes-image-drop-position"
+                        data-testid="notes-image-drop-position"
+                        aria-hidden="true"
+                        style={{
+                          insetInlineStart: `calc(${imageDropMarkerBoundary.depth} * var(--notes-outline-indent) + var(--notes-content-offset))`
+                        }}
+                      />
+                    )}
                   </li>
                 ))}
                 {bodyDropPreview?.beforeId === null && (
@@ -2487,6 +2562,7 @@ export function NotesOutlinePane() {
           onOpenChange={setQuickJumpOpen}
           onSearch={actions.searchNotes}
           onJump={actions.zoomTo}
+          nodesById={state.nodesById}
         />
         {selectionChooser?.kind === "move" && (
           <NotesMoveChooser

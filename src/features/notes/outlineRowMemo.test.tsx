@@ -22,6 +22,7 @@ import {
   NotesStateContext
 } from "./NotesWorkspaceContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
   useNotesWorkspace,
@@ -186,13 +187,15 @@ function Harness({
     [applyPreparedSelectionBatch, baseActions]
   );
   return (
-    <NotesActionsContext.Provider value={actionsValue}>
-      <NotesStateContext.Provider value={value.stateSlice ?? value}>
-        <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
-          <NotesOutlinePane />
-        </NotesDraftsContext.Provider>
-      </NotesStateContext.Provider>
-    </NotesActionsContext.Provider>
+    <NotesImageResidencyProvider scopeKey="memo-test">
+      <NotesActionsContext.Provider value={actionsValue}>
+        <NotesStateContext.Provider value={value.stateSlice ?? value}>
+          <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
+            <NotesOutlinePane />
+          </NotesDraftsContext.Provider>
+        </NotesStateContext.Provider>
+      </NotesActionsContext.Provider>
+    </NotesImageResidencyProvider>
   );
 }
 
@@ -281,6 +284,35 @@ describe("outline row memoization", () => {
       }
     }
     expect(churned).toEqual([]);
+  });
+
+  it("does not re-render an image row when a text sibling draft changes", async () => {
+    const store = repository([
+      node({
+        id: "image-row",
+        nodeKind: "image",
+        sortKey: 1,
+        title: "diagram.png"
+      }),
+      node({ id: "text-row", sortKey: 2, title: "Text row" })
+    ]);
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() =>
+      expect(
+        document.querySelectorAll("[data-outline-id]")
+      ).toHaveLength(2)
+    );
+
+    const imageBefore = rowRenderCounts.get("image-row")!;
+    fireEvent.change(titleInput("text-row"), {
+      target: { value: "Text row edited" }
+    });
+
+    expect(captured?.draftsByNodeId["text-row"]?.title).toBe(
+      "Text row edited"
+    );
+    expect(rowRenderCounts.get("image-row")).toBe(imageBefore);
   });
 
   it("re-renders only the typed row while zoomed into a subtree", async () => {

@@ -2,14 +2,28 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NoteId, NoteSearchResult } from "../../domain/notes";
+import type {
+  NoteId,
+  NoteNodeKind,
+  NoteSearchResult
+} from "../../domain/notes";
 import { NotesQuickJump } from "./NotesQuickJump";
 
-function result(overrides: Partial<NoteSearchResult> & { nodeId: NoteId }): NoteSearchResult {
+type KindAwareSearchResult = NoteSearchResult & {
+  readonly nodeKind?: NoteNodeKind;
+  readonly parentTrailKinds?: readonly NoteNodeKind[];
+};
+
+function result(
+  overrides: Partial<KindAwareSearchResult> & { nodeId: NoteId }
+): KindAwareSearchResult {
+  const parentTrail = overrides.parentTrail ?? [];
   return {
     title: overrides.nodeId,
-    parentTrail: [],
+    parentTrail,
     matchedField: "title",
+    nodeKind: "text",
+    parentTrailKinds: parentTrail.map(() => "text"),
     ...overrides
   };
 }
@@ -92,6 +106,42 @@ describe("NotesQuickJump", () => {
     expect(
       screen.getByRole("option", { name: "Milestone, in Project / Plan" })
     ).toBeInTheDocument();
+  });
+
+  it("distinguishes image results and ancestors by stored filename", async () => {
+    const onSearch = vi.fn().mockResolvedValue([
+      result({
+        nodeId: "image-result",
+        title: "private-result.png",
+        nodeKind: "image",
+        parentTrail: ["private-parent.png", "Visible project"],
+        parentTrailKinds: ["image", "text"]
+      }),
+      result({
+        nodeId: "text-result",
+        title: "Visible note",
+        parentTrail: ["Visible project"]
+      })
+    ]);
+    const user = userEvent.setup();
+    render(<Harness onSearch={onSearch} onJump={vi.fn()} />);
+
+    await user.type(
+      await screen.findByRole("combobox", { name: "Jump to note" }),
+      "project"
+    );
+
+    const imageResult = await screen.findByRole("option", {
+      name: "private-result.png, in private-parent.png / Visible project"
+    });
+    expect(imageResult).toHaveTextContent(
+      "private-result.pngprivate-parent.png / Visible project"
+    );
+    expect(
+      screen.getByRole("option", {
+        name: "Visible note, in Visible project"
+      })
+    ).toBeVisible();
   });
 
   it("moves the active selection with the arrow keys and jumps on Enter, then closes", async () => {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-import-image-node-paths-batch"
+description = "Enables the notes_import_image_node_paths_batch command without any pre-configured scope."
+commands.allow = ["notes_import_image_node_paths_batch"]
+
+[[permission]]
+identifier = "deny-notes-import-image-node-paths-batch"
+description = "Denies the notes_import_image_node_paths_batch command without any pre-configured scope."
+commands.deny = ["notes_import_image_node_paths_batch"]

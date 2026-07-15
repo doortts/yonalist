@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-collapse-all"
+description = "Enables the notes_collapse_all command without any pre-configured scope."
+commands.allow = ["notes_collapse_all"]
+
+[[permission]]
+identifier = "deny-notes-collapse-all"
+description = "Denies the notes_collapse_all command without any pre-configured scope."
+commands.deny = ["notes_collapse_all"]

@@ -16,10 +16,13 @@ import { VaultRootContext } from "../../VaultRootContext";
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  MoveNoteNodeInput,
   NoteAttachment,
   NoteAttachmentsByNodeId,
   NoteId,
   NoteNode,
+  NoteNodeKind,
+  NoteSearchResult,
   NotesWorkspace,
   UpdateNoteNodeInput
 } from "../../domain/notes";
@@ -42,6 +45,8 @@ const notesStoreMock = vi.hoisted(() => ({
   archiveNode: vi.fn(),
   unarchiveNode: vi.fn(),
   importAttachmentPaths: vi.fn(),
+  importImageNodePaths: vi.fn(),
+  importImageNodeBytes: vi.fn(),
   readAttachmentBytes: vi.fn(),
   resizeAttachment: vi.fn(),
   removeAttachment: vi.fn(),
@@ -98,6 +103,25 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    ...overrides
+  };
+}
+
+type KindAwareSearchResult = NoteSearchResult & {
+  readonly nodeKind: NoteNodeKind;
+  readonly parentTrailKinds: NoteNodeKind[];
+};
+
+function searchResult(
+  overrides: Partial<KindAwareSearchResult> & Pick<NoteSearchResult, "nodeId">
+): KindAwareSearchResult {
+  const parentTrail = overrides.parentTrail ?? [];
+  return {
+    title: overrides.nodeId,
+    nodeKind: "text",
+    parentTrail,
+    parentTrailKinds: parentTrail.map(() => "text"),
+    matchedField: "title",
     ...overrides
   };
 }
@@ -288,6 +312,12 @@ function configureRepository(
     workspace(confirmedNodes)
   );
   notesStoreMock.importAttachmentPaths.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.importImageNodePaths.mockImplementation(async () =>
+    workspace(confirmedNodes)
+  );
+  notesStoreMock.importImageNodeBytes.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
   notesStoreMock.readAttachmentBytes.mockRejectedValue(
@@ -685,25 +715,38 @@ describe("Notes workspace", () => {
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
       title: "Project"
     });
-    const imported = attachment({
-      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
-      nodeId: root.id,
-      originalName: "diagram.png"
-    });
     configureRepository([root]);
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
-    );
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
+      saveImageFile: vi.fn().mockResolvedValue(null),
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     mockNotesContentWidth(700, 480);
-    notesStoreMock.importAttachmentPaths.mockImplementation(
+    notesStoreMock.importImageNodePaths.mockImplementation(
       async (_vaultRoot, input) => {
-        expect(input.attachments[0]?.id).toBe(imported.id);
-        confirmedAttachmentsByNodeId = { [root.id]: [imported] };
-        return workspace(confirmedNodes);
+        const item = input.items[0]!;
+        const imported = attachment({
+          id: item.attachmentId,
+          nodeId: item.nodeId,
+          originalName: "diagram.png"
+        });
+        confirmedNodes = [
+          ...confirmedNodes,
+          node({
+            id: item.nodeId,
+            nodeKind: "image",
+            sortKey: 2,
+            title: "diagram.png"
+          })
+        ];
+        confirmedAttachmentsByNodeId = { [item.nodeId]: [imported] };
+        return {
+          workspace: workspace(confirmedNodes),
+          historyEntryId: null,
+          canUndo: true,
+          canRedo: false,
+          importedRootIds: [item.nodeId]
+        };
       }
     );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
@@ -734,18 +777,24 @@ describe("Notes workspace", () => {
 
     await waitFor(() => expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce());
     await waitFor(() =>
-      expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledOnce()
+      expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledOnce()
     );
-    expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledWith(
+    expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledWith(
       "/vault",
       {
-        nodeId: root.id,
-        attachments: [
-          { id: imported.id, sourcePath: "/incoming/diagram.png" }
+        parentId: null,
+        afterId: root.id,
+        items: [
+          {
+            nodeId: expect.any(String),
+            attachmentId: expect.any(String),
+            sourcePath: "/incoming/diagram.png"
+          }
         ],
         initialMaxDisplayWidth: 480
       }
     );
+    expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(
       await screen.findByRole("group", { name: "Image: diagram.png" })
     ).toBeVisible();
@@ -756,6 +805,7 @@ describe("Notes workspace", () => {
     configureRepository([node({ id: "project", title: "Project" })]);
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(null),
+      saveImageFile: vi.fn().mockResolvedValue(null),
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     renderNotesWorkspace(attachmentUi);
@@ -770,31 +820,54 @@ describe("Notes workspace", () => {
     expect(screen.queryByText(/image upload failed/i)).toBeNull();
   });
 
-  it("shows a retryable import error without a phantom image and clears it after retry", async () => {
+  it("shows a retryable picker error on an image row without rendering legacy attachments", async () => {
     const user = userEvent.setup();
     const root = node({
       id: "77384bb1-f6cc-4848-a1b5-b8d3b9157306",
-      title: "Project"
+      nodeKind: "image",
+      title: "base.png"
     });
-    const imported = attachment({
-      id: "1c17ba74-a617-45e7-9e21-74068b63befe",
+    const base = attachment({
+      id: "77384bb1-f6cc-4848-a1b5-b8d3b9157307",
       nodeId: root.id,
-      originalName: "diagram.png"
+      originalName: "base.png"
     });
-    configureRepository([root]);
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      imported.id as ReturnType<typeof globalThis.crypto.randomUUID>
-    );
+    configureRepository([root], { [root.id]: [base] });
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(["/incoming/diagram.png"]),
+      saveImageFile: vi.fn().mockResolvedValue(null),
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     mockNotesContentWidth(480);
-    notesStoreMock.importAttachmentPaths
+    notesStoreMock.importImageNodePaths
       .mockRejectedValueOnce(new Error("disk full"))
-      .mockImplementation(async () => {
-        confirmedAttachmentsByNodeId = { [root.id]: [imported] };
-        return workspace(confirmedNodes);
+      .mockImplementation(async (_vaultRoot, input) => {
+        const item = input.items[0]!;
+        const imported = attachment({
+          id: item.attachmentId,
+          nodeId: item.nodeId,
+          originalName: "diagram.png"
+        });
+        confirmedNodes = [
+          ...confirmedNodes,
+          node({
+            id: item.nodeId,
+            nodeKind: "image",
+            sortKey: 2,
+            title: "diagram.png"
+          })
+        ];
+        confirmedAttachmentsByNodeId = {
+          ...confirmedAttachmentsByNodeId,
+          [item.nodeId]: [imported]
+        };
+        return {
+          workspace: workspace(confirmedNodes),
+          historyEntryId: null,
+          canUndo: true,
+          canRedo: false,
+          importedRootIds: [item.nodeId]
+        };
       });
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
       new Uint8Array([137, 80, 78, 71])
@@ -817,7 +890,7 @@ describe("Notes workspace", () => {
     });
     renderNotesWorkspace(attachmentUi);
 
-    const menu = await openNodeMenu("Project", user);
+    const menu = await openNodeMenu("base.png", user);
     await user.click(
       within(menu).getByRole("menuitem", { name: "Upload image" })
     );
@@ -825,21 +898,147 @@ describe("Notes workspace", () => {
     const alert = await screen.findByRole("alert", {
       name: "Image upload failed"
     });
+    const rootRow = screen
+      .getByRole("group", { name: "Image: base.png" })
+      .closest<HTMLElement>(".notes-node")!;
     expect(alert).toHaveTextContent("disk full");
-    expect(screen.queryByRole("group", { name: "Image: diagram.png" })).toBeNull();
+    expect(rootRow).toContainElement(alert);
+    expect(rootRow.querySelector(".notes-attachment-list")).toBeNull();
+    expect(screen.getAllByRole("group", { name: "Image: base.png" }))
+      .toHaveLength(1);
 
     await user.click(
       within(alert).getByRole("button", { name: "Retry image upload" })
     );
 
-    expect(
-      await screen.findByRole("group", { name: "Image: diagram.png" })
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("group", {
+          name: /^Image: (?:base|diagram)\.png$/
+        })
+      ).toHaveLength(2)
+    );
     expect(attachmentUi.openImageFiles).toHaveBeenCalledOnce();
-    expect(notesStoreMock.importAttachmentPaths).toHaveBeenCalledTimes(2);
+    expect(notesStoreMock.importImageNodePaths).toHaveBeenCalledTimes(2);
+    expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(
       screen.queryByRole("alert", { name: "Image upload failed" })
     ).toBeNull();
+  });
+
+  it("shows a retryable clipboard error on a zoomed image header and reuses the exact attempt", async () => {
+    const user = userEvent.setup();
+    const root = node({
+      id: "88384bb1-f6cc-4848-a1b5-b8d3b9157306",
+      nodeKind: "image",
+      title: "base.png"
+    });
+    const base = attachment({
+      id: "88384bb1-f6cc-4848-a1b5-b8d3b9157307",
+      nodeId: root.id,
+      originalName: "base.png"
+    });
+    configureRepository([root], { [root.id]: [base] });
+    const attachmentUi = {
+      openImageFiles: vi.fn().mockResolvedValue(null),
+      saveImageFile: vi.fn().mockResolvedValue(null),
+      subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
+    };
+    mockNotesContentWidth(480);
+    notesStoreMock.importImageNodeBytes
+      .mockRejectedValueOnce(new Error("clipboard disk full"))
+      .mockImplementation(async (_vaultRoot, input, context) => {
+        const item = input.items[0]!;
+        const imported = attachment({
+          id: item.attachmentId,
+          nodeId: item.nodeId,
+          originalName: item.originalName
+        });
+        confirmedNodes = [
+          ...confirmedNodes,
+          node({
+            id: item.nodeId,
+            nodeKind: "image",
+            parentId: root.id,
+            sortKey: 1,
+            title: item.originalName
+          })
+        ];
+        confirmedAttachmentsByNodeId = {
+          ...confirmedAttachmentsByNodeId,
+          [item.nodeId]: [imported]
+        };
+        return {
+          workspace: workspace(confirmedNodes),
+          historyEntryId: context?.entryId ?? null,
+          canUndo: true,
+          canRedo: false,
+          importedRootIds: [item.nodeId]
+        };
+      });
+    renderNotesWorkspace(attachmentUi);
+
+    await user.click(
+      await screen.findByRole("button", { name: "Zoom into base.png" })
+    );
+    const headerImage = await screen.findByRole("group", {
+      name: "Image: base.png"
+    });
+    const file = new File(["clipboard-bytes"], "pasted.png", {
+      type: "image/png"
+    });
+    const clipboardItems = Object.assign(
+      [
+        {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => file,
+          getAsString: vi.fn(),
+          webkitGetAsEntry: vi.fn()
+        }
+      ],
+      { add: vi.fn(), clear: vi.fn(), remove: vi.fn() }
+    ) as unknown as DataTransferItemList;
+
+    expect(
+      fireEvent.paste(headerImage, {
+        clipboardData: { items: clipboardItems, getData: () => "" }
+      })
+    ).toBe(false);
+
+    const alert = await screen.findByRole("alert", {
+      name: "Image upload failed"
+    });
+    const header = headerImage.closest<HTMLElement>(".notes-page-header")!;
+    expect(header).toContainElement(alert);
+    expect(alert).toHaveTextContent("clipboard disk full");
+    expect(header.querySelector(".notes-attachment-list")).toBeNull();
+    expect(notesStoreMock.importImageNodeBytes).toHaveBeenCalledTimes(1);
+
+    await user.click(
+      within(alert).getByRole("button", { name: "Retry image upload" })
+    );
+
+    await waitFor(() =>
+      expect(notesStoreMock.importImageNodeBytes).toHaveBeenCalledTimes(2)
+    );
+    expect(notesStoreMock.importImageNodeBytes.mock.calls[1]?.[1]).toEqual(
+      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[1]
+    );
+    expect(notesStoreMock.importImageNodeBytes.mock.calls[1]?.[2]).toBe(
+      notesStoreMock.importImageNodeBytes.mock.calls[0]?.[2]
+    );
+    expect(
+      notesStoreMock.importImageNodeBytes.mock.calls[1]?.[1].items[0].blob
+    ).toBe(file);
+    expect(attachmentUi.openImageFiles).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("group", {
+          name: /^Image: (?:base|pasted)\.png$/
+        })
+      ).toHaveLength(2)
+    );
   });
 
   it("requires accessible confirmation before removing an image", async () => {
@@ -871,20 +1070,30 @@ describe("Notes workspace", () => {
     await user.click(
       await screen.findByRole("button", { name: "Load image diagram.png" })
     );
-    const remove = await screen.findByRole("button", {
-      name: "Remove diagram.png"
-    });
-    await user.click(remove);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Image actions for diagram.png"
+      })
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
     let dialog = await screen.findByRole("alertdialog", {
       name: "Remove image?"
     });
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
+    );
     expect(notesStoreMock.removeAttachment).not.toHaveBeenCalled();
     expect(
       screen.getByRole("group", { name: "Image: diagram.png" })
     ).toBeVisible();
 
-    await user.click(remove);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Image actions for diagram.png"
+      })
+    );
+    await user.click(await screen.findByRole("menuitem", { name: "Delete" }));
     dialog = await screen.findByRole("alertdialog", { name: "Remove image?" });
     await user.click(
       within(dialog).getByRole("button", { name: "Remove image" })
@@ -1062,6 +1271,245 @@ describe("Notes workspace", () => {
     expect(
       leafRow?.querySelector(".notes-node-arrow-slot")
     ).toBeEmptyDOMElement();
+  });
+
+  it("renders an image node as primary row content while legacy text attachments stay below text", async () => {
+    const diagramAttachment = attachment({
+      id: "diagram-primary",
+      nodeId: "diagram-node",
+      originalName: "diagram.png"
+    });
+    const photoAttachment = attachment({
+      id: "photo-primary",
+      nodeId: "photo-node",
+      originalName: "photo.png"
+    });
+    const legacyAttachment = attachment({
+      id: "legacy-image",
+      nodeId: "text-node",
+      originalName: "legacy.png"
+    });
+    configureRepository(
+      [
+        node({
+          id: "diagram-node",
+          nodeKind: "image",
+          sortKey: 1,
+          title: "diagram.png",
+          note: "Architecture description",
+          isCollapsed: true
+        }),
+        node({
+          id: "diagram-child",
+          parentId: "diagram-node",
+          title: "Diagram child"
+        }),
+        node({
+          id: "photo-node",
+          nodeKind: "image",
+          sortKey: 2,
+          title: "photo.png",
+          note: "Photo description"
+        }),
+        node({
+          id: "photo-child",
+          parentId: "photo-node",
+          title: "Photo child"
+        }),
+        node({ id: "text-node", sortKey: 3, title: "Legacy text" })
+      ],
+      {
+        "diagram-node": [diagramAttachment],
+        "photo-node": [photoAttachment],
+        "text-node": [legacyAttachment]
+      }
+    );
+    renderNotesWorkspace();
+
+    const diagramContent = await screen.findByRole("group", {
+      name: "Image: diagram.png"
+    });
+    const photoContent = await screen.findByRole("group", {
+      name: "Image: photo.png"
+    });
+    const diagramRow = diagramContent.closest<HTMLElement>(".notes-node")!;
+    const photoRow = photoContent.closest<HTMLElement>(".notes-node")!;
+    expect(diagramContent.closest(".notes-node-main")).not.toBeNull();
+    expect(photoContent.closest(".notes-node-main")).not.toBeNull();
+    expect(queryTitleInput("diagram.png")).toBeNull();
+    expect(queryTitleInput("photo.png")).toBeNull();
+    expect(diagramRow).not.toHaveTextContent("diagram.png");
+    expect(photoRow).not.toHaveTextContent("photo.png");
+    expect(
+      within(diagramRow).getByRole("button", {
+        name: "Zoom into diagram.png"
+      })
+    ).toBeVisible();
+    expect(
+      within(photoRow).getByRole("button", { name: "Zoom into photo.png" })
+    ).toBeVisible();
+    expect(
+      within(diagramRow).getByRole("button", {
+        name: "More actions for diagram.png"
+      })
+    ).toBeVisible();
+    expect(
+      within(photoRow).getByRole("button", {
+        name: "More actions for photo.png"
+      })
+    ).toBeVisible();
+    expect(
+      within(diagramRow).getByRole("button", { name: "Expand diagram.png" })
+    ).toBeVisible();
+    expect(
+      within(photoRow).getByRole("button", { name: "Collapse photo.png" })
+    ).toBeVisible();
+    const diagramDescription = getTextareaByName(
+      "Supporting note: diagram.png"
+    );
+    const photoDescription = getTextareaByName("Supporting note: photo.png");
+    expect(diagramRow).toContainElement(diagramDescription);
+    expect(photoRow).toContainElement(photoDescription);
+    expect(diagramDescription).toHaveValue("Architecture description");
+    expect(photoDescription).toHaveValue("Photo description");
+    expect(diagramContent).not.toHaveTextContent("diagram.png");
+    expect(photoContent).not.toHaveTextContent("photo.png");
+
+    const textTitle = await findTitleInput("Legacy text");
+    const legacyImage = screen.getByRole("group", {
+      name: "Image: legacy.png"
+    });
+    expect(textTitle).toBeVisible();
+    expect(legacyImage.closest(".notes-node-attachments")).not.toBeNull();
+    expect(legacyImage.closest(".notes-node-main")).toBeNull();
+  });
+
+  it("keeps a missing image node actionable and renders Image unavailable", async () => {
+    configureRepository([
+      node({
+        id: "missing-image",
+        nodeKind: "image",
+        title: "missing.png",
+        note: "Recovery details"
+      })
+    ]);
+    renderNotesWorkspace();
+
+    const content = await screen.findByRole("group", {
+      name: "Image: missing.png"
+    });
+    const row = content.closest<HTMLElement>(".notes-node")!;
+    expect(within(content).getByRole("alert")).toHaveTextContent(
+      "Image unavailable"
+    );
+    expect(
+      within(row).getByRole("button", {
+        name: "More actions for missing.png"
+      })
+    ).toBeVisible();
+    expect(
+      within(row).getByRole("button", { name: "Zoom into missing.png" })
+    ).toBeVisible();
+    expect(queryTitleInput("missing.png")).toBeNull();
+    expect(row).not.toHaveTextContent("missing.png");
+    expect(row.outerHTML).toContain("missing.png");
+  });
+
+  it("opens an image description and creates a focused text sibling without splitting", async () => {
+    const image = node({
+      id: "image-node",
+      nodeKind: "image",
+      title: "diagram.png",
+      note: ""
+    });
+    configureRepository(
+      [image],
+      {
+        "image-node": [
+          attachment({
+            id: "image-primary",
+            nodeId: "image-node",
+            originalName: "diagram.png"
+          })
+        ]
+      }
+    );
+    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
+      "00000000-0000-4000-8000-000000000001"
+    );
+    renderNotesWorkspace();
+    const content = await screen.findByRole("group", {
+      name: "Image: diagram.png"
+    });
+
+    expect(
+      fireEvent.keyDown(content, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(getTextareaByName("Supporting note: diagram.png")).toHaveFocus();
+
+    content.focus();
+    expect(fireEvent.keyDown(content, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.createNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.createNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "00000000-0000-4000-8000-000000000001",
+        parentId: null,
+        afterId: "image-node",
+        title: "",
+        note: ""
+      }
+    );
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
+    expect(await findTitleInput("")).toHaveFocus();
+  });
+
+  it("indents and outdents image nodes with Tab and Shift+Tab", async () => {
+    configureRepository([
+      node({ id: "previous", sortKey: 1, title: "Previous" }),
+      node({
+        id: "image-node",
+        nodeKind: "image",
+        sortKey: 2,
+        title: "diagram.png"
+      })
+    ]);
+    notesStoreMock.moveNode.mockImplementation(
+      async (_vaultRoot: string, input: MoveNoteNodeInput) => {
+        confirmedNodes = confirmedNodes.map((current) =>
+          current.id === input.id
+            ? { ...current, parentId: input.parentId }
+            : current
+        );
+        return workspace(confirmedNodes);
+      }
+    );
+    renderNotesWorkspace();
+    const content = await screen.findByRole("group", {
+      name: "Image: diagram.png"
+    });
+
+    content.focus();
+    expect(fireEvent.keyDown(content, { key: "Tab" })).toBe(false);
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
+    expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
+      id: "image-node",
+      parentId: "previous",
+      afterId: null
+    });
+
+    content.focus();
+    expect(
+      fireEvent.keyDown(content, { key: "Tab", shiftKey: true })
+    ).toBe(false);
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(2));
+    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith("/vault", {
+      id: "image-node",
+      parentId: null,
+      afterId: "previous"
+    });
+    expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
+    expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
 
   it("snapshots leaf, expanded, collapsed, and completed collapsed bullet states", async () => {
@@ -1366,6 +1814,57 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
   });
 
+  it("uses exact image filenames in drag announcements without rendering them visibly", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({
+        id: "diagram-image",
+        nodeKind: "image",
+        sortKey: 1,
+        title: "diagram.png"
+      }),
+      node({
+        id: "photo-image",
+        nodeKind: "image",
+        sortKey: 2,
+        title: "photo.png"
+      })
+    ]);
+    renderNotesWorkspace();
+    const diagramBullet = await screen.findByRole("button", {
+      name: "Zoom into diagram.png"
+    });
+    const photoBullet = await screen.findByRole("button", {
+      name: "Zoom into photo.png"
+    });
+    mockOutlineRowRects();
+
+    for (const row of document.querySelectorAll(".notes-node")) {
+      expect(row).not.toHaveTextContent(/diagram\.png|photo\.png/);
+    }
+
+    diagramBullet.focus();
+    await user.keyboard("[Space][Space]");
+
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent(
+        "No move was made for diagram.png."
+      )
+    );
+    photoBullet.focus();
+    await user.keyboard("[Space][Space]");
+
+    await waitFor(() =>
+      expect(document.body).toHaveTextContent(
+        "No move was made for photo.png."
+      )
+    );
+    for (const row of document.querySelectorAll(".notes-node")) {
+      expect(row).not.toHaveTextContent(/diagram\.png|photo\.png/);
+    }
+    expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+  });
+
   it("moves before the first row by keyboard through one queued action without optimistic order", async () => {
     const user = userEvent.setup();
     const move = deferred<NotesWorkspace>();
@@ -1527,6 +2026,108 @@ describe("Notes workspace", () => {
     expect(
       queryTitleInput("Project")
     ).not.toBeInTheDocument();
+  });
+
+  it("uses the stored image filename in breadcrumbs", async () => {
+    const user = userEvent.setup();
+    configureRepository(
+      [
+        node({
+          id: "image-page",
+          nodeKind: "image",
+          title: "private-filename.png"
+        })
+      ],
+      {
+        "image-page": [
+          attachment({
+            id: "image-attachment",
+            nodeId: "image-page",
+            originalName: "private-filename.png"
+          })
+        ]
+      }
+    );
+    renderNotesWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Zoom into private-filename.png"
+      })
+    );
+    const breadcrumb = screen.getByLabelText("Notes breadcrumb");
+
+    expect(
+      within(breadcrumb).getByRole("button", { name: "private-filename.png" })
+    ).toHaveAttribute("aria-current", "page");
+    expect(
+      within(breadcrumb).queryByRole("button", {
+        name: "Image"
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("draws the native image-drop marker after an expanded target subtree", async () => {
+    const target = node({ id: "target", sortKey: 1, title: "Target" });
+    const child = node({
+      id: "child",
+      parentId: target.id,
+      sortKey: 1,
+      title: "Child"
+    });
+    const sibling = node({ id: "sibling", sortKey: 2, title: "Sibling" });
+    configureRepository([target, child, sibling]);
+    let dropListener:
+      | Parameters<NotesAttachmentUiBoundary["subscribeToImageDrop"]>[0]
+      | null = null;
+    const attachmentUi: NotesAttachmentUiBoundary = {
+      openImageFiles: vi.fn().mockResolvedValue(null),
+      saveImageFile: vi.fn().mockResolvedValue(null),
+      subscribeToImageDrop: vi.fn().mockImplementation(async (listener) => {
+        dropListener = listener;
+        return vi.fn();
+      })
+    };
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "elementFromPoint"
+    );
+    renderNotesWorkspace(attachmentUi);
+    const targetRow = (await findTitleInput("Target")).closest(".notes-node");
+    const childItem = (await findTitleInput("Child")).closest("li");
+    expect(targetRow).not.toBeNull();
+    expect(childItem).not.toBeNull();
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => targetRow)
+    });
+
+    try {
+      await waitFor(() => expect(dropListener).toBeTypeOf("function"));
+      act(() =>
+        dropListener?.({
+          type: "enter",
+          paths: ["/incoming/subtree.png"],
+          position: { x: 10, y: 10 }
+        })
+      );
+
+      const markers = await screen.findAllByTestId("notes-image-drop-position");
+      expect(markers).toHaveLength(1);
+      expect(childItem).toContainElement(markers[0]);
+      expect(targetRow).toHaveAttribute("data-image-drop-active", "true");
+      expect(targetRow).not.toContainElement(markers[0]);
+    } finally {
+      if (originalElementFromPoint) {
+        Object.defineProperty(
+          document,
+          "elementFromPoint",
+          originalElementFromPoint
+        );
+      } else {
+        Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    }
   });
 
   it("focuses a created title exactly once across row unmount and remount", async () => {
@@ -5317,22 +5918,8 @@ describe("Notes workspace", () => {
   });
 
   it("keeps only the newest asynchronous search results", async () => {
-    const first = deferred<
-      Array<{
-        nodeId: string;
-        title: string;
-        parentTrail: string[];
-        matchedField: "title";
-      }>
-    >();
-    const second = deferred<
-      Array<{
-        nodeId: string;
-        title: string;
-        parentTrail: string[];
-        matchedField: "title";
-      }>
-    >();
+    const first = deferred<KindAwareSearchResult[]>();
+    const second = deferred<KindAwareSearchResult[]>();
     notesStoreMock.search.mockImplementation(
       async (_vaultRoot: string, query: string) =>
         query === "Old" ? first.promise : second.promise
@@ -5345,24 +5932,24 @@ describe("Notes workspace", () => {
     fireEvent.change(search, { target: { value: "Old" } });
     fireEvent.change(search, { target: { value: "New" } });
     second.resolve([
-      {
+      searchResult({
         nodeId: "new",
         title: "New result",
         parentTrail: ["Project"],
         matchedField: "title"
-      }
+      })
     ]);
     expect(
       await screen.findByRole("option", { name: /New result/ })
     ).toBeInTheDocument();
 
     first.resolve([
-      {
+      searchResult({
         nodeId: "old",
         title: "Old result",
         parentTrail: ["Project"],
         matchedField: "title"
-      }
+      })
     ]);
     await act(async () => first.promise);
     expect(
@@ -5372,12 +5959,12 @@ describe("Notes workspace", () => {
 
   it("runs mixed structured queries and renders their ancestor trail", async () => {
     notesStoreMock.searchStructured.mockResolvedValue([
-      {
+      searchResult({
         nodeId: "plan",
         title: "Plan",
         parentTrail: ["Project", "Roadmap"],
         matchedField: "note"
-      }
+      })
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
@@ -5429,22 +6016,8 @@ describe("Notes workspace", () => {
   });
 
   it("hides rendered search results as soon as the query changes", async () => {
-    const oldSearch = deferred<
-      Array<{
-        nodeId: string;
-        title: string;
-        parentTrail: string[];
-        matchedField: "title";
-      }>
-    >();
-    const newSearch = deferred<
-      Array<{
-        nodeId: string;
-        title: string;
-        parentTrail: string[];
-        matchedField: "title";
-      }>
-    >();
+    const oldSearch = deferred<KindAwareSearchResult[]>();
+    const newSearch = deferred<KindAwareSearchResult[]>();
     notesStoreMock.search.mockImplementation(
       async (_vaultRoot: string, query: string) =>
         query === "Old" ? oldSearch.promise : newSearch.promise
@@ -5456,12 +6029,12 @@ describe("Notes workspace", () => {
 
     fireEvent.change(search, { target: { value: "Old" } });
     oldSearch.resolve([
-      {
+      searchResult({
         nodeId: "project",
         title: "Old result",
         parentTrail: [],
         matchedField: "title"
-      }
+      })
     ]);
     expect(
       await screen.findByRole("option", { name: /Old result/ })
@@ -5475,12 +6048,12 @@ describe("Notes workspace", () => {
     expect(screen.queryByRole("listbox", { name: "Search results" })).toBeNull();
 
     newSearch.resolve([
-      {
+      searchResult({
         nodeId: "outside",
         title: "New result",
         parentTrail: [],
         matchedField: "title"
-      }
+      })
     ]);
     expect(
       await screen.findByRole("option", { name: /New result/ })
@@ -5490,24 +6063,24 @@ describe("Notes workspace", () => {
   it("supports complete keyboard navigation and selection in search results", async () => {
     const user = userEvent.setup();
     notesStoreMock.search.mockResolvedValue([
-      {
+      searchResult({
         nodeId: "project",
         title: "Project",
         parentTrail: [],
         matchedField: "title"
-      },
-      {
+      }),
+      searchResult({
         nodeId: "plan",
         title: "Plan",
         parentTrail: ["Project"],
         matchedField: "title"
-      },
-      {
+      }),
+      searchResult({
         nodeId: "outside",
         title: "Outside branch",
         parentTrail: [],
         matchedField: "title"
-      }
+      })
     ]);
     renderNotesWorkspace();
     const search = await screen.findByRole("searchbox", {
@@ -5574,12 +6147,12 @@ describe("Notes workspace", () => {
       node({ id: "target", parentId: "section", title: "Target" })
     ]);
     notesStoreMock.search.mockResolvedValue([
-      {
+      searchResult({
         nodeId: "target",
         title: "Target",
         parentTrail: ["Page", "Section"],
         matchedField: "title"
-      }
+      })
     ]);
     renderNotesWorkspace();
 

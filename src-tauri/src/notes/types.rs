@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use crate::notes::tags::is_canonical_tag_body;
@@ -7,8 +7,19 @@ use crate::notes::tags::is_canonical_tag_body;
 pub type NoteId = String;
 pub(crate) const MAX_NOTE_ATTACHMENTS_PER_NODE: i64 = 128;
 pub(crate) const MAX_NOTE_ATTACHMENTS_PER_VAULT: i64 = 512;
+pub(crate) const MAX_IMAGE_NODE_IMPORT_ITEMS: usize = 128;
 pub(crate) const MAX_NOTES_EXPORT_ATTACHMENTS: usize = 512;
 pub(crate) const MAX_BATCH_NODE_IDS: usize = 10_000;
+
+pub(crate) fn deserialize_required_nullable<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
 
 /// Bounds for `notes_import_subtree` (paste import). The whole import runs as a
 /// single transaction + single history entry, so it is bounded to a sane node
@@ -120,6 +131,7 @@ pub struct ExportDateSpan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportNode {
     pub id: NoteId,
+    pub node_kind: NoteNodeKind,
     pub title: String,
     pub note: String,
     pub title_date_spans: Vec<ExportDateSpan>,
@@ -127,6 +139,22 @@ pub struct ExportNode {
     pub completed: bool,
     pub attachments: Vec<ExportAttachment>,
     pub children: Vec<ExportNode>,
+}
+
+impl ExportNode {
+    pub(crate) fn validate_attachment_ownership(&self) -> Result<(), String> {
+        if self.node_kind == NoteNodeKind::Image && self.attachments.len() != 1 {
+            return Err(format!(
+                "Image Note node {} must own exactly one attachment for export; found {}.",
+                self.id,
+                self.attachments.len()
+            ));
+        }
+        for child in &self.children {
+            child.validate_attachment_ownership()?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -211,6 +239,95 @@ pub(crate) struct ImportAttachmentPathBatchInput {
 pub(crate) struct ImportAttachmentPathItem {
     pub(crate) id: String,
     pub(crate) source_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportImageNodePathsInput {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub(crate) parent_id: Option<NoteId>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub(crate) after_id: Option<NoteId>,
+    pub(crate) items: Vec<ImportImageNodePathItem>,
+    pub(crate) initial_max_display_width: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportImageNodePathItem {
+    pub(crate) node_id: NoteId,
+    pub(crate) attachment_id: String,
+    pub(crate) source_path: String,
+}
+
+impl ImportImageNodePathsInput {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_image_node_batch_fields(
+            self.parent_id.as_deref(),
+            self.after_id.as_deref(),
+            self.initial_max_display_width,
+            self.items
+                .iter()
+                .map(|item| (item.node_id.as_str(), item.attachment_id.as_str())),
+        )
+    }
+}
+
+pub(crate) fn validate_image_node_batch_fields<'a>(
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    initial_max_display_width: i64,
+    ids: impl ExactSizeIterator<Item = (&'a str, &'a str)>,
+) -> Result<(), String> {
+    if let Some(parent_id) = parent_id {
+        validate_note_id(parent_id)?;
+    }
+    if let Some(after_id) = after_id {
+        validate_note_id(after_id)?;
+    }
+    if initial_max_display_width <= 0 {
+        return Err(
+            "A Notes image node initial maximum display width must be positive.".to_string(),
+        );
+    }
+    let item_count = ids.len();
+    if item_count == 0 || item_count > MAX_IMAGE_NODE_IMPORT_ITEMS {
+        return Err(format!(
+            "A Notes image node batch must contain between 1 and {MAX_IMAGE_NODE_IMPORT_ITEMS} images."
+        ));
+    }
+
+    let mut node_ids = HashSet::with_capacity(item_count);
+    let mut attachment_ids = HashSet::with_capacity(item_count);
+    for (node_id, attachment_id) in ids {
+        validate_note_id(node_id)?;
+        validate_note_id(attachment_id).map_err(|_| {
+            "A Notes image node attachment ID must be a canonical UUID v4 string.".to_string()
+        })?;
+        if !node_ids.insert(node_id) {
+            return Err(format!(
+                "A Notes image node batch contains duplicate node ID {node_id}."
+            ));
+        }
+        if !attachment_ids.insert(attachment_id) {
+            return Err(format!(
+                "A Notes image node batch contains duplicate attachment ID {attachment_id}."
+            ));
+        }
+        let overlapping_id = if attachment_ids.contains(node_id) {
+            Some(node_id)
+        } else if node_ids.contains(attachment_id) {
+            Some(attachment_id)
+        } else {
+            None
+        };
+        if let Some(overlapping_id) = overlapping_id {
+            return Err(format!(
+                "A Notes image node batch contains ID {overlapping_id} used as both a node and attachment ID."
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -326,8 +443,10 @@ pub enum NoteSearchMatchedField {
 #[serde(rename_all = "camelCase")]
 pub struct NoteSearchResult {
     pub node_id: NoteId,
+    pub node_kind: NoteNodeKind,
     pub title: String,
     pub parent_trail: Vec<String>,
+    pub parent_trail_kinds: Vec<NoteNodeKind>,
     pub matched_field: NoteSearchMatchedField,
 }
 
@@ -766,12 +885,12 @@ impl SplitNodeInput {
 #[cfg(test)]
 mod tests {
     use super::{
-        validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput, MoveNodeInput,
-        NoteAttachment, NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField,
-        NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-        NoteTagSummary, NotesExportFormat, NotesExportResult, NotesHistoryContext,
-        NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
-        NotesWorkspaceScope,
+        validate_note_id, ApplyBatchInput, BatchOp, ImportAttachmentPathBatchInput,
+        ImportImageNodePathsInput, MoveNodeInput, NoteAttachment, NoteLayoutMode, NoteNode,
+        NoteNodeKind, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
+        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
+        NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
+        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
 
@@ -844,6 +963,144 @@ mod tests {
                 "initialMaxDisplayWidth": 480
             }))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn image_node_path_batch_deserializes_the_shared_anchor_and_ordered_ids() {
+        let input: ImportImageNodePathsInput = serde_json::from_value(json!({
+            "parentId": NODE_ID,
+            "afterId": null,
+            "items": [
+                {
+                    "nodeId": SECOND_ID,
+                    "attachmentId": THIRD_ID,
+                    "sourcePath": "/incoming/first.png"
+                }
+            ],
+            "initialMaxDisplayWidth": 480
+        }))
+        .expect("image node path batch input");
+
+        assert_eq!(input.parent_id.as_deref(), Some(NODE_ID));
+        assert_eq!(input.after_id, None);
+        assert_eq!(input.items[0].node_id, SECOND_ID);
+        assert_eq!(input.items[0].attachment_id, THIRD_ID);
+        assert_eq!(input.items[0].source_path, "/incoming/first.png");
+        assert_eq!(input.initial_max_display_width, 480);
+
+        assert!(serde_json::from_value::<ImportImageNodePathsInput>(json!({
+            "parentId": null,
+            "afterId": null,
+            "items": [{
+                "nodeId": SECOND_ID,
+                "attachmentId": THIRD_ID,
+                "sourcePath": "/incoming/first.png",
+                "unexpected": true
+            }],
+            "initialMaxDisplayWidth": 480
+        }))
+        .is_err());
+    }
+
+    fn image_node_path_batch_wire_input() -> serde_json::Value {
+        json!({
+            "parentId": null,
+            "afterId": null,
+            "items": [{
+                "nodeId": SECOND_ID,
+                "attachmentId": THIRD_ID,
+                "sourcePath": "/incoming/first.png"
+            }],
+            "initialMaxDisplayWidth": 480
+        })
+    }
+
+    #[test]
+    fn image_node_path_batch_accepts_explicit_null_anchor_keys() {
+        let input: ImportImageNodePathsInput =
+            serde_json::from_value(image_node_path_batch_wire_input())
+                .expect("explicit null image node anchors");
+
+        assert_eq!(input.parent_id, None);
+        assert_eq!(input.after_id, None);
+    }
+
+    #[test]
+    fn image_node_path_batch_requires_parent_id_key() {
+        let mut input = image_node_path_batch_wire_input();
+        input
+            .as_object_mut()
+            .expect("path batch object")
+            .remove("parentId")
+            .expect("remove parentId");
+
+        let error = serde_json::from_value::<ImportImageNodePathsInput>(input)
+            .expect_err("missing parentId");
+
+        assert!(
+            error.to_string().contains("missing field `parentId`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn image_node_path_batch_requires_after_id_key() {
+        let mut input = image_node_path_batch_wire_input();
+        input
+            .as_object_mut()
+            .expect("path batch object")
+            .remove("afterId")
+            .expect("remove afterId");
+
+        let error = serde_json::from_value::<ImportImageNodePathsInput>(input)
+            .expect_err("missing afterId");
+
+        assert!(
+            error.to_string().contains("missing field `afterId`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn image_node_batch_rejects_ids_shared_between_nodes_and_attachments() {
+        let same_item = ImportImageNodePathsInput {
+            parent_id: None,
+            after_id: None,
+            items: vec![super::ImportImageNodePathItem {
+                node_id: SECOND_ID.to_string(),
+                attachment_id: SECOND_ID.to_string(),
+                source_path: "/incoming/first.png".to_string(),
+            }],
+            initial_max_display_width: 480,
+        };
+        let same_item_error = same_item.validate().expect_err("same-item ID overlap");
+        assert!(
+            same_item_error.contains("both a node and attachment ID"),
+            "{same_item_error}"
+        );
+
+        let cross_item = ImportImageNodePathsInput {
+            parent_id: None,
+            after_id: None,
+            items: vec![
+                super::ImportImageNodePathItem {
+                    node_id: SECOND_ID.to_string(),
+                    attachment_id: THIRD_ID.to_string(),
+                    source_path: "/incoming/first.png".to_string(),
+                },
+                super::ImportImageNodePathItem {
+                    node_id: THIRD_ID.to_string(),
+                    attachment_id: NODE_ID.to_string(),
+                    source_path: "/incoming/second.png".to_string(),
+                },
+            ],
+            initial_max_display_width: 480,
+        };
+        let cross_item_error = cross_item.validate().expect_err("cross-item ID overlap");
+        assert!(
+            cross_item_error.contains("both a node and attachment ID"),
+            "{cross_item_error}"
         );
     }
 
@@ -1346,6 +1603,30 @@ mod tests {
         assert_eq!(
             serde_json::to_value(NoteSearchMatchedField::Date).expect("date match field"),
             json!("date")
+        );
+    }
+
+    #[test]
+    fn notes_search_result_uses_the_complete_camel_case_wire_shape() {
+        let result = NoteSearchResult {
+            node_id: NODE_ID.to_string(),
+            node_kind: NoteNodeKind::Image,
+            title: "Target".to_string(),
+            parent_trail: vec!["Page".to_string(), "Section".to_string()],
+            parent_trail_kinds: vec![NoteNodeKind::Image, NoteNodeKind::Text],
+            matched_field: NoteSearchMatchedField::Note,
+        };
+
+        assert_eq!(
+            serde_json::to_value(result).expect("search result"),
+            json!({
+                "nodeId": NODE_ID,
+                "nodeKind": "image",
+                "title": "Target",
+                "parentTrail": ["Page", "Section"],
+                "parentTrailKinds": ["image", "text"],
+                "matchedField": "note"
+            })
         );
     }
 

@@ -278,6 +278,53 @@ export async function createChildCommand(
   });
 }
 
+export async function createNextTextSiblingCommand(
+  ctx: NotesCommandContext,
+  nodeId: NoteId
+): Promise<NotesWorkspaceCommandOutcome> {
+  return ctx.runStructuralCommand("create", async (context, historyContext) => {
+    const before = confirmedState(context);
+    const source = before.nodesById[nodeId];
+    if (!source) {
+      return { kind: "skipped" };
+    }
+    const id = createNoteId();
+    const mutation = unwrapNotesMutation(
+      await context.repository.createNode(
+        context.vaultRoot,
+        {
+          id,
+          parentId: source.parentId,
+          afterId: source.id,
+          title: "",
+          note: ""
+        },
+        ...historyArguments(historyContext)
+      )
+    );
+    const projection = await projectNotesMutation(
+      context,
+      mutation,
+      ctx.activeScopeRef.current
+    );
+    const uiUpdate = {
+      selectedId: id,
+      editingNoteId: id,
+      pendingFocusId: id,
+      pendingFocusField: "title" as const,
+      ...(ctx.currentNavigation().zoomRootId === nodeId
+        ? { zoomRootId: source.parentId }
+        : {})
+    };
+    ctx.rememberHistoryAfter(
+      appliedHistoryContext(historyContext, mutation),
+      projection.workspace,
+      uiUpdate
+    );
+    return directMutationResult(mutation, projection, uiUpdate);
+  });
+}
+
 export async function splitNodeCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,

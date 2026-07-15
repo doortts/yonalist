@@ -30,6 +30,11 @@ CREATE INDEX notes_nodes_archive_parent_order
 CREATE INDEX notes_nodes_archive_root_order
   ON notes_nodes(archive_root_id, parent_id, sort_key);
 
+CREATE TABLE notes_metadata (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  vault_generation TEXT NOT NULL
+);
+
 CREATE TABLE notes_tags (
   node_id TEXT NOT NULL REFERENCES notes_nodes(id) ON DELETE CASCADE,
   prefix TEXT NOT NULL CHECK (prefix IN ('#', '@')),

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-expand-all"
+description = "Enables the notes_expand_all command without any pre-configured scope."
+commands.allow = ["notes_expand_all"]
+
+[[permission]]
+identifier = "deny-notes-expand-all"
+description = "Denies the notes_expand_all command without any pre-configured scope."
+commands.deny = ["notes_expand_all"]

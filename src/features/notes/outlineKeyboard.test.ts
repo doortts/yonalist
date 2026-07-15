@@ -244,6 +244,110 @@ describe("resolveOutlineKey", () => {
     expect(resolveOutlineKey(input(overrides))).toEqual(resolution);
   });
 
+  it("resolves image primary-content Enter without splitting the hidden filename", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "Enter",
+          nodeId: "child-b",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({ type: "createNextTextSibling" });
+  });
+
+  it("opens an image description with Shift+Enter", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "Enter",
+          shiftKey: true,
+          nodeId: "child-b",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({ type: "focusNote" });
+  });
+
+  it("keeps image Tab and Shift+Tab on the existing move resolutions", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "Tab",
+          nodeId: "child-b",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "child-b", parentId: "child-a", afterId: "grandchild" },
+      focusNodeId: "child-b"
+    });
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "Tab",
+          shiftKey: true,
+          nodeId: "grandchild",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "grandchild", parentId: "root-a", afterId: "child-a" },
+      focusNodeId: "grandchild"
+    });
+  });
+
+  it("provides image-only Alt+Arrow structural shortcuts while Tab enters controls", () => {
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "ArrowRight",
+          altKey: true,
+          nodeId: "child-b",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "child-b", parentId: "child-a", afterId: "grandchild" },
+      focusNodeId: "child-b"
+    });
+    expect(
+      resolveOutlineKey(
+        input({
+          target: "image",
+          key: "ArrowLeft",
+          altKey: true,
+          nodeId: "grandchild",
+          title: "diagram.png",
+          selectionStart: null,
+          selectionEnd: null
+        })
+      )
+    ).toEqual({
+      type: "move",
+      input: { id: "grandchild", parentId: "root-a", afterId: "child-a" },
+      focusNodeId: "grandchild"
+    });
+  });
+
   it.each([
     {
       label: "Cmd+Enter on other platforms",

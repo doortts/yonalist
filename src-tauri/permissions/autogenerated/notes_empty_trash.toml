@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-empty-trash"
+description = "Enables the notes_empty_trash command without any pre-configured scope."
+commands.allow = ["notes_empty_trash"]
+
+[[permission]]
+identifier = "deny-notes-empty-trash"
+description = "Denies the notes_empty_trash command without any pre-configured scope."
+commands.deny = ["notes_empty_trash"]

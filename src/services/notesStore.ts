@@ -5,12 +5,16 @@ import {
   isRetryableNotesErrorCode,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
+  MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS,
   MAX_NOTE_ATTACHMENTS_PER_NODE,
   MAX_NOTES_BATCH_NODE_IDS,
   normalizeNotesWorkspace,
   parseNotesError
 } from "../domain/notes";
-import { encodeNotesAttachmentRawEnvelope } from "./notesAttachmentRawIpc";
+import {
+  encodeNotesAttachmentRawEnvelope,
+  encodeNotesImageNodeRawEnvelope
+} from "./notesAttachmentRawIpc";
 import {
   isCanonicalNoteTagBody,
   validateAndCanonicalizeNoteSearchQuery
@@ -18,12 +22,16 @@ import {
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  ImportImageNodeBytesInput,
+  ImportImageNodePathsInput,
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
   ImportSubtreeInput,
   MoveNoteNodeInput,
+  NoteAttachment,
   NoteId,
+  NoteNode,
   NoteSearchResult,
   NoteSearchScope,
   NoteStructuredSearchQuery,
@@ -73,6 +81,12 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SUPPORTED_IMAGE_MIME_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif"
+]);
 
 function hasExactKeys(
   value: Record<string, unknown>,
@@ -118,6 +132,25 @@ function normalizeAttachmentHistoryContext(
   };
 }
 
+function normalizeNullableNoteId(value: unknown): NoteId | null | undefined {
+  if (value === null) {
+    return null;
+  }
+  return isCanonicalUuidV4(value) ? value : undefined;
+}
+
+function isSupportedImageMimeType(value: unknown): value is string {
+  return typeof value === "string" && SUPPORTED_IMAGE_MIME_TYPES.has(value);
+}
+
+function isValidImageOriginalName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    new TextEncoder().encode(value).byteLength <= 1024
+  );
+}
+
 function isStandardByteArray(value: unknown): value is Uint8Array {
   return (
     value instanceof Uint8Array &&
@@ -130,6 +163,10 @@ function isStandardArrayBuffer(value: unknown): value is ArrayBuffer {
     value instanceof ArrayBuffer &&
     Object.getPrototypeOf(value) === ArrayBuffer.prototype
   );
+}
+
+function isNonEmptyNativeString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && !value.includes("\0");
 }
 
 function normalizeImportAttachmentInput(
@@ -302,6 +339,177 @@ function normalizeImportAttachmentBytesBatchInput(
       initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
     },
     errorMessage: null
+  };
+}
+
+function normalizeImportImageNodePathsInput(
+  input: unknown
+): { input: ImportImageNodePathsInput; nodeIds: NoteId[] } | null {
+  if (
+    !isPlainRecord(input) ||
+    !hasExactKeys(input, [
+      "parentId",
+      "afterId",
+      "items",
+      "initialMaxDisplayWidth"
+    ]) ||
+    !Array.isArray(input.items) ||
+    Object.getPrototypeOf(input.items) !== Array.prototype ||
+    input.items.length === 0 ||
+    input.items.length > MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS ||
+    !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
+    (input.initialMaxDisplayWidth as number) <= 0
+  ) {
+    return null;
+  }
+
+  const parentId = normalizeNullableNoteId(input.parentId);
+  const afterId = normalizeNullableNoteId(input.afterId);
+  if (parentId === undefined || afterId === undefined) {
+    return null;
+  }
+
+  const nodeIds = new Set<string>();
+  const attachmentIds = new Set<string>();
+  const allIds = new Set<string>();
+  const items: ImportImageNodePathsInput["items"][number][] = [];
+  for (let index = 0; index < input.items.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(input.items, index)) {
+      return null;
+    }
+    const item = input.items[index];
+    if (
+      !isPlainRecord(item) ||
+      !hasExactKeys(item, ["nodeId", "attachmentId", "sourcePath"]) ||
+      !isCanonicalUuidV4(item.nodeId) ||
+      nodeIds.has(item.nodeId) ||
+      !isCanonicalUuidV4(item.attachmentId) ||
+      attachmentIds.has(item.attachmentId) ||
+      item.nodeId === item.attachmentId ||
+      allIds.has(item.nodeId) ||
+      allIds.has(item.attachmentId) ||
+      typeof item.sourcePath !== "string" ||
+      item.sourcePath.length === 0 ||
+      item.sourcePath.includes("\0")
+    ) {
+      return null;
+    }
+    nodeIds.add(item.nodeId);
+    attachmentIds.add(item.attachmentId);
+    allIds.add(item.nodeId);
+    allIds.add(item.attachmentId);
+    items.push({
+      nodeId: item.nodeId,
+      attachmentId: item.attachmentId,
+      sourcePath: item.sourcePath
+    });
+  }
+
+  return {
+    input: {
+      parentId,
+      afterId,
+      items,
+      initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+    },
+    nodeIds: items.map((item) => item.nodeId)
+  };
+}
+
+function normalizeImportImageNodeBytesInput(
+  input: unknown
+): { input: ImportImageNodeBytesInput; nodeIds: NoteId[] } | null {
+  if (
+    !isPlainRecord(input) ||
+    !hasExactKeys(input, [
+      "parentId",
+      "afterId",
+      "items",
+      "initialMaxDisplayWidth"
+    ]) ||
+    !Array.isArray(input.items) ||
+    Object.getPrototypeOf(input.items) !== Array.prototype ||
+    input.items.length === 0 ||
+    input.items.length > MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS ||
+    !Number.isSafeInteger(input.initialMaxDisplayWidth) ||
+    (input.initialMaxDisplayWidth as number) <= 0
+  ) {
+    return null;
+  }
+
+  const parentId = normalizeNullableNoteId(input.parentId);
+  const afterId = normalizeNullableNoteId(input.afterId);
+  if (parentId === undefined || afterId === undefined) {
+    return null;
+  }
+
+  const nodeIds = new Set<string>();
+  const attachmentIds = new Set<string>();
+  const allIds = new Set<string>();
+  const items: ImportImageNodeBytesInput["items"][number][] = [];
+  for (let index = 0; index < input.items.length; index += 1) {
+    if (!Object.prototype.hasOwnProperty.call(input.items, index)) {
+      return null;
+    }
+    const item = input.items[index];
+    if (
+      !isPlainRecord(item) ||
+      !hasExactKeys(item, [
+        "nodeId",
+        "attachmentId",
+        "originalName",
+        "mimeType",
+        "blob"
+      ]) ||
+      !isCanonicalUuidV4(item.nodeId) ||
+      nodeIds.has(item.nodeId) ||
+      !isCanonicalUuidV4(item.attachmentId) ||
+      attachmentIds.has(item.attachmentId) ||
+      item.nodeId === item.attachmentId ||
+      allIds.has(item.nodeId) ||
+      allIds.has(item.attachmentId) ||
+      !isValidImageOriginalName(item.originalName) ||
+      !isSupportedImageMimeType(item.mimeType) ||
+      typeof item.blob !== "object" ||
+      item.blob === null ||
+      !Number.isSafeInteger((item.blob as Blob).size) ||
+      (item.blob as Blob).size <= 0 ||
+      typeof (item.blob as Blob).arrayBuffer !== "function"
+    ) {
+      return null;
+    }
+    nodeIds.add(item.nodeId);
+    attachmentIds.add(item.attachmentId);
+    allIds.add(item.nodeId);
+    allIds.add(item.attachmentId);
+    items.push({
+      nodeId: item.nodeId,
+      attachmentId: item.attachmentId,
+      originalName: item.originalName,
+      mimeType: item.mimeType,
+      blob: item.blob as Blob
+    });
+  }
+
+  let aggregateBytes = 0;
+  for (const item of items) {
+    if (item.blob.size > MAX_NOTE_ATTACHMENT_BYTES) {
+      return null;
+    }
+    aggregateBytes += item.blob.size;
+    if (aggregateBytes > MAX_NOTE_ATTACHMENT_BATCH_BYTES) {
+      return null;
+    }
+  }
+
+  return {
+    input: {
+      parentId,
+      afterId,
+      items,
+      initialMaxDisplayWidth: input.initialMaxDisplayWidth as number
+    },
+    nodeIds: items.map((item) => item.nodeId)
   };
 }
 
@@ -479,7 +687,7 @@ function normalizeMutationResult(
     );
   }
   const workspace = normalizeNotesWorkspace(result.workspace);
-  if (workspace === null) {
+  if (workspace === null || !workspaceHasUniqueNodeIds(workspace)) {
     throw notesStoreError(
       "write",
       "Notes mutation returned an invalid result.",
@@ -487,6 +695,264 @@ function normalizeMutationResult(
     );
   }
   return { ...result, workspace };
+}
+
+function workspaceHasUniqueNodeIds(workspace: NotesWorkspace): boolean {
+  const nodeIds = new Set<NoteId>();
+  for (const node of workspace.nodes) {
+    if (nodeIds.has(node.id)) {
+      return false;
+    }
+    nodeIds.add(node.id);
+  }
+  return true;
+}
+
+function canonicalNodeEquals(left: NoteNode, right: NoteNode): boolean {
+  return (
+    left.id === right.id &&
+    left.nodeKind === right.nodeKind &&
+    left.parentId === right.parentId &&
+    left.sortKey === right.sortKey &&
+    left.title === right.title &&
+    left.note === right.note &&
+    left.layoutMode === right.layoutMode &&
+    left.isCollapsed === right.isCollapsed &&
+    left.isStarred === right.isStarred &&
+    left.completedAt === right.completedAt &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt &&
+    left.deletedAt === right.deletedAt &&
+    left.archivedAt === right.archivedAt &&
+    left.archiveRootId === right.archiveRootId
+  );
+}
+
+function canonicalAttachmentEquals(
+  left: NoteAttachment,
+  right: NoteAttachment
+): boolean {
+  return (
+    left.id === right.id &&
+    left.nodeId === right.nodeId &&
+    left.sortKey === right.sortKey &&
+    left.relativePath === right.relativePath &&
+    left.contentHash === right.contentHash &&
+    left.originalName === right.originalName &&
+    left.mimeType === right.mimeType &&
+    left.byteSize === right.byteSize &&
+    left.intrinsicWidth === right.intrinsicWidth &&
+    left.intrinsicHeight === right.intrinsicHeight &&
+    left.displayWidth === right.displayWidth &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+const NOTE_SORT_KEY_STEP = 1024;
+
+function imageNodeImportDeltaMatchesWorkspace(
+  result: NotesMutationResult,
+  input: ImportImageNodePathsInput | ImportImageNodeBytesInput
+): boolean {
+  const deltaFields = [
+    result.changedNodes !== undefined,
+    result.removedNodeIds !== undefined,
+    result.changedAttachments !== undefined
+  ];
+  if (!deltaFields.every(Boolean)) {
+    return false;
+  }
+
+  const changedNodes = result.changedNodes!;
+  const removedNodeIds = result.removedNodeIds!;
+  const changedAttachments = result.changedAttachments!;
+  const importedNodeIds = new Set(input.items.map((item) => item.nodeId));
+  const canonicalNodesById = new Map(
+    result.workspace.nodes.map((node) => [node.id, node])
+  );
+  const canonicalAttachmentsById = new Map<string, NoteAttachment>();
+  for (const attachments of Object.values(
+    result.workspace.attachmentsByNodeId ?? {}
+  )) {
+    for (const attachment of attachments) {
+      canonicalAttachmentsById.set(attachment.id, attachment);
+    }
+  }
+
+  const changedNodeIds = new Set<NoteId>();
+  for (const changedNode of changedNodes) {
+    const canonicalNode = canonicalNodesById.get(changedNode.id);
+    if (
+      changedNodeIds.has(changedNode.id) ||
+      !canonicalNode ||
+      !canonicalNodeEquals(changedNode, canonicalNode)
+    ) {
+      return false;
+    }
+    changedNodeIds.add(changedNode.id);
+  }
+
+  if (removedNodeIds.length !== 0) {
+    return false;
+  }
+
+  // A sparse-key rebalance updates every live sibling. If the delta reports
+  // one existing sibling, require the complete step-aligned sibling set.
+  const reportsSiblingRebalance = changedNodes.some(
+    (node) => !importedNodeIds.has(node.id)
+  );
+  const expectedChangedNodeIds = reportsSiblingRebalance
+    ? new Set(
+        result.workspace.nodes
+          .filter(
+            (node) =>
+              node.parentId === input.parentId &&
+              node.deletedAt === null &&
+              node.archivedAt === null
+          )
+          .map((node) => node.id)
+      )
+    : importedNodeIds;
+  if (
+    changedNodeIds.size !== expectedChangedNodeIds.size ||
+    [...expectedChangedNodeIds].some((id) => !changedNodeIds.has(id))
+  ) {
+    return false;
+  }
+  if (
+    reportsSiblingRebalance &&
+    result.workspace.nodes.some(
+      (node) =>
+        node.parentId === input.parentId &&
+        node.deletedAt === null &&
+        node.archivedAt === null &&
+        !importedNodeIds.has(node.id) &&
+        (node.sortKey <= 0 || node.sortKey % NOTE_SORT_KEY_STEP !== 0)
+    )
+  ) {
+    return false;
+  }
+
+  if (changedAttachments.length !== input.items.length) {
+    return false;
+  }
+  for (let index = 0; index < input.items.length; index += 1) {
+    const item = input.items[index]!;
+    const changedAttachment = changedAttachments[index]!;
+    const canonicalAttachment = canonicalAttachmentsById.get(
+      changedAttachment.id
+    );
+    if (
+      changedAttachment.id !== item.attachmentId ||
+      changedAttachment.nodeId !== item.nodeId ||
+      !canonicalAttachment ||
+      !canonicalAttachmentEquals(changedAttachment, canonicalAttachment)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function normalizeImageNodeImportResult(
+  result: unknown,
+  historyContext: NotesHistoryContext | null,
+  input: ImportImageNodePathsInput | ImportImageNodeBytesInput
+): NotesMutationResult {
+  const normalized = normalizeMutationResult(result, historyContext);
+  const expectedImportedRootIds = input.items.map((item) => item.nodeId);
+  if (
+    !Array.isArray(normalized.importedRootIds) ||
+    normalized.importedRootIds.length !== expectedImportedRootIds.length ||
+    normalized.importedRootIds.some(
+      (id, index) => id !== expectedImportedRootIds[index]
+    )
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes image-node import returned unexpected imported root IDs.",
+      false
+    );
+  }
+  if (
+    (historyContext !== null &&
+      normalized.historyEntryId !== historyContext.entryId) ||
+    !imageNodeImportWorkspaceMatchesInput(normalized.workspace, input)
+  ) {
+    throw notesStoreError(
+      "write",
+      "Notes image-node import returned an invalid workspace.",
+      false
+    );
+  }
+  if (!imageNodeImportDeltaMatchesWorkspace(normalized, input)) {
+    throw notesStoreError(
+      "write",
+      "Notes image-node import returned an invalid mutation delta.",
+      false
+    );
+  }
+  return normalized;
+}
+
+function imageNodeImportWorkspaceMatchesInput(
+  workspace: NotesWorkspace,
+  input: ImportImageNodePathsInput | ImportImageNodeBytesInput
+): boolean {
+  const nodesById = new Map(workspace.nodes.map((node) => [node.id, node]));
+  if (input.parentId !== null && !nodesById.has(input.parentId)) {
+    return false;
+  }
+
+  const siblings = workspace.nodes
+    .filter((node) => node.parentId === input.parentId)
+    .sort(
+      (left, right) =>
+        left.sortKey - right.sortKey || left.id.localeCompare(right.id)
+    );
+  const anchorIndex =
+    input.afterId === null
+      ? -1
+      : siblings.findIndex((node) => node.id === input.afterId);
+  if (input.afterId !== null && anchorIndex < 0) {
+    return false;
+  }
+
+  const expectedNodeIds = input.items.map((item) => item.nodeId);
+  const actualNodeIds = siblings
+    .slice(anchorIndex + 1, anchorIndex + 1 + expectedNodeIds.length)
+    .map((node) => node.id);
+  if (
+    actualNodeIds.length !== expectedNodeIds.length ||
+    actualNodeIds.some((id, index) => id !== expectedNodeIds[index])
+  ) {
+    return false;
+  }
+
+  for (const item of input.items) {
+    const node = nodesById.get(item.nodeId);
+    if (
+      !node ||
+      node.nodeKind !== "image" ||
+      node.parentId !== input.parentId ||
+      node.deletedAt !== null ||
+      node.archivedAt !== null
+    ) {
+      return false;
+    }
+    const attachments = workspace.attachmentsByNodeId?.[item.nodeId] ?? [];
+    if (
+      attachments.length !== 1 ||
+      attachments[0]?.id !== item.attachmentId ||
+      attachments[0].nodeId !== item.nodeId
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function invokeNodeMutation(
@@ -763,6 +1229,77 @@ export async function notesImportAttachmentBytes(
   return normalizeMutationResult(result, normalizedHistoryContext);
 }
 
+export async function notesImportImageNodePaths(
+  vaultPath: string,
+  input: ImportImageNodePathsInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  const normalization = normalizeImportImageNodePathsInput(input);
+  const normalizedHistoryContext =
+    normalizeAttachmentHistoryContext(historyContext);
+  if (normalization === null || normalizedHistoryContext === undefined) {
+    throw notesStoreError(
+      "write",
+      "Notes image-node path import input is invalid.",
+      false
+    );
+  }
+
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>("notes_import_image_node_paths_batch", {
+      vaultPath,
+      input: normalization.input,
+      historyContext: normalizedHistoryContext
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  return normalizeImageNodeImportResult(
+    result,
+    normalizedHistoryContext,
+    normalization.input
+  );
+}
+
+export async function notesImportImageNodeBytes(
+  vaultPath: string,
+  input: ImportImageNodeBytesInput,
+  historyContext: NotesHistoryContext | null = null
+): Promise<NotesMutationResult> {
+  const normalization = normalizeImportImageNodeBytesInput(input);
+  const normalizedHistoryContext =
+    normalizeAttachmentHistoryContext(historyContext);
+  if (normalization === null || normalizedHistoryContext === undefined) {
+    throw notesStoreError(
+      "write",
+      "Notes image-node byte import input is invalid.",
+      false
+    );
+  }
+
+  let result: unknown;
+  try {
+    const body = await encodeNotesImageNodeRawEnvelope(
+      vaultPath,
+      normalization.input,
+      normalizedHistoryContext
+    );
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      throw new Error("Notes requires Tauri desktop storage.");
+    }
+    const { invoke } = await import("@tauri-apps/api/core");
+    result = await invoke<unknown>("notes_import_image_node_bytes", body);
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  return normalizeImageNodeImportResult(
+    result,
+    normalizedHistoryContext,
+    normalization.input
+  );
+}
+
 export async function notesReadAttachmentBytes(
   vaultPath: string,
   attachmentId: string
@@ -804,6 +1341,63 @@ export async function notesReadAttachmentBytes(
 
   // Return an owned copy so callers never observe the transport buffer.
   return source.slice();
+}
+
+async function invokeAttachmentVoidAction(
+  command: string,
+  args: Record<string, unknown>
+): Promise<void> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
+  if (result !== null) {
+    throw notesStoreError(
+      "write",
+      "Notes attachment action returned an invalid result.",
+      false
+    );
+  }
+}
+
+export function notesOpenAttachmentOriginal(
+  vaultPath: string,
+  attachmentId: string
+): Promise<void> {
+  if (!isNonEmptyNativeString(attachmentId)) {
+    return Promise.reject(
+      notesStoreError(
+        "write",
+        "Notes attachment action input is invalid.",
+        false
+      )
+    );
+  }
+  return invokeAttachmentVoidAction("notes_open_attachment_original", {
+    vaultPath,
+    attachmentId
+  });
+}
+
+export function notesDownloadAttachment(
+  vaultPath: string,
+  attachmentId: string
+): Promise<void> {
+  if (!isNonEmptyNativeString(attachmentId)) {
+    return Promise.reject(
+      notesStoreError(
+        "write",
+        "Notes attachment action input is invalid.",
+        false
+      )
+    );
+  }
+  return invokeAttachmentVoidAction("notes_download_attachment", {
+    vaultPath,
+    attachmentId
+  });
 }
 
 export function notesResizeAttachment(
@@ -952,6 +1546,10 @@ export const notesStore: NotesStore = {
   importAttachment: notesImportAttachment,
   importAttachmentPaths: notesImportAttachmentPaths,
   importAttachmentBytes: notesImportAttachmentBytes,
+  importImageNodePaths: notesImportImageNodePaths,
+  importImageNodeBytes: notesImportImageNodeBytes,
+  openAttachmentOriginal: notesOpenAttachmentOriginal,
+  downloadAttachment: notesDownloadAttachment,
   readAttachmentBytes: notesReadAttachmentBytes,
   resizeAttachment: notesResizeAttachment,
   removeAttachment: notesRemoveAttachment,

@@ -106,6 +106,25 @@ describe("notes attachment target resolution", () => {
     expect(attachmentTargetFromPoint(root, { x: 20, y: 30 })).toBeNull();
   });
 
+  it("falls back to the zoomed page for a targetless hit inside the outline", () => {
+    const blankOutlineSurface = appendTarget(root);
+    elementFromPoint.mockReturnValue(blankOutlineSurface);
+
+    expect(
+      attachmentTargetFromPoint(root, { x: 20, y: 30 }, "zoomed-page")
+    ).toBe("zoomed-page");
+  });
+
+  it("does not use the zoomed-page fallback outside the outline", () => {
+    const outsideRoot = document.createElement("aside");
+    document.body.append(outsideRoot);
+    elementFromPoint.mockReturnValue(outsideRoot);
+
+    expect(
+      attachmentTargetFromPoint(root, { x: 20, y: 30 }, "zoomed-page")
+    ).toBeNull();
+  });
+
   it.each(["", "   "])(
     "returns null for a malformed attachment target value %j",
     (noteId) => {

@@ -13,7 +13,7 @@ import { VaultRootContext } from "../../VaultRootContext";
 import type {
   NoteAttachment,
   NoteNode,
-  PendingNoteAttachmentByteItem
+  PendingImageNodeByteItem
 } from "../../domain/notes";
 import { NotesAttachmentUiContext } from "./NotesAttachmentUiContext";
 import type {
@@ -21,6 +21,7 @@ import type {
   NotesNativeImageDropEvent
 } from "./notesAttachmentController";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -123,8 +124,11 @@ function pasteClipboardItems(
 function workspaceValue(options: {
   zoomRootId?: string | null;
   selectedId?: string | null;
+  firstNodeKind?: NoteNode["nodeKind"];
   notesByNodeId?: Readonly<Record<string, string>>;
   attachmentNodeId?: string;
+  attachmentUploadError?: string;
+  attachmentUploadRetryAttemptId?: string;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
   deletingNotesData?: boolean;
   status?: "loading" | "ready" | "error";
@@ -134,17 +138,19 @@ function workspaceValue(options: {
   importClipboardImages?:
     | ((
         nodeId: string,
-        items: readonly PendingNoteAttachmentByteItem[]
+        items: readonly PendingImageNodeByteItem[]
       ) => Promise<void>)
     | null
     | undefined;
   importSubtree?: UseNotesWorkspaceResult["actions"]["importSubtree"];
+  retryImageUpload?: UseNotesWorkspaceResult["actions"]["retryImageUpload"];
   secondNoteText?: string;
 } = {}): UseNotesWorkspaceResult {
   const state = normalizeWorkspace({
     nodes: [
       node({
         id: "first",
+        nodeKind: options.firstNodeKind ?? "text",
         title: "First",
         note: options.notesByNodeId?.first ?? "",
         isCollapsed: true
@@ -177,6 +183,7 @@ function workspaceValue(options: {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
     createRoot: resolved(),
+    createNextTextSibling: resolved(),
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
@@ -216,7 +223,7 @@ function workspaceValue(options: {
       "importClipboardImages" in options
         ? (options.importClipboardImages ?? undefined)
         : resolved(),
-    retryImageUpload: resolved(),
+    retryImageUpload: options.retryImageUpload ?? resolved(),
     loadAttachmentBytes: vi.fn().mockResolvedValue(new Uint8Array([1])),
     resizeImage: resolved(),
     removeImage: resolved(),
@@ -238,8 +245,13 @@ function workspaceValue(options: {
     locallyExpandedNodeIds: new Set(),
     draftsByNodeId: {},
     writeError: null,
-    attachmentUploadErrorsByNodeId: {},
-    attachmentUploadRetryAttemptIdsByNodeId: {},
+    attachmentUploadErrorsByNodeId: options.attachmentUploadError
+      ? { first: options.attachmentUploadError }
+      : {},
+    attachmentUploadRetryAttemptIdsByNodeId:
+      options.attachmentUploadRetryAttemptId
+        ? { first: options.attachmentUploadRetryAttemptId }
+        : {},
     retryFailedDraft: resolved(),
     retryLastFailedWrite: resolved(),
     status: state.status,
@@ -255,6 +267,7 @@ function renderPane(
 ) {
   const attachmentUi: NotesAttachmentUiBoundary = {
     openImageFiles: vi.fn().mockResolvedValue(null),
+    saveImageFile: vi.fn().mockResolvedValue(null),
     subscribeToImageDrop
   };
   let vaultRoot = initialVaultRoot;
@@ -263,9 +276,11 @@ function renderPane(
       <VaultRootContext.Provider value={currentVaultRoot}>
         <NotesAttachmentUiContext.Provider value={attachmentUi}>
           <NotesWorkspaceContext.Provider value={value}>
-            <div className="feature-pane-slot">
-              <NotesOutlinePane />
-            </div>
+            <NotesImageResidencyProvider scopeKey={currentVaultRoot}>
+              <div className="feature-pane-slot">
+                <NotesOutlinePane />
+              </div>
+            </NotesImageResidencyProvider>
           </NotesWorkspaceContext.Provider>
         </NotesAttachmentUiContext.Provider>
       </VaultRootContext.Provider>
@@ -418,9 +433,11 @@ describe("Notes image ingest", () => {
       })
     );
     expect(firstRow).toHaveAttribute("data-image-drop-active", "true");
-    expect(
-      within(firstRow).getByTestId("notes-image-drop-position")
-    ).toBeVisible();
+    const firstMarker = within(firstRow.closest("li")!).getByTestId(
+      "notes-image-drop-position"
+    );
+    expect(firstMarker).toBeVisible();
+    expect(firstMarker.previousElementSibling).toBe(firstRow);
     const dragPreview = screen.getByTestId("notes-attachment-drag-preview");
     expect(dragPreview).toHaveTextContent("from-enter.png");
     expect(dragPreview).toHaveTextContent("+1");
@@ -432,12 +449,16 @@ describe("Notes image ingest", () => {
     );
     expect(firstRow).not.toHaveAttribute("data-image-drop-active");
     expect(
-      within(firstRow).queryByTestId("notes-image-drop-position")
+      within(firstRow.closest("li")!).queryByTestId(
+        "notes-image-drop-position"
+      )
     ).toBeNull();
     expect(secondRow).toHaveAttribute("data-image-drop-active", "true");
-    expect(
-      within(secondRow).getByTestId("notes-image-drop-position")
-    ).toBeVisible();
+    const secondMarker = within(secondRow.closest("li")!).getByTestId(
+      "notes-image-drop-position"
+    );
+    expect(secondMarker).toBeVisible();
+    expect(secondMarker.previousElementSibling).toBe(secondRow);
     expect(dragPreview).toHaveStyle({ left: "234px", top: "194px" });
 
     act(() =>
@@ -461,6 +482,137 @@ describe("Notes image ingest", () => {
     expect(secondTitle.selectionStart).toBe(1);
     expect(secondTitle.selectionEnd).toBe(4);
     expect(workspace.state.nodesById.first.isCollapsed).toBe(true);
+  });
+
+  it("appends a Finder image to a zoomed page from its blank outline surface", async () => {
+    let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
+    const importDroppedImagePaths = vi.fn().mockResolvedValue(undefined);
+    const subscribe = vi.fn().mockImplementation(async (listener) => {
+      nativeDrop = listener;
+      return vi.fn();
+    });
+    renderPane(
+      workspaceValue({ zoomRootId: "first", importDroppedImagePaths }),
+      subscribe
+    );
+    await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+    const outline = document.querySelector<HTMLElement>(".notes-outline-rows")!;
+    const header = document.querySelector<HTMLElement>(".notes-page-header")!;
+    elementFromPoint.mockReturnValue(outline);
+
+    act(() =>
+      nativeDrop?.({
+        type: "enter",
+        paths: ["/incoming/blank-page.png"],
+        position: { x: 300, y: 420 }
+      })
+    );
+
+    expect(header).toHaveAttribute("data-image-drop-active", "true");
+    expect(screen.getByTestId("notes-image-drop-position")).toBeVisible();
+
+    // Native backends can lose the final hit-test position while completing
+    // the drop; the last highlighted insertion target remains authoritative.
+    elementFromPoint.mockReturnValue(null);
+    act(() =>
+      nativeDrop?.({
+        type: "drop",
+        paths: ["/incoming/blank-page.png"],
+        position: { x: 300, y: 420 }
+      })
+    );
+
+    expect(importDroppedImagePaths).toHaveBeenCalledWith("first", [
+      "/incoming/blank-page.png"
+    ]);
+    expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
+  });
+
+  it("renders a failed Finder drop on an image row with the exact retry and no legacy attachment list", async () => {
+    const user = userEvent.setup();
+    let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
+    const importDroppedImagePaths = vi.fn().mockResolvedValue(undefined);
+    const retryImageUpload = vi.fn().mockResolvedValue(undefined);
+    const subscribe = vi.fn().mockImplementation(async (listener) => {
+      nativeDrop = listener;
+      return vi.fn();
+    });
+    const view = renderPane(
+      workspaceValue({
+        firstNodeKind: "image",
+        attachmentNodeId: "first",
+        importDroppedImagePaths
+      }),
+      subscribe
+    );
+    await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+    const row = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    elementFromPoint.mockReturnValue(row);
+
+    act(() =>
+      nativeDrop?.({
+        type: "drop",
+        paths: ["/incoming/failed.png"],
+        position: { x: 20, y: 20 }
+      })
+    );
+    expect(importDroppedImagePaths).toHaveBeenCalledWith("first", [
+      "/incoming/failed.png"
+    ]);
+
+    view.rerenderWorkspace(
+      workspaceValue({
+        firstNodeKind: "image",
+        attachmentNodeId: "first",
+        attachmentUploadError: "Image upload failed: disk full",
+        attachmentUploadRetryAttemptId: "finder-attempt",
+        importDroppedImagePaths,
+        retryImageUpload
+      })
+    );
+    const failedRow = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    const alert = within(failedRow).getByRole("alert", {
+      name: "Image upload failed"
+    });
+    expect(alert).toHaveTextContent("disk full");
+    expect(failedRow.querySelector(".notes-attachment-list")).toBeNull();
+    expect(
+      within(failedRow).getAllByRole("group", {
+        name: "Image: existing.png"
+      })
+    ).toHaveLength(1);
+    expect(
+      within(failedRow).queryByRole("group", { name: "Image: First" })
+    ).toBeNull();
+
+    await user.click(
+      within(alert).getByRole("button", { name: "Retry image upload" })
+    );
+    expect(retryImageUpload).toHaveBeenCalledWith("first", "finder-attempt");
+
+    view.rerenderWorkspace(
+      workspaceValue({
+        firstNodeKind: "image",
+        attachmentNodeId: "first",
+        attachmentUploadError: "Image upload failed: disk full",
+        attachmentUploadRetryAttemptId: "finder-attempt",
+        importDroppedImagePaths,
+        retryImageUpload,
+        libraryView: "archive"
+      })
+    );
+    const readOnlyAlert = within(
+      document.querySelector<HTMLElement>('[data-outline-id="first"]')!
+    ).getByRole("alert", { name: "Image upload failed" });
+    expect(
+      within(readOnlyAlert).queryByRole("button", {
+        name: "Retry image upload"
+      })
+    ).toBeNull();
   });
 
   it("clears previews on outside hits, leave, and rejected imports", async () => {
@@ -546,7 +698,11 @@ describe("Notes image ingest", () => {
       })
     );
     expect(screen.getByTestId("notes-attachment-drag-preview")).toBeVisible();
-    expect(within(row).getByTestId("notes-image-drop-position")).toBeVisible();
+    const marker = within(row.closest("li")!).getByTestId(
+      "notes-image-drop-position"
+    );
+    expect(marker).toBeVisible();
+    expect(marker.previousElementSibling).toBe(row);
 
     act(() => {
       slot.hidden = true;
@@ -1232,6 +1388,76 @@ describe("Notes image ingest", () => {
       ).toBeNull();
       view.unmount();
     }
+  });
+
+  it("blocks clipboard image writes when there is no active vault root", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    renderPane(
+      workspaceValue({
+        selectedId: "first",
+        importClipboardImages
+      }),
+      vi.fn().mockResolvedValue(vi.fn()),
+      ""
+    );
+    const content = document.querySelector(".notes-outline-content")!;
+    const image = new File(["no-vault"], "no-vault.png", {
+      type: "image/png"
+    });
+
+    const event = pasteClipboardItems(content, [
+      clipboardItem("image/png", image)
+    ]);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("alert", { name: "Image paste failed" })
+    ).toBeNull();
+  });
+
+  it("blocks Finder image drops when there is no active vault root", async () => {
+    let nativeDrop: ((event: NotesNativeImageDropEvent) => void) | undefined;
+    const importDroppedImagePaths = vi.fn().mockResolvedValue(undefined);
+    const subscribe = vi.fn().mockImplementation(async (listener) => {
+      nativeDrop = listener;
+      return vi.fn();
+    });
+    renderPane(
+      workspaceValue({
+        importDroppedImagePaths
+      }),
+      subscribe,
+      ""
+    );
+    await waitFor(() => expect(subscribe).toHaveBeenCalledOnce());
+    const row = document.querySelector<HTMLElement>(
+      '[data-outline-id="first"]'
+    )!;
+    elementFromPoint.mockReturnValue(row);
+
+    act(() =>
+      nativeDrop?.({
+        type: "enter",
+        paths: ["/incoming/no-vault.png"],
+        position: { x: 20, y: 20 }
+      })
+    );
+    expect(row).not.toHaveAttribute("data-image-drop-active");
+    expect(screen.queryByTestId("notes-image-drop-position")).toBeNull();
+
+    act(() =>
+      nativeDrop?.({
+        type: "drop",
+        paths: ["/incoming/no-vault.png"],
+        position: { x: 20, y: 20 }
+      })
+    );
+
+    expect(importDroppedImagePaths).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("alert", { name: "Image drop failed" })
+    ).toBeNull();
   });
 
   it("replaces a drop error with one paste error instead of overlapping alerts", async () => {

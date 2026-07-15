@@ -14,9 +14,11 @@ use crate::notes::types::{
     NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
     NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
     NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput, MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE,
-    MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS,
+    MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 use rusqlite::{
     params, params_from_iter, Connection, Error, ErrorCode, OpenFlags, OptionalExtension, Params,
     Row, Transaction, TransactionBehavior,
@@ -24,8 +26,8 @@ use rusqlite::{
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
 
@@ -49,7 +51,12 @@ const NOTE_SEARCH_MAX_TEXT_UTF8_BYTES: usize = 4096;
 const NOTE_SEARCH_MAX_UNIQUE_TAG_ALTERNATIVES: usize = 64;
 const NOTE_SEARCH_MAX_OR_GROUPS: usize = 16;
 const NOTE_SEARCH_MAX_ALTERNATIVES_PER_OR_GROUP: usize = 16;
-const SORT_KEY_STEP: i64 = 1024;
+const SQLITE_HEADER_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+/// Bounds the structural allocations used to assemble and render one export.
+pub(crate) const MAX_NOTES_EXPORT_NODES: usize = 20_000;
+/// Counts the root as level one and keeps recursive export work stack-safe.
+pub(crate) const MAX_NOTES_EXPORT_DEPTH: usize = 128;
+pub(crate) const SORT_KEY_STEP: i64 = 1024;
 // Keep every dynamic ancestor query below SQLite's legacy 999-variable limit,
 // even though current bundled SQLite builds allow more.
 const ANCESTOR_CLOSURE_CHUNK_SIZE: usize = 400;
@@ -69,6 +76,38 @@ thread_local! {
         const { RefCell::new(None) };
     static NODE_BY_ID_LOOKUP_COUNT: Cell<usize> = const { Cell::new(0) };
     static ANCESTOR_CLOSURE_QUERY_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    static NOTES_DATABASE_AFTER_HOLD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+    static DELETE_DATABASE_AFTER_HOLD_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn inject_notes_database_after_hold_once(action: impl FnOnce() + 'static) {
+    NOTES_DATABASE_AFTER_HOLD_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+fn maybe_inject_notes_database_after_hold() {
+    #[cfg(test)]
+    if let Some(action) = NOTES_DATABASE_AFTER_HOLD_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action();
+    }
+}
+
+#[cfg(test)]
+fn inject_delete_database_after_hold_once(action: impl FnOnce() + 'static) {
+    DELETE_DATABASE_AFTER_HOLD_HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(action)));
+}
+
+#[cfg(test)]
+fn maybe_inject_delete_database_after_hold() {
+    if let Some(action) = DELETE_DATABASE_AFTER_HOLD_HOOK.with(|slot| slot.borrow_mut().take()) {
+        action();
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +164,13 @@ fn install_initialization_busy_observer(connection: &Connection) -> Result<(), S
     Ok(())
 }
 
+pub(crate) fn validate_vault_path(vault_path: &str) -> Result<(), String> {
+    if vault_path.trim().is_empty() {
+        return Err("Vault path must not be empty.".to_string());
+    }
+    Ok(())
+}
+
 pub(crate) fn notes_db_path(vault_path: &str) -> PathBuf {
     crate::metadata_dir(vault_path).join("notes.sqlite")
 }
@@ -135,68 +181,540 @@ fn sqlite_companion_path(database_path: &PathBuf, suffix: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
-    if vault_path.trim().is_empty() {
-        return Err("Vault path must not be empty.".to_string());
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NotesFileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn notes_file_identity(metadata: &fs::Metadata) -> NotesFileIdentity {
+    NotesFileIdentity {
+        device: CapMetadataExt::dev(metadata),
+        inode: CapMetadataExt::ino(metadata),
+    }
+}
+
+fn notes_capability_identity(metadata: &cap_std::fs::Metadata) -> NotesFileIdentity {
+    NotesFileIdentity {
+        device: CapMetadataExt::dev(metadata),
+        inode: CapMetadataExt::ino(metadata),
+    }
+}
+
+fn validate_notes_owned_file_metadata(
+    metadata: &fs::Metadata,
+    description: &str,
+) -> Result<NotesFileIdentity, String> {
+    if !metadata.file_type().is_file() {
+        return Err(format!("The {description} must be a regular file."));
+    }
+    if CapMetadataExt::nlink(metadata) != 1 {
+        return Err(format!(
+            "The {description} must not have multiple hard links."
+        ));
+    }
+    Ok(notes_file_identity(metadata))
+}
+
+fn validate_notes_owned_capability_metadata(
+    metadata: &cap_std::fs::Metadata,
+    description: &str,
+) -> Result<NotesFileIdentity, String> {
+    if !metadata.file_type().is_file() {
+        return Err(format!("The {description} must be a regular file."));
+    }
+    if CapMetadataExt::nlink(metadata) != 1 {
+        return Err(format!(
+            "The {description} must not have multiple hard links."
+        ));
+    }
+    Ok(notes_capability_identity(metadata))
+}
+
+#[cfg(windows)]
+fn windows_notes_database_share_mode() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+    FILE_SHARE_READ | FILE_SHARE_WRITE
+}
+
+#[cfg(all(test, not(windows)))]
+fn windows_notes_database_share_mode() -> u32 {
+    0x1 | 0x2
+}
+
+#[cfg(windows)]
+fn open_notes_file_nofollow(
+    _directory: &Dir,
+    _name: &Path,
+    absolute_path: &Path,
+    writable: bool,
+    create_new: bool,
+) -> std::io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, CREATE_NEW,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, OPEN_EXISTING,
+    };
+
+    let path = absolute_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | if writable { GENERIC_WRITE } else { 0 },
+            windows_notes_database_share_mode(),
+            std::ptr::null(),
+            if create_new {
+                CREATE_NEW
+            } else {
+                OPEN_EXISTING
+            },
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { fs::File::from_raw_handle(handle) };
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Notes database files must not be reparse points.",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(windows))]
+fn open_notes_file_nofollow(
+    directory: &Dir,
+    name: &Path,
+    _absolute_path: &Path,
+    writable: bool,
+    create_new: bool,
+) -> std::io::Result<fs::File> {
+    let mut options = CapOpenOptions::new();
+    options
+        .read(true)
+        .write(writable)
+        .create_new(create_new)
+        .follow(FollowSymlinks::No);
+    directory
+        .open_with(name, &options)
+        .map(cap_std::fs::File::into_std)
+}
+
+struct HeldNotesFile {
+    path: PathBuf,
+    name: PathBuf,
+    file: fs::File,
+    identity: NotesFileIdentity,
+    description: &'static str,
+}
+
+impl HeldNotesFile {
+    fn open_existing(
+        directory: &Dir,
+        name: &Path,
+        path: &Path,
+        writable: bool,
+        description: &'static str,
+    ) -> Result<Self, String> {
+        let path_metadata = directory
+            .symlink_metadata(name)
+            .map_err(|error| format!("Could not inspect the {description}: {error}"))?;
+        if path_metadata.file_type().is_symlink() {
+            return Err(format!(
+                "The {description} must not be a symlink or reparse point."
+            ));
+        }
+        let path_identity = validate_notes_owned_capability_metadata(&path_metadata, description)?;
+        let file = open_notes_file_nofollow(directory, name, path, writable, false)
+            .map_err(|error| format!("Could not open the {description} safely: {error}"))?;
+        let identity = validate_notes_owned_file_metadata(
+            &file
+                .metadata()
+                .map_err(|error| format!("Could not inspect the held {description}: {error}"))?,
+            description,
+        )?;
+        if identity != path_identity {
+            return Err(format!(
+                "The {description} identity changed while it was acquired."
+            ));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            name: name.to_path_buf(),
+            file,
+            identity,
+            description,
+        })
     }
 
-    let database_path = notes_db_path(vault_path);
-    let owned_paths = [
-        database_path.clone(),
-        sqlite_companion_path(&database_path, "-wal"),
-        sqlite_companion_path(&database_path, "-shm"),
-    ];
-    let mut failures = Vec::new();
-    for path in owned_paths {
-        if let Err(error) = fs::remove_file(&path) {
-            if error.kind() != ErrorKind::NotFound {
-                failures.push(format!("{}: {error}", path.display()));
+    fn create_new(
+        directory: &Dir,
+        name: &Path,
+        path: &Path,
+        description: &'static str,
+    ) -> Result<Self, String> {
+        let file = open_notes_file_nofollow(directory, name, path, true, true)
+            .map_err(|error| format!("Could not create the {description} safely: {error}"))?;
+        let identity = validate_notes_owned_file_metadata(
+            &file
+                .metadata()
+                .map_err(|error| format!("Could not inspect the held {description}: {error}"))?,
+            description,
+        )?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            name: name.to_path_buf(),
+            file,
+            identity,
+            description,
+        })
+    }
+
+    fn verify_at(&self, directory: &Dir) -> Result<(), String> {
+        let held_identity = validate_notes_owned_file_metadata(
+            &self.file.metadata().map_err(|error| {
+                format!("Could not inspect the held {}: {error}", self.description)
+            })?,
+            self.description,
+        )?;
+        if held_identity != self.identity {
+            return Err(format!(
+                "The {} held identity changed during acquisition.",
+                self.description
+            ));
+        }
+        let reopened =
+            Self::open_existing(directory, &self.name, &self.path, false, self.description)?;
+        if reopened.identity != self.identity {
+            return Err(format!(
+                "The {} identity changed during acquisition.",
+                self.description
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_sqlite_connection(
+        &self,
+        connection: &Connection,
+        metadata: &Dir,
+    ) -> Result<(), String> {
+        #[cfg(not(windows))]
+        let _ = connection;
+        #[cfg(windows)]
+        let opened_path = connection
+            .path()
+            .ok_or_else(|| "Could not identify the database file opened by SQLite.".to_string())?;
+        #[cfg(windows)]
+        let opened_path = Path::new(opened_path);
+        #[cfg(windows)]
+        let name = opened_path
+            .file_name()
+            .ok_or_else(|| "Could not identify the database file opened by SQLite.".to_string())?;
+        #[cfg(windows)]
+        let opened = Self::open_existing(
+            metadata,
+            Path::new(name),
+            opened_path,
+            false,
+            self.description,
+        )?;
+        #[cfg(not(windows))]
+        let opened =
+            Self::open_existing(metadata, &self.name, &self.path, false, self.description)?;
+        if opened.identity != self.identity {
+            return Err(format!(
+                "The {} identity opened by SQLite did not match the safely held file.",
+                self.description
+            ));
+        }
+        Ok(())
+    }
+
+    fn read_header(&self) -> Result<[u8; 64], String> {
+        let mut file = self
+            .file
+            .try_clone()
+            .map_err(|error| format!("Could not inspect Notes storage: {error}"))?;
+        let mut header = [0_u8; 64];
+        match file.read_exact(&mut header) {
+            Ok(()) => Ok(header),
+            Err(error) if error.kind() == ErrorKind::UnexpectedEof => Ok([0_u8; 64]),
+            Err(error) => Err(format!("Could not inspect Notes storage: {error}")),
+        }
+    }
+}
+
+fn hold_existing_notes_companions(
+    metadata: &Dir,
+    database_path: &PathBuf,
+) -> Result<Vec<HeldNotesFile>, String> {
+    let mut companions = Vec::new();
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let path = sqlite_companion_path(database_path, suffix);
+        let name = Path::new(path.file_name().expect("companion file name"));
+        match metadata.symlink_metadata(name) {
+            Ok(_) => companions.push(HeldNotesFile::open_existing(
+                metadata,
+                name,
+                &path,
+                false,
+                "Notes database companion",
+            )?),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not inspect the Notes database companion: {error}"
+                ))
             }
         }
     }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
+    Ok(companions)
+}
+
+fn verify_held_notes_files(
+    metadata: &Dir,
+    database: &HeldNotesFile,
+    companions: &[HeldNotesFile],
+) -> Result<(), String> {
+    database.verify_at(metadata)?;
+    for companion in companions {
+        companion.verify_at(metadata)?;
+    }
+    Ok(())
+}
+
+fn verify_notes_companion_set_stable(
+    metadata: &Dir,
+    database_path: &PathBuf,
+    expected: &[HeldNotesFile],
+) -> Result<(), String> {
+    let current = hold_existing_notes_companions(metadata, database_path)?;
+    if current.len() != expected.len()
+        || current.iter().any(|file| {
+            !expected.iter().any(|expected_file| {
+                expected_file.path == file.path && expected_file.identity == file.identity
+            })
+        })
+    {
+        return Err(
+            "The Notes database companion identity set changed during acquisition.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_notes_metadata_directory(metadata: &Dir) -> Result<(), String> {
+    metadata
+        .try_clone()
+        .and_then(|metadata| metadata.into_std_file().sync_all())
+        .map_err(|error| format!("Could not sync the Notes metadata directory: {error}"))
+}
+
+#[cfg(not(unix))]
+fn sync_notes_metadata_directory(_metadata: &Dir) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn delete_database(vault_path: &str) -> Result<(), String> {
+    validate_vault_path(vault_path)?;
+    let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
+    maybe_inject_delete_database_after_hold();
+    let metadata = app_lock.try_clone_metadata()?;
+    delete_database_from_metadata(&metadata)
+}
+
+pub(crate) fn delete_database_from_metadata(metadata: &Dir) -> Result<(), String> {
+    let owned_names = [
+        "notes.sqlite",
+        "notes.sqlite-wal",
+        "notes.sqlite-shm",
+        "notes.sqlite-journal",
+    ];
+    let mut failures = Vec::new();
+    for name in owned_names {
+        if let Err(error) = metadata.remove_file_or_symlink(name) {
+            if error.kind() != ErrorKind::NotFound {
+                failures.push(format!("{name}: {error}"));
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(format!(
             "Could not delete Notes storage: {}",
             failures.join("; ")
-        ))
+        ));
     }
+    sync_notes_metadata_directory(metadata)
 }
 
 pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
-    if vault_path.trim().is_empty() {
-        return Err("Vault path must not be empty.".to_string());
-    }
+    validate_vault_path(vault_path)?;
+    let app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)?;
 
-    let metadata = crate::metadata_dir(vault_path);
-    fs::create_dir_all(&metadata)
-        .map_err(|error| format!("Could not prepare Notes storage: {error}"))?;
-    let mut connection = Connection::open(notes_db_path(vault_path))
+    let database_path = notes_db_path(vault_path);
+    let metadata = app_lock.try_clone_metadata()?;
+    let database_name = Path::new("notes.sqlite");
+    let (database, created) = match metadata.symlink_metadata(database_name) {
+        Ok(_) => (
+            HeldNotesFile::open_existing(
+                &metadata,
+                database_name,
+                &database_path,
+                true,
+                "Notes database",
+            )?,
+            false,
+        ),
+        Err(error) if error.kind() == ErrorKind::NotFound => (
+            HeldNotesFile::create_new(&metadata, database_name, &database_path, "Notes database")?,
+            true,
+        ),
+        Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
+    };
+    let mut companions = hold_existing_notes_companions(&metadata, &database_path)?;
+    if !created {
+        preflight_existing_notes_schema_with_holds(
+            &database_path,
+            &metadata,
+            &database,
+            &companions,
+        )?;
+        companions = hold_existing_notes_companions(&metadata, &database_path)?;
+    }
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    maybe_inject_notes_database_after_hold();
+    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
+    app_lock.revalidate_metadata_path()?;
+    let mut connection = Connection::open(&database_path)
         .map_err(|error| format!("Could not open Notes storage: {error}"))?;
+    app_lock.revalidate_metadata_path()?;
+    database.verify_sqlite_connection(&connection, &metadata)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
     initialize_notes_db(&mut connection)?;
+    app_lock.revalidate_metadata_path()?;
+    database.verify_sqlite_connection(&connection, &metadata)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
     Ok(connection)
 }
 
-pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, String> {
-    if vault_path.trim().is_empty() {
-        return Err("Vault path must not be empty.".to_string());
+fn preflight_existing_notes_schema_with_holds(
+    database_path: &PathBuf,
+    metadata: &Dir,
+    database: &HeldNotesFile,
+    companions: &[HeldNotesFile],
+) -> Result<(), String> {
+    verify_held_notes_files(metadata, database, companions)?;
+    preflight_notes_schema_header(database)?;
+    verify_notes_companion_set_stable(metadata, database_path, companions)?;
+
+    let connection =
+        Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| format!("Could not open Notes storage for inspection: {error}"))?;
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, database, companions)?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if user_version > CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
+        ));
+    }
+    database.verify_sqlite_connection(&connection, metadata)?;
+    verify_held_notes_files(metadata, database, companions)
+}
+
+fn preflight_notes_schema_header(database: &HeldNotesFile) -> Result<(), String> {
+    let header = database.read_header()?;
+    if &header[..SQLITE_HEADER_MAGIC.len()] != SQLITE_HEADER_MAGIC {
+        return Ok(());
     }
 
+    let user_version = u32::from_be_bytes([header[60], header[61], header[62], header[63]]);
+    if i64::from(user_version) > CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, String> {
+    validate_vault_path(vault_path)?;
+
     let database_path = notes_db_path(vault_path);
-    match fs::symlink_metadata(&database_path) {
+    let Some(app_lock) = crate::notes::connection::try_acquire_existing_vault_app_lock(vault_path)?
+    else {
+        return Err("Notes database does not exist.".to_string());
+    };
+    let metadata = app_lock.try_clone_metadata()?;
+    match metadata.symlink_metadata("notes.sqlite") {
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => {
             return Err("Notes database does not exist.".to_string());
         }
         Err(error) => return Err(format!("Could not inspect Notes storage: {error}")),
     }
+    let database = HeldNotesFile::open_existing(
+        &metadata,
+        Path::new("notes.sqlite"),
+        &database_path,
+        false,
+        "Notes database",
+    )?;
+    let companions = hold_existing_notes_companions(&metadata, &database_path)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    maybe_inject_notes_database_after_hold();
+    verify_notes_companion_set_stable(&metadata, &database_path, &companions)?;
 
-    Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|error| format!("Could not open Notes storage for export: {error}"))
+    app_lock.revalidate_metadata_path()?;
+    let connection = Connection::open_with_flags(&database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("Could not open Notes storage for export: {error}"))?;
+    app_lock.revalidate_metadata_path()?;
+    database.verify_sqlite_connection(&connection, &metadata)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    let user_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if user_version != CURRENT_NOTES_SCHEMA_VERSION {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {user_version}."
+        ));
+    }
+    app_lock.revalidate_metadata_path()?;
+    database.verify_sqlite_connection(&connection, &metadata)?;
+    verify_held_notes_files(&metadata, &database, &companions)?;
+    Ok(connection)
 }
 
 fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
+    let preflight_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
+    if !(0..=CURRENT_NOTES_SCHEMA_VERSION).contains(&preflight_version) {
+        return Err(format!(
+            "{UNSUPPORTED_SCHEMA_VERSION_PREFIX} {preflight_version}."
+        ));
+    }
+
     connection
         .busy_timeout(NOTES_BUSY_TIMEOUT)
         .map_err(|error| format!("Could not configure the Notes busy timeout: {error}"))?;
@@ -221,6 +739,7 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
     }
 
     if created {
+        seed_vault_generation(&transaction)?;
         seed_notes_onboarding(&transaction)?;
         let node_ids = {
             let mut statement = transaction
@@ -244,9 +763,63 @@ fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
             .map_err(|error| format!("Could not record the Notes schema version: {error}"))?;
     }
 
+    validate_persisted_id_namespace(&transaction)?;
+
     transaction
         .commit()
         .map_err(|error| format!("Could not finish Notes storage initialization: {error}"))
+}
+
+fn seed_vault_generation(transaction: &Transaction<'_>) -> Result<(), String> {
+    transaction
+        .execute(
+            "INSERT INTO notes_metadata(id, vault_generation) VALUES (1, ?1)",
+            [Uuid::new_v4().to_string()],
+        )
+        .map_err(|error| format!("Could not record the Notes vault generation: {error}"))?;
+    Ok(())
+}
+
+pub(crate) fn notes_vault_generation(connection: &Connection) -> Result<String, String> {
+    let generation = connection
+        .query_row(
+            "SELECT vault_generation FROM notes_metadata WHERE id = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(|error| format!("Could not read the Notes vault generation: {error}"))?;
+    validate_note_id(&generation)
+        .map_err(|error| format!("The Notes vault generation is invalid: {error}"))?;
+    Ok(generation)
+}
+
+fn validate_persisted_id_namespace(connection: &Connection) -> Result<(), String> {
+    let collision = connection
+        .query_row(
+            "WITH namespace(id, kind) AS (\
+               SELECT id, 'node' FROM notes_nodes \
+               UNION ALL \
+               SELECT id, 'attachment' FROM notes_attachments \
+               UNION ALL \
+               SELECT row_id, CASE table_name \
+                 WHEN 'notes_nodes' THEN 'node' ELSE 'attachment' END \
+               FROM notes_history_changes \
+               WHERE table_name IN ('notes_nodes', 'notes_attachments')\
+             ) \
+             SELECT id FROM namespace \
+             GROUP BY id HAVING COUNT(DISTINCT kind) > 1 \
+             ORDER BY id LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| format!("Could not validate the Notes ID namespace: {error}"))?;
+    if let Some(id) = collision {
+        return Err(format!(
+            "The Notes ID namespace contains a node/attachment collision for {id}."
+        ));
+    }
+    Ok(())
 }
 
 fn rebuild_all_tag_indexes(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -583,6 +1156,7 @@ struct StoredExportNode {
     id: String,
     parent_id: Option<String>,
     sort_key: i64,
+    node_kind: NoteNodeKind,
     title: String,
     note: String,
     title_date_spans: Vec<ExportDateSpan>,
@@ -596,6 +1170,20 @@ struct StoredExportDate {
     end_utf16: i64,
     normalized_start: String,
     normalized_end: String,
+}
+
+fn validate_export_subtree_budget(node_count: usize, max_depth: usize) -> Result<(), String> {
+    if node_count > MAX_NOTES_EXPORT_NODES {
+        return Err(format!(
+            "Notes export must contain at most {MAX_NOTES_EXPORT_NODES} nodes."
+        ));
+    }
+    if max_depth > MAX_NOTES_EXPORT_DEPTH {
+        return Err(format!(
+            "Notes export cannot nest deeper than {MAX_NOTES_EXPORT_DEPTH} levels."
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -666,19 +1254,21 @@ fn load_export_snapshot_queries(
              export_context(exported_at) AS (\
                SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
              ), \
-             subtree(id, path, cycle) AS (\
-               SELECT id, '|' || id || '|', 0 FROM notes_nodes \
+             subtree(id, path, cycle, depth) AS (\
+               SELECT id, '|' || id || '|', 0, 1 FROM notes_nodes \
                WHERE id = ?1 AND deleted_at IS NULL AND archived_at IS NULL \
                UNION ALL \
                SELECT child.id, subtree.path || child.id || '|', \
-                      instr(subtree.path, '|' || child.id || '|') > 0 \
+                      instr(subtree.path, '|' || child.id || '|') > 0, \
+                      subtree.depth + 1 \
                FROM notes_nodes child \
                JOIN subtree ON child.parent_id = subtree.id \
                WHERE child.deleted_at IS NULL AND child.archived_at IS NULL \
-                 AND subtree.cycle = 0\
+                 AND subtree.cycle = 0 AND subtree.depth <= ?2 \
+               LIMIT ?3\
              ) \
-             SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
-                    node.completed_at, subtree.cycle, export_context.exported_at \
+             SELECT node.id, node.parent_id, node.sort_key, node.node_kind, node.title, node.note, \
+                    node.completed_at, subtree.cycle, export_context.exported_at, subtree.depth \
              FROM subtree \
              JOIN notes_nodes node ON node.id = subtree.id \
              CROSS JOIN export_context \
@@ -686,22 +1276,32 @@ fn load_export_snapshot_queries(
         )
         .map_err(|error| format!("Could not prepare the Notes export snapshot: {error}"))?;
     let rows = statement
-        .query_map([root_node_id], |row| {
-            Ok((
-                StoredExportNode {
-                    id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    sort_key: row.get(2)?,
-                    title: row.get(3)?,
-                    note: row.get(4)?,
-                    title_date_spans: Vec::new(),
-                    note_date_spans: Vec::new(),
-                    completed_at: row.get(5)?,
-                },
-                row.get::<_, i64>(6)? != 0,
-                row.get::<_, String>(7)?,
-            ))
-        })
+        .query_map(
+            params![
+                root_node_id,
+                i64::try_from(MAX_NOTES_EXPORT_DEPTH).expect("export depth limit fits i64"),
+                i64::try_from(MAX_NOTES_EXPORT_NODES + 1)
+                    .expect("export node probe limit fits i64"),
+            ],
+            |row| {
+                Ok((
+                    StoredExportNode {
+                        id: row.get(0)?,
+                        parent_id: row.get(1)?,
+                        sort_key: row.get(2)?,
+                        node_kind: note_node_kind_from_row(row, 3)?,
+                        title: row.get(4)?,
+                        note: row.get(5)?,
+                        title_date_spans: Vec::new(),
+                        note_date_spans: Vec::new(),
+                        completed_at: row.get(6)?,
+                    },
+                    row.get::<_, i64>(7)? != 0,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            },
+        )
         .map_err(|error| format!("Could not load the Notes export snapshot: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes export snapshot: {error}"))?;
@@ -711,14 +1311,25 @@ fn load_export_snapshot_queries(
             "Note node {root_node_id} is missing, deleted, or archived and cannot be exported."
         ));
     }
-    if rows.iter().any(|(_, cycle, _)| *cycle) {
+    if rows.iter().any(|(_, cycle, _, _)| *cycle) {
         return Err("The Notes tree contains a cycle and cannot be exported.".to_string());
     }
 
     let node_rows = rows.len();
+    let max_depth = rows
+        .iter()
+        .try_fold(0usize, |max_depth, (_, _, _, depth)| {
+            let depth = usize::try_from(*depth)
+                .map_err(|_| "The Notes export subtree depth is invalid.".to_string())?;
+            if depth == 0 {
+                return Err("The Notes export subtree depth is invalid.".to_string());
+            }
+            Ok(max_depth.max(depth))
+        })?;
+    validate_export_subtree_budget(node_rows, max_depth)?;
     let exported_at = rows[0].2.clone();
     let mut by_id = HashMap::new();
-    for (node, _, _) in rows {
+    for (node, _, _, _) in rows {
         if by_id.insert(node.id.clone(), node).is_some() {
             return Err("The Notes export subtree contains duplicate nodes.".to_string());
         }
@@ -932,6 +1543,7 @@ fn load_export_snapshot_queries(
             .collect::<Result<Vec<_>, _>>()?;
         Ok(ExportNode {
             id: node.id,
+            node_kind: node.node_kind,
             title: node.title,
             note: node.note,
             title_date_spans: node.title_date_spans,
@@ -955,6 +1567,7 @@ fn load_export_snapshot_queries(
     if !attachments_by_node_id.is_empty() {
         return Err("The Notes export attachments could not be assembled safely.".to_string());
     }
+    root.validate_attachment_ownership()?;
 
     Ok((
         NotesExportSnapshot {
@@ -1237,20 +1850,27 @@ fn fts_match_expression(query: &str) -> Option<String> {
 
 /// Resolve the ancestor title trail for each search hit with a recursive CTE
 /// scoped to the LIMITed result set, instead of loading every
-/// `(id, parent_id, title)` row in the vault into a map on every search.
+/// `(id, parent_id, title, node_kind)` row in the vault into a map on every
+/// search.
 ///
 /// The walk only follows ancestors that satisfy the same scope predicate as the
 /// match set, so an out-of-scope ancestor (for example a live parent above a
 /// trashed node) terminates the trail exactly like the previous map lookup did.
 /// Each returned trail is ordered root-first. Node trees are acyclic by
 /// construction; the depth bound is a defensive guard against a corrupt cycle.
+#[derive(Clone, Default)]
+struct SearchParentTrail {
+    titles: Vec<String>,
+    kinds: Vec<NoteNodeKind>,
+}
+
 fn search_parent_trails(
     connection: &Connection,
     scope: NoteSearchScope,
     node_ids: &[&str],
-) -> Result<HashMap<String, Vec<String>>, String> {
+) -> Result<HashMap<String, SearchParentTrail>, String> {
     const MAX_TRAIL_DEPTH: i64 = 10_000;
-    let mut trails: HashMap<String, Vec<String>> = HashMap::new();
+    let mut trails: HashMap<String, SearchParentTrail> = HashMap::new();
     if node_ids.is_empty() {
         return Ok(trails);
     }
@@ -1267,19 +1887,19 @@ fn search_parent_trails(
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!(
-            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, depth) AS (\
-               SELECT child.id, node.id, node.parent_id, node.title, 0 \
+            "WITH RECURSIVE ancestor_trail(match_id, id, parent_id, title, node_kind, depth) AS (\
+               SELECT child.id, node.id, node.parent_id, node.title, node.node_kind, 0 \
                FROM notes_nodes child \
                JOIN notes_nodes node ON node.id = child.parent_id \
                WHERE child.id IN ({placeholders}) AND {scope_predicate} \
                UNION ALL \
-               SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, \
+               SELECT ancestor_trail.match_id, node.id, node.parent_id, node.title, node.node_kind, \
                       ancestor_trail.depth + 1 \
                FROM ancestor_trail \
                JOIN notes_nodes node ON node.id = ancestor_trail.parent_id \
                WHERE ancestor_trail.depth < {MAX_TRAIL_DEPTH} AND {scope_predicate}\
              ) \
-             SELECT match_id, title, depth FROM ancestor_trail \
+             SELECT match_id, title, node_kind, depth FROM ancestor_trail \
              ORDER BY match_id, depth DESC"
         );
         let mut statement = connection
@@ -1287,13 +1907,19 @@ fn search_parent_trails(
             .map_err(|error| format!("Could not prepare Notes search ancestors: {error}"))?;
         let rows = statement
             .query_map(params_from_iter(chunk.iter().copied()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    note_node_kind_from_row(row, 2)?,
+                ))
             })
             .map_err(|error| format!("Could not load Notes search ancestors: {error}"))?;
         for row in rows {
-            let (match_id, title) =
+            let (match_id, title, kind) =
                 row.map_err(|error| format!("Could not read Notes search ancestors: {error}"))?;
-            trails.entry(match_id).or_default().push(title);
+            let trail = trails.entry(match_id).or_default();
+            trail.titles.push(title);
+            trail.kinds.push(kind);
         }
     }
     Ok(trails)
@@ -1322,7 +1948,7 @@ fn search_nodes_by_date(
     scope: NoteSearchScope,
 ) -> Result<Vec<NoteSearchResult>, String> {
     let sql = format!(
-        "SELECT DISTINCT node.id, node.title \
+        "SELECT DISTINCT node.id, node.title, node.node_kind \
          FROM notes_dates date INDEXED BY notes_dates_range \
          JOIN notes_nodes node ON node.id = date.node_id \
          WHERE date.normalized_start <= ?1 AND date.normalized_end >= ?2 \
@@ -1334,23 +1960,29 @@ fn search_nodes_by_date(
         .prepare(&sql)
         .map_err(|error| format!("Could not prepare the Notes date search: {error}"))?
         .query_map(params![range.end.to_iso(), range.start.to_iso()], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                note_node_kind_from_row(row, 2)?,
+            ))
         })
         .map_err(|error| format!("Could not search Note dates: {error}"))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("Could not read the Notes date search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _)| id.as_str())
+        .map(|(id, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
     Ok(matches
         .into_iter()
-        .map(|(node_id, title)| {
+        .map(|(node_id, title, node_kind)| {
             let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
             NoteSearchResult {
-                parent_trail,
+                parent_trail: parent_trail.titles,
+                parent_trail_kinds: parent_trail.kinds,
                 node_id,
+                node_kind,
                 title,
                 matched_field: NoteSearchMatchedField::Date,
             }
@@ -1371,7 +2003,7 @@ fn search_nodes_fts(
         NoteSearchScope::Archive | NoteSearchScope::Trash => "notes_search_lifecycle",
     };
     let sql = format!(
-        "SELECT {search_table}.node_id, {search_table}.title, \
+        "SELECT {search_table}.node_id, {search_table}.title, node.node_kind, \
                 highlight({search_table}, 1, '<notes-match>', '</notes-match>') \
                   <> {search_table}.title \
          FROM {search_table} \
@@ -1389,7 +2021,8 @@ fn search_nodes_fts(
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, bool>(2)?,
+                note_node_kind_from_row(row, 2)?,
+                row.get::<_, bool>(3)?,
             ))
         })
         .map_err(|error| format!("Could not search Notes: {error}"))?
@@ -1397,17 +2030,19 @@ fn search_nodes_fts(
         .map_err(|error| format!("Could not read the Notes search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _)| id.as_str())
+        .map(|(id, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, scope, &node_ids)?;
 
     Ok(matches
         .into_iter()
-        .map(|(node_id, title, matched_title)| {
+        .map(|(node_id, title, node_kind, matched_title)| {
             let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
             NoteSearchResult {
-                parent_trail,
+                parent_trail: parent_trail.titles,
+                parent_trail_kinds: parent_trail.kinds,
                 node_id,
+                node_kind,
                 title,
                 matched_field: if matched_title {
                     NoteSearchMatchedField::Title
@@ -1609,7 +2244,7 @@ pub(crate) fn search_nodes_structured(
     };
     let sql = if match_expression.is_some() {
         format!(
-            "SELECT notes_search.node_id, node.title, node.note, \
+            "SELECT notes_search.node_id, node.title, node.note, node.node_kind, \
                     highlight(notes_search, 1, '<notes-match>', '</notes-match>') \
                       <> notes_search.title \
              FROM notes_search \
@@ -1620,7 +2255,7 @@ pub(crate) fn search_nodes_structured(
         )
     } else {
         format!(
-            "SELECT node.id, node.title, node.note, 0 \
+            "SELECT node.id, node.title, node.note, node.node_kind, 0 \
              FROM notes_nodes node \
              WHERE node.deleted_at IS NULL AND node.archived_at IS NULL{tag_predicates} \
              ORDER BY node.updated_at DESC, node.id LIMIT 100"
@@ -1635,7 +2270,8 @@ pub(crate) fn search_nodes_structured(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, bool>(3)?,
+                note_node_kind_from_row(row, 3)?,
+                row.get::<_, bool>(4)?,
             ))
         })
         .map_err(|error| format!("Could not search Notes with tag filters: {error}"))?
@@ -1643,13 +2279,13 @@ pub(crate) fn search_nodes_structured(
         .map_err(|error| format!("Could not read structured Notes search results: {error}"))?;
     let node_ids = matches
         .iter()
-        .map(|(id, _, _, _)| id.as_str())
+        .map(|(id, _, _, _, _)| id.as_str())
         .collect::<Vec<_>>();
     let trails = search_parent_trails(connection, NoteSearchScope::Active, &node_ids)?;
 
     Ok(matches
         .into_iter()
-        .map(|(node_id, title, _note, matched_title)| {
+        .map(|(node_id, title, _note, node_kind, matched_title)| {
             let matched_field = if match_expression.is_some() {
                 if matched_title {
                     NoteSearchMatchedField::Title
@@ -1657,7 +2293,7 @@ pub(crate) fn search_nodes_structured(
                     NoteSearchMatchedField::Note
                 }
             } else if positive_tags.is_empty()
-                || tokenize_note_text(&title)
+                || tokenize_note_text(derived_title_for_node_kind(node_kind, &title))
                     .iter()
                     .any(|tag| positive_tags.contains(&(tag.prefix, tag.normalized.clone())))
             {
@@ -1667,8 +2303,10 @@ pub(crate) fn search_nodes_structured(
             };
             let parent_trail = trails.get(&node_id).cloned().unwrap_or_default();
             NoteSearchResult {
-                parent_trail,
+                parent_trail: parent_trail.titles,
+                parent_trail_kinds: parent_trail.kinds,
                 node_id,
+                node_kind,
                 title,
                 matched_field,
             }
@@ -1742,15 +2380,25 @@ fn require_deleted_node(
     }
 }
 
-fn ensure_fresh_id(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
-    let exists: bool = transaction
+fn id_namespace_in_use(transaction: &Transaction<'_>, id: &str) -> Result<bool, String> {
+    transaction
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM notes_nodes WHERE id = ?1)",
-            [node_id],
+            "SELECT EXISTS(\
+               SELECT 1 FROM notes_nodes WHERE id = ?1 \
+               UNION ALL \
+               SELECT 1 FROM notes_attachments WHERE id = ?1 \
+               UNION ALL \
+               SELECT 1 FROM notes_history_changes \
+               WHERE row_id = ?1 AND table_name IN ('notes_nodes', 'notes_attachments')\
+             )",
+            [id],
             |row| row.get(0),
         )
-        .map_err(|error| format!("Could not validate the new Note ID: {error}"))?;
-    if exists {
+        .map_err(|error| format!("Could not validate the Notes ID namespace: {error}"))
+}
+
+fn ensure_fresh_id(transaction: &Transaction<'_>, node_id: &str) -> Result<(), String> {
+    if id_namespace_in_use(transaction, node_id)? {
         Err(format!("Note ID {node_id} is already in use."))
     } else {
         Ok(())
@@ -1964,6 +2612,13 @@ fn replace_derived_content(
     replace_dates(transaction, node_id, title, note, today)
 }
 
+fn derived_title_for_node_kind(node_kind: NoteNodeKind, title: &str) -> &str {
+    match node_kind {
+        NoteNodeKind::Text => title,
+        NoteNodeKind::Image => "",
+    }
+}
+
 pub(crate) fn rebuild_derived_for_nodes_at(
     transaction: &Transaction<'_>,
     node_ids: &BTreeSet<String>,
@@ -1972,16 +2627,28 @@ pub(crate) fn rebuild_derived_for_nodes_at(
     for node_id in node_ids {
         let content = transaction
             .query_row(
-                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                "SELECT title, note, node_kind FROM notes_nodes WHERE id = ?1",
                 [node_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        note_node_kind_from_row(row, 2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|error| {
                 format!("Could not read Note content after history replay: {error}")
             })?;
-        if let Some((title, note)) = content {
-            replace_derived_content(transaction, node_id, &title, &note, today)?;
+        if let Some((title, note, node_kind)) = content {
+            replace_derived_content(
+                transaction,
+                node_id,
+                derived_title_for_node_kind(node_kind, &title),
+                &note,
+                today,
+            )?;
         } else {
             transaction
                 .execute("DELETE FROM notes_tags WHERE node_id = ?1", [node_id])
@@ -2053,7 +2720,12 @@ pub(crate) fn update_node_at(
 ) -> Result<NotesWorkspace, String> {
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
-        require_active_node(transaction, &input.id)?;
+        let source = require_active_node(transaction, &input.id)?;
+        if source.node_kind == NoteNodeKind::Image && input.title != source.title {
+            return Err(
+                "An image node filename cannot be changed by a generic Note update.".to_string(),
+            );
+        }
         transaction
             .execute(
                 "UPDATE notes_nodes SET title = ?1, note = ?2, \
@@ -2062,7 +2734,8 @@ pub(crate) fn update_node_at(
                 params![input.title, input.note, input.id],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
-        replace_derived_content(transaction, &input.id, &input.title, &input.note, today)
+        let derived_title = derived_title_for_node_kind(source.node_kind, &input.title);
+        replace_derived_content(transaction, &input.id, derived_title, &input.note, today)
     })
 }
 
@@ -2083,6 +2756,9 @@ pub(crate) fn split_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
+        if source.node_kind == NoteNodeKind::Image {
+            return Err("An image node cannot be split.".to_string());
+        }
         ensure_fresh_id(transaction, &input.new_node_id)?;
         let sort_key = next_sort_key(
             transaction,
@@ -2559,7 +3235,7 @@ fn fresh_uuid_v4(
 ) -> Result<String, String> {
     for _ in 0..16 {
         let id = generate_uuid_v4(transaction)?;
-        if !reserved.contains(&id) && node_by_id(transaction, &id)?.is_none() {
+        if !reserved.contains(&id) && !id_namespace_in_use(transaction, &id)? {
             return Ok(id);
         }
     }
@@ -2572,16 +3248,7 @@ fn fresh_attachment_id(
 ) -> Result<String, String> {
     for _ in 0..16 {
         let id = generate_uuid_v4(transaction)?;
-        let in_use: bool = transaction
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-                [&id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                format!("Could not validate a duplicated Notes attachment ID: {error}")
-            })?;
-        if !reserved.contains(&id) && !in_use {
+        if !reserved.contains(&id) && !id_namespace_in_use(transaction, &id)? {
             return Ok(id);
         }
     }
@@ -2779,7 +3446,7 @@ fn duplicate_forest_in_transaction(
             replace_derived_content(
                 transaction,
                 copied_id,
-                &original.title,
+                derived_title_for_node_kind(original.node_kind, &original.title),
                 &original.note,
                 today,
             )?;
@@ -3002,9 +3669,24 @@ pub(crate) fn remove_empty_node(
 }
 
 fn fresh_deletion_batch_id(transaction: &Transaction<'_>) -> Result<String, String> {
-    transaction
+    let batch_id: String = transaction
         .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
-        .map_err(|error| format!("Could not create a Notes deletion batch: {error}"))
+        .map_err(|error| format!("Could not create a Notes deletion batch: {error}"))?;
+    validate_deleted_batch_id(&batch_id)
+        .map_err(|error| format!("Could not create a Notes deletion batch: {error}"))?;
+    Ok(batch_id)
+}
+
+fn validate_deleted_batch_id(value: &str) -> Result<(), String> {
+    if value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        Ok(())
+    } else {
+        Err("Notes deletion batch IDs must be 32 lowercase hexadecimal characters.".to_string())
+    }
 }
 
 pub(crate) fn archive_node(
@@ -3762,6 +4444,12 @@ pub(crate) struct NewAttachment {
     pub(crate) display_width: i64,
 }
 
+pub(crate) struct NewImageNode {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) attachment: NewAttachment,
+}
+
 fn validate_attachment_display_width(
     display_width: i64,
     intrinsic_width: i64,
@@ -3829,7 +4517,10 @@ fn validate_attachment_capacity(
     transaction: &Transaction<'_>,
     node_id: &str,
 ) -> Result<(), String> {
-    require_active_node(transaction, node_id)?;
+    let owner = require_active_node(transaction, node_id)?;
+    if owner.node_kind == NoteNodeKind::Image {
+        return Err("A generic Notes attachment cannot be added to an image node.".to_string());
+    }
     let (node_count, vault_count): (i64, i64) = transaction
         .query_row(
             "SELECT \
@@ -3857,7 +4548,10 @@ fn validate_attachment_batch_capacity(
     node_id: &str,
     batch_len: usize,
 ) -> Result<(), String> {
-    require_active_node(transaction, node_id)?;
+    let owner = require_active_node(transaction, node_id)?;
+    if owner.node_kind == NoteNodeKind::Image {
+        return Err("A generic Notes attachment cannot be added to an image node.".to_string());
+    }
     let batch_len = i64::try_from(batch_len)
         .map_err(|_| "Could not measure the Notes attachment batch.".to_string())?;
     let (node_count, vault_count): (i64, i64) = transaction
@@ -3893,6 +4587,12 @@ fn insert_new_attachment_at_sort_key(
     attachment: NewAttachment,
     sort_key: i64,
 ) -> Result<(), String> {
+    if id_namespace_in_use(transaction, &attachment.id)? {
+        return Err(format!(
+            "Notes attachment ID {} is already in use.",
+            attachment.id
+        ));
+    }
     transaction
         .execute(
             "INSERT INTO notes_attachments(\
@@ -3925,14 +4625,7 @@ fn insert_new_attachment(
     attachment: NewAttachment,
 ) -> Result<(), String> {
     validate_attachment_capacity(transaction, &attachment.node_id)?;
-    let id_exists: bool = transaction
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-            [&attachment.id],
-            |row| row.get(0),
-        )
-        .map_err(|error| format!("Could not validate the new Notes attachment ID: {error}"))?;
-    if id_exists {
+    if id_namespace_in_use(transaction, &attachment.id)? {
         return Err(format!(
             "Notes attachment ID {} is already in use.",
             attachment.id
@@ -3998,16 +4691,7 @@ fn create_attachment_coordinated_inner(
                     attachment.id
                 ));
             }
-            let id_exists: bool = transaction
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
-                    [&attachment.id],
-                    |row| row.get(0),
-                )
-                .map_err(|error| {
-                    format!("Could not validate the new Notes attachment ID: {error}")
-                })?;
-            if id_exists {
+            if id_namespace_in_use(&transaction, &attachment.id)? {
                 return Err(format!(
                     "Notes attachment ID {} is already in use.",
                     attachment.id
@@ -4081,6 +4765,170 @@ pub(crate) fn create_attachments_coordinated_for_node(
     )
 }
 
+fn validate_image_node_batch_preflight(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    nodes: &[NewImageNode],
+) -> Result<(), String> {
+    if nodes.is_empty() || nodes.len() > MAX_IMAGE_NODE_IMPORT_ITEMS {
+        return Err(format!(
+            "A Notes image node batch must contain between 1 and {MAX_IMAGE_NODE_IMPORT_ITEMS} images."
+        ));
+    }
+    ensure_live_parent(transaction, parent_id)?;
+    if let Some(after_id) = after_id {
+        let anchor = require_active_node(transaction, after_id)?;
+        if anchor.parent_id.as_deref() != parent_id {
+            return Err(
+                "The requested afterId must identify a live sibling under the target parent."
+                    .to_string(),
+            );
+        }
+    }
+
+    let batch_len = i64::try_from(nodes.len())
+        .map_err(|_| "Could not measure the Notes image node batch.".to_string())?;
+    let vault_count: i64 = transaction
+        .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("Could not inspect Notes attachment capacity: {error}"))?;
+    if vault_count
+        .checked_add(batch_len)
+        .map_or(true, |count| count > MAX_NOTE_ATTACHMENTS_PER_VAULT)
+    {
+        return Err(format!(
+            "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+
+    let mut node_ids = HashSet::with_capacity(nodes.len());
+    let mut attachment_ids = HashSet::with_capacity(nodes.len());
+    for node in nodes {
+        validate_note_id(&node.id)?;
+        if !node_ids.insert(node.id.as_str()) {
+            return Err(format!(
+                "A Notes image node batch contains duplicate node ID {}.",
+                node.id
+            ));
+        }
+        ensure_fresh_id(transaction, &node.id)?;
+        validate_new_attachment(&node.attachment)?;
+        if node.attachment.node_id != node.id {
+            return Err(
+                "A Notes image node attachment must belong to its new image node.".to_string(),
+            );
+        }
+        if node.title != node.attachment.original_name {
+            return Err(
+                "A Notes image node title must equal its attachment's original filename."
+                    .to_string(),
+            );
+        }
+        if !attachment_ids.insert(node.attachment.id.as_str()) {
+            return Err(format!(
+                "A Notes image node batch contains duplicate attachment ID {}.",
+                node.attachment.id
+            ));
+        }
+        let overlapping_id = if attachment_ids.contains(node.id.as_str()) {
+            Some(node.id.as_str())
+        } else if node_ids.contains(node.attachment.id.as_str()) {
+            Some(node.attachment.id.as_str())
+        } else {
+            None
+        };
+        if let Some(overlapping_id) = overlapping_id {
+            return Err(format!(
+                "A Notes image node batch contains ID {overlapping_id} used as both a node and attachment ID."
+            ));
+        }
+        if id_namespace_in_use(transaction, &node.attachment.id)? {
+            return Err(format!(
+                "Notes attachment ID {} is already in use.",
+                node.attachment.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn first_image_node_sort_key(
+    transaction: &Transaction<'_>,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+) -> Result<i64, String> {
+    if after_id.is_some() {
+        return next_sort_key(transaction, parent_id, after_id);
+    }
+    let first_sibling = sibling_keys(transaction, parent_id, None)?
+        .into_iter()
+        .next()
+        .map(|(id, _)| id);
+    next_sort_key_excluding(transaction, parent_id, None, first_sibling.as_deref(), None)
+}
+
+pub(crate) fn create_image_nodes_coordinated(
+    connection: &mut Connection,
+    parent_id: Option<&str>,
+    after_id: Option<&str>,
+    nodes: Vec<NewImageNode>,
+    publish: impl FnOnce() -> Result<(), String>,
+    before_commit: impl FnOnce() -> Result<(), String>,
+) -> Result<NotesWorkspace, String> {
+    let journaled = history::has_active_context(connection)?;
+
+    {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Could not start the Notes image node validation: {error}"))?;
+        validate_image_node_batch_preflight(&transaction, parent_id, after_id, &nodes)?;
+        transaction.rollback().map_err(|error| {
+            format!("Could not finish the Notes image node validation: {error}")
+        })?;
+    }
+
+    publish()?;
+
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start the Notes image node transaction: {error}"))?;
+    validate_image_node_batch_preflight(&transaction, parent_id, after_id, &nodes)?;
+    let mut previous_id = after_id.map(str::to_string);
+    for (index, node) in nodes.into_iter().enumerate() {
+        let sort_key = if index == 0 {
+            first_image_node_sort_key(&transaction, parent_id, after_id)?
+        } else {
+            next_sort_key(&transaction, parent_id, previous_id.as_deref())?
+        };
+        transaction
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (\
+                   ?1, ?2, ?3, ?4, '', 'image', \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
+                 )",
+                params![node.id, parent_id, sort_key, node.title],
+            )
+            .map_err(|error| format!("Could not create the Notes image node: {error}"))?;
+        let node_id = node.id;
+        insert_new_attachment_at_sort_key(&transaction, node.attachment, SORT_KEY_STEP)?;
+        previous_id = Some(node_id);
+    }
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    if journaled {
+        history::finalize_transaction(&transaction)?;
+    }
+    before_commit()?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit the Notes image node transaction: {error}"))?;
+    Ok(workspace)
+}
+
 #[cfg(test)]
 pub(crate) fn create_attachment_coordinated(
     connection: &mut Connection,
@@ -4132,7 +4980,12 @@ pub(crate) fn remove_attachment(
     with_workspace_transaction(connection, |transaction| {
         let attachment = attachment_by_id(transaction, attachment_id)?
             .ok_or_else(|| format!("Notes attachment {attachment_id} does not exist."))?;
-        require_active_node(transaction, &attachment.node_id)?;
+        let owner = require_active_node(transaction, &attachment.node_id)?;
+        if owner.node_kind == NoteNodeKind::Image {
+            return Err(
+                "An image node's owned attachment cannot be removed independently.".to_string(),
+            );
+        }
         transaction
             .execute(
                 "DELETE FROM notes_attachments WHERE id = ?1",
@@ -4185,7 +5038,11 @@ pub(crate) fn restore_attachment(
         require_active_node(transaction, &attachment.node_id)?;
         let exists: bool = transaction
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM notes_attachments WHERE id = ?1)",
+                "SELECT EXISTS(\
+                   SELECT 1 FROM notes_nodes WHERE id = ?1 \
+                   UNION ALL \
+                   SELECT 1 FROM notes_attachments WHERE id = ?1\
+                 )",
                 [&attachment.id],
                 |row| row.get(0),
             )
@@ -4240,26 +5097,30 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
 mod tests {
     use super::{
         ancestor_closure_query_count, apply_batch, apply_batch_at, archive_node, collapse_all,
-        connect_notes_db, create_attachment, create_attachments_coordinated_for_node, create_node,
-        create_node_at, delete_database, duplicate_node, duplicate_node_at, empty_trash,
-        expand_all, import_subtree_at, initialize_notes_db, list_tags, list_tags_with_counts,
-        load_workspace, move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
-        observe_next_initialization_busy, open_notes_export_db, remove_empty_node,
-        reset_ancestor_closure_query_count, reset_node_by_id_lookup_count, restore_attachment,
-        restore_node, restore_node_at, search_nodes, search_nodes_at, search_nodes_structured,
-        seed_notes_onboarding, selection_roots, soft_delete_node, sort_subtree_ascending,
-        sort_subtree_descending, split_node, split_node_at, toggle_collapsed, toggle_complete,
-        toggle_star, unarchive_node, update_node, update_node_at, NewAttachment, NoteAttachment,
-        ANCESTOR_CLOSURE_CHUNK_SIZE, CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
+        connect_notes_db, create_attachment, create_attachments_coordinated_for_node,
+        create_image_nodes_coordinated, create_node, create_node_at, delete_database,
+        duplicate_node, duplicate_node_at, empty_trash, expand_all, import_subtree_at,
+        initialize_notes_db, inject_delete_database_after_hold_once,
+        inject_notes_database_after_hold_once, list_tags, list_tags_with_counts, load_workspace,
+        move_node, node_attachments, node_by_id_lookup_count, notes_db_path,
+        observe_next_initialization_busy, open_notes_export_db, remove_attachment,
+        remove_empty_node, reset_ancestor_closure_query_count, reset_node_by_id_lookup_count,
+        resize_attachment, restore_attachment, restore_node, restore_node_at, search_nodes,
+        search_nodes_at, search_nodes_structured, seed_notes_onboarding, selection_roots,
+        soft_delete_node, sort_subtree_ascending, sort_subtree_descending, split_node,
+        split_node_at, sqlite_companion_path, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node, update_node_at, windows_notes_database_share_mode,
+        NewAttachment, NewImageNode, NoteAttachment, ANCESTOR_CLOSURE_CHUNK_SIZE,
+        CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
     use crate::notes::types::{
         validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
-        ImportSubtreeInput, MoveNodeInput, NoteSearchMatchedField, NoteSearchScope, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NotesHistoryContext,
-        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_IMPORT_SUBTREE_NODES,
-        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
+        NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
+        NotesHistoryContext, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
+        MAX_IMPORT_SUBTREE_NODES, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
     use std::collections::{BTreeSet, HashMap};
@@ -4278,6 +5139,33 @@ mod tests {
 
     fn fixed_today() -> LocalDate {
         LocalDate::new(2026, 7, 11).expect("fixed date")
+    }
+
+    #[test]
+    fn notes_database_initializes_one_stable_vault_generation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        let connection = connect_notes_db(&vault_path).expect("initialize database");
+        let first: String = connection
+            .query_row(
+                "SELECT vault_generation FROM notes_metadata WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("vault generation metadata");
+        validate_note_id(&first).expect("canonical generation UUID");
+        drop(connection);
+
+        let connection = connect_notes_db(&vault_path).expect("reopen database");
+        let second: String = connection
+            .query_row(
+                "SELECT vault_generation FROM notes_metadata WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("stable vault generation preference");
+
+        assert_eq!(second, first);
     }
 
     fn date_rows(
@@ -4335,6 +5223,263 @@ mod tests {
         assert!(error.contains("does not exist"));
         assert!(!vault_path.join(".yonalist").exists());
         assert!(!notes_db_path(vault_path.to_str().expect("vault path")).exists());
+    }
+
+    #[test]
+    fn export_open_rejects_a_future_schema_without_file_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata fixture");
+        let connection = Connection::open(&database_path).expect("create database fixture");
+        connection
+            .execute_batch("CREATE TABLE future_only (value TEXT); PRAGMA user_version = 99;")
+            .expect("seed future schema");
+        drop(connection);
+        let bytes_before = std::fs::read(&database_path).expect("read database before export open");
+
+        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
+            .expect_err("future schema must be rejected");
+
+        assert_eq!(
+            error,
+            "This Notes database uses unsupported schema version 99."
+        );
+        assert_eq!(
+            std::fs::read(&database_path).expect("read database after export open"),
+            bytes_before
+        );
+        assert!(!sqlite_companion_path(&database_path, "-wal").exists());
+        assert!(!sqlite_companion_path(&database_path, "-shm").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_connection_rejects_a_symlinked_database_before_sqlite_mutates_the_target() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        let outside = temp_dir.path().join("outside.sqlite");
+        std::fs::write(&outside, b"").expect("create empty outside target");
+        symlink(&outside, &database_path).expect("symlink Notes database");
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("symlinked Notes database must be rejected");
+
+        assert!(
+            error.contains("symlink") || error.contains("reparse"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(outside).expect("read outside target"), b"");
+        assert!(!sqlite_companion_path(&database_path, "-wal").exists());
+        assert!(!sqlite_companion_path(&database_path, "-shm").exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn notes_connection_rejects_a_hardlinked_database_before_sqlite_mutates_the_inode() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        let outside = temp_dir.path().join("outside.sqlite");
+        std::fs::write(&outside, b"").expect("create empty outside target");
+        std::fs::hard_link(&outside, &database_path).expect("hardlink Notes database");
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("hardlinked Notes database must be rejected");
+
+        assert!(error.contains("multiple hard links"), "{error}");
+        assert_eq!(std::fs::read(outside).expect("read outside inode"), b"");
+        assert!(!sqlite_companion_path(&database_path, "-wal").exists());
+        assert!(!sqlite_companion_path(&database_path, "-shm").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_open_rejects_a_symlinked_notes_database() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_path = temp_dir.path().join("source.sqlite");
+        let mut source = Connection::open(&source_path).expect("create source database");
+        initialize_notes_db(&mut source).expect("initialize source database");
+        drop(source);
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        symlink(&source_path, &database_path).expect("symlink export database");
+
+        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
+            .expect_err("symlinked export database must be rejected");
+
+        assert!(
+            error.contains("symlink") || error.contains("reparse"),
+            "{error}"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn export_open_rejects_a_hardlinked_notes_database() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let source_path = temp_dir.path().join("source.sqlite");
+        let mut source = Connection::open(&source_path).expect("create source database");
+        initialize_notes_db(&mut source).expect("initialize source database");
+        drop(source);
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        std::fs::hard_link(&source_path, &database_path).expect("hardlink export database");
+
+        let error = open_notes_export_db(vault_path.to_str().expect("vault path"))
+            .expect_err("hardlinked export database must be rejected");
+
+        assert!(error.contains("multiple hard links"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_connection_rejects_a_database_path_swap_after_safe_file_acquisition() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        std::fs::write(&database_path, b"").expect("create original empty database");
+        let moved_database = temp_dir.path().join("held-original.sqlite");
+        let outside = temp_dir.path().join("outside.sqlite");
+        std::fs::write(&outside, b"").expect("create outside target");
+        let raced_database = database_path.clone();
+        let raced_moved = moved_database.clone();
+        let raced_outside = outside.clone();
+        inject_notes_database_after_hold_once(move || {
+            std::fs::rename(&raced_database, &raced_moved).expect("move safely held database");
+            symlink(&raced_outside, &raced_database).expect("swap database path to symlink");
+        });
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("database path swap must be rejected before initialization");
+
+        assert!(
+            error.contains("identity") || error.contains("symlink"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(outside).expect("read outside target"), b"");
+        assert_eq!(
+            std::fs::read(moved_database).expect("read safely held original"),
+            b""
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_connection_rejects_metadata_relocation_before_sqlite_open() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        let metadata_path = database_path.parent().expect("metadata path").to_path_buf();
+        std::fs::create_dir_all(&metadata_path).expect("create metadata directory");
+        std::fs::write(&database_path, b"").expect("create original empty database");
+        let held_metadata = vault_path.join("held-metadata");
+        let attacker_metadata = vault_path.join("attacker-metadata");
+        std::fs::create_dir(&attacker_metadata).expect("create attacker metadata");
+        let attacker_database = attacker_metadata.join("notes.sqlite");
+        std::fs::write(&attacker_database, b"").expect("create attacker database");
+        let raced_metadata = metadata_path.clone();
+        let raced_held = held_metadata.clone();
+        let raced_attacker = attacker_metadata.clone();
+        inject_notes_database_after_hold_once(move || {
+            std::fs::rename(&raced_metadata, &raced_held).expect("relocate held metadata");
+            symlink(&raced_attacker, &raced_metadata).expect("redirect metadata path");
+        });
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("metadata relocation must be rejected before SQLite initialization");
+
+        assert!(
+            error.contains("metadata directory identity changed"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(attacker_database).expect("read attacker database"),
+            b""
+        );
+        assert_eq!(
+            std::fs::read(held_metadata.join("notes.sqlite")).expect("read safely held database"),
+            b""
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notes_connection_rejects_a_companion_symlink_created_after_initial_acquisition() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        let database_path = notes_db_path(vault_path.to_str().expect("vault path"));
+        std::fs::create_dir_all(database_path.parent().expect("metadata path"))
+            .expect("create metadata directory");
+        let mut seed = Connection::open(&database_path).expect("create Notes database");
+        initialize_notes_db(&mut seed).expect("initialize Notes database");
+        seed.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;")
+            .expect("close WAL fixtures");
+        drop(seed);
+        let wal_path = sqlite_companion_path(&database_path, "-wal");
+        assert!(!wal_path.exists(), "seed must not leave a WAL file");
+        let outside = temp_dir.path().join("outside-wal");
+        std::fs::write(&outside, b"").expect("create outside WAL target");
+        let raced_wal = wal_path.clone();
+        let raced_outside = outside.clone();
+        inject_notes_database_after_hold_once(move || {
+            symlink(&raced_outside, &raced_wal).expect("inject WAL symlink");
+        });
+
+        let error = connect_notes_db(vault_path.to_str().expect("vault path"))
+            .expect_err("late WAL symlink must be rejected before SQLite initialization");
+
+        assert!(
+            error.contains("companion") || error.contains("symlink"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(outside).expect("read outside WAL target"),
+            b""
+        );
+    }
+
+    #[test]
+    fn windows_notes_database_acquisition_source_contract_rejects_reparse_and_delete_races() {
+        let source = include_str!("repository.rs");
+        let start = source
+            .find("#[cfg(windows)]\nfn open_notes_file_nofollow")
+            .expect("Windows no-follow database opener");
+        let end = source[start..]
+            .find("#[cfg(not(windows))]\nfn open_notes_file_nofollow")
+            .map(|offset| start + offset)
+            .expect("end of Windows database opener");
+        let windows_opener = &source[start..end];
+
+        assert!(windows_opener.contains("FILE_FLAG_OPEN_REPARSE_POINT"));
+        assert!(windows_opener.contains("FILE_ATTRIBUTE_REPARSE_POINT"));
+        assert!(windows_opener.contains("GetFileInformationByHandle"));
+        assert_eq!(windows_notes_database_share_mode(), 0x1 | 0x2);
+        assert_eq!(windows_notes_database_share_mode() & 0x4, 0);
+        assert!(source.contains("CapMetadataExt::nlink(metadata) != 1"));
+        assert!(source.contains("must not have multiple hard links"));
     }
 
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
@@ -4823,6 +5968,231 @@ mod tests {
         }
     }
 
+    fn test_new_image_node(index: usize, node_id: &str, attachment_id: &str) -> NewImageNode {
+        let mut attachment = test_new_attachment(index, node_id);
+        attachment.id = attachment_id.to_string();
+        NewImageNode {
+            id: node_id.to_string(),
+            title: attachment.original_name.clone(),
+            attachment,
+        }
+    }
+
+    #[test]
+    fn image_node_batch_repository_rejects_shared_node_and_attachment_ids_before_publication() {
+        for (label, nodes) in [
+            ("same item", vec![test_new_image_node(90, NODE_ID, NODE_ID)]),
+            (
+                "cross item",
+                vec![
+                    test_new_image_node(91, NODE_ID, CHILD_ID),
+                    test_new_image_node(92, CHILD_ID, THIRD_ID),
+                ],
+            ),
+        ] {
+            let mut connection = test_connection();
+            let mut published = false;
+
+            let error = create_image_nodes_coordinated(
+                &mut connection,
+                None,
+                None,
+                nodes,
+                || {
+                    published = true;
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .expect_err(label);
+
+            assert!(
+                error.contains("both a node and attachment ID"),
+                "{label}: {error}"
+            );
+            assert!(!published, "{label}: publication must not run");
+            let counts: (i64, i64, i64, i64) = connection
+                .query_row(
+                    "SELECT \
+                       (SELECT COUNT(*) FROM notes_nodes), \
+                       (SELECT COUNT(*) FROM notes_attachments), \
+                       (SELECT COUNT(*) FROM notes_history_entries), \
+                       (SELECT COUNT(*) FROM notes_history_changes)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("count rejected image node batch rows");
+            assert_eq!(counts, (0, 0, 0, 0), "{label}");
+        }
+    }
+
+    #[test]
+    fn image_node_batch_repository_rejects_existing_opposite_table_ids_before_publication() {
+        for collision in ["node matches attachment", "attachment matches node"] {
+            let mut connection = test_connection();
+            insert_node(&connection, NODE_ID, None, 1024, "existing root");
+            let nodes = if collision == "node matches attachment" {
+                let seeded_attachment = insert_test_attachment(&connection, 93, NODE_ID);
+                connection
+                    .execute(
+                        "UPDATE notes_attachments SET id = ?1 WHERE id = ?2",
+                        params![CHILD_ID, seeded_attachment],
+                    )
+                    .expect("align existing attachment ID with incoming node ID");
+                vec![test_new_image_node(94, CHILD_ID, THIRD_ID)]
+            } else {
+                vec![test_new_image_node(95, CHILD_ID, NODE_ID)]
+            };
+            let mut published = false;
+
+            let error = create_image_nodes_coordinated(
+                &mut connection,
+                None,
+                Some(NODE_ID),
+                nodes,
+                || {
+                    published = true;
+                    Ok(())
+                },
+                || Ok(()),
+            )
+            .expect_err(collision);
+
+            assert!(error.contains("already in use"), "{collision}: {error}");
+            assert!(!published, "{collision}: publication must not run");
+            let counts: (i64, i64, i64, i64) = connection
+                .query_row(
+                    "SELECT \
+                       (SELECT COUNT(*) FROM notes_nodes), \
+                       (SELECT COUNT(*) FROM notes_attachments), \
+                       (SELECT COUNT(*) FROM notes_history_entries), \
+                       (SELECT COUNT(*) FROM notes_history_changes)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("count rejected opposite-table collision rows");
+            let expected_attachment_count = if collision == "node matches attachment" {
+                1
+            } else {
+                0
+            };
+            assert_eq!(counts, (1, expected_attachment_count, 0, 0), "{collision}");
+        }
+    }
+
+    #[test]
+    fn image_node_ownership_rejects_generic_content_and_attachment_mutations_but_allows_resize() {
+        let mut connection = test_connection();
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (?1, 1024, 'image.png', '', 'image', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                [NODE_ID],
+            )
+            .expect("seed image node");
+        let attachment_id = insert_test_attachment(&connection, 90, NODE_ID);
+        connection
+            .execute(
+                "UPDATE notes_attachments SET intrinsic_width = 320, display_width = 320 \
+                 WHERE id = ?1",
+                [&attachment_id],
+            )
+            .expect("seed resizable image attachment");
+
+        let rename_error = update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "renamed.png".to_string(),
+                note: "description".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect_err("generic update must not rename an image node");
+        assert!(rename_error.contains("filename"), "{rename_error}");
+        let unchanged: (String, String) = connection
+            .query_row(
+                "SELECT title, note FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("unchanged image node content");
+        assert_eq!(unchanged, ("image.png".to_string(), String::new()));
+
+        let updated = update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: "image.png".to_string(),
+                note: "supporting description".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("image description update");
+        let image_node = updated
+            .nodes
+            .iter()
+            .find(|node| node.id == NODE_ID)
+            .expect("updated image node");
+        assert_eq!(image_node.title, "image.png");
+        assert_eq!(image_node.note, "supporting description");
+
+        let split_error = split_node_at(
+            &mut connection,
+            SplitNodeInput {
+                id: NODE_ID.to_string(),
+                new_node_id: CHILD_ID.to_string(),
+                prefix: "image".to_string(),
+                suffix: ".png".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect_err("image nodes cannot be split");
+        assert!(split_error.contains("image"), "{split_error}");
+
+        let add_error = create_attachment(&mut connection, test_new_attachment(91, NODE_ID))
+            .expect_err("generic attachment add must reject image owner");
+        assert!(add_error.contains("image node"), "{add_error}");
+        let publish_called = std::cell::Cell::new(false);
+        let coordinated_error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![test_new_attachment(92, NODE_ID)],
+            || {
+                publish_called.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect_err("coordinated attachment add must reject image owner");
+        assert!(
+            coordinated_error.contains("image node"),
+            "{coordinated_error}"
+        );
+        assert!(!publish_called.get());
+
+        let remove_error = remove_attachment(&mut connection, &attachment_id)
+            .expect_err("generic attachment removal must reject image owner");
+        assert!(remove_error.contains("image node"), "{remove_error}");
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("image attachment remains owned");
+        assert_eq!(attachment_count, 1);
+
+        let resized = resize_attachment(&mut connection, &attachment_id, 200)
+            .expect("image node attachment resize remains valid");
+        assert_eq!(
+            resized.attachments_by_node_id[NODE_ID][0].display_width,
+            200
+        );
+    }
+
     #[test]
     fn attachment_insert_rejects_the_129th_row_for_one_node_transactionally() {
         let mut connection = test_connection();
@@ -4990,6 +6360,39 @@ mod tests {
             error.contains("already in use"),
             "unexpected error: {error}"
         );
+        assert!(
+            !publish_called.get(),
+            "ID validation must precede publication"
+        );
+        let count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count attachments");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn coordinated_attachment_batch_rejects_an_id_used_by_a_node_before_publication() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "root");
+        let mut attachment = test_new_attachment(32_002, NODE_ID);
+        attachment.id = NODE_ID.to_string();
+        let publish_called = std::cell::Cell::new(false);
+
+        let error = create_attachments_coordinated_for_node(
+            &mut connection,
+            NODE_ID,
+            vec![attachment],
+            || {
+                publish_called.set(true);
+                Ok(())
+            },
+            || Ok(()),
+        )
+        .expect_err("attachment ID already belongs to a node");
+
+        assert!(error.contains("already in use"), "{error}");
         assert!(
             !publish_called.get(),
             "ID validation must precede publication"
@@ -5246,6 +6649,158 @@ mod tests {
             })
             .expect("count attachments after rejected restore");
         assert_eq!(count, MAX_NOTE_ATTACHMENTS_PER_VAULT);
+    }
+
+    #[test]
+    fn new_node_rejects_an_id_reserved_by_retained_attachment_history() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "owner");
+        let attachment = test_new_attachment(20_001, NODE_ID);
+        let reserved_id = attachment.id.clone();
+        create_attachment(&mut connection, attachment).expect("create attachment");
+        let context = NotesHistoryContext {
+            session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            entry_id: "99999999-9999-4999-8999-999999999999".to_string(),
+            command_kind: "removeAttachment".to_string(),
+        };
+        with_history_transaction_and_prunes(&mut connection, Some(&context), |connection| {
+            remove_attachment(connection, &reserved_id)
+        })
+        .expect("remove attachment with retained history");
+
+        let error = create_node(
+            &mut connection,
+            CreateNodeInput {
+                id: reserved_id,
+                parent_id: None,
+                after_id: Some(NODE_ID.to_string()),
+                title: "must not reuse attachment history ID".to_string(),
+                note: String::new(),
+            },
+        )
+        .expect_err("retained attachment history reserves its ID");
+
+        assert!(error.contains("already in use"), "{error}");
+        assert_eq!(history_entry_count(&connection), 1);
+        assert_eq!(active_children(&connection, None).len(), 1);
+    }
+
+    #[test]
+    fn restore_attachment_rejects_an_id_used_by_a_live_node() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "owner");
+        insert_node(&connection, CHILD_ID, None, 2048, "colliding node");
+        let attachment = NoteAttachment {
+            id: CHILD_ID.to_string(),
+            node_id: NODE_ID.to_string(),
+            sort_key: 1024,
+            relative_path: "notes-assets/restored.png".to_string(),
+            content_hash: "d".repeat(64),
+            original_name: "restored.png".to_string(),
+            mime_type: "image/png".to_string(),
+            byte_size: 1,
+            intrinsic_width: 160,
+            intrinsic_height: 160,
+            display_width: 160,
+            created_at: "2026-07-10T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-10T00:00:00.000Z".to_string(),
+        };
+
+        let error = restore_attachment(&mut connection, attachment)
+            .expect_err("restore must preserve the shared ID namespace");
+
+        assert!(error.contains("already exists"), "{error}");
+        let attachment_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
+                row.get(0)
+            })
+            .expect("count restored attachments");
+        assert_eq!(attachment_count, 0);
+    }
+
+    #[test]
+    fn initialization_rejects_existing_node_attachment_id_collisions() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "owner");
+        insert_node(&connection, CHILD_ID, None, 2048, "colliding node");
+        let content_hash = "e".repeat(64);
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (?1, ?2, 1024, ?3, ?4, 'image.png', 'image/png', 1, 160, 160, 160, \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![
+                    CHILD_ID,
+                    NODE_ID,
+                    format!("notes-assets/{content_hash}.png"),
+                    content_hash
+                ],
+            )
+            .expect("seed legacy cross-table collision");
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("existing cross-table IDs must fail storage validation");
+
+        assert!(error.contains("ID namespace"), "{error}");
+    }
+
+    #[test]
+    fn initialization_rejects_a_live_node_id_reserved_by_attachment_history() {
+        let mut connection = test_connection();
+        insert_node(&connection, NODE_ID, None, 1024, "live node");
+        let entry_id = "99999999-9999-4999-8999-999999999999";
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, is_undone, estimated_bytes, command_kind\
+                 ) VALUES (?1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1, 0, 1, 'legacy')",
+                [entry_id],
+            )
+            .expect("seed retained history entry");
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, table_name, row_id, ordinal, before_json, after_json\
+                 ) VALUES (?1, 'notes_attachments', ?2, 1, NULL, '{}')",
+                params![entry_id, NODE_ID],
+            )
+            .expect("seed retained attachment history");
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("live and retained IDs must share one namespace");
+
+        assert!(error.contains("ID namespace"), "{error}");
+    }
+
+    #[test]
+    fn initialization_rejects_node_and_attachment_history_using_the_same_id() {
+        let mut connection = test_connection();
+        let entry_id = "99999999-9999-4999-8999-999999999999";
+        connection
+            .execute(
+                "INSERT INTO notes_history_entries(\
+                   id, session_id, sequence, is_undone, estimated_bytes, command_kind\
+                 ) VALUES (?1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 1, 0, 1, 'legacy')",
+                [entry_id],
+            )
+            .expect("seed retained history entry");
+        for (ordinal, table_name) in [(1_i64, "notes_nodes"), (2, "notes_attachments")] {
+            connection
+                .execute(
+                    "INSERT INTO notes_history_changes(\
+                       entry_id, table_name, row_id, ordinal, before_json, after_json\
+                     ) VALUES (?1, ?2, ?3, ?4, NULL, '{}')",
+                    params![entry_id, table_name, CHILD_ID, ordinal],
+                )
+                .expect("seed cross-kind retained history");
+        }
+
+        let error = initialize_notes_db(&mut connection)
+            .expect_err("retained node and attachment IDs must not collide");
+
+        assert!(error.contains("ID namespace"), "{error}");
     }
 
     #[test]
@@ -9094,6 +10649,12 @@ mod tests {
             fixed_today(),
         )
         .expect("create archive root");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image' WHERE id = ?1",
+                [FIFTH_ID],
+            )
+            .expect("mark archive root as image");
         create_node_at(
             &mut connection,
             CreateNodeInput {
@@ -9107,17 +10668,16 @@ mod tests {
         )
         .expect("create archive child");
         archive_node(&mut connection, FIFTH_ID).expect("archive subtree");
-        assert_eq!(
-            search_nodes_at(
-                &connection,
-                "07/14/2026",
-                NoteSearchScope::Archive,
-                fixed_today(),
-            )
-            .expect("archive context search")[0]
-                .parent_trail,
-            vec!["Archive root"]
-        );
+        let archived = search_nodes_at(
+            &connection,
+            "07/14/2026",
+            NoteSearchScope::Archive,
+            fixed_today(),
+        )
+        .expect("archive context search");
+        assert_eq!(archived[0].node_kind, NoteNodeKind::Text);
+        assert_eq!(archived[0].parent_trail, vec!["Archive root"]);
+        assert_eq!(archived[0].parent_trail_kinds, vec![NoteNodeKind::Image]);
     }
 
     fn create_search_node(
@@ -9147,18 +10707,31 @@ mod tests {
         create_search_node(&mut connection, CHILD_ID, Some(NODE_ID), "Bravo");
         create_search_node(&mut connection, THIRD_ID, Some(CHILD_ID), "Charlie");
         create_search_node(&mut connection, FOURTH_ID, Some(THIRD_ID), "Delta target");
+        connection
+            .execute(
+                "UPDATE notes_nodes SET node_kind = 'image' WHERE id = ?1",
+                [NODE_ID],
+            )
+            .expect("mark root ancestor as image");
 
         // Nested result: full ancestor trail, ordered root-first.
         let nested = search_nodes(&connection, "target").expect("nested search");
         assert_eq!(nested.len(), 1);
         assert_eq!(nested[0].node_id, FOURTH_ID);
+        assert_eq!(nested[0].node_kind, NoteNodeKind::Text);
         assert_eq!(nested[0].parent_trail, vec!["Alpha", "Bravo", "Charlie"]);
+        assert_eq!(
+            nested[0].parent_trail_kinds,
+            vec![NoteNodeKind::Image, NoteNodeKind::Text, NoteNodeKind::Text]
+        );
 
         // Root-level result: no ancestors to resolve.
         let root = search_nodes(&connection, "Alpha").expect("root search");
         assert_eq!(root.len(), 1);
         assert_eq!(root[0].node_id, NODE_ID);
+        assert_eq!(root[0].node_kind, NoteNodeKind::Image);
         assert_eq!(root[0].parent_trail, Vec::<String>::new());
+        assert_eq!(root[0].parent_trail_kinds, Vec::<NoteNodeKind>::new());
 
         // Structured search over the same nested leaf resolves the same trail.
         let structured = search_nodes_structured(
@@ -9224,6 +10797,88 @@ mod tests {
             excluded_tags,
             or_groups,
         }
+    }
+
+    #[test]
+    fn notes_tag_structured_search_classifies_image_note_tags_without_filename_title() {
+        let mut connection = test_connection();
+        let filename = "#same #hidden 2026-07-14 image.png";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (?1, 1024, ?2, '', 'image', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, filename],
+            )
+            .expect("seed image node");
+        update_node_at(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: filename.to_string(),
+                note: "Caption #same 07/15/2026".to_string(),
+            },
+            fixed_today(),
+        )
+        .expect("seed image note projections");
+
+        let filename_fts = search_nodes(&connection, "#same").expect("filename FTS search");
+        assert_eq!(filename_fts.len(), 1);
+        assert_eq!(filename_fts[0].node_id, NODE_ID);
+        assert_eq!(filename_fts[0].node_kind, NoteNodeKind::Image);
+        assert_eq!(filename_fts[0].title, filename);
+        assert!(filename_fts[0].parent_trail_kinds.is_empty());
+        assert_eq!(filename_fts[0].matched_field, NoteSearchMatchedField::Title);
+
+        let note_tag = search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "same")],
+                vec![],
+                vec![],
+            ),
+        )
+        .expect("image note tag structured search");
+        assert_eq!(note_tag.len(), 1);
+        assert_eq!(note_tag[0].node_id, NODE_ID);
+        assert_eq!(note_tag[0].node_kind, NoteNodeKind::Image);
+        assert_eq!(note_tag[0].title, filename);
+        assert!(note_tag[0].parent_trail_kinds.is_empty());
+        assert_eq!(note_tag[0].matched_field, NoteSearchMatchedField::Note);
+
+        assert!(search_nodes_structured(
+            &connection,
+            &structured_query(
+                "",
+                vec![search_tag(NoteTagPrefix::Hash, "hidden")],
+                vec![],
+                vec![],
+            ),
+        )
+        .expect("filename-only tag structured search")
+        .is_empty());
+        assert!(search_nodes_at(
+            &connection,
+            "07/14/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("filename-only date structured search")
+        .is_empty());
+        let note_date = search_nodes_at(
+            &connection,
+            "07/15/2026",
+            NoteSearchScope::Active,
+            fixed_today(),
+        )
+        .expect("image note date search");
+        assert_eq!(note_date.len(), 1);
+        assert_eq!(note_date[0].node_id, NODE_ID);
+        assert_eq!(note_date[0].node_kind, NoteNodeKind::Image);
+        assert!(note_date[0].parent_trail_kinds.is_empty());
+        assert_eq!(note_date[0].matched_field, NoteSearchMatchedField::Date);
     }
 
     #[test]
@@ -10178,8 +11833,10 @@ mod tests {
 
         let wal_path = metadata_path.join("notes.sqlite-wal");
         let shm_path = metadata_path.join("notes.sqlite-shm");
+        let journal_path = metadata_path.join("notes.sqlite-journal");
         std::fs::write(&wal_path, b"wal").expect("write WAL fixture");
         std::fs::write(&shm_path, b"shm").expect("write SHM fixture");
+        std::fs::write(&journal_path, b"journal").expect("write journal fixture");
 
         delete_database(vault_path).expect("delete Notes database");
         delete_database(vault_path).expect("repeat missing Notes database deletion");
@@ -10187,9 +11844,66 @@ mod tests {
         assert!(!notes_path.exists());
         assert!(!wal_path.exists());
         assert!(!shm_path.exists());
+        assert!(!journal_path.exists());
         assert_eq!(std::fs::read(index_path).expect("read index"), b"index");
         assert_eq!(std::fs::read(settings_path).expect("read settings"), b"{}");
         assert!(metadata_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_database_stays_relative_to_the_held_metadata_directory_after_relocation() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().join("vault");
+        std::fs::create_dir(&vault_path).expect("create vault");
+        let vault_path_string = vault_path.to_string_lossy().into_owned();
+        let connection = connect_notes_db(&vault_path_string).expect("connect notes");
+        drop(connection);
+
+        let metadata = crate::metadata_dir(&vault_path_string);
+        let held_metadata = vault_path.join("held-metadata");
+        let attacker_metadata = vault_path.join("attacker-metadata");
+        std::fs::create_dir(&attacker_metadata).expect("create attacker metadata");
+        for name in [
+            "notes.sqlite",
+            "notes.sqlite-wal",
+            "notes.sqlite-shm",
+            "notes.sqlite-journal",
+        ] {
+            std::fs::write(metadata.join(name), format!("held {name}"))
+                .expect("seed held database file");
+            std::fs::write(attacker_metadata.join(name), format!("attacker {name}"))
+                .expect("seed attacker database file");
+        }
+
+        let raced_metadata = metadata.clone();
+        let raced_held = held_metadata.clone();
+        let raced_attacker = attacker_metadata.clone();
+        inject_delete_database_after_hold_once(move || {
+            std::fs::rename(&raced_metadata, &raced_held).expect("relocate held metadata");
+            symlink(&raced_attacker, &raced_metadata).expect("redirect metadata path");
+        });
+
+        delete_database(&vault_path_string).expect("delete from held metadata capability");
+
+        for name in [
+            "notes.sqlite",
+            "notes.sqlite-wal",
+            "notes.sqlite-shm",
+            "notes.sqlite-journal",
+        ] {
+            assert!(
+                !held_metadata.join(name).exists(),
+                "held {name} must be deleted"
+            );
+            assert_eq!(
+                std::fs::read(attacker_metadata.join(name)).expect("read attacker file"),
+                format!("attacker {name}").as_bytes(),
+                "redirected {name} must remain untouched"
+            );
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-export-pdf"
+description = "Enables the notes_export_pdf command without any pre-configured scope."
+commands.allow = ["notes_export_pdf"]
+
+[[permission]]
+identifier = "deny-notes-export-pdf"
+description = "Denies the notes_export_pdf command without any pre-configured scope."
+commands.deny = ["notes_export_pdf"]

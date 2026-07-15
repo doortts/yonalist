@@ -600,16 +600,33 @@ export class NotesDraftEngine {
     return cutoff;
   }
 
-  flushDraftBarrier(cutoff: number): Promise<boolean> {
+  async flushDraftBarrier(cutoff: number): Promise<boolean> {
     const record = this.record;
+    if (record.closing) {
+      await (record.closeCompletion ?? Promise.resolve());
+      return record.drafts.size === 0;
+    }
+    if (
+      this.host.currentRecord() !== record ||
+      this.host.currentSession() !== record.session
+    ) {
+      return record.drafts.size === 0;
+    }
+    const flushed = await this.flushDraftsThroughCutoff(cutoff);
+    if (flushed) {
+      return true;
+    }
+    if (record.closing) {
+      await (record.closeCompletion ?? Promise.resolve());
+    }
     if (
       record.closing ||
       this.host.currentRecord() !== record ||
       this.host.currentSession() !== record.session
     ) {
-      return Promise.resolve(false);
+      return record.drafts.size === 0;
     }
-    return this.flushDraftsThroughCutoff(cutoff);
+    return false;
   }
 
   releaseDraftBarrier(cutoff: number): void {

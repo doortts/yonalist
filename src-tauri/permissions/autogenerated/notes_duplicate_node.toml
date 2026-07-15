@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-duplicate-node"
+description = "Enables the notes_duplicate_node command without any pre-configured scope."
+commands.allow = ["notes_duplicate_node"]
+
+[[permission]]
+identifier = "deny-notes-duplicate-node"
+description = "Denies the notes_duplicate_node command without any pre-configured scope."
+commands.deny = ["notes_duplicate_node"]

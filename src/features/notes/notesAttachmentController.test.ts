@@ -7,12 +7,13 @@ import {
 } from "./notesAttachmentController";
 
 const open = vi.hoisted(() => vi.fn());
+const save = vi.hoisted(() => vi.fn());
 const scaleFactor = vi.hoisted(() => vi.fn());
 const onScaleChanged = vi.hoisted(() => vi.fn());
 const listen = vi.hoisted(() => vi.fn());
 const useNotesWorkspace = vi.hoisted(() => vi.fn());
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open, save }));
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({ listen })
 }));
@@ -70,6 +71,7 @@ beforeEach(() => {
 
 afterEach(() => {
   open.mockReset();
+  save.mockReset();
   scaleFactor.mockReset();
   onScaleChanged.mockReset();
   listen.mockReset();
@@ -108,6 +110,207 @@ describe("notes attachment UI boundary", () => {
       "/incoming/legacy.png"
     ]);
     await expect(nativeNotesAttachmentUi.openImageFiles()).resolves.toBeNull();
+  });
+
+  it.each([
+    ["diagram.png", "image/png", "PNG image", ["png"]],
+    ["photo.jpg", "image/jpeg", "JPEG image", ["jpg", "jpeg"]],
+    ["photo.jpeg", "image/jpeg", "JPEG image", ["jpg", "jpeg"]],
+    ["still.webp", "image/webp", "WebP image", ["webp"]],
+    ["animation.gif", "image/gif", "GIF image", ["gif"]]
+  ] as const)(
+    "opens a native save dialog for %s with a matching image filter",
+    async (originalName, mimeType, filterName, extensions) => {
+      save.mockResolvedValue(`/exports/${originalName}`);
+
+      await expect(
+        nativeNotesAttachmentUi.saveImageFile(originalName, mimeType)
+      ).resolves.toBe(`/exports/${originalName}`);
+
+      expect(save).toHaveBeenCalledWith({
+        defaultPath: originalName,
+        filters: [{ name: filterName, extensions }]
+      });
+    }
+  );
+
+  it.each([
+    [".", "image/png", "image.png", "PNG image", ["png"]],
+    ["..", "image/jpeg", "image.jpg", "JPEG image", ["jpg", "jpeg"]],
+    ["", "image/webp", "image.webp", "WebP image", ["webp"]],
+    [" \t ", "image/gif", "image.gif", "GIF image", ["gif"]],
+    ["/tmp/images/", "image/png", "image.png", "PNG image", ["png"]],
+    [
+      "C:\\images\\",
+      "image/jpeg",
+      "image.jpg",
+      "JPEG image",
+      ["jpg", "jpeg"]
+    ],
+    [
+      "bad\0\u0007name.png",
+      "image/png",
+      "bad_name.png",
+      "PNG image",
+      ["png"]
+    ],
+    [
+      "diagram.png. ",
+      "image/png",
+      "diagram.png",
+      "PNG image",
+      ["png"]
+    ],
+    [
+      "photo.png",
+      "image/jpeg",
+      "photo.jpg",
+      "JPEG image",
+      ["jpg", "jpeg"]
+    ],
+    [
+      "folder\\nested/diagram.png",
+      "image/png",
+      "diagram.png",
+      "PNG image",
+      ["png"]
+    ]
+  ] as const)(
+    "sanitizes image save name %j using its canonical MIME type",
+    async (originalName, mimeType, defaultPath, filterName, extensions) => {
+      save.mockResolvedValue("/exports/selected");
+
+      await nativeNotesAttachmentUi.saveImageFile(originalName, mimeType);
+
+      expect(save).toHaveBeenCalledWith({
+        defaultPath,
+        filters: [{ name: filterName, extensions }]
+      });
+    }
+  );
+
+  it.each([
+    [".profile.png", "image/png", "profile.png"],
+    ["./.hidden", "image/png", "hidden.png"],
+    ["../.hidden.webp", "image/webp", "hidden.webp"],
+    [".\\.hidden.gif", "image/gif", "hidden.gif"],
+    ["...archive.photo.jpeg", "image/jpeg", "archive.photo.jpeg"]
+  ] as const)(
+    "normalizes leading-dot image save basename %j",
+    async (originalName, mimeType, defaultPath) => {
+      save.mockResolvedValue("/exports/selected");
+
+      await nativeNotesAttachmentUi.saveImageFile(originalName, mimeType);
+
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultPath })
+      );
+    }
+  );
+
+  it.each([
+    ["CON.png", "image/png", "_CON.png"],
+    ["prn.jpeg", "image/jpeg", "_prn.jpeg"],
+    ["AUX.photo.png", "image/png", "_AUX.photo.png"],
+    ["nul.webp", "image/webp", "_nul.webp"],
+    ["COM1.gif", "image/gif", "_COM1.gif"],
+    ["COM9.photo.jpeg", "image/jpeg", "_COM9.photo.jpeg"],
+    ["LPT1.png", "image/png", "_LPT1.png"],
+    ["lpt9.jpg", "image/jpeg", "_lpt9.jpg"],
+    ["COM¹.png", "image/png", "_COM¹.png"],
+    ["COM².webp", "image/webp", "_COM².webp"],
+    ["COM³.gif", "image/gif", "_COM³.gif"],
+    ["LPT¹.png", "image/png", "_LPT¹.png"],
+    ["LPT².photo.jpeg", "image/jpeg", "_LPT².photo.jpeg"],
+    ["LPT³.gif", "image/gif", "_LPT³.gif"],
+    [".AUX.photo.png", "image/png", "_AUX.photo.png"]
+  ] as const)(
+    "replaces Windows reserved image save stem in %j",
+    async (originalName, mimeType, defaultPath) => {
+      save.mockResolvedValue("/exports/selected");
+
+      await nativeNotesAttachmentUi.saveImageFile(originalName, mimeType);
+
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultPath })
+      );
+    }
+  );
+
+  it.each([
+    ["CON", 248],
+    ["COM9", 247],
+    ["LPT²", 246]
+  ] as const)(
+    "rechecks %s after UTF-8 truncation removes a disambiguating suffix",
+    async (reservedStem, paddingLength) => {
+      const originalName = `${reservedStem}${" ".repeat(
+        paddingLength
+      )}X.png`;
+      save.mockResolvedValue("/exports/selected");
+
+      await nativeNotesAttachmentUi.saveImageFile(originalName, "image/png");
+
+      const options = save.mock.calls[0]?.[0] as { defaultPath: string };
+      expect(options.defaultPath).toBe(`_${reservedStem}.png`);
+      expect(new TextEncoder().encode(options.defaultPath).byteLength).toBeLessThanOrEqual(
+        255
+      );
+    }
+  );
+
+  it("keeps a long prefixed reserved dotted name within the UTF-8 cap", async () => {
+    const originalName = `AUX.${"한".repeat(100)}.png`;
+    save.mockResolvedValue("/exports/selected");
+
+    await nativeNotesAttachmentUi.saveImageFile(originalName, "image/png");
+
+    const options = save.mock.calls[0]?.[0] as { defaultPath: string };
+    expect(options.defaultPath).toMatch(/^_AUX\..+\.png$/);
+    expect(new TextEncoder().encode(options.defaultPath).byteLength).toBeLessThanOrEqual(
+      255
+    );
+  });
+
+  it.each([
+    ["report.final.v2.png", "image/png"],
+    ["COM10.photo.png", "image/png"],
+    ["LPT0.gif", "image/gif"],
+    ["comet.photo.png", "image/png"],
+    ["auxiliary.photo.jpeg", "image/jpeg"],
+    ["콘텐츠.사진.png", "image/png"]
+  ] as const)(
+    "preserves normal dotted image save name %j",
+    async (originalName, mimeType) => {
+      save.mockResolvedValue("/exports/selected");
+
+      await nativeNotesAttachmentUi.saveImageFile(originalName, mimeType);
+
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ defaultPath: originalName })
+      );
+    }
+  );
+
+  it("caps a Unicode default filename at 255 UTF-8 bytes without losing its extension", async () => {
+    const originalName = `${"한".repeat(100)}.png`;
+    save.mockResolvedValue("/exports/selected");
+
+    await nativeNotesAttachmentUi.saveImageFile(originalName, "image/png");
+
+    const options = save.mock.calls[0]?.[0] as { defaultPath: string };
+    expect(new TextEncoder().encode(options.defaultPath).byteLength).toBeLessThanOrEqual(
+      255
+    );
+    expect(options.defaultPath).toBe(`${"한".repeat(83)}.png`);
+  });
+
+  it("keeps image download cancellation silent", async () => {
+    save.mockResolvedValue(null);
+
+    await expect(
+      nativeNotesAttachmentUi.saveImageFile("diagram.png", "image/png")
+    ).resolves.toBeNull();
   });
 
   it("keeps a scale change that arrives while the baseline query is pending", async () => {
@@ -642,6 +845,7 @@ describe("notes attachment UI boundary", () => {
       ]);
     const attachmentUi = {
       openImageFiles: vi.fn().mockResolvedValue(null),
+      saveImageFile: vi.fn().mockResolvedValue(null),
       subscribeToImageDrop: vi.fn().mockResolvedValue(vi.fn())
     };
     let providedAttachmentUi: unknown;

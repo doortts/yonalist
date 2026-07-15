@@ -177,6 +177,21 @@ describe("NotesBulletMenu", () => {
     ]);
   });
 
+  it("uses a neutral move destination for image nodes without changing text labels", () => {
+    const nodes = [
+      node({ id: "moving", title: "Moving" }),
+      node({ id: "image", nodeKind: "image", title: "private-image.png" }),
+      node({ id: "text", sortKey: 2048, title: "Visible text" })
+    ];
+    const nodesById = Object.fromEntries(nodes.map((item) => [item.id, item]));
+
+    expect(buildNotesMoveDestinations(nodesById, "moving")).toEqual([
+      { id: null, label: "Top level", depth: 0 },
+      { id: "image", label: "Image", depth: 0 },
+      { id: "text", label: "Visible text", depth: 0 }
+    ]);
+  });
+
   it("builds deterministic append moves and skips an already-last sibling", () => {
     const nodes = [
       node({ id: "source-parent" }),

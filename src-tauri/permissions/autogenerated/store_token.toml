@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-store-token"
+description = "Enables the store_token command without any pre-configured scope."
+commands.allow = ["store_token"]
+
+[[permission]]
+identifier = "deny-store-token"
+description = "Denies the store_token command without any pre-configured scope."
+commands.deny = ["store_token"]

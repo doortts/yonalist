@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-list-outbox-markdown-files"
+description = "Enables the list_outbox_markdown_files command without any pre-configured scope."
+commands.allow = ["list_outbox_markdown_files"]
+
+[[permission]]
+identifier = "deny-list-outbox-markdown-files"
+description = "Denies the list_outbox_markdown_files command without any pre-configured scope."
+commands.deny = ["list_outbox_markdown_files"]

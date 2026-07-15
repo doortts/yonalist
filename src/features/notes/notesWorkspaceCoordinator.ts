@@ -11,8 +11,9 @@ import {
   type NotesHistoryFocusField,
   type NotesHistorySession
 } from "./notesHistory";
+import type { ImageNodeInsertionAnchor } from "./imageNodeInsertion";
 import type { NotesWorkspaceDelta } from "./notesWorkspaceReducer";
-import { scopeKey } from "./notesWorkspaceScope";
+import { canonicalizeTagFilters, scopeKey } from "./notesWorkspaceScope";
 
 export type NotesWorkspaceUiUpdate = Partial<{
   selectedId: NoteId | null;
@@ -31,6 +32,7 @@ export type NotesWorkspaceQueueResult =
       historyVersion?: number;
       suppressSynchronization?: boolean;
       scopeAgnostic?: boolean;
+      broadcastScope?: NotesWorkspaceScope;
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
@@ -49,6 +51,7 @@ export type NotesWorkspaceQueueResult =
       historyStatus?: NotesHistoryStatus;
       historyVersion?: number;
       scopeAgnostic?: boolean;
+      broadcastScope?: NotesWorkspaceScope;
       clearLocalExpansionSubtreeId?: NoteId;
       committedHistoryEntryIds?: readonly string[];
       invalidatesTagSummaries?: boolean;
@@ -80,6 +83,7 @@ export interface NotesWorkspaceQueueContext {
   repository: NotesStore;
   vaultRoot: string;
   confirmedWorkspace: NotesWorkspace;
+  readonly sourceScope: NotesWorkspaceScope;
 }
 
 export type NotesWorkspaceQueueWork = (
@@ -116,15 +120,28 @@ export interface OpenNotesWorkspaceSessionOptions {
 export interface NotesWorkspaceCoordinatorSession {
   readonly activation: Promise<void>;
   readonly history: NotesHistorySession;
+  reserveImageImportInsertion?(
+    anchor: ImageNodeInsertionAnchor
+  ): NotesWorkspaceImageImportReservation;
   enqueue(
     work: NotesWorkspaceQueueWork,
     options?: { silent?: boolean }
   ): Promise<NotesWorkspaceCommandOutcome>;
   enqueueStructural(
     work: NotesWorkspaceQueueWork,
-    options?: { selectionPolicy?: NotesPendingSelectionPolicy }
+    options?: {
+      selectionPolicy?: NotesPendingSelectionPolicy;
+      retainAfterClose?: boolean;
+      requireAllBarriers?: boolean;
+    }
   ): Promise<NotesWorkspaceCommandOutcome>;
   close(): void;
+}
+
+export interface NotesWorkspaceImageImportReservation {
+  resolve(): ImageNodeInsertionAnchor;
+  commit(tailId: NoteId): void;
+  release(): void;
 }
 
 export interface NotesWorkspaceCoordinatorRegistry {
@@ -148,6 +165,13 @@ interface CoordinatorEntry {
   pendingStructuralBarriers: number;
   historyStatus: NotesHistoryStatus;
   historyVersion: number;
+  imageImportSequences: Map<string, ImageImportSequence>;
+}
+
+interface ImageImportSequence {
+  readonly anchor: ImageNodeInsertionAnchor;
+  pendingReservations: number;
+  committedTailId: NoteId | null;
 }
 
 interface SessionState {
@@ -175,6 +199,10 @@ interface QueueItemBase {
 
 const LEGACY_HISTORY_SESSION_ID = "00000000-0000-4000-8000-000000000000";
 
+function imageImportAnchorKey(anchor: ImageNodeInsertionAnchor): string {
+  return `${anchor.parentId ?? ""}\u0000${anchor.afterId ?? ""}`;
+}
+
 interface ActivationItem extends QueueItemBase {
   kind: "activation";
   sessions: Set<SessionState>;
@@ -183,6 +211,7 @@ interface ActivationItem extends QueueItemBase {
 interface CommandItem extends QueueItemBase {
   kind: "command";
   owner: SessionState | null;
+  retainAfterOwnerClose: boolean;
   work: NotesWorkspaceQueueWork | null;
   sourceScope: NotesWorkspaceScope;
   // Silent work (draft autosave) stays out of the loading/pending accounting:
@@ -195,6 +224,14 @@ type QueueItem = ActivationItem | CommandItem;
 
 function errorMessage(cause: unknown): string {
   return parseNotesError(cause).message;
+}
+
+function snapshotWorkspaceScope(
+  scope: NotesWorkspaceScope
+): NotesWorkspaceScope {
+  return scope.kind === "tags"
+    ? { kind: "tags", tags: canonicalizeTagFilters(scope.tags) }
+    : { ...scope };
 }
 
 function completionParts<T>(): {
@@ -275,6 +312,61 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     finishCompletion(item, "skipped");
   };
 
+  const reserveImageImportInsertion = (
+    entry: CoordinatorEntry,
+    anchor: ImageNodeInsertionAnchor
+  ): NotesWorkspaceImageImportReservation => {
+    const key = imageImportAnchorKey(anchor);
+    let sequence = entry.imageImportSequences.get(key);
+    if (!sequence) {
+      sequence = {
+        anchor,
+        pendingReservations: 0,
+        committedTailId: null
+      };
+      entry.imageImportSequences.set(key, sequence);
+    }
+    sequence.pendingReservations += 1;
+    let released = false;
+
+    return {
+      resolve(): ImageNodeInsertionAnchor {
+        if (released || sequence!.committedTailId === null) {
+          return anchor;
+        }
+        return {
+          parentId: sequence!.anchor.parentId,
+          afterId: sequence!.committedTailId
+        };
+      },
+      commit(tailId: NoteId): void {
+        if (
+          released ||
+          entry.imageImportSequences.get(key) !== sequence
+        ) {
+          return;
+        }
+        sequence!.committedTailId = tailId;
+      },
+      release(): void {
+        if (released) {
+          return;
+        }
+        released = true;
+        sequence!.pendingReservations = Math.max(
+          0,
+          sequence!.pendingReservations - 1
+        );
+        if (
+          sequence!.pendingReservations === 0 &&
+          entry.imageImportSequences.get(key) === sequence
+        ) {
+          entry.imageImportSequences.delete(key);
+        }
+      }
+    };
+  };
+
   const removeQueuedItem = (item: QueueItem): void => {
     const index = item.entry.queue.indexOf(item);
     if (index >= 0) {
@@ -348,9 +440,13 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         const sourceScope =
           result.kind !== "skipped" && result.scopeAgnostic
             ? null
-            : owner?.active && owner.getScope
-              ? owner.getScope()
-              : item.sourceScope;
+            : result.kind !== "skipped" && result.broadcastScope
+              ? snapshotWorkspaceScope(result.broadcastScope)
+              : owner?.active
+                ? snapshotWorkspaceScope(
+                    owner.getScope?.() ?? item.sourceScope
+                  )
+                : item.sourceScope;
         let synchronizedResult: NotesWorkspaceQueueSettlement;
         if (result.kind === "authoritative") {
           synchronizedResult = {
@@ -375,7 +471,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               : {})
           };
         } else if (result.kind === "failure") {
-          const { uiUpdate: _ownerUiUpdate, ...synchronizedFailure } = result;
+          const {
+            uiUpdate: _ownerUiUpdate,
+            broadcastScope: _broadcastScope,
+            ...synchronizedFailure
+          } = result;
           synchronizedResult = synchronizedFailure;
         } else {
           synchronizedResult = result;
@@ -438,7 +538,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             repository: item.entry.repository,
             vaultRoot: item.entry.vaultRoot,
             confirmedWorkspace:
-              item.owner?.confirmedWorkspace ?? item.entry.confirmedWorkspace
+              item.owner?.confirmedWorkspace ?? item.entry.confirmedWorkspace,
+            sourceScope: snapshotWorkspaceScope(item.sourceScope)
           });
         }
       }
@@ -485,7 +586,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       }
       if (
         (item.kind === "activation" && !hasLiveActivationSession(item)) ||
-        (item.kind === "command" && !item.owner?.active)
+        (item.kind === "command" &&
+          !item.owner?.active &&
+          !item.retainAfterOwnerClose)
       ) {
         cancelItem(item);
         continue;
@@ -528,7 +631,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         structuralTail: Promise.resolve(),
         pendingStructuralBarriers: 0,
         historyStatus: { canUndo: false, canRedo: false },
-        historyVersion: 0
+        historyVersion: 0,
+        imageImportSequences: new Map()
       };
       repositoryEntries.set(vaultRoot, entry);
     }
@@ -563,7 +667,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     }
 
     for (const item of [...session.entry.queue]) {
-      if (item.kind === "command" && item.owner === session) {
+      if (
+        item.kind === "command" &&
+        item.owner === session &&
+        !item.retainAfterOwnerClose
+      ) {
         removeQueuedItem(item);
       }
     }
@@ -628,9 +736,10 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       const enqueueCommand = (
         work: NotesWorkspaceQueueWork,
         silent = false,
-        selectionPolicy: NotesPendingSelectionPolicy = "clear"
+        selectionPolicy: NotesPendingSelectionPolicy = "clear",
+        retainAfterOwnerClose = false
       ): Promise<NotesWorkspaceCommandOutcome> => {
-        if (!session.active) {
+        if (!session.active && !retainAfterOwnerClose) {
           return Promise.resolve("skipped");
         }
         const completion = completionParts<NotesWorkspaceCommandOutcome>();
@@ -638,8 +747,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           kind: "command",
           entry,
           owner: session,
+          retainAfterOwnerClose,
           work,
-          sourceScope: session.getScope?.() ?? { kind: "active" },
+          sourceScope: snapshotWorkspaceScope(
+            session.getScope?.() ?? { kind: "active" }
+          ),
           silent,
           canceled: false,
           ...completion
@@ -661,6 +773,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
       return {
         activation: activationCompletion,
         history: entry.history,
+        reserveImageImportInsertion(
+          anchor: ImageNodeInsertionAnchor
+        ): NotesWorkspaceImageImportReservation {
+          return reserveImageImportInsertion(entry, anchor);
+        },
         enqueue(
           work: NotesWorkspaceQueueWork,
           options?: { silent?: boolean }
@@ -669,17 +786,27 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         },
         enqueueStructural(
           work: NotesWorkspaceQueueWork,
-          options?: { selectionPolicy?: NotesPendingSelectionPolicy }
+          options?: {
+            selectionPolicy?: NotesPendingSelectionPolicy;
+            retainAfterClose?: boolean;
+            requireAllBarriers?: boolean;
+          }
         ): Promise<NotesWorkspaceCommandOutcome> {
+          const retainAfterClose = options?.retainAfterClose === true;
+          const requireAllBarriers = options?.requireAllBarriers === true;
           const participants = [...entry.sessions]
             .filter((participant) => participant.active)
             .map((participant) => {
               const cutoff = participant.captureDraftCutoff?.() ?? 0;
+              const capturedBarrier = participant.beforeStructural;
               const capturedFinalizer = participant.afterStructural;
+              const capturedIsCurrent = participant.isCurrent;
               let finalized = false;
               return {
                 participant,
                 cutoff,
+                beforeStructural: capturedBarrier,
+                isCurrent: capturedIsCurrent,
                 finalize(): void {
                   if (finalized) {
                     return;
@@ -702,21 +829,22 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
           const runStructuralIntent =
             async (): Promise<NotesWorkspaceCommandOutcome> => {
               try {
-                if (!session.active) {
+                if (!session.active && !retainAfterClose) {
                   return "skipped";
                 }
                 for (const intent of participants) {
                   const participant = intent.participant;
-                  if (!participant.active) {
+                  if (!participant.active && !requireAllBarriers) {
                     continue;
                   }
                   if (
-                    participant.beforeStructural &&
-                    !(await participant.beforeStructural(intent.cutoff))
+                    intent.beforeStructural &&
+                    !(await intent.beforeStructural(intent.cutoff))
                   ) {
                     if (
-                      participant.active &&
-                      (participant.isCurrent?.() ?? true)
+                      requireAllBarriers ||
+                      (participant.active &&
+                        (intent.isCurrent?.() ?? true))
                     ) {
                       // The draft-flush barrier failed for a still-current
                       // participant: drop the structural command rather than
@@ -728,7 +856,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
                 const structural = enqueueCommand(
                   work,
                   false,
-                  options?.selectionPolicy ?? "clear"
+                  options?.selectionPolicy ?? "clear",
+                  retainAfterClose
                 );
                 finalizeParticipants();
                 return await structural;
@@ -752,6 +881,9 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
               );
               maybeDeleteEntry(entry);
             });
+          if (retainAfterClose) {
+            return completion;
+          }
           // If the session closes before the structural intent settles, the
           // command was effectively dropped for this caller.
           return Promise.race([

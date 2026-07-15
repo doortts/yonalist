@@ -23,6 +23,7 @@ import {
   type NotesExportResult
 } from "../../domain/notesExport";
 import { NotesLibraryPane } from "./NotesLibraryPane";
+import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -109,10 +110,15 @@ function findTitleTextarea(value: string) {
   ).find((input) => input.value === value);
 }
 
-function note(id: NoteId, title: string, parentId: NoteId | null): NoteNode {
+function note(
+  id: NoteId,
+  title: string,
+  parentId: NoteId | null,
+  nodeKind: NoteNode["nodeKind"] = "text"
+): NoteNode {
   return {
     id,
-    nodeKind: "text",
+    nodeKind,
     parentId,
     sortKey: 1,
     title,
@@ -241,7 +247,9 @@ interface WorkspaceOptions {
   draftTitle?: string;
   libraryView?: NotesLibraryView;
   pageDraftTitle?: string;
+  pageNodeKind?: NoteNode["nodeKind"];
   selectedId?: NoteId | null;
+  selectedNodeKind?: NoteNode["nodeKind"];
   status?: UseNotesWorkspaceResult["state"]["status"];
   zoomRootId?: NoteId | null;
 }
@@ -249,10 +257,16 @@ interface WorkspaceOptions {
 function workspaceValue(
   options: WorkspaceOptions = {}
 ): UseNotesWorkspaceResult {
+  const pageTitle =
+    options.pageNodeKind === "image" ? "page-private.png" : "Page title";
+  const selectedTitle =
+    options.selectedNodeKind === "image"
+      ? "selected-private.png"
+      : "Selected title";
   const state = normalizeWorkspace({
     nodes: [
-      note("page", "Page title", null),
-      note("selected", "Selected title", "page")
+      note("page", pageTitle, null, options.pageNodeKind),
+      note("selected", selectedTitle, "page", options.selectedNodeKind)
     ]
   });
   state.selectedId = options.selectedId ?? "selected";
@@ -264,6 +278,7 @@ function workspaceValue(
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
     createRoot: resolved(),
+    createNextTextSibling: resolved(),
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
@@ -345,14 +360,16 @@ function renderNotesPanes(
   const workspace = workspaceValue(options);
   render(
     <VaultRootContext.Provider value={vaultPath}>
-      <NotesWorkspaceContext.Provider value={workspace}>
-        <div data-testid="notes-middle-pane">
-          <NotesLibraryPane />
-        </div>
-        <div data-testid="notes-detail-pane">
-          <NotesOutlinePane />
-        </div>
-      </NotesWorkspaceContext.Provider>
+      <NotesImageResidencyProvider scopeKey={vaultPath}>
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <div data-testid="notes-middle-pane">
+            <NotesLibraryPane />
+          </div>
+          <div data-testid="notes-detail-pane">
+            <NotesOutlinePane />
+          </div>
+        </NotesWorkspaceContext.Provider>
+      </NotesImageResidencyProvider>
     </VaultRootContext.Provider>
   );
   return workspace;
@@ -1162,6 +1179,136 @@ describe("NotesExportMenu", () => {
         expect.objectContaining({ rootNodeId: "selected" })
       );
     });
+  });
+
+  it.each([
+    {
+      command: "Selected node as Markdown",
+      accessibleFilename: "selected-draft-private.png",
+      filename: "selected-private.png",
+      options: {
+        selectedNodeKind: "image" as const,
+        draftTitle: "selected-draft-private.png"
+      },
+      rootNodeId: "selected"
+    },
+    {
+      command: "Current page as Markdown",
+      accessibleFilename: "page-draft-private.png",
+      filename: "page-private.png",
+      options: {
+        pageNodeKind: "image" as const,
+        pageDraftTitle: "page-draft-private.png"
+      },
+      rootNodeId: "page"
+    }
+  ])(
+    "uses Image for an image-node $command save name and generic body presentation",
+    async ({ accessibleFilename, command, filename, options, rootNodeId }) => {
+      const user = userEvent.setup();
+      exportServiceMock.saveNotesExport.mockResolvedValue(
+        exportResult("markdown")
+      );
+      renderNotesPanes(options);
+      const detailPane = screen.getByTestId("notes-detail-pane");
+
+      await user.click(
+        within(detailPane).getByRole("button", { name: "Export" })
+      );
+      const menu = await screen.findByRole("menu");
+      await user.click(within(menu).getByRole("menuitem", { name: command }));
+
+      await waitFor(() =>
+        expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
+          expect.objectContaining({
+            rootNodeId,
+            defaultFileName: "Image"
+          })
+        )
+      );
+      const imageBody = within(detailPane).getByRole("group", {
+        name: `Image: ${accessibleFilename}`
+      });
+      expect(imageBody).not.toHaveTextContent(filename);
+      expect(imageBody).toHaveAccessibleName(`Image: ${accessibleFilename}`);
+    }
+  );
+
+  it("uses Image for image-node row and library export save names", async () => {
+    const user = userEvent.setup();
+    exportServiceMock.saveNotesExport.mockResolvedValue(
+      exportResult("markdown")
+    );
+    renderNotesPanes({ selectedNodeKind: "image" });
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "More actions for selected-private.png"
+      })
+    );
+    let menu = await screen.findByRole("menu");
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree" })
+    );
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export subtree as Markdown" })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          rootNodeId: "selected",
+          defaultFileName: "Image"
+        })
+      )
+    );
+
+    const library = screen.getByTestId("notes-middle-pane");
+    await user.click(
+      within(library).getByRole("button", { name: "Page actions for Page title" })
+    );
+    menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Export" }));
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export as Markdown" })
+    );
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          rootNodeId: "page",
+          defaultFileName: "Page title"
+        })
+      )
+    );
+  });
+
+  it("uses Image for a library image-page export save name", async () => {
+    const user = userEvent.setup();
+    exportServiceMock.saveNotesExport.mockResolvedValue(
+      exportResult("markdown")
+    );
+    renderNotesPanes({ pageNodeKind: "image", zoomRootId: null });
+    const library = screen.getByTestId("notes-middle-pane");
+
+    await user.click(
+      within(library).getByRole("button", {
+        name: "Page actions for Image: page-private.png"
+      })
+    );
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Export" }));
+    await user.click(
+      within(menu).getByRole("menuitem", { name: "Export as Markdown" })
+    );
+
+    await waitFor(() =>
+      expect(exportServiceMock.saveNotesExport).toHaveBeenCalledWith(
+        expect.objectContaining({
+          rootNodeId: "page",
+          defaultFileName: "Image"
+        })
+      )
+    );
+    expect(library.textContent).not.toContain("page-private.png");
   });
 
   it("routes a row subtree export through the shared guarded controller", async () => {

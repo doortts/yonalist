@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-load-workspace"
+description = "Enables the notes_load_workspace command without any pre-configured scope."
+commands.allow = ["notes_load_workspace"]
+
+[[permission]]
+identifier = "deny-notes-load-workspace"
+description = "Denies the notes_load_workspace command without any pre-configured scope."
+commands.deny = ["notes_load_workspace"]

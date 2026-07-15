@@ -1,12 +1,34 @@
 use crate::notes::attachments::{MAX_ATTACHMENT_BATCH_BYTES, MAX_ATTACHMENT_BYTES};
-use crate::notes::types::{validate_note_id, NotesHistoryContext, MAX_NOTE_ATTACHMENTS_PER_NODE};
+use crate::notes::repository::validate_vault_path;
+use crate::notes::types::{
+    deserialize_required_nullable, validate_image_node_batch_fields, validate_note_id,
+    NotesHistoryContext, MAX_NOTE_ATTACHMENTS_PER_NODE,
+};
 use serde::Deserialize;
 use std::collections::HashSet;
 
 const RAW_ATTACHMENT_MAGIC: &[u8; 4] = b"YNAB";
 const RAW_ATTACHMENT_VERSION: u8 = 1;
+const RAW_IMAGE_NODE_MAGIC: &[u8; 4] = b"YNIB";
+const RAW_IMAGE_NODE_VERSION: u8 = 2;
 const RAW_ATTACHMENT_HEADER_BYTES: usize = 9;
 pub(crate) const MAX_ATTACHMENT_BATCH_METADATA_BYTES: usize = 256 * 1024;
+const MAX_ATTACHMENT_ORIGINAL_NAME_BYTES: usize = 1024;
+
+fn validate_raw_source_metadata(original_name: &str, mime_type: &str) -> Result<(), String> {
+    if original_name.trim().is_empty() || original_name.len() > MAX_ATTACHMENT_ORIGINAL_NAME_BYTES {
+        return Err(format!(
+            "A Notes attachment original name must contain 1 to {MAX_ATTACHMENT_ORIGINAL_NAME_BYTES} bytes."
+        ));
+    }
+    if !matches!(
+        mime_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    ) {
+        return Err("The Notes attachment MIME type is unsupported.".to_string());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -28,6 +50,30 @@ pub(crate) struct ImportAttachmentBytesMetadataItem {
     pub(crate) byte_length: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportImageNodeBytesMetadata {
+    pub(crate) vault_path: String,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub(crate) parent_id: Option<String>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub(crate) after_id: Option<String>,
+    pub(crate) items: Vec<ImportImageNodeBytesMetadataItem>,
+    pub(crate) initial_max_display_width: i64,
+    pub(crate) history_context: Option<NotesHistoryContext>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportImageNodeBytesMetadataItem {
+    pub(crate) node_id: String,
+    pub(crate) attachment_id: String,
+    pub(crate) ordinal: u32,
+    pub(crate) original_name: String,
+    pub(crate) mime_type: String,
+    pub(crate) byte_length: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct RawAttachmentSource<'a> {
     pub(crate) original_name: String,
@@ -38,6 +84,12 @@ pub(crate) struct RawAttachmentSource<'a> {
 #[derive(Debug)]
 pub(crate) struct DecodedAttachmentBatch<'a> {
     pub(crate) metadata: ImportAttachmentBytesMetadata,
+    pub(crate) sources: Vec<RawAttachmentSource<'a>>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DecodedImageNodeBatch<'a> {
+    pub(crate) metadata: ImportImageNodeBytesMetadata,
     pub(crate) sources: Vec<RawAttachmentSource<'a>>,
 }
 
@@ -73,6 +125,7 @@ pub(crate) fn decode_raw_attachment_envelope(
     let metadata: ImportAttachmentBytesMetadata = serde_json::from_slice(metadata_bytes)
         .map_err(|error| format!("Could not decode Notes attachment metadata: {error}"))?;
 
+    validate_vault_path(&metadata.vault_path)?;
     if metadata.attachments.is_empty()
         || metadata.attachments.len()
             > usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE)
@@ -92,6 +145,7 @@ pub(crate) fn decode_raw_attachment_envelope(
     let mut ids = HashSet::with_capacity(metadata.attachments.len());
     let mut aggregate_bytes = 0_u64;
     for (index, attachment) in metadata.attachments.iter().enumerate() {
+        validate_raw_source_metadata(&attachment.original_name, &attachment.mime_type)?;
         if usize::try_from(attachment.ordinal).ok() != Some(index) {
             return Err(
                 "Notes attachment ordinals must be contiguous and match source order.".to_string(),
@@ -143,6 +197,97 @@ pub(crate) fn decode_raw_attachment_envelope(
     }
 
     Ok(DecodedAttachmentBatch { metadata, sources })
+}
+
+pub(crate) fn decode_raw_image_node_envelope(
+    body: &[u8],
+) -> Result<DecodedImageNodeBatch<'_>, String> {
+    let header = body
+        .get(..RAW_ATTACHMENT_HEADER_BYTES)
+        .ok_or_else(|| "The Notes image node envelope header is truncated.".to_string())?;
+    if &header[..4] != RAW_IMAGE_NODE_MAGIC {
+        return Err("The Notes image node envelope magic is invalid.".to_string());
+    }
+    if header[4] != RAW_IMAGE_NODE_VERSION {
+        return Err("The Notes image node envelope version is unsupported.".to_string());
+    }
+
+    let metadata_length =
+        usize::try_from(u32::from_le_bytes(header[5..9].try_into().map_err(
+            |_| "The Notes image node metadata length is invalid.".to_string(),
+        )?))
+        .map_err(|_| "The Notes image node metadata length is too large.".to_string())?;
+    if metadata_length > MAX_ATTACHMENT_BATCH_METADATA_BYTES {
+        return Err(format!(
+            "Notes image node batch metadata must contain at most {MAX_ATTACHMENT_BATCH_METADATA_BYTES} bytes."
+        ));
+    }
+    let metadata_end = RAW_ATTACHMENT_HEADER_BYTES
+        .checked_add(metadata_length)
+        .ok_or_else(|| "The Notes image node metadata length overflowed.".to_string())?;
+    let metadata_bytes = body
+        .get(RAW_ATTACHMENT_HEADER_BYTES..metadata_end)
+        .ok_or_else(|| "The Notes image node envelope metadata is truncated.".to_string())?;
+    let metadata: ImportImageNodeBytesMetadata = serde_json::from_slice(metadata_bytes)
+        .map_err(|error| format!("Could not decode Notes image node metadata: {error}"))?;
+
+    validate_vault_path(&metadata.vault_path)?;
+    validate_image_node_batch_fields(
+        metadata.parent_id.as_deref(),
+        metadata.after_id.as_deref(),
+        metadata.initial_max_display_width,
+        metadata
+            .items
+            .iter()
+            .map(|item| (item.node_id.as_str(), item.attachment_id.as_str())),
+    )?;
+
+    let mut aggregate_bytes = 0_u64;
+    for (index, item) in metadata.items.iter().enumerate() {
+        validate_raw_source_metadata(&item.original_name, &item.mime_type)?;
+        if usize::try_from(item.ordinal).ok() != Some(index) {
+            return Err(
+                "Notes image node ordinals must be contiguous and match source order.".to_string(),
+            );
+        }
+        if item.byte_length == 0 || item.byte_length > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "Notes image node images must contain between 1 and {MAX_ATTACHMENT_BYTES} bytes."
+            ));
+        }
+        aggregate_bytes = aggregate_bytes
+            .checked_add(item.byte_length)
+            .ok_or_else(|| "The Notes image node batch byte length overflowed.".to_string())?;
+        if aggregate_bytes > MAX_ATTACHMENT_BATCH_BYTES {
+            return Err(format!(
+                "Notes image node batches must contain at most {MAX_ATTACHMENT_BATCH_BYTES} image bytes."
+            ));
+        }
+    }
+
+    let mut offset = metadata_end;
+    let mut sources = Vec::with_capacity(metadata.items.len());
+    for item in &metadata.items {
+        let byte_length = usize::try_from(item.byte_length)
+            .map_err(|_| "A Notes image node byte length is too large.".to_string())?;
+        let end = offset
+            .checked_add(byte_length)
+            .ok_or_else(|| "The Notes image node source offset overflowed.".to_string())?;
+        let bytes = body
+            .get(offset..end)
+            .ok_or_else(|| "The Notes image node envelope body is truncated.".to_string())?;
+        sources.push(RawAttachmentSource {
+            original_name: item.original_name.clone(),
+            declared_mime_type: item.mime_type.clone(),
+            bytes,
+        });
+        offset = end;
+    }
+    if offset != body.len() {
+        return Err("The Notes image node envelope contains trailing bytes.".to_string());
+    }
+
+    Ok(DecodedImageNodeBatch { metadata, sources })
 }
 
 #[cfg(test)]
@@ -225,6 +370,188 @@ mod tests {
             declared_mime_type: mime_type.to_string(),
             bytes,
         }
+    }
+
+    fn image_node_metadata_item(
+        node_id: &str,
+        attachment_id: &str,
+        ordinal: u32,
+        byte_length: u64,
+    ) -> Value {
+        json!({
+            "nodeId": node_id,
+            "attachmentId": attachment_id,
+            "ordinal": ordinal,
+            "originalName": format!("image-{ordinal}.png"),
+            "mimeType": "image/png",
+            "byteLength": byte_length
+        })
+    }
+
+    fn image_node_envelope(metadata: &Value, body: &[u8]) -> Vec<u8> {
+        let metadata = serde_json::to_vec(metadata).expect("encode image node metadata");
+        let mut envelope = Vec::with_capacity(9 + metadata.len() + body.len());
+        envelope.extend_from_slice(b"YNIB");
+        envelope.push(2);
+        envelope.extend_from_slice(
+            &u32::try_from(metadata.len())
+                .expect("image node metadata length")
+                .to_le_bytes(),
+        );
+        envelope.extend_from_slice(&metadata);
+        envelope.extend_from_slice(body);
+        envelope
+    }
+
+    fn image_node_nullable_anchor_metadata() -> Value {
+        json!({
+            "vaultPath": "/vault",
+            "parentId": null,
+            "afterId": null,
+            "items": [image_node_metadata_item(NODE_ID, FIRST_ID, 0, 2)],
+            "initialMaxDisplayWidth": 480,
+            "historyContext": null
+        })
+    }
+
+    #[test]
+    fn image_node_raw_envelope_accepts_explicit_null_anchor_keys() {
+        let envelope = image_node_envelope(&image_node_nullable_anchor_metadata(), &[1, 2]);
+        let decoded = decode_raw_image_node_envelope(&envelope)
+            .expect("decode explicit null image node anchors");
+
+        assert_eq!(decoded.metadata.parent_id, None);
+        assert_eq!(decoded.metadata.after_id, None);
+    }
+
+    #[test]
+    fn image_node_raw_envelope_requires_parent_id_key() {
+        let mut metadata = image_node_nullable_anchor_metadata();
+        metadata
+            .as_object_mut()
+            .expect("raw metadata object")
+            .remove("parentId")
+            .expect("remove parentId");
+        let envelope = image_node_envelope(&metadata, &[1, 2]);
+
+        let error = decode_raw_image_node_envelope(&envelope).expect_err("missing parentId");
+
+        assert!(error.contains("missing field `parentId`"), "{error}");
+    }
+
+    #[test]
+    fn image_node_raw_envelope_requires_after_id_key() {
+        let mut metadata = image_node_nullable_anchor_metadata();
+        metadata
+            .as_object_mut()
+            .expect("raw metadata object")
+            .remove("afterId")
+            .expect("remove afterId");
+        let envelope = image_node_envelope(&metadata, &[1, 2]);
+
+        let error = decode_raw_image_node_envelope(&envelope).expect_err("missing afterId");
+
+        assert!(error.contains("missing field `afterId`"), "{error}");
+    }
+
+    #[test]
+    fn image_node_raw_envelope_rejects_unknown_metadata_fields() {
+        let mut metadata = image_node_nullable_anchor_metadata();
+        metadata
+            .as_object_mut()
+            .expect("raw metadata object")
+            .insert("unexpected".to_string(), json!(true));
+        let envelope = image_node_envelope(&metadata, &[1, 2]);
+
+        let error = decode_raw_image_node_envelope(&envelope).expect_err("unknown metadata field");
+
+        assert!(error.contains("unknown field `unexpected`"), "{error}");
+    }
+
+    #[test]
+    fn image_node_raw_envelope_v2_preserves_shared_anchor_ids_and_source_order() {
+        let metadata = json!({
+            "vaultPath": "/vault",
+            "parentId": NODE_ID,
+            "afterId": null,
+            "items": [
+                image_node_metadata_item(FIRST_ID, SECOND_ID, 0, 2),
+                image_node_metadata_item(
+                    "44444444-4444-4444-8444-444444444444",
+                    "55555555-5555-4555-8555-555555555555",
+                    1,
+                    3
+                )
+            ],
+            "initialMaxDisplayWidth": 480,
+            "historyContext": null
+        });
+        let envelope = image_node_envelope(&metadata, &[1, 2, 3, 4, 5]);
+        let decoded = decode_raw_image_node_envelope(&envelope).expect("decode image node batch");
+
+        assert_eq!(decoded.metadata.parent_id.as_deref(), Some(NODE_ID));
+        assert_eq!(decoded.metadata.after_id, None);
+        assert_eq!(decoded.metadata.items[0].node_id, FIRST_ID);
+        assert_eq!(decoded.metadata.items[0].attachment_id, SECOND_ID);
+        assert_eq!(decoded.sources[0].bytes, &[1, 2]);
+        assert_eq!(decoded.sources[1].bytes, &[3, 4, 5]);
+
+        let mut legacy_v1 = envelope.clone();
+        legacy_v1[..4].copy_from_slice(b"YNAB");
+        legacy_v1[4] = 1;
+        assert!(decode_raw_image_node_envelope(&legacy_v1).is_err());
+
+        let mut legacy_magic_v2 = envelope.clone();
+        legacy_magic_v2[..4].copy_from_slice(b"YNAB");
+        assert!(decode_raw_image_node_envelope(&legacy_magic_v2).is_err());
+        assert!(decode_raw_attachment_envelope(&envelope).is_err());
+    }
+
+    #[test]
+    fn image_node_raw_envelope_rejects_duplicate_ids_ordinals_and_length_mismatches() {
+        let base = json!({
+            "vaultPath": "/vault",
+            "parentId": null,
+            "afterId": null,
+            "items": [
+                image_node_metadata_item(NODE_ID, FIRST_ID, 0, 2),
+                image_node_metadata_item(SECOND_ID, "44444444-4444-4444-8444-444444444444", 1, 3)
+            ],
+            "initialMaxDisplayWidth": 480,
+            "historyContext": null
+        });
+
+        let mut duplicate_node = base.clone();
+        duplicate_node["items"][1]["nodeId"] = json!(NODE_ID);
+        assert!(decode_raw_image_node_envelope(&image_node_envelope(
+            &duplicate_node,
+            &[1, 2, 3, 4, 5]
+        ))
+        .is_err());
+
+        let mut duplicate_attachment = base.clone();
+        duplicate_attachment["items"][1]["attachmentId"] = json!(FIRST_ID);
+        assert!(decode_raw_image_node_envelope(&image_node_envelope(
+            &duplicate_attachment,
+            &[1, 2, 3, 4, 5]
+        ))
+        .is_err());
+
+        let mut non_contiguous = base.clone();
+        non_contiguous["items"][1]["ordinal"] = json!(2);
+        assert!(decode_raw_image_node_envelope(&image_node_envelope(
+            &non_contiguous,
+            &[1, 2, 3, 4, 5]
+        ))
+        .is_err());
+
+        assert!(
+            decode_raw_image_node_envelope(&image_node_envelope(&base, &[1, 2, 3, 4])).is_err()
+        );
+        assert!(
+            decode_raw_image_node_envelope(&image_node_envelope(&base, &[1, 2, 3, 4, 5, 6]))
+                .is_err()
+        );
     }
 
     #[test]

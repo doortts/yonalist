@@ -3,16 +3,21 @@ import type { NotesLogicalPoint } from "./notesAttachmentController";
 
 export function attachmentTargetFromPoint(
   root: HTMLElement,
-  logicalPoint: NotesLogicalPoint
+  logicalPoint: NotesLogicalPoint,
+  zoomRootFallbackId: NoteId | null = null
 ): NoteId | null {
   const hit = document.elementFromPoint(logicalPoint.x, logicalPoint.y);
+  if (!hit || !root.contains(hit)) return null;
+
   const target = hit?.closest<HTMLElement>(
     "[data-notes-attachment-target]"
   );
-  if (!target || !root.contains(target)) return null;
+  if (target && root.contains(target)) {
+    const noteId = target.dataset.notesAttachmentTarget;
+    if (noteId?.trim()) return noteId;
+  }
 
-  const noteId = target.dataset.notesAttachmentTarget;
-  return noteId?.trim() ? noteId : null;
+  return zoomRootFallbackId?.trim() ? zoomRootFallbackId : null;
 }
 
 export function attachmentTargetFromPaste(

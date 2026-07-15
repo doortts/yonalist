@@ -15,11 +15,13 @@ mod notes;
 use file_io::{ensure_parent, write_text_file_inner};
 use notes::commands::{
     notes_apply_batch, notes_archive_node, notes_clear_history, notes_collapse_all,
-    notes_create_node, notes_delete_database, notes_duplicate_node, notes_empty_trash,
-    notes_expand_all, notes_export_markdown, notes_export_pdf, notes_history_status,
-    notes_import_attachment, notes_import_attachment_bytes, notes_import_attachment_paths_batch,
-    notes_import_subtree, notes_initialize, notes_list_tags, notes_list_tags_with_counts,
-    notes_load_workspace, notes_move_node, notes_read_attachment_bytes, notes_redo,
+    notes_create_node, notes_delete_database, notes_download_attachment, notes_duplicate_node,
+    notes_empty_trash, notes_expand_all, notes_export_markdown, notes_export_pdf,
+    notes_history_status, notes_import_attachment, notes_import_attachment_bytes,
+    notes_import_attachment_paths_batch, notes_import_image_node_bytes,
+    notes_import_image_node_paths_batch, notes_import_subtree, notes_initialize, notes_list_tags,
+    notes_list_tags_with_counts, notes_load_workspace, notes_move_node,
+    notes_open_attachment_original, notes_read_attachment_bytes, notes_redo,
     notes_remove_attachment, notes_remove_empty_node, notes_resize_attachment,
     notes_restore_attachment, notes_restore_node, notes_search, notes_search_structured,
     notes_soft_delete_node, notes_sort_subtree_ascending, notes_sort_subtree_descending,
@@ -1584,7 +1586,11 @@ pub fn run() {
             notes_import_attachment,
             notes_import_attachment_paths_batch,
             notes_import_attachment_bytes,
+            notes_import_image_node_paths_batch,
+            notes_import_image_node_bytes,
             notes_read_attachment_bytes,
+            notes_open_attachment_original,
+            notes_download_attachment,
             notes_resize_attachment,
             notes_remove_attachment,
             notes_restore_attachment,
@@ -1599,6 +1605,224 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    const APP_COMMAND_PERMISSION_SET: &str = "main-window-app-commands";
+
+    fn tauri_project_path(relative: impl AsRef<Path>) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
+    }
+
+    fn registered_app_commands() -> Vec<String> {
+        let source = include_str!("lib.rs");
+        source
+            .split_once(".invoke_handler(tauri::generate_handler![")
+            .expect("desktop invoke handler")
+            .1
+            .split_once("])")
+            .expect("desktop invoke handler terminator")
+            .0
+            .lines()
+            .map(str::trim)
+            .map(|line| line.strip_suffix(',').unwrap_or(line))
+            .filter(|line| {
+                !line.is_empty()
+                    && line
+                        .chars()
+                        .all(|character| character.is_ascii_alphanumeric() || character == '_')
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn manifest_app_commands() -> Vec<String> {
+        let source = fs::read_to_string(tauri_project_path("build.rs")).expect("read build.rs");
+        source
+            .split_once("const APP_COMMANDS: &[&str] = &[")
+            .expect("application command manifest declaration")
+            .1
+            .split_once("];")
+            .expect("application command manifest terminator")
+            .0
+            .lines()
+            .filter_map(|line| {
+                line.trim()
+                    .strip_prefix('"')
+                    .and_then(|line| line.strip_suffix("\","))
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn unique_names(values: &[String], label: &str) -> BTreeSet<String> {
+        let names = values.iter().cloned().collect::<BTreeSet<_>>();
+        assert_eq!(
+            names.len(),
+            values.len(),
+            "{label} must not contain duplicates"
+        );
+        names
+    }
+
+    fn permission_identifier(value: &serde_json::Value) -> Option<&str> {
+        value
+            .as_str()
+            .or_else(|| value.get("identifier").and_then(|v| v.as_str()))
+    }
+
+    #[test]
+    fn application_manifest_covers_every_registered_command_exactly_once() {
+        let registered = registered_app_commands();
+        let manifest = manifest_app_commands();
+
+        assert_eq!(
+            unique_names(&manifest, "application command manifest"),
+            unique_names(&registered, "desktop invoke handler"),
+            "application command manifest must exactly match the desktop invoke handler"
+        );
+
+        let build_source =
+            fs::read_to_string(tauri_project_path("build.rs")).expect("read build.rs");
+        assert!(
+            build_source.contains("commands(APP_COMMANDS)"),
+            "Tauri AppManifest must use APP_COMMANDS"
+        );
+    }
+
+    #[test]
+    fn application_commands_are_granted_only_to_local_main_window() {
+        let registered = registered_app_commands();
+        let registered = unique_names(&registered, "desktop invoke handler");
+        let expected_allow_permissions = registered
+            .iter()
+            .map(|command| format!("allow-{}", command.replace('_', "-")))
+            .collect::<BTreeSet<_>>();
+
+        let manifests: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(tauri_project_path("gen/schemas/acl-manifests.json"))
+                .expect("read generated ACL manifests"),
+        )
+        .expect("parse generated ACL manifests");
+        let app_manifest = manifests
+            .get("__app-acl__")
+            .expect("generated application ACL manifest");
+        let permissions = app_manifest
+            .get("permissions")
+            .and_then(|v| v.as_object())
+            .expect("application command permissions");
+
+        let actual_allow_permissions = permissions
+            .keys()
+            .filter(|identifier| identifier.starts_with("allow-"))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            actual_allow_permissions, expected_allow_permissions,
+            "generated allow permissions must exactly cover registered commands"
+        );
+
+        for command in &registered {
+            let identifier = format!("allow-{}", command.replace('_', "-"));
+            assert_eq!(
+                permissions[&identifier]["commands"]["allow"],
+                serde_json::json!([command]),
+                "{identifier} must grant only {command}"
+            );
+        }
+
+        let command_set = &app_manifest["permission_sets"][APP_COMMAND_PERMISSION_SET];
+        let command_set_permissions = command_set["permissions"]
+            .as_array()
+            .expect("main-window app command permission list")
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .expect("app command permission identifier")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            unique_names(
+                &command_set_permissions,
+                "main-window app command permission set"
+            ),
+            expected_allow_permissions,
+            "main-window permission set must include every generated allow permission"
+        );
+
+        let app_permission_identifiers = permissions
+            .keys()
+            .chain(
+                app_manifest["permission_sets"]
+                    .as_object()
+                    .expect("application permission sets")
+                    .keys(),
+            )
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut app_command_capabilities = Vec::new();
+        let capabilities: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(tauri_project_path("gen/schemas/capabilities.json"))
+                .expect("read generated capabilities"),
+        )
+        .expect("parse generated capabilities");
+        for capability in capabilities
+            .as_object()
+            .expect("generated capability map")
+            .values()
+        {
+            let app_permissions = capability["permissions"]
+                .as_array()
+                .expect("capability permissions")
+                .iter()
+                .filter_map(permission_identifier)
+                .filter(|identifier| app_permission_identifiers.contains(*identifier))
+                .collect::<Vec<_>>();
+            if app_permissions.is_empty() {
+                continue;
+            }
+
+            assert_eq!(
+                app_permissions,
+                vec![APP_COMMAND_PERMISSION_SET],
+                "capabilities must grant app commands only through the main-window set"
+            );
+            assert_eq!(capability["windows"], serde_json::json!(["main"]));
+            assert!(
+                capability
+                    .get("webviews")
+                    .and_then(|value| value.as_array())
+                    .map_or(true, Vec::is_empty),
+                "app command capability must not target additional webviews"
+            );
+            assert!(
+                capability.get("remote").is_none(),
+                "app command capability must not grant remote origins"
+            );
+            assert_eq!(
+                capability.get("local").and_then(|value| value.as_bool()),
+                Some(true),
+                "app command capability must allow the local main window"
+            );
+            assert_ne!(capability["windows"], serde_json::json!(["oauth-login"]));
+
+            app_command_capabilities.push(
+                capability["identifier"]
+                    .as_str()
+                    .expect("capability identifier")
+                    .to_string(),
+            );
+        }
+
+        assert_eq!(
+            app_command_capabilities,
+            vec!["default"],
+            "only the default local-main capability may grant app commands"
+        );
+    }
 
     #[test]
     fn workflowy_subtree_commands_are_registered_for_desktop_invoke() {
@@ -1618,6 +1842,10 @@ mod tests {
             "notes_sort_subtree_descending",
             "notes_import_attachment_paths_batch",
             "notes_import_attachment_bytes",
+            "notes_import_image_node_paths_batch",
+            "notes_import_image_node_bytes",
+            "notes_open_attachment_original",
+            "notes_download_attachment",
             "notes_apply_batch",
             "notes_import_subtree",
         ] {

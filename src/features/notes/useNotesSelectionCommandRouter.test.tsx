@@ -20,6 +20,7 @@ function node(
 ): NoteNode {
   return {
     id,
+    nodeKind: "text",
     parentId: null,
     sortKey: 1024,
     title: id,

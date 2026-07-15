@@ -62,13 +62,17 @@ export function NotesImageMenu({
   onDelete,
   onOpenSettings
 }: NotesImageMenuProps) {
+  const triggerLabel =
+    originalName === "Image"
+      ? "Image actions"
+      : `Image actions for ${originalName}`;
   return (
     <Menu.Root disabled={disabled} modal={false}>
       <IconTooltip label="Image actions" side="left">
         <Menu.Trigger
           type="button"
           className="notes-image-menu-trigger"
-          aria-label={`Image actions for ${originalName}`}
+          aria-label={triggerLabel}
           disabled={disabled}
           onPointerDown={stopRowPointerDown}
         >

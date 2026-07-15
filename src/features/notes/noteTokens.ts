@@ -117,12 +117,20 @@ function isAsciiLetter(codeUnit: number): boolean {
   );
 }
 
+function isAsciiUppercase(codeUnit: number): boolean {
+  return codeUnit >= 0x41 && codeUnit <= 0x5a;
+}
+
 function isAsciiDigit(codeUnit: number): boolean {
   return codeUnit >= 0x30 && codeUnit <= 0x39;
 }
 
 function isAsciiLetterOrDigit(codeUnit: number): boolean {
   return isAsciiLetter(codeUnit) || isAsciiDigit(codeUnit);
+}
+
+function isAsciiScalar(character: string): boolean {
+  return character.length === 1 && character.charCodeAt(0) <= 0x7f;
 }
 
 function isUrlLeadRunCharacter(codeUnit: number): boolean {
@@ -345,7 +353,7 @@ function matchesLowercaseAscii(
 function urlSchemeLength(source: string, offsetUtf16: number): number {
   const firstCodeUnit = source.charCodeAt(offsetUtf16);
   // Fast reject: every accepted scheme starts with `h`/`H`.
-  if (firstCodeUnit !== 0x68 && firstCodeUnit !== 0x48) {
+  if (!isHttpUrlSchemeLead(firstCodeUnit)) {
     return 0;
   }
   if (matchesLowercaseAscii(source, offsetUtf16, "https://")) {
@@ -355,6 +363,10 @@ function urlSchemeLength(source: string, offsetUtf16: number): number {
     return 7;
   }
   return 0;
+}
+
+function isHttpUrlSchemeLead(codeUnit: number): boolean {
+  return codeUnit === 0x68 || codeUnit === 0x48;
 }
 
 function isUrlBodyStopCodeUnit(codeUnit: number): boolean {
@@ -508,6 +520,14 @@ function matchFormatOpen(
   return null;
 }
 
+function hasPossibleFormatMarker(source: string): boolean {
+  return (
+    source.includes("*") ||
+    source.includes("`") ||
+    source.includes("~~")
+  );
+}
+
 interface FormatSpan {
   readonly kind: NoteFormatKind;
   readonly startUtf16: number;
@@ -588,7 +608,9 @@ function findFormatSpans(source: string): readonly FormatSpan[] {
 
 export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
   const tokens: NoteTextToken[] = [];
-  const formatSpans = findFormatSpans(source);
+  const formatSpans: readonly FormatSpan[] = hasPossibleFormatMarker(source)
+    ? findFormatSpans(source)
+    : [];
   let nextSpanIndex = 0;
   let textStartUtf16 = 0;
   let offsetUtf16 = 0;
@@ -633,7 +655,9 @@ export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
     // URL and jumps past it); conversely a formatting span that starts INSIDE a
     // URL is discarded (nextSpanIndex advances past it) and its markers render
     // as plain URL characters — mirroring the tokenizer's non-recursion rule.
-    const urlEndUtf16 = matchUrlAt(source, offsetUtf16);
+    const urlEndUtf16 = isHttpUrlSchemeLead(source.charCodeAt(offsetUtf16))
+      ? matchUrlAt(source, offsetUtf16)
+      : null;
     if (urlEndUtf16 !== null) {
       if (textStartUtf16 < offsetUtf16) {
         tokens.push({
@@ -697,12 +721,22 @@ export function tokenizeNoteText(source: string): readonly NoteTextToken[] {
       continue;
     }
 
+    let tagBodyIsAscii = isAsciiScalar(firstBodyCharacter);
+    let tagBodyHasAsciiUppercase =
+      tagBodyIsAscii && isAsciiUppercase(firstBodyCharacter.charCodeAt(0));
     let bodyEndUtf16 = bodyStartUtf16 + firstBodyCharacter.length;
 
     while (bodyEndUtf16 < source.length) {
       const bodyCharacter = scalarAt(source, bodyEndUtf16);
       if (!isTagBodyContinuationCharacter(bodyCharacter)) {
         break;
+      }
+      if (isAsciiScalar(bodyCharacter)) {
+        tagBodyHasAsciiUppercase ||= isAsciiUppercase(
+          bodyCharacter.charCodeAt(0)
+        );
+      } else {
+        tagBodyIsAscii = false;
       }
       bodyEndUtf16 += bodyCharacter.length;
     }

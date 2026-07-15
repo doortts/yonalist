@@ -1024,7 +1024,7 @@ describe("Yonalist app shell", () => {
     expect(notificationTip).toHaveClass("tooltip-popup");
     expect(notificationTip).toHaveAttribute("data-closed");
     expect(notificationTip).toHaveTextContent("브라우저에서 열기");
-    notificationOpen.focus();
+    act(() => notificationOpen.focus());
     await waitFor(() => expect(notificationTip).toHaveAttribute("data-open"));
 
     // Item detail: the visible label now lives in a Base UI Tooltip popup, not
@@ -1041,7 +1041,7 @@ describe("Yonalist app shell", () => {
     expect(itemTip).toHaveClass("tooltip-popup");
     expect(itemTip).toHaveAttribute("data-closed");
     expect(itemTip).toHaveTextContent("브라우저에서 열기");
-    itemOpen.focus();
+    act(() => itemOpen.focus());
     await waitFor(() => expect(itemTip).toHaveAttribute("data-open"));
   });
 

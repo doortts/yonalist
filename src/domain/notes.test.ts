@@ -10,6 +10,7 @@ import {
   isRetryableNotesErrorCode,
   MAX_NOTE_ATTACHMENTS_PER_NODE,
   MAX_NOTE_ATTACHMENTS_PER_WORKSPACE,
+  MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS,
   normalizeNotesWorkspace,
   notesErrorHasCode,
   parseNotesError
@@ -18,6 +19,10 @@ import type { NotesErrorCode } from "./notes";
 import type {
   ApplyNotesBatchInput,
   NoteAttachment,
+  ImportImageNodeByteItem,
+  ImportImageNodeBytesInput,
+  ImportImageNodePathItem,
+  ImportImageNodePathsInput,
   ImportNoteAttachmentByteItem,
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
@@ -30,6 +35,7 @@ import type {
   NotesMutationResponse,
   NotesStore,
   NotesWorkspaceScope,
+  PendingImageNodeByteItem,
   PendingNoteAttachmentByteItem,
   ResizeNoteAttachmentInput
 } from "./notes";
@@ -488,21 +494,41 @@ describe("Notes domain contract", () => {
   it("recognizes typed search results and rejects malformed parent trails", () => {
     const result = {
       nodeId: UUID,
+      nodeKind: "image",
       title: "Target",
       parentTrail: ["Page", "Section"],
+      parentTrailKinds: ["image", "text"],
       matchedField: "note"
     };
 
     expect(isNoteSearchResult(result)).toBe(true);
     expect(isNoteSearchResult({ ...result, parentTrail: ["Page", 42] })).toBe(false);
+    expect(
+      isNoteSearchResult({ ...result, parentTrailKinds: ["text"] })
+    ).toBe(false);
+    expect(
+      isNoteSearchResult({ ...result, parentTrailKinds: ["text", "canvas"] })
+    ).toBe(false);
+    expect(isNoteSearchResult({ ...result, nodeKind: "canvas" })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "tags" })).toBe(false);
     expect(isNoteSearchResult({ ...result, matchedField: "date" })).toBe(true);
+    const { nodeKind: _nodeKind, ...missingNodeKind } = result;
+    const { parentTrailKinds: _parentTrailKinds, ...missingTrailKinds } = result;
+    expect(isNoteSearchResult(missingNodeKind)).toBe(false);
+    expect(isNoteSearchResult(missingTrailKinds)).toBe(false);
+    expect(isNoteSearchResult({ ...result, extra: true })).toBe(false);
     const inherited = Object.assign(Object.create({ inherited: true }), result);
     const sparseTrail: string[] = [];
     sparseTrail.length = 2;
     sparseTrail[1] = "Section";
+    const sparseTrailKinds: string[] = [];
+    sparseTrailKinds.length = 2;
+    sparseTrailKinds[1] = "text";
     expect(isNoteSearchResult(inherited)).toBe(false);
     expect(isNoteSearchResult({ ...result, parentTrail: sparseTrail })).toBe(false);
+    expect(
+      isNoteSearchResult({ ...result, parentTrailKinds: sparseTrailKinds })
+    ).toBe(false);
   });
 
   it("supports typed active, archive, and trash search scopes", () => {
@@ -688,6 +714,39 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         input: ImportNoteAttachmentBytesBatchInput,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+  });
+
+  it("defines typed image-node import inputs and store APIs with history context", () => {
+    expect(MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS).toBe(128);
+    expectTypeOf<keyof ImportImageNodePathItem>().toEqualTypeOf<
+      "nodeId" | "attachmentId" | "sourcePath"
+    >();
+    expectTypeOf<keyof ImportImageNodePathsInput>().toEqualTypeOf<
+      "parentId" | "afterId" | "items" | "initialMaxDisplayWidth"
+    >();
+    expectTypeOf<keyof ImportImageNodeByteItem>().toEqualTypeOf<
+      "nodeId" | "attachmentId" | "originalName" | "mimeType" | "blob"
+    >();
+    expectTypeOf<keyof PendingImageNodeByteItem>().toEqualTypeOf<
+      "originalName" | "mimeType" | "blob"
+    >();
+    expectTypeOf<keyof ImportImageNodeBytesInput>().toEqualTypeOf<
+      "parentId" | "afterId" | "items" | "initialMaxDisplayWidth"
+    >();
+    expectTypeOf<NonNullable<NotesStore["importImageNodePaths"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ImportImageNodePathsInput,
+        historyContext?: import("./notes").NotesHistoryContext | null
+      ) => Promise<NotesMutationResponse>
+    >();
+    expectTypeOf<NonNullable<NotesStore["importImageNodeBytes"]>>().toEqualTypeOf<
+      (
+        vaultPath: string,
+        input: ImportImageNodeBytesInput,
         historyContext?: import("./notes").NotesHistoryContext | null
       ) => Promise<NotesMutationResponse>
     >();

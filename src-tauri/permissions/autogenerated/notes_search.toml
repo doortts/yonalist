@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-search"
+description = "Enables the notes_search command without any pre-configured scope."
+commands.allow = ["notes_search"]
+
+[[permission]]
+identifier = "deny-notes-search"
+description = "Denies the notes_search command without any pre-configured scope."
+commands.deny = ["notes_search"]

@@ -15,6 +15,12 @@ import {
   NotesBulletMenu
 } from "./NotesBulletMenu";
 import { NotesAttachmentList } from "./NotesAttachmentList";
+import { NotesImageNodeContent } from "./NotesImageAttachment";
+import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
+import {
+  noteNodeNavigationLabel,
+  noteNodePresentationLabel
+} from "./notesPresentation";
 import { useNotesExportController } from "./NotesExportController";
 import {
   useNotesActions,
@@ -38,10 +44,6 @@ interface NotesPageHeaderProps {
   mode?: "standard" | "archive" | "trash";
   imageDropActive?: boolean;
   showDropPlaceholder?: boolean;
-}
-
-function pageLabel(title: string): string {
-  return title.trim() || "Untitled page";
 }
 
 export function NotesPageHeader({
@@ -70,11 +72,13 @@ export function NotesPageHeader({
   const draft = draftsByNodeId[nodeId];
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
+  const imageRef = useRef<HTMLDivElement>(null);
   const titleSelectionRef = useRef<{
     startUtf16: number;
     endUtf16: number;
   } | null>(null);
   const focusNoteOnOpenRef = useRef(false);
+  const dateNoteOnOpenRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const commandInFlightRef = useRef(false);
   const [revealedNoteNodeId, setRevealedNoteNodeId] =
@@ -83,7 +87,20 @@ export function NotesPageHeader({
   const [commandBusy, setCommandBusy] = useState(false);
   const titleValue = draft?.title ?? node?.title ?? "";
   const noteValue = draft?.note ?? node?.note ?? "";
-  const label = pageLabel(titleValue || node?.title || "");
+  const label = node
+    ? noteNodePresentationLabel(
+        node,
+        titleValue || node.title,
+        "Untitled page"
+      )
+    : "Untitled page";
+  const headingLabel = node
+    ? noteNodeNavigationLabel(
+        node,
+        titleValue || node.title,
+        "Untitled page"
+      )
+    : "Untitled page";
   const noteVisible =
     noteValue.length > 0 || revealedNoteNodeId === nodeId;
   const readOnly = mode !== "standard";
@@ -119,11 +136,24 @@ export function NotesPageHeader({
   useAutoGrowTextarea(noteRef, noteValue, noteVisible);
 
   useLayoutEffect(() => {
-    if (noteVisible && focusNoteOnOpenRef.current && noteRef.current) {
+    if (!noteVisible || !noteRef.current) {
+      return;
+    }
+    if (dateNoteOnOpenRef.current) {
+      dateNoteOnOpenRef.current = false;
+      const caret = noteRef.current.value.length;
+      datePicker.openTypedDate(
+        "note",
+        { startUtf16: caret, endUtf16: caret },
+        noteRef.current
+      );
+      return;
+    }
+    if (focusNoteOnOpenRef.current) {
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
     }
-  }, [noteVisible]);
+  }, [datePicker, noteVisible]);
 
   useEffect(() => {
     if (state.pendingFocusId !== nodeId) {
@@ -141,7 +171,11 @@ export function NotesPageHeader({
       return;
     }
     const target =
-      state.pendingFocusField === "note" ? noteRef.current : titleRef.current;
+      state.pendingFocusField === "note"
+        ? noteRef.current
+        : node?.nodeKind === "image"
+          ? imageRef.current
+          : titleRef.current;
     target?.focus();
     if (target && document.activeElement === target) {
       void actions.acknowledgeFocus(nodeId);
@@ -149,6 +183,7 @@ export function NotesPageHeader({
   }, [
     actions,
     nodeId,
+    node?.nodeKind,
     noteVisible,
     readOnly,
     state.pendingFocusField,
@@ -186,6 +221,20 @@ export function NotesPageHeader({
       focusNoteOnOpenRef.current = false;
       noteRef.current.focus();
     }
+  };
+
+  const openNoteDate = () => {
+    if (!noteRef.current) {
+      dateNoteOnOpenRef.current = true;
+      setRevealedNoteNodeId(nodeId);
+      return;
+    }
+    const caret = noteRef.current.value.length;
+    datePicker.openTypedDate(
+      "note",
+      { startUtf16: caret, endUtf16: caret },
+      noteRef.current
+    );
   };
 
   const removeNote = () => {
@@ -268,6 +317,82 @@ export function NotesPageHeader({
     }
   };
 
+  const handleImageKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const historyShortcut = resolveNotesHistoryShortcut({
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      platform: detectOutlineShortcutPlatform()
+    });
+    if (historyShortcut) {
+      event.preventDefault();
+      void actions[historyShortcut]?.();
+      return;
+    }
+    const resolution = resolveOutlineKey({
+      target: "image",
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      repeat: event.repeat,
+      selectionStart: null,
+      selectionEnd: null,
+      title: titleValue,
+      note: noteValue,
+      nodeId,
+      platform: detectOutlineShortcutPlatform(),
+      workspace: state
+    });
+    if (!resolution) return;
+
+    event.preventDefault();
+    switch (resolution.type) {
+      case "createNextTextSibling":
+        runCommand(() => actions.createNextTextSibling(nodeId));
+        return;
+      case "focusNote":
+        openAndFocusNote();
+        return;
+      case "move":
+        runCommand(() =>
+          actions.moveNode(resolution.input, resolution.focusNodeId, {
+            expandNodeId: resolution.expandNodeId
+          })
+        );
+        return;
+      case "toggleComplete":
+        runCommand(() => actions.toggleComplete(nodeId));
+        return;
+      case "duplicate":
+        runCommand(() => actions.duplicateNode(nodeId));
+        return;
+      case "delete":
+        runCommand(() => actions.deleteNode(nodeId));
+        return;
+      case "toggleCollapsed":
+        runCommand(() => actions.toggleCollapsed(nodeId));
+        return;
+      case "focus":
+        void actions.focusNode(resolution.nodeId);
+        return;
+      case "split":
+      case "remove":
+      case "extendSelection":
+      case "clearSelection":
+      case "batchComplete":
+      case "batchDelete":
+      case "batchIndent":
+      case "batchOutdent":
+        return;
+    }
+  };
+
   return (
     <>
       <header
@@ -334,6 +459,10 @@ export function NotesPageHeader({
               }
               onOpenNote={openAndFocusNote}
               onAddDate={() => {
+                if (node.nodeKind === "image") {
+                  openNoteDate();
+                  return;
+                }
                 datePicker.openTitleDate(titleSelectionRef.current ?? undefined);
                 titleSelectionRef.current = null;
               }}
@@ -378,7 +507,11 @@ export function NotesPageHeader({
                 runCommand(() => actions.duplicateNode(nodeId))
               }
               onExport={(format) =>
-                exportController.startExport(nodeId, titleValue, format)
+                exportController.startExport(
+                  nodeId,
+                  node.nodeKind === "image" ? label : titleValue,
+                  format
+                )
               }
               onDelete={() => {
                 if (mode === "archive") {
@@ -394,70 +527,94 @@ export function NotesPageHeader({
               }
             />
           </div>
-          <h1 className="notes-page-heading" aria-label={label}>
-            <NoteTextField
-              ref={titleRef}
-              className="notes-page-title"
-              containerClassName="notes-page-title-field"
-              value={titleValue}
-              aria-label="Edit page title"
-              presentationAriaLabel={titlePresentationLabel}
-              placeholder="Untitled page"
-              rows={1}
-              wrap="soft"
-              disabled={disabled}
-              readOnly={readOnly}
-              today={datePicker.today}
-              onDateClick={
-                readOnly || disabled
-                  ? undefined
-                  : (token, anchor) =>
-                      datePicker.openExistingDate("title", token, anchor)
-              }
-              onDateTrigger={
-                readOnly || disabled
-                  ? undefined
-                  : (range, anchor) =>
-                      datePicker.openTypedDate("title", range, anchor)
-              }
-              onTagClick={(token) =>
-                void actions.toggleTagFilter({
-                  prefix: token.prefix,
-                  normalizedTag: token.normalized
-                })
-              }
-              isTagActive={(token) =>
-                activeTagFilters.some(
-                  (filter) =>
-                    filter.prefix === token.prefix &&
-                    filter.normalizedTag === token.normalized
-                )
-              }
-              onKeyDown={readOnly ? undefined : handleTitleKeyDown}
-              onSelect={(event) => {
-                titleSelectionRef.current = {
-                  startUtf16: event.currentTarget.selectionStart,
-                  endUtf16: event.currentTarget.selectionEnd
-                };
-              }}
-              onChange={(event) => {
-                resizeTextarea(event.currentTarget);
-                actions.updateNodeDraft(nodeId, {
-                  title: event.target.value,
-                  note: noteValue
-                }, "title");
-              }}
-              onBlur={(event) => {
-                titleSelectionRef.current = {
-                  startUtf16: event.currentTarget.selectionStart,
-                  endUtf16: event.currentTarget.selectionEnd
-                };
-                if (!datePicker.shouldSuppressBlur()) {
-                  void actions.flushNodeDraft(nodeId);
+          {node.nodeKind === "image" ? (
+            <div className="notes-page-primary">
+              <h1
+                className="notes-page-heading"
+                aria-label={headingLabel}
+              />
+              <NotesImageNodeContent
+                nodeId={nodeId}
+                attachment={attachments[0]}
+                originalName={titleValue || node.title}
+                className="notes-page-primary-image"
+                style={{ minWidth: 0 }}
+                contentRef={imageRef}
+                onKeyDown={readOnly ? undefined : handleImageKeyDown}
+                readOnly={readOnly}
+                disabled={disabled}
+              />
+            </div>
+          ) : (
+            <h1 className="notes-page-heading" aria-label={label}>
+              <NoteTextField
+                ref={titleRef}
+                className="notes-page-title"
+                containerClassName="notes-page-title-field"
+                value={titleValue}
+                aria-label="Edit page title"
+                presentationAriaLabel={titlePresentationLabel}
+                placeholder="Untitled page"
+                rows={1}
+                wrap="soft"
+                disabled={disabled}
+                readOnly={readOnly}
+                today={datePicker.today}
+                onDateClick={
+                  readOnly || disabled
+                    ? undefined
+                    : (token, anchor) =>
+                        datePicker.openExistingDate("title", token, anchor)
                 }
-              }}
-            />
-          </h1>
+                onDateTrigger={
+                  readOnly || disabled
+                    ? undefined
+                    : (range, anchor) =>
+                        datePicker.openTypedDate("title", range, anchor)
+                }
+                onTagClick={(token) =>
+                  void actions.toggleTagFilter({
+                    prefix: token.prefix,
+                    normalizedTag: token.normalized
+                  })
+                }
+                isTagActive={(token) =>
+                  activeTagFilters.some(
+                    (filter) =>
+                      filter.prefix === token.prefix &&
+                      filter.normalizedTag === token.normalized
+                  )
+                }
+                onKeyDown={readOnly ? undefined : handleTitleKeyDown}
+                onSelect={(event) => {
+                  titleSelectionRef.current = {
+                    startUtf16: event.currentTarget.selectionStart,
+                    endUtf16: event.currentTarget.selectionEnd
+                  };
+                }}
+                onChange={(event) => {
+                  resizeTextarea(event.currentTarget);
+                  actions.updateNodeDraft(
+                    nodeId,
+                    {
+                      title: event.target.value,
+                      note: noteValue
+                    },
+                    "title"
+                  );
+                }}
+                onBlur={(event) => {
+                  titleSelectionRef.current = {
+                    startUtf16: event.currentTarget.selectionStart,
+                    endUtf16: event.currentTarget.selectionEnd
+                  };
+                  if (!datePicker.shouldSuppressBlur()) {
+                    void actions.flushNodeDraft(nodeId);
+                  }
+                }}
+              />
+            </h1>
+          )}
         </div>
         {noteVisible && (
           <NoteTextField
@@ -559,16 +716,27 @@ export function NotesPageHeader({
             }}
           />
         )}
-        <NotesAttachmentList
-          nodeId={nodeId}
-          attachments={attachments}
-          uploadError={attachmentUploadErrorsByNodeId?.[nodeId]}
-          uploadRetryAttemptId={
-            attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
-          }
-          className="notes-page-attachments"
-          readOnly={readOnly || disabled}
-        />
+        {node.nodeKind === "text" ? (
+          <NotesAttachmentList
+            nodeId={nodeId}
+            attachments={attachments}
+            uploadError={attachmentUploadErrorsByNodeId?.[nodeId]}
+            uploadRetryAttemptId={
+              attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
+            }
+            className="notes-page-attachments"
+            readOnly={readOnly || disabled}
+          />
+        ) : (
+          <NotesImageUploadStatus
+            nodeId={nodeId}
+            uploadError={attachmentUploadErrorsByNodeId?.[nodeId]}
+            uploadRetryAttemptId={
+              attachmentUploadRetryAttemptIdsByNodeId?.[nodeId]
+            }
+            readOnly={readOnly || disabled}
+          />
+        )}
         {imageDropEnabled && showDropPlaceholder && (
           <span
             className="notes-image-drop-position"

@@ -2,7 +2,11 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
-import type { NoteNode } from "../../domain/notes";
+import type {
+  NoteNode,
+  NoteNodeKind,
+  NoteSearchResult
+} from "../../domain/notes";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
@@ -47,6 +51,7 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
     createRoot: resolved(),
+    createNextTextSibling: resolved(),
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
@@ -268,5 +273,89 @@ describe("NotesLibraryPane", () => {
     );
     expect(workspace.actions.zoomTo).not.toHaveBeenCalled();
     expect(workspace.actions.selectLibraryView).not.toHaveBeenCalled();
+  });
+
+  it.each(["all", "archive", "trash", "tags"] as const)(
+    "uses stored filenames for image hits and ancestors in %s search rows",
+    async (libraryView) => {
+      const user = userEvent.setup();
+      const workspace = activeWorkspace({ libraryView });
+      if (libraryView === "tags") {
+        workspace.activeTagFilters = [
+          { prefix: "#", normalizedTag: "filtered" }
+        ];
+      }
+      const kindAwareResult = {
+        nodeId: "unloaded-image",
+        title: "hidden-result.png",
+        nodeKind: "image",
+        parentTrail: ["hidden-parent.png", "Visible page"],
+        parentTrailKinds: ["image", "text"],
+        matchedField: "note"
+      } satisfies NoteSearchResult & {
+        nodeKind: NoteNodeKind;
+        parentTrailKinds: NoteNodeKind[];
+      };
+      vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
+        kindAwareResult
+      ]);
+
+      render(
+        <VaultRootContext.Provider value="/vault">
+          <NotesWorkspaceContext.Provider value={workspace}>
+            <NotesLibraryPane />
+          </NotesWorkspaceContext.Provider>
+        </VaultRootContext.Provider>
+      );
+
+      await user.type(
+        screen.getByRole("searchbox", { name: "Search notes" }),
+        "diagram"
+      );
+
+      const result = await screen.findByRole("option", {
+        name:
+          "hidden-result.png, in hidden-parent.png / Visible page, note match"
+      });
+      expect(result).toHaveTextContent(
+        "hidden-result.pnghidden-parent.png / Visible page"
+      );
+      expect(result).toHaveAccessibleName(
+        "hidden-result.png, in hidden-parent.png / Visible page, note match"
+      );
+    }
+  );
+
+  it("fails closed when a search result arrives without kind metadata", async () => {
+    const user = userEvent.setup();
+    const workspace = activeWorkspace();
+    vi.mocked(workspace.actions.searchNotes).mockResolvedValue([
+      {
+        nodeId: "unloaded-result",
+        title: "possibly-private-filename.png",
+        parentTrail: ["possibly-private-parent.png"],
+        matchedField: "note"
+      } as unknown as NoteSearchResult
+    ]);
+
+    render(
+      <VaultRootContext.Provider value="/vault">
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <NotesLibraryPane />
+        </NotesWorkspaceContext.Provider>
+      </VaultRootContext.Provider>
+    );
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search notes" }),
+      "private"
+    );
+
+    const result = await screen.findByRole("option", {
+      name: "Note, in Note, note match"
+    });
+    expect(result).toHaveTextContent("NoteNote");
+    expect(result).not.toHaveTextContent("possibly-private-filename.png");
+    expect(result).not.toHaveTextContent("possibly-private-parent.png");
   });
 });

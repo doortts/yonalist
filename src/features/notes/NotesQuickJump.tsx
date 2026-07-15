@@ -8,8 +8,9 @@ import {
   useRef,
   useState
 } from "react";
-import type { NoteId, NoteSearchResult } from "../../domain/notes";
+import type { NoteId, NoteNode, NoteSearchResult } from "../../domain/notes";
 import "../../components/ui/dialog.css";
+import { noteSearchPresentation } from "./notesPresentation";
 
 export interface NotesQuickJumpProps {
   /** Whether the palette is currently open. */
@@ -20,15 +21,18 @@ export interface NotesQuickJumpProps {
   onSearch(query: string): Promise<readonly NoteSearchResult[]>;
   /** Reuses the workspace's existing zoom action to jump to a node. */
   onJump(nodeId: NoteId): void | Promise<void>;
+  /** Loaded nodes preserve text labels while kind-aware search metadata lands. */
+  nodesById?: Readonly<Record<NoteId, NoteNode>>;
   /** Debounce delay before firing a search, in ms. Defaults to 120ms. */
   debounceMs?: number;
 }
 
-function resultAriaLabel(result: NoteSearchResult): string {
-  const title = result.title.trim() || "Untitled note";
-  return result.parentTrail.length > 0
-    ? `${title}, in ${result.parentTrail.join(" / ")}`
-    : title;
+function resultAriaLabel(
+  presentation: ReturnType<typeof noteSearchPresentation>
+): string {
+  return presentation.parentTrail.length > 0
+    ? `${presentation.title}, in ${presentation.parentTrail.join(" / ")}`
+    : presentation.title;
 }
 
 /**
@@ -44,6 +48,7 @@ export function NotesQuickJump({
   onOpenChange,
   onSearch,
   onJump,
+  nodesById,
   debounceMs = 120
 }: NotesQuickJumpProps) {
   const [query, setQuery] = useState("");
@@ -200,28 +205,31 @@ export function NotesQuickJump({
             role="listbox"
             aria-label="Matching notes"
           >
-            {results.map((result, index) => (
-              <button
-                id={`${listboxId}-${index}`}
-                key={result.nodeId}
-                type="button"
-                role="option"
-                aria-selected={activeIndex === index}
-                aria-label={resultAriaLabel(result)}
-                className="notes-quick-jump-result"
-                onMouseMove={() => setActiveIndex(index)}
-                onClick={() => commit(result.nodeId)}
-              >
-                <span className="notes-quick-jump-result-title">
-                  {result.title.trim() || "Untitled note"}
-                </span>
-                {result.parentTrail.length > 0 && (
-                  <span className="notes-quick-jump-result-trail">
-                    {result.parentTrail.join(" / ")}
+            {results.map((result, index) => {
+              const presentation = noteSearchPresentation(result, nodesById);
+              return (
+                <button
+                  id={`${listboxId}-${index}`}
+                  key={result.nodeId}
+                  type="button"
+                  role="option"
+                  aria-selected={activeIndex === index}
+                  aria-label={resultAriaLabel(presentation)}
+                  className="notes-quick-jump-result"
+                  onMouseMove={() => setActiveIndex(index)}
+                  onClick={() => commit(result.nodeId)}
+                >
+                  <span className="notes-quick-jump-result-title">
+                    {presentation.title}
                   </span>
-                )}
-              </button>
-            ))}
+                  {presentation.parentTrail.length > 0 && (
+                    <span className="notes-quick-jump-result-trail">
+                      {presentation.parentTrail.join(" / ")}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
             {query.trim().length > 0 && results.length === 0 && !error && (
               <p className="notes-quick-jump-empty">No matching notes</p>
             )}

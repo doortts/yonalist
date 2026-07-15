@@ -3,6 +3,7 @@ import type {
   NoteId,
   NoteNode
 } from "../../domain/notes";
+import { noteNodePresentationLabel } from "./notesPresentation";
 
 export interface NotesMoveDestination {
   id: NoteId | null;
@@ -96,7 +97,7 @@ export function buildNotesMoveDestinations(
       visited.add(node.id);
       destinations.push({
         id: node.id,
-        label: node.title.trim() || "Untitled node",
+        label: noteNodePresentationLabel(node, node.title, "Untitled node"),
         depth
       });
       appendChildren(node.id, depth + 1);

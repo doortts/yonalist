@@ -76,6 +76,8 @@ const darkThemeOptions: Array<{ value: DarkTheme; label: string }> = [
   { value: "base-dark", label: "Base Dark" }
 ];
 
+const targetHighlightFallbackMs = 2_000;
+
 const resetStepStatusLabels: Record<ResetProgressStepStatus, string> = {
   pending: "Pending",
   running: "Running",
@@ -151,11 +153,16 @@ export function SettingsPage({
   const [highlightedTarget, setHighlightedTarget] =
     useState<SettingsTarget | null>(null);
   const imagesSectionRef = useRef<HTMLElement>(null);
+  const targetHighlightTimerRef = useRef<number | null>(null);
   const meta = settingsSections.find((entry) => entry.key === section);
   const resetRunning = resetProgress.status === "running";
 
   useEffect(() => {
     if (section !== "notes") {
+      if (targetHighlightTimerRef.current !== null) {
+        window.clearTimeout(targetHighlightTimerRef.current);
+        targetHighlightTimerRef.current = null;
+      }
       setHighlightedTarget(null);
       return;
     }
@@ -166,9 +173,26 @@ export function SettingsPage({
     const imagesSection = imagesSectionRef.current;
     imagesSection.scrollIntoView({ block: "nearest" });
     imagesSection.focus({ preventScroll: true });
+    if (targetHighlightTimerRef.current !== null) {
+      window.clearTimeout(targetHighlightTimerRef.current);
+    }
     setHighlightedTarget("images");
+    targetHighlightTimerRef.current = window.setTimeout(() => {
+      targetHighlightTimerRef.current = null;
+      setHighlightedTarget(null);
+    }, targetHighlightFallbackMs);
     onTargetConsumed("images");
   }, [onTargetConsumed, section, target]);
+
+  useEffect(
+    () => () => {
+      if (targetHighlightTimerRef.current !== null) {
+        window.clearTimeout(targetHighlightTimerRef.current);
+        targetHighlightTimerRef.current = null;
+      }
+    },
+    []
+  );
 
   return (
     <form className="settings-page" aria-label="Settings page" onSubmit={onSave}>
@@ -358,6 +382,10 @@ export function SettingsPage({
             tabIndex={-1}
             onAnimationEnd={(event) => {
               if (event.target === event.currentTarget) {
+                if (targetHighlightTimerRef.current !== null) {
+                  window.clearTimeout(targetHighlightTimerRef.current);
+                  targetHighlightTimerRef.current = null;
+                }
                 setHighlightedTarget(null);
               }
             }}

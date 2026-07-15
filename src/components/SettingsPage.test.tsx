@@ -1,8 +1,15 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings } from "../appSettings";
 import { SettingsPage } from "./SettingsPage";
 
@@ -43,6 +50,11 @@ describe("SettingsPage Notes targets", () => {
     });
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
   it("focuses, scrolls to, outlines, and consumes the requested Images target", async () => {
     const onTargetConsumed = vi.fn();
     render(
@@ -66,6 +78,55 @@ describe("SettingsPage Notes targets", () => {
 
     fireEvent.animationEnd(images);
     expect(images).not.toHaveClass("settings-target-highlight");
+  });
+
+  it("clears the Images outline when animationend does not fire", () => {
+    vi.useFakeTimers();
+    render(<SettingsPage {...settingsPageProps()} target="images" />);
+
+    const images = screen.getByRole("region", { name: "Images" });
+    expect(images).toHaveClass("settings-target-highlight");
+
+    act(() => vi.advanceTimersByTime(2_000));
+
+    expect(images).not.toHaveClass("settings-target-highlight");
+  });
+
+  it("restarts the outline fallback after navigating away", () => {
+    vi.useFakeTimers();
+    const props = settingsPageProps();
+    const { rerender } = render(<SettingsPage {...props} target="images" />);
+
+    act(() => vi.advanceTimersByTime(1_000));
+
+    rerender(<SettingsPage {...props} section="appearance" target={null} />);
+    rerender(<SettingsPage {...props} section="notes" target="images" />);
+
+    const images = screen.getByRole("region", { name: "Images" });
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(images).toHaveClass("settings-target-highlight");
+
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(images).not.toHaveClass("settings-target-highlight");
+  });
+
+  it("cancels the outline fallback timer on unmount", () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(window, "clearTimeout");
+    const { unmount } = render(
+      <SettingsPage {...settingsPageProps()} target="images" />
+    );
+
+    const fallbackCallIndex = setTimeoutSpy.mock.calls.findIndex(
+      ([, delay]) => delay === 2_000
+    );
+    expect(fallbackCallIndex).toBeGreaterThanOrEqual(0);
+    const fallbackTimer = setTimeoutSpy.mock.results[fallbackCallIndex]?.value;
+
+    unmount();
+
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(fallbackTimer);
   });
 
   it("does not restore a consumed outline after manual section navigation", async () => {

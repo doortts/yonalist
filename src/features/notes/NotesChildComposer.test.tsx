@@ -65,6 +65,7 @@ function workspaceValue(options: {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
     createRoot: resolved(),
+    createNextTextSibling: resolved(),
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),

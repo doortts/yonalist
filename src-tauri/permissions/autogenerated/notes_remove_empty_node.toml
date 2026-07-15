@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-remove-empty-node"
+description = "Enables the notes_remove_empty_node command without any pre-configured scope."
+commands.allow = ["notes_remove_empty_node"]
+
+[[permission]]
+identifier = "deny-notes-remove-empty-node"
+description = "Denies the notes_remove_empty_node command without any pre-configured scope."
+commands.deny = ["notes_remove_empty_node"]

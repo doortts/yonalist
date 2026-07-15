@@ -95,7 +95,7 @@ export function resolveNotesHistoryShortcut(
 }
 
 export interface ResolveOutlineKeyInput {
-  target: "title" | "textarea";
+  target: "title" | "image" | "textarea";
   key: string;
   altKey: boolean;
   ctrlKey: boolean;
@@ -123,6 +123,7 @@ export interface ResolveOutlineKeyInput {
 
 export type OutlineKeyResolution =
   | { type: "split"; prefix: string; suffix: string }
+  | { type: "createNextTextSibling" }
   | {
       type: "move";
       input: MoveNoteNodeInput;
@@ -160,8 +161,16 @@ export type OutlineKeyResolution =
 export function resolveOutlineKey(
   input: ResolveOutlineKeyInput
 ): OutlineKeyResolution | null {
+  const imageTarget = input.target === "image";
+  const imageAltStructuralKey =
+    imageTarget &&
+    input.altKey &&
+    !input.ctrlKey &&
+    !input.metaKey &&
+    !input.shiftKey &&
+    (input.key === "ArrowLeft" || input.key === "ArrowRight");
   if (
-    input.target !== "title" ||
+    input.target === "textarea" ||
     input.isComposing ||
     input.key === "Process"
   ) {
@@ -303,7 +312,7 @@ export function resolveOutlineKey(
   }
 
   if (
-    input.altKey ||
+    (input.altKey && !imageAltStructuralKey) ||
     input.ctrlKey ||
     input.metaKey ||
     (input.shiftKey && input.key !== "Tab")
@@ -323,13 +332,14 @@ export function resolveOutlineKey(
 
   const { selectionStart, selectionEnd } = input;
   if (
-    selectionStart === null ||
-    selectionEnd === null ||
-    !Number.isInteger(selectionStart) ||
-    !Number.isInteger(selectionEnd) ||
-    selectionStart < 0 ||
-    selectionEnd < selectionStart ||
-    selectionEnd > input.title.length
+    !imageTarget &&
+    (selectionStart === null ||
+      selectionEnd === null ||
+      !Number.isInteger(selectionStart) ||
+      !Number.isInteger(selectionEnd) ||
+      selectionStart < 0 ||
+      selectionEnd < selectionStart ||
+      selectionEnd > input.title.length)
   ) {
     return null;
   }
@@ -344,15 +354,20 @@ export function resolveOutlineKey(
     visibleNodeIds(input.workspace, input.workspace.zoomRootId);
 
   if (input.key === "Enter") {
+    if (imageTarget) {
+      return { type: "createNextTextSibling" };
+    }
     return {
       type: "split",
-      prefix: input.title.slice(0, selectionStart),
-      suffix: input.title.slice(selectionEnd)
+      prefix: input.title.slice(0, selectionStart!),
+      suffix: input.title.slice(selectionEnd!)
     };
   }
 
-  if (input.key === "Tab") {
-    if (input.shiftKey) {
+  if (input.key === "Tab" || imageAltStructuralKey) {
+    const outdent =
+      input.key === "Tab" ? input.shiftKey : input.key === "ArrowLeft";
+    if (outdent) {
       if (
         node.parentId === null ||
         node.parentId === input.workspace.zoomRootId
@@ -419,9 +434,13 @@ export function resolveOutlineKey(
     return focusId ? { type: "focus", nodeId: focusId } : null;
   }
 
-  const collapsedSelection = selectionStart === selectionEnd;
+  const collapsedSelection =
+    imageTarget || selectionStart === selectionEnd;
   if (input.key === "ArrowLeft") {
-    if (!collapsedSelection || selectionStart !== 0) {
+    if (
+      !collapsedSelection ||
+      (!imageTarget && selectionStart !== 0)
+    ) {
       return null;
     }
     const hasVisibleChildren = (
@@ -436,7 +455,10 @@ export function resolveOutlineKey(
   }
 
   if (input.key === "ArrowRight") {
-    if (!collapsedSelection || selectionEnd !== input.title.length) {
+    if (
+      !collapsedSelection ||
+      (!imageTarget && selectionEnd !== input.title.length)
+    ) {
       return null;
     }
     const childIds = input.workspace.childIdsByParent[input.nodeId] ?? [];
@@ -456,10 +478,13 @@ export function resolveOutlineKey(
   }
 
   if (input.key === "Backspace") {
+    if (imageTarget) {
+      return null;
+    }
     if (
       input.repeat ||
       !collapsedSelection ||
-      selectionStart !== 0 ||
+      selectionStart! !== 0 ||
       input.title.trim() ||
       input.note.trim() ||
       visibleIndex < 0 ||

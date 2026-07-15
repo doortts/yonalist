@@ -86,15 +86,24 @@ describe("extractClipboardImages", () => {
     expect(result).not.toHaveProperty("items");
   });
 
-  it("treats image MIME items as candidates regardless of their kind", () => {
-    const image = clipboardItem("string", "image/png", null);
-    const items = clipboardItems([image]);
+  it("ignores string image flavors while preserving image files", () => {
+    const stringFlavor = clipboardItem("string", "image/png", null);
+    const file = new File(["image"], "clipboard.png", { type: "image/png" });
+    const fileFlavor = clipboardItem("file", "image/png", file);
+    const items = clipboardItems([stringFlavor, fileFlavor]);
 
     expect(extractClipboardImages(items)).toEqual({
-      kind: "error",
-      message: "An image could not be read from the clipboard."
+      kind: "images",
+      items: [
+        {
+          blob: file,
+          originalName: "clipboard.png",
+          mimeType: "image/png"
+        }
+      ]
     });
-    expect(image.getAsFile).toHaveBeenCalledOnce();
+    expect(stringFlavor.getAsFile).not.toHaveBeenCalled();
+    expect(fileFlavor.getAsFile).toHaveBeenCalledOnce();
   });
 
   it("generates canonical names for unnamed supported image MIME types", () => {

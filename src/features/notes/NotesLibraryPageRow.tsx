@@ -49,6 +49,10 @@ function pageLabel(title: string): string {
   return title.trim() || "Untitled page";
 }
 
+function visiblePageLabel(node: NoteNode, title: string): string {
+  return node.nodeKind === "image" ? "Image" : pageLabel(title);
+}
+
 function CommandItem({
   children,
   danger = false,
@@ -99,7 +103,10 @@ export function NotesLibraryPageRow({
   const exportBackRef = useRef<HTMLElement>(null);
   const exportCommandRef = useRef<HTMLElement>(null);
   const viewFocusTargetRef = useRef<"back" | "export" | null>(null);
-  const label = pageLabel(displayTitle);
+  const label = visiblePageLabel(node, displayTitle);
+  const accessibleLabel =
+    node.nodeKind === "image" ? `Image: ${pageLabel(displayTitle)}` : label;
+  const canRename = node.nodeKind !== "image";
 
   useLayoutEffect(() => {
     if (!editing) {
@@ -151,6 +158,10 @@ export function NotesLibraryPageRow({
   };
 
   const startRename = () => {
+    if (!canRename) {
+      if (!active) onOpen();
+      return;
+    }
     if (mode !== "active" || !active) {
       onOpen();
       return;
@@ -165,7 +176,7 @@ export function NotesLibraryPageRow({
       className="notes-library-page-row"
       data-active={active ? "true" : undefined}
     >
-      {editing && mode === "active" && active ? (
+      {editing && canRename && mode === "active" && active ? (
         <div className="notes-library-page notes-library-page-editing">
           <FileText size={16} aria-hidden="true" />
           <input
@@ -204,7 +215,7 @@ export function NotesLibraryPageRow({
         <button
           className="notes-library-page"
           type="button"
-          aria-label={label}
+          aria-label={accessibleLabel}
           aria-current={active ? "page" : undefined}
           disabled={disabled}
           onClick={startRename}
@@ -228,7 +239,7 @@ export function NotesLibraryPageRow({
         <Menu.Trigger
           className="notes-library-page-menu-trigger"
           type="button"
-          aria-label={`Page actions for ${label}`}
+          aria-label={`Page actions for ${accessibleLabel}`}
           disabled={disabled}
         >
           <MoreHorizontal size={16} aria-hidden="true" />

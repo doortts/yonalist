@@ -1,18 +1,26 @@
 import {
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState
 } from "react";
+import { AppNavigationContext } from "../../AppNavigationContext";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import {
   MAX_NOTE_ATTACHMENTS_PER_NODE,
   type NoteAttachment,
   type NoteId
 } from "../../domain/notes";
-import { NotesImageAttachment } from "./NotesImageAttachment";
+import {
+  NotesImageActionFailureStatus,
+  NotesImageAttachment,
+  useNotesImageActionFailureController
+} from "./NotesImageAttachment";
+import { NotesImageMenu } from "./NotesImageMenu";
 import { useNotesImageResidencyLease } from "./NotesImageResidencyContext";
+import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import { useNotesActions } from "./NotesWorkspaceContext";
 
 interface NotesAttachmentListProps {
@@ -35,6 +43,7 @@ function DeferredNotesImage({
   readonly onRequestRemove?: () => void;
   readonly readOnly: boolean;
 }) {
+  const appNavigation = useContext(AppNavigationContext);
   const { actions } = useNotesActions();
   const {
     active,
@@ -42,6 +51,8 @@ function DeferredNotesImage({
     deactivate: deactivateResidency
   } = useNotesImageResidencyLease();
   const slotRef = useRef<HTMLDivElement>(null);
+  const actionFailureController =
+    useNotesImageActionFailureController(attachment.id);
   const manualFocusPendingRef = useRef(false);
   const observerGenerationRef = useRef(0);
   const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -118,6 +129,25 @@ function DeferredNotesImage({
     },
     [actions, attachment.id]
   );
+  const viewOriginal = useCallback(() => {
+    return actions.viewImageOriginal?.(attachment.id) ?? Promise.resolve();
+  }, [actions, attachment.id]);
+  const downloadImage = useCallback(() => {
+    return actions.downloadImage?.(
+      attachment.id,
+      attachment.originalName,
+      attachment.mimeType
+    ) ?? Promise.resolve();
+  }, [
+    actions,
+    attachment.id,
+    attachment.mimeType,
+    attachment.originalName
+  ]);
+  const openImageSettings = useCallback(
+    () => appNavigation?.openSettings("notes", "images"),
+    [appNavigation]
+  );
 
   return (
     <div
@@ -133,14 +163,21 @@ function DeferredNotesImage({
           attachment={attachment}
           embedded
           loadBytes={loadBytes}
+          actionFailureController={actionFailureController}
+          renderActionFailureStatus={false}
           onDisplayWidthCommit={commitWidth}
           onRemove={onRequestRemove}
+          onViewOriginal={actions.viewImageOriginal ? viewOriginal : undefined}
+          onDownload={actions.downloadImage ? downloadImage : undefined}
           readOnly={readOnly}
         />
       ) : (
         <div
           className="notes-image-attachment-placeholder"
           style={{
+            width: attachment.displayWidth,
+            maxWidth: "100%",
+            minHeight: 0,
             aspectRatio: `${attachment.intrinsicWidth} / ${attachment.intrinsicHeight}`
           }}
         >
@@ -156,8 +193,23 @@ function DeferredNotesImage({
           >
             Load image
           </button>
+          <NotesImageMenu
+            originalName={attachment.originalName}
+            onViewOriginal={actionFailureController.bindViewOriginal(
+              actions.viewImageOriginal ? viewOriginal : undefined
+            )}
+            onDownload={actionFailureController.bindDownload(
+              actions.downloadImage ? downloadImage : undefined
+            )}
+            onDelete={readOnly ? undefined : onRequestRemove}
+            onOpenSettings={appNavigation ? openImageSettings : undefined}
+          />
         </div>
       )}
+      <NotesImageActionFailureStatus
+        failure={actionFailureController.failure}
+        maxWidth={attachment.displayWidth}
+      />
     </div>
   );
 }
@@ -201,37 +253,19 @@ export function NotesAttachmentList({
           ))}
         </div>
       )}
-      {uploadError && (
-        <div
-          className="notes-attachment-error"
-          role="alert"
-          aria-label="Image upload failed"
-        >
-          <span>{uploadError}</span>
-          {!readOnly && uploadRetryAttemptId && actions.retryImageUpload && (
-            <button
-              type="button"
-              className="text-button"
-              onClick={() =>
-                void actions.retryImageUpload?.(nodeId, uploadRetryAttemptId)
-              }
-            >
-              Retry image upload
-            </button>
-          )}
-        </div>
-      )}
+      <NotesImageUploadStatus
+        nodeId={nodeId}
+        uploadError={uploadError}
+        uploadRetryAttemptId={uploadRetryAttemptId}
+        readOnly={readOnly}
+      />
       <ConfirmDialog
         open={pendingRemoval !== null}
         onOpenChange={(open) => {
           if (!open) setPendingRemoval(null);
         }}
         title="Remove image?"
-        description={
-          pendingRemoval
-            ? `Remove ${pendingRemoval.originalName} from this note?`
-            : "Remove this image from the note?"
-        }
+        description="Remove this image from the note?"
         confirmLabel="Remove image"
         cancelLabel="Cancel"
         danger

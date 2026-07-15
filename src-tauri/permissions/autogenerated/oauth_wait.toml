@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-oauth-wait"
+description = "Enables the oauth_wait command without any pre-configured scope."
+commands.allow = ["oauth_wait"]
+
+[[permission]]
+identifier = "deny-oauth-wait"
+description = "Denies the oauth_wait command without any pre-configured scope."
+commands.deny = ["oauth_wait"]

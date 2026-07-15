@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-toggle-collapsed"
+description = "Enables the notes_toggle_collapsed command without any pre-configured scope."
+commands.allow = ["notes_toggle_collapsed"]
+
+[[permission]]
+identifier = "deny-notes-toggle-collapsed"
+description = "Denies the notes_toggle_collapsed command without any pre-configured scope."
+commands.deny = ["notes_toggle_collapsed"]

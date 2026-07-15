@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-archive-node"
+description = "Enables the notes_archive_node command without any pre-configured scope."
+commands.allow = ["notes_archive_node"]
+
+[[permission]]
+identifier = "deny-notes-archive-node"
+description = "Denies the notes_archive_node command without any pre-configured scope."
+commands.deny = ["notes_archive_node"]

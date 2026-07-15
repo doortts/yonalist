@@ -12,7 +12,7 @@ use crate::notes::types::{
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 pub(crate) const HISTORY_MAX_ENTRIES: i64 = 100;
 pub(crate) const HISTORY_MAX_BYTES: i64 = 50 * 1024 * 1024;
@@ -52,7 +52,7 @@ fn validate_history_id(label: &str, value: &str) -> Result<(), String> {
     validate_note_id(value).map_err(|_| format!("{label} must be a canonical UUID v4 string."))
 }
 
-fn validate_context(context: &NotesHistoryContext) -> Result<(), String> {
+pub(crate) fn validate_context(context: &NotesHistoryContext) -> Result<(), String> {
     validate_history_id("Notes history session ID", &context.session_id)?;
     validate_history_id("Notes history entry ID", &context.entry_id)?;
     let command_kind = context.command_kind.trim();
@@ -902,6 +902,50 @@ fn validate_target_lifecycle(
             ));
         }
     }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum VisitColor {
+        Visiting,
+        Visited,
+    }
+
+    // Persisted hierarchy must remain acyclic even for deleted or archived nodes.
+    let mut colors = HashMap::<&str, VisitColor>::with_capacity(resulting_nodes.len());
+    for start in resulting_nodes.keys() {
+        if colors.contains_key(start.as_str()) {
+            continue;
+        }
+        let mut walk = Vec::new();
+        let mut current = start.as_str();
+        loop {
+            match colors.get(current).copied() {
+                Some(VisitColor::Visiting) => {
+                    return Err(
+                        "Notes history conflict: replay would create a cycle in the Notes hierarchy."
+                            .to_string(),
+                    );
+                }
+                Some(VisitColor::Visited) => break,
+                None => {
+                    colors.insert(current, VisitColor::Visiting);
+                    walk.push(current);
+                }
+            }
+            let Some(parent_id) = resulting_nodes
+                .get(current)
+                .and_then(|node| node.parent_id.as_deref())
+            else {
+                break;
+            };
+            if !resulting_nodes.contains_key(parent_id) {
+                break;
+            }
+            current = parent_id;
+        }
+        for node_id in walk {
+            colors.insert(node_id, VisitColor::Visited);
+        }
+    }
     Ok(())
 }
 
@@ -968,6 +1012,151 @@ fn validate_target_attachment_capacity(
     if vault_count > MAX_NOTE_ATTACHMENTS_PER_VAULT {
         return Err(format!(
             "A Notes vault can contain at most {MAX_NOTE_ATTACHMENTS_PER_VAULT} attachments."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_target_image_attachment_ownership(
+    transaction: &Transaction<'_>,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    let node_rows = transaction
+        .prepare("SELECT id, node_kind FROM notes_nodes")
+        .map_err(|error| format!("Could not prepare image ownership replay: {error}"))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Could not read image ownership replay: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect image ownership replay: {error}"))?;
+    let mut resulting_node_kinds = HashMap::<String, NoteNodeKind>::new();
+    for (node_id, node_kind) in node_rows {
+        let node_kind = match node_kind.as_str() {
+            "text" => NoteNodeKind::Text,
+            "image" => NoteNodeKind::Image,
+            _ => {
+                return Err(format!(
+                    "Notes history conflict: node {node_id} has unsupported kind {node_kind}."
+                ));
+            }
+        };
+        resulting_node_kinds.insert(node_id, node_kind);
+    }
+
+    let mut resulting_attachments = transaction
+        .prepare("SELECT id, node_id FROM notes_attachments")
+        .map_err(|error| format!("Could not prepare image attachment replay: {error}"))?
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Could not read image attachment replay: {error}"))?
+        .collect::<Result<HashMap<_, _>, _>>()
+        .map_err(|error| format!("Could not collect image attachment replay: {error}"))?;
+    let mut affected_node_ids = HashSet::<String>::new();
+
+    for (table_name, row_id, before_json, after_json) in changes {
+        let target = if undoing { before_json } else { after_json };
+        match table_name.as_str() {
+            "notes_nodes" => {
+                if resulting_node_kinds.get(row_id) == Some(&NoteNodeKind::Image) {
+                    affected_node_ids.insert(row_id.clone());
+                }
+                match target.as_deref() {
+                    Some(state) => {
+                        let node = decode_node_snapshot(row_id, state)?;
+                        if node.node_kind == NoteNodeKind::Image {
+                            affected_node_ids.insert(row_id.clone());
+                        }
+                        resulting_node_kinds.insert(row_id.clone(), node.node_kind);
+                    }
+                    None => {
+                        resulting_node_kinds.remove(row_id);
+                    }
+                }
+            }
+            "notes_attachments" => {
+                if let Some(current_node_id) = resulting_attachments.get(row_id) {
+                    affected_node_ids.insert(current_node_id.clone());
+                }
+                match target.as_deref() {
+                    Some(state) => {
+                        let attachment = decode_attachment_snapshot(row_id, state)?;
+                        affected_node_ids.insert(attachment.node_id.clone());
+                        resulting_attachments.insert(row_id.clone(), attachment.node_id);
+                    }
+                    None => {
+                        resulting_attachments.remove(row_id);
+                    }
+                }
+            }
+            _ => return Err(format!("Unsupported Notes history table {table_name}.")),
+        }
+    }
+
+    let mut attachment_counts = HashMap::<String, usize>::new();
+    for (attachment_id, node_id) in &resulting_attachments {
+        if !resulting_node_kinds.contains_key(node_id) {
+            return Err(format!(
+                "Notes history conflict: attachment {attachment_id} has missing owner node {node_id}."
+            ));
+        }
+        *attachment_counts.entry(node_id.clone()).or_default() += 1;
+    }
+    for node_id in affected_node_ids {
+        if resulting_node_kinds.get(&node_id) != Some(&NoteNodeKind::Image) {
+            continue;
+        }
+        let count = attachment_counts.get(&node_id).copied().unwrap_or_default();
+        if count != 1 {
+            return Err(format!(
+                "Notes history conflict: image node {node_id} must own exactly one attachment; found {count}."
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_target_id_namespace(
+    transaction: &Transaction<'_>,
+    changes: &[(String, String, Option<String>, Option<String>)],
+    undoing: bool,
+) -> Result<(), String> {
+    let mut node_ids = transaction
+        .prepare("SELECT id FROM notes_nodes")
+        .map_err(|error| format!("Could not prepare Notes node ID replay validation: {error}"))?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not read Notes node IDs for replay: {error}"))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| format!("Could not collect Notes node IDs for replay: {error}"))?;
+    let mut attachment_ids = transaction
+        .prepare("SELECT id FROM notes_attachments")
+        .map_err(|error| {
+            format!("Could not prepare Notes attachment ID replay validation: {error}")
+        })?
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not read Notes attachment IDs for replay: {error}"))?
+        .collect::<Result<HashSet<_>, _>>()
+        .map_err(|error| format!("Could not collect Notes attachment IDs for replay: {error}"))?;
+
+    for (table_name, row_id, before_json, after_json) in changes {
+        let state = if undoing { before_json } else { after_json };
+        let ids = match table_name.as_str() {
+            "notes_nodes" => &mut node_ids,
+            "notes_attachments" => &mut attachment_ids,
+            _ => return Err(format!("Unsupported Notes history table {table_name}.")),
+        };
+        if state.is_some() {
+            ids.insert(row_id.clone());
+        } else {
+            ids.remove(row_id);
+        }
+    }
+
+    if let Some(id) = node_ids.intersection(&attachment_ids).next() {
+        return Err(format!(
+            "Notes history conflict: the resulting ID namespace uses {id} for both a node and attachment."
         ));
     }
     Ok(())
@@ -1175,6 +1364,8 @@ fn replay(
     validate_expected_states(&transaction, &changes, undoing)?;
     validate_target_lifecycle(&transaction, &changes, undoing)?;
     validate_target_attachment_capacity(&transaction, &changes, undoing)?;
+    validate_target_image_attachment_ownership(&transaction, &changes, undoing)?;
+    validate_target_id_namespace(&transaction, &changes, undoing)?;
     let mut affected_nodes = BTreeSet::new();
     for (table_name, row_id, before_json, after_json) in changes {
         let state = if undoing {
@@ -1277,10 +1468,11 @@ mod tests {
     };
     use crate::notes::repository::{
         apply_batch, archive_node, connect_notes_db, create_attachment,
-        create_attachments_coordinated_for_node, create_node, delete_database, duplicate_node,
-        empty_trash, list_tags, load_workspace, move_node, remove_attachment, restore_node,
-        search_nodes, search_nodes_structured, soft_delete_node, split_node, toggle_collapsed,
-        toggle_complete, toggle_star, unarchive_node, update_node, NewAttachment,
+        create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node,
+        delete_database, duplicate_node, empty_trash, list_tags, load_workspace, move_node,
+        remove_attachment, resize_attachment, restore_node, search_nodes, search_nodes_structured,
+        soft_delete_node, split_node, toggle_collapsed, toggle_complete, toggle_star,
+        unarchive_node, update_node, NewAttachment, NewImageNode,
     };
     use crate::notes::types::{
         ApplyBatchInput, BatchOp, CreateNodeInput, MoveNodeInput, NoteSearchTag,
@@ -1379,6 +1571,18 @@ mod tests {
         id
     }
 
+    fn insert_history_image_node(connection: &Connection, node_id: &str, sort_key: i64) {
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (?1, ?2, 'history.png', '', 'image', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![node_id, sort_key],
+            )
+            .expect("insert history image node");
+    }
+
     fn history_new_attachment(index: i64, node_id: &str) -> NewAttachment {
         let content_hash = format!("{index:064x}");
         NewAttachment {
@@ -1468,6 +1672,457 @@ mod tests {
             )
             .expect("removal cursor");
         assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_rejects_an_image_node_with_multiple_attachments_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let creation = history_context(1, "importImageNode");
+        let attachment = history_new_attachment(40_000, NODE_ID);
+        let original_attachment_id = attachment.id.clone();
+        let title = attachment.original_name.clone();
+        journal(&mut connection, &creation, |connection| {
+            create_image_nodes_coordinated(
+                connection,
+                None,
+                None,
+                vec![NewImageNode {
+                    id: NODE_ID.to_string(),
+                    title,
+                    attachment,
+                }],
+                || Ok(()),
+                || Ok(()),
+            )
+        })
+        .expect("record valid image creation");
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo image creation");
+        let original_json: String = connection
+            .query_row(
+                "SELECT after_json FROM notes_history_changes \
+                 WHERE entry_id = ?1 AND table_name = 'notes_attachments' AND row_id = ?2",
+                params![creation.entry_id, original_attachment_id],
+                |row| row.get(0),
+            )
+            .expect("read original attachment history");
+        let replacement = history_new_attachment(40_001, NODE_ID);
+        let mut second_snapshot: serde_json::Value =
+            serde_json::from_str(&original_json).expect("decode attachment history");
+        second_snapshot["id"] = serde_json::json!(replacement.id);
+        second_snapshot["sort_key"] = serde_json::json!(2048);
+        second_snapshot["relative_path"] = serde_json::json!(replacement.relative_path);
+        second_snapshot["content_hash"] = serde_json::json!(replacement.content_hash);
+        connection
+            .execute(
+                "INSERT INTO notes_history_changes(\
+                   entry_id, table_name, row_id, ordinal, before_json, after_json\
+                 ) VALUES (?1, 'notes_attachments', ?2, 99, NULL, ?3)",
+                params![
+                    creation.entry_id,
+                    replacement.id,
+                    serde_json::to_string(&second_snapshot).expect("encode attachment history")
+                ],
+            )
+            .expect("tamper image attachment history");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("redo must reject invalid image ownership");
+
+        assert!(error.contains("exactly one attachment"), "{error}");
+        assert_eq!(active(&connection), before);
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("image attachment count");
+        assert_eq!(attachment_count, 0);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&creation.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_rejects_an_image_node_without_an_attachment_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let creation = history_context(1, "importImageNode");
+        let attachment = history_new_attachment(41_000, NODE_ID);
+        let title = attachment.original_name.clone();
+        journal(&mut connection, &creation, |connection| {
+            create_image_nodes_coordinated(
+                connection,
+                None,
+                None,
+                vec![NewImageNode {
+                    id: NODE_ID.to_string(),
+                    title,
+                    attachment,
+                }],
+                || Ok(()),
+                || Ok(()),
+            )
+        })
+        .expect("record valid image creation");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo image creation");
+        connection
+            .execute(
+                "UPDATE notes_history_changes SET after_json = NULL \
+                 WHERE entry_id = ?1 AND table_name = 'notes_attachments'",
+                [&creation.entry_id],
+            )
+            .expect("tamper attachment creation history");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("redo must reject an attachment-free image node");
+
+        assert!(error.contains("exactly one attachment"), "{error}");
+        assert_eq!(active(&connection), before);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&creation.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(is_undone);
+    }
+
+    #[test]
+    fn notes_history_undo_rejects_an_attachment_whose_owner_is_missing_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let creation = history_context(1, "importImageNode");
+        let attachment = history_new_attachment(41_001, NODE_ID);
+        let attachment_id = attachment.id.clone();
+        let title = attachment.original_name.clone();
+        journal(&mut connection, &creation, |connection| {
+            create_image_nodes_coordinated(
+                connection,
+                None,
+                None,
+                vec![NewImageNode {
+                    id: NODE_ID.to_string(),
+                    title,
+                    attachment,
+                }],
+                || Ok(()),
+                || Ok(()),
+            )
+        })
+        .expect("record valid image creation");
+        connection
+            .execute(
+                "DELETE FROM notes_history_changes \
+                 WHERE entry_id = ?1 AND table_name = 'notes_attachments'",
+                [&creation.entry_id],
+            )
+            .expect("remove attachment creation history");
+        let before = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("undo must reject an attachment with no resulting owner");
+
+        assert!(error.contains("owner"), "{error}");
+        assert_eq!(active(&connection), before);
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE id = ?1 AND node_id = ?2",
+                params![attachment_id, NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("image attachment count");
+        assert_eq!(attachment_count, 1);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&creation.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_undo_rejects_removing_an_image_nodes_only_attachment_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let mut attachment = history_new_attachment(42_000, NODE_ID);
+        attachment.intrinsic_width = 200;
+        attachment.display_width = 160;
+        let attachment_id = attachment.id.clone();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: NODE_ID.to_string(),
+                title: attachment.original_name.clone(),
+                attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create valid image node");
+        let creation = history_context(1, "resizeImage");
+        journal(&mut connection, &creation, |connection| {
+            resize_attachment(connection, &attachment_id, 180)
+        })
+        .expect("record image attachment update");
+        connection
+            .execute(
+                "UPDATE notes_history_changes SET before_json = NULL \
+                 WHERE entry_id = ?1 AND table_name = 'notes_attachments' AND row_id = ?2",
+                params![creation.entry_id, attachment_id],
+            )
+            .expect("tamper attachment undo history");
+        let before = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("undo must preserve the image attachment");
+
+        assert!(error.contains("exactly one attachment"), "{error}");
+        assert_eq!(active(&connection), before);
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE id = ?1 AND node_id = ?2",
+                params![attachment_id, NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("image attachment count");
+        assert_eq!(attachment_count, 1);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&creation.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_validates_both_owners_when_an_attachment_moves() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let mut first_attachment = history_new_attachment(43_000, NODE_ID);
+        first_attachment.intrinsic_width = 200;
+        first_attachment.display_width = 160;
+        let first_attachment_id = first_attachment.id.clone();
+        let second_attachment = history_new_attachment(43_001, CHILD_ID);
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![
+                NewImageNode {
+                    id: NODE_ID.to_string(),
+                    title: first_attachment.original_name.clone(),
+                    attachment: first_attachment,
+                },
+                NewImageNode {
+                    id: CHILD_ID.to_string(),
+                    title: second_attachment.original_name.clone(),
+                    attachment: second_attachment,
+                },
+            ],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create valid image nodes");
+        let change = history_context(1, "updateImageAttachment");
+        journal(&mut connection, &change, |connection| {
+            resize_attachment(connection, &first_attachment_id, 180)
+        })
+        .expect("record attachment update");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("undo valid attachment update");
+        let after_json: String = connection
+            .query_row(
+                "SELECT after_json FROM notes_history_changes \
+                 WHERE entry_id = ?1 AND table_name = 'notes_attachments' AND row_id = ?2",
+                params![change.entry_id, first_attachment_id],
+                |row| row.get(0),
+            )
+            .expect("attachment history snapshot");
+        let mut moved: serde_json::Value =
+            serde_json::from_str(&after_json).expect("decode attachment snapshot");
+        moved["node_id"] = serde_json::json!(CHILD_ID);
+        connection
+            .execute(
+                "UPDATE notes_history_changes SET after_json = ?1 \
+                 WHERE entry_id = ?2 AND table_name = 'notes_attachments' AND row_id = ?3",
+                params![
+                    serde_json::to_string(&moved).expect("encode moved attachment"),
+                    change.entry_id,
+                    first_attachment_id
+                ],
+            )
+            .expect("tamper attachment owner history");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("redo must reject invalid source and target image owners");
+
+        assert!(error.contains("exactly one attachment"), "{error}");
+        assert_eq!(active(&connection), before);
+        for (node_id, expected) in [(NODE_ID, 1_i64), (CHILD_ID, 1_i64)] {
+            let count: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM notes_attachments WHERE node_id = ?1",
+                    [node_id],
+                    |row| row.get(0),
+                )
+                .expect("attachment owner count");
+            assert_eq!(count, expected, "owner {node_id}");
+        }
+    }
+
+    #[test]
+    fn notes_history_ignores_an_unrelated_malformed_image_node() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        insert_history_image_node(&connection, THIRD_ID, 2048);
+        create_node(
+            &mut connection,
+            create_input(NODE_ID, None, None, "Text owner"),
+        )
+        .expect("text owner");
+        let mut attachment = history_new_attachment(44_000, NODE_ID);
+        attachment.intrinsic_width = 200;
+        attachment.display_width = 160;
+        let attachment_id = attachment.id.clone();
+        create_attachment(&mut connection, attachment).expect("text attachment");
+        let change = history_context(1, "updateTextAttachment");
+        journal(&mut connection, &change, |connection| {
+            resize_attachment(connection, &attachment_id, 180)
+        })
+        .expect("record text attachment update");
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("unrelated malformed image must not block undo");
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect("unrelated malformed image must not block redo");
+    }
+
+    #[test]
+    fn notes_history_undo_rejects_a_live_node_using_the_restored_attachment_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let attachment_id = insert_history_attachment(&connection, 99, NODE_ID);
+        let removal = history_context(1, "removeAttachment");
+        journal(&mut connection, &removal, |connection| {
+            remove_attachment(connection, &attachment_id)
+        })
+        .expect("remove attachment");
+        connection
+            .execute(
+                "INSERT INTO notes_nodes (\
+                   id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (?1, 2048, 'legacy collision', '', 'text', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                [&attachment_id],
+            )
+            .expect("seed legacy live-node collision");
+        let before = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("history replay must preserve the shared ID namespace");
+
+        assert!(error.contains("ID namespace"), "{error}");
+        assert_eq!(active(&connection), before);
+        let attachment_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_attachments WHERE id = ?1",
+                [&attachment_id],
+                |row| row.get(0),
+            )
+            .expect("count restored attachment collision");
+        assert_eq!(attachment_count, 0);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&removal.entry_id],
+                |row| row.get(0),
+            )
+            .expect("removal cursor");
+        assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_rejects_a_live_attachment_using_the_restored_node_id() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        let creation = history_context(1, "createNode");
+        journal(&mut connection, &creation, |connection| {
+            create_node(
+                connection,
+                create_input(CHILD_ID, Some(NODE_ID), None, "History node"),
+            )
+        })
+        .expect("create history node");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo node creation");
+        let content_hash = "f".repeat(64);
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (\
+                   id, node_id, sort_key, relative_path, content_hash, original_name, mime_type, \
+                   byte_size, intrinsic_width, intrinsic_height, display_width, created_at, updated_at\
+                 ) VALUES (?1, ?2, 1024, ?3, ?4, 'legacy.png', 'image/png', 1, 1, 1, 1, \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![
+                    CHILD_ID,
+                    NODE_ID,
+                    format!("notes-assets/{content_hash}.png"),
+                    content_hash
+                ],
+            )
+            .expect("seed legacy live-attachment collision");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("redo must preserve the shared ID namespace");
+
+        assert!(error.contains("ID namespace"), "{error}");
+        assert_eq!(active(&connection), before);
+        let node_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM notes_nodes WHERE id = ?1",
+                [CHILD_ID],
+                |row| row.get(0),
+            )
+            .expect("count restored node collision");
+        assert_eq!(node_count, 0);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&creation.entry_id],
+                |row| row.get(0),
+            )
+            .expect("creation cursor");
+        assert!(is_undone);
     }
 
     #[test]
@@ -2100,6 +2755,74 @@ mod tests {
     }
 
     #[test]
+    fn notes_history_replay_keeps_image_filenames_out_of_derived_content() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let filename = "#urgent 2026-07-14 image.png";
+        connection
+            .execute(
+                "INSERT INTO notes_nodes(\
+                   id, sort_key, title, note, node_kind, created_at, updated_at\
+                 ) VALUES (?1, 1024, ?2, '', 'image', \
+                   '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![NODE_ID, filename],
+            )
+            .expect("seed image node");
+        insert_history_attachment(&connection, 70_001, NODE_ID);
+        update_node(
+            &mut connection,
+            UpdateNodeInput {
+                id: NODE_ID.to_string(),
+                title: filename.to_string(),
+                note: "Before #before 07/15/2026".to_string(),
+            },
+        )
+        .expect("seed image note projections");
+
+        let context = history_context(1, "updateText");
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: filename.to_string(),
+                    note: "After #after 07/16/2026".to_string(),
+                },
+            )
+        })
+        .expect("journal image note update");
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo image note");
+        assert_eq!(list_tags(&connection).expect("undo tags"), vec!["before"]);
+        let undone_dates = connection
+            .prepare("SELECT token_text FROM notes_dates WHERE node_id = ?1 ORDER BY token_text")
+            .expect("prepare undo dates")
+            .query_map([NODE_ID], |row| row.get::<_, String>(0))
+            .expect("query undo dates")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read undo dates");
+        assert_eq!(undone_dates, vec!["07/15/2026"]);
+        assert_eq!(
+            search_nodes(&connection, "urgent")
+                .expect("filename full-text search")
+                .len(),
+            1
+        );
+
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo image note");
+        assert_eq!(list_tags(&connection).expect("redo tags"), vec!["after"]);
+        let redone_dates = connection
+            .prepare("SELECT token_text FROM notes_dates WHERE node_id = ?1 ORDER BY token_text")
+            .expect("prepare redo dates")
+            .query_map([NODE_ID], |row| row.get::<_, String>(0))
+            .expect("query redo dates")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read redo dates");
+        assert_eq!(redone_dates, vec!["07/16/2026"]);
+    }
+
+    #[test]
     fn notes_history_failed_mutation_and_invalid_contexts_leave_no_journal() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
@@ -2371,6 +3094,131 @@ mod tests {
                 .expect("redo remains available after conflict")
                 .can_redo
         );
+    }
+
+    #[test]
+    fn notes_history_undo_rejects_a_projected_hierarchy_cycle_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+        )
+        .expect("child");
+        let change = history_context(1, "updateText");
+        journal(&mut connection, &change, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Updated root".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("record root update");
+        let before_json: String = connection
+            .query_row(
+                "SELECT before_json FROM notes_history_changes \
+                 WHERE entry_id = ?1 AND table_name = 'notes_nodes' AND row_id = ?2",
+                params![change.entry_id, NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("root before snapshot");
+        let mut cyclic: serde_json::Value =
+            serde_json::from_str(&before_json).expect("decode root before snapshot");
+        cyclic["parent_id"] = serde_json::json!(CHILD_ID);
+        connection
+            .execute(
+                "UPDATE notes_history_changes SET before_json = ?1 \
+                 WHERE entry_id = ?2 AND table_name = 'notes_nodes' AND row_id = ?3",
+                params![
+                    serde_json::to_string(&cyclic).expect("encode cyclic root snapshot"),
+                    change.entry_id,
+                    NODE_ID
+                ],
+            )
+            .expect("tamper root undo snapshot");
+        let before = active(&connection);
+
+        let error = undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("undo must reject a projected hierarchy cycle");
+
+        assert!(error.to_lowercase().contains("cycle"), "{error}");
+        assert_eq!(active(&connection), before);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&change.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(!is_undone);
+    }
+
+    #[test]
+    fn notes_history_redo_rejects_a_projected_hierarchy_cycle_atomically() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection =
+            connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Root")).expect("root");
+        create_node(
+            &mut connection,
+            create_input(CHILD_ID, Some(NODE_ID), None, "Child"),
+        )
+        .expect("child");
+        let change = history_context(1, "updateText");
+        journal(&mut connection, &change, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "Updated root".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("record root update");
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("valid undo");
+        let after_json: String = connection
+            .query_row(
+                "SELECT after_json FROM notes_history_changes \
+                 WHERE entry_id = ?1 AND table_name = 'notes_nodes' AND row_id = ?2",
+                params![change.entry_id, NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("root after snapshot");
+        let mut cyclic: serde_json::Value =
+            serde_json::from_str(&after_json).expect("decode root after snapshot");
+        cyclic["parent_id"] = serde_json::json!(CHILD_ID);
+        connection
+            .execute(
+                "UPDATE notes_history_changes SET after_json = ?1 \
+                 WHERE entry_id = ?2 AND table_name = 'notes_nodes' AND row_id = ?3",
+                params![
+                    serde_json::to_string(&cyclic).expect("encode cyclic root snapshot"),
+                    change.entry_id,
+                    NODE_ID
+                ],
+            )
+            .expect("tamper root redo snapshot");
+        let before = active(&connection);
+
+        let error = redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
+            .expect_err("redo must reject a projected hierarchy cycle");
+
+        assert!(error.to_lowercase().contains("cycle"), "{error}");
+        assert_eq!(active(&connection), before);
+        let is_undone: bool = connection
+            .query_row(
+                "SELECT is_undone FROM notes_history_entries WHERE id = ?1",
+                [&change.entry_id],
+                |row| row.get(0),
+            )
+            .expect("history cursor");
+        assert!(is_undone);
     }
 
     #[test]

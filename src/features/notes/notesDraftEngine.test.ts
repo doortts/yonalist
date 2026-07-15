@@ -134,7 +134,8 @@ function createSession(options: {
   const context: NotesWorkspaceQueueContext = {
     repository: store,
     vaultRoot,
-    confirmedWorkspace
+    confirmedWorkspace,
+    sourceScope: { kind: "active" }
   };
   const runSerialized = (
     work: (context: NotesWorkspaceQueueContext) => unknown

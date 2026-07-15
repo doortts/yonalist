@@ -27,6 +27,10 @@ import {
 } from "./NotesExportController";
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 import {
+  noteNodePresentationLabel,
+  noteSearchPresentation
+} from "./notesPresentation";
+import {
   useNotesActions,
   useNotesDrafts,
   useNotesState
@@ -46,16 +50,13 @@ const libraryViews = [
   icon: typeof ListTree;
 }>;
 
-function pageLabel(title: string): string {
-  return title.trim() || "Untitled page";
-}
-
-function resultLabel(result: NoteSearchResult): string {
-  const title = result.title.trim() || "Untitled note";
+function resultLabel(
+  result: NoteSearchResult,
+  presentation: ReturnType<typeof noteSearchPresentation>
+): string {
+  const { title, parentTrail } = presentation;
   const context =
-    result.parentTrail.length > 0
-      ? `, in ${result.parentTrail.join(" / ")}`
-      : "";
+    parentTrail.length > 0 ? `, in ${parentTrail.join(" / ")}` : "";
   return `${title}${context}, ${result.matchedField} match`;
 }
 
@@ -313,29 +314,37 @@ function NotesLibraryPaneContent() {
               )}
               {results.length > 0 && (
                 <div role="listbox" aria-label="Search results">
-                  {results.map((result, index) => (
-                    <button
-                      className="notes-search-result"
-                      key={result.nodeId}
-                      ref={(element) => {
-                        resultOptionRefs.current[index] = element;
-                      }}
-                      type="button"
-                      role="option"
-                      aria-selected={activeResultIndex === index}
-                      aria-label={resultLabel(result)}
-                      disabled={deletingNotesData}
-                      tabIndex={activeResultIndex === index ? 0 : -1}
-                      onFocus={() => setActiveResultIndex(index)}
-                      onKeyDown={(event) => handleResultKeyDown(event, index)}
-                      onClick={() => void openResult(result.nodeId)}
-                    >
-                      <strong>{pageLabel(result.title)}</strong>
-                      <span>
-                        {result.parentTrail.join(" / ") || "Top level"}
-                      </span>
-                    </button>
-                  ))}
+                  {results.map((result, index) => {
+                    const presentation = noteSearchPresentation(
+                      result,
+                      state.nodesById
+                    );
+                    const titleLabel = presentation.title;
+                    const parentTrail = presentation.parentTrail;
+                    return (
+                      <button
+                        className="notes-search-result"
+                        key={result.nodeId}
+                        ref={(element) => {
+                          resultOptionRefs.current[index] = element;
+                        }}
+                        type="button"
+                        role="option"
+                        aria-selected={activeResultIndex === index}
+                        aria-label={resultLabel(result, presentation)}
+                        disabled={deletingNotesData}
+                        tabIndex={activeResultIndex === index ? 0 : -1}
+                        onFocus={() => setActiveResultIndex(index)}
+                        onKeyDown={(event) => handleResultKeyDown(event, index)}
+                        onClick={() => void openResult(result.nodeId)}
+                      >
+                        <strong>{titleLabel}</strong>
+                        <span>
+                          {parentTrail.join(" / ") || "Top level"}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -396,7 +405,11 @@ function NotesLibraryPaneContent() {
               const draft = draftsByNodeId[nodeId];
               const displayTitle = draft?.title ?? node.title;
               const visibleNote = draft?.note ?? node.note;
-              const label = pageLabel(displayTitle);
+              const label = noteNodePresentationLabel(
+                node,
+                displayTitle,
+                "Untitled page"
+              );
               return (
                 <NotesLibraryPageRow
                   key={nodeId}

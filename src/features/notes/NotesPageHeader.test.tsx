@@ -67,6 +67,7 @@ function attachment(
 }
 
 function workspaceValue(options: {
+  nodeKind?: NoteNode["nodeKind"];
   title?: string;
   note?: string;
   childTitle?: string;
@@ -86,6 +87,7 @@ function workspaceValue(options: {
     nodes: [
       node({
         id: "project",
+        nodeKind: options.nodeKind ?? "text",
         title: options.title ?? "Project",
         note: options.note ?? "Project context"
       }),
@@ -113,6 +115,7 @@ function workspaceValue(options: {
     acknowledgeFocus: resolved(),
     focusNode: resolved(),
     createRoot: resolved(),
+    createNextTextSibling: resolved(),
     splitNode: resolved(),
     createChild: resolved(),
     updateNode: resolved(),
@@ -284,6 +287,105 @@ describe("NotesPageHeader", () => {
     ).toEqual(["1", "2"]);
   });
 
+  it("uses an image node as page primary content with its description beneath", () => {
+    const image = attachment({ id: "image-1", nodeId: "project" });
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "diagram.png",
+        note: "Architecture description",
+        attachments: [image]
+      })
+    );
+
+    const heading = screen.getByRole("heading", {
+      name: "diagram.png",
+      level: 1
+    });
+    const content = screen.getByRole("group", {
+      name: "Image: diagram.png"
+    });
+    const description = getTextareaByName("Supporting note: Image");
+
+    expect(content).toHaveAttribute("tabindex", "0");
+    expect(heading).not.toContainElement(content);
+    expect(heading.parentElement).toBe(content.parentElement);
+    expect(heading.parentElement).toHaveClass("notes-page-primary");
+    expect(
+      heading.querySelector("button, input, textarea, [tabindex]")
+    ).toBeNull();
+    expect(heading.querySelector("textarea.notes-page-title")).toBeNull();
+    expect(heading).not.toHaveTextContent("diagram.png");
+    expect(
+      content.compareDocumentPosition(description) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(description).toHaveValue("Architecture description");
+    expect(
+      screen.getByRole("button", { name: "More actions for Image" })
+    ).toBeVisible();
+    expect(heading.closest(".notes-page-header")).not.toHaveTextContent(
+      "diagram.png"
+    );
+    expect(
+      screen.getByRole("button", { name: "Zoom into First child" })
+    ).toBeVisible();
+  });
+
+  it("keeps a zoomed image node actionable when its attachment is missing", () => {
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "missing.png",
+        note: "Recovery details"
+      })
+    );
+
+    const heading = screen.getByRole("heading", {
+      name: "missing.png",
+      level: 1
+    });
+    const content = screen.getByRole("group", { name: "Image: missing.png" });
+    expect(heading).not.toContainElement(content);
+    expect(within(content).getByRole("alert")).toHaveTextContent(
+      "Image unavailable"
+    );
+    expect(
+      screen.getByRole("button", { name: "More actions for Image" })
+    ).toBeVisible();
+    expect(getTextareaByName("Supporting note: Image")).toHaveValue(
+      "Recovery details"
+    );
+    expect(heading.closest(".notes-page-header")).not.toHaveTextContent(
+      "missing.png"
+    );
+  });
+
+  it("opens an image description and creates a text sibling from page-primary keys", () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      note: "",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    renderZoomedOutline(workspace);
+    const content = screen.getByRole("group", {
+      name: "Image: diagram.png"
+    });
+
+    expect(
+      fireEvent.keyDown(content, { key: "Enter", shiftKey: true })
+    ).toBe(false);
+    expect(getTextareaByName("Supporting note: Image")).toHaveFocus();
+
+    content.focus();
+    expect(fireEvent.keyDown(content, { key: "Enter" })).toBe(false);
+    expect(workspace.actions.createNextTextSibling).toHaveBeenCalledWith(
+      "project"
+    );
+    expect(workspace.actions.splitNode).not.toHaveBeenCalled();
+  });
+
   it("exposes an attachment target only for a writable page header", () => {
     const view = render(zoomedOutline(workspaceValue()));
     const header = screen
@@ -338,6 +440,60 @@ describe("NotesPageHeader", () => {
       "project",
       "attempt-1"
     );
+  });
+
+  it("renders image-node upload status without a legacy list and retries the exact attempt", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })],
+      attachmentUploadError: "Image upload failed: disk full",
+      attachmentUploadRetryAttemptId: "image-attempt-1"
+    });
+    renderZoomedOutline(workspace);
+
+    const header = screen
+      .getByRole("heading", { name: "diagram.png", level: 1 })
+      .closest<HTMLElement>(".notes-page-header")!;
+    const alert = within(header).getByRole("alert", {
+      name: "Image upload failed"
+    });
+    expect(alert).toHaveTextContent("disk full");
+    expect(header.querySelector(".notes-attachment-list")).toBeNull();
+    expect(
+      within(header).getAllByRole("group", { name: "Image: diagram.png" })
+    ).toHaveLength(1);
+
+    await user.click(
+      within(alert).getByRole("button", { name: "Retry image upload" })
+    );
+    expect(workspace.actions.retryImageUpload).toHaveBeenCalledWith(
+      "project",
+      "image-attempt-1"
+    );
+  });
+
+  it.each([
+    ["read-only", { libraryView: "archive" as const }],
+    ["disabled", { deletingNotesData: true }]
+  ])("does not offer image-header retry while %s", (_label, mode) => {
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "diagram.png",
+        attachments: [attachment({ id: "image-1", nodeId: "project" })],
+        attachmentUploadError: "Image upload failed: disk full",
+        attachmentUploadRetryAttemptId: "image-attempt-1",
+        ...mode
+      })
+    );
+
+    const alert = screen.getByRole("alert", { name: "Image upload failed" });
+    expect(alert).toHaveTextContent("disk full");
+    expect(
+      within(alert).queryByRole("button", { name: "Retry image upload" })
+    ).toBeNull();
   });
 
   it("routes unified history shortcuts from page and outline text fields", () => {
@@ -845,6 +1001,40 @@ describe("NotesPageHeader", () => {
     fireEvent.focus(title);
     fireEvent.keyDown(title, { key: "z", ctrlKey: true });
     expect(committedWorkspace.actions.undo).toHaveBeenCalledOnce();
+  });
+
+  it("adds dates to an image description without changing the hidden filename", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      note: "Context",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    render(zoomedOutline(workspace));
+
+    await user.click(
+      screen.getByRole("button", { name: "More actions for Image" })
+    );
+    await user.click(
+      within(await screen.findByRole("menu")).getByRole("menuitem", {
+        name: "Add date"
+      })
+    );
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Tomorrow" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenCalledWith(
+      "project",
+      { title: "diagram.png", note: "Context 07/12/2026" },
+      "note"
+    );
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalledWith(
+      "project",
+      expect.objectContaining({ title: expect.stringContaining("07/12/2026") }),
+      "title"
+    );
   });
 
   it("replaces the selected title text from Add date without rewriting its neighbors", async () => {

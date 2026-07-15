@@ -7,6 +7,8 @@ import {
 import type {
   ApplyNotesBatchInput,
   CreateNoteNodeInput,
+  ImportImageNodeBytesInput,
+  ImportImageNodePathsInput,
   ImportNoteAttachmentBytesBatchInput,
   ImportNoteAttachmentInput,
   ImportNoteAttachmentPathBatchInput,
@@ -37,12 +39,16 @@ import {
   notesImportAttachment,
   notesImportAttachmentBytes,
   notesImportAttachmentPaths,
+  notesImportImageNodeBytes,
+  notesImportImageNodePaths,
   notesImportSubtree,
   notesInitialize,
   notesListTags,
   notesListTagsWithCounts,
   notesLoadWorkspace,
   notesMoveNode,
+  notesDownloadAttachment,
+  notesOpenAttachmentOriginal,
   notesReadAttachmentBytes,
   notesRemoveAttachment,
   notesRemoveEmptyNode,
@@ -99,6 +105,7 @@ const workspace: NotesWorkspace = {
   nodes: [
     {
       id: nodeId,
+      nodeKind: "text",
       parentId: null,
       sortKey: 1024,
       title: "Page",
@@ -148,6 +155,56 @@ const normalizedUnjournaledMutationResult: NotesMutationResult = {
   ...unjournaledMutationResult,
   workspace: normalizedWorkspace
 };
+const secondImageAttachment: NoteAttachment = {
+  ...attachment,
+  id: secondAttachmentId,
+  nodeId: secondNodeId,
+  contentHash: "b".repeat(64),
+  relativePath: `notes-assets/${"b".repeat(64)}.webp`,
+  originalName: "second.webp",
+  mimeType: "image/webp"
+};
+const imageImportWorkspace: NotesWorkspace = {
+  nodes: [
+    {
+      ...workspace.nodes[0]!,
+      id: nodeId,
+      nodeKind: "image",
+      title: "first.png",
+      sortKey: 1024
+    },
+    {
+      ...workspace.nodes[0]!,
+      id: secondNodeId,
+      nodeKind: "image",
+      title: "second.webp",
+      sortKey: 2048
+    }
+  ],
+  attachmentsByNodeId: {
+    [nodeId]: [attachment],
+    [secondNodeId]: [secondImageAttachment]
+  }
+};
+const imageImportMutationResult: NotesMutationResult = {
+  ...mutationResult,
+  workspace: imageImportWorkspace,
+  changedNodes: imageImportWorkspace.nodes,
+  removedNodeIds: [],
+  changedAttachments: [attachment, secondImageAttachment],
+  importedRootIds: [nodeId, secondNodeId]
+};
+
+function decodeRawEnvelopeMetadata<T>(body: Uint8Array): T {
+  const metadataLength = new DataView(
+    body.buffer,
+    body.byteOffset,
+    body.byteLength
+  ).getUint32(5, true);
+  return JSON.parse(
+    new TextDecoder().decode(body.subarray(9, 9 + metadataLength))
+  ) as T;
+}
 
 describe("notesStore in Tauri", () => {
   beforeEach(() => {
@@ -363,6 +420,687 @@ describe("notesStore in Tauri", () => {
       "notes_import_attachment_bytes",
       expect.any(Uint8Array)
     );
+  });
+
+  it("invokes one JSON batch command for ordered image-node paths", async () => {
+    const input: ImportImageNodePathsInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          sourcePath: "/tmp/second.webp"
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue(imageImportMutationResult);
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, input, historyContext)
+    ).resolves.toEqual({
+      ...imageImportMutationResult,
+      workspace: imageImportWorkspace
+    });
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "notes_import_image_node_paths_batch",
+      { vaultPath, input, historyContext }
+    );
+    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
+      "notes_import_attachment_paths_batch"
+    );
+  });
+
+  it("invokes one raw v2 batch command for ordered image-node bytes", async () => {
+    const input: ImportImageNodeBytesInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        {
+          nodeId,
+          attachmentId,
+          originalName: "first.png",
+          mimeType: "image/png",
+          blob: new NodeBlob([Uint8Array.of(1, 2)], {
+            type: "image/png"
+          }) as Blob
+        },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          originalName: "second.webp",
+          mimeType: "image/webp",
+          blob: new NodeBlob([Uint8Array.of(3, 4, 5)], {
+            type: "image/webp"
+          }) as Blob
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue(imageImportMutationResult);
+
+    await expect(
+      notesImportImageNodeBytes(vaultPath, input, historyContext)
+    ).resolves.toEqual({
+      ...imageImportMutationResult,
+      workspace: imageImportWorkspace
+    });
+
+    expect(invokeMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "notes_import_image_node_bytes",
+      expect.any(Uint8Array)
+    );
+    const rawBody = invokeMock.mock.calls[0][1] as Uint8Array;
+    expect([...rawBody.slice(0, 5)]).toEqual([89, 78, 73, 66, 2]);
+    expect(decodeRawEnvelopeMetadata(rawBody)).toMatchObject({
+      vaultPath,
+      parentId: null,
+      afterId: null,
+      items: [
+        {
+          nodeId,
+          attachmentId,
+          ordinal: 0,
+          originalName: "first.png",
+          mimeType: "image/png",
+          byteLength: 2
+        },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          ordinal: 1,
+          originalName: "second.webp",
+          mimeType: "image/webp",
+          byteLength: 3
+        }
+      ],
+      initialMaxDisplayWidth: 480,
+      historyContext
+    });
+    expect(invokeMock.mock.calls.map(([command]) => command)).not.toContain(
+      "notes_import_attachment_bytes"
+    );
+  });
+
+  it("rejects malformed image-node imports before invoking native code", async () => {
+    const readBlob = vi.fn();
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, {
+        parentId: null,
+        afterId: null,
+        items: [
+          { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+          {
+            nodeId,
+            attachmentId: secondAttachmentId,
+            sourcePath: "/tmp/second.png"
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({
+      message: "Notes image-node path import input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, {
+        parentId: "not-a-uuid",
+        afterId: null,
+        items: [{ nodeId, attachmentId, sourcePath: "/tmp/first.png" }],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+    const sparseItems = [
+      {
+        nodeId,
+        attachmentId,
+        originalName: "first.png",
+        mimeType: "image/png",
+        blob: { size: 1, arrayBuffer: readBlob } as unknown as Blob
+      }
+    ];
+    sparseItems.length = 2;
+    await expect(
+      notesImportImageNodeBytes(vaultPath, {
+        parentId: null,
+        afterId: null,
+        items: sparseItems,
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({
+      message: "Notes image-node byte import input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    await expect(
+      notesImportImageNodeBytes(vaultPath, {
+        parentId: null,
+        afterId: null,
+        items: [
+          {
+            nodeId,
+            attachmentId,
+            originalName: "vector.svg",
+            mimeType: "image/svg+xml",
+            blob: { size: 1, arrayBuffer: readBlob } as unknown as Blob
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      })
+    ).rejects.toMatchObject({ operation: "write", retryable: false });
+
+    expect(readBlob).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing importedRootIds", undefined],
+    ["too few importedRootIds", [nodeId]],
+    ["importedRootIds out of order", [secondNodeId, nodeId]],
+    ["importedRootIds with a foreign ID", [nodeId, attachmentId]]
+  ])(
+    "rejects image-node import responses with %s",
+    async (_label, importedRootIds) => {
+      const input: ImportImageNodePathsInput = {
+        parentId: null,
+        afterId: null,
+        items: [
+          { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+          {
+            nodeId: secondNodeId,
+            attachmentId: secondAttachmentId,
+            sourcePath: "/tmp/second.webp"
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      };
+      invokeMock.mockResolvedValue(
+        importedRootIds === undefined
+          ? mutationResult
+          : { ...mutationResult, importedRootIds }
+      );
+
+      await expect(
+        notesImportImageNodePaths(vaultPath, input, historyContext)
+      ).rejects.toMatchObject({
+        message:
+          "Notes image-node import returned unexpected imported root IDs.",
+        operation: "write",
+        retryable: false
+      });
+    }
+  );
+
+  it.each([
+    [
+      "unchanged workspace without imported image nodes",
+      {
+        ...mutationResult,
+        importedRootIds: [nodeId, secondNodeId]
+      }
+    ],
+    [
+      "fabricated image node without its requested attachment",
+      {
+        ...mutationResult,
+        workspace: {
+          nodes: [
+            {
+              ...workspace.nodes[0]!,
+              id: nodeId,
+              nodeKind: "image",
+              title: "first.png",
+              sortKey: 1024
+            },
+            {
+              ...workspace.nodes[0]!,
+              id: secondNodeId,
+              nodeKind: "image",
+              title: "second.webp",
+              sortKey: 2048
+            }
+          ],
+          attachmentsByNodeId: {
+            [nodeId]: [attachment]
+          }
+        },
+        importedRootIds: [nodeId, secondNodeId]
+      }
+    ],
+    [
+      "requested attachment duplicated on one image node",
+      {
+        ...mutationResult,
+        workspace: {
+          nodes: [
+            {
+              ...workspace.nodes[0]!,
+              id: nodeId,
+              nodeKind: "image",
+              title: "first.png",
+              sortKey: 1024
+            },
+            {
+              ...workspace.nodes[0]!,
+              id: secondNodeId,
+              nodeKind: "image",
+              title: "second.webp",
+              sortKey: 2048
+            }
+          ],
+          attachmentsByNodeId: {
+            [nodeId]: [
+              attachment,
+              {
+                ...attachment,
+                id: "55555555-5555-4555-8555-555555555555",
+                sortKey: 2048,
+                contentHash: "c".repeat(64),
+                relativePath: `notes-assets/${"c".repeat(64)}.png`
+              }
+            ],
+            [secondNodeId]: [secondImageAttachment]
+          }
+        },
+        importedRootIds: [nodeId, secondNodeId]
+      }
+    ],
+    [
+      "null history entry after a requested history context",
+      {
+        ...mutationResult,
+        historyEntryId: null,
+        workspace: {
+          nodes: [
+            {
+              ...workspace.nodes[0]!,
+              id: nodeId,
+              nodeKind: "image",
+              title: "first.png",
+              sortKey: 1024
+            },
+            {
+              ...workspace.nodes[0]!,
+              id: secondNodeId,
+              nodeKind: "image",
+              title: "second.webp",
+              sortKey: 2048
+            }
+          ],
+          attachmentsByNodeId: {
+            [nodeId]: [attachment],
+            [secondNodeId]: [secondImageAttachment]
+          }
+        },
+        importedRootIds: [nodeId, secondNodeId]
+      }
+    ]
+  ])("rejects image-node import success with %s", async (_label, payload) => {
+    const input: ImportImageNodePathsInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          sourcePath: "/tmp/second.webp"
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue(payload);
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, input, historyContext)
+    ).rejects.toMatchObject({
+      message: "Notes image-node import returned an invalid workspace.",
+      operation: "write",
+      retryable: false
+    });
+  });
+
+  it("rejects image-node import workspaces with duplicate node IDs", async () => {
+    const input: ImportImageNodePathsInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          sourcePath: "/tmp/second.webp"
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    invokeMock.mockResolvedValue({
+      ...imageImportMutationResult,
+      workspace: {
+        ...imageImportWorkspace,
+        nodes: [
+          ...imageImportWorkspace.nodes,
+          { ...imageImportWorkspace.nodes[1]! }
+        ]
+      }
+    });
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, input, historyContext)
+    ).rejects.toMatchObject({
+      operation: "write",
+      retryable: false
+    });
+  });
+
+  it.each([
+    [
+      "a partial delta field group",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: undefined,
+        changedAttachments: undefined
+      }
+    ],
+    [
+      "a changed node that differs from its canonical workspace entry",
+      {
+        changedNodes: [
+          { ...imageImportWorkspace.nodes[0]!, title: "forged.png" },
+          imageImportWorkspace.nodes[1]!
+        ],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "duplicate changed node IDs",
+      {
+        changedNodes: [
+          imageImportWorkspace.nodes[0]!,
+          imageImportWorkspace.nodes[0]!,
+          imageImportWorkspace.nodes[1]!
+        ],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "an imported node missing from changedNodes",
+      {
+        changedNodes: [imageImportWorkspace.nodes[0]!],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "a changed and removed node ID overlap",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [nodeId],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "duplicate removed node IDs",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [
+          "77777777-7777-4777-8777-777777777777",
+          "77777777-7777-4777-8777-777777777777"
+        ],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "a removed node ID that an image import cannot produce",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: ["77777777-7777-4777-8777-777777777777"],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "a canonical changed node outside the insertion sibling set",
+      {
+        workspace: {
+          ...imageImportWorkspace,
+          nodes: [
+            ...imageImportWorkspace.nodes,
+            {
+              ...workspace.nodes[0]!,
+              id: "88888888-8888-4888-8888-888888888888",
+              parentId: nodeId,
+              title: "Unrelated child"
+            }
+          ]
+        },
+        changedNodes: [
+          ...imageImportWorkspace.nodes,
+          {
+            ...workspace.nodes[0]!,
+            id: "88888888-8888-4888-8888-888888888888",
+            parentId: nodeId,
+            title: "Unrelated child"
+          }
+        ],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "an unrelated canonical same-parent node without a rebalance sort key",
+      {
+        workspace: {
+          ...imageImportWorkspace,
+          nodes: [
+            ...imageImportWorkspace.nodes,
+            {
+              ...workspace.nodes[0]!,
+              id: "55555555-5555-4555-8555-555555555555",
+              title: "Unrelated sibling",
+              sortKey: 4097
+            }
+          ]
+        },
+        changedNodes: [
+          ...imageImportWorkspace.nodes,
+          {
+            ...workspace.nodes[0]!,
+            id: "55555555-5555-4555-8555-555555555555",
+            title: "Unrelated sibling",
+            sortKey: 4097
+          }
+        ],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "an omitted required rebalanced sibling",
+      {
+        workspace: {
+          ...imageImportWorkspace,
+          nodes: [
+            ...imageImportWorkspace.nodes,
+            {
+              ...workspace.nodes[0]!,
+              id: "66666666-6666-4666-8666-666666666666",
+              title: "First rebalanced sibling",
+              sortKey: 3072
+            },
+            {
+              ...workspace.nodes[0]!,
+              id: "77777777-7777-4777-8777-777777777777",
+              title: "Omitted rebalanced sibling",
+              sortKey: 4096
+            }
+          ]
+        },
+        changedNodes: [
+          ...imageImportWorkspace.nodes,
+          {
+            ...workspace.nodes[0]!,
+            id: "66666666-6666-4666-8666-666666666666",
+            title: "First rebalanced sibling",
+            sortKey: 3072
+          }
+        ],
+        removedNodeIds: [],
+        changedAttachments: [attachment, secondImageAttachment]
+      }
+    ],
+    [
+      "a changed attachment that differs from its canonical workspace entry",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [],
+        changedAttachments: [
+          { ...attachment, originalName: "forged.png" },
+          secondImageAttachment
+        ]
+      }
+    ],
+    [
+      "duplicate changed attachment IDs",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [],
+        changedAttachments: [
+          attachment,
+          attachment,
+          secondImageAttachment
+        ]
+      }
+    ],
+    [
+      "an imported attachment missing from changedAttachments",
+      {
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [],
+        changedAttachments: [attachment]
+      }
+    ],
+    [
+      "an unrelated canonical changed attachment",
+      {
+        workspace: {
+          ...imageImportWorkspace,
+          nodes: [
+            ...imageImportWorkspace.nodes,
+            {
+              ...workspace.nodes[0]!,
+              id: "99999999-9999-4999-8999-999999999991",
+              title: "Attachment owner",
+              sortKey: 3072
+            }
+          ],
+          attachmentsByNodeId: {
+            ...imageImportWorkspace.attachmentsByNodeId,
+            "99999999-9999-4999-8999-999999999991": [
+              {
+                ...attachment,
+                id: "99999999-9999-4999-8999-999999999992",
+                nodeId: "99999999-9999-4999-8999-999999999991",
+                contentHash: "c".repeat(64),
+                relativePath: `notes-assets/${"c".repeat(64)}.png`,
+                originalName: "unrelated.png"
+              }
+            ]
+          }
+        },
+        changedNodes: imageImportWorkspace.nodes,
+        removedNodeIds: [],
+        changedAttachments: [
+          attachment,
+          secondImageAttachment,
+          {
+            ...attachment,
+            id: "99999999-9999-4999-8999-999999999992",
+            nodeId: "99999999-9999-4999-8999-999999999991",
+            contentHash: "c".repeat(64),
+            relativePath: `notes-assets/${"c".repeat(64)}.png`,
+            originalName: "unrelated.png"
+          }
+        ]
+      }
+    ]
+  ])(
+    "rejects image-node import responses with %s",
+    async (_label, delta) => {
+      const input: ImportImageNodePathsInput = {
+        parentId: null,
+        afterId: null,
+        items: [
+          { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+          {
+            nodeId: secondNodeId,
+            attachmentId: secondAttachmentId,
+            sourcePath: "/tmp/second.webp"
+          }
+        ],
+        initialMaxDisplayWidth: 480
+      };
+      invokeMock.mockResolvedValue({
+        ...imageImportMutationResult,
+        ...delta
+      });
+
+      await expect(
+        notesImportImageNodePaths(vaultPath, input, historyContext)
+      ).rejects.toMatchObject({
+        operation: "write",
+        retryable: false
+      });
+    }
+  );
+
+  it("accepts canonical sibling rebalance nodes in an image import delta", async () => {
+    const sibling = {
+      ...workspace.nodes[0]!,
+      id: "66666666-6666-4666-8666-666666666666",
+      title: "Sibling",
+      sortKey: 3072
+    };
+    const rebalanceWorkspace: NotesWorkspace = {
+      ...imageImportWorkspace,
+      nodes: [...imageImportWorkspace.nodes, sibling]
+    };
+    const input: ImportImageNodePathsInput = {
+      parentId: null,
+      afterId: null,
+      items: [
+        { nodeId, attachmentId, sourcePath: "/tmp/first.png" },
+        {
+          nodeId: secondNodeId,
+          attachmentId: secondAttachmentId,
+          sourcePath: "/tmp/second.webp"
+        }
+      ],
+      initialMaxDisplayWidth: 480
+    };
+    const response: NotesMutationResult = {
+      ...imageImportMutationResult,
+      workspace: rebalanceWorkspace,
+      changedNodes: [...rebalanceWorkspace.nodes],
+      removedNodeIds: [],
+      changedAttachments: [attachment, secondImageAttachment]
+    };
+    invokeMock.mockResolvedValue(response);
+
+    await expect(
+      notesImportImageNodePaths(vaultPath, input, historyContext)
+    ).resolves.toEqual(response);
   });
 
   it("rejects malformed path and byte batches before invoking native code", async () => {
@@ -867,6 +1605,63 @@ describe("notesStore in Tauri", () => {
     });
   });
 
+  it("opens originals and delegates the trusted download dialog to native code", async () => {
+    invokeMock.mockResolvedValue(null);
+
+    await expect(
+      notesOpenAttachmentOriginal(vaultPath, attachmentId)
+    ).resolves.toBeUndefined();
+    await expect(
+      notesDownloadAttachment(vaultPath, attachmentId)
+    ).resolves.toBeUndefined();
+
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "notes_open_attachment_original",
+      { vaultPath, attachmentId }
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
+      "notes_download_attachment",
+      { vaultPath, attachmentId }
+    );
+  });
+
+  it.each([undefined, true, "ok", { ok: true }, []])(
+    "rejects malformed attachment action response %j",
+    async (payload) => {
+      invokeMock.mockResolvedValue(payload);
+
+      await expect(
+        notesOpenAttachmentOriginal(vaultPath, attachmentId)
+      ).rejects.toMatchObject({
+        message: "Notes attachment action returned an invalid result.",
+        operation: "write",
+        retryable: false
+      });
+    }
+  );
+
+  it("rejects malformed attachment action input before invoking native code", async () => {
+    await expect(
+      notesDownloadAttachment(vaultPath, "")
+    ).rejects.toMatchObject({
+      message: "Notes attachment action input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    await expect(
+      notesDownloadAttachment(vaultPath, "\0bad")
+    ).rejects.toMatchObject({
+      message: "Notes attachment action input is invalid.",
+      operation: "write",
+      retryable: false
+    });
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
   it("copies Uint8Array attachment bytes without changing binary boundaries", async () => {
     const bytes = new Uint8Array([0, 1, 127, 128, 255]);
     invokeMock.mockResolvedValue(bytes);
@@ -960,7 +1755,10 @@ describe("notesStore in Tauri", () => {
 
       const result = await notesReadAttachmentBytes(vaultPath, attachmentId);
 
-      expect(result).not.toBe(payload);
+      // Keep the matcher away from two 6 MiB typed arrays: Vitest's object
+      // diagnostics can traverse both values even though this is an identity
+      // assertion, obscuring the bulk-copy performance this test protects.
+      expect(Object.is(result, payload)).toBe(false);
       expect(result.length).toBe(size);
       expect(result[0]).toBe(1);
       expect(result[size - 1]).toBe(254);
@@ -1031,8 +1829,10 @@ describe("notesStore in Tauri", () => {
     const searchResults = [
       {
         nodeId,
+        nodeKind: "text" as const,
         title: "Page",
         parentTrail: ["Home"],
+        parentTrailKinds: ["image" as const],
         matchedField: "title" as const
       }
     ];
@@ -1132,8 +1932,10 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValue([
       {
         nodeId,
+        nodeKind: "text",
         title: "Page",
         parentTrail: ["Home", 42],
+        parentTrailKinds: ["text", "text"],
         matchedField: "title"
       }
     ]);
@@ -1147,8 +1949,10 @@ describe("notesStore in Tauri", () => {
     const results = [
       {
         nodeId,
+        nodeKind: "text" as const,
         title: "Archived plan",
         parentTrail: [],
+        parentTrailKinds: [],
         matchedField: "date" as const
       }
     ];
@@ -1183,8 +1987,10 @@ describe("notesStore in Tauri", () => {
     const results = [
       {
         nodeId,
+        nodeKind: "text" as const,
         title: "Page",
         parentTrail: ["Home"],
+        parentTrailKinds: ["image" as const],
         matchedField: "title" as const
       }
     ];

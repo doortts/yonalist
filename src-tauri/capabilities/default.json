@@ -9,6 +9,7 @@
     "core:window:allow-set-badge-count",
     "dialog:allow-open",
     "dialog:allow-save",
-    "notification:default"
+    "notification:default",
+    "main-window-app-commands"
   ]
 }

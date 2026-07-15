@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-load-cached-avatar-image"
+description = "Enables the load_cached_avatar_image command without any pre-configured scope."
+commands.allow = ["load_cached_avatar_image"]
+
+[[permission]]
+identifier = "deny-load-cached-avatar-image"
+description = "Denies the load_cached_avatar_image command without any pre-configured scope."
+commands.deny = ["load_cached_avatar_image"]

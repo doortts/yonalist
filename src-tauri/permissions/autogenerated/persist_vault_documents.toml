@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-persist-vault-documents"
+description = "Enables the persist_vault_documents command without any pre-configured scope."
+commands.allow = ["persist_vault_documents"]
+
+[[permission]]
+identifier = "deny-persist-vault-documents"
+description = "Denies the persist_vault_documents command without any pre-configured scope."
+commands.deny = ["persist_vault_documents"]

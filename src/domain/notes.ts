@@ -9,6 +9,7 @@ export const MAX_NOTE_ATTACHMENT_PIXELS = 40_000_000;
 export const MIN_NOTE_ATTACHMENT_DISPLAY_WIDTH = 160;
 export const MAX_NOTE_ATTACHMENTS_PER_NODE = 128;
 export const MAX_NOTE_ATTACHMENTS_PER_WORKSPACE = 512;
+export const MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS = 128;
 export const MAX_NOTES_BATCH_NODE_IDS = 10_000;
 
 export interface NoteNode {
@@ -140,8 +141,10 @@ export type NoteSearchScope =
 
 export interface NoteSearchResult {
   nodeId: NoteId;
+  nodeKind: NoteNodeKind;
   title: string;
   parentTrail: string[];
+  parentTrailKinds: NoteNodeKind[];
   matchedField: "title" | "note" | "date";
 }
 
@@ -292,6 +295,39 @@ export interface ImportNoteAttachmentBytesBatchInput {
   readonly initialMaxDisplayWidth: number;
 }
 
+export interface ImportImageNodePathItem {
+  readonly nodeId: NoteId;
+  readonly attachmentId: string;
+  readonly sourcePath: string;
+}
+
+export interface ImportImageNodePathsInput {
+  readonly parentId: NoteId | null;
+  readonly afterId: NoteId | null;
+  readonly items: readonly ImportImageNodePathItem[];
+  readonly initialMaxDisplayWidth: number;
+}
+
+export interface ImportImageNodeByteItem {
+  readonly nodeId: NoteId;
+  readonly attachmentId: string;
+  readonly originalName: string;
+  readonly mimeType: string;
+  readonly blob: Blob;
+}
+
+export type PendingImageNodeByteItem = Omit<
+  ImportImageNodeByteItem,
+  "nodeId" | "attachmentId"
+>;
+
+export interface ImportImageNodeBytesInput {
+  readonly parentId: NoteId | null;
+  readonly afterId: NoteId | null;
+  readonly items: readonly ImportImageNodeByteItem[];
+  readonly initialMaxDisplayWidth: number;
+}
+
 export interface ResizeNoteAttachmentInput {
   id: string;
   displayWidth: number;
@@ -399,6 +435,24 @@ export interface NotesStore {
     input: ImportNoteAttachmentBytesBatchInput,
     historyContext?: NotesHistoryContext | null
   ): Promise<NotesMutationResponse>;
+  importImageNodePaths?(
+    vaultPath: string,
+    input: ImportImageNodePathsInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  importImageNodeBytes?(
+    vaultPath: string,
+    input: ImportImageNodeBytesInput,
+    historyContext?: NotesHistoryContext | null
+  ): Promise<NotesMutationResponse>;
+  openAttachmentOriginal?(
+    vaultPath: string,
+    attachmentId: string
+  ): Promise<void>;
+  downloadAttachment?(
+    vaultPath: string,
+    attachmentId: string
+  ): Promise<void>;
   readAttachmentBytes?(
     vaultPath: string,
     attachmentId: string
@@ -796,11 +850,24 @@ export function isNotesHistoryReplayResult(
 export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
   return (
     isRecord(value) &&
-    hasOwnKeys(value, ["nodeId", "title", "parentTrail", "matchedField"]) &&
+    hasExactKeys(value, [
+      "nodeId",
+      "nodeKind",
+      "title",
+      "parentTrail",
+      "parentTrailKinds",
+      "matchedField"
+    ]) &&
     typeof value.nodeId === "string" &&
+    (value.nodeKind === "text" || value.nodeKind === "image") &&
     typeof value.title === "string" &&
     isDenseArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&
+    isDenseArray(value.parentTrailKinds) &&
+    value.parentTrailKinds.length === value.parentTrail.length &&
+    value.parentTrailKinds.every(
+      (kind) => kind === "text" || kind === "image"
+    ) &&
     (value.matchedField === "title" ||
       value.matchedField === "note" ||
       value.matchedField === "date")

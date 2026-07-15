@@ -175,7 +175,14 @@ describe("Notes quick-jump wiring (Cmd/Ctrl+K)", () => {
 
   it("searches via the existing FTS action and zooms into the selected result on Enter", async () => {
     notesStoreMock.search.mockResolvedValue([
-      { nodeId: "milestone", title: "Milestone", parentTrail: ["Project", "Plan"], matchedField: "title" }
+      {
+        nodeId: "milestone",
+        title: "Milestone",
+        parentTrail: ["Project", "Plan"],
+        matchedField: "title",
+        nodeKind: "text",
+        parentTrailKinds: ["text", "text"]
+      }
     ]);
     renderNotesWorkspace();
     await findTitleInput("Project");

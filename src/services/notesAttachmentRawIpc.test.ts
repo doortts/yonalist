@@ -9,10 +9,14 @@ import {
   MAX_NOTE_ATTACHMENTS_PER_NODE
 } from "../domain/notes";
 import type {
+  ImportImageNodeBytesInput,
   ImportNoteAttachmentBytesBatchInput,
   NotesHistoryContext
 } from "../domain/notes";
-import { encodeNotesAttachmentRawEnvelope } from "./notesAttachmentRawIpc";
+import {
+  encodeNotesAttachmentRawEnvelope,
+  encodeNotesImageNodeRawEnvelope
+} from "./notesAttachmentRawIpc";
 
 const NODE_ID = "11111111-1111-4111-8111-111111111111";
 const FIRST_ID = "22222222-2222-4222-8222-222222222222";
@@ -29,6 +33,22 @@ interface FixtureMetadata {
   nodeId: string;
   attachments: Array<{
     id: string;
+    ordinal: number;
+    originalName: string;
+    mimeType: string;
+    byteLength: number;
+  }>;
+  initialMaxDisplayWidth: number;
+  historyContext: NotesHistoryContext | null;
+}
+
+interface ImageNodeMetadata {
+  vaultPath: string;
+  parentId: string | null;
+  afterId: string | null;
+  items: Array<{
+    nodeId: string;
+    attachmentId: string;
     ordinal: number;
     originalName: string;
     mimeType: string;
@@ -74,6 +94,27 @@ function decodeMetadata(envelope: Uint8Array): FixtureMetadata {
   return metadata;
 }
 
+function decodeImageNodeMetadata(envelope: Uint8Array): ImageNodeMetadata {
+  expect([...envelope.slice(0, 4)]).toEqual([89, 78, 73, 66]);
+  expect(envelope[4]).toBe(2);
+  const metadataLength = new DataView(
+    envelope.buffer,
+    envelope.byteOffset,
+    envelope.byteLength
+  ).getUint32(5, true);
+  const metadata = JSON.parse(
+    new TextDecoder().decode(
+      envelope.slice(HEADER_BYTES, HEADER_BYTES + metadataLength)
+    )
+  ) as ImageNodeMetadata;
+  metadata.items.forEach((item, index) => {
+    if (item.ordinal !== index) {
+      throw new Error("Image-node ordinals must be contiguous and match transport order.");
+    }
+  });
+  return metadata;
+}
+
 function hex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
@@ -99,12 +140,34 @@ function input(
   return { nodeId: NODE_ID, attachments, initialMaxDisplayWidth };
 }
 
+function imageNodeInput(
+  items: ImportImageNodeBytesInput["items"],
+  initialMaxDisplayWidth = 480
+): ImportImageNodeBytesInput {
+  return {
+    parentId: NODE_ID,
+    afterId: null,
+    items,
+    initialMaxDisplayWidth
+  };
+}
+
 function item(
   id: string,
   blob: Blob = bytesBlob(Uint8Array.of(1), "image/png"),
   originalName = "image.png"
 ) {
   return { id, originalName, mimeType: "image/png", blob };
+}
+
+function imageNodeItem(
+  nodeId: string,
+  attachmentId: string,
+  blob: Blob = bytesBlob(Uint8Array.of(1), "image/png"),
+  originalName = "image.png",
+  mimeType = "image/png"
+) {
+  return { nodeId, attachmentId, originalName, mimeType, blob };
 }
 
 function indexedId(index: number): string {
@@ -409,5 +472,217 @@ describe("notes attachment raw IPC envelope", () => {
     ]);
     expect([...envelope.slice(-2)]).toEqual([7, 8]);
     expect(decodeMetadata(envelope).historyContext).toBeNull();
+  });
+});
+
+describe("notes image-node raw IPC envelope", () => {
+  it("uses a distinct v2 image-node magic and preserves Unicode source order", async () => {
+    const envelope = await encodeNotesImageNodeRawEnvelope(
+      "/vault",
+      imageNodeInput([
+        {
+          nodeId: FIRST_ID,
+          attachmentId: "55555555-5555-4555-8555-555555555555",
+          originalName: "첫째.png",
+          mimeType: "image/png",
+          blob: bytesBlob(Uint8Array.of(1, 2), "image/png")
+        },
+        {
+          nodeId: SECOND_ID,
+          attachmentId: "66666666-6666-4666-8666-666666666666",
+          originalName: "둘째.webp",
+          mimeType: "image/webp",
+          blob: bytesBlob(Uint8Array.of(3, 4, 5), "image/webp")
+        }
+      ]),
+      HISTORY_CONTEXT
+    );
+
+    expect([...envelope.slice(0, 5)]).toEqual([89, 78, 73, 66, 2]);
+    expect([...envelope.slice(0, 5)]).not.toEqual([...fixtureBytes().slice(0, 5)]);
+    expect([...envelope.slice(-5)]).toEqual([1, 2, 3, 4, 5]);
+    expect(decodeImageNodeMetadata(envelope)).toEqual({
+      vaultPath: "/vault",
+      parentId: NODE_ID,
+      afterId: null,
+      items: [
+        {
+          nodeId: FIRST_ID,
+          attachmentId: "55555555-5555-4555-8555-555555555555",
+          ordinal: 0,
+          originalName: "첫째.png",
+          mimeType: "image/png",
+          byteLength: 2
+        },
+        {
+          nodeId: SECOND_ID,
+          attachmentId: "66666666-6666-4666-8666-666666666666",
+          ordinal: 1,
+          originalName: "둘째.webp",
+          mimeType: "image/webp",
+          byteLength: 3
+        }
+      ],
+      initialMaxDisplayWidth: 480,
+      historyContext: HISTORY_CONTEXT
+    });
+  });
+
+  it("rejects empty, sparse, and oversized item batches before reading blobs", async () => {
+    await expect(
+      encodeNotesImageNodeRawEnvelope("/vault", imageNodeInput([]), null)
+    ).rejects.toThrow(/at least one image/i);
+
+    const sparseItems = [
+      imageNodeItem(FIRST_ID, "55555555-5555-4555-8555-555555555555")
+    ];
+    sparseItems.length = 2;
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput(sparseItems),
+        null
+      )
+    ).rejects.toThrow(/contiguous/i);
+
+    const tooMany = Array.from({ length: 129 }, (_, index) =>
+      imageNodeItem(
+        `22222222-2222-4222-8222-${index.toString(16).padStart(12, "0")}`,
+        `33333333-3333-4333-8333-${index.toString(16).padStart(12, "0")}`
+      )
+    );
+    await expect(
+      encodeNotesImageNodeRawEnvelope("/vault", imageNodeInput(tooMany), null)
+    ).rejects.toThrow(/at most 128 images/i);
+  });
+
+  it("rejects duplicate IDs and invalid anchors before reading blobs", async () => {
+    const read = vi.fn();
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput([
+          imageNodeItem(FIRST_ID, "55555555-5555-4555-8555-555555555555"),
+          imageNodeItem(FIRST_ID, "66666666-6666-4666-8666-666666666666")
+        ]),
+        null
+      )
+    ).rejects.toThrow(/duplicate image node ID/i);
+
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput([
+          imageNodeItem(FIRST_ID, "55555555-5555-4555-8555-555555555555"),
+          imageNodeItem(SECOND_ID, "55555555-5555-4555-8555-555555555555")
+        ]),
+        null
+      )
+    ).rejects.toThrow(/duplicate attachment ID/i);
+
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        {
+          ...imageNodeInput([
+            imageNodeItem(
+              FIRST_ID,
+              "55555555-5555-4555-8555-555555555555",
+              sizedBlob(1, read)
+            )
+          ]),
+          parentId: "not-a-uuid"
+        },
+        null
+      )
+    ).rejects.toThrow(/parent ID/i);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported image metadata and byte limits before reading blobs", async () => {
+    const svgRead = vi.fn();
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput([
+          imageNodeItem(
+            FIRST_ID,
+            "55555555-5555-4555-8555-555555555555",
+            sizedBlob(1, svgRead),
+            "vector.svg",
+            "image/svg+xml"
+          )
+        ]),
+        null
+      )
+    ).rejects.toThrow(/unsupported image MIME type/i);
+    expect(svgRead).not.toHaveBeenCalled();
+
+    const oversizedRead = vi.fn();
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput([
+          imageNodeItem(
+            FIRST_ID,
+            "55555555-5555-4555-8555-555555555555",
+            sizedBlob(MAX_NOTE_ATTACHMENT_BYTES + 1, oversizedRead)
+          )
+        ]),
+        null
+      )
+    ).rejects.toThrow(/20 MiB/i);
+    expect(oversizedRead).not.toHaveBeenCalled();
+
+    const aggregateItemBytes = MAX_NOTE_ATTACHMENT_BATCH_BYTES / 4 + 1;
+    const aggregateReads = Array.from({ length: 4 }, () => vi.fn());
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput(
+          aggregateReads.map((read, index) =>
+            imageNodeItem(
+              `22222222-2222-4222-8222-${index.toString(16).padStart(12, "0")}`,
+              `33333333-3333-4333-8333-${index.toString(16).padStart(12, "0")}`,
+              sizedBlob(aggregateItemBytes, read)
+            )
+          )
+        ),
+        null
+      )
+    ).rejects.toThrow(/64 MiB/i);
+    aggregateReads.forEach((read) => expect(read).not.toHaveBeenCalled());
+  });
+
+  it("rejects oversized metadata and body length mismatches", async () => {
+    const read = vi.fn();
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        `/${"vault".repeat(MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES)}`,
+        imageNodeInput([
+          imageNodeItem(
+            FIRST_ID,
+            "55555555-5555-4555-8555-555555555555",
+            sizedBlob(1, read)
+          )
+        ]),
+        null
+      )
+    ).rejects.toThrow(/256 KiB/i);
+    expect(read).not.toHaveBeenCalled();
+
+    await expect(
+      encodeNotesImageNodeRawEnvelope(
+        "/vault",
+        imageNodeInput([
+          imageNodeItem(
+            FIRST_ID,
+            "55555555-5555-4555-8555-555555555555",
+            sizedBlob(2, vi.fn(async () => Uint8Array.of(1).buffer))
+          )
+        ]),
+        null
+      )
+    ).rejects.toThrow(/size changed/i);
   });
 });

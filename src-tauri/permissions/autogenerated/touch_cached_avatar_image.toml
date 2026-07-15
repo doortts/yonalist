@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-touch-cached-avatar-image"
+description = "Enables the touch_cached_avatar_image command without any pre-configured scope."
+commands.allow = ["touch_cached_avatar_image"]
+
+[[permission]]
+identifier = "deny-touch-cached-avatar-image"
+description = "Denies the touch_cached_avatar_image command without any pre-configured scope."
+commands.deny = ["touch_cached_avatar_image"]

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-record-perf-event"
+description = "Enables the record_perf_event command without any pre-configured scope."
+commands.allow = ["record_perf_event"]
+
+[[permission]]
+identifier = "deny-record-perf-event"
+description = "Denies the record_perf_event command without any pre-configured scope."
+commands.deny = ["record_perf_event"]

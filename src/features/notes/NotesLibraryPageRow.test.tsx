@@ -373,6 +373,74 @@ describe("NotesLibraryPageRow", () => {
     expect(handlers.onOpen).not.toHaveBeenCalled();
   });
 
+  it("keeps image filenames visual-only neutral while actions stay distinguishable", async () => {
+    const user = userEvent.setup();
+    const handlers = callbacks();
+    render(
+      <NotesLibraryPageRow
+        node={node({ nodeKind: "image", title: "hidden-diagram.png" })}
+        mode="active"
+        active
+        {...handlers}
+      />
+    );
+
+    const selection = screen.getByRole("button", {
+      name: "Image: hidden-diagram.png"
+    });
+    expect(within(selection).getByText("Image")).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: "Page actions for Image: hidden-diagram.png"
+      })
+    ).toBeVisible();
+    expect(screen.queryByText("hidden-diagram.png")).toBeNull();
+
+    await user.click(selection);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(handlers.onRename).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: "Page actions for Image: hidden-diagram.png"
+      })
+    );
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByRole("menuitem", { name: "Move to Trash" }));
+    const dialog = screen.getByRole("alertdialog", {
+      name: "Move page to Trash?"
+    });
+    expect(dialog).toHaveTextContent(
+      "Move Image and all of its descendants to Trash?"
+    );
+    expect(dialog).not.toHaveTextContent("hidden-diagram.png");
+  });
+
+  it.each(["active", "archive", "trash"] as const)(
+    "keeps an image filename visually hidden but accessible in a %s library row",
+    (mode) => {
+      render(
+        <NotesLibraryPageRow
+          node={node({ nodeKind: "image", title: "hidden-diagram.png" })}
+          mode={mode}
+          active={false}
+          {...callbacks()}
+        />
+      );
+
+      const selection = screen.getByRole("button", {
+        name: "Image: hidden-diagram.png"
+      });
+      expect(within(selection).getByText("Image")).toBeVisible();
+      expect(
+        screen.getByRole("button", {
+          name: "Page actions for Image: hidden-diagram.png"
+        })
+      ).toBeVisible();
+      expect(screen.queryByText("hidden-diagram.png")).toBeNull();
+    }
+  );
+
   it("discards rename mode when the row stops being selected", async () => {
     const user = userEvent.setup();
     const handlers = callbacks();

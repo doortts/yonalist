@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-read-attachment-bytes"
+description = "Enables the notes_read_attachment_bytes command without any pre-configured scope."
+commands.allow = ["notes_read_attachment_bytes"]
+
+[[permission]]
+identifier = "deny-notes-read-attachment-bytes"
+description = "Denies the notes_read_attachment_bytes command without any pre-configured scope."
+commands.deny = ["notes_read_attachment_bytes"]

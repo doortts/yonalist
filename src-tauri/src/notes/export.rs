@@ -1,22 +1,31 @@
 use super::types::{
-    validate_note_id, ExportDateSpan, ExportNode, NotesExportSnapshot, MAX_NOTES_EXPORT_ATTACHMENTS,
+    validate_note_id, ExportDateSpan, ExportNode, NoteNodeKind, NotesExportSnapshot,
+    MAX_NOTES_EXPORT_ATTACHMENTS,
 };
 use crate::notes::date_index::LocalDate;
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+#[cfg(not(windows))]
+use cap_std::fs::DirBuilder;
+#[cfg(unix)]
+use cap_std::fs::DirBuilderExt as CapDirBuilderExt;
+use cap_std::fs::{Dir, File as CapFile, OpenOptions as CapOpenOptions};
 use image::codecs::{gif::GifDecoder, webp::WebPDecoder};
 use image::{AnimationDecoder, RgbaImage};
 use printpdf::{
-    Color, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
+    Color, DictItem, FontId, Greyscale, Mm, Op, ParsedFont, PdfDocument, PdfFontHandle, PdfPage,
     PdfParseErrorSeverity, PdfSaveOptions, Point, Pt, RawImage, RawImageData, RawImageFormat,
     TextItem, XObject, XObjectId, XObjectTransform,
 };
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write;
 use std::fs;
-use std::io::Cursor;
 use std::io::Write as IoWrite;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::path::{Component, Path};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 const PDF_FONT_BYTES: &[u8] = include_bytes!("../../resources/NanumGothic-Regular.ttf");
@@ -47,6 +56,8 @@ const MAX_EXPORT_DECODED_PIXELS: u64 = 40_000_000;
 const MAX_PDF_ATTACHMENT_WORKING_BYTES: u64 = 256 * 1024 * 1024;
 const PDF_DECODER_BYTES_PER_PIXEL: u64 = 16;
 const PDF_RETAINED_RGBA_BYTES_PER_PIXEL: u64 = 4;
+const PDF_DOCUMENT_VERSION: &str = "1.5";
+static EXPORT_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// File written inside every Markdown export assets directory so that a later
 /// overwrite can tell one of our own asset directories apart from an unrelated
@@ -60,6 +71,177 @@ const EXPORT_ASSET_MARKER_VERSION: u32 = 1;
 /// distinct from `DestinationExists`, so the frontend never mistakes it for an
 /// overwrite conflict (see `src/domain/notesExport.ts`).
 pub(crate) const FOREIGN_EXPORT_ASSET_DIR_MESSAGE: &str = "Export assets folder already exists and was not created by a previous export. Move or rename it and retry.";
+pub(crate) const EXPORT_DESTINATION_IN_VAULT_METADATA_MESSAGE: &str =
+    "Notes exports must be saved outside the vault metadata directory.";
+
+fn canonical_existing_export_ancestor(path: &Path) -> Result<PathBuf, String> {
+    let mut candidate = path;
+    loop {
+        match fs::canonicalize(candidate) {
+            Ok(canonical) => return Ok(canonical),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                candidate = candidate.parent().ok_or_else(|| {
+                    format!("Could not resolve the Notes export destination: {error}")
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "Could not resolve the Notes export destination: {error}"
+                ))
+            }
+        }
+    }
+}
+
+pub(crate) fn preflight_export_destinations_outside_vault_metadata(
+    vault_path: &str,
+    destinations: &[&Path],
+) -> Result<(), String> {
+    let metadata = match fs::canonicalize(crate::metadata_dir(vault_path)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "Could not resolve the Notes metadata directory: {error}"
+            ))
+        }
+    };
+    for destination in destinations {
+        let resolved = canonical_existing_export_ancestor(destination)?;
+        if resolved.starts_with(&metadata) {
+            return Err(EXPORT_DESTINATION_IN_VAULT_METADATA_MESSAGE.to_string());
+        }
+    }
+    Ok(())
+}
+
+pub(crate) struct NotesExportDestinationGuard {
+    app_lock: crate::notes::connection::VaultAppLockGuard,
+    metadata_path: PathBuf,
+    metadata_canonical: PathBuf,
+    metadata: HeldExportDirectory,
+    parent_path: PathBuf,
+    parent_canonical: PathBuf,
+    parent: HeldExportDirectory,
+    destinations: Vec<PathBuf>,
+}
+
+impl NotesExportDestinationGuard {
+    pub(crate) fn acquire(vault_path: &str, destinations: &[&Path]) -> Result<Self, String> {
+        let app_lock = crate::notes::connection::try_acquire_existing_vault_app_lock(vault_path)?
+            .ok_or_else(|| "The Notes metadata directory does not exist.".to_string())?;
+        preflight_export_destinations_outside_vault_metadata(vault_path, destinations)?;
+        let destination = destinations
+            .first()
+            .ok_or_else(|| "Notes export destination guard requires a destination.".to_string())?;
+        let parent_path = destination
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        if destinations.iter().any(|path| {
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."))
+                != parent_path
+        }) {
+            return Err("Notes export destinations must share one parent directory.".to_string());
+        }
+
+        fs::create_dir_all(&parent_path)
+            .map_err(|error| format!("Could not prepare the Notes export directory: {error}"))?;
+        let metadata_path = crate::metadata_dir(vault_path);
+        let metadata = HeldExportDirectory::from_directory(app_lock.try_clone_metadata()?)?;
+        let parent = HeldExportDirectory::open_nofollow(
+            &parent_path,
+            "Notes export parent identity changed while export access was acquired",
+        )?;
+        let guard = Self {
+            app_lock,
+            metadata_canonical: fs::canonicalize(&metadata_path).map_err(|error| {
+                format!("Could not resolve the Notes metadata directory: {error}")
+            })?,
+            parent_canonical: fs::canonicalize(&parent_path).map_err(|error| {
+                format!("Could not resolve the Notes export parent directory: {error}")
+            })?,
+            metadata_path,
+            metadata,
+            parent_path,
+            parent,
+            destinations: destinations
+                .iter()
+                .map(|path| (*path).to_path_buf())
+                .collect(),
+        };
+        guard.revalidate()?;
+        Ok(guard)
+    }
+
+    pub(crate) fn revalidate(&self) -> Result<(), String> {
+        self.app_lock.revalidate_metadata_path()?;
+        self.metadata.verify_held(
+            "Notes vault metadata directory identity changed before export publication",
+        )?;
+        self.parent.verify_at(
+            &self.parent_path,
+            "Notes export parent identity changed before publication",
+        )?;
+        let metadata_canonical = fs::canonicalize(&self.metadata_path).map_err(|error| {
+            format!("Notes vault metadata directory identity changed before export publication: {error}")
+        })?;
+        let parent_canonical = fs::canonicalize(&self.parent_path).map_err(|error| {
+            format!("Notes export parent identity changed before publication: {error}")
+        })?;
+        if metadata_canonical != self.metadata_canonical {
+            return Err(
+                "Notes vault metadata directory identity changed before export publication."
+                    .to_string(),
+            );
+        }
+        if parent_canonical != self.parent_canonical {
+            return Err("Notes export parent identity changed before publication.".to_string());
+        }
+        if self.metadata.identity == self.parent.identity {
+            return Err(EXPORT_DESTINATION_IN_VAULT_METADATA_MESSAGE.to_string());
+        }
+        for destination in &self.destinations {
+            let resolved = canonical_existing_export_ancestor(destination)?;
+            if resolved.starts_with(&metadata_canonical) {
+                return Err(EXPORT_DESTINATION_IN_VAULT_METADATA_MESSAGE.to_string());
+            }
+        }
+        self.app_lock.revalidate_metadata_path()?;
+        Ok(())
+    }
+
+    fn destination_name<'a>(&self, destination: &'a Path) -> Result<&'a Path, String> {
+        if !self.destinations.iter().any(|held| held == destination) {
+            return Err("The Notes export destination was not held by this guard.".to_string());
+        }
+        destination
+            .file_name()
+            .map(Path::new)
+            .ok_or_else(|| "File path must name a file.".to_string())
+    }
+
+    pub(crate) fn write_atomic_file(
+        &self,
+        destination: &Path,
+        bytes: &[u8],
+        overwrite: bool,
+        after_final_revalidation: impl FnOnce(),
+    ) -> Result<(), String> {
+        let name = self.destination_name(destination)?;
+        crate::file_io::write_atomic_file_in_guarded_parent(
+            &self.parent.directory,
+            name,
+            bytes,
+            overwrite,
+            || self.revalidate(),
+            after_final_revalidation,
+        )
+    }
+}
 
 pub(crate) fn load_export_snapshot(
     connection: &Connection,
@@ -102,16 +284,6 @@ fn validate_export_node_ids(node: &ExportNode) -> Result<(), String> {
     for attachment in &node.attachments {
         validate_note_id(&attachment.id)
             .map_err(|_| "A Notes export attachment ID is invalid.".to_string())?;
-        let components = Path::new(&attachment.original_name)
-            .components()
-            .collect::<Vec<_>>();
-        if components.len() != 1
-            || !matches!(components[0], Component::Normal(_))
-            || attachment.original_name.contains(['/', '\\'])
-            || attachment.original_name.chars().any(char::is_control)
-        {
-            return Err("A Notes export attachment filename is unsafe.".to_string());
-        }
         if attachment.bytes.is_none() {
             return Err("Notes export attachment bytes were not validated.".to_string());
         }
@@ -224,6 +396,8 @@ pub(crate) fn hydrate_export_attachments_with_budget(
     budget: ExportAttachmentBudget,
     mut read: impl FnMut(&super::types::ExportAttachment) -> Result<Vec<u8>, String>,
 ) -> Result<(), String> {
+    snapshot.root.validate_attachment_ownership()?;
+
     fn inspect(
         node: &ExportNode,
         budget: ExportAttachmentBudget,
@@ -364,7 +538,14 @@ pub(crate) fn hydrate_export_attachments_with_budget(
     assign(&mut snapshot.root, &prepared)
 }
 
-fn render_node(markdown: &mut String, node: &super::types::ExportNode, depth: usize) {
+fn render_node(
+    markdown: &mut String,
+    node: &super::types::ExportNode,
+    depth: usize,
+) -> Result<(), String> {
+    if node.node_kind == NoteNodeKind::Image {
+        return Err("Markdown image nodes require an export asset directory.".to_string());
+    }
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
     writeln!(
@@ -388,16 +569,29 @@ fn render_node(markdown: &mut String, node: &super::types::ExportNode, depth: us
     }
 
     for child in &node.children {
-        render_node(markdown, child, depth + 1);
+        render_node(markdown, child, depth + 1)?;
     }
+    Ok(())
+}
+
+fn normalize_attachment_presentation(value: &str) -> String {
+    normalize_newlines(value)
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 fn escape_markdown_alt(value: &str) -> String {
-    normalize_newlines(value)
+    normalize_attachment_presentation(value)
         .replace('\\', "\\\\")
         .replace('[', "\\[")
         .replace(']', "\\]")
-        .replace('\n', " ")
 }
 
 fn markdown_asset_extension(mime_type: &str) -> Result<&'static str, String> {
@@ -410,7 +604,7 @@ fn markdown_asset_extension(mime_type: &str) -> Result<&'static str, String> {
     }
 }
 
-fn percent_encode_path_component(value: &str) -> String {
+fn percent_encode_unreserved(value: &str) -> String {
     let mut encoded = String::new();
     for byte in value.as_bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
@@ -420,6 +614,57 @@ fn percent_encode_path_component(value: &str) -> String {
         }
     }
     encoded
+}
+
+fn percent_encode_markdown_comment_metadata(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'~') {
+            encoded.push(char::from(*byte));
+        } else {
+            write!(encoded, "%{byte:02X}").expect("writing to a String cannot fail");
+        }
+    }
+    encoded
+}
+
+fn markdown_attachment_link(
+    attachment: &super::types::ExportAttachment,
+    asset_directory_name: &str,
+    ordinal: &mut usize,
+    asset_links: &mut HashMap<ExportPayloadKey, String>,
+    assets: &mut Vec<MarkdownExportAsset>,
+) -> Result<String, String> {
+    let payload_key = ExportPayloadKey {
+        relative_path: attachment.relative_path.clone(),
+        content_hash: attachment.content_hash.clone(),
+    };
+    let file_name = if let Some(file_name) = asset_links.get(&payload_key) {
+        file_name.clone()
+    } else {
+        *ordinal = ordinal
+            .checked_add(1)
+            .ok_or_else(|| "The Notes export attachment count is too large.".to_string())?;
+        let file_name = format!(
+            "{:04}.{}",
+            *ordinal,
+            markdown_asset_extension(&attachment.mime_type)?
+        );
+        assets.push(MarkdownExportAsset {
+            file_name: file_name.clone(),
+            bytes: attachment
+                .bytes
+                .clone()
+                .ok_or_else(|| "Notes export attachment bytes were not validated.".to_string())?,
+        });
+        asset_links.insert(payload_key, file_name.clone());
+        file_name
+    };
+    Ok(format!(
+        "{}/{}",
+        percent_encode_unreserved(asset_directory_name),
+        file_name
+    ))
 }
 
 fn render_node_with_assets(
@@ -433,13 +678,37 @@ fn render_node_with_assets(
 ) -> Result<(), String> {
     let indentation = "  ".repeat(depth);
     let completion = if node.completed { 'x' } else { ' ' };
-    writeln!(
-        markdown,
-        "{indentation}- [{completion}] {} <!-- yonalist-node-id: {} -->",
-        escape_inline(&node.title),
-        node.id
-    )
-    .expect("writing to a String cannot fail");
+    match node.node_kind {
+        NoteNodeKind::Text => {
+            writeln!(
+                markdown,
+                "{indentation}- [{completion}] {} <!-- yonalist-node-id: {} -->",
+                escape_inline(&node.title),
+                node.id
+            )
+            .expect("writing to a String cannot fail");
+        }
+        NoteNodeKind::Image => {
+            let attachment = node
+                .attachments
+                .first()
+                .expect("validated image node has one attachment");
+            let link = markdown_attachment_link(
+                attachment,
+                asset_directory_name,
+                ordinal,
+                asset_links,
+                assets,
+            )?;
+            let original_name = percent_encode_markdown_comment_metadata(&attachment.original_name);
+            writeln!(
+                markdown,
+                "{indentation}- [{completion}] ![Image]({link}) <!-- yonalist-attachment-original-name: {original_name} --> <!-- yonalist-node-id: {} -->",
+                node.id
+            )
+            .expect("writing to a String cannot fail");
+        }
+    }
 
     if !node.note.is_empty() {
         let note_indentation = "  ".repeat(depth + 1);
@@ -453,43 +722,23 @@ fn render_node_with_assets(
         }
     }
 
-    let attachment_indentation = "  ".repeat(depth + 1);
-    for attachment in &node.attachments {
-        let payload_key = ExportPayloadKey {
-            relative_path: attachment.relative_path.clone(),
-            content_hash: attachment.content_hash.clone(),
-        };
-        let file_name = if let Some(file_name) = asset_links.get(&payload_key) {
-            file_name.clone()
-        } else {
-            *ordinal = ordinal
-                .checked_add(1)
-                .ok_or_else(|| "The Notes export attachment count is too large.".to_string())?;
-            let file_name = format!(
-                "{:04}.{}",
-                *ordinal,
-                markdown_asset_extension(&attachment.mime_type)?
-            );
-            assets.push(MarkdownExportAsset {
-                file_name: file_name.clone(),
-                bytes: attachment.bytes.clone().ok_or_else(|| {
-                    "Notes export attachment bytes were not validated.".to_string()
-                })?,
-            });
-            asset_links.insert(payload_key, file_name.clone());
-            file_name
-        };
-        let link = format!(
-            "{}/{}",
-            percent_encode_path_component(asset_directory_name),
-            file_name
-        );
-        writeln!(
-            markdown,
-            "{attachment_indentation}![{}]({link})",
-            escape_markdown_alt(&attachment.original_name)
-        )
-        .expect("writing to a String cannot fail");
+    if node.node_kind == NoteNodeKind::Text {
+        let attachment_indentation = "  ".repeat(depth + 1);
+        for attachment in &node.attachments {
+            let link = markdown_attachment_link(
+                attachment,
+                asset_directory_name,
+                ordinal,
+                asset_links,
+                assets,
+            )?;
+            writeln!(
+                markdown,
+                "{attachment_indentation}![{}]({link})",
+                escape_markdown_alt(&attachment.original_name)
+            )
+            .expect("writing to a String cannot fail");
+        }
     }
 
     for child in &node.children {
@@ -517,17 +766,20 @@ fn render_markdown_frontmatter(snapshot: &NotesExportSnapshot) -> String {
     writeln!(markdown, "exported_at: \"{}\"", snapshot.exported_at)
         .expect("writing to a String cannot fail");
     writeln!(markdown, "---\n").expect("writing to a String cannot fail");
-    writeln!(markdown, "# {}\n", escape_inline(&snapshot.title))
-        .expect("writing to a String cannot fail");
+    if snapshot.root.node_kind == NoteNodeKind::Text {
+        writeln!(markdown, "# {}\n", escape_inline(&snapshot.title))
+            .expect("writing to a String cannot fail");
+    }
     markdown
 }
 
 pub(crate) fn render_markdown(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
+    snapshot.root.validate_attachment_ownership()?;
     validate_export_node_ids(&snapshot.root)?;
 
     let mut markdown = render_markdown_frontmatter(snapshot);
-    render_node(&mut markdown, &snapshot.root, 0);
+    render_node(&mut markdown, &snapshot.root, 0)?;
     Ok(markdown.into_bytes())
 }
 
@@ -546,6 +798,7 @@ pub(crate) fn prepare_markdown_export(
     asset_directory_name: &str,
 ) -> Result<PreparedMarkdownExport, String> {
     validate_note_id(&snapshot.root_node_id)?;
+    snapshot.root.validate_attachment_ownership()?;
     validate_export_node_ids(&snapshot.root)?;
     let components = Path::new(asset_directory_name)
         .components()
@@ -602,21 +855,161 @@ pub(crate) fn preflight_markdown_asset_destination(
     }
 }
 
-fn remove_path_nofollow(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            fs::remove_dir_all(path).map_err(|error| error.to_string())
-        }
-        Ok(_) => fs::remove_file(path).map_err(|error| error.to_string()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.to_string()),
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ExportDirectoryIdentity {
     volume: u64,
     file: u64,
+}
+
+#[cfg(windows)]
+fn windows_export_directory_share_mode() -> u32 {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+}
+
+#[cfg(all(test, not(windows)))]
+fn windows_export_directory_share_mode() -> u32 {
+    // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+    0x1 | 0x2 | 0x4
+}
+
+#[cfg(windows)]
+fn windows_open_export_handle(path: &Path, directory: bool) -> std::io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+        OPEN_EXISTING,
+    };
+
+    let path = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let desired_access = DELETE
+        | FILE_READ_ATTRIBUTES
+        | if directory {
+            FILE_LIST_DIRECTORY
+        } else {
+            FILE_READ_DATA
+        };
+    let flags = FILE_FLAG_OPEN_REPARSE_POINT
+        | if directory {
+            FILE_FLAG_BACKUP_SEMANTICS
+        } else {
+            0
+        };
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            desired_access,
+            windows_export_directory_share_mode(),
+            std::ptr::null(),
+            OPEN_EXISTING,
+            flags,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let file = unsafe { fs::File::from_raw_handle(handle) };
+    let mut information = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut information) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let attributes = information.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Notes export held paths must not be reparse points.",
+        ));
+    }
+    if (attributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Notes export held path has the wrong file type.",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn windows_delete_export_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> std::io::Result<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
+
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let deleted = unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileDispositionInfo,
+            std::ptr::addr_of!(disposition).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if deleted == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn open_export_directory_nofollow(path: &Path) -> std::io::Result<Dir> {
+    windows_open_export_handle(path, true).map(Dir::from_std_file)
+}
+
+#[cfg(not(windows))]
+fn open_export_directory_nofollow(path: &Path) -> std::io::Result<Dir> {
+    let parent_path = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Notes export directory must have a final path component.",
+        )
+    })?;
+    Dir::open_ambient_dir(parent_path, ambient_authority())?.open_dir_nofollow(name)
+}
+
+#[cfg(windows)]
+fn open_export_directory_from(parent: &Dir, path: &Path) -> std::io::Result<Dir> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY;
+
+    crate::file_io::open_for_delete_nofollow(parent, path, FILE_LIST_DIRECTORY)
+        .map(|directory| Dir::from_std_file(directory.into_std()))
+}
+
+#[cfg(not(windows))]
+fn open_export_directory_from(parent: &Dir, path: &Path) -> std::io::Result<Dir> {
+    parent.open_dir_nofollow(path)
+}
+
+#[cfg(windows)]
+fn open_export_file_from(parent: &Dir, path: &Path) -> std::io::Result<CapFile> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_READ_DATA;
+
+    crate::file_io::open_for_delete_nofollow(parent, path, FILE_READ_DATA)
+}
+
+#[cfg(not(windows))]
+fn open_export_file_from(parent: &Dir, path: &Path) -> std::io::Result<CapFile> {
+    let mut options = CapOpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    parent.open_with(path, &options)
 }
 
 #[cfg(unix)]
@@ -683,146 +1076,52 @@ fn export_directory_identity(_path: &Path) -> Result<ExportDirectoryIdentity, St
     Err("Notes export rollback identity checks are unsupported on this platform.".to_string())
 }
 
-#[cfg(any(
-    target_vendor = "apple",
-    target_os = "linux",
-    target_os = "android",
-    target_os = "redox"
-))]
-fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), String> {
-    match rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        staged,
-        rustix::fs::CWD,
-        destination,
-        rustix::fs::RenameFlags::NOREPLACE,
-    ) {
+fn publish_path_noreplace_in(
+    source_parent: &Dir,
+    source: &Path,
+    destination_parent: &Dir,
+    destination: &Path,
+) -> Result<(), String> {
+    match crate::file_io::rename_noreplace(source_parent, source, destination_parent, destination) {
         Ok(()) => Ok(()),
-        Err(error) if error == rustix::io::Errno::EXIST => {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
         }
         Err(error) => Err(error.to_string()),
     }
 }
 
-#[cfg(windows)]
-fn windows_directory_move_flags() -> u32 {
-    0
-}
-
-#[cfg(all(test, not(windows)))]
-fn windows_directory_move_flags() -> u32 {
-    0
-}
-
-#[cfg(windows)]
-fn publish_directory_noreplace(staged: &Path, destination: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS};
-    use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
-
-    let staged = staged
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let moved = unsafe {
-        MoveFileExW(
-            staged.as_ptr(),
-            destination.as_ptr(),
-            windows_directory_move_flags(),
-        )
-    };
-    if moved != 0 {
-        return Ok(());
-    }
-    let error = std::io::Error::last_os_error();
-    match error.raw_os_error().map(|code| code as u32) {
-        Some(ERROR_ALREADY_EXISTS) | Some(ERROR_FILE_EXISTS) => {
-            Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
+fn unique_export_capability_name(parent: &Dir, prefix: &str) -> Result<String, String> {
+    for _ in 0..128 {
+        let sequence = EXPORT_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let name = format!("{prefix}{:x}-{sequence:x}", std::process::id());
+        match parent.symlink_metadata(&name) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(name),
+            Ok(_) => {}
+            Err(error) => return Err(error.to_string()),
         }
-        _ => Err(error.to_string()),
     }
+    Err("Could not allocate a Notes export staging path.".to_string())
 }
 
-#[cfg(not(any(
-    target_vendor = "apple",
-    target_os = "linux",
-    target_os = "android",
-    target_os = "redox",
-    windows
-)))]
-fn publish_directory_noreplace(_staged: &Path, _destination: &Path) -> Result<(), String> {
-    Err("Atomic no-replace Notes asset publication is unsupported on this platform.".to_string())
-}
-
-fn unique_export_cleanup_path(parent: &Path, prefix: &str) -> Result<PathBuf, String> {
-    let path = tempfile::Builder::new()
-        .prefix(prefix)
-        .tempdir_in(parent)
-        .map_err(|error| error.to_string())?
-        .keep();
-    fs::remove_dir(&path).map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-fn preserve_export_directory(
-    directory: &Path,
-    parent: &Path,
-    prefix: &str,
-) -> Result<PathBuf, String> {
-    let preserved = unique_export_cleanup_path(parent, prefix)?;
-    publish_directory_noreplace(directory, &preserved)?;
-    Ok(preserved)
-}
-
-fn rollback_published_directory(
-    published: &Path,
-    parent: &Path,
-    expected_identity: ExportDirectoryIdentity,
-) -> Result<String, String> {
-    let quarantine = unique_export_cleanup_path(parent, ".yonalist-notes-rollback-")?;
-    publish_directory_noreplace(published, &quarantine)
-        .map_err(|error| format!("Could not quarantine Notes export assets: {error}"))?;
-
-    let actual_identity = match export_directory_identity(&quarantine) {
-        Ok(identity) => identity,
-        Err(error) => {
-            let restore = publish_directory_noreplace(&quarantine, published);
-            return match restore {
-                Ok(()) => Err(format!(
-                    "Could not verify the quarantined Notes export asset identity; the directory was preserved: {error}"
-                )),
-                Err(restore_error) => Err(format!(
-                    "Could not verify the quarantined Notes export asset identity; the directory was preserved at {}: {error}; restore failed: {restore_error}",
-                    quarantine.display()
-                )),
-            };
+fn path_exists_nofollow_in(parent: &Dir, path: &Path) -> Result<bool, String> {
+    #[cfg(test)]
+    if INJECT_MARKDOWN_ROLLBACK_INSPECTION_FAILURE.with(|injected| {
+        let mut injected = injected.borrow_mut();
+        if injected.as_deref() == path.file_name().and_then(|name| name.to_str()) {
+            injected.take();
+            true
+        } else {
+            false
         }
-    };
-    if actual_identity != expected_identity {
-        let restore = publish_directory_noreplace(&quarantine, published);
-        return match restore {
-            Ok(()) => Err(
-                "Notes export asset directory identity changed before rollback; the unrelated replacement was preserved."
-                    .to_string(),
-            ),
-            Err(restore_error) => Err(format!(
-                "Notes export asset directory identity changed before rollback; the unrelated replacement was preserved at {} because restore failed: {restore_error}",
-                quarantine.display()
-            )),
-        };
+    }) {
+        return Err("Injected Notes export rollback inspection failure.".to_string());
     }
-
-    Ok(format!(
-        "Notes export rollback cleanup warning: published assets were preserved for startup/manual cleanup at {}.",
-        quarantine.display()
-    ))
+    match parent.symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), String> {
@@ -833,12 +1132,12 @@ fn classify_export_directory_sync(result: std::io::Result<()>) -> Result<(), Str
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 fn sync_export_directory(path: &Path) -> Result<(), String> {
     classify_export_directory_sync(fs::File::open(path).and_then(|directory| directory.sync_all()))
 }
 
-#[cfg(not(unix))]
+#[cfg(all(test, not(unix)))]
 fn sync_export_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
@@ -850,7 +1149,25 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     static INJECT_MARKDOWN_ASSET_DESTINATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_ASSET_MARKER_IDENTITY_RACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_OVERWRITE_DISPLACEMENT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_PRE_DOCUMENT_BACKUP_SLOT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_PRE_ASSET_BACKUP_SLOT_RACE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
     static INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_PRE_DOCUMENT_PUBLICATION_ASSET_SWAP: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_PRE_STAGE_CLEANUP_RACE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_POST_STAGE_VALIDATION_CLEANUP_RACE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_PRE_DOCUMENT_ROLLBACK_RACE: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> =
+        const { std::cell::RefCell::new(None) };
+    static INJECT_MARKDOWN_ROLLBACK_INSPECTION_FAILURE: std::cell::RefCell<Option<String>> =
         const { std::cell::RefCell::new(None) };
     static INJECT_EXPORT_PARENT_SYNC_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static EXPORT_CLEANUP_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -905,6 +1222,70 @@ fn maybe_inject_markdown_asset_destination_swap() {
 }
 
 #[cfg(test)]
+fn inject_markdown_asset_marker_identity_race_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_ASSET_MARKER_IDENTITY_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_asset_marker_identity_race() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_ASSET_MARKER_IDENTITY_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_overwrite_displacement_race_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_OVERWRITE_DISPLACEMENT_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_overwrite_displacement_race() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_OVERWRITE_DISPLACEMENT_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_pre_document_backup_slot_race_once(action: impl FnOnce(&Path) + 'static) {
+    INJECT_MARKDOWN_PRE_DOCUMENT_BACKUP_SLOT_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_pre_document_backup_slot_race(_stage: &Path) {
+    #[cfg(test)]
+    INJECT_MARKDOWN_PRE_DOCUMENT_BACKUP_SLOT_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action(_stage);
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_pre_asset_backup_slot_race_once(action: impl FnOnce(&Path) + 'static) {
+    INJECT_MARKDOWN_PRE_ASSET_BACKUP_SLOT_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_pre_asset_backup_slot_race(_stage: &Path) {
+    #[cfg(test)]
+    INJECT_MARKDOWN_PRE_ASSET_BACKUP_SLOT_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action(_stage);
+        }
+    });
+}
+
+#[cfg(test)]
 fn inject_markdown_post_asset_publication_swap_once(action: impl FnOnce() + 'static) {
     INJECT_MARKDOWN_POST_ASSET_PUBLICATION_SWAP.with(|injected| {
         *injected.borrow_mut() = Some(Box::new(action));
@@ -921,16 +1302,101 @@ fn maybe_inject_markdown_post_asset_publication_swap() {
 }
 
 #[cfg(test)]
+fn inject_markdown_pre_document_publication_asset_swap_once(action: impl FnOnce() + 'static) {
+    INJECT_MARKDOWN_PRE_DOCUMENT_PUBLICATION_ASSET_SWAP.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_pre_document_publication_asset_swap() {
+    #[cfg(test)]
+    INJECT_MARKDOWN_PRE_DOCUMENT_PUBLICATION_ASSET_SWAP.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action();
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_pre_stage_cleanup_race_once(action: impl FnOnce(&Path) + 'static) {
+    INJECT_MARKDOWN_PRE_STAGE_CLEANUP_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_pre_stage_cleanup_race(_stage: &Path) {
+    #[cfg(test)]
+    INJECT_MARKDOWN_PRE_STAGE_CLEANUP_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action(_stage);
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_post_stage_validation_cleanup_race_once(action: impl FnOnce(&Path) + 'static) {
+    INJECT_MARKDOWN_POST_STAGE_VALIDATION_CLEANUP_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_post_stage_validation_cleanup_race(_stage: &Path) {
+    #[cfg(test)]
+    INJECT_MARKDOWN_POST_STAGE_VALIDATION_CLEANUP_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action(_stage);
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_pre_document_rollback_race_once(action: impl FnOnce(&Path) + 'static) {
+    INJECT_MARKDOWN_PRE_DOCUMENT_ROLLBACK_RACE.with(|injected| {
+        *injected.borrow_mut() = Some(Box::new(action));
+    });
+}
+
+fn maybe_inject_markdown_pre_document_rollback_race(_stage: &Path) {
+    #[cfg(test)]
+    INJECT_MARKDOWN_PRE_DOCUMENT_ROLLBACK_RACE.with(|injected| {
+        if let Some(action) = injected.borrow_mut().take() {
+            action(_stage);
+        }
+    });
+}
+
+#[cfg(test)]
+fn inject_markdown_rollback_inspection_failure_once(file_name: &str) {
+    INJECT_MARKDOWN_ROLLBACK_INSPECTION_FAILURE.with(|injected| {
+        *injected.borrow_mut() = Some(file_name.to_string());
+    });
+}
+
+#[cfg(test)]
 fn inject_export_parent_sync_failure_once() {
     INJECT_EXPORT_PARENT_SYNC_FAILURE.with(|injected| injected.set(true));
 }
 
-fn sync_export_parent(path: &Path) -> Result<(), String> {
+#[cfg(unix)]
+fn sync_held_export_directory(directory: &Dir) -> Result<(), String> {
+    classify_export_directory_sync(
+        directory
+            .try_clone()
+            .and_then(|directory| directory.into_std_file().sync_all()),
+    )
+}
+
+#[cfg(not(unix))]
+fn sync_held_export_directory(_directory: &Dir) -> Result<(), String> {
+    Ok(())
+}
+
+fn sync_export_capability(directory: &Dir) -> Result<(), String> {
     #[cfg(test)]
     if INJECT_EXPORT_PARENT_SYNC_FAILURE.with(|injected| injected.replace(false)) {
         return Err("Injected Notes export parent sync failure.".to_string());
     }
-    sync_export_directory(path)
+    sync_held_export_directory(directory)
 }
 
 fn maybe_fail_markdown_publish() -> Result<(), String> {
@@ -968,47 +1434,1056 @@ fn export_asset_marker_bytes(prepared: &PreparedMarkdownExport) -> Result<Vec<u8
         .map_err(|error| format!("Could not serialize the Notes export asset marker: {error}"))
 }
 
-/// Guard for the overwrite path: an existing `{stem}_assets` directory may only
-/// be displaced when it carries our marker with a matching `createdBy`. Missing
-/// marker, unreadable/invalid marker, or a foreign `createdBy` all refuse with
-/// [`FOREIGN_EXPORT_ASSET_DIR_MESSAGE`]. Must run before any destructive rename
-/// so the destination `.md` and the foreign directory stay untouched on refusal.
-fn ensure_overwritable_export_asset_directory(asset_destination: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(asset_destination) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+fn export_capability_identity(metadata: &cap_std::fs::Metadata) -> ExportDirectoryIdentity {
+    ExportDirectoryIdentity {
+        volume: cap_fs_ext::MetadataExt::dev(metadata),
+        file: cap_fs_ext::MetadataExt::ino(metadata),
+    }
+}
+
+struct HeldExportDirectory {
+    directory: Dir,
+    identity: ExportDirectoryIdentity,
+}
+
+impl HeldExportDirectory {
+    fn from_directory(directory: Dir) -> Result<Self, String> {
+        let metadata = directory
+            .dir_metadata()
+            .map_err(|error| error.to_string())?;
+        if !metadata.is_dir() {
+            return Err("Notes export held paths must be directories.".to_string());
+        }
+        let identity = export_capability_identity(&metadata);
+        Ok(Self {
+            directory,
+            identity,
+        })
+    }
+
+    fn open_from(parent: &Dir, path: &Path, changed_context: &str) -> Result<Self, String> {
+        let held = Self::from_directory(
+            open_export_directory_from(parent, path).map_err(|error| error.to_string())?,
+        )?;
+        held.verify_in(parent, path, changed_context)?;
+        Ok(held)
+    }
+
+    fn open_nofollow(path: &Path, changed_context: &str) -> Result<Self, String> {
+        let directory = open_export_directory_nofollow(path).map_err(|error| error.to_string())?;
+        let identity = export_capability_identity(
+            &directory
+                .dir_metadata()
+                .map_err(|error| error.to_string())?,
+        );
+        let held = Self {
+            directory,
+            identity,
+        };
+        held.verify_at(path, changed_context)?;
+        Ok(held)
+    }
+
+    fn verify_at(&self, path: &Path, changed_context: &str) -> Result<(), String> {
+        self.verify_held(changed_context)?;
+        let path_identity = export_directory_identity(path)
+            .map_err(|error| format!("{changed_context}: {error}"))?;
+        if path_identity != self.identity {
+            return Err(format!("{changed_context}."));
+        }
+        Ok(())
+    }
+
+    fn verify_held(&self, changed_context: &str) -> Result<(), String> {
+        let capability_identity =
+            export_capability_identity(&self.directory.dir_metadata().map_err(|error| {
+                format!("{changed_context}; could not inspect the held directory: {error}")
+            })?);
+        if capability_identity != self.identity {
+            return Err(format!(
+                "{changed_context}; the held directory identity changed."
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_in(&self, parent: &Dir, path: &Path, changed_context: &str) -> Result<(), String> {
+        self.verify_held(changed_context)?;
+        let current = open_export_directory_from(parent, path)
+            .map_err(|error| format!("{changed_context}: {error}"))?;
+        let identity = export_capability_identity(
+            &current
+                .dir_metadata()
+                .map_err(|error| format!("{changed_context}: {error}"))?,
+        );
+        if identity != self.identity {
+            return Err(format!("{changed_context}."));
+        }
+        Ok(())
+    }
+
+    fn remove_empty_held(self, context: &str) -> Result<(), String> {
+        self.verify_held(context)?;
+        let unexpected_entry = {
+            let mut entries = self
+                .directory
+                .entries()
+                .map_err(|error| format!("{context}; could not inspect the directory: {error}"))?;
+            entries
+                .next()
+                .transpose()
+                .map_err(|error| format!("{context}; could not inspect the directory: {error}"))?
+                .map(|entry| entry.file_name())
+        };
+        if let Some(entry) = unexpected_entry {
+            return Err(format!(
+                "{context}; the directory contains an unexpected entry named {}.",
+                Path::new(&entry).display()
+            ));
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+
+            let result = windows_delete_export_handle(self.directory.as_raw_handle())
+                .map_err(|error| format!("{context}: {error}"));
+            drop(self.directory);
+            result
+        }
+
+        #[cfg(not(windows))]
+        {
+            self.directory
+                .remove_open_dir()
+                .map_err(|error| format!("{context}: {error}"))
+        }
+    }
+}
+
+struct HeldExportFile {
+    file: CapFile,
+    identity: ExportDirectoryIdentity,
+}
+
+impl HeldExportFile {
+    fn open_from(parent: &Dir, path: &Path, changed_context: &str) -> Result<Self, String> {
+        let file = open_export_file_from(parent, path).map_err(|error| error.to_string())?;
+        let held = Self::from_file_held(file)?;
+        held.verify_in(parent, path, changed_context)?;
+        Ok(held)
+    }
+
+    fn from_file_held(file: CapFile) -> Result<Self, String> {
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if !metadata.file_type().is_file() {
+            return Err("Notes export held paths must be regular files.".to_string());
+        }
+        Ok(Self {
+            identity: export_capability_identity(&metadata),
+            file,
+        })
+    }
+
+    fn verify_held(&self, changed_context: &str) -> Result<(), String> {
+        let capability_identity =
+            export_capability_identity(&self.file.metadata().map_err(|error| {
+                format!("{changed_context}; could not inspect the held file: {error}")
+            })?);
+        if capability_identity != self.identity {
+            return Err(format!(
+                "{changed_context}; the held file identity changed."
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_in(&self, parent: &Dir, path: &Path, changed_context: &str) -> Result<(), String> {
+        self.verify_held(changed_context)?;
+        let current = Self::open_from_unverified(parent, path, changed_context)?;
+        if current.identity != self.identity {
+            return Err(format!("{changed_context}."));
+        }
+        Ok(())
+    }
+
+    fn open_from_unverified(
+        parent: &Dir,
+        path: &Path,
+        changed_context: &str,
+    ) -> Result<Self, String> {
+        let file = open_export_file_from(parent, path)
+            .map_err(|error| format!("{changed_context}: {error}"))?;
+        Self::from_file_held(file).map_err(|error| format!("{changed_context}; {error}"))
+    }
+
+    fn preserve_copy_in(&self, parent: &Dir, prefix: &str) -> Result<PathBuf, String> {
+        let name = unique_export_capability_name(parent, prefix)?;
+        let mut source = self.file.try_clone().map_err(|error| error.to_string())?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut options = CapOpenOptions::new();
+        options.write(true).create_new(true);
+        let mut destination = parent
+            .open_with(&name, &options)
+            .map_err(|error| error.to_string())?;
+        std::io::copy(&mut source, &mut destination).map_err(|error| error.to_string())?;
+        destination.sync_all().map_err(|error| error.to_string())?;
+        Ok(PathBuf::from(name))
+    }
+
+    fn remove_from_held(
+        self,
+        parent: &Dir,
+        relative_path: &Path,
+        context: &str,
+    ) -> Result<(), String> {
+        self.verify_in(parent, relative_path, context)?;
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+
+            let result = windows_delete_export_handle(self.file.as_raw_handle())
+                .map_err(|error| format!("{context}: {error}"));
+            drop(self.file);
+            result
+        }
+
+        #[cfg(not(windows))]
+        {
+            parent
+                .remove_file(relative_path)
+                .map_err(|error| format!("{context}: {error}"))
+        }
+    }
+
+    fn read_all(&self) -> Result<Vec<u8>, String> {
+        let mut source = self.file.try_clone().map_err(|error| error.to_string())?;
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| error.to_string())?;
+        let mut bytes = Vec::new();
+        source
+            .read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+
+    fn has_same_identity(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+struct HeldExportAssetFile {
+    relative_path: PathBuf,
+    file: HeldExportFile,
+}
+
+struct HeldExportAssetDirectory {
+    directory: HeldExportDirectory,
+    files: Vec<HeldExportAssetFile>,
+}
+
+impl HeldExportAssetDirectory {
+    fn capture_held(
+        directory: HeldExportDirectory,
+        preheld_file: Option<HeldExportAssetFile>,
+        changed_context: &str,
+    ) -> Result<Self, String> {
+        directory.verify_held(changed_context)?;
+        let entry_names = Self::entry_names(&directory.directory, changed_context)?;
+        let mut preheld_file = preheld_file;
+        let mut files = Vec::with_capacity(entry_names.len());
+        for relative_path in entry_names {
+            let file = if preheld_file
+                .as_ref()
+                .is_some_and(|file| file.relative_path == relative_path)
+            {
+                preheld_file
+                    .take()
+                    .expect("matching preheld asset file must be present")
+                    .file
+            } else {
+                HeldExportFile::open_from(&directory.directory, &relative_path, changed_context)?
+            };
+            files.push(HeldExportAssetFile {
+                relative_path,
+                file,
+            });
+        }
+        if preheld_file.is_some() {
+            return Err(format!(
+                "{changed_context}; the validated marker disappeared while asset files were captured."
+            ));
+        }
+        let held = Self { directory, files };
+        held.verify_held(changed_context)?;
+        Ok(held)
+    }
+
+    fn entry_names(directory: &Dir, context: &str) -> Result<BTreeSet<PathBuf>, String> {
+        let entries = directory
+            .entries()
+            .map_err(|error| format!("{context}; could not inspect asset files: {error}"))?;
+        let mut names = BTreeSet::new();
+        for entry in entries {
+            let entry = entry
+                .map_err(|error| format!("{context}; could not inspect an asset file: {error}"))?;
+            let relative_path = PathBuf::from(entry.file_name());
+            if relative_path.components().count() != 1
+                || !matches!(
+                    relative_path.components().next(),
+                    Some(Component::Normal(_))
+                )
+            {
+                return Err(format!(
+                    "{context}; an asset file has an unsafe relative path."
+                ));
+            }
+            names.insert(relative_path);
+        }
+        Ok(names)
+    }
+
+    fn verify_held(&self, changed_context: &str) -> Result<(), String> {
+        self.directory.verify_held(changed_context)?;
+        let current_names = Self::entry_names(&self.directory.directory, changed_context)?;
+        let expected_names = self
+            .files
+            .iter()
+            .map(|file| file.relative_path.clone())
+            .collect::<BTreeSet<_>>();
+        if current_names != expected_names {
+            return Err(format!(
+                "{changed_context}; the asset directory entry set changed."
+            ));
+        }
+        for file in &self.files {
+            file.file.verify_in(
+                &self.directory.directory,
+                &file.relative_path,
+                &format!(
+                    "{changed_context}; asset file {} changed",
+                    file.relative_path.display()
+                ),
+            )?;
+        }
+        self.directory.verify_held(changed_context)
+    }
+
+    fn verify_in(&self, parent: &Dir, path: &Path, changed_context: &str) -> Result<(), String> {
+        self.directory.verify_in(parent, path, changed_context)?;
+        self.verify_held(changed_context)
+    }
+
+    fn is_in(&self, parent: &Dir, path: &Path, changed_context: &str) -> Result<bool, String> {
+        match parent.symlink_metadata(path) {
+            Ok(_) => self.verify_in(parent, path, changed_context).map(|()| true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("{changed_context}: {error}")),
+        }
+    }
+
+    fn remove_owned_held(self, context: &str) -> Result<(), String> {
+        self.verify_held(context)?;
+        let Self { directory, files } = self;
+        for file in files {
+            file.file.remove_from_held(
+                &directory.directory,
+                &file.relative_path,
+                &format!(
+                    "{context}; owned asset file {} changed during cleanup",
+                    file.relative_path.display()
+                ),
+            )?;
+        }
+        directory.remove_empty_held(context)
+    }
+}
+
+fn validated_export_asset_marker_in(
+    parent: &Dir,
+    asset_path: &Path,
+    asset_directory: &HeldExportDirectory,
+) -> Result<HeldExportFile, String> {
+    asset_directory.verify_in(
+        parent,
+        asset_path,
+        "Notes export asset destination identity changed before marker validation",
+    )?;
+    let marker_path = Path::new(EXPORT_ASSET_MARKER_NAME);
+    match asset_directory.directory.symlink_metadata(marker_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string())
+        }
+        Err(error) => return Err(error.to_string()),
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string())
+        }
+        Ok(_) => {}
+    }
+    let marker_file = HeldExportFile::open_from(
+        &asset_directory.directory,
+        marker_path,
+        "Notes export asset marker identity changed while it was opened",
+    )?;
+    let marker = serde_json::from_slice::<ExportAssetMarker>(&marker_file.read_all()?)
+        .map_err(|_| FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string())?;
+    if marker.created_by != EXPORT_ASSET_MARKER_CREATED_BY {
+        return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string());
+    }
+    maybe_inject_markdown_asset_marker_identity_race();
+    asset_directory.verify_in(
+        parent,
+        asset_path,
+        "Notes export asset destination identity changed during marker validation",
+    )?;
+    marker_file.verify_in(
+        &asset_directory.directory,
+        marker_path,
+        "Notes export asset marker identity changed during marker validation",
+    )?;
+    Ok(marker_file)
+}
+
+fn existing_export_document_in(
+    parent: &Dir,
+    destination: &Path,
+) -> Result<Option<HeldExportFile>, String> {
+    match parent.symlink_metadata(destination) {
+        Ok(metadata) if !metadata.file_type().is_file() => {
+            Err("Notes export document destination must be a regular file.".to_string())
+        }
+        Ok(_) => HeldExportFile::open_from(
+            parent,
+            destination,
+            "Notes export document destination identity changed while it was opened",
+        )
+        .map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+struct PreparedMarkdownStage {
+    name: String,
+    path: PathBuf,
+    directory: HeldExportDirectory,
+    document_path: PathBuf,
+    document: HeldExportFile,
+    assets_path: PathBuf,
+    assets: HeldExportAssetDirectory,
+}
+
+fn prepare_markdown_stage_in(
+    parent: &Dir,
+    parent_path: &Path,
+    prepared: &PreparedMarkdownExport,
+) -> Result<PreparedMarkdownStage, String> {
+    let stage_name = unique_export_capability_name(parent, ".yonalist-notes-export-")?;
+    #[cfg(windows)]
+    parent
+        .create_dir(&stage_name)
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(windows))]
+    {
+        let mut builder = DirBuilder::new();
+        #[cfg(unix)]
+        CapDirBuilderExt::mode(&mut builder, 0o700);
+        parent
+            .create_dir_with(&stage_name, &builder)
+            .map_err(|error| error.to_string())?;
+    }
+    let stage_path = parent_path.join(&stage_name);
+    let prepared_stage = (|| {
+        let stage_directory = HeldExportDirectory::open_from(
+            parent,
+            Path::new(&stage_name),
+            "Notes export private staging identity changed while it was opened",
+        )?;
+        stage_directory
+            .directory
+            .create_dir("assets")
+            .map_err(|error| error.to_string())?;
+        let assets_path = stage_path.join("assets");
+        let assets = HeldExportDirectory::open_from(
+            &stage_directory.directory,
+            Path::new("assets"),
+            "Notes export staged asset directory identity changed while it was opened",
+        )?;
+        for asset in &prepared.assets {
+            let mut options = CapOpenOptions::new();
+            options.write(true).create_new(true);
+            let mut file = assets
+                .directory
+                .open_with(&asset.file_name, &options)
+                .map_err(|error| error.to_string())?;
+            file.write_all(&asset.bytes)
+                .map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+        }
+        let marker_bytes = export_asset_marker_bytes(prepared)?;
+        let mut marker_options = CapOpenOptions::new();
+        marker_options.write(true).create_new(true);
+        let mut marker = assets
+            .directory
+            .open_with(EXPORT_ASSET_MARKER_NAME, &marker_options)
+            .map_err(|error| error.to_string())?;
+        marker
+            .write_all(&marker_bytes)
+            .map_err(|error| error.to_string())?;
+        marker.sync_all().map_err(|error| error.to_string())?;
+
+        let document_path = stage_path.join("document.md");
+        let mut document_options = CapOpenOptions::new();
+        document_options.read(true).write(true).create_new(true);
+        let mut document = stage_directory
+            .directory
+            .open_with("document.md", &document_options)
+            .map_err(|error| error.to_string())?;
+        document
+            .write_all(&prepared.markdown)
+            .map_err(|error| error.to_string())?;
+        document.sync_all().map_err(|error| error.to_string())?;
+        drop(document);
+        let document = HeldExportFile::open_from(
+            &stage_directory.directory,
+            Path::new("document.md"),
+            "Notes export staged document identity changed while it was opened",
+        )?;
+        sync_held_export_directory(&assets.directory)?;
+        let assets = HeldExportAssetDirectory::capture_held(
+            assets,
+            None,
+            "Notes export staged asset directory identity changed before publication",
+        )?;
+        sync_held_export_directory(&stage_directory.directory)?;
+        Ok(PreparedMarkdownStage {
+            name: stage_name.clone(),
+            path: stage_path.clone(),
+            directory: stage_directory,
+            document_path,
+            document,
+            assets_path,
+            assets,
+        })
+    })();
+    prepared_stage.map_err(|error: String| {
+        format!(
+            "{error} Notes export private staging was preserved at {}.",
+            stage_path.display()
+        )
+    })
+}
+
+fn overwritable_export_asset_directory_in(
+    parent: &Dir,
+    asset_destination: &Path,
+) -> Result<Option<HeldExportAssetDirectory>, String> {
+    match parent.symlink_metadata(asset_destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err("Notes export asset directory must not be a symlink.".to_string());
         }
         Ok(_) => {}
     }
-    let marker_bytes = match fs::read(asset_destination.join(EXPORT_ASSET_MARKER_NAME)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string());
+
+    let asset_directory = HeldExportDirectory::open_from(
+        parent,
+        asset_destination,
+        "Notes export asset destination identity changed before marker validation",
+    )?;
+    let marker_file =
+        validated_export_asset_marker_in(parent, asset_destination, &asset_directory)?;
+    HeldExportAssetDirectory::capture_held(
+        asset_directory,
+        Some(HeldExportAssetFile {
+            relative_path: PathBuf::from(EXPORT_ASSET_MARKER_NAME),
+            file: marker_file,
+        }),
+        "Notes export asset destination identity changed while its files were captured",
+    )
+    .map(Some)
+}
+
+fn rollback_published_directory_in(
+    parent: &Dir,
+    parent_path: &Path,
+    published: &Path,
+    expected_directory: &HeldExportAssetDirectory,
+) -> Result<String, String> {
+    let quarantine = unique_export_capability_name(parent, ".yonalist-notes-rollback-")?;
+    let quarantine_path = Path::new(&quarantine);
+    publish_path_noreplace_in(parent, published, parent, quarantine_path)
+        .map_err(|error| format!("Could not quarantine Notes export assets: {error}"))?;
+
+    if let Err(error) = expected_directory.verify_in(
+        parent,
+        quarantine_path,
+        "Notes export asset directory identity changed before rollback",
+    ) {
+        let restore = publish_path_noreplace_in(parent, quarantine_path, parent, published);
+        return match restore {
+            Ok(()) => Err(format!("{error}; the unrelated replacement was preserved.")),
+            Err(restore_error) => Err(format!(
+                "{error}; the unrelated replacement was preserved at {} because restore failed: {restore_error}",
+                parent_path.join(quarantine_path).display()
+            )),
+        };
+    }
+
+    Ok(format!(
+        "Notes export rollback cleanup warning: published assets were preserved for startup/manual cleanup at {}.",
+        parent_path.join(quarantine_path).display()
+    ))
+}
+
+fn restore_or_preserve_displaced_path_in(
+    source_parent: &Dir,
+    displaced: &Path,
+    destination_parent: &Dir,
+    destination: &Path,
+    recovery_parent: &Dir,
+    recovery_parent_path: &Path,
+    preserve_prefix: &str,
+) -> Result<String, String> {
+    match publish_path_noreplace_in(source_parent, displaced, destination_parent, destination) {
+        Ok(()) => Ok("the unrelated replacement was preserved.".to_string()),
+        Err(restore_error) => {
+            let preserved = unique_export_capability_name(recovery_parent, preserve_prefix)?;
+            publish_path_noreplace_in(
+                source_parent,
+                displaced,
+                recovery_parent,
+                Path::new(&preserved),
+            )
+            .map_err(|preserve_error| {
+                format!(
+                    "the unrelated replacement could not be restored or moved out of private staging: {restore_error}; preservation failed: {preserve_error}"
+                )
+            })?;
+            Ok(format!(
+                "the unrelated replacement was preserved at {} because restore failed: {restore_error}",
+                recovery_parent_path.join(preserved).display()
+            ))
         }
-        Err(error) => return Err(error.to_string()),
-    };
-    let marker = serde_json::from_slice::<ExportAssetMarker>(&marker_bytes)
-        .map_err(|_| FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string())?;
-    if marker.created_by != EXPORT_ASSET_MARKER_CREATED_BY {
-        return Err(FOREIGN_EXPORT_ASSET_DIR_MESSAGE.to_string());
+    }
+}
+
+fn displace_verified_overwrite_destination_in(
+    parent: &Dir,
+    destination: &Path,
+    stage: &Dir,
+    displaced: &Path,
+    parent_path: &Path,
+    expected_file: &HeldExportFile,
+    destination_kind: &str,
+    preserve_prefix: &str,
+) -> Result<(), String> {
+    publish_path_noreplace_in(parent, destination, stage, displaced)?;
+    if let Err(error) = expected_file.verify_in(
+        stage,
+        displaced,
+        &format!(
+            "Notes export {destination_kind} destination identity changed before overwrite displacement"
+        ),
+    ) {
+        let preservation = restore_or_preserve_displaced_path_in(
+            stage,
+            displaced,
+            parent,
+            destination,
+            parent,
+            parent_path,
+            preserve_prefix,
+        )
+        .map_err(|preserve_error| format!("{error}; {preserve_error}"))?;
+        return Err(format!("{error}; {preservation}"));
     }
     Ok(())
 }
 
+fn displace_verified_overwrite_asset_directory_in(
+    parent: &Dir,
+    destination: &Path,
+    stage: &Dir,
+    displaced: &Path,
+    parent_path: &Path,
+    expected_directory: &HeldExportAssetDirectory,
+    preserve_prefix: &str,
+) -> Result<(), String> {
+    publish_path_noreplace_in(parent, destination, stage, displaced)?;
+    if let Err(error) = expected_directory.verify_in(
+        stage,
+        displaced,
+        "Notes export asset destination identity changed before overwrite displacement",
+    ) {
+        let preservation = restore_or_preserve_displaced_path_in(
+            stage,
+            displaced,
+            parent,
+            destination,
+            parent,
+            parent_path,
+            preserve_prefix,
+        )
+        .map_err(|preserve_error| format!("{error}; {preserve_error}"))?;
+        return Err(format!("{error}; {preservation}"));
+    }
+    Ok(())
+}
+
+fn rollback_published_document_in(
+    parent: &Dir,
+    destination: &Path,
+    stage: &Dir,
+    expected_file: &HeldExportFile,
+) -> Result<(), String> {
+    expected_file.verify_in(
+        parent,
+        destination,
+        "Notes export published document identity changed before rollback",
+    )?;
+    let rolled_back = Path::new("published-document");
+    publish_path_noreplace_in(parent, destination, stage, rolled_back)
+        .map_err(|error| format!("Could not roll back the published Notes document: {error}"))?;
+    if let Err(error) = expected_file.verify_in(
+        stage,
+        rolled_back,
+        "Notes export published document identity changed during rollback",
+    ) {
+        let preservation = restore_or_preserve_displaced_path_in(
+            stage,
+            rolled_back,
+            parent,
+            destination,
+            parent,
+            Path::new("."),
+            ".yonalist-notes-raced-document-",
+        )
+        .map_err(|preserve_error| format!("{error}; {preserve_error}"))?;
+        return Err(format!("{error}; {preservation}"));
+    }
+    Ok(())
+}
+
+fn rollback_old_document_in(
+    stage: &Dir,
+    old_document: &Path,
+    parent: &Dir,
+    parent_path: &Path,
+    destination: &Path,
+    expected_file: &HeldExportFile,
+) -> Result<(), (String, bool)> {
+    if let Err(identity_error) = expected_file.verify_in(
+        stage,
+        old_document,
+        "Notes export old document backup identity changed before rollback",
+    ) {
+        return match expected_file.preserve_copy_in(parent, ".yonalist-notes-old-document-") {
+            Ok(preserved) => Err((
+                format!(
+                    "{identity_error}; the original old document was preserved at {} and the untrusted staging path was retained.",
+                    parent_path.join(preserved).display()
+                ),
+                true,
+            )),
+            Err(preserve_error) => Err((
+                format!(
+                    "{identity_error}; the untrusted staging path was retained, but the held original document could not be copied to recovery: {preserve_error}"
+                ),
+                true,
+            )),
+        };
+    }
+
+    match publish_path_noreplace_in(stage, old_document, parent, destination) {
+        Ok(()) => expected_file
+            .verify_in(
+                parent,
+                destination,
+                "Notes export old document identity changed during rollback",
+            )
+            .map_err(|identity_error| (identity_error, true)),
+        Err(restore_error) => match expected_file
+            .preserve_copy_in(parent, ".yonalist-notes-old-document-")
+        {
+            Ok(preserved) => Err((
+                format!(
+                    "Notes export incomplete rollback: the document destination remained occupied; the original old document backup was preserved at {}: {restore_error}",
+                    parent_path.join(preserved).display()
+                ),
+                false,
+            )),
+            Err(preserve_error) => Err((
+                format!(
+                    "Notes export incomplete rollback: the document destination remained occupied and the held original document could not be copied to recovery: {restore_error}; preservation failed: {preserve_error}"
+                ),
+                true,
+            )),
+        },
+    }
+}
+
+fn rollback_old_assets_in(
+    stage: &Dir,
+    old_assets: &Path,
+    parent: &Dir,
+    parent_path: &Path,
+    asset_destination: &Path,
+    expected_directory: &HeldExportAssetDirectory,
+) -> Result<(), (String, bool)> {
+    if let Err(identity_error) = expected_directory.verify_in(
+        stage,
+        old_assets,
+        "Notes export old asset backup identity changed before rollback",
+    ) {
+        return Err((identity_error, true));
+    }
+    match publish_path_noreplace_in(stage, old_assets, parent, asset_destination) {
+        Ok(()) => expected_directory
+            .verify_in(
+                parent,
+                asset_destination,
+                "Notes export old asset backup identity changed during rollback",
+            )
+            .map_err(|identity_error| (identity_error, true)),
+        Err(restore_error) => {
+            let preserved = unique_export_capability_name(parent, ".yonalist-notes-old-assets-")
+                .map_err(|error| {
+                    (
+                        format!(
+                            "Notes export incomplete rollback: the asset destination remained occupied and no recovery path could be reserved: {restore_error}; {error}"
+                        ),
+                        true,
+                    )
+                })?;
+            publish_path_noreplace_in(stage, old_assets, parent, Path::new(&preserved)).map_err(
+                |preserve_error| {
+                    (
+                        format!(
+                            "Notes export incomplete rollback: the asset destination remained occupied and the old asset backup could not be moved out of private staging: {restore_error}; preservation failed: {preserve_error}"
+                        ),
+                        true,
+                    )
+                },
+            )?;
+            expected_directory
+                .verify_in(
+                    parent,
+                    Path::new(&preserved),
+                    "Notes export old asset backup identity changed during recovery preservation",
+                )
+                .map_err(|identity_error| {
+                    (
+                        format!(
+                            "{identity_error}; the untrusted recovery path was retained at {}",
+                            parent_path.join(&preserved).display()
+                        ),
+                        true,
+                    )
+                })?;
+            Err((
+                format!(
+                    "Notes export incomplete rollback: the asset destination remained occupied; the old asset backup was preserved at {}: {restore_error}",
+                    parent_path.join(preserved).display()
+                ),
+                false,
+            ))
+        }
+    }
+}
+
+fn cleanup_markdown_stage_in(
+    stage_path: &Path,
+    stage_directory: HeldExportDirectory,
+    staged_document: HeldExportFile,
+    old_document: Option<HeldExportFile>,
+    staged_assets: HeldExportAssetDirectory,
+    old_assets: Option<HeldExportAssetDirectory>,
+) -> Result<(), String> {
+    let cleanup = (|| {
+        maybe_inject_markdown_pre_stage_cleanup_race(stage_path);
+        stage_directory
+            .verify_held("Notes export private staging identity changed before cleanup")?;
+        let staged_assets_present = staged_assets.is_in(
+            &stage_directory.directory,
+            Path::new("assets"),
+            "Notes export staged asset directory identity changed before private staging cleanup",
+        )?;
+        let old_assets_present = match old_assets.as_ref() {
+            Some(directory) => directory.is_in(
+                &stage_directory.directory,
+                Path::new("old-assets"),
+                "Notes export old asset backup identity changed before private staging cleanup",
+            )?,
+            None => false,
+        };
+        let staged_document_cleanup = matching_export_file_in(
+            &stage_directory.directory,
+            Path::new("document.md"),
+            &staged_document,
+            "Notes export staged document identity changed before private staging cleanup",
+        )?;
+        let rolled_back_document_cleanup = matching_export_file_in(
+            &stage_directory.directory,
+            Path::new("published-document"),
+            &staged_document,
+            "Notes export rolled-back document identity changed before private staging cleanup",
+        )?;
+        let old_document_cleanup = match old_document.as_ref() {
+            Some(file) => matching_export_file_in(
+                &stage_directory.directory,
+                Path::new("old-document"),
+                file,
+                "Notes export old document backup identity changed before private staging cleanup",
+            )?,
+            None => None,
+        };
+
+        maybe_inject_markdown_post_stage_validation_cleanup_race(stage_path);
+        stage_directory
+            .verify_held("Notes export private staging identity changed during cleanup")?;
+        if staged_assets_present {
+            staged_assets.remove_owned_held("Could not remove owned staged Notes export assets")?;
+        }
+        if old_assets_present {
+            old_assets
+                .expect("presence requires an old asset capability")
+                .remove_owned_held("Could not remove the owned old Notes export asset backup")?;
+        }
+        drop(staged_document);
+        drop(old_document);
+        for (file, relative, context) in [
+            (
+                staged_document_cleanup,
+                "document.md",
+                "Notes export staged document identity changed during private staging cleanup",
+            ),
+            (
+                rolled_back_document_cleanup,
+                "published-document",
+                "Notes export rolled-back document identity changed during private staging cleanup",
+            ),
+        ] {
+            if let Some(file) = file {
+                file.remove_from_held(&stage_directory.directory, Path::new(relative), context)?;
+            }
+        }
+        if let Some(file) = old_document_cleanup {
+            file.remove_from_held(
+                &stage_directory.directory,
+                Path::new("old-document"),
+                "Notes export old document backup identity changed during private staging cleanup",
+            )?;
+        }
+        stage_directory
+            .verify_held("Notes export private staging identity changed before final cleanup")?;
+        stage_directory.remove_empty_held("Could not remove private Notes export staging")
+    })();
+    cleanup.map_err(|error| {
+        format!(
+            "{error} Notes export private staging was preserved at {}.",
+            stage_path.display()
+        )
+    })
+}
+
+fn matching_export_file_in(
+    parent: &Dir,
+    path: &Path,
+    expected_file: &HeldExportFile,
+    changed_context: &str,
+) -> Result<Option<HeldExportFile>, String> {
+    match parent.symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("{changed_context}: {error}")),
+        Ok(metadata) if !metadata.file_type().is_file() => Err(format!(
+            "{changed_context}; the cleanup path is not a regular file."
+        )),
+        Ok(_) => {
+            let file = HeldExportFile::open_from(parent, path, changed_context)?;
+            if !file.has_same_identity(expected_file) {
+                return Err(format!("{changed_context}."));
+            }
+            Ok(Some(file))
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn publish_markdown_export(
     destination: &Path,
     asset_destination: &Path,
     prepared: &PreparedMarkdownExport,
     overwrite: bool,
 ) -> Result<(), String> {
+    let parent_path = destination.parent().unwrap_or_else(|| Path::new("."));
+    let parent = Dir::open_ambient_dir(parent_path, ambient_authority())
+        .map_err(|error| error.to_string())?;
+    publish_markdown_export_with_revalidation(
+        destination,
+        asset_destination,
+        prepared,
+        overwrite,
+        &parent,
+        || Ok(()),
+        || {},
+    )
+}
+
+pub(crate) fn publish_markdown_export_guarded(
+    destination: &Path,
+    asset_destination: &Path,
+    prepared: &PreparedMarkdownExport,
+    overwrite: bool,
+    guard: &NotesExportDestinationGuard,
+    after_final_revalidation: impl FnOnce(),
+) -> Result<(), String> {
+    publish_markdown_export_with_revalidation(
+        destination,
+        asset_destination,
+        prepared,
+        overwrite,
+        &guard.parent.directory,
+        || guard.revalidate(),
+        after_final_revalidation,
+    )
+}
+
+fn publish_markdown_export_with_revalidation(
+    destination: &Path,
+    asset_destination: &Path,
+    prepared: &PreparedMarkdownExport,
+    overwrite: bool,
+    parent_capability: &Dir,
+    mut revalidate: impl FnMut() -> Result<(), String>,
+    after_final_revalidation: impl FnOnce(),
+) -> Result<(), String> {
+    revalidate()?;
+    let destination_name = destination
+        .file_name()
+        .map(Path::new)
+        .ok_or_else(|| "File path must name a file.".to_string())?;
+    let asset_destination_name = asset_destination
+        .file_name()
+        .map(Path::new)
+        .ok_or_else(|| "Notes export asset destination must name a directory.".to_string())?;
     if prepared.assets.is_empty() {
-        return crate::file_io::write_atomic_file(destination, &prepared.markdown, overwrite);
+        return crate::file_io::write_atomic_file_in_guarded_parent(
+            parent_capability,
+            destination_name,
+            &prepared.markdown,
+            overwrite,
+            revalidate,
+            after_final_revalidation,
+        );
     }
-    preflight_markdown_asset_destination(asset_destination, overwrite)?;
     if !overwrite {
-        match fs::symlink_metadata(destination) {
+        match parent_capability.symlink_metadata(destination_name) {
             Ok(_) => return Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.to_string()),
@@ -1016,164 +2491,306 @@ pub(crate) fn publish_markdown_export(
     }
 
     let parent = destination.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let stage = tempfile::Builder::new()
-        .prefix(".yonalist-notes-export-")
-        .tempdir_in(parent)
-        .map_err(|error| error.to_string())?;
-    let staged_document = stage.path().join("document.md");
-    let staged_assets = stage.path().join("assets");
-    fs::create_dir(&staged_assets).map_err(|error| error.to_string())?;
-    for asset in &prepared.assets {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(staged_assets.join(&asset.file_name))
-            .map_err(|error| error.to_string())?;
-        file.write_all(&asset.bytes)
-            .map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-    }
-    let marker_bytes = export_asset_marker_bytes(prepared)?;
-    let mut marker = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(staged_assets.join(EXPORT_ASSET_MARKER_NAME))
-        .map_err(|error| error.to_string())?;
-    marker
-        .write_all(&marker_bytes)
-        .map_err(|error| error.to_string())?;
-    marker.sync_all().map_err(|error| error.to_string())?;
-    let mut document = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&staged_document)
-        .map_err(|error| error.to_string())?;
-    document
-        .write_all(&prepared.markdown)
-        .map_err(|error| error.to_string())?;
-    document.sync_all().map_err(|error| error.to_string())?;
-    sync_export_directory(&staged_assets)?;
-    let staged_asset_identity = export_directory_identity(&staged_assets)?;
+    let old_document_capability = if overwrite {
+        existing_export_document_in(parent_capability, destination_name)?
+    } else {
+        None
+    };
+    let old_asset_directory = if overwrite {
+        overwritable_export_asset_directory_in(parent_capability, asset_destination_name)?
+    } else {
+        if path_exists_nofollow_in(parent_capability, asset_destination_name)? {
+            return Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string());
+        }
+        None
+    };
+    let PreparedMarkdownStage {
+        name: _stage_name,
+        path: stage_path,
+        directory: stage_directory,
+        document_path: _staged_document,
+        document: staged_document_capability,
+        assets_path: _staged_assets,
+        assets: staged_asset_directory,
+    } = prepare_markdown_stage_in(parent_capability, parent, prepared)?;
+    let mut after_final_revalidation = Some(after_final_revalidation);
     maybe_inject_markdown_commit_race();
 
     if !overwrite {
         maybe_inject_markdown_asset_destination_swap();
         let mut published_assets = false;
+        let mut published_document = false;
         let publish_result = (|| {
-            publish_directory_noreplace(&staged_assets, asset_destination)?;
+            revalidate()?;
+            if let Some(action) = after_final_revalidation.take() {
+                action();
+            }
+            publish_path_noreplace_in(
+                &stage_directory.directory,
+                Path::new("assets"),
+                parent_capability,
+                asset_destination_name,
+            )?;
             published_assets = true;
             maybe_inject_markdown_post_asset_publication_swap();
             maybe_fail_markdown_publish()?;
-            match fs::hard_link(&staged_document, destination) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    Err(crate::file_io::DESTINATION_EXISTS_MESSAGE.to_string())
-                }
-                Err(error) => Err(error.to_string()),
-            }
+            staged_asset_directory.verify_in(
+                parent_capability,
+                asset_destination_name,
+                "Notes export staged asset directory identity changed after publication",
+            )?;
+            maybe_inject_markdown_pre_document_publication_asset_swap();
+            revalidate()?;
+            publish_path_noreplace_in(
+                &stage_directory.directory,
+                Path::new("document.md"),
+                parent_capability,
+                destination_name,
+            )?;
+            published_document = true;
+            staged_document_capability.verify_in(
+                parent_capability,
+                destination_name,
+                "Notes export staged document identity changed after publication",
+            )?;
+            staged_asset_directory.verify_in(
+                parent_capability,
+                asset_destination_name,
+                "Notes export staged asset directory identity changed after document publication",
+            )?;
+            revalidate()
         })();
         if let Err(error) = publish_result {
-            if published_assets {
-                return match rollback_published_directory(
-                    asset_destination,
-                    parent,
-                    staged_asset_identity,
+            let mut rollback_errors = Vec::new();
+            let mut preserve_stage = false;
+            if published_document {
+                if let Err(rollback_error) = rollback_published_document_in(
+                    parent_capability,
+                    destination_name,
+                    &stage_directory.directory,
+                    &staged_document_capability,
                 ) {
-                    Ok(warning) => {
-                        report_export_cleanup_warning(warning);
-                        Err(error)
-                    }
-                    Err(rollback_error) => Err(format!(
-                        "{error} Notes export rollback also failed: {rollback_error}"
-                    )),
-                };
+                    preserve_stage = true;
+                    rollback_errors.push(rollback_error);
+                }
             }
-            return Err(error);
+            if published_assets {
+                match rollback_published_directory_in(
+                    parent_capability,
+                    parent,
+                    asset_destination_name,
+                    &staged_asset_directory,
+                ) {
+                    Ok(warning) => report_export_cleanup_warning(warning),
+                    Err(rollback_error) => rollback_errors.push(rollback_error),
+                }
+            }
+            if preserve_stage {
+                rollback_errors.push(format!(
+                    "Notes export incomplete rollback: private staging was preserved at {} for startup/manual recovery.",
+                    stage_path.display()
+                ));
+            } else {
+                if let Err(cleanup_error) = cleanup_markdown_stage_in(
+                    &stage_path,
+                    stage_directory,
+                    staged_document_capability,
+                    None,
+                    staged_asset_directory,
+                    None,
+                ) {
+                    rollback_errors.push(cleanup_error);
+                }
+            }
+            return if rollback_errors.is_empty() {
+                Err(error)
+            } else {
+                Err(format!(
+                    "{error} Notes export rollback also failed: {}",
+                    rollback_errors.join("; ")
+                ))
+            };
         }
-        let _ = sync_export_parent(parent);
+        if let Err(cleanup_error) = cleanup_markdown_stage_in(
+            &stage_path,
+            stage_directory,
+            staged_document_capability,
+            None,
+            staged_asset_directory,
+            None,
+        ) {
+            report_export_cleanup_warning(format!("Notes export cleanup warning: {cleanup_error}"));
+        }
+        let _ = sync_export_capability(parent_capability);
         return Ok(());
     }
 
-    // Refuse before touching anything: only displace an assets directory that a
-    // previous export created (see the marker guard). On refusal the existing
-    // `.md` and the foreign directory both stay byte-for-byte untouched.
-    ensure_overwritable_export_asset_directory(asset_destination)?;
-
-    let old_document = stage.path().join("old-document");
-    let old_assets = stage.path().join("old-assets");
-    let had_document = fs::symlink_metadata(destination).is_ok();
-    let had_assets = fs::symlink_metadata(asset_destination).is_ok();
+    let old_document = Path::new("old-document");
+    let old_assets = Path::new("old-assets");
+    let had_document = old_document_capability.is_some();
+    let had_assets = old_asset_directory.is_some();
     let mut published_document = false;
     let mut published_assets = false;
+    maybe_inject_markdown_overwrite_displacement_race();
     let publish_result = (|| {
-        if had_document {
-            fs::rename(destination, &old_document).map_err(|error| error.to_string())?;
+        revalidate()?;
+        if let Some(action) = after_final_revalidation.take() {
+            action();
         }
-        if had_assets {
-            if let Err(error) = fs::rename(asset_destination, &old_assets) {
-                if had_document {
-                    let _ = fs::rename(&old_document, destination);
-                }
-                return Err(error.to_string());
-            }
+        if let Some(document) = old_document_capability.as_ref() {
+            maybe_inject_markdown_pre_document_backup_slot_race(&stage_path);
+            displace_verified_overwrite_destination_in(
+                parent_capability,
+                destination_name,
+                &stage_directory.directory,
+                old_document,
+                parent,
+                document,
+                "document",
+                ".yonalist-notes-replaced-document-",
+            )?;
         }
-        fs::rename(&staged_assets, asset_destination).map_err(|error| error.to_string())?;
+        if let Some(directory) = old_asset_directory.as_ref() {
+            maybe_inject_markdown_pre_asset_backup_slot_race(&stage_path);
+            displace_verified_overwrite_asset_directory_in(
+                parent_capability,
+                asset_destination_name,
+                &stage_directory.directory,
+                old_assets,
+                parent,
+                directory,
+                ".yonalist-notes-replaced-assets-",
+            )?;
+        }
+        publish_path_noreplace_in(
+            &stage_directory.directory,
+            Path::new("assets"),
+            parent_capability,
+            asset_destination_name,
+        )?;
         published_assets = true;
         maybe_inject_markdown_post_asset_publication_swap();
         maybe_fail_markdown_publish()?;
-        fs::rename(&staged_document, destination).map_err(|error| error.to_string())?;
+        staged_asset_directory.verify_in(
+            parent_capability,
+            asset_destination_name,
+            "Notes export staged asset directory identity changed after publication",
+        )?;
+        maybe_inject_markdown_pre_document_publication_asset_swap();
+        publish_path_noreplace_in(
+            &stage_directory.directory,
+            Path::new("document.md"),
+            parent_capability,
+            destination_name,
+        )?;
         published_document = true;
-        Ok(())
+        staged_document_capability.verify_in(
+            parent_capability,
+            destination_name,
+            "Notes export staged document identity changed after publication",
+        )?;
+        staged_asset_directory.verify_in(
+            parent_capability,
+            asset_destination_name,
+            "Notes export staged asset directory identity changed after document publication",
+        )?;
+        revalidate()
     })();
 
     if let Err(error) = publish_result {
         let mut rollback_errors = Vec::new();
         let mut preserve_stage = false;
         if published_document {
-            if let Err(rollback_error) = remove_path_nofollow(destination) {
+            if let Err(rollback_error) = rollback_published_document_in(
+                parent_capability,
+                destination_name,
+                &stage_directory.directory,
+                &staged_document_capability,
+            ) {
+                preserve_stage = true;
                 rollback_errors.push(rollback_error);
             }
         }
         if published_assets {
-            match rollback_published_directory(asset_destination, parent, staged_asset_identity) {
+            match rollback_published_directory_in(
+                parent_capability,
+                parent,
+                asset_destination_name,
+                &staged_asset_directory,
+            ) {
                 Ok(warning) => report_export_cleanup_warning(warning),
                 Err(rollback_error) => rollback_errors.push(rollback_error),
             }
         }
-        if had_assets && old_assets.exists() {
-            if let Err(restore_error) = publish_directory_noreplace(&old_assets, asset_destination)
-            {
-                match preserve_export_directory(
-                    &old_assets,
-                    parent,
-                    ".yonalist-notes-old-assets-",
-                ) {
-                    Ok(preserved) => rollback_errors.push(format!(
-                        "Notes export incomplete rollback: the asset destination remained occupied; the old asset backup was preserved at {}: {restore_error}",
-                        preserved.display()
-                    )),
-                    Err(preserve_error) => {
-                        preserve_stage = true;
-                        rollback_errors.push(format!(
-                            "Notes export incomplete rollback: the asset destination remained occupied and the old asset backup could not be moved out of private staging: {restore_error}; preservation failed: {preserve_error}"
-                        ));
+        if had_assets {
+            match path_exists_nofollow_in(&stage_directory.directory, old_assets) {
+                Ok(true) => {
+                    if let Err((rollback_error, must_preserve_stage)) = rollback_old_assets_in(
+                        &stage_directory.directory,
+                        old_assets,
+                        parent_capability,
+                        parent,
+                        asset_destination_name,
+                        old_asset_directory
+                            .as_ref()
+                            .expect("had assets requires a held directory"),
+                    ) {
+                        preserve_stage |= must_preserve_stage;
+                        rollback_errors.push(rollback_error);
                     }
+                }
+                Ok(false) => {}
+                Err(inspect_error) => {
+                    preserve_stage = true;
+                    rollback_errors.push(format!(
+                        "Could not inspect the old Notes export asset backup during rollback: {inspect_error}"
+                    ));
                 }
             }
         }
-        if had_document && old_document.exists() {
-            if let Err(rollback_error) = fs::rename(&old_document, destination) {
-                preserve_stage = true;
-                rollback_errors.push(rollback_error.to_string());
+        if had_document {
+            maybe_inject_markdown_pre_document_rollback_race(&stage_path);
+            match path_exists_nofollow_in(&stage_directory.directory, old_document) {
+                Ok(true) => {
+                    if let Err((rollback_error, must_preserve_stage)) = rollback_old_document_in(
+                        &stage_directory.directory,
+                        old_document,
+                        parent_capability,
+                        parent,
+                        destination_name,
+                        old_document_capability
+                            .as_ref()
+                            .expect("had document requires a held file"),
+                    ) {
+                        preserve_stage |= must_preserve_stage;
+                        rollback_errors.push(rollback_error);
+                    }
+                }
+                Ok(false) => {}
+                Err(inspect_error) => {
+                    preserve_stage = true;
+                    rollback_errors.push(format!(
+                        "Could not inspect the old Notes export document backup during rollback: {inspect_error}"
+                    ));
+                }
             }
         }
         if preserve_stage {
-            let preserved_stage = stage.keep();
             rollback_errors.push(format!(
-                "Notes export incomplete rollback: private staging was preserved at {} for startup/manual cleanup.",
-                preserved_stage.display()
+                "Notes export incomplete rollback: private staging was preserved at {} for startup/manual recovery.",
+                stage_path.display()
             ));
+        } else {
+            if let Err(cleanup_error) = cleanup_markdown_stage_in(
+                &stage_path,
+                stage_directory,
+                staged_document_capability,
+                old_document_capability,
+                staged_asset_directory,
+                old_asset_directory,
+            ) {
+                rollback_errors.push(cleanup_error);
+            }
         }
         return if rollback_errors.is_empty() {
             Err(error)
@@ -1185,7 +2802,17 @@ pub(crate) fn publish_markdown_export(
         };
     }
 
-    let _ = sync_export_parent(parent);
+    if let Err(cleanup_error) = cleanup_markdown_stage_in(
+        &stage_path,
+        stage_directory,
+        staged_document_capability,
+        old_document_capability,
+        staged_asset_directory,
+        old_asset_directory,
+    ) {
+        report_export_cleanup_warning(format!("Notes export cleanup warning: {cleanup_error}"));
+    }
+    let _ = sync_export_capability(parent_capability);
     Ok(())
 }
 
@@ -1309,6 +2936,7 @@ struct PdfPreparedRow {
 
 struct PdfPreparedImage {
     attachment_id: String,
+    original_name: String,
     mime_type: String,
     payload_key: ExportPayloadKey,
     bytes: Arc<[u8]>,
@@ -1317,8 +2945,16 @@ struct PdfPreparedImage {
     x: f32,
     width: f32,
     height: f32,
+    marker_line: Option<PdfPreparedLine>,
+    primary_height: f32,
     caption_lines: Vec<PdfPreparedLine>,
     block_height: f32,
+}
+
+struct PdfImageSupportingContent {
+    text: String,
+    size: f32,
+    line_height: f32,
 }
 
 enum PdfPreparedBlock {
@@ -1337,6 +2973,7 @@ struct PdfPlacedLine {
 
 struct PdfPlacedImage {
     attachment_id: String,
+    original_name: String,
     mime_type: String,
     payload_key: ExportPayloadKey,
     bytes: Arc<[u8]>,
@@ -1470,6 +3107,8 @@ fn prepare_pdf_image(
     attachment: &super::types::ExportAttachment,
     depth: usize,
     full_page_height: f32,
+    marker: Option<char>,
+    supporting: Option<PdfImageSupportingContent>,
 ) -> Result<PdfPreparedImage, String> {
     let intrinsic_width = usize::try_from(attachment.intrinsic_width)
         .map_err(|_| "A PDF attachment has an invalid intrinsic width.".to_string())?;
@@ -1480,27 +3119,43 @@ fn prepare_pdf_image(
     }
     let margin_x = millimeters_to_points(PDF_MARGIN_X_MM);
     let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
-    let max_indent = body_width - PDF_MIN_TEXT_WIDTH;
+    let marker_indent = if marker.is_some() {
+        PDF_NOTE_INDENT
+    } else {
+        0.0
+    };
+    let max_indent = body_width - PDF_MIN_TEXT_WIDTH - marker_indent;
     let indentation = (depth as f32 * PDF_DEPTH_INDENT).min(max_indent);
-    let x = margin_x + indentation;
-    let max_width = body_width - indentation;
-    let caption_lines = wrap_pdf_text(
-        font,
-        &attachment.original_name,
-        PDF_IMAGE_CAPTION_SIZE,
-        max_width,
-    )?
-    .into_iter()
-    .map(|text| PdfPreparedLine {
-        text,
-        x,
-        size: PDF_IMAGE_CAPTION_SIZE,
-        line_height: PDF_IMAGE_CAPTION_LINE_HEIGHT,
-        tone: PdfTextTone::Supporting,
-    })
-    .collect::<Vec<_>>();
-    let caption_height = caption_lines.len() as f32 * PDF_IMAGE_CAPTION_LINE_HEIGHT;
-    let max_image_height = full_page_height - PDF_IMAGE_CAPTION_GAP - caption_height - PDF_ROW_GAP;
+    let marker_x = margin_x + indentation;
+    let x = marker_x + marker_indent;
+    let max_width = body_width - indentation - marker_indent;
+    let caption_lines = supporting
+        .map(|supporting| {
+            wrap_pdf_text(font, &supporting.text, supporting.size, max_width).map(|lines| {
+                lines
+                    .into_iter()
+                    .map(|text| PdfPreparedLine {
+                        text,
+                        x,
+                        size: supporting.size,
+                        line_height: supporting.line_height,
+                        tone: PdfTextTone::Supporting,
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let caption_height = caption_lines
+        .iter()
+        .map(|line| line.line_height)
+        .sum::<f32>();
+    let caption_gap = if caption_lines.is_empty() {
+        0.0
+    } else {
+        PDF_IMAGE_CAPTION_GAP
+    };
+    let max_image_height = full_page_height - caption_gap - caption_height - PDF_ROW_GAP;
     if max_image_height <= 0.0 {
         return Err("A PDF attachment caption is too tall to fit on an A4 page.".to_string());
     }
@@ -1509,10 +3164,21 @@ fn prepare_pdf_image(
     let scale = (max_width / width).min(max_image_height / height).min(1.0);
     width *= scale;
     height *= scale;
-    let block_height = height + PDF_IMAGE_CAPTION_GAP + caption_height + PDF_ROW_GAP;
+    let marker_line = marker.map(|marker| PdfPreparedLine {
+        text: format!("[{marker}]"),
+        x: marker_x,
+        size: PDF_ROW_SIZE,
+        line_height: PDF_ROW_LINE_HEIGHT,
+        tone: PdfTextTone::Primary,
+    });
+    let primary_height = marker_line
+        .as_ref()
+        .map_or(height, |line| height.max(line.line_height));
+    let block_height = primary_height + caption_gap + caption_height + PDF_ROW_GAP;
 
     Ok(PdfPreparedImage {
         attachment_id: attachment.id.clone(),
+        original_name: attachment.original_name.clone(),
         mime_type: attachment.mime_type.clone(),
         payload_key: ExportPayloadKey {
             relative_path: attachment.relative_path.clone(),
@@ -1527,6 +3193,8 @@ fn prepare_pdf_image(
         x,
         width,
         height,
+        marker_line,
+        primary_height,
         caption_lines,
         block_height,
     })
@@ -1539,14 +3207,57 @@ fn prepare_pdf_blocks(
     full_page_height: f32,
     blocks: &mut Vec<PdfPreparedBlock>,
 ) -> Result<(), String> {
-    blocks.push(PdfPreparedBlock::Row(prepare_pdf_row(font, node, depth)?));
-    for attachment in &node.attachments {
-        blocks.push(PdfPreparedBlock::Image(prepare_pdf_image(
-            font,
-            attachment,
-            depth,
-            full_page_height,
-        )?));
+    match node.node_kind {
+        NoteNodeKind::Text => {
+            blocks.push(PdfPreparedBlock::Row(prepare_pdf_row(font, node, depth)?));
+            for attachment in &node.attachments {
+                blocks.push(PdfPreparedBlock::Image(prepare_pdf_image(
+                    font,
+                    attachment,
+                    depth,
+                    full_page_height,
+                    None,
+                    Some(PdfImageSupportingContent {
+                        text: normalize_attachment_presentation(&attachment.original_name),
+                        size: PDF_IMAGE_CAPTION_SIZE,
+                        line_height: PDF_IMAGE_CAPTION_LINE_HEIGHT,
+                    }),
+                )?));
+            }
+        }
+        NoteNodeKind::Image => {
+            let description = if node.note.is_empty() {
+                None
+            } else {
+                let display_note =
+                    format_date_matches_for_pdf_display(&node.note, &node.note_date_spans)?;
+                Some(PdfImageSupportingContent {
+                    text: normalize_newlines(&display_note)
+                        .split('\n')
+                        .map(|line| {
+                            if line.is_empty() {
+                                ">".to_string()
+                            } else {
+                                format!("> {line}")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    size: PDF_NOTE_SIZE,
+                    line_height: PDF_NOTE_LINE_HEIGHT,
+                })
+            };
+            blocks.push(PdfPreparedBlock::Image(prepare_pdf_image(
+                font,
+                node.attachments
+                    .first()
+                    .expect("validated image node has one attachment"),
+                depth,
+                full_page_height,
+                Some(if node.completed { 'x' } else { ' ' }),
+                description,
+            )?));
+        }
     }
     for child in &node.children {
         prepare_pdf_blocks(font, child, depth + 1, full_page_height, blocks)?;
@@ -1603,6 +3314,16 @@ fn append_pdf_text_op(ops: &mut Vec<Op>, font_id: &FontId, line: PdfPlacedLine) 
     ]);
 }
 
+fn pdf_image_alt_properties(original_name: &str) -> DictItem {
+    let original_name = normalize_attachment_presentation(original_name);
+    DictItem::Dict {
+        map: BTreeMap::from([(
+            "Alt".to_string(),
+            DictItem::from_lopdf(&lopdf::text_string(&original_name)),
+        )]),
+    }
+}
+
 fn build_pdf_pages(
     font: &ParsedFont,
     snapshot: &NotesExportSnapshot,
@@ -1612,19 +3333,27 @@ fn build_pdf_pages(
     let content_top = page_height - millimeters_to_points(PDF_MARGIN_TOP_MM);
     let content_bottom = millimeters_to_points(PDF_MARGIN_BOTTOM_MM + PDF_FOOTER_RESERVE_MM);
     let body_width = millimeters_to_points(PDF_PAGE_WIDTH_MM - PDF_MARGIN_X_MM * 2.0);
-    let display_title =
-        format_date_matches_for_pdf_display(&snapshot.title, &snapshot.root.title_date_spans)?;
-    let title_lines = wrap_pdf_text(font, &display_title, PDF_TITLE_SIZE, body_width)?
-        .into_iter()
-        .map(|text| PdfPreparedLine {
-            text,
-            x: margin_x,
-            size: PDF_TITLE_SIZE,
-            line_height: PDF_TITLE_LINE_HEIGHT,
-            tone: PdfTextTone::Primary,
-        })
-        .collect::<Vec<_>>();
-    let title_height = title_lines.len() as f32 * PDF_TITLE_LINE_HEIGHT + PDF_TITLE_GAP;
+    let title_lines = if snapshot.root.node_kind == NoteNodeKind::Text {
+        let display_title =
+            format_date_matches_for_pdf_display(&snapshot.title, &snapshot.root.title_date_spans)?;
+        wrap_pdf_text(font, &display_title, PDF_TITLE_SIZE, body_width)?
+            .into_iter()
+            .map(|text| PdfPreparedLine {
+                text,
+                x: margin_x,
+                size: PDF_TITLE_SIZE,
+                line_height: PDF_TITLE_LINE_HEIGHT,
+                tone: PdfTextTone::Primary,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let title_height = if title_lines.is_empty() {
+        0.0
+    } else {
+        title_lines.len() as f32 * PDF_TITLE_LINE_HEIGHT + PDF_TITLE_GAP
+    };
     if title_height > content_top - content_bottom {
         return Err("PDF title is too tall to fit on an A4 page.".to_string());
     }
@@ -1663,11 +3392,19 @@ fn build_pdf_pages(
                     cursor_top = content_top;
                 }
                 let image_y = cursor_top - image.height;
-                let caption_top = image_y - PDF_IMAGE_CAPTION_GAP;
+                let caption_gap = if image.caption_lines.is_empty() {
+                    0.0
+                } else {
+                    PDF_IMAGE_CAPTION_GAP
+                };
+                let caption_top = cursor_top - image.primary_height - caption_gap;
                 let block_height = image.block_height;
+                let marker_line = image.marker_line;
+                let caption_lines = image.caption_lines;
                 let page = pages.last_mut().expect("PDF page exists");
                 page.images.push(PdfPlacedImage {
                     attachment_id: image.attachment_id,
+                    original_name: image.original_name,
                     mime_type: image.mime_type,
                     payload_key: image.payload_key,
                     bytes: image.bytes,
@@ -1678,7 +3415,10 @@ fn build_pdf_pages(
                     width: image.width,
                     height: image.height,
                 });
-                place_pdf_lines(page, image.caption_lines, caption_top);
+                if let Some(marker_line) = marker_line {
+                    place_pdf_lines(page, vec![marker_line], cursor_top);
+                }
+                place_pdf_lines(page, caption_lines, caption_top);
                 cursor_top -= block_height;
             }
         }
@@ -1758,6 +3498,7 @@ fn decode_pdf_attachment_rgba(bytes: &[u8], mime_type: &str) -> Result<RgbaImage
 
 pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, String> {
     validate_note_id(&snapshot.root_node_id)?;
+    snapshot.root.validate_attachment_ownership()?;
     validate_export_node_ids(&snapshot.root)?;
     validate_pdf_attachment_working_budget(snapshot, MAX_PDF_ATTACHMENT_WORKING_BYTES)?;
 
@@ -1801,6 +3542,10 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
                 image_ids.insert(image.payload_key, image_id.clone());
                 image_id
             };
+            ops.push(Op::BeginMarkedContentWithProperties {
+                tag: "Span".to_string(),
+                properties: pdf_image_alt_properties(&image.original_name),
+            });
             ops.push(Op::UseXobject {
                 id: image_id,
                 transform: XObjectTransform {
@@ -1812,6 +3557,7 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
                     ..XObjectTransform::default()
                 },
             });
+            ops.push(Op::EndMarkedContent);
         }
         for line in page.lines {
             append_pdf_text_op(&mut ops, &font_id, line);
@@ -1825,7 +3571,12 @@ pub(crate) fn render_pdf(snapshot: &NotesExportSnapshot) -> Result<Vec<u8>, Stri
     document.with_pages(pages);
 
     let mut save_warnings = Vec::new();
-    let bytes = document.save(&PdfSaveOptions::default(), &mut save_warnings);
+    let mut serialized = document.to_lopdf_document(&PdfSaveOptions::default(), &mut save_warnings);
+    serialized.version = PDF_DOCUMENT_VERSION.to_string();
+    let mut bytes = Vec::new();
+    serialized
+        .save_to(&mut bytes)
+        .map_err(|error| format!("Could not serialize the Notes PDF: {error}"))?;
     if save_warnings
         .iter()
         .any(|warning| warning.severity == PdfParseErrorSeverity::Error)
@@ -1846,15 +3597,25 @@ mod tests {
         format_date_matches_for_pdf_display, format_date_matches_for_pdf_display_with_work,
         hydrate_export_attachments, hydrate_export_attachments_with_budget,
         inject_export_parent_sync_failure_once, inject_markdown_asset_destination_swap_once,
-        inject_markdown_commit_race_once, inject_markdown_post_asset_publication_swap_once,
-        load_export_snapshot, prepare_markdown_export, publish_markdown_export, render_markdown,
-        render_pdf, sync_export_directory, validate_pdf_attachment_working_budget,
-        validate_serialized_pdf, windows_directory_move_flags, ExportAttachmentBudget,
-        EXPORT_ASSET_MARKER_CREATED_BY, EXPORT_ASSET_MARKER_NAME, EXPORT_ASSET_MARKER_VERSION,
-        FOREIGN_EXPORT_ASSET_DIR_MESSAGE, PDF_FONT_BYTES, PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM,
-        PDF_PAGE_HEIGHT_MM,
+        inject_markdown_asset_marker_identity_race_once, inject_markdown_commit_race_once,
+        inject_markdown_overwrite_displacement_race_once,
+        inject_markdown_post_asset_publication_swap_once,
+        inject_markdown_post_stage_validation_cleanup_race_once,
+        inject_markdown_pre_asset_backup_slot_race_once,
+        inject_markdown_pre_document_backup_slot_race_once,
+        inject_markdown_pre_document_publication_asset_swap_once,
+        inject_markdown_pre_document_rollback_race_once,
+        inject_markdown_pre_stage_cleanup_race_once,
+        inject_markdown_rollback_inspection_failure_once, load_export_snapshot,
+        prepare_markdown_export, publish_markdown_export, render_markdown, render_pdf,
+        sync_export_directory, validate_pdf_attachment_working_budget, validate_serialized_pdf,
+        ExportAttachmentBudget, EXPORT_ASSET_MARKER_CREATED_BY, EXPORT_ASSET_MARKER_NAME,
+        EXPORT_ASSET_MARKER_VERSION, FOREIGN_EXPORT_ASSET_DIR_MESSAGE, PDF_FONT_BYTES,
+        PDF_MARGIN_BOTTOM_MM, PDF_MARGIN_TOP_MM, PDF_PAGE_HEIGHT_MM,
     };
-    use crate::notes::types::{ExportAttachment, ExportDateSpan, ExportNode, NotesExportSnapshot};
+    use crate::notes::types::{
+        ExportAttachment, ExportDateSpan, ExportNode, NoteNodeKind, NotesExportSnapshot,
+    };
     use image::codecs::gif::GifEncoder;
     use image::{DynamicImage, Frame, ImageFormat, Rgba, RgbaImage};
     use printpdf::{Mm, Op, ParsedFont, PdfDocument, PdfPage, PdfParseOptions, Pt, TextItem};
@@ -1880,6 +3641,7 @@ mod tests {
     ) -> ExportNode {
         ExportNode {
             id: id.to_string(),
+            node_kind: NoteNodeKind::Text,
             title: title.to_string(),
             note: note.to_string(),
             title_date_spans: Vec::new(),
@@ -1888,6 +3650,20 @@ mod tests {
             attachments: Vec::new(),
             children,
         }
+    }
+
+    fn image_node(
+        id: &str,
+        title: &str,
+        note: &str,
+        completed: bool,
+        attachment: ExportAttachment,
+        children: Vec<ExportNode>,
+    ) -> ExportNode {
+        let mut node = export_node(id, title, note, completed, children);
+        node.node_kind = NoteNodeKind::Image;
+        node.attachments.push(attachment);
+        node
     }
 
     fn snapshot(root: ExportNode) -> NotesExportSnapshot {
@@ -1933,6 +3709,131 @@ mod tests {
         }
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct ParsedNativeMarkdownImage {
+        source: String,
+        alt: String,
+        title: Option<String>,
+    }
+
+    fn decode_commonmark_entity(reference: &str) -> Option<String> {
+        match reference {
+            "&amp;" => Some("&".to_string()),
+            "&apos;" => Some("'".to_string()),
+            "&gt;" => Some(">".to_string()),
+            "&lt;" => Some("<".to_string()),
+            "&quot;" => Some("\"".to_string()),
+            _ => {
+                let digits = reference.strip_prefix("&#")?.strip_suffix(';')?;
+                let hexadecimal = digits
+                    .strip_prefix('x')
+                    .or_else(|| digits.strip_prefix('X'));
+                let (radix, digits) = hexadecimal.map_or((10, digits), |digits| (16, digits));
+                char::from_u32(u32::from_str_radix(digits, radix).ok()?)
+                    .map(|value| value.to_string())
+            }
+        }
+    }
+
+    fn parse_native_markdown_image(source: &str) -> ParsedNativeMarkdownImage {
+        let image = source.strip_prefix("![").expect("native image opener");
+        let (alt, image) = image.split_once("](").expect("native image alt");
+        let image = image.strip_suffix(')').expect("native image closer");
+        let Some((destination, title)) = image.split_once(" \"") else {
+            return ParsedNativeMarkdownImage {
+                source: image.to_string(),
+                alt: alt.to_string(),
+                title: None,
+            };
+        };
+        let title_and_close = title.strip_suffix('"').expect("image title closer");
+        let mut title = String::new();
+        let mut index = 0;
+        while index < title_and_close.len() {
+            let character = title_and_close[index..]
+                .chars()
+                .next()
+                .expect("title character");
+            if character == '\\' {
+                index += character.len_utf8();
+                let escaped = title_and_close[index..]
+                    .chars()
+                    .next()
+                    .expect("escaped title character");
+                if escaped.is_ascii_punctuation() {
+                    title.push(escaped);
+                    index += escaped.len_utf8();
+                    continue;
+                }
+                title.push(character);
+                continue;
+            }
+            if character == '&' {
+                if let Some(end) = title_and_close[index..].find(';') {
+                    let reference = &title_and_close[index..index + end + 1];
+                    if let Some(decoded) = decode_commonmark_entity(reference) {
+                        title.push_str(&decoded);
+                        index += end + 1;
+                        continue;
+                    }
+                }
+            }
+            title.push(character);
+            index += character.len_utf8();
+        }
+        ParsedNativeMarkdownImage {
+            source: destination.to_string(),
+            alt: alt.to_string(),
+            title: Some(title),
+        }
+    }
+
+    fn parse_exported_native_image(markdown: &[u8]) -> ParsedNativeMarkdownImage {
+        let source = std::str::from_utf8(markdown).expect("UTF-8 Markdown");
+        let line = source
+            .lines()
+            .find(|line| line.contains("![Image]("))
+            .expect("native image-node line");
+        let start = line.find("![Image](").expect("native image start");
+        let end = line[start..]
+            .find(") <!--")
+            .map(|end| start + end + 1)
+            .expect("image-node metadata comment");
+        parse_native_markdown_image(&line[start..end])
+    }
+
+    fn decode_percent_encoded_metadata(value: &str) -> String {
+        let mut decoded = Vec::with_capacity(value.len());
+        let mut bytes = value.as_bytes().iter().copied();
+        while let Some(byte) = bytes.next() {
+            if byte == b'%' {
+                let high = bytes.next().expect("percent-encoded high nibble");
+                let low = bytes.next().expect("percent-encoded low nibble");
+                let digits = [high, low];
+                decoded.push(
+                    u8::from_str_radix(std::str::from_utf8(&digits).expect("ASCII hex"), 16)
+                        .expect("hex byte"),
+                );
+            } else {
+                decoded.push(byte);
+            }
+        }
+        String::from_utf8(decoded).expect("UTF-8 attachment metadata")
+    }
+
+    fn exported_markdown_original_name(markdown: &[u8]) -> String {
+        const PREFIX: &str = "<!-- yonalist-attachment-original-name: ";
+        let source = std::str::from_utf8(markdown).expect("UTF-8 Markdown");
+        let encoded = source
+            .split_once(PREFIX)
+            .expect("attachment metadata opener")
+            .1
+            .split_once(" -->")
+            .expect("attachment metadata closer")
+            .0;
+        decode_percent_encoded_metadata(encoded)
+    }
+
     fn read_export_asset_marker(assets: &std::path::Path) -> serde_json::Value {
         let bytes =
             std::fs::read(assets.join(EXPORT_ASSET_MARKER_NAME)).expect("read export asset marker");
@@ -1964,6 +3865,21 @@ mod tests {
                 .expect("PNG pixels");
         }
         bytes
+    }
+
+    fn png_export_attachment(
+        id: &str,
+        original_name: &str,
+        width: u32,
+        height: u32,
+    ) -> ExportAttachment {
+        let bytes = encoded_png(width, height);
+        let mut attachment = export_attachment(id, original_name, Some(bytes));
+        attachment.byte_size = attachment.bytes.as_ref().expect("PNG bytes").len() as i64;
+        attachment.intrinsic_width = i64::from(width);
+        attachment.intrinsic_height = i64::from(height);
+        attachment.display_width = i64::from(width);
+        attachment
     }
 
     fn encoded_animated_gif() -> Vec<u8> {
@@ -2115,6 +4031,73 @@ mod tests {
             .collect()
     }
 
+    fn serialized_pdf_image_xobject_count(bytes: &[u8]) -> usize {
+        let structural = lopdf::Document::load_mem(bytes).expect("parse PDF structure");
+        structural
+            .objects
+            .values()
+            .filter(|object| {
+                object
+                    .as_stream()
+                    .ok()
+                    .and_then(|stream| stream.dict.get(b"Subtype").ok())
+                    .and_then(|subtype| subtype.as_name().ok())
+                    == Some(&b"Image"[..])
+            })
+            .count()
+    }
+
+    fn parsed_pdf_image_use_count(bytes: &[u8]) -> usize {
+        parse_pdf(bytes)
+            .pages
+            .iter()
+            .flat_map(|page| &page.ops)
+            .filter(|op| matches!(op, Op::UseXobject { .. }))
+            .count()
+    }
+
+    fn serialized_pdf_image_alt_texts(bytes: &[u8]) -> Vec<String> {
+        let document = lopdf::Document::load_mem(bytes).expect("parse PDF structure");
+        let mut alt_texts = Vec::new();
+        for page_id in document.get_pages().into_values() {
+            let content = document
+                .get_and_decode_page_content(page_id)
+                .expect("decode PDF page content");
+            let mut active_alt = None;
+            for operation in content.operations {
+                match operation.operator.as_str() {
+                    "BDC" => {
+                        active_alt = operation
+                            .operands
+                            .get(1)
+                            .and_then(|properties| properties.as_dict().ok())
+                            .and_then(|properties| properties.get(b"Alt").ok())
+                            .map(|alt| {
+                                lopdf::decode_text_string(alt).expect("decode image alternate text")
+                            });
+                    }
+                    "Do" => {
+                        if let Some(alt) = active_alt.take() {
+                            alt_texts.push(alt);
+                        }
+                    }
+                    "EMC" => active_alt = None,
+                    _ => {}
+                }
+            }
+        }
+        alt_texts
+    }
+
+    fn pdf_content_bounds() -> (f32, f32, f32, f32) {
+        let left = super::millimeters_to_points(super::PDF_MARGIN_X_MM);
+        let right = super::millimeters_to_points(super::PDF_PAGE_WIDTH_MM - super::PDF_MARGIN_X_MM);
+        let bottom =
+            super::millimeters_to_points(PDF_MARGIN_BOTTOM_MM + super::PDF_FOOTER_RESERVE_MM);
+        let top = super::millimeters_to_points(PDF_PAGE_HEIGHT_MM - PDF_MARGIN_TOP_MM);
+        (left, right, bottom, top)
+    }
+
     fn initialize_export_connection(connection: &Connection) {
         connection
             .execute_batch(
@@ -2124,6 +4107,7 @@ mod tests {
                    sort_key INTEGER NOT NULL,\
                    title TEXT NOT NULL,\
                    note TEXT NOT NULL,\
+                   node_kind TEXT NOT NULL DEFAULT 'text' CHECK (node_kind IN ('text', 'image')),\
                    is_collapsed INTEGER NOT NULL DEFAULT 0,\
                    completed_at TEXT,\
                    deleted_at TEXT,\
@@ -2169,6 +4153,7 @@ mod tests {
         sort_key: i64,
         title: &'a str,
         note: &'a str,
+        node_kind: NoteNodeKind,
         is_collapsed: bool,
         completed_at: Option<&'a str>,
         deleted_at: Option<&'a str>,
@@ -2182,6 +4167,7 @@ mod tests {
                 sort_key,
                 title,
                 note: "",
+                node_kind: NoteNodeKind::Text,
                 is_collapsed: false,
                 completed_at: None,
                 deleted_at: None,
@@ -2193,20 +4179,48 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, is_collapsed, completed_at, deleted_at\
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                   id, parent_id, sort_key, title, note, node_kind, is_collapsed, completed_at, deleted_at\
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     node.id,
                     node.parent_id,
                     node.sort_key,
                     node.title,
                     node.note,
+                    node.node_kind.as_str(),
                     node.is_collapsed,
                     node.completed_at,
                     node.deleted_at
                 ],
             )
             .expect("insert node");
+    }
+
+    fn insert_export_attachment_metadata(
+        connection: &Connection,
+        id: &str,
+        node_id: &str,
+        sort_key: i64,
+        original_name: &str,
+    ) {
+        connection
+            .execute(
+                "INSERT INTO notes_attachments (
+                   id, node_id, sort_key, relative_path, content_hash, original_name,
+                   mime_type, byte_size, intrinsic_width, intrinsic_height, display_width,
+                   created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'image/png', 3, 1, 1, 1,
+                           '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z')",
+                params![
+                    id,
+                    node_id,
+                    sort_key,
+                    format!("notes-assets/{}.png", "a".repeat(64)),
+                    "a".repeat(64),
+                    original_name,
+                ],
+            )
+            .expect("seed export attachment metadata");
     }
 
     fn insert_date_span(
@@ -2317,6 +4331,86 @@ mod tests {
     }
 
     #[test]
+    fn export_snapshot_threads_image_node_kind_and_owned_attachment() {
+        let connection = export_connection();
+        insert_node(
+            &connection,
+            SeedNode::active(ROOT_ID, None, 1024, "Project"),
+        );
+        insert_node(
+            &connection,
+            SeedNode {
+                note: "Visible description",
+                node_kind: NoteNodeKind::Image,
+                ..SeedNode::active(FIRST_ID, Some(ROOT_ID), 1024, "hidden-file.png")
+            },
+        );
+        insert_export_attachment_metadata(
+            &connection,
+            SECOND_ID,
+            FIRST_ID,
+            1024,
+            "hidden-file.png",
+        );
+
+        let snapshot = load_export_snapshot(&connection, ROOT_ID).expect("image snapshot");
+        let image = &snapshot.root.children[0];
+
+        assert_eq!(snapshot.root.node_kind, NoteNodeKind::Text);
+        assert_eq!(image.node_kind, NoteNodeKind::Image);
+        assert_eq!(image.title, "hidden-file.png");
+        assert_eq!(image.note, "Visible description");
+        assert_eq!(image.attachments.len(), 1);
+        assert_eq!(image.attachments[0].id, SECOND_ID);
+    }
+
+    #[test]
+    fn export_snapshot_rejects_image_node_without_an_attachment() {
+        let connection = export_connection();
+        insert_node(
+            &connection,
+            SeedNode {
+                node_kind: NoteNodeKind::Image,
+                ..SeedNode::active(ROOT_ID, None, 1024, "missing.png")
+            },
+        );
+
+        let error = load_export_snapshot(&connection, ROOT_ID)
+            .expect_err("image node without attachment must be rejected");
+
+        assert_eq!(
+            error,
+            format!(
+                "Image Note node {ROOT_ID} must own exactly one attachment for export; found 0."
+            )
+        );
+    }
+
+    #[test]
+    fn export_snapshot_rejects_image_node_with_multiple_attachments() {
+        let connection = export_connection();
+        insert_node(
+            &connection,
+            SeedNode {
+                node_kind: NoteNodeKind::Image,
+                ..SeedNode::active(ROOT_ID, None, 1024, "duplicate.png")
+            },
+        );
+        insert_export_attachment_metadata(&connection, FIRST_ID, ROOT_ID, 1024, "first.png");
+        insert_export_attachment_metadata(&connection, SECOND_ID, ROOT_ID, 2048, "second.png");
+
+        let error = load_export_snapshot(&connection, ROOT_ID)
+            .expect_err("image node with multiple attachments must be rejected");
+
+        assert_eq!(
+            error,
+            format!(
+                "Image Note node {ROOT_ID} must own exactly one attachment for export; found 2."
+            )
+        );
+    }
+
+    #[test]
     fn export_snapshot_keeps_attachment_metadata_in_deterministic_node_order() {
         let connection = export_connection();
         insert_node(
@@ -2327,6 +4421,7 @@ mod tests {
                 sort_key: 1024,
                 title: "Project",
                 note: "",
+                node_kind: NoteNodeKind::Text,
                 is_collapsed: false,
                 completed_at: None,
                 deleted_at: None,
@@ -2426,6 +4521,151 @@ mod tests {
         assert_eq!(
             render_pdf(&snapshot).expect_err("PDF requires validated bytes"),
             "Notes export attachment bytes were not validated."
+        );
+    }
+
+    #[test]
+    fn image_node_attachment_cardinality_is_rejected_before_hydration_or_rendering() {
+        for found in [0, 2] {
+            let mut root = image_node(
+                ROOT_ID,
+                "hidden.png",
+                "Visible description",
+                false,
+                export_attachment(FIRST_ID, "hidden.png", Some(vec![1, 2, 3])),
+                Vec::new(),
+            );
+            if found == 0 {
+                root.attachments.clear();
+            } else {
+                root.attachments.push(export_attachment(
+                    SECOND_ID,
+                    "extra.png",
+                    Some(vec![1, 2, 3]),
+                ));
+            }
+            let expected = format!(
+                "Image Note node {ROOT_ID} must own exactly one attachment for export; found {found}."
+            );
+
+            let mut hydration_snapshot = snapshot(root.clone());
+            for attachment in &mut hydration_snapshot.root.attachments {
+                attachment.bytes = None;
+            }
+            let mut reads = 0;
+            let hydration_error = hydrate_export_attachments(&mut hydration_snapshot, |_| {
+                reads += 1;
+                Ok(vec![1, 2, 3])
+            })
+            .expect_err("invalid image ownership must fail before hydration");
+            assert_eq!(hydration_error, expected);
+            assert_eq!(reads, 0);
+
+            let render_snapshot = snapshot(root);
+            let markdown_error = match prepare_markdown_export(&render_snapshot, "image_assets") {
+                Ok(_) => panic!("invalid image ownership must fail before Markdown preparation"),
+                Err(error) => error,
+            };
+            assert_eq!(markdown_error, expected);
+            assert_eq!(
+                render_pdf(&render_snapshot)
+                    .expect_err("invalid image ownership must fail before PDF rendering"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn nested_image_node_attachment_cardinality_is_rejected_before_hydration_or_rendering() {
+        for found in [0, 2] {
+            let mut nested = image_node(
+                FIRST_ID,
+                "nested-hidden.png",
+                "Nested description",
+                false,
+                export_attachment(SECOND_ID, "nested-hidden.png", Some(vec![1, 2, 3])),
+                Vec::new(),
+            );
+            if found == 0 {
+                nested.attachments.clear();
+            } else {
+                nested.attachments.push(export_attachment(
+                    LATER_ID,
+                    "extra-nested.png",
+                    Some(vec![1, 2, 3]),
+                ));
+            }
+            let root = export_node(ROOT_ID, "Project", "", false, vec![nested]);
+            let expected = format!(
+                "Image Note node {FIRST_ID} must own exactly one attachment for export; found {found}."
+            );
+
+            let mut hydration_snapshot = snapshot(root.clone());
+            for attachment in &mut hydration_snapshot.root.children[0].attachments {
+                attachment.bytes = None;
+            }
+            let mut reads = 0;
+            let hydration_error = hydrate_export_attachments(&mut hydration_snapshot, |_| {
+                reads += 1;
+                Ok(vec![1, 2, 3])
+            })
+            .expect_err("invalid nested image ownership must fail before hydration");
+            assert_eq!(hydration_error, expected);
+            assert_eq!(reads, 0);
+
+            let render_snapshot = snapshot(root);
+            assert_eq!(
+                render_markdown(&render_snapshot)
+                    .expect_err("invalid nested image ownership must fail before Markdown render"),
+                expected
+            );
+            assert_eq!(
+                match prepare_markdown_export(&render_snapshot, "nested_image_assets") {
+                    Ok(_) => {
+                        panic!("invalid nested image ownership must fail before Markdown export")
+                    }
+                    Err(error) => error,
+                },
+                expected
+            );
+            assert_eq!(
+                render_pdf(&render_snapshot)
+                    .expect_err("invalid nested image ownership must fail before PDF render"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn image_node_svg_remains_unsupported_in_markdown_and_pdf() {
+        let mut attachment = export_attachment(
+            FIRST_ID,
+            "hidden-vector.svg",
+            Some(b"<svg xmlns='http://www.w3.org/2000/svg'/>".to_vec()),
+        );
+        attachment.mime_type = "image/svg+xml".to_string();
+        attachment.relative_path = format!("notes-assets/{}.svg", "a".repeat(64));
+        attachment.byte_size = attachment.bytes.as_ref().expect("SVG bytes").len() as i64;
+        let snapshot = snapshot(image_node(
+            ROOT_ID,
+            "hidden-vector.svg",
+            "Vector description",
+            false,
+            attachment,
+            Vec::new(),
+        ));
+
+        let markdown_error = match prepare_markdown_export(&snapshot, "vector_assets") {
+            Ok(_) => panic!("SVG Markdown export must stay unsupported"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            markdown_error,
+            "A Notes export attachment MIME type is unsupported."
+        );
+        assert_eq!(
+            render_pdf(&snapshot).expect_err("SVG PDF export must stay unsupported"),
+            "A PDF attachment image has an unsupported MIME type."
         );
     }
 
@@ -2844,9 +5084,38 @@ mod tests {
         sync_export_directory(temp_dir.path()).expect("sync directory");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn notes_export_windows_directory_publication_never_requests_replace_existing() {
-        assert_eq!(windows_directory_move_flags(), 0);
+    fn notes_export_guard_rejects_locked_metadata_relocated_into_export_parent() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault = temp_dir.path().join("vault");
+        std::fs::create_dir(&vault).expect("vault directory");
+        let vault_path = vault.to_str().expect("UTF-8 vault path");
+        let _app_lock = crate::notes::connection::acquire_vault_app_lock(vault_path)
+            .expect("acquire vault app lock");
+        let metadata = crate::metadata_dir(vault_path);
+        let export_parent = temp_dir.path().join("export-parent");
+        let destination = export_parent.join("notes.sqlite");
+        std::fs::write(metadata.join("notes.sqlite"), b"real database")
+            .expect("seed real database");
+
+        std::fs::rename(&metadata, &export_parent)
+            .expect("relocate real metadata into export parent");
+        std::fs::create_dir(&metadata).expect("replace metadata path");
+
+        let result = super::NotesExportDestinationGuard::acquire(vault_path, &[&destination])
+            .and_then(|guard| {
+                guard.write_atomic_file(&destination, b"export payload", true, || {})
+            });
+
+        assert_eq!(
+            std::fs::read(&destination).expect("real database survives"),
+            b"real database"
+        );
+        assert!(
+            result.is_err(),
+            "relocated locked metadata must be rejected"
+        );
     }
 
     #[cfg(windows)]
@@ -2858,17 +5127,673 @@ mod tests {
         std::fs::create_dir(&staged).expect("staged directory");
         std::fs::write(staged.join("0001.png"), b"image").expect("staged asset");
         std::fs::create_dir(&destination).expect("existing empty directory");
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temp_dir.path(), cap_std::ambient_authority())
+                .expect("open export parent");
 
-        let error = super::publish_directory_noreplace(&staged, &destination)
-            .expect_err("existing destination must not be replaced");
+        let error = super::publish_path_noreplace_in(
+            &parent,
+            std::path::Path::new("staged-assets"),
+            &parent,
+            std::path::Path::new("existing-assets"),
+        )
+        .expect_err("existing destination must not be replaced");
 
-        assert_eq!(error, "Destination already exists.");
+        assert_eq!(error, crate::file_io::DESTINATION_EXISTS_MESSAGE);
         assert!(staged.join("0001.png").is_file());
         assert_eq!(
             std::fs::read_dir(&destination)
                 .expect("existing destination")
                 .count(),
             0
+        );
+    }
+
+    #[test]
+    fn notes_export_adversarial_rejects_published_asset_capability_swap() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("published-swap.md");
+        let assets = temp_dir.path().join("published-swap_assets");
+        let displaced_assets = temp_dir.path().join("racer-moved-published-assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "published-swap_assets")
+            .expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_displaced_assets = displaced_assets.clone();
+        inject_markdown_post_asset_publication_swap_once(move || {
+            std::fs::rename(&raced_assets, &raced_displaced_assets)
+                .expect("racer moves published assets");
+            std::fs::create_dir(&raced_assets).expect("racer replacement directory");
+            std::fs::write(raced_assets.join("unrelated.txt"), b"unrelated assets")
+                .expect("racer replacement content");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("published asset capability swap must fail closed");
+
+        assert!(
+            error.contains("staged asset directory identity changed after publication"),
+            "{error}"
+        );
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(assets.join("unrelated.txt")).expect("replacement survives"),
+            b"unrelated assets"
+        );
+        assert_eq!(
+            std::fs::read(displaced_assets.join("0001.png"))
+                .expect("published export assets survive"),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn notes_export_adversarial_preserves_stage_when_old_asset_capability_is_replaced_before_cleanup(
+    ) {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("cleanup-swap.md");
+        let assets = temp_dir.path().join("cleanup-swap_assets");
+        let displaced_old_assets = temp_dir.path().join("racer-moved-old-assets-at-cleanup");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "cleanup-swap_assets")
+            .expect("prepare export");
+        let preserved_stage = Rc::new(RefCell::new(None));
+        let injected_stage = preserved_stage.clone();
+        let raced_displaced_old_assets = displaced_old_assets.clone();
+        let _ = super::take_export_cleanup_warnings();
+        inject_markdown_pre_stage_cleanup_race_once(move |stage| {
+            let old_assets = stage.join("old-assets");
+            std::fs::rename(&old_assets, &raced_displaced_old_assets)
+                .expect("racer moves validated old assets");
+            std::fs::create_dir(&old_assets).expect("racer replacement directory");
+            std::fs::create_dir(old_assets.join("nested")).expect("racer nested directory");
+            std::fs::write(
+                old_assets.join("nested").join("sentinel.txt"),
+                b"unrelated cleanup directory",
+            )
+            .expect("racer sentinel");
+            *injected_stage.borrow_mut() = Some(stage.to_path_buf());
+        });
+
+        publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect("publication remains committed with staging preserved");
+
+        let preserved_stage = preserved_stage.borrow().clone().expect("captured stage");
+        assert!(preserved_stage.is_dir(), "{}", preserved_stage.display());
+        assert_eq!(
+            std::fs::read(
+                preserved_stage
+                    .join("old-assets")
+                    .join("nested")
+                    .join("sentinel.txt")
+            )
+            .expect("unrelated cleanup directory survives"),
+            b"unrelated cleanup directory"
+        );
+        assert_eq!(
+            std::fs::read(displaced_old_assets.join("old.png"))
+                .expect("validated old assets survive"),
+            b"old asset"
+        );
+        let warnings = super::take_export_cleanup_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0]
+                .contains("old asset backup identity changed before private staging cleanup"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[0].contains(&preserved_stage.display().to_string()),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("new document remains published"),
+            prepared.markdown
+        );
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("new assets remain published"),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn notes_export_adversarial_retains_old_document_when_rollback_inspection_fails() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("rollback-inspection.md");
+        let assets = temp_dir.path().join("rollback-inspection_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "rollback-inspection_assets")
+            .expect("prepare export");
+        inject_markdown_rollback_inspection_failure_once("old-document");
+        super::inject_markdown_publish_failure_once();
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("injected publication failure");
+
+        assert!(
+            error
+                .contains("Could not inspect the old Notes export document backup during rollback"),
+            "{error}"
+        );
+        let preserved_stages = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-export-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(preserved_stages.len(), 1, "{error}");
+        let preserved_stage = preserved_stages[0].path();
+        assert!(
+            error.contains(&preserved_stage.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(preserved_stage.join("old-document"))
+                .expect("old document retained in staging"),
+            b"old document"
+        );
+        assert!(!destination.exists());
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets restored"),
+            b"old asset"
+        );
+    }
+
+    #[test]
+    fn notes_export_adversarial_no_overwrite_document_publication_does_not_require_hard_links() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("no-link.md");
+        let assets = temp_dir.path().join("no-link_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "no-link_assets").expect("prepare export");
+        publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect("no-overwrite publication uses an atomic move");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("published document"),
+            prepared.markdown
+        );
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("published asset"),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn notes_export_adversarial_overwrite_document_publication_does_not_require_hard_links() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("overwrite-no-link.md");
+        let assets = temp_dir.path().join("overwrite-no-link_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "overwrite-no-link_assets")
+            .expect("prepare export");
+        publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect("overwrite publication uses an atomic move");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("published document"),
+            prepared.markdown
+        );
+        assert_eq!(
+            std::fs::read(assets.join("0001.png")).expect("published asset"),
+            [1, 2, 3]
+        );
+        assert!(!assets.join("old.png").exists());
+    }
+
+    #[test]
+    fn notes_export_third_review_windows_directory_capability_uses_delete_sharing() {
+        let source = include_str!("export.rs");
+        let constructor = ["fn open_export_", "directory_nofollow"].concat();
+        let share_mode = ["windows_export_directory_", "share_mode()"].concat();
+        let wrapped_handle = ["Dir::from_", "std_file"].concat();
+        let delete_access = ["let desired_access = ", "DELETE"].concat();
+        let delete_share = ["FILE_SHARE_", "DELETE"].concat();
+        let nofollow = ["FILE_FLAG_OPEN_", "REPARSE_POINT"].concat();
+        let exact_delete = ["SetFileInformation", "ByHandle"].concat();
+        let disposition = ["FILE_DISPOSITION", "_INFO"].concat();
+
+        assert_ne!(super::windows_export_directory_share_mode() & 0x4, 0);
+        assert!(source.contains(&constructor), "{constructor}");
+        assert!(source.contains(&share_mode), "{share_mode}");
+        assert!(source.contains(&wrapped_handle), "{wrapped_handle}");
+        assert!(source.contains(&delete_access), "{delete_access}");
+        assert!(source.contains(&delete_share), "{delete_share}");
+        assert!(source.contains(&nofollow), "{nofollow}");
+        assert!(source.contains(&exact_delete), "{exact_delete}");
+        assert!(source.contains(&disposition), "{disposition}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notes_export_windows_held_file_and_directory_support_noreplace_and_disposition() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let original = temp_dir.path().join("held-directory");
+        let moved = temp_dir.path().join("moved-directory");
+        std::fs::create_dir(&original).expect("held directory");
+        std::fs::write(original.join("owned.txt"), b"owned").expect("owned file");
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temp_dir.path(), cap_std::ambient_authority())
+                .expect("open export parent");
+        let held = super::HeldExportDirectory::open_from(
+            &parent,
+            std::path::Path::new("held-directory"),
+            "held directory changed before Windows rename",
+        )
+        .expect("hold directory");
+        let held_file = super::HeldExportFile::open_from(
+            &held.directory,
+            std::path::Path::new("owned.txt"),
+            "held file changed before Windows rename",
+        )
+        .expect("hold file");
+
+        super::publish_path_noreplace_in(
+            &parent,
+            std::path::Path::new("held-directory"),
+            &parent,
+            std::path::Path::new("moved-directory"),
+        )
+        .expect("no-replace rename while held");
+        held.verify_in(
+            &parent,
+            std::path::Path::new("moved-directory"),
+            "held directory changed during Windows rename",
+        )
+        .expect("same held directory after rename");
+        held_file
+            .remove_from_held(
+                &held.directory,
+                std::path::Path::new("owned.txt"),
+                "held file changed before Windows deletion",
+            )
+            .expect("delete held file");
+        held.remove_empty_held("delete held Windows directory")
+            .expect("delete held directory");
+        assert!(!moved.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn notes_export_windows_held_capabilities_reject_reparse_points() {
+        use std::os::windows::fs::{symlink_dir, symlink_file};
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let target_directory = temp_dir.path().join("target-directory");
+        std::fs::create_dir(&target_directory).expect("target directory");
+        std::fs::write(target_directory.join("owned.txt"), b"owned").expect("target file");
+        symlink_dir(
+            "target-directory",
+            temp_dir.path().join("held-directory-link"),
+        )
+        .expect("directory symlink");
+        symlink_file(
+            std::path::Path::new("target-directory").join("owned.txt"),
+            temp_dir.path().join("held-file-link"),
+        )
+        .expect("file symlink");
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temp_dir.path(), cap_std::ambient_authority())
+                .expect("open export parent");
+
+        assert!(super::HeldExportDirectory::open_from(
+            &parent,
+            std::path::Path::new("held-directory-link"),
+            "held directory link must be rejected",
+        )
+        .is_err());
+        assert!(super::HeldExportFile::open_from(
+            &parent,
+            std::path::Path::new("held-file-link"),
+            "held file link must be rejected",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn notes_export_third_review_never_recursively_cleans_post_validation_stage_entries() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("stage-race.md");
+        let assets = temp_dir.path().join("stage-race_assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "stage-race_assets").expect("prepare export");
+        let captured_stage = Rc::new(RefCell::new(None));
+        let injected_stage = captured_stage.clone();
+        let _ = super::take_export_cleanup_warnings();
+        inject_markdown_post_stage_validation_cleanup_race_once(move |stage| {
+            let unrelated = stage.join("racer-added").join("nested");
+            std::fs::create_dir_all(&unrelated).expect("racer directory");
+            std::fs::write(unrelated.join("sentinel.txt"), b"unrelated stage entry")
+                .expect("racer sentinel");
+            *injected_stage.borrow_mut() = Some(stage.to_path_buf());
+        });
+
+        publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect("publication remains committed");
+
+        let stage = captured_stage.borrow().clone().expect("captured stage");
+        assert_eq!(
+            std::fs::read(stage.join("racer-added/nested/sentinel.txt"))
+                .expect("unrelated stage entry survives"),
+            b"unrelated stage entry"
+        );
+        let warnings = super::take_export_cleanup_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(&stage.display().to_string()));
+    }
+
+    #[test]
+    fn notes_export_third_review_never_recursively_cleans_unexpected_old_asset_entries() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("asset-cleanup-race.md");
+        let assets = temp_dir.path().join("asset-cleanup-race_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "asset-cleanup-race_assets")
+            .expect("prepare export");
+        let captured_stage = Rc::new(RefCell::new(None));
+        let injected_stage = captured_stage.clone();
+        let _ = super::take_export_cleanup_warnings();
+        inject_markdown_post_stage_validation_cleanup_race_once(move |stage| {
+            let unrelated = stage.join("old-assets").join("racer-added").join("nested");
+            std::fs::create_dir_all(&unrelated).expect("racer directory");
+            std::fs::write(unrelated.join("sentinel.txt"), b"unrelated old asset entry")
+                .expect("racer sentinel");
+            *injected_stage.borrow_mut() = Some(stage.to_path_buf());
+        });
+
+        publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect("publication remains committed");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("new document published"),
+            prepared.markdown
+        );
+        let stage = captured_stage.borrow().clone().expect("captured stage");
+        assert_eq!(
+            std::fs::read(stage.join("old-assets/racer-added/nested/sentinel.txt"))
+                .expect("unrelated old asset entry survives"),
+            b"unrelated old asset entry"
+        );
+        let warnings = super::take_export_cleanup_warnings();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(&stage.display().to_string()));
+    }
+
+    #[test]
+    fn notes_export_third_review_rejects_directory_document_destination_before_displacement() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("directory.md");
+        let assets = temp_dir.path().join("directory_assets");
+        std::fs::create_dir(&destination).expect("document directory");
+        std::fs::write(destination.join("sentinel.txt"), b"document directory")
+            .expect("document directory sentinel");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "directory_assets").expect("prepare export");
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("document directory must be refused");
+
+        assert_eq!(
+            error,
+            "Notes export document destination must be a regular file."
+        );
+        assert_eq!(
+            std::fs::read(destination.join("sentinel.txt")).expect("document directory survives"),
+            b"document directory"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets survive"),
+            b"old asset"
+        );
+    }
+
+    #[test]
+    fn notes_export_third_review_old_document_swap_is_never_restored_and_original_is_recovered() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("old-document-swap.md");
+        let assets = temp_dir.path().join("old-document-swap_assets");
+        let removed_original = temp_dir.path().join("racer-unlinked-original.md");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "old-document-swap_assets")
+            .expect("prepare export");
+        let captured_stage = Rc::new(RefCell::new(None));
+        let injected_stage = captured_stage.clone();
+        let raced_original = removed_original.clone();
+        inject_markdown_pre_document_rollback_race_once(move |stage| {
+            let old_document = stage.join("old-document");
+            std::fs::rename(&old_document, &raced_original).expect("move real old document");
+            std::fs::remove_file(&raced_original).expect("unlink real old document");
+            std::fs::write(&old_document, b"foreign staged document")
+                .expect("foreign staged replacement");
+            *injected_stage.borrow_mut() = Some(stage.to_path_buf());
+        });
+        super::inject_markdown_publish_failure_once();
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("injected publication failure");
+
+        assert!(
+            !destination.exists(),
+            "foreign document must not be restored"
+        );
+        let stage = captured_stage.borrow().clone().expect("captured stage");
+        assert_eq!(
+            std::fs::read(stage.join("old-document")).expect("foreign staging path survives"),
+            b"foreign staged document"
+        );
+        assert!(error.contains(&stage.display().to_string()), "{error}");
+        let recoveries = std::fs::read_dir(temp_dir.path())
+            .expect("list recoveries")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-old-document-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recoveries.len(), 1, "{error}");
+        assert_eq!(
+            std::fs::read(recoveries[0].path()).expect("recovered original document"),
+            b"old document"
+        );
+        assert!(
+            error.contains(&recoveries[0].path().display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn notes_export_third_review_no_overwrite_rechecks_assets_after_document_publication() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("final-swap.md");
+        let assets = temp_dir.path().join("final-swap_assets");
+        let moved_assets = temp_dir.path().join("racer-moved-final-assets");
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "final-swap_assets").expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_moved_assets = moved_assets.clone();
+        inject_markdown_pre_document_publication_asset_swap_once(move || {
+            std::fs::rename(&raced_assets, &raced_moved_assets)
+                .expect("move verified published assets");
+            std::fs::create_dir(&raced_assets).expect("foreign replacement directory");
+            std::fs::write(raced_assets.join("foreign.txt"), b"foreign assets")
+                .expect("foreign asset sentinel");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, false)
+            .expect_err("post-document asset swap must roll back");
+
+        assert!(
+            error.contains("staged asset directory identity changed after document publication"),
+            "{error}"
+        );
+        assert!(!destination.exists(), "published document must roll back");
+        assert_eq!(
+            std::fs::read(assets.join("foreign.txt")).expect("foreign assets survive"),
+            b"foreign assets"
+        );
+        assert_eq!(
+            std::fs::read(moved_assets.join("0001.png")).expect("real assets survive"),
+            [1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn notes_export_third_review_overwrite_rechecks_assets_after_document_publication() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("overwrite-final-swap.md");
+        let assets = temp_dir.path().join("overwrite-final-swap_assets");
+        let moved_assets = temp_dir.path().join("racer-moved-overwrite-final-assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "overwrite-final-swap_assets")
+            .expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_moved_assets = moved_assets.clone();
+        inject_markdown_pre_document_publication_asset_swap_once(move || {
+            std::fs::rename(&raced_assets, &raced_moved_assets)
+                .expect("move verified published assets");
+            std::fs::create_dir(&raced_assets).expect("foreign replacement directory");
+            std::fs::write(raced_assets.join("foreign.txt"), b"foreign assets")
+                .expect("foreign asset sentinel");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("post-document asset swap must roll back");
+
+        assert!(
+            error.contains("staged asset directory identity changed after document publication"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document restored"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("foreign.txt")).expect("foreign assets survive"),
+            b"foreign assets"
+        );
+        assert_eq!(
+            std::fs::read(moved_assets.join("0001.png")).expect("new assets survive"),
+            [1, 2, 3]
+        );
+        let old_asset_recoveries = std::fs::read_dir(temp_dir.path())
+            .expect("list recoveries")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-old-assets-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(old_asset_recoveries.len(), 1, "{error}");
+        assert_eq!(
+            std::fs::read(old_asset_recoveries[0].path().join("old.png"))
+                .expect("old assets recovered"),
+            b"old asset"
         );
     }
 
@@ -3094,6 +6019,337 @@ mod tests {
             std::fs::read(displaced_assets.join("0001.png")).expect("new assets displaced"),
             [1, 2, 3]
         );
+    }
+
+    #[test]
+    fn notes_export_overwrite_rollback_preserves_raced_document_and_old_document_backup() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("rollback-document-race.md");
+        let assets = temp_dir.path().join("rollback-document-race_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "rollback-document-race_assets")
+            .expect("prepare export");
+        let raced_destination = destination.clone();
+        inject_markdown_post_asset_publication_swap_once(move || {
+            std::fs::write(&raced_destination, b"racer document")
+                .expect("create racer document before final publication");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("final no-replace document publication must conflict");
+
+        assert_eq!(
+            std::fs::read(&destination).expect("racer document survives rollback"),
+            b"racer document"
+        );
+        let old_document_backups = std::fs::read_dir(temp_dir.path())
+            .expect("list export parent")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".yonalist-notes-old-document-")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(old_document_backups.len(), 1, "{error}");
+        assert_eq!(
+            std::fs::read(old_document_backups[0].path()).expect("preserved old document backup"),
+            b"old document"
+        );
+        assert!(
+            error.contains("old document backup was preserved at"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&old_document_backups[0].path().display().to_string()),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets restored"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_same_uid_document_backup_slot_race_preserves_foreign_file() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("document-backup-slot-race.md");
+        let assets = temp_dir.path().join("document-backup-slot-race_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "document-backup-slot-race_assets")
+            .expect("prepare export");
+        let captured_stage = Rc::new(RefCell::new(None));
+        let injected_stage = captured_stage.clone();
+        inject_markdown_pre_document_backup_slot_race_once(move |stage| {
+            std::fs::write(stage.join("old-document"), b"foreign backup slot")
+                .expect("same-uid racer creates document backup slot");
+            *injected_stage.borrow_mut() = Some(stage.to_path_buf());
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("occupied document backup slot must fail closed");
+
+        let stage = captured_stage.borrow().clone().expect("captured stage");
+        assert!(
+            error.contains(crate::file_io::DESTINATION_EXISTS_MESSAGE),
+            "{error}"
+        );
+        assert!(error.contains(&stage.display().to_string()), "{error}");
+        assert_eq!(
+            std::fs::read(stage.join("old-document")).expect("foreign backup slot survives"),
+            b"foreign backup slot"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document remains"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets remain"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_same_uid_asset_backup_slot_race_preserves_foreign_directory() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("asset-backup-slot-race.md");
+        let assets = temp_dir.path().join("asset-backup-slot-race_assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "asset-backup-slot-race_assets")
+            .expect("prepare export");
+        let captured_slot = Rc::new(RefCell::new(None));
+        let injected_slot = captured_slot.clone();
+        inject_markdown_pre_asset_backup_slot_race_once(move |stage| {
+            let slot = stage.join("old-assets");
+            std::fs::create_dir(&slot).expect("same-uid racer creates empty asset backup slot");
+            let identity = super::export_directory_identity(&slot).expect("foreign slot identity");
+            *injected_slot.borrow_mut() = Some((stage.to_path_buf(), identity));
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("occupied asset backup slot must fail closed");
+
+        let (stage, foreign_identity) = captured_slot.borrow().clone().expect("captured slot");
+        let foreign_slot = stage.join("old-assets");
+        assert!(
+            error.contains(crate::file_io::DESTINATION_EXISTS_MESSAGE),
+            "{error}"
+        );
+        assert!(error.contains(&stage.display().to_string()), "{error}");
+        assert_eq!(
+            super::export_directory_identity(&foreign_slot).expect("surviving slot identity"),
+            foreign_identity
+        );
+        assert_eq!(
+            std::fs::read_dir(&foreign_slot)
+                .expect("foreign backup slot survives")
+                .count(),
+            0
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document restored"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets remain"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_fails_closed_when_document_destination_is_swapped_before_displacement(
+    ) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("overwrite-document-swap.md");
+        let assets = temp_dir.path().join("overwrite-document-swap_assets");
+        let displaced_document = temp_dir.path().join("racer-moved-old-document.md");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "overwrite-document-swap_assets")
+            .expect("prepare export");
+        let raced_destination = destination.clone();
+        let raced_displaced_document = displaced_document.clone();
+        inject_markdown_overwrite_displacement_race_once(move || {
+            std::fs::rename(&raced_destination, &raced_displaced_document)
+                .expect("racer moves old document");
+            std::fs::create_dir(&raced_destination).expect("racer directory");
+            std::fs::write(
+                raced_destination.join("unrelated.txt"),
+                b"unrelated document dir",
+            )
+            .expect("racer sentinel");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("swapped document destination must be refused");
+
+        assert!(
+            error.contains("document destination identity changed"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(destination.join("unrelated.txt")).expect("racer directory survives"),
+            b"unrelated document dir"
+        );
+        assert_eq!(
+            std::fs::read(&displaced_document).expect("racer-moved old document survives"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("old.png")).expect("old assets remain"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_binds_marker_validation_to_the_captured_asset_identity() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("marker-identity-race.md");
+        let assets = temp_dir.path().join("marker-identity-race_assets");
+        let displaced_assets = temp_dir.path().join("racer-moved-owned-assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("owned asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "marker-identity-race_assets")
+            .expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_displaced_assets = displaced_assets.clone();
+        inject_markdown_asset_marker_identity_race_once(move || {
+            std::fs::rename(&raced_assets, &raced_displaced_assets)
+                .expect("racer moves marker-owned assets");
+            std::fs::create_dir(&raced_assets).expect("racer replacement directory");
+            std::fs::create_dir(raced_assets.join("unrelated")).expect("racer nested directory");
+            std::fs::write(
+                raced_assets.join("unrelated").join("sentinel.txt"),
+                b"unrelated assets",
+            )
+            .expect("racer sentinel");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("asset identity changed after marker validation");
+
+        assert!(
+            error.contains("asset destination identity changed during marker validation"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document remains"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("unrelated").join("sentinel.txt"))
+                .expect("unrelated replacement survives"),
+            b"unrelated assets"
+        );
+        assert_eq!(
+            std::fs::read(displaced_assets.join("old.png")).expect("owned directory survives"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
+    }
+
+    #[test]
+    fn notes_export_overwrite_fails_closed_when_asset_destination_is_swapped_before_displacement() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let destination = temp_dir.path().join("overwrite-asset-swap.md");
+        let assets = temp_dir.path().join("overwrite-asset-swap_assets");
+        let displaced_assets = temp_dir.path().join("racer-moved-old-assets");
+        std::fs::write(&destination, b"old document").expect("old document");
+        std::fs::create_dir(&assets).expect("old asset directory");
+        std::fs::write(assets.join("old.png"), b"old asset").expect("old asset");
+        write_export_asset_marker(&assets, &["old.png"], EXPORT_ASSET_MARKER_CREATED_BY);
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "image.png",
+            Some(vec![1, 2, 3]),
+        ));
+        let prepared = prepare_markdown_export(&snapshot(root), "overwrite-asset-swap_assets")
+            .expect("prepare export");
+        let raced_assets = assets.clone();
+        let raced_displaced_assets = displaced_assets.clone();
+        inject_markdown_overwrite_displacement_race_once(move || {
+            std::fs::rename(&raced_assets, &raced_displaced_assets)
+                .expect("racer moves old assets");
+            std::fs::create_dir(&raced_assets).expect("racer asset directory");
+            std::fs::write(raced_assets.join("unrelated.txt"), b"unrelated assets")
+                .expect("racer asset sentinel");
+        });
+
+        let error = publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect_err("swapped asset destination must be refused");
+
+        assert!(
+            error.contains("asset destination identity changed"),
+            "{error}"
+        );
+        assert_eq!(
+            std::fs::read(&destination).expect("old document restored"),
+            b"old document"
+        );
+        assert_eq!(
+            std::fs::read(assets.join("unrelated.txt")).expect("racer assets survive"),
+            b"unrelated assets"
+        );
+        assert_eq!(
+            std::fs::read(displaced_assets.join("old.png")).expect("racer-moved old assets"),
+            b"old asset"
+        );
+        assert!(!assets.join("0001.png").exists());
     }
 
     #[test]
@@ -3351,6 +6607,38 @@ mod tests {
         assert!(!assets.join(EXPORT_ASSET_MARKER_NAME).exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn notes_export_windows_overwrite_displaces_a_document_symlink_without_following_it() {
+        use std::os::windows::fs::symlink_file;
+
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let target = temp_dir.path().join("symlink-target.md");
+        let destination = temp_dir.path().join("plain.md");
+        let assets = temp_dir.path().join("plain_assets");
+        std::fs::write(&target, b"target stays untouched").expect("symlink target");
+        symlink_file("symlink-target.md", &destination).expect("destination symlink");
+        let root = export_node(ROOT_ID, "Project", "replacement", false, Vec::new());
+        let prepared =
+            prepare_markdown_export(&snapshot(root), "plain_assets").expect("prepare export");
+
+        publish_markdown_export(&destination, &assets, &prepared, true)
+            .expect("overwrite destination symlink");
+
+        assert_eq!(
+            std::fs::read(&target).expect("symlink target survives"),
+            b"target stays untouched"
+        );
+        let metadata = std::fs::symlink_metadata(&destination).expect("published document");
+        assert!(metadata.file_type().is_file());
+        assert!(!metadata.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read(&destination).expect("published bytes"),
+            prepared.markdown
+        );
+        assert!(!assets.exists());
+    }
+
     #[test]
     fn notes_export_post_publish_parent_sync_failure_keeps_success_semantics() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -3381,27 +6669,6 @@ mod tests {
     fn notes_export_directory_sync_is_a_noop_without_unix_directory_handles() {
         sync_export_directory(Path::new("directory-that-does-not-exist"))
             .expect("non-Unix directory sync no-op");
-    }
-
-    #[test]
-    fn renderers_reject_unsafe_attachment_output_names() {
-        for original_name in ["../escape.png", "..\\escape.png", ".", "line\nbreak.png"] {
-            let mut snapshot = snapshot(export_node(ROOT_ID, "Project", "", false, Vec::new()));
-            snapshot.root.attachments.push(export_attachment(
-                FIRST_ID,
-                original_name,
-                Some(vec![1, 2, 3]),
-            ));
-
-            assert_eq!(
-                render_markdown(&snapshot).expect_err("unsafe Markdown attachment name"),
-                "A Notes export attachment filename is unsafe."
-            );
-            assert_eq!(
-                render_pdf(&snapshot).expect_err("unsafe PDF attachment name"),
-                "A Notes export attachment filename is unsafe."
-            );
-        }
     }
 
     #[test]
@@ -3521,6 +6788,276 @@ mod tests {
         );
         assert!(rendered.ends_with(b"\n"));
         assert!(!rendered.ends_with(b"\n\n"));
+    }
+
+    #[test]
+    fn markdown_nested_image_node_is_primary_content_with_description_and_children_in_order() {
+        let root = export_node(
+            ROOT_ID,
+            "Project",
+            "",
+            false,
+            vec![
+                image_node(
+                    FIRST_ID,
+                    "hidden-nested.png",
+                    "Visible image description",
+                    true,
+                    export_attachment(COLLAPSED_CHILD_ID, "hidden-nested.png", Some(vec![1, 2, 3])),
+                    vec![export_node(
+                        SECOND_ID,
+                        "Child after image",
+                        "",
+                        false,
+                        Vec::new(),
+                    )],
+                ),
+                export_node(LATER_ID, "Later sibling", "", false, Vec::new()),
+            ],
+        );
+
+        let prepared = prepare_markdown_export(&snapshot(root), "project_assets")
+            .expect("prepare nested image Markdown");
+
+        assert_eq!(
+            prepared.markdown,
+            concat!(
+                "---\n",
+                "kind: yonalist-notes-export\n",
+                "format_version: 1\n",
+                "source: notes.sqlite\n",
+                "root_node_id: \"11111111-1111-4111-8111-111111111111\"\n",
+                "exported_at: \"2026-07-10T12:34:56.789Z\"\n",
+                "---\n",
+                "\n",
+                "# Project\n",
+                "\n",
+                "- [ ] Project <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n",
+                "  - [x] ![Image](project_assets/0001.png) <!-- yonalist-attachment-original-name: hidden%2Dnested.png --> <!-- yonalist-node-id: 22222222-2222-4222-8222-222222222222 -->\n",
+                "    > Visible image description\n",
+                "    - [ ] Child after image <!-- yonalist-node-id: 33333333-3333-4333-8333-333333333333 -->\n",
+                "  - [ ] Later sibling <!-- yonalist-node-id: 44444444-4444-4444-8444-444444444444 -->\n",
+            )
+            .as_bytes()
+        );
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        assert!(source.contains("![Image](project_assets/0001.png)"));
+        assert!(!source.contains("# hidden-nested.png"), "{source}");
+        assert!(!source.contains("> hidden-nested.png"), "{source}");
+        assert_eq!(prepared.assets.len(), 1);
+    }
+
+    #[test]
+    fn markdown_root_image_node_omits_visible_filename_heading_and_keeps_description() {
+        let root = image_node(
+            ROOT_ID,
+            "hidden [root].png",
+            "Root image description",
+            false,
+            export_attachment(FIRST_ID, "hidden [root].png", Some(vec![1, 2, 3])),
+            vec![export_node(SECOND_ID, "Child task", "", false, Vec::new())],
+        );
+
+        let prepared = prepare_markdown_export(&snapshot(root), "root-image_assets")
+            .expect("prepare root image Markdown");
+
+        assert_eq!(
+            prepared.markdown,
+            concat!(
+                "---\n",
+                "kind: yonalist-notes-export\n",
+                "format_version: 1\n",
+                "source: notes.sqlite\n",
+                "root_node_id: \"11111111-1111-4111-8111-111111111111\"\n",
+                "exported_at: \"2026-07-10T12:34:56.789Z\"\n",
+                "---\n",
+                "\n",
+                "- [ ] ![Image](root-image_assets/0001.png) <!-- yonalist-attachment-original-name: hidden%20%5Broot%5D.png --> <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n",
+                "  > Root image description\n",
+                "  - [ ] Child task <!-- yonalist-node-id: 33333333-3333-4333-8333-333333333333 -->\n",
+            )
+            .as_bytes()
+        );
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        assert!(source.contains("![Image](root-image_assets/0001.png)"));
+        assert!(!source.contains("# hidden [root].png"), "{source}");
+        assert!(!source.contains("> hidden [root].png"), "{source}");
+    }
+
+    #[test]
+    fn markdown_image_node_omits_title_and_round_trips_parser_sensitive_metadata() {
+        let printable_ascii = (0x20_u8..=0x7e).map(char::from).collect::<String>();
+        for original_name in [
+            "hidden [root] (final) \"quoted\" &amp; <angle>.png",
+            printable_ascii.as_str(),
+            "사진 [원본] (최종) &amp; \"인용\".png",
+            "a &amp; b.png",
+            "literal &#42; &#x2A; &quot;.png",
+            r#"comment --> (round) [square] 100%.png"#,
+        ] {
+            let root = image_node(
+                ROOT_ID,
+                original_name,
+                "",
+                false,
+                export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
+                Vec::new(),
+            );
+            let prepared = prepare_markdown_export(&snapshot(root), "image_assets")
+                .expect("prepare parser-sensitive image-node Markdown");
+
+            assert_eq!(
+                parse_exported_native_image(&prepared.markdown),
+                ParsedNativeMarkdownImage {
+                    source: "image_assets/0001.png".to_string(),
+                    alt: "Image".to_string(),
+                    title: None,
+                }
+            );
+            assert_eq!(
+                exported_markdown_original_name(&prepared.markdown),
+                original_name
+            );
+        }
+    }
+
+    #[test]
+    fn markdown_image_metadata_is_one_valid_html_comment_for_repeated_hyphens() {
+        let original_name = "before----middle-->after-->.png";
+        let root = image_node(
+            ROOT_ID,
+            original_name,
+            "",
+            false,
+            export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
+            Vec::new(),
+        );
+
+        let prepared = prepare_markdown_export(&snapshot(root), "image_assets")
+            .expect("prepare comment-sensitive image-node Markdown");
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        let metadata_prefix = "<!-- yonalist-attachment-original-name: ";
+        let encoded = source
+            .split_once(metadata_prefix)
+            .expect("metadata opener")
+            .1
+            .split_once(" -->")
+            .expect("metadata closer")
+            .0;
+        let image_line = source
+            .lines()
+            .find(|line| line.contains("![Image]("))
+            .expect("image-node line");
+
+        assert!(
+            !encoded.contains('-'),
+            "invalid HTML comment body: {encoded}"
+        );
+        assert!(encoded.contains("%2D%2D%3E"), "{encoded}");
+        assert_eq!(image_line.matches("-->").count(), 2, "{image_line}");
+        assert_eq!(
+            exported_markdown_original_name(&prepared.markdown),
+            original_name
+        );
+        assert_eq!(parse_exported_native_image(&prepared.markdown).title, None);
+        assert!(!source.contains(original_name), "{source}");
+    }
+
+    #[test]
+    fn markdown_image_node_accepts_path_like_and_control_original_name_as_hidden_metadata() {
+        let original_name = "../folder\\line\tname\r\nnul\0.png";
+        let root = image_node(
+            ROOT_ID,
+            original_name,
+            "",
+            false,
+            export_attachment(FIRST_ID, original_name, Some(vec![1, 2, 3])),
+            Vec::new(),
+        );
+
+        let prepared = prepare_markdown_export(&snapshot(root), "image_assets")
+            .expect("prepare image-node Markdown");
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+        let parsed = parse_exported_native_image(&prepared.markdown);
+
+        assert_eq!(
+            parsed,
+            ParsedNativeMarkdownImage {
+                source: "image_assets/0001.png".to_string(),
+                alt: "Image".to_string(),
+                title: None,
+            }
+        );
+        assert_eq!(
+            exported_markdown_original_name(&prepared.markdown),
+            original_name
+        );
+        assert!(source.contains(
+            "<!-- yonalist-attachment-original-name: ..%2Ffolder%5Cline%09name%0D%0Anul%00.png -->"
+        ));
+        assert!(!source.contains(['\t', '\r', '\0']), "{source:?}");
+        assert_eq!(prepared.assets.len(), 1);
+        assert_eq!(prepared.assets[0].file_name, "0001.png");
+    }
+
+    #[test]
+    fn markdown_text_node_legacy_attachment_output_remains_byte_compatible() {
+        let mut root = export_node(
+            ROOT_ID,
+            "Project",
+            "Root note",
+            false,
+            vec![export_node(SECOND_ID, "Child task", "", false, Vec::new())],
+        );
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            "legacy diagram.png",
+            Some(vec![1, 2, 3]),
+        ));
+
+        let prepared = prepare_markdown_export(&snapshot(root), "legacy_assets")
+            .expect("prepare legacy attachment Markdown");
+
+        assert_eq!(
+            prepared.markdown,
+            concat!(
+                "---\n",
+                "kind: yonalist-notes-export\n",
+                "format_version: 1\n",
+                "source: notes.sqlite\n",
+                "root_node_id: \"11111111-1111-4111-8111-111111111111\"\n",
+                "exported_at: \"2026-07-10T12:34:56.789Z\"\n",
+                "---\n",
+                "\n",
+                "# Project\n",
+                "\n",
+                "- [ ] Project <!-- yonalist-node-id: 11111111-1111-4111-8111-111111111111 -->\n",
+                "  > Root note\n",
+                "  ![legacy diagram.png](legacy_assets/0001.png)\n",
+                "  - [ ] Child task <!-- yonalist-node-id: 33333333-3333-4333-8333-333333333333 -->\n",
+            )
+            .as_bytes()
+        );
+    }
+
+    #[test]
+    fn markdown_text_node_legacy_attachment_accepts_untrusted_original_name() {
+        let original_name = "../folder\\draft\tname\r\nnul\0.png";
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments.push(export_attachment(
+            FIRST_ID,
+            original_name,
+            Some(vec![1, 2, 3]),
+        ));
+
+        let prepared = prepare_markdown_export(&snapshot(root), "legacy_assets")
+            .expect("prepare legacy attachment with untrusted name");
+        let source = std::str::from_utf8(&prepared.markdown).expect("UTF-8 Markdown");
+
+        assert!(source.contains("  ![../folder\\\\draft name nul .png](legacy_assets/0001.png)\n"));
+        assert!(!source.contains("yonalist-attachment-original-name"));
+        assert_eq!(prepared.assets.len(), 1);
+        assert_eq!(prepared.assets[0].file_name, "0001.png");
     }
 
     #[test]
@@ -4039,6 +7576,253 @@ mod tests {
     }
 
     #[test]
+    fn pdf_text_node_legacy_attachment_accepts_untrusted_original_name() {
+        let original_name = "../folder\\draft\tname\r\nnul\0.png";
+        let presented_name = "../folder\\draft name nul .png";
+        let mut root = export_node(ROOT_ID, "Project", "", false, Vec::new());
+        root.attachments
+            .push(png_export_attachment(FIRST_ID, original_name, 40, 20));
+
+        let bytes = render_pdf(&snapshot(root))
+            .expect("render legacy attachment with untrusted original name");
+        assert_eq!(serialized_pdf_image_alt_texts(&bytes), vec![presented_name]);
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+
+        assert!(text.contains(presented_name), "{text:?}");
+        assert!(!text.contains(['\t', '\r', '\0']), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_nested_image_node_uses_image_as_primary_content_without_filename_caption() {
+        let root = export_node(
+            ROOT_ID,
+            "Project",
+            "",
+            false,
+            vec![
+                image_node(
+                    FIRST_ID,
+                    "hidden-nested.png",
+                    "Visible image description",
+                    true,
+                    png_export_attachment(COLLAPSED_CHILD_ID, "hidden-nested.png", 120, 80),
+                    vec![export_node(
+                        SECOND_ID,
+                        "Child after image",
+                        "",
+                        false,
+                        Vec::new(),
+                    )],
+                ),
+                export_node(LATER_ID, "Later sibling", "", false, Vec::new()),
+            ],
+        );
+        let snapshot = snapshot(root);
+        let mut warnings = Vec::new();
+        let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("font");
+
+        let drafts = build_pdf_pages(&font, &snapshot).expect("image-node page drafts");
+        let draft_images = drafts
+            .iter()
+            .enumerate()
+            .flat_map(|(page_index, page)| page.images.iter().map(move |image| (page_index, image)))
+            .collect::<Vec<_>>();
+        assert_eq!(draft_images.len(), 1);
+        let (image_page_index, image) = draft_images[0];
+        assert_eq!(image.attachment_id, COLLAPSED_CHILD_ID);
+        let (content_left, content_right, content_bottom, content_top) = pdf_content_bounds();
+        assert!(image.x >= content_left);
+        assert!(image.x + image.width <= content_right + 0.01);
+        assert!(image.y >= content_bottom);
+        assert!(image.y + image.height <= content_top + 0.01);
+        let expected_image_x = content_left + super::PDF_DEPTH_INDENT + super::PDF_NOTE_INDENT;
+        assert!((image.x - expected_image_x).abs() < 0.01);
+
+        let image_page = &drafts[image_page_index];
+        let marker = image_page
+            .lines
+            .iter()
+            .find(|line| line.text == "[x]")
+            .expect("image-node marker");
+        let description = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Visible image description"))
+            .expect("image-node description");
+        let child = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Child after image"))
+            .expect("image-node child");
+        let sibling = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Later sibling"))
+            .expect("later sibling");
+        assert!((marker.x + super::PDF_NOTE_INDENT - image.x).abs() < 0.01);
+        assert!(marker.y >= image.y);
+        assert!(marker.y <= image.y + image.height);
+        assert!((description.x - image.x).abs() < 0.01);
+        assert!(description.y < image.y);
+        assert!(description.y > child.y);
+        assert!(child.y > sibling.y);
+
+        let bytes = render_pdf(&snapshot).expect("render nested image PDF");
+        assert_eq!(serialized_pdf_image_xobject_count(&bytes), 1);
+        assert_eq!(parsed_pdf_image_use_count(&bytes), 1);
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+
+        assert!(!text.contains("hidden-nested.png"), "{text}");
+        assert!(text.contains("Visible image description"), "{text}");
+        assert!(text.contains("[x]"), "{text}");
+        let description = text.find("Visible image description").expect("description");
+        let child = text.find("Child after image").expect("image child");
+        let sibling = text.find("Later sibling").expect("later sibling");
+        assert!(description < child && child < sibling, "{text}");
+    }
+
+    #[test]
+    fn pdf_root_image_node_omits_visible_filename_title_and_keeps_description() {
+        let original_name = "숨은 root image (최종).png";
+        let root = image_node(
+            ROOT_ID,
+            original_name,
+            "Root image description",
+            false,
+            png_export_attachment(FIRST_ID, original_name, 120, 80),
+            vec![export_node(SECOND_ID, "Child task", "", false, Vec::new())],
+        );
+
+        let bytes = render_pdf(&snapshot(root)).expect("render root image PDF");
+        let structural = lopdf::Document::load_mem(&bytes).expect("parse PDF structure");
+        assert_eq!(structural.version, "1.5");
+        assert_eq!(serialized_pdf_image_alt_texts(&bytes), vec![original_name]);
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+
+        assert!(!text.contains(original_name), "{text}");
+        assert!(text.contains("Root image description"), "{text}");
+        assert!(text.contains("Child task"), "{text}");
+        assert!(
+            text.find("Root image description").expect("description")
+                < text.find("Child task").expect("child"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn pdf_image_node_accepts_untrusted_original_name_as_accessibility_metadata() {
+        let original_name = "../folder\\image\tname\r\nnul\0.png";
+        let presented_name = "../folder\\image name nul .png";
+        let root = image_node(
+            ROOT_ID,
+            original_name,
+            "Visible description",
+            false,
+            png_export_attachment(FIRST_ID, original_name, 40, 20),
+            Vec::new(),
+        );
+
+        let bytes =
+            render_pdf(&snapshot(root)).expect("render image node with untrusted original name");
+        assert_eq!(serialized_pdf_image_alt_texts(&bytes), vec![presented_name]);
+        let mut parsed = parse_pdf(&bytes);
+        let text = extracted_pdf_pages(&mut parsed).join(" ");
+
+        assert!(!text.contains(presented_name), "{text:?}");
+        assert!(text.contains("Visible description"), "{text:?}");
+    }
+
+    #[test]
+    fn pdf_layout_keeps_paginated_image_node_marker_image_and_description_grouped() {
+        let mut children = (0..68)
+            .map(|index| {
+                export_node(
+                    &format!("{index:08x}-0000-4000-8000-{index:012x}"),
+                    &format!("Outline row {index:02}"),
+                    "",
+                    false,
+                    Vec::new(),
+                )
+            })
+            .collect::<Vec<_>>();
+        children.push(image_node(
+            LATER_ID,
+            "paginated-image.png",
+            "Paginated image description",
+            true,
+            png_export_attachment(FIRST_ID, "paginated-image.png", 120, 90),
+            vec![export_node(
+                SECOND_ID,
+                "Child after paginated image",
+                "",
+                false,
+                Vec::new(),
+            )],
+        ));
+        let snapshot = snapshot(export_node(
+            ROOT_ID,
+            "Long image project",
+            "",
+            false,
+            children,
+        ));
+        let mut warnings = Vec::new();
+        let font = ParsedFont::from_bytes(PDF_FONT_BYTES, 0, &mut warnings).expect("font");
+
+        let drafts = build_pdf_pages(&font, &snapshot).expect("paginated image-node layout");
+        let image_page_index = drafts
+            .iter()
+            .position(|page| !page.images.is_empty())
+            .expect("image page");
+        assert!(image_page_index > 0);
+        let image_page = &drafts[image_page_index];
+        assert_eq!(image_page.images.len(), 1);
+        let image = &image_page.images[0];
+        assert_eq!(image.attachment_id, FIRST_ID);
+        let marker = image_page
+            .lines
+            .iter()
+            .find(|line| line.text == "[x]")
+            .expect("image-node marker");
+        let description = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Paginated image description"))
+            .expect("image-node description");
+        let child = image_page
+            .lines
+            .iter()
+            .find(|line| line.text.contains("Child after paginated image"))
+            .expect("image-node child");
+
+        assert!(marker.y >= image.y);
+        assert!(marker.y <= image.y + image.height);
+        assert!(description.y < image.y);
+        assert!(description.y > child.y);
+        assert!(!drafts[..image_page_index].iter().any(|page| {
+            page.lines
+                .iter()
+                .any(|line| line.text == "[x]" || line.text.contains("Paginated image description"))
+        }));
+
+        let bytes = render_pdf(&snapshot).expect("render paginated image-node PDF");
+        assert_eq!(serialized_pdf_image_xobject_count(&bytes), 1);
+        assert_eq!(parsed_pdf_image_use_count(&bytes), 1);
+        assert_eq!(
+            serialized_pdf_image_alt_texts(&bytes),
+            vec!["paginated-image.png"]
+        );
+        let mut parsed = parse_pdf(&bytes);
+        let pages = extracted_pdf_pages(&mut parsed);
+        assert!(pages[image_page_index].contains("[x]"));
+        assert!(pages[image_page_index].contains("Paginated image description"));
+        assert!(pages[image_page_index].contains("Child after paginated image"));
+    }
+
+    #[test]
     fn pdf_export_deterministically_decodes_the_first_animation_frame() {
         for (name, mime_type, bytes, first_pixel) in [
             (
@@ -4118,6 +7902,10 @@ mod tests {
             .count();
 
         assert_eq!(image_xobjects, 1);
+        assert_eq!(
+            serialized_pdf_image_alt_texts(&bytes),
+            vec!["first copy.png", "second copy.png"]
+        );
         let mut parsed = parse_pdf(&bytes);
         let text = extracted_pdf_pages(&mut parsed).join(" ");
         assert!(text.contains("first copy.png"), "{text}");
