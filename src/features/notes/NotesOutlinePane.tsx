@@ -2322,7 +2322,9 @@ export function NotesOutlinePane() {
             onPasteCapture={handlePasteCapture}
           >
           {initialLoading && (
-            <p className="notes-pane-state">Loading notes...</p>
+            <p className="notes-pane-state" role="status">
+              Loading notes...
+            </p>
           )}
           {state.status === "error" && state.rootIds.length === 0 && (
             <p className="notes-pane-state notes-pane-error" role="alert">
@@ -2332,12 +2334,16 @@ export function NotesOutlinePane() {
           {!initialLoading &&
             state.status !== "error" &&
             completedItemsHidden && (
-              <p className="notes-pane-state">Completed items are hidden.</p>
+              <p className="notes-pane-state" role="status">
+                Completed items are hidden.
+              </p>
             )}
           {!initialLoading &&
             state.status !== "error" &&
             allStructuralRows.length === 0 && (
-              <p className="notes-pane-state">No outline yet.</p>
+              <p className="notes-pane-state" role="status">
+                No outline yet.
+              </p>
             )}
           {state.status === "error" && state.rootIds.length > 0 && (
             <p className="notes-inline-error" role="alert">

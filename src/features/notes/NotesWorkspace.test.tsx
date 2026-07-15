@@ -1824,6 +1824,10 @@ describe("Notes workspace", () => {
     await user.click(toggle);
 
     expect(screen.getByText("Completed items are hidden.")).toBeVisible();
+    expect(screen.getByText("Completed items are hidden.")).toHaveAttribute(
+      "role",
+      "status"
+    );
     expect(screen.queryByText("No outline yet.")).toBeNull();
     expect(queryTitleInput("Completed project")).toBeNull();
 
@@ -1857,6 +1861,10 @@ describe("Notes workspace", () => {
     ).toBeVisible();
     expect(queryTitleInput("Hidden child")).toBeNull();
     expect(screen.getByText("Completed items are hidden.")).toBeVisible();
+    expect(screen.getByText("Completed items are hidden.")).toHaveAttribute(
+      "role",
+      "status"
+    );
     const menu = await openNodeMenu("Completed project", user);
     expect(
       within(menu).getByRole("menuitem", { name: "Uncomplete" })
@@ -5313,6 +5321,7 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(chips).toHaveTextContent("#work0"));
     expect(queryTitleInput("No tag")).toBeNull();
     expect(screen.getByText("No pages yet.")).toBeVisible();
+    expect(screen.getByText("No pages yet.")).toHaveAttribute("role", "status");
   });
 
   it("keeps only the newest asynchronous search results", async () => {
@@ -6002,6 +6011,10 @@ describe("Notes workspace", () => {
     ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
     expect(queryTextareaByName("Edit node title")).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
+    expect(screen.getByText("No outline yet.")).toHaveAttribute(
+      "role",
+      "status"
+    );
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
   });
 
@@ -6058,16 +6071,21 @@ describe("Notes workspace", () => {
     notesStoreMock.loadWorkspace.mockRejectedValueOnce(new Error("Load failed"));
     renderNotesWorkspace();
 
-    expect(screen.getAllByText("Loading notes...")).toHaveLength(2);
+    const library = screen.getByLabelText("Notes library");
+    const outline = screen.getByLabelText("Notes outline");
+    expect(within(library).getByRole("status")).toHaveTextContent(
+      "Loading notes..."
+    );
+    expect(
+      within(outline).getByText("Loading notes...", {
+        selector: '[role="status"]'
+      })
+    ).toHaveTextContent("Loading notes...");
     expect(screen.getByRole("button", { name: "New page" })).toBeDisabled();
-    expect(await screen.findAllByText("Load failed")).toHaveLength(2);
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
-    expect(
-      within(screen.getByLabelText("Notes outline")).getByRole("alert")
-    ).toHaveTextContent("Load failed");
-    expect(
-      within(screen.getByLabelText("Notes library")).queryByRole("alert")
-    ).not.toBeInTheDocument();
+    expect(await within(library).findByRole("alert")).toHaveTextContent(
+      "Load failed"
+    );
+    expect(within(outline).getByRole("alert")).toHaveTextContent("Load failed");
   });
 
   it("keeps long titles and one compact menu trigger in stable layout hooks", async () => {

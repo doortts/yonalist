@@ -2479,6 +2479,10 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Save settings" }));
 
     expect(screen.getByText("Settings saved")).toBeInTheDocument();
+    const settingsPage = screen.getByLabelText("Settings page");
+    expect(within(settingsPage).getByRole("status")).toHaveTextContent(
+      "Settings saved"
+    );
     expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
       "/Users/doortts/Yonalist"
     );
@@ -2536,6 +2540,7 @@ describe("Yonalist app shell", () => {
       expect(document.documentElement.dataset.theme).toBe("graphite");
       expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
     });
+    expect(progress).toHaveAttribute("role", "status");
     expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
       "github.com/acme/app/issues/1/issue.md"
     );

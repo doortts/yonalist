@@ -54,6 +54,38 @@ function cssRule(selector: string): string {
 }
 
 describe("NotificationsPane", () => {
+  it("exposes loading, empty, and error states without conflicting copy", () => {
+    const { rerender } = render(
+      <NotificationsPane
+        state={makeState({ notifications: [], loading: true })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Loading notifications..."
+    );
+    expect(screen.queryByText("No notifications.")).toBeNull();
+
+    rerender(
+      <NotificationsPane
+        state={makeState({
+          notifications: [],
+          loading: false,
+          error: "Load failed"
+        })}
+        webBaseUrl="https://github.com"
+        online
+        selectedId={null}
+        onSelect={vi.fn()}
+      />
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Load failed");
+    expect(screen.queryByText("No notifications.")).toBeNull();
+  });
+
   it("renders notification rows grouped and selects on click", () => {
     const onSelect = vi.fn();
     const notification = makeNotification();

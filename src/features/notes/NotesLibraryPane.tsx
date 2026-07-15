@@ -309,7 +309,9 @@ function NotesLibraryPaneContent() {
                 </p>
               )}
               {!searchError && !searching && results.length === 0 && (
-                <p className="notes-pane-state">No matches.</p>
+                <p className="notes-pane-state" role="status">
+                  No matches.
+                </p>
               )}
               {results.length > 0 && (
                 <div role="listbox" aria-label="Search results">
@@ -344,7 +346,9 @@ function NotesLibraryPaneContent() {
           {showingTags && (
             <div className="notes-tag-list" aria-label="Note tags">
               {tagSummaries.length === 0 ? (
-                <p className="notes-pane-state">No tags yet.</p>
+                <p className="notes-pane-state" role="status">
+                  No tags yet.
+                </p>
               ) : (
                 tagSummaries.map((summary) => {
                   const label = `${summary.prefix}${summary.displayTag}`;
@@ -373,14 +377,20 @@ function NotesLibraryPaneContent() {
 
         {!choosingTag && (
           <div className="notes-library-list">
-            {initialLoading && <p className="notes-pane-state">Loading notes...</p>}
+            {initialLoading && (
+              <p className="notes-pane-state" role="status">
+                Loading notes...
+              </p>
+            )}
             {state.status === "error" && (
-              <p className="notes-pane-state notes-pane-error">{state.error}</p>
+              <p className="notes-pane-state notes-pane-error" role="alert">
+                {state.error}
+              </p>
             )}
             {!initialLoading &&
               state.status !== "error" &&
               state.rootIds.length === 0 && (
-                <p className="notes-pane-state">
+                <p className="notes-pane-state" role="status">
                   {libraryView === "trash"
                     ? "Trash is empty."
                     : libraryView === "archive"

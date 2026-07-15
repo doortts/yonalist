@@ -350,6 +350,7 @@ export function SettingsPage({
             {resetProgress.steps.length > 0 && (
               <div
                 className={`reset-progress reset-progress-${resetProgress.status}`}
+                role={resetProgress.status === "failed" ? "alert" : "status"}
                 aria-label="Reset progress"
                 aria-live="polite"
               >
@@ -383,7 +384,9 @@ export function SettingsPage({
 
       {(section === "appearance" || section === "vault") && (
         <footer className="settings-actions">
-          <span>{status}</span>
+          <span role="status" aria-live="polite" aria-atomic="true">
+            {status}
+          </span>
           <button className="primary-button" type="submit">
             <CheckCircle2 size={16} />
             Save settings

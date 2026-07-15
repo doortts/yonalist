@@ -73,7 +73,11 @@ export function NotificationDetail({
 }: NotificationDetailProps) {
   if (!notification) {
     return (
-      <div className="detail-empty" aria-label="Empty notification detail">
+      <div
+        className="detail-empty"
+        role="status"
+        aria-label="Empty notification detail"
+      >
         <Bell size={32} />
         <h2>Nothing selected</h2>
         <p className="empty-copy">
@@ -168,15 +172,23 @@ export function NotificationDetail({
       </StickyTitle>
 
       {showSkeleton && (
-        <div className="detail-loading" aria-label="Loading conversation">
+        <div
+          className="detail-loading"
+          role="status"
+          aria-label="Loading conversation"
+        >
           <Loader2 size={20} className="spinning" />
           <span>Loading conversation...</span>
         </div>
       )}
 
-      {error && <p className="notifications-error detail-error">{error}</p>}
+      {error && (
+        <p className="notifications-error detail-error" role="alert">
+          {error}
+        </p>
+      )}
       {detail?.commentsError && !loading && (
-        <p className="notifications-error detail-error">
+        <p className="notifications-error detail-error" role="alert">
           Comments could not be loaded. Reopen this notification to retry.
         </p>
       )}
@@ -184,7 +196,11 @@ export function NotificationDetail({
       {detail && (
         <div className="conversation">
           {refreshing && (
-            <div className="detail-loading" aria-label="Refreshing conversation">
+            <div
+              className="detail-loading"
+              role="status"
+              aria-label="Refreshing conversation"
+            >
               <Loader2 size={16} className="spinning" />
               <span>Refreshing…</span>
             </div>
