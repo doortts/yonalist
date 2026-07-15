@@ -70,6 +70,10 @@ import {
   deriveNotesSelectionActionSnapshot,
   type NotesSelectionActionSnapshot
 } from "./notesSelectionActions";
+import {
+  notesSelectionMutationDisabledReason as deriveSelectionMutationDisabledReason,
+  notesSelectionOperationDisabledReason
+} from "./notesSelectionMutationAvailability";
 import { buildNotesMoveDestinations } from "./notesMoveTargets";
 import { tokenizeNoteText } from "./noteTokens";
 import {
@@ -440,6 +444,9 @@ export function NotesOutlinePane() {
     busy: false,
     error: null as string | null
   });
+  const [selectionClipboardError, setSelectionClipboardError] = useState<
+    string | null
+  >(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
   const lastSelectionHeadRef = useRef<NoteId | null>(null);
@@ -484,6 +491,18 @@ export function NotesOutlinePane() {
       : trashView
         ? "trash"
         : "standard";
+  const selectionMutationDisabledReason =
+    deriveSelectionMutationDisabledReason({
+      deletingNotesData,
+      lifecycleReadOnly,
+      loading: state.status === "loading",
+      writeError: writeError !== null
+    });
+  const selectionMutationDisabledReasonRef = useRef(
+    selectionMutationDisabledReason
+  );
+  selectionMutationDisabledReasonRef.current =
+    selectionMutationDisabledReason;
   const imageDropAvailable =
     !deletingNotesData &&
     !lifecycleReadOnly &&
@@ -1064,6 +1083,7 @@ export function NotesOutlinePane() {
     getSnapshot: getLiveSelectionActionSnapshot,
     getSelectionRevision: () =>
       getLiveSelectionSnapshot?.().revision ?? selectionRevisionRef.current,
+    getNavigationVersion: () => actions.getNavigationVersion?.() ?? 0,
     getVisibleNodeIds: getProjectedSelectionVisibleIds,
     flushDrafts: actions.flushAllDrafts,
     prepareAuthority: (nodeIds) => {
@@ -1120,6 +1140,34 @@ export function NotesOutlinePane() {
     writeClipboard: writeSelectionClipboard
   });
   const executeSelectionCommand = selectionRouter.execute;
+  const clearSelectionRouterFeedback = selectionRouter.clearFeedback;
+  const rejectDisabledSelectionOperation = useCallback(
+    (operation: Parameters<typeof notesSelectionOperationDisabledReason>[0]) => {
+      const reason = notesSelectionOperationDisabledReason(
+        operation,
+        selectionMutationDisabledReasonRef.current
+      );
+      if (reason === null) {
+        return false;
+      }
+      setSelectionClipboardError(null);
+      setSelectionChooserFeedback({ busy: false, error: reason });
+      return true;
+    },
+    []
+  );
+  const executeGuardedSelectionCommand = useCallback(
+    (...args: Parameters<typeof executeSelectionCommand>) => {
+      if (rejectDisabledSelectionOperation(args[0].type)) {
+        return Promise.resolve({
+          outcome: "skipped" as const,
+          mutationCommitted: false
+        });
+      }
+      return executeSelectionCommand(...args);
+    },
+    [executeSelectionCommand, rejectDisabledSelectionOperation]
+  );
   const invalidatePreparedSelectionClipboard =
     selectionRouter.invalidatePreparedClipboard;
   const selectionChooserAuthorityCurrent =
@@ -1144,21 +1192,37 @@ export function NotesOutlinePane() {
         ? { busy: false, error: null }
         : current
     );
+    setSelectionClipboardError(null);
   }, [
     selectionChooser,
     selectionChooserAuthorityCurrent,
     selectionChooserLifecycleKey
   ]);
+  const handleSelectionClipboardPreparationPending = useCallback(
+    (intent: "copy" | "cut") => {
+      const action = intent === "copy" ? "Copy" : "Cut";
+      setSelectionClipboardError(
+        `The selected items are still preparing for ${action}. Try again.`
+      );
+    },
+    []
+  );
   const selectionNativeClipboard = useMemo(
     () =>
-      createNotesSelectionNativeClipboardController({
-        prepareClipboard: selectionRouter.prepareClipboard,
-        commitPreparedClipboardEvent:
-          selectionRouter.commitPreparedClipboardEvent,
-        invalidatePreparedClipboard:
-          selectionRouter.invalidatePreparedClipboard
-      }),
+      createNotesSelectionNativeClipboardController(
+        {
+          prepareClipboard: selectionRouter.prepareClipboard,
+          commitPreparedClipboardEvent:
+            selectionRouter.commitPreparedClipboardEvent,
+          invalidatePreparedClipboard:
+            selectionRouter.invalidatePreparedClipboard
+        },
+        {
+          onPreparationPending: handleSelectionClipboardPreparationPending
+        }
+      ),
     [
+      handleSelectionClipboardPreparationPending,
       selectionRouter.commitPreparedClipboardEvent,
       selectionRouter.invalidatePreparedClipboard,
       selectionRouter.prepareClipboard
@@ -1222,16 +1286,52 @@ export function NotesOutlinePane() {
       ) {
         return;
       }
-      const options = { allowNonTextTarget: !textControlTarget };
+      const hasOutlineSelection =
+        selectionRangeIds(
+          getSelection(),
+          bodyVisibleIdsRef.current
+        ).length > 0;
+      const hasNativeTextSelection =
+        textControlTarget &&
+        (event.target as HTMLInputElement | HTMLTextAreaElement)
+          .selectionStart !==
+          (event.target as HTMLInputElement | HTMLTextAreaElement).selectionEnd;
+      if (selectionNativeClipboard.isCompositionActive()) {
+        return;
+      }
+      if (
+        hasOutlineSelection &&
+        !hasNativeTextSelection &&
+        rejectDisabledSelectionOperation(intent)
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      const options = {
+        allowNonTextTarget: !textControlTarget,
+        claimUnprepared: hasOutlineSelection
+      };
       const outcome =
         intent === "copy"
           ? selectionNativeClipboard.handleCopy(event, options)
           : selectionNativeClipboard.handleCut(event, options);
-      if (outcome.kind === "committed") {
+      if (outcome.kind !== "unowned") {
         event.stopPropagation();
       }
+      if (outcome.kind === "claimed") {
+        clearSelectionRouterFeedback();
+      }
+      if (outcome.kind === "committed") {
+        setSelectionClipboardError(null);
+      }
     },
-    [selectionNativeClipboard]
+    [
+      clearSelectionRouterFeedback,
+      getSelection,
+      rejectDisabledSelectionOperation,
+      selectionNativeClipboard
+    ]
   );
   const handleSelectionCopyCapture = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) =>
@@ -1408,6 +1508,10 @@ export function NotesOutlinePane() {
       kind: "move" | "tags",
       origin: SelectionChooserRequestOrigin
     ): Promise<void> => {
+      const operation = kind === "move" ? "moveTo" : "tags";
+      if (rejectDisabledSelectionOperation(operation)) {
+        return;
+      }
       if (selectionChooserPreparingRef.current) {
         return;
       }
@@ -1502,6 +1606,9 @@ export function NotesOutlinePane() {
           failCurrent("The selection changed. Try again.");
           return;
         }
+        if (rejectDisabledSelectionOperation(operation)) {
+          return;
+        }
         const snapshot: SelectionChooserSnapshot = Object.freeze({
           nodeIds: Object.freeze([...targetIds]),
           ownership: Object.freeze({ actionSnapshot, authority })
@@ -1536,12 +1643,17 @@ export function NotesOutlinePane() {
       getLiveSelectionActionSnapshot,
       getLiveSelectionSnapshot,
       isPreparedSelectionAuthorityCurrent,
-      prepareSelectionAuthority
+      prepareSelectionAuthority,
+      rejectDisabledSelectionOperation
     ]
   );
 
   const executeSelectionAction = useCallback(
     async (action: NotesSelectionActionBarAction): Promise<void> => {
+      if (rejectDisabledSelectionOperation(action)) {
+        return;
+      }
+      setSelectionClipboardError(null);
       setSelectionChooserFeedback((current) =>
         current.error ? { ...current, error: null } : current
       );
@@ -1568,10 +1680,14 @@ export function NotesOutlinePane() {
           return;
       }
       if (intent) {
-        await executeSelectionCommand(intent);
+        await executeGuardedSelectionCommand(intent);
       }
     },
-    [executeSelectionCommand, requestSelectionChooser]
+    [
+      executeGuardedSelectionCommand,
+      rejectDisabledSelectionOperation,
+      requestSelectionChooser
+    ]
   );
   const returnFocusToSelectionHead = useCallback(() => {
     const headId = lastSelectionHeadRef.current;
@@ -1579,13 +1695,6 @@ export function NotesOutlinePane() {
       focusBodyTitle(headId);
     }
   }, [focusBodyTitle]);
-  const selectionMutationDisabledReason = deletingNotesData
-    ? "Notes data is being deleted."
-    : lifecycleReadOnly
-      ? "Selection actions are unavailable in Archive or Trash."
-      : writeError
-        ? "Retry the failed save before changing notes."
-        : null;
   const selectionMenuState = useMemo<NotesBulletMenuSelectionState | null>(
     () =>
       selectionSnapshot
@@ -2068,7 +2177,7 @@ export function NotesOutlinePane() {
         if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
           return;
         }
-        void executeSelectionCommand(
+        void executeGuardedSelectionCommand(
           {
             type: "reorder",
             target: lateProjection.target,
@@ -2085,7 +2194,7 @@ export function NotesOutlinePane() {
       return;
     }
     if (projection.kind === "selected-move") {
-      void executeSelectionCommand(
+      void executeGuardedSelectionCommand(
         {
           type: "reorder",
           target: projection.target,
@@ -2130,7 +2239,11 @@ export function NotesOutlinePane() {
             busy={selectionRouter.busy || selectionChooserFeedback.busy}
             mutationDisabledReason={selectionMutationDisabledReason}
             status={selectionRouter.status}
-            error={selectionChooserFeedback.error ?? selectionRouter.error}
+            error={
+              selectionChooserFeedback.error ??
+              selectionRouter.error ??
+              selectionClipboardError
+            }
             onAction={executeSelectionAction}
             onClearSelection={actions.clearSelection}
             onReturnFocus={returnFocusToSelectionHead}
@@ -2394,7 +2507,7 @@ export function NotesOutlinePane() {
                 destinationId
               );
               if (target) {
-                void executeSelectionCommand(
+                void executeGuardedSelectionCommand(
                   { type: "moveTo", target },
                   snapshot
                 );
@@ -2415,7 +2528,7 @@ export function NotesOutlinePane() {
               }
             }}
             onCommit={(commit) => {
-              void executeSelectionCommand(
+              void executeGuardedSelectionCommand(
                 commit.mode === "add"
                   ? { type: "addTag", tag: commit.tag }
                   : { type: "removeTag", tag: commit.tag },

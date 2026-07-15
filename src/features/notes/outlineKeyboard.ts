@@ -190,7 +190,9 @@ export function resolveOutlineKey(
     }
     const nextHead =
       selectionVisibleIds[headIndex + (input.key === "ArrowUp" ? -1 : 1)];
-    return nextHead ? { type: "extendSelection", headId: nextHead } : null;
+    return nextHead
+      ? { type: "extendSelection", headId: nextHead }
+      : { type: "consumeSelectionShortcut" };
   }
   if (
     selectionModifiersClear &&

@@ -6,6 +6,7 @@ import {
   waitFor,
   within
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import {
   createElement,
   memo,
@@ -419,9 +420,10 @@ describe("outline row memoization", () => {
     expect(errorChurn).toEqual([]);
   });
 
-  it("Shift+Click on a bullet selects the range from the caret node to the clicked row", async () => {
+  it("Shift+Click prefers the active outline row over a stale selectedId", async () => {
     const store = repository(seededNodes());
     render(<Harness store={store} />);
+    const user = userEvent.setup();
     await waitFor(() => expect(captured?.status).toBe("ready"));
     await waitFor(() => {
       expect(document.querySelectorAll("[data-outline-id]").length).toBe(
@@ -429,18 +431,22 @@ describe("outline row memoization", () => {
       );
     });
 
-    // Place the caret (single-select anchor source) on p-0, then Shift+Click the
-    // bullet on c-0-1.
+    // Leave the reducer navigation stale on p-1, then place the real DOM caret
+    // on p-0 without typing. Shift+Click must anchor from that active row.
     await act(async () => {
-      await captured!.actions.focusNode("p-0");
+      await captured!.actions.focusNode("p-1");
     });
+    act(() => titleInput("p-0").focus());
+    expect(titleInput("p-0")).toHaveFocus();
+    expect(captured?.state.selectedId).toBe("p-1");
+
     const bullet = document
       .querySelector('[data-outline-id="c-0-1"]')
       ?.querySelector<HTMLButtonElement>('button[aria-label^="Zoom into"]');
     expect(bullet).toBeTruthy();
-    await act(async () => {
-      fireEvent.click(bullet!, { shiftKey: true });
-    });
+    await user.keyboard("{Shift>}");
+    await user.click(bullet!);
+    await user.keyboard("{/Shift}");
 
     expect(captured?.draftsSlice?.selection).toEqual({
       anchorId: "p-0",
@@ -462,4 +468,65 @@ describe("outline row memoization", () => {
     ).toBeNull();
     expect(captured?.state.zoomRootId).toBeNull();
   });
+
+  it("records real title and note focus but not pending programmatic focus twice", async () => {
+    const nodes = seededNodes();
+    nodes[0] = { ...nodes[0], note: "details" };
+    render(<Harness store={repository(nodes)} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    await waitFor(() => expect(titleInput("p-1")).toBeInTheDocument());
+    expect(captured?.actions.getNavigationVersion).toBeTypeOf("function");
+
+    const beforeTitle = captured!.actions.getNavigationVersion!();
+    act(() => titleInput("p-1").focus());
+    expect(captured!.actions.getNavigationVersion!()).toBe(beforeTitle + 1);
+
+    const note = document.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Supporting note: p-0"]'
+    );
+    expect(note).toBeTruthy();
+    const beforeNote = captured!.actions.getNavigationVersion!();
+    act(() => note!.focus());
+    expect(captured!.actions.getNavigationVersion!()).toBe(beforeNote + 1);
+
+    const beforePendingFocus = captured!.actions.getNavigationVersion!();
+    await act(async () => {
+      await captured!.actions.focusNode("p-2");
+    });
+    await waitFor(() => expect(titleInput("p-2")).toHaveFocus());
+    expect(captured!.actions.getNavigationVersion!()).toBe(
+      beforePendingFocus + 1
+    );
+  });
+
+  it("advances the navigation epoch when the same editor field is genuinely refocused", async () => {
+    render(<Harness store={repository(seededNodes())} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const title = titleInput("p-1");
+
+    const beforeFirstFocus = captured!.actions.getNavigationVersion!();
+    act(() => title.focus());
+    expect(captured!.actions.getNavigationVersion!()).toBe(
+      beforeFirstFocus + 1
+    );
+
+    act(() => title.blur());
+    const beforeRefocus = captured!.actions.getNavigationVersion!();
+    act(() => title.focus());
+    expect(captured!.actions.getNavigationVersion!()).toBe(beforeRefocus + 1);
+  });
+
+  it("does not advance the navigation epoch for repeated draft changes in one focused field", async () => {
+    render(<Harness store={repository(seededNodes())} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const title = titleInput("p-1");
+    act(() => title.focus());
+    const focusedVersion = captured!.actions.getNavigationVersion!();
+
+    fireEvent.change(title, { target: { value: "first" } });
+    fireEvent.change(title, { target: { value: "second" } });
+
+    expect(captured!.actions.getNavigationVersion!()).toBe(focusedVersion);
+  });
+
 });

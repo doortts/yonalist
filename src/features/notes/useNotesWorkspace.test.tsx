@@ -16,6 +16,7 @@ import type {
   PendingNoteAttachmentByteItem
 } from "../../domain/notes";
 import {
+  focusedUiUpdate,
   isNotesDraftsFlushFailedError,
   NOTES_DRAFTS_FLUSH_FAILED_CODE,
   scopedActiveDelta,
@@ -32,6 +33,7 @@ import { createNotesSelectionCommandRouter } from "./useNotesSelectionCommandRou
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
   discard: vi.fn(),
+  beginStructural: vi.fn(),
   rememberAfter: vi.fn()
 }));
 
@@ -50,6 +52,13 @@ vi.mock("./notesHistory", async (importOriginal) => {
       const session = actual.createNotesHistorySession(options);
       return {
         ...session,
+        beginStructuralEntry(
+          commandKind: string,
+          before: Parameters<typeof session.beginStructuralEntry>[1]
+        ) {
+          notesHistorySpies.beginStructural(commandKind, before);
+          return session.beginStructuralEntry(commandKind, before);
+        },
         discard(entryId: string) {
           notesHistorySpies.discard(entryId);
           session.discard(entryId);
@@ -58,7 +67,7 @@ vi.mock("./notesHistory", async (importOriginal) => {
           entryId: string,
           after: Parameters<typeof session.rememberAfter>[1]
         ) {
-          notesHistorySpies.rememberAfter(entryId);
+          notesHistorySpies.rememberAfter(entryId, after);
           session.rememberAfter(entryId, after);
         }
       };
@@ -7818,6 +7827,15 @@ describe("useNotesWorkspace incremental delta wiring", () => {
 });
 
 describe("useNotesWorkspace multi-node selection", () => {
+  it("resets a frozen survivor focus to the title field", () => {
+    expect(focusedUiUpdate("survivor")).toEqual({
+      selectedId: "survivor",
+      editingNoteId: "survivor",
+      pendingFocusId: "survivor",
+      pendingFocusField: "title"
+    });
+  });
+
   beforeEach(() => {
     createNoteIdMock.mockReset();
   });
@@ -8296,7 +8314,8 @@ describe("useNotesWorkspace multi-node selection", () => {
 
     expect(settlement).toEqual({
       outcome: "skipped",
-      mutationCommitted: false
+      mutationCommitted: false,
+      navigationOwned: false
     });
     expect(applyBatch).not.toHaveBeenCalled();
   });
@@ -8335,7 +8354,8 @@ describe("useNotesWorkspace multi-node selection", () => {
       })
     ).resolves.toEqual({
       outcome: "skipped",
-      mutationCommitted: false
+      mutationCommitted: false,
+      navigationOwned: false
     });
     expect(applyBatch).not.toHaveBeenCalled();
   });
@@ -8374,6 +8394,8 @@ describe("useNotesWorkspace multi-node selection", () => {
           authoritativeWorkspace: result.current.state
         }),
       getSelectionRevision: () => result.current.selectionRevision!,
+      getNavigationVersion: () =>
+        result.current.actions.getNavigationVersion?.() ?? 0,
       getVisibleNodeIds: (projectedWorkspace) =>
         projectedWorkspace.rootIds,
       flushDrafts: () => result.current.actions.flushAllDrafts(),
@@ -8445,7 +8467,8 @@ describe("useNotesWorkspace multi-node selection", () => {
 
     expect(settlement).toEqual({
       outcome: "skipped",
-      mutationCommitted: false
+      mutationCommitted: false,
+      navigationOwned: false
     });
     expect(applyBatch).not.toHaveBeenCalled();
   });
@@ -8569,6 +8592,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     expect(settlement).toEqual({
       outcome: "failed",
       mutationCommitted: true,
+      navigationOwned: true,
       duplicatedRootIds: ["copy-a", "copy-b"]
     });
     expect(applyBatch).toHaveBeenCalledTimes(1);
@@ -8836,6 +8860,326 @@ describe("useNotesWorkspace multi-node selection", () => {
     await act(async () => completion);
 
     expect(result.current.locallyExpandedNodeIds).toEqual(new Set());
+  });
+
+  it("does not own survivor navigation after a newer editor focus without a selection change", async () => {
+    const before = workspace([
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "b", sortKey: 2 }),
+      node({ id: "c", sortKey: 3 }),
+      node({ id: "d", sortKey: 4 })
+    ]);
+    const after = workspace([
+      node({ id: "c", sortKey: 3 }),
+      node({ id: "d", sortKey: 4 })
+    ]);
+    let active = before;
+    const pending = deferred<NotesMutationResult>();
+    let batchEntryId: string | null = null;
+    const applyBatch = vi.fn((_vaultRoot, _input, context) => {
+      batchEntryId = context?.entryId ?? null;
+      return pending.promise;
+    });
+    const undo = vi.fn(async () => {
+      active = before;
+      return {
+        workspace: before,
+        replayedEntryId: batchEntryId,
+        canUndo: false,
+        canRedo: true
+      };
+    });
+    const redo = vi.fn(async () => {
+      active = after;
+      return {
+        workspace: after,
+        replayedEntryId: batchEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) => ({
+      workspace: after,
+      historyEntryId: context?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      applyBatch,
+      undo,
+      redo,
+      toggleStar
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    await act(async () => result.current.actions.focusNode("a"));
+    expect(result.current.state).toMatchObject({
+      selectedId: "a",
+      editingNoteId: "a",
+      pendingFocusId: "a",
+      pendingFocusField: "title"
+    });
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let completion!: ReturnType<
+      NonNullable<UseNotesWorkspaceResult["applyPreparedSelectionBatch"]>
+    >;
+    act(() => {
+      completion = result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "delete" },
+        { focusNodeId: "c" }
+      );
+    });
+    await waitFor(() => expect(applyBatch).toHaveBeenCalledTimes(1));
+
+    expect(result.current.actions.markEditingFocus).toBeTypeOf("function");
+    act(() => result.current.actions.markEditingFocus?.("d", "note"));
+    expect(result.current.selectionRevision).toBe(prepared.selectionRevision);
+    active = after;
+    pending.resolve({
+      workspace: after,
+      historyEntryId: batchEntryId,
+      canUndo: true,
+      canRedo: false
+    });
+    const settlement = await act(async () => completion);
+
+    expect(settlement.navigationOwned).toBe(false);
+    expect(result.current.state).toMatchObject({
+      selectedId: "d",
+      editingNoteId: "d",
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+    expect(notesHistorySpies.rememberAfter).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        selectedId: "d",
+        focus: { nodeId: "d", field: "note" }
+      })
+    );
+
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "a",
+      editingNoteId: "a",
+      pendingFocusId: "a",
+      pendingFocusField: "title"
+    });
+    await act(async () => result.current.actions.redo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "d",
+      editingNoteId: "d",
+      pendingFocusId: "d",
+      pendingFocusField: "note"
+    });
+
+    const beforeAcknowledge =
+      result.current.actions.getNavigationVersion?.();
+    await act(async () => result.current.actions.acknowledgeFocus("d"));
+    expect(result.current.actions.getNavigationVersion?.()).toBe(
+      beforeAcknowledge
+    );
+    expect(result.current.state).toMatchObject({
+      selectedId: "d",
+      editingNoteId: "d",
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+    const beforeNextCommand = notesHistorySpies.beginStructural.mock.calls.length;
+    await act(async () => result.current.actions.toggleStar("d"));
+    expect(notesHistorySpies.beginStructural.mock.calls[beforeNextCommand]).toEqual([
+      "star",
+      expect.objectContaining({
+        selectedId: "d",
+        focus: { nodeId: "d", field: "note" }
+      })
+    ]);
+  });
+
+  it("does not retain newer editor focus when that focused node was deleted", async () => {
+    const before = workspace([
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "b", sortKey: 2 }),
+      node({ id: "c", sortKey: 3 })
+    ]);
+    const after = workspace([node({ id: "c", sortKey: 3 })]);
+    let active = before;
+    const pending = deferred<NotesMutationResult>();
+    let batchEntryId: string | null = null;
+    const applyBatch = vi.fn((_vaultRoot, _input, context) => {
+      batchEntryId = context?.entryId ?? null;
+      return pending.promise;
+    });
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) => ({
+      workspace: after,
+      historyEntryId: context?.entryId ?? null,
+      canUndo: true,
+      canRedo: false
+    }));
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      applyBatch,
+      toggleStar
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({
+        vaultRoot: "/vault",
+        repository: store
+      })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    expect(result.current.state).toMatchObject({
+      selectedId: null,
+      editingNoteId: null,
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    let completion!: ReturnType<
+      NonNullable<UseNotesWorkspaceResult["applyPreparedSelectionBatch"]>
+    >;
+    act(() => {
+      completion = result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "delete" },
+        { focusNodeId: "c" }
+      );
+    });
+    await waitFor(() => expect(applyBatch).toHaveBeenCalledTimes(1));
+    act(() => result.current.actions.markEditingFocus?.("a", "note"));
+    active = after;
+    pending.resolve({
+      workspace: after,
+      historyEntryId: batchEntryId,
+      canUndo: true,
+      canRedo: false
+    });
+    await act(async () => completion);
+
+    expect(result.current.state).toMatchObject({
+      selectedId: null,
+      editingNoteId: null,
+      pendingFocusId: null,
+      pendingFocusField: null
+    });
+    expect(notesHistorySpies.rememberAfter).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        selectedId: null,
+        focus: null
+      })
+    );
+
+    const beforeNextCommand = notesHistorySpies.beginStructural.mock.calls.length;
+    await act(async () => result.current.actions.toggleStar("c"));
+    expect(notesHistorySpies.beginStructural.mock.calls[beforeNextCommand]).toEqual([
+      "star",
+      expect.objectContaining({
+        selectedId: null,
+        focus: null
+      })
+    ]);
+  });
+
+  it("settles and replays prepared delete survivor navigation with history", async () => {
+    const before = workspace([
+      node({ id: "a", sortKey: 1 }),
+      node({ id: "b", sortKey: 2 }),
+      node({ id: "c", sortKey: 3 })
+    ]);
+    const after = workspace([node({ id: "c", sortKey: 3 })]);
+    let active = before;
+    let batchEntryId: string | null = null;
+    const applyBatch = vi.fn(async (_vaultRoot, _input, context) => {
+      active = after;
+      batchEntryId = context?.entryId ?? null;
+      return {
+        workspace: after,
+        historyEntryId: batchEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const undo = vi.fn(async () => {
+      active = before;
+      return {
+        workspace: before,
+        replayedEntryId: batchEntryId,
+        canUndo: false,
+        canRedo: true
+      };
+    });
+    const redo = vi.fn(async () => {
+      active = after;
+      return {
+        workspace: after,
+        replayedEntryId: batchEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const store = repository({
+      loadWorkspace: vi.fn(async () => active),
+      applyBatch,
+      undo,
+      redo
+    });
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    await act(async () => result.current.actions.focusNode("a"));
+    act(() => {
+      result.current.actions.setSelectionAnchor("a");
+      result.current.actions.extendSelectionTo("b");
+    });
+    const prepared = await act(async () =>
+      result.current.prepareSelectionAuthority!(["a", "b"])
+    );
+
+    await act(async () =>
+      result.current.applyPreparedSelectionBatch!(
+        prepared,
+        { type: "delete" },
+        { focusNodeId: "c" }
+      )
+    );
+
+    expect(result.current.state).toMatchObject({
+      selectedId: "c",
+      editingNoteId: "c",
+      pendingFocusId: "c",
+      pendingFocusField: "title"
+    });
+    await act(async () => result.current.actions.undo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "a",
+      pendingFocusId: "a"
+    });
+    await act(async () => result.current.actions.redo!());
+    expect(result.current.state).toMatchObject({
+      selectedId: "c",
+      pendingFocusId: "c",
+      pendingFocusField: "title"
+    });
   });
 
   it("keeps a prepared range selected while the batch is pending and after failure", async () => {

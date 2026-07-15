@@ -80,6 +80,7 @@ export interface NotesCommandContext {
   // The reducer-owned navigation, derived on demand (settled state plus the live
   // editing caret). Commands read this instead of a parallel navigation ref.
   readonly currentNavigation: () => LiveNotesNavigation;
+  readonly currentEditingFocus: () => NotesHistoryFocus | null;
   readonly navigationVersionRef: MutableRefObject<number>;
   readonly locallyExpandedNodeIdsRef: MutableRefObject<ReadonlySet<NoteId>>;
   readonly tagFilterRequestRef: MutableRefObject<number>;
@@ -580,6 +581,8 @@ export interface NotesBatchCommandSettlement {
   /** True once the repository returned, even if projecting the committed
    * mutation back into the active scope subsequently failed. */
   readonly mutationCommitted: boolean;
+  /** Whether this command still owns survivor focus/navigation postconditions. */
+  readonly navigationOwned?: boolean;
   readonly duplicatedRootIds?: readonly NoteId[];
   /** Present only when the committed mutation was successfully projected into
    * the active UI scope. Router postconditions must use this snapshot rather
@@ -708,6 +711,44 @@ function preparedSelectionOwnerIsCurrent(
   );
 }
 
+function retainedFocusAfterNavigationLoss(
+  navigation: LiveNotesNavigation,
+  workspace: NotesWorkspace
+): NotesHistoryFocus | null {
+  const nodeId = navigation.editingNoteId;
+  if (nodeId === null || !workspace.nodes.some((node) => node.id === nodeId)) {
+    return null;
+  }
+  return {
+    nodeId,
+    field: navigation.pendingFocusField ?? "title"
+  };
+}
+
+function settledNavigationAfterNavigationLoss(
+  navigation: LiveNotesNavigation,
+  editingFocus: NotesHistoryFocus | null,
+  workspace: NotesWorkspace
+): NotesWorkspaceUiUpdate {
+  const normalized = normalizeWorkspace(workspace);
+  const retained = settledUiState(normalized, navigation);
+  if (editingFocus === null) {
+    return retained;
+  }
+  const nodeId = normalized.nodesById[editingFocus.nodeId]
+    ? editingFocus.nodeId
+    : null;
+  return {
+    ...retained,
+    selectedId: nodeId,
+    editingNoteId: nodeId,
+    // The editor already owns real DOM focus. A pending focus would replay the
+    // stale command postcondition and could move the caret away again.
+    pendingFocusId: null,
+    pendingFocusField: null
+  };
+}
+
 function projectedSettlementWorkspace(
   ctx: NotesCommandContext,
   result: Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>
@@ -793,9 +834,11 @@ export async function applyPreparedSelectionBatchCommand(
   prepared: NotesPreparedSelectionAuthority,
   op: NotesBatchOp,
   uiUpdate?: NotesWorkspaceUiUpdate,
-  expandNodeId?: NoteId
+  expandNodeId?: NoteId,
+  expectedNavigationVersion = ctx.navigationVersionRef.current
 ): Promise<NotesBatchCommandSettlement> {
   let mutationCommitted = false;
+  let navigationOwned = false;
   let duplicatedRootIds: readonly NoteId[] | undefined;
   let projectedWorkspace: NormalizedNotesWorkspace | undefined;
   const outcome = await ctx.runStructuralCommand(
@@ -849,7 +892,23 @@ export async function applyPreparedSelectionBatchCommand(
         mutation,
         ctx.activeScopeRef.current
       );
-      const result = directMutationResult(mutation, projection, uiUpdate);
+      navigationOwned =
+        preparedSelectionOwnerIsCurrent(ctx, prepared, context, record) &&
+        ctx.navigationVersionRef.current === expectedNavigationVersion;
+      const latestNavigation = ctx.currentNavigation();
+      const latestEditingFocus = ctx.currentEditingFocus();
+      const settlementUiUpdate = navigationOwned
+        ? uiUpdate
+        : settledNavigationAfterNavigationLoss(
+            latestNavigation,
+            latestEditingFocus,
+            projection.workspace
+          );
+      const result = directMutationResult(
+        mutation,
+        projection,
+        settlementUiUpdate
+      );
       if (result.kind === "authoritative") {
         projectedWorkspace = projectedSettlementWorkspace(ctx, result);
       }
@@ -873,17 +932,28 @@ export async function applyPreparedSelectionBatchCommand(
       ctx.rememberHistoryAfter(
         appliedHistoryContext(historyContext, mutation),
         projection.workspace,
-        uiUpdate,
-        undefined,
+        settlementUiUpdate,
+        navigationOwned
+          ? undefined
+          : retainedFocusAfterNavigationLoss(
+              latestNavigation,
+              projection.workspace
+            ),
         expandedNodeIds
       );
       return result;
     },
     { selectionPolicy: "preserve" }
   );
+  // Catch a caret/navigation move that landed after projection but before the
+  // structural queue settled back to the semantic command.
+  navigationOwned =
+    navigationOwned &&
+    ctx.navigationVersionRef.current === expectedNavigationVersion;
   return {
     outcome,
     mutationCommitted,
+    navigationOwned,
     ...(duplicatedRootIds ? { duplicatedRootIds } : {}),
     ...(projectedWorkspace ? { projectedWorkspace } : {})
   };

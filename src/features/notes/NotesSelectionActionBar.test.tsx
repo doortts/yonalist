@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -304,6 +310,47 @@ describe("NotesSelectionActionBar", () => {
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it("restores More focus before invoking and allows later survivor focus", async () => {
+    mockCompactViewport(false);
+    const user = userEvent.setup();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let focusAtInvocation: Element | null = null;
+    const onAction = vi.fn(async () => {
+      focusAtInvocation = document.activeElement;
+      await pending;
+      screen.getByRole("button", { name: "Surviving row" }).focus();
+    });
+    render(
+      <>
+        <NotesSelectionActionBar
+          snapshot={snapshot()}
+          onAction={onAction}
+          onClearSelection={vi.fn()}
+          onReturnFocus={vi.fn()}
+        />
+        <button type="button">Surviving row</button>
+      </>
+    );
+    const trigger = screen.getByRole("button", { name: "More actions" });
+
+    await user.click(trigger);
+    await user.click(await screen.findByRole("menuitem", { name: "Cut" }));
+
+    expect(onAction).toHaveBeenCalledWith("cut");
+    expect(focusAtInvocation).toBe(trigger);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    finish();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Surviving row" }))
+        .toHaveFocus()
+    );
   });
 
   it("returns to the selection head with Shift+F6 from inside More", async () => {

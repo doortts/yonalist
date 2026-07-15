@@ -2821,7 +2821,7 @@ describe("Notes workspace", () => {
       );
     });
 
-    it("leaves native Copy unowned until a filtered selection has full authority", async () => {
+    it("claims native Copy with feedback until a filtered selection has full authority", async () => {
       const user = userEvent.setup();
       const activeNodes = [
         node({ id: "a", sortKey: 1, title: "Alpha", isStarred: true }),
@@ -2864,8 +2864,11 @@ describe("Notes workspace", () => {
       );
 
       const provisional = dispatchClipboardEvent("copy", title);
-      expect(provisional.event.defaultPrevented).toBe(false);
+      expect(provisional.event.defaultPrevented).toBe(true);
       expect(provisional.setData).not.toHaveBeenCalled();
+      expect(
+        await screen.findByText(/still preparing for Copy\. Try again/i)
+      ).toBeVisible();
 
       await act(async () => {
         hydration.resolve(workspace(activeNodes));
@@ -2881,6 +2884,11 @@ describe("Notes workspace", () => {
       const authoritative = dispatchClipboardEvent("copy", title);
       expect(authoritative.event.defaultPrevented).toBe(true);
       expect(authoritative.values.get("text/plain")).toBe("- Alpha");
+      await waitFor(() =>
+        expect(
+          screen.queryByText(/still preparing for Copy\. Try again/i)
+        ).toBeNull()
+      );
     });
 
     it("consumes repeated selection shortcuts without mutating or clearing the range", async () => {
@@ -2933,7 +2941,7 @@ describe("Notes workspace", () => {
       ).toEqual(["a", "b"]);
     });
 
-    it("owns prepared native Copy while preserving browser text, repeat, and composition events", async () => {
+    it("owns prepared native Copy while preserving browser text and composition events and consuming outline repeats", async () => {
       useCtrlPlatform();
       configureRepository(threeRoots());
       renderNotesWorkspace();
@@ -2972,7 +2980,7 @@ describe("Notes workspace", () => {
       title.setSelectionRange(0, 0);
       fireEvent.keyDown(title, { key: "c", ctrlKey: true, repeat: true });
       const repeated = dispatchClipboardEvent("copy", title);
-      expect(repeated.event.defaultPrevented).toBe(false);
+      expect(repeated.event.defaultPrevented).toBe(true);
       expect(repeated.setData).not.toHaveBeenCalled();
       fireEvent.keyUp(title, { key: "c" });
 
@@ -2997,6 +3005,36 @@ describe("Notes workspace", () => {
       const paneCopy = dispatchClipboardEvent("copy", content);
       expect(paneCopy.event.defaultPrevented).toBe(true);
       expect(paneCopy.values.get("text/plain")).toBe("- Alpha\n- Bravo");
+    });
+
+    it("leaves composing native Cut unowned while a selection mutation is loading", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      const completion = deferred<NotesWorkspace>();
+      notesStoreMock.applyBatch.mockReturnValueOnce(completion.promise);
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      const toolbar = await screen.findByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+
+      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+
+      title.focus();
+      title.setSelectionRange(0, 0);
+      fireEvent.compositionStart(title);
+      const composingCut = dispatchClipboardEvent("cut", title);
+
+      expect(composingCut.event.defaultPrevented).toBe(false);
+      expect(composingCut.setData).not.toHaveBeenCalled();
+      fireEvent.compositionEnd(title);
+
+      await act(async () => {
+        completion.resolve(workspace(confirmedNodes));
+        await completion.promise;
+      });
     });
 
     it("falls back to plain text for toolbar More Copy and preserves the selected range", async () => {
@@ -3223,9 +3261,11 @@ describe("Notes workspace", () => {
       ]);
       expect(order.slice(0, 2)).toEqual(["text/plain", "text/markdown"]);
 
+      fireEvent.keyDown(title, { key: "x", ctrlKey: true, repeat: true });
       const repeated = dispatchClipboardEvent("cut", title, order);
-      expect(repeated.event.defaultPrevented).toBe(false);
+      expect(repeated.event.defaultPrevented).toBe(true);
       expect(repeated.setData).not.toHaveBeenCalled();
+      fireEvent.keyUp(title, { key: "x" });
 
       await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
       expect(order).toEqual(["text/plain", "text/markdown", "batch"]);
@@ -4091,6 +4131,47 @@ describe("Notes workspace", () => {
       // The surviving neighbor takes focus.
       await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
+    });
+
+    it("does not steal note focus from a surviving row entered while a selected delete is pending", async () => {
+      useCtrlPlatform();
+      const before = [
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
+        node({
+          id: "d",
+          sortKey: 4,
+          title: "Delta",
+          note: "Keep this caret"
+        })
+      ];
+      const after = before.slice(2);
+      configureRepository(before);
+      const batch = deferred<NotesWorkspace>();
+      notesStoreMock.applyBatch.mockReturnValueOnce(batch.promise);
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      act(() => alpha.focus());
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      fireEvent.keyDown(alpha, {
+        key: "Backspace",
+        ctrlKey: true,
+        shiftKey: true
+      });
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+
+      const deltaNote = getTextareaByName("Supporting note: Delta");
+      act(() => deltaNote.focus());
+      expect(deltaNote).toHaveFocus();
+
+      confirmedNodes = after;
+      await act(async () => batch.resolve(workspace(after)));
+
+      await waitFor(() =>
+        expect(queryTextareaByName("Supporting note: Delta")).toHaveFocus()
+      );
+      expect(queryTitleInput("Charlie")).not.toHaveFocus();
     });
 
     it.each([

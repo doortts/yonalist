@@ -182,9 +182,11 @@ function OutlineNodeRowComponent({
     endUtf16: number;
   } | null>(null);
   const focusedPendingIdRef = useRef<NoteId | null>(null);
+  const pendingFocusInProgressRef = useRef(false);
   const focusNoteOnOpenRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const structuralCommandInFlightRef = useRef(false);
+  const shiftClickAnchorRef = useRef<NoteId | null | undefined>(undefined);
   const suppressedBlurPatchRef = useRef<{
     title: string;
     note: string;
@@ -206,6 +208,17 @@ function OutlineNodeRowComponent({
       void actions.flushNodeDraft(nodeId);
     }
   });
+
+  const activeSelectionRowId = (): NoteId | null => {
+    const activeRow =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>("[data-outline-id]")
+        : null;
+    const activeRowId = activeRow?.dataset.outlineId;
+    return activeRowId && getSelectionVisibleNodeIds().includes(activeRowId)
+      ? activeRowId
+      : null;
+  };
 
   useAutoGrowTextarea(titleRef, titleValue);
   useAutoGrowTextarea(noteRef, noteValue, noteOpen);
@@ -234,7 +247,14 @@ function OutlineNodeRowComponent({
     if (!target) {
       return;
     }
-    target.focus();
+    // This focus is the command's own pending-focus postcondition. Do not
+    // report it as a newer user navigation and invalidate its ownership.
+    pendingFocusInProgressRef.current = true;
+    try {
+      target.focus();
+    } finally {
+      pendingFocusInProgressRef.current = false;
+    }
     if (document.activeElement !== target) {
       return;
     }
@@ -610,8 +630,8 @@ function OutlineNodeRowComponent({
         onSelectionAction(resolution.action);
         return;
       case "consumeSelectionShortcut":
-        // Repeated structural selection chords are owned by the selection
-        // layer, but deliberately do not enqueue another command.
+        // Recognized selection chords are owned by the selection layer even
+        // when they are a deliberate no-op (repeat or range boundary).
         return;
       case "focusNote":
         openAndFocusNote();
@@ -803,6 +823,11 @@ function OutlineNodeRowComponent({
           disabled={disabled}
           data-collapsed={hasChildren && isCollapsed ? "true" : undefined}
           data-sortable-activator={dragEnabled ? "true" : undefined}
+          onPointerDownCapture={(event) => {
+            shiftClickAnchorRef.current = event.shiftKey
+              ? activeSelectionRowId()
+              : undefined;
+          }}
           onClick={(event) => {
             // Shift+Click extends the multi-node selection to this row (head),
             // anchoring at the current caret node the first time. A plain click
@@ -811,12 +836,18 @@ function OutlineNodeRowComponent({
               event.preventDefault();
               if (!getSelection()) {
                 const selectionVisibleIds = getSelectionVisibleNodeIds();
-                actions.setSelectionAnchor(
+                const capturedAnchorId = shiftClickAnchorRef.current;
+                shiftClickAnchorRef.current = undefined;
+                const activeRowId =
+                  capturedAnchorId === undefined
+                    ? activeSelectionRowId()
+                    : capturedAnchorId;
+                const fallbackRowId =
                   state.selectedId !== null &&
                     selectionVisibleIds.includes(state.selectedId)
                     ? state.selectedId
-                    : nodeId
-                );
+                    : nodeId;
+                actions.setSelectionAnchor(activeRowId ?? fallbackRowId);
               }
               actions.extendSelectionTo(nodeId);
               return;
@@ -870,6 +901,11 @@ function OutlineNodeRowComponent({
               title: event.target.value,
               note: noteValue
             }, "title")
+          }}
+          onFocus={() => {
+            if (!pendingFocusInProgressRef.current) {
+              actions.markEditingFocus?.(nodeId, "title");
+            }
           }}
           onKeyDown={handleTitleKeyDown}
           onPaste={(event) => handlePaste(event, "title")}
@@ -981,6 +1017,11 @@ function OutlineNodeRowComponent({
               title: titleValue,
               note: event.target.value
             }, "note");
+          }}
+          onFocus={() => {
+            if (!pendingFocusInProgressRef.current) {
+              actions.markEditingFocus?.(nodeId, "note");
+            }
           }}
           onPaste={(event) => handlePaste(event, "note")}
           onBlur={() => {

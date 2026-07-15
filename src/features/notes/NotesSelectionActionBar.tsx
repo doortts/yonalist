@@ -646,6 +646,7 @@ export const NotesSelectionActionBar = forwardRef<
                       return;
                     }
                     setMoreOpen(false);
+                    moreTriggerRef.current?.focus();
                     invoke(item.action);
                   }}
                 >

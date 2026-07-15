@@ -119,12 +119,14 @@ function dependencies(
 ) {
   let currentSnapshot = snapshot();
   let currentRevision = 7;
+  let currentNavigationVersion = 11;
   const projectedWorkspace = authority(["a", "b", "c"]).workspace;
   let visibleNodeIds: readonly NoteId[] = ["a", "b", "c", "tail"];
   const prepared = authority(["a", "b", "c"]);
   const deps: NotesSelectionCommandRouterDependencies<NotesSelectionRouterAuthority> = {
     getSnapshot: () => currentSnapshot,
     getSelectionRevision: () => currentRevision,
+    getNavigationVersion: () => currentNavigationVersion,
     getVisibleNodeIds: () => visibleNodeIds,
     flushDrafts: vi.fn().mockResolvedValue(true),
     prepareAuthority: vi.fn().mockResolvedValue(prepared),
@@ -149,6 +151,9 @@ function dependencies(
     },
     setRevision(value: number) {
       currentRevision = value;
+    },
+    setNavigationVersion(value: number) {
+      currentNavigationVersion = value;
     },
     setVisibleNodeIds(value: readonly NoteId[]) {
       visibleNodeIds = value;
@@ -377,8 +382,29 @@ describe("createNotesSelectionCommandRouter", () => {
     expect(harness.deps.applyBatch).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves newer selection and focus when a prepared native Cut settles late", async () => {
-    let revision = 7;
+  it("captures prepared native Cut navigation ownership at commit, not prewarm", async () => {
+    const harness = dependencies();
+    const router = createNotesSelectionCommandRouter(harness.deps);
+    const session = await router.prepareClipboard();
+    harness.setNavigationVersion(14);
+
+    router.commitPreparedClipboardEvent(
+      "cut",
+      nativeClipboardEvent().event,
+      session!
+    );
+
+    await vi.waitFor(() =>
+      expect(harness.deps.applyBatch).toHaveBeenCalledWith(
+        expect.anything(),
+        { type: "delete" },
+        { focusNodeId: "tail", expectedNavigationVersion: 14 }
+      )
+    );
+  });
+
+  it("preserves newer focus when a prepared native Cut loses navigation ownership", async () => {
+    const revision = 7;
     const pendingDelete = deferred<NotesBatchCommandSettlement>();
     const replaceSelection = vi.fn(
       (_selection, expectedRevision: number) => expectedRevision === revision
@@ -398,10 +424,10 @@ describe("createNotesSelectionCommandRouter", () => {
       nativeClipboardEvent().event,
       session!
     );
-    revision = 8;
     pendingDelete.resolve({
       outcome: "committed",
       mutationCommitted: true,
+      navigationOwned: false,
       projectedWorkspace: normalizeWorkspace({
         nodes: [node("tail", { sortKey: 1 })]
       })
@@ -911,10 +937,32 @@ describe("createNotesSelectionCommandRouter", () => {
     expect(harness.deps.applyBatch).toHaveBeenCalledWith(
       prepared,
       { type: "delete" },
-      undefined
+      { focusNodeId: "tail", expectedNavigationVersion: 11 }
     );
     expect(harness.deps.replaceSelection).toHaveBeenCalledWith(null, 7);
     expect(harness.deps.focusNode).toHaveBeenCalledWith("tail");
+  });
+
+  it("captures navigation ownership before an executing command awaits draft flush", async () => {
+    const flush = deferred<boolean>();
+    const harness = dependencies({
+      flushDrafts: vi.fn().mockReturnValue(flush.promise)
+    });
+    const router = createNotesSelectionCommandRouter(harness.deps);
+
+    const completion = router.execute({ type: "delete" });
+    await vi.waitFor(() =>
+      expect(harness.deps.flushDrafts).toHaveBeenCalledTimes(1)
+    );
+    harness.setNavigationVersion(15);
+    flush.resolve(true);
+    await completion;
+
+    expect(harness.deps.applyBatch).toHaveBeenCalledWith(
+      expect.anything(),
+      { type: "delete" },
+      { focusNodeId: "tail", expectedNavigationVersion: 11 }
+    );
   });
 
   it("never deletes when Cut clipboard writing fails", async () => {
@@ -1070,6 +1118,30 @@ describe("createNotesSelectionCommandRouter", () => {
         error:
           "The command completed, but the current view could not be refreshed."
       });
+    }
+  );
+
+  it.each(["delete", "cut"] as const)(
+    "clears the frozen range without restoring %s survivor focus after navigation ownership is lost",
+    async (type) => {
+      const focusNode = vi.fn();
+      const replaceSelection = vi.fn(() => true);
+      const harness = dependencies({
+        applyBatch: vi.fn().mockResolvedValue({
+          outcome: "committed",
+          mutationCommitted: true,
+          navigationOwned: false,
+          projectedWorkspace: authority(["tail"]).workspace
+        }),
+        replaceSelection,
+        focusNode
+      });
+      const router = createNotesSelectionCommandRouter(harness.deps);
+
+      await router.execute({ type });
+
+      expect(replaceSelection).toHaveBeenCalledWith(null, 7);
+      expect(focusNode).not.toHaveBeenCalled();
     }
   );
 
@@ -1344,7 +1416,7 @@ describe("createNotesSelectionCommandRouter", () => {
       expect(harness.deps.applyBatch).toHaveBeenCalledWith(
         expect.anything(),
         { type: "delete" },
-        undefined
+        { focusNodeId, expectedNavigationVersion: 11 }
       );
       expect(replaceSelection).toHaveBeenCalledWith(null, 7);
       if (focusNodeId === null) {
@@ -1390,7 +1462,7 @@ describe("createNotesSelectionCommandRouter", () => {
       expect(harness.deps.applyBatch).toHaveBeenCalledWith(
         expect.anything(),
         { type: "delete" },
-        undefined
+        { focusNodeId: "tail", expectedNavigationVersion: 11 }
       );
       expect(replaceSelection).toHaveBeenCalledWith(null, 7);
       expect(focusNode).not.toHaveBeenCalled();

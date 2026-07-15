@@ -66,6 +66,60 @@ function router(
 }
 
 describe("createNotesSelectionNativeClipboardController", () => {
+  it("claims an eligible Copy while selection clipboard preparation is pending", () => {
+    const selectionRouter = router();
+    const onPreparationPending = vi.fn();
+    const controller = createNotesSelectionNativeClipboardController(
+      selectionRouter,
+      { onPreparationPending }
+    );
+    const clipboard = nativeEvent();
+
+    const outcome = controller.handleCopy(clipboard.event, {
+      claimUnprepared: true
+    });
+
+    expect(outcome).toEqual({
+      kind: "claimed",
+      reason: "unprepared",
+      intent: "copy"
+    });
+    expect(outcome).not.toBeInstanceOf(Promise);
+    expect(clipboard.preventDefault).toHaveBeenCalledTimes(1);
+    expect(onPreparationPending).toHaveBeenCalledWith("copy");
+    expect(selectionRouter.prepareClipboard).toHaveBeenCalledTimes(1);
+    expect(selectionRouter.commitPreparedClipboardEvent).not.toHaveBeenCalled();
+  });
+
+  it("never commits an unprepared Cut after its asynchronous preparation completes", async () => {
+    const pending = deferred<TestSession | null>();
+    const selectionRouter = router({
+      prepareClipboard: vi.fn(() => pending.promise)
+    });
+    const onPreparationPending = vi.fn();
+    const controller = createNotesSelectionNativeClipboardController(
+      selectionRouter,
+      { onPreparationPending }
+    );
+    const clipboard = nativeEvent();
+
+    expect(
+      controller.handleCut(clipboard.event, { claimUnprepared: true })
+    ).toEqual({
+      kind: "claimed",
+      reason: "unprepared",
+      intent: "cut"
+    });
+    const preparation = controller.prewarm();
+    pending.resolve({ id: "ready" });
+    await expect(preparation).resolves.toEqual({ id: "ready" });
+
+    expect(clipboard.preventDefault).toHaveBeenCalledTimes(1);
+    expect(clipboard.setData).not.toHaveBeenCalled();
+    expect(onPreparationPending).toHaveBeenCalledWith("cut");
+    expect(selectionRouter.commitPreparedClipboardEvent).not.toHaveBeenCalled();
+  });
+
   it("coalesces preparation inside one lifecycle generation", async () => {
     const pending = deferred<TestSession | null>();
     const selectionRouter = router({
@@ -283,6 +337,80 @@ describe("createNotesSelectionNativeClipboardController", () => {
     expect(selectionRouter.commitPreparedClipboardEvent).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    { label: "Copy", key: "c", intent: "copy" as const },
+    { label: "Cut", key: "x", intent: "cut" as const }
+  ])(
+    "claims repeated outline $label events until keyup without committing",
+    async ({ key, intent }) => {
+      const selectionRouter = router();
+      const controller = createNotesSelectionNativeClipboardController(
+        selectionRouter
+      );
+      await controller.prewarm();
+      const handle =
+        intent === "copy" ? controller.handleCopy : controller.handleCut;
+
+      controller.handleKeyDown({ key, metaKey: true, repeat: true });
+      for (let index = 0; index < 2; index += 1) {
+        const clipboard = nativeEvent();
+        expect(handle(clipboard.event, { claimUnprepared: true })).toEqual({
+          kind: "claimed",
+          reason: "repeat",
+          intent
+        });
+        expect(clipboard.preventDefault).toHaveBeenCalledTimes(1);
+        expect(clipboard.setData).not.toHaveBeenCalled();
+      }
+      expect(
+        selectionRouter.commitPreparedClipboardEvent
+      ).not.toHaveBeenCalled();
+
+      controller.handleKeyUp({ key });
+      const afterKeyup = nativeEvent();
+      expect(handle(afterKeyup.event, { claimUnprepared: true })).toEqual({
+        kind: "committed",
+        intent
+      });
+      expect(
+        selectionRouter.commitPreparedClipboardEvent
+      ).toHaveBeenCalledOnce();
+    }
+  );
+
+  it("keeps composition and native text selection ahead of an outline repeat claim", async () => {
+    const selectionRouter = router();
+    const controller = createNotesSelectionNativeClipboardController(
+      selectionRouter
+    );
+    await controller.prewarm();
+    controller.handleKeyDown({ key: "c", metaKey: true, repeat: true });
+
+    const composing = nativeEvent();
+    expect(
+      controller.handleCopy(composing.event, {
+        claimUnprepared: true,
+        isComposing: true
+      })
+    ).toEqual({ kind: "unowned", reason: "composition" });
+    expect(composing.preventDefault).not.toHaveBeenCalled();
+
+    const nativeSelection = nativeEvent({
+      tagName: "TEXTAREA",
+      selectionStart: 0,
+      selectionEnd: 4
+    });
+    expect(
+      controller.handleCopy(nativeSelection.event, {
+        claimUnprepared: true
+      })
+    ).toEqual({ kind: "unowned", reason: "nativeTextSelection" });
+    expect(nativeSelection.preventDefault).not.toHaveBeenCalled();
+    expect(
+      selectionRouter.commitPreparedClipboardEvent
+    ).not.toHaveBeenCalled();
+  });
+
   it("leaves missing and router-rejected sessions unowned", async () => {
     const missingRouter = router();
     const missing = createNotesSelectionNativeClipboardController(missingRouter);
@@ -311,6 +439,70 @@ describe("createNotesSelectionNativeClipboardController", () => {
       reason: "unprepared"
     });
   });
+
+  it.each(["stale", "busy"] as const)(
+    "claims a %s prepared-session rejection and never leaks native Cut",
+    async (reason) => {
+      const selectionRouter = router({
+        commitPreparedClipboardEvent: vi.fn(() => ({
+          kind: "rejected" as const,
+          reason
+        }))
+      });
+      const onPreparationPending = vi.fn();
+      const controller = createNotesSelectionNativeClipboardController(
+        selectionRouter,
+        { onPreparationPending }
+      );
+      await controller.prewarm();
+      const clipboard = nativeEvent();
+
+      expect(
+        controller.handleCut(clipboard.event, { claimUnprepared: true })
+      ).toEqual({ kind: "rejected", reason });
+      expect(clipboard.preventDefault).toHaveBeenCalledTimes(1);
+      expect(clipboard.setData).not.toHaveBeenCalled();
+      expect(onPreparationPending).toHaveBeenCalledWith("cut");
+      expect(selectionRouter.prepareClipboard).toHaveBeenCalledTimes(
+        reason === "stale" ? 2 : 1
+      );
+      expect(
+        selectionRouter.invalidatePreparedClipboard
+      ).toHaveBeenCalledTimes(reason === "stale" ? 1 : 0);
+    }
+  );
+
+  it.each([
+    {
+      label: "unavailable Cut",
+      outcome: {
+        kind: "rejected" as const,
+        reason: "cutUnavailable" as const
+      }
+    },
+    {
+      label: "clipboard failure",
+      outcome: { kind: "failed" as const, message: "write failed" }
+    }
+  ])(
+    "claims a prepared $label instead of falling through to native Cut",
+    async ({ outcome }) => {
+      const selectionRouter = router({
+        commitPreparedClipboardEvent: vi.fn(() => outcome)
+      });
+      const controller = createNotesSelectionNativeClipboardController(
+        selectionRouter
+      );
+      await controller.prewarm();
+      const clipboard = nativeEvent();
+
+      expect(
+        controller.handleCut(clipboard.event, { claimUnprepared: true })
+      ).toEqual(outcome);
+      expect(clipboard.preventDefault).toHaveBeenCalledTimes(1);
+      expect(clipboard.setData).not.toHaveBeenCalled();
+    }
+  );
 
   it("delegates synchronous dual-MIME Copy to the prepared router session", async () => {
     const selectionRouter = router();

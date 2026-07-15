@@ -21,6 +21,8 @@ export interface NotesNativeClipboardEvent extends NotesClipboardEvent {
 export interface NotesNativeClipboardEventOptions {
   /** Non-input/textarea targets stay native unless the pane opts in. */
   readonly allowNonTextTarget?: boolean;
+  /** Claims eligible unprepared/repeat events for a live outline selection. */
+  readonly claimUnprepared?: boolean;
   /** Lets an event boundary provide composition state without using trackers. */
   readonly isComposing?: boolean;
   /** Lets an event boundary provide repeat state without using trackers. */
@@ -46,13 +48,26 @@ export type NotesNativeClipboardUnownedReason =
 export type NotesNativeClipboardHandleOutcome =
   | NotesPreparedClipboardCommitOutcome
   | {
+      readonly kind: "claimed";
+      readonly reason: "unprepared" | "repeat";
+      readonly intent: NotesPreparedClipboardIntent;
+    }
+  | {
       readonly kind: "unowned";
       readonly reason: NotesNativeClipboardUnownedReason;
     };
 
+export interface NotesSelectionNativeClipboardControllerOptions {
+  readonly onPreparationPending?: (
+    intent: NotesPreparedClipboardIntent
+  ) => void;
+}
+
 export interface NotesSelectionNativeClipboardController<Session> {
   /** Coalesces callers until the current lifecycle generation settles. */
   readonly prewarm: () => Promise<Session | null>;
+  /** Lets outer lifecycle guards preserve the controller's IME exception. */
+  readonly isCompositionActive: () => boolean;
   /** Invalidates the old lifecycle generation, then starts a fresh prewarm. */
   readonly refresh: () => Promise<Session | null>;
   /** Call for selection, scope, visibility, draft, or command lifecycle changes. */
@@ -133,7 +148,8 @@ function shortcutIntent(
  * the selection command router.
  */
 export function createNotesSelectionNativeClipboardController<Session>(
-  router: NotesSelectionNativeClipboardRouter<Session>
+  router: NotesSelectionNativeClipboardRouter<Session>,
+  controllerOptions: NotesSelectionNativeClipboardControllerOptions = {}
 ): NotesSelectionNativeClipboardController<Session> {
   let generation = 0;
   let disposed = false;
@@ -219,10 +235,21 @@ export function createNotesSelectionNativeClipboardController<Session>(
     ) {
       return { kind: "unowned", reason: "composition" };
     }
-    if (
+    const repeated =
       options.repeatedPrimaryShortcut === true ||
-      repeatedShortcut === intent
-    ) {
+      repeatedShortcut === intent;
+    if (repeated && options.claimUnprepared === true) {
+      const blockedTarget = targetBlockReason(
+        event.target,
+        options.allowNonTextTarget === true
+      );
+      if (blockedTarget !== null) {
+        return { kind: "unowned", reason: blockedTarget };
+      }
+      event.preventDefault();
+      return { kind: "claimed", reason: "repeat", intent };
+    }
+    if (repeated) {
       return { kind: "unowned", reason: "repeat" };
     }
     const blockedTarget = targetBlockReason(
@@ -234,23 +261,51 @@ export function createNotesSelectionNativeClipboardController<Session>(
     }
     const session = activeSession;
     if (session === null) {
+      if (options.claimUnprepared === true) {
+        event.preventDefault();
+        void prewarm();
+        controllerOptions.onPreparationPending?.(intent);
+        return { kind: "claimed", reason: "unprepared", intent };
+      }
       return { kind: "unowned", reason: "unprepared" };
     }
 
     const outcome = router.commitPreparedClipboardEvent(intent, event, session);
-    if (
-      (outcome.kind === "committed" && intent === "cut") ||
-      (outcome.kind === "rejected" && outcome.reason === "stale")
-    ) {
+    if (outcome.kind === "committed" && intent === "cut") {
       generation += 1;
       activeSession = null;
       preparation = null;
+      return outcome;
+    }
+    if (outcome.kind === "rejected" && outcome.reason === "stale") {
+      if (options.claimUnprepared === true) {
+        event.preventDefault();
+        invalidateCurrent();
+        void prewarm();
+        controllerOptions.onPreparationPending?.(intent);
+      } else {
+        generation += 1;
+        activeSession = null;
+        preparation = null;
+      }
+      return outcome;
+    }
+    if (options.claimUnprepared === true && outcome.kind !== "committed") {
+      // Once the pane opts in for a live outline selection, every eligible
+      // clipboard event remains pane-owned even if the prepared session races
+      // with another command or the synchronous clipboard write fails. Native
+      // Cut must never edit the focused textarea as a fallback.
+      event.preventDefault();
+      if (outcome.kind === "rejected" && outcome.reason === "busy") {
+        controllerOptions.onPreparationPending?.(intent);
+      }
     }
     return outcome;
   };
 
   return {
     prewarm,
+    isCompositionActive: () => compositionActive || processKeyActive,
     refresh,
     invalidate,
     dispose() {

@@ -117,6 +117,8 @@ export interface NotesSelectionCommandRouterDependencies<
 > {
   readonly getSnapshot: () => NotesSelectionActionSnapshot | null;
   readonly getSelectionRevision: () => number;
+  /** Monotonic editor/navigation epoch, independent from selection currency. */
+  readonly getNavigationVersion: () => number;
   /** Derives pane-visible IDs synchronously from the exact projected result,
    * using the pane's current zoom/expansion rules without waiting for render. */
   readonly getVisibleNodeIds: (
@@ -135,6 +137,7 @@ export interface NotesSelectionCommandRouterDependencies<
     options?: {
       focusNodeId?: NoteId | null;
       expandNodeId?: NoteId;
+      expectedNavigationVersion?: number;
     }
   ) => Promise<NotesBatchCommandSettlement>;
   readonly replaceSelection: (
@@ -602,7 +605,8 @@ export function createNotesSelectionCommandRouter<
   };
 
   const finalizePreparedCut = async (
-    prepared: ActivePreparedClipboardSession<Authority>
+    prepared: ActivePreparedClipboardSession<Authority>,
+    expectedNavigationVersion: number
   ): Promise<void> => {
     try {
       if (
@@ -619,7 +623,10 @@ export function createNotesSelectionCommandRouter<
       const settlement = await dependencies.applyBatch(
         prepared.authority,
         { type: "delete" },
-        undefined
+        {
+          focusNodeId: prepared.focusNodeId,
+          expectedNavigationVersion
+        }
       );
       const committed =
         settlement.outcome === "committed" || settlement.mutationCommitted;
@@ -643,6 +650,7 @@ export function createNotesSelectionCommandRouter<
       );
       if (
         selectionCleared &&
+        settlement.navigationOwned !== false &&
         prepared.focusNodeId !== null &&
         settlement.projectedWorkspace.nodesById[prepared.focusNodeId]
       ) {
@@ -782,11 +790,12 @@ export function createNotesSelectionCommandRouter<
       return { kind: "committed", intent };
     }
 
+    const expectedNavigationVersion = dependencies.getNavigationVersion();
     activeClipboardSession = null;
     clipboardEpoch += 1;
     feedback(dependencies, "Copied.", null);
     setBusy(true);
-    void finalizePreparedCut(prepared);
+    void finalizePreparedCut(prepared, expectedNavigationVersion);
     return { kind: "committed", intent };
   };
 
@@ -797,6 +806,7 @@ export function createNotesSelectionCommandRouter<
     if (busy) {
       return execution("busy");
     }
+    const expectedNavigationVersion = dependencies.getNavigationVersion();
     invalidatePreparedClipboard();
     const snapshot =
       frozenContext?.ownership.actionSnapshot ?? dependencies.getSnapshot();
@@ -930,7 +940,10 @@ export function createNotesSelectionCommandRouter<
         const settlement = await dependencies.applyBatch(
           authority,
           { type: "delete" },
-          undefined
+          {
+            focusNodeId: command.focusNodeId ?? null,
+            expectedNavigationVersion
+          }
         );
         const committed =
           settlement.outcome === "committed" || settlement.mutationCommitted;
@@ -957,6 +970,7 @@ export function createNotesSelectionCommandRouter<
         );
         if (
           selectionCleared &&
+          settlement.navigationOwned !== false &&
           command.focusNodeId != null &&
           settlement.projectedWorkspace.nodesById[command.focusNodeId]
         ) {
@@ -973,9 +987,14 @@ export function createNotesSelectionCommandRouter<
       const settlement = await dependencies.applyBatch(
         authority,
         oneStepOp ?? command.op!,
-        command.expandNodeId === undefined
-          ? undefined
-          : { expandNodeId: command.expandNodeId }
+        intent.type === "delete"
+          ? {
+              focusNodeId: command.focusNodeId ?? null,
+              expectedNavigationVersion
+            }
+          : command.expandNodeId === undefined
+            ? undefined
+            : { expandNodeId: command.expandNodeId }
       );
       const committed =
         settlement.outcome === "committed" || settlement.mutationCommitted;
@@ -1034,6 +1053,7 @@ export function createNotesSelectionCommandRouter<
         );
         if (
           selectionCleared &&
+          settlement.navigationOwned !== false &&
           command.focusNodeId != null &&
           settlement.projectedWorkspace.nodesById[command.focusNodeId]
         ) {
@@ -1102,6 +1122,8 @@ export function useNotesSelectionCommandRouter<
       getSnapshot: () => dependenciesRef.current.getSnapshot(),
       getSelectionRevision: () =>
         dependenciesRef.current.getSelectionRevision(),
+      getNavigationVersion: () =>
+        dependenciesRef.current.getNavigationVersion(),
       getVisibleNodeIds: (workspace) =>
         dependenciesRef.current.getVisibleNodeIds(workspace),
       flushDrafts: () => dependenciesRef.current.flushDrafts(),

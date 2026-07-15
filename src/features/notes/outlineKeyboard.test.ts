@@ -883,7 +883,7 @@ describe("resolveOutlineKey selection", () => {
     ).toEqual({ type: "extendSelection", headId: "grandchild" });
   });
 
-  it("uses the selection-only visible rows when extending a zoomed range", () => {
+  it("consumes Shift+ArrowUp at the first selection-only visible row", () => {
     expect(
       resolveOutlineKey(
         input({
@@ -894,7 +894,7 @@ describe("resolveOutlineKey selection", () => {
           selectionVisibleNodeIds: ["child-a", "grandchild", "child-b"]
         })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeSelectionShortcut" });
   });
 
   it("keeps structural visible rows for ordinary zoomed caret navigation", () => {
@@ -938,7 +938,7 @@ describe("resolveOutlineKey selection", () => {
     ).toEqual({ type: "extendSelection", headId: "root-a" });
   });
 
-  it("Shift+ArrowDown at the last visible row is a no-op", () => {
+  it("consumes Shift+ArrowDown at the last visible row", () => {
     expect(
       resolveOutlineKey(
         input({
@@ -948,7 +948,7 @@ describe("resolveOutlineKey selection", () => {
           selection: { anchorId: "root-a", headId: "root-c" }
         })
       )
-    ).toBeNull();
+    ).toEqual({ type: "consumeSelectionShortcut" });
   });
 
   it("ArrowDown without Shift collapses to a caret move (focus), not a range", () => {

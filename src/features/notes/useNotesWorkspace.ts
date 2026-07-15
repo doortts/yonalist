@@ -174,6 +174,13 @@ function hasAttachmentCleanupFlag(
 export interface NotesWorkspaceActions {
   acknowledgeFocus(nodeId: NoteId): Promise<void>;
   focusNode(nodeId: NoteId): Promise<void>;
+  /** Records a real editor-caret move without dispatching a row-wide render. */
+  markEditingFocus?(
+    nodeId: NoteId,
+    field: NotesHistoryFocusField
+  ): void;
+  /** Live navigation epoch used to own async command postconditions. */
+  getNavigationVersion?(): number;
   createRoot(): Promise<NotesWorkspaceCommandOutcome>;
   splitNode(
     nodeId: NoteId,
@@ -393,6 +400,8 @@ export interface NotesPreparedSelectionBatchOptions {
   readonly focusNodeId?: NoteId | null;
   /** Client-only expansion applied only after an authoritative prepared move. */
   readonly expandNodeId?: NoteId;
+  /** Navigation epoch captured when the semantic command began. */
+  readonly expectedNavigationVersion?: number;
 }
 
 export interface UseNotesWorkspaceResult
@@ -1055,7 +1064,8 @@ export function focusedUiUpdate(
     : {
         selectedId: focusNodeId,
         editingNoteId: focusNodeId,
-        pendingFocusId: focusNodeId
+        pendingFocusId: focusNodeId,
+        pendingFocusField: "title"
       };
 }
 
@@ -1329,19 +1339,31 @@ export function useNotesWorkspace({
   // synchronous mirror first (with the same pure reducer React will run on
   // commit) keeps `stateRef` ahead of the render, so navigation reads never
   // observe a stale value even before React re-renders. It also retires the
-  // live editing caret whenever the reducer authoritatively moves editing (a
-  // settle carrying a focus update, focusNode, focus acknowledgement, load);
-  // a pure zoom or a silent draft settle leaves selection/editing untouched, so
-  // the caret survives to feed the next history "before" snapshot.
+  // live editing caret whenever the reducer authoritatively moves somewhere
+  // else. A settle that catches the reducer up to the same live editor keeps
+  // that caret; pure zoom and silent draft settles do as well.
   const applyAction = useCallback(
     (action: NotesWorkspaceReducerAction): void => {
       const previous = stateRef.current;
       const next = notesWorkspaceReducer(previous, action);
       stateRef.current = next;
+      const liveEditingFocus = editingFocusRef.current;
+      const liveEditingNodeWasRemoved =
+        liveEditingFocus !== null &&
+        next.nodesById[liveEditingFocus.nodeId] === undefined;
+      const settlesToLiveEditingFocus =
+        liveEditingFocus !== null &&
+        next.selectedId === liveEditingFocus.nodeId &&
+        next.editingNoteId === liveEditingFocus.nodeId &&
+        (next.pendingFocusId === null ||
+          (next.pendingFocusId === liveEditingFocus.nodeId &&
+            (next.pendingFocusField ?? "title") === liveEditingFocus.field));
       if (
-        next.selectedId !== previous.selectedId ||
-        next.editingNoteId !== previous.editingNoteId ||
-        next.pendingFocusField !== previous.pendingFocusField
+        liveEditingNodeWasRemoved ||
+        ((next.selectedId !== previous.selectedId ||
+          next.editingNoteId !== previous.editingNoteId ||
+          next.pendingFocusField !== previous.pendingFocusField) &&
+          !settlesToLiveEditingFocus)
       ) {
         editingFocusRef.current = null;
       }
@@ -1381,6 +1403,10 @@ export function useNotesWorkspace({
       pendingFocusField: editing ? editing.field : settled.pendingFocusField
     };
   }, []);
+  const currentEditingFocus = useCallback(
+    (): NotesHistoryFocus | null => editingFocusRef.current,
+    []
+  );
 
   // The draft engine is the external store behind the drafts slice. A stable
   // subscribe/getSnapshot pair reads whichever engine is currently active so
@@ -2102,6 +2128,7 @@ export function useNotesWorkspace({
       sessionRecordRef,
       sessionRef,
       currentNavigation,
+      currentEditingFocus,
       navigationVersionRef,
       locallyExpandedNodeIdsRef,
       tagFilterRequestRef,
@@ -2125,6 +2152,7 @@ export function useNotesWorkspace({
     }),
     [
       currentNavigation,
+      currentEditingFocus,
       runStructuralCommand,
       rememberHistoryAfter,
       replaceLocalExpansions,
@@ -2178,14 +2206,30 @@ export function useNotesWorkspace({
     [discardHistoryEntry, rememberHistoryAfter]
   );
 
-  const setDraftEditingNavigation = useCallback(
+  const markEditingFocus = useCallback(
     (nodeId: NoteId, field: NotesHistoryFocusField): void => {
-      // Record the live caret without dispatching: a reducer update here would
-      // re-render every row on each keystroke. currentNavigation() overlays this
-      // field onto the settled navigation while nodeId is still the editing
-      // node, so history "before" snapshots see the field being typed into.
+      // A real DOM focus event is a new navigation gesture even when the user
+      // returns to the same node/field after focusing outside the editor.
+      navigationVersionRef.current += 1;
       editingFocusRef.current = { nodeId, field };
     },
+    []
+  );
+  const setDraftEditingNavigation = useCallback(
+    (nodeId: NoteId, field: NotesHistoryFocusField): void => {
+      // Draft updates are only a fallback for non-DOM callers. Repeated typing
+      // in one field must not manufacture a navigation gesture per keystroke.
+      const current = editingFocusRef.current;
+      if (current?.nodeId === nodeId && current.field === field) {
+        return;
+      }
+      navigationVersionRef.current += 1;
+      editingFocusRef.current = { nodeId, field };
+    },
+    []
+  );
+  const getNavigationVersion = useCallback(
+    (): number => navigationVersionRef.current,
     []
   );
 
@@ -2779,7 +2823,20 @@ export function useNotesWorkspace({
 
   const acknowledgeFocus = useCallback(
     async (nodeId: NoteId) => {
-      // applyAction retires the live caret when this clears pendingFocusField.
+      const pending = stateRef.current;
+      if (
+        pending.pendingFocusId === nodeId &&
+        pending.pendingFocusField !== null &&
+        pending.nodesById[nodeId] !== undefined
+      ) {
+        // OutlineNodeRow calls this only after DOM focus succeeds. Preserve the
+        // acknowledged field as the live caret without creating a new user
+        // navigation epoch, then retire the pending-focus request.
+        editingFocusRef.current = {
+          nodeId,
+          field: pending.pendingFocusField
+        };
+      }
       applyAction({ type: "acknowledgePendingFocus", nodeId });
     },
     [applyAction]
@@ -3539,6 +3596,12 @@ export function useNotesWorkspace({
     return {
       acknowledgeFocus: gate(acknowledgeFocus),
       focusNode: gate(focusNode),
+      markEditingFocus: (nodeId, field) => {
+        if (!deletingNotesDataRef.current) {
+          markEditingFocus(nodeId, field);
+        }
+      },
+      getNavigationVersion,
       createRoot: gateOutcome(createRoot),
       splitNode: gateOutcome(splitNode),
       createChild: gateOutcome(createChild),
@@ -3601,6 +3664,8 @@ export function useNotesWorkspace({
   }, [
     acknowledgeFocus,
     focusNode,
+    markEditingFocus,
+    getNavigationVersion,
     createRoot,
     splitNode,
     createChild,
@@ -3746,7 +3811,8 @@ export function useNotesWorkspace({
         prepared,
         op,
         focusedUiUpdate(options?.focusNodeId),
-        options?.expandNodeId
+        options?.expandNodeId,
+        options?.expectedNavigationVersion ?? navigationVersionRef.current
       ),
     [commandCtx]
   );
