@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+const baseThemeStyles = readFileSync(
+  join(process.cwd(), "src/themes/base-ui-pure.css"),
+  "utf8"
+);
 
 function declarations(selector: string): Record<string, string> {
   const start = styles.indexOf(`${selector} {`);
@@ -160,5 +164,82 @@ describe("Graphite & Mist CSS contract", () => {
     expect(styles).toMatch(
       /prefers-reduced-motion:\s*reduce[\s\S]*\.spinning\s*\{[^}]*animation:\s*spin/s
     );
+  });
+
+  it("enforces the compact control rhythm and radius scale", () => {
+    expect(styles).toMatch(
+      /:root\s*\{[^}]*--radius-sm:\s*4px;[^}]*--radius:\s*5px;[^}]*--radius-lg:\s*8px;/s
+    );
+    expect(styles).toMatch(
+      /\.nav-section-icon-button\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*var\(--radius-sm\);/s
+    );
+    expect(styles).toMatch(
+      /\.text-button,[\s\S]*?\.icon-button\s*\{[^}]*min-height:\s*32px;[^}]*border-radius:\s*var\(--radius\);/s
+    );
+    expect(styles).toMatch(
+      /(?:^|\n)\.icon-button\s*\{[^}]*width:\s*32px;/s
+    );
+    expect(styles).toMatch(
+      /\.list-refresh\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*min-height:\s*28px;/s
+    );
+    expect(styles).toMatch(
+      /\.item-state-tab\s*\{[^}]*min-height:\s*32px;[^}]*border-radius:\s*var\(--radius-sm\) var\(--radius-sm\) 0 0;/s
+    );
+    expect(styles).toMatch(
+      /\.item-sort-trigger\s*\{[^}]*min-height:\s*32px;[^}]*border-radius:\s*var\(--radius-sm\);/s
+    );
+    expect(styles).toMatch(
+      /\.notifications-open-all\s*\{[^}]*width:\s*28px;[^}]*height:\s*28px;[^}]*border-radius:\s*var\(--radius-sm\);/s
+    );
+  });
+
+  it("stores optional row identity in semantic selection tokens", () => {
+    expect(declarations(':root[data-theme="yonal-light"]')).toMatchObject({
+      "--selection-bg":
+        "var(--nav-list-selected-bg, var(--list-selected-bg))",
+      "--selection-rail":
+        "var(--nav-list-selected-border, var(--list-selected-border))"
+    });
+    expect(declarations(':root[data-theme="yona-dark"]')).toMatchObject({
+      "--selection-bg": "var(--yonal-gradient-soft)",
+      "--selection-rail": "var(--accent)"
+    });
+    expect(baseThemeStyles).toMatch(
+      /:root\[data-theme="base-light"\],\s*:root\[data-theme="base-dark"\]\s*\{[^}]*--selection-bg:\s*var\(--bg-active\);[^}]*--selection-rail:\s*var\(--text-1\);/s
+    );
+  });
+
+  it("keeps shared row selection and unread declarations authoritative", () => {
+    expect(styles).toMatch(
+      /\.item-card\.selected\s*\{[^}]*background:\s*var\(--selection-bg\);[^}]*box-shadow:\s*inset 2px 0 0 var\(--selection-rail\);/s
+    );
+    expect(styles).toMatch(
+      /\.notification-row\.selected\s*\{[^}]*background:\s*var\(--selection-bg\);[^}]*box-shadow:\s*inset 2px 0 0 var\(--selection-rail\);/s
+    );
+    expect(declarations(".notification-unread-dot").background).toBe(
+      "var(--accent)"
+    );
+    expect(styles).not.toMatch(
+      /:root\[data-theme="yonal-light"\] \.item-card\.selected/
+    );
+    expect(styles).not.toMatch(
+      /:root\[data-theme="yona-dark"\] \.item-card\.selected/
+    );
+    expect(styles).not.toMatch(
+      /:root\[data-theme="yona-dark"\] \.notification-unread-dot/
+    );
+    expect(baseThemeStyles).not.toMatch(
+      /:root\[data-theme="base-(?:light|dark)"\] \.item-card\.selected/
+    );
+    expect(baseThemeStyles).not.toMatch(
+      /:root\[data-theme="base-(?:light|dark)"\] \.notification-row\.selected/
+    );
+  });
+
+  it("uses the semantic focus ring for login-required controls", () => {
+    expect(
+      declarations(".icon-button.login-required-button:focus-visible").outline
+    ).toBe("2px solid var(--focus-ring)");
+    expect(styles).not.toContain("outline: 2px solid rgb(220 38 38 / 34%)");
   });
 });

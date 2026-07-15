@@ -42,6 +42,8 @@
   --radius-sm: 4px;
   --radius: 5px;
   --radius-lg: 8px;
+  --selection-bg: var(--bg-active);
+  --selection-rail: var(--text-1);
 }
 
 /* ------------------------------------------------------------------ *
@@ -148,12 +150,8 @@
  *    foreground indicator (base-ui shows selection with foreground, not the
  *    accent hue; the accent stays reserved for focus & links).
  * ------------------------------------------------------------------ */
-:root[data-theme="base-light"] .item-card.selected,
-:root[data-theme="base-dark"] .item-card.selected,
 :root[data-theme="base-light"] .category-item.active,
-:root[data-theme="base-dark"] .category-item.active,
-:root[data-theme="base-light"] .notification-row.selected,
-:root[data-theme="base-dark"] .notification-row.selected {
+:root[data-theme="base-dark"] .category-item.active {
   background: var(--bg-active);
   box-shadow: inset 2px 0 0 var(--text-1);
 }
