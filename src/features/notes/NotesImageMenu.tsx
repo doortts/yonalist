@@ -7,7 +7,7 @@ import {
   Settings,
   Trash2
 } from "lucide-react";
-import type { PointerEvent } from "react";
+import { useState, type PointerEvent } from "react";
 import { IconTooltip } from "../../components/ui/Tooltip";
 
 export interface NotesImageMenuProps {
@@ -62,18 +62,25 @@ export function NotesImageMenu({
   onDelete,
   onOpenSettings
 }: NotesImageMenuProps) {
+  const [open, setOpen] = useState(false);
   const triggerLabel =
     originalName === "Image"
       ? "Image actions"
       : `Image actions for ${originalName}`;
   return (
-    <Menu.Root disabled={disabled} modal={false}>
+    <Menu.Root
+      disabled={disabled}
+      modal={false}
+      open={open}
+      onOpenChange={setOpen}
+    >
       <IconTooltip label="Image actions" side="left">
         <Menu.Trigger
           type="button"
           className="notes-image-menu-trigger"
           aria-label={triggerLabel}
           disabled={disabled}
+          onClick={() => setOpen(true)}
           onPointerDown={stopRowPointerDown}
         >
           <MoreVertical size={18} aria-hidden="true" />
