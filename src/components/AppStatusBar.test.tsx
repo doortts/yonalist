@@ -2,7 +2,40 @@ import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppStatusBar } from "./AppStatusBar";
 
+const emptyMetrics = () => ({
+  listFetchDurationMs: null,
+  detailDisplayDurationMs: null,
+  prefetch: {
+    enabled: false,
+    visible: 0,
+    queued: 0,
+    active: 0,
+    cached: 0,
+    completed: 0,
+    totalDurationMs: 0,
+    lastDurationMs: null
+  },
+  caches: []
+});
+
 describe("AppStatusBar", () => {
+  it("renders feedback inside the status bar", () => {
+    render(
+      <AppStatusBar
+        feedback={<span role="alert">Can't indent selection.</span>}
+        outboxCount={0}
+        online
+        syncing={false}
+        getMetrics={emptyMetrics}
+        onOpenOutbox={vi.fn()}
+      />
+    );
+
+    expect(
+      within(screen.getByLabelText("Status bar")).getByRole("alert")
+    ).toHaveTextContent("Can't indent selection.");
+  });
+
   it("shows list, detail, and prefetch timings", () => {
     render(
       <AppStatusBar

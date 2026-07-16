@@ -139,6 +139,10 @@ import {
   persistActiveFeature
 } from "./features/core/featureSelection";
 import type { FeatureId, FeaturePanes } from "./features/core/featureTypes";
+import {
+  NotesFeedbackProvider,
+  NotesStatusBarMessage
+} from "./features/notes/NotesFeedbackContext";
 import { clearImageProxyCache } from "./services/imageProxy";
 import { scheduleIdleTask } from "./services/idleQueue";
 import {
@@ -1706,6 +1710,7 @@ export default function App({ initialOnline }: AppProps) {
   }
 
   return (
+    <NotesFeedbackProvider active={activeFeatureId === "notes"}>
     <GithubConnectionContext.Provider value={auth.connection}>
     <MarkdownStyleContext.Provider value={settings.markdownStyle}>
     <VaultRootContext.Provider value={vaultRoot}>
@@ -1818,6 +1823,7 @@ export default function App({ initialOnline }: AppProps) {
       )}
 
       <AppStatusBar
+        feedback={<NotesStatusBarMessage />}
         outboxCount={outboxSync.outbox.length}
         online={online}
         syncing={outboxSync.syncing}
@@ -1878,5 +1884,6 @@ export default function App({ initialOnline }: AppProps) {
     </VaultRootContext.Provider>
     </MarkdownStyleContext.Provider>
     </GithubConnectionContext.Provider>
+    </NotesFeedbackProvider>
   );
 }

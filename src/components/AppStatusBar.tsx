@@ -1,5 +1,5 @@
 import { Inbox } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, type ReactNode, useEffect, useState } from "react";
 import { IconTooltip } from "./ui/Tooltip";
 
 export interface StatusBarMetrics {
@@ -39,6 +39,7 @@ interface AppStatusBarProps {
   outboxCount: number;
   online: boolean;
   syncing: boolean;
+  feedback?: ReactNode;
   /**
    * Pull-based metrics source. Called on a polling interval inside the status
    * bar so metric churn (prefetch progress, cache growth) never re-renders
@@ -78,12 +79,14 @@ export const AppStatusBar = memo(function AppStatusBar({
   outboxCount,
   online,
   syncing,
+  feedback,
   getMetrics,
   onOpenOutbox
 }: AppStatusBarProps) {
   return (
     <footer className="app-statusbar" aria-label="Status bar">
       {METRICS_ENABLED && <StatusBarMetricsRow getMetrics={getMetrics} />}
+      <div className="statusbar-feedback">{feedback}</div>
       <div className="statusbar-actions">
         <span className="statusbar-state">
           {syncing ? "Syncing" : online ? "Online" : "Offline"}

@@ -40,6 +40,7 @@ import { NotesChildComposer } from "./NotesChildComposer";
 import { NotesAttachmentDragPreview } from "./NotesAttachmentDragPreview";
 import { NotesExportMenu } from "./NotesExportMenu";
 import { NotesExportControllerProvider } from "./NotesExportController";
+import { useNotesFeedback } from "./NotesFeedbackContext";
 import { useNotesAttachmentUi } from "./NotesAttachmentUiContext";
 import type { NotesNativeImageDropEvent } from "./notesAttachmentController";
 import {
@@ -1281,6 +1282,28 @@ export function NotesOutlinePane() {
   });
   const executeSelectionCommand = selectionRouter.execute;
   const clearSelectionRouterFeedback = selectionRouter.clearFeedback;
+  const selectionFeedbackError =
+    selectionChooserFeedback.error ??
+    selectionRouter.error ??
+    selectionClipboardError;
+  const { publish: publishNotesFeedback, clear: clearNotesFeedback } =
+    useNotesFeedback();
+  useEffect(() => {
+    clearNotesFeedback();
+  }, [clearNotesFeedback, selectionRevision]);
+  useEffect(() => {
+    if (selectionFeedbackError) {
+      publishNotesFeedback({
+        kind: "error",
+        message: selectionFeedbackError
+      });
+    } else if (selectionRouter.status) {
+      publishNotesFeedback({
+        kind: "status",
+        message: selectionRouter.status
+      });
+    }
+  }, [publishNotesFeedback, selectionFeedbackError, selectionRouter.status]);
   const rejectDisabledSelectionOperation = useCallback(
     (operation: Parameters<typeof notesSelectionOperationDisabledReason>[0]) => {
       const reason = notesSelectionOperationDisabledReason(
@@ -2393,12 +2416,6 @@ export function NotesOutlinePane() {
             snapshot={selectionSnapshot}
             busy={selectionRouter.busy || selectionChooserFeedback.busy}
             mutationDisabledReason={selectionMutationDisabledReason}
-            status={selectionRouter.status}
-            error={
-              selectionChooserFeedback.error ??
-              selectionRouter.error ??
-              selectionClipboardError
-            }
             onAction={executeSelectionAction}
             onClearSelection={actions.clearSelection}
             onReturnFocus={returnFocusToSelectionHead}

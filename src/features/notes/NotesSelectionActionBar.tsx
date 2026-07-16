@@ -39,8 +39,6 @@ export interface NotesSelectionActionBarProps {
   readonly busy?: boolean;
   /** A shared reason that disables mutation controls, for example Trash mode. */
   readonly mutationDisabledReason?: string | null;
-  readonly status?: string | null;
-  readonly error?: string | null;
   readonly onAction: (
     action: NotesSelectionActionBarAction
   ) => void | Promise<void>;
@@ -171,8 +169,6 @@ export const NotesSelectionActionBar = forwardRef<
     snapshot,
     busy = false,
     mutationDisabledReason = null,
-    status = null,
-    error = null,
     onAction,
     onClearSelection,
     onReturnFocus
@@ -303,7 +299,7 @@ export const NotesSelectionActionBar = forwardRef<
       try {
         await onAction(action);
       } catch {
-        // The semantic router owns user-facing errors in the shared region.
+        // The semantic router owns user-facing errors in the status bar.
       } finally {
         submissionRef.current = false;
         setLocallyBusy(false);
@@ -658,16 +654,6 @@ export const NotesSelectionActionBar = forwardRef<
           </div>
         )}
       </div>
-
-      <span
-        className="notes-selection-action-status"
-        role="status"
-        aria-live="polite"
-        aria-atomic="true"
-        data-kind={error ? "error" : status ? "status" : undefined}
-      >
-        {error ?? status ?? ""}
-      </span>
 
       <ToolbarActionButton
         actionKey="delete"

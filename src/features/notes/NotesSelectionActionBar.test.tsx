@@ -174,15 +174,13 @@ describe("NotesSelectionActionBar", () => {
     finish();
   });
 
-  it("renders one polite region for status or error feedback", () => {
+  it("leaves selection command feedback out of the toolbar", () => {
     mockCompactViewport(false);
-    renderBar({ status: "Copied", error: "Clipboard unavailable" });
+    renderBar();
 
-    const regions = screen.getAllByRole("status");
-    expect(regions).toHaveLength(1);
-    expect(regions[0]).toHaveAttribute("aria-live", "polite");
-    expect(regions[0]).toHaveTextContent("Clipboard unavailable");
-    expect(regions[0]).toHaveAttribute("data-kind", "error");
+    const toolbar = screen.getByRole("toolbar");
+    expect(within(toolbar).queryByRole("status")).not.toBeInTheDocument();
+    expect(within(toolbar).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("uses one roving tab stop and handles arrows, Home, and End", () => {

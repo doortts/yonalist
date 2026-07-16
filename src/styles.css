@@ -923,8 +923,22 @@ body.is-resizing-pane {
   text-overflow: ellipsis;
 }
 
-.statusbar-spacer {
+.statusbar-feedback {
+  flex: 1 1 0;
   min-width: 0;
+  padding: 0 12px;
+}
+
+.statusbar-message {
+  display: block;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusbar-message[data-kind="error"] {
+  color: var(--danger);
 }
 
 .statusbar-actions {

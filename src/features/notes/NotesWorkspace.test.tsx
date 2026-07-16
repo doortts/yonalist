@@ -61,6 +61,10 @@ const notesStoreMock = vi.hoisted(() => ({
 vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 
 import { NotesFeatureProvider } from "./NotesFeature";
+import {
+  NotesFeedbackProvider,
+  NotesStatusBarMessage
+} from "./NotesFeedbackContext";
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
@@ -373,12 +377,17 @@ function configureRepository(
 function renderNotesWorkspace(attachmentUi?: NotesAttachmentUiBoundary) {
   return render(
     <StrictMode>
-      <VaultRootContext.Provider value="/vault">
-        <NotesFeatureProvider attachmentUi={attachmentUi}>
-          <NotesLibraryPane />
-          <NotesOutlinePane />
-        </NotesFeatureProvider>
-      </VaultRootContext.Provider>
+      <NotesFeedbackProvider active>
+        <VaultRootContext.Provider value="/vault">
+          <NotesFeatureProvider attachmentUi={attachmentUi}>
+            <NotesLibraryPane />
+            <NotesOutlinePane />
+          </NotesFeatureProvider>
+        </VaultRootContext.Provider>
+        <div className="statusbar-feedback" aria-label="Status bar feedback">
+          <NotesStatusBarMessage />
+        </div>
+      </NotesFeedbackProvider>
     </StrictMode>
   );
 }
@@ -3812,7 +3821,11 @@ describe("Notes workspace", () => {
         expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
-        expect(await within(toolbar).findByText("Copied.")).toBeVisible();
+        expect(
+          await within(
+            screen.getByLabelText("Status bar feedback")
+          ).findByRole("status")
+        ).toHaveTextContent("Copied.");
       } finally {
         restoreClipboard();
       }
@@ -3900,10 +3913,10 @@ describe("Notes workspace", () => {
         await user.click(screen.getByRole("menuitem", { name: "Cut" }));
 
         expect(
-          await within(toolbar).findByText(
-            "The clipboard could not be written."
-          )
-        ).toBeVisible();
+          await within(
+            screen.getByLabelText("Status bar feedback")
+          ).findByRole("alert")
+        ).toHaveTextContent("The clipboard could not be written.");
         expect(write).toHaveBeenCalledOnce();
         expect(writeText).toHaveBeenCalledOnce();
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
@@ -4685,7 +4698,11 @@ describe("Notes workspace", () => {
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
 
-      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      expect(
+        await within(
+          screen.getByLabelText("Status bar feedback")
+        ).findByRole("alert")
+      ).toHaveTextContent(/couldn't open/i);
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
 
@@ -4743,7 +4760,11 @@ describe("Notes workspace", () => {
       await act(async () =>
         chooserAuthority.reject(new Error("stale authority failure"))
       );
-      expect(within(toolbar).queryByText(/couldn't open|selection changed/i)).toBeNull();
+      expect(
+        within(screen.getByLabelText("Status bar feedback")).queryByRole(
+          "alert"
+        )
+      ).toBeNull();
       expect(charlie).toHaveFocus();
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
@@ -4782,7 +4803,11 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 2 selected notes"
       });
-      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      expect(
+        await within(
+          screen.getByLabelText("Status bar feedback")
+        ).findByRole("alert")
+      ).toHaveTextContent(/couldn't open/i);
       await waitFor(() => expect(bravo).toHaveFocus());
     });
 
@@ -5048,16 +5073,22 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 5 selected notes"
       });
-      const status = within(toolbar).getByRole("status");
+      expect(within(toolbar).queryByRole("alert")).not.toBeInTheDocument();
+      const status = within(
+        screen.getByLabelText("Status bar feedback")
+      ).getByRole("alert");
       await waitFor(() =>
         expect(status).toHaveTextContent(
           /^Can't indent selection: the first selected item has no preceding sibling outside the selection\.$/
         )
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
-      expect(status).toHaveAttribute("aria-live", "polite");
-      expect(status).toHaveAttribute("aria-atomic", "true");
       expect(status).toHaveAttribute("data-kind", "error");
+
+      fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      );
     });
 
     it.each([

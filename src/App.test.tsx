@@ -388,6 +388,42 @@ describe("Yonalist app shell", () => {
     );
   });
 
+  it("clears Notes selection feedback when Notes becomes inactive", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
+      nodes: [
+        appTestNote({ id: "alpha", sortKey: 1, title: "Alpha" }),
+        appTestNote({ id: "bravo", sortKey: 2, title: "Bravo" })
+      ]
+    });
+    const applyBatchSpy = vi.spyOn(notesStore, "applyBatch");
+    window.localStorage.setItem(activeFeatureStorageKey, "notes");
+
+    render(<App />);
+    const alpha = await screen.findByDisplayValue<HTMLTextAreaElement>("Alpha");
+    act(() => alpha.focus());
+    fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+    const toolbar = await screen.findByRole("toolbar", {
+      name: "Actions for 2 selected notes"
+    });
+
+    fireEvent.keyDown(alpha, { key: "Tab" });
+
+    const statusBar = screen.getByLabelText("Status bar");
+    expect(await within(statusBar).findByRole("alert")).toHaveTextContent(
+      "Can't indent selection"
+    );
+    expect(within(toolbar).queryByRole("alert")).not.toBeInTheDocument();
+    expect(applyBatchSpy).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "GitHub Inbox" }));
+
+    await waitFor(() =>
+      expect(within(statusBar).queryByRole("alert")).not.toBeInTheDocument()
+    );
+  });
+
   it("opens straight into the app when the last authenticated host verifies", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
     window.localStorage.setItem(
