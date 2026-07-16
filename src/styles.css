@@ -653,9 +653,10 @@ h2 {
   --list-resizer-width: var(--pane-gap);
   display: grid;
   grid-template-columns:
-    var(--sidebar-width, 240px) var(--sidebar-resizer-width, 10px)
-    var(--list-width, 340px) var(--list-resizer-width, 10px)
-    minmax(520px, 1fr);
+    minmax(0, var(--sidebar-width, 240px))
+    var(--sidebar-resizer-width, 10px)
+    minmax(0, var(--list-width, 340px))
+    var(--list-resizer-width, 10px) minmax(320px, 1fr);
   grid-template-rows: minmax(0, 1fr) var(--statusbar-height);
   height: 100vh;
   padding-inline: var(--shell-inset);

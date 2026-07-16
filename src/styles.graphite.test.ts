@@ -142,6 +142,16 @@ describe("Graphite & Mist CSS contract", () => {
     );
   });
 
+  it("shrinks desktop pane requests around a usable detail minimum", () => {
+    expect(
+      declarations(".app-shell")["grid-template-columns"].replace(/\s+/g, " ")
+    ).toBe(
+      "minmax(0, var(--sidebar-width, 240px)) var(--sidebar-resizer-width, 10px) minmax(0, var(--list-width, 340px)) var(--list-resizer-width, 10px) minmax(320px, 1fr)"
+    );
+    expect(styles).toMatch(/@media \(min-width: 981px\)/);
+    expect(styles).toMatch(/@media \(max-width: 980px\)/);
+  });
+
   it("uses shared interactive tokens and restrained motion", () => {
     expect(styles).toMatch(
       /\.theme-options\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(112px,\s*1fr\)\)/s
