@@ -18,9 +18,12 @@ properties:
 - a Notes row-title editing offset.
 
 The root theme contract keeps the current offsets for themes using the shared
-font stack. Soft Paper overrides both offsets for Avenir Next. Notes CSS consumes
-only the custom properties, so typography-specific calibration lives beside the
-theme typography instead of inside the editor layout.
+font stack. Soft Paper keeps the general textarea offset at `-1px` and overrides
+only the row-title offset to `0px` for Avenir Next. The two values differ because
+the page title uses the general field geometry while outline rows use the
+row-title override. Notes CSS consumes only the custom properties, so
+typography-specific calibration lives beside the theme typography instead of
+inside the editor layout.
 
 ## Regression protection
 
