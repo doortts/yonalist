@@ -4115,6 +4115,83 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
+    it("shows a selected drop line before frozen authority resolves", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
+        node({ id: "d", sortKey: 4, title: "Delta" })
+      ];
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: alpha,
+        coords: { clientX: 9, clientY: 14 }
+      });
+      await user.pointer({
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+
+      const dropLine = document.querySelector(".notes-outline-drop-preview");
+      expect(dropLine).not.toBeNull();
+      expect(dropLine).toHaveAttribute("data-before-id", "d");
+      expect(dropLine).not.toHaveAttribute("data-parent-id");
+      expect(dropLine).toHaveAttribute("data-depth", "0");
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+
+      await act(async () => {
+        deferAuthority = false;
+        hydration.resolve(workspace(activeNodes));
+        await hydration.promise;
+      });
+
+      await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
+      expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
+        op: "move",
+        nodeIds: ["a", "b"],
+        parentId: null,
+        afterId: "c",
+        beforeId: null
+      });
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("moves five selected sibling roots as one pointer-dragged block from a middle bullet", async () => {
       const user = userEvent.setup();
       const movingIds = ["a", "b", "c", "d", "e"];

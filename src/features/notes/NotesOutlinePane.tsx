@@ -5,6 +5,7 @@ import {
   KeyboardSensor,
   PointerSensor,
   type Announcements,
+  type CollisionDetection,
   type DragEndEvent,
   type DragMoveEvent,
   type DragStartEvent,
@@ -90,9 +91,14 @@ import {
   OUTLINE_INDENT_PX,
   OUTLINE_NARROW_INDENT_PX,
   OUTLINE_NARROW_MEDIA_QUERY,
+  prepareOutlineSelectionDrag,
+  preparedOutlineSelectionDragContainsNode,
+  projectPreparedOutlineSelectionDrop,
   projectOutlineDrop,
   type OutlineDropProjection,
-  type OutlineDropPreview
+  type OutlineDropPreview,
+  type OutlineSelectionDropResult,
+  type PreparedOutlineSelectionDrag
 } from "./outlineDrag";
 import {
   projectOutlineSelectionDragSession,
@@ -171,6 +177,11 @@ type PaneDragProjection =
       kind: "ordinary-move";
       projection: OutlineDropProjection;
     }>
+  | Readonly<{
+      kind: "selected-preview";
+      prepared: PreparedOutlineSelectionDrag;
+      result: OutlineSelectionDropResult;
+    }>
   | OutlineSelectionDragProjection;
 type PendingPaneSelectionDragPreparation = {
   /** `undefined` is still loading, `null` is a rejected/stale ownership. */
@@ -185,6 +196,7 @@ type PendingPaneSelectionDragSession = Readonly<{
   selectionRevision: number;
   rows: readonly FlattenedOutlineRow[];
   zoomRootId: NoteId | null;
+  preview: PreparedOutlineSelectionDrag;
   preparation: PendingPaneSelectionDragPreparation;
 }>;
 type PaneDragSession =
@@ -727,6 +739,28 @@ export function NotesOutlinePane() {
     },
     [activeDragId]
   );
+  const detectOutlineCollisions = useCallback<CollisionDetection>((args) => {
+    const session = outlineDragSessionRef.current;
+    const prepared =
+      args.pointerCoordinates === null
+        ? null
+        : session?.kind === "selected-ready"
+          ? session.prepared
+          : session?.kind === "selected-pending"
+            ? session.preview
+            : null;
+    return closestCenter(
+      prepared === null
+        ? args
+        : {
+            ...args,
+            droppableContainers: args.droppableContainers.filter(
+              ({ id }) =>
+                !preparedOutlineSelectionDragContainsNode(prepared, String(id))
+            )
+          }
+    );
+  }, []);
   const sensors = useSensors(
     useSensor(PointerSensor, pointerSensorOptions),
     useSensor(KeyboardSensor, keyboardSensorOptions)
@@ -2065,7 +2099,17 @@ export function NotesOutlinePane() {
       session = promotePendingSelectionDrag(session);
       outlineDragSessionRef.current = session;
       if (session.kind === "selected-pending") {
-        return null;
+        const result = projectPreparedOutlineSelectionDrop(
+          session.preview,
+          String(event.over.id),
+          event.delta.x,
+          outlineIndentPx
+        );
+        return Object.freeze({
+          kind: "selected-preview",
+          prepared: session.preview,
+          result
+        });
       }
       if (session.kind !== "ordinary") {
         return projectOutlineSelectionDragSession(
@@ -2201,8 +2245,19 @@ export function NotesOutlinePane() {
           currentPreparedAuthorityRef.current?.workspace
       });
       const selectedNodeIds = Object.freeze([...selectedIds]);
+      const visualPreparation = prepareOutlineSelectionDrag(
+        id,
+        selectedNodeIds,
+        structuralRows,
+        {
+          rootIds: state.rootIds,
+          childIdsByParent: state.childIdsByParent,
+          zoomRootId: state.zoomRootId
+        }
+      );
       const existingContext = selectionDragContextRef.current;
       const existingContextCurrent =
+        visualPreparation.kind === "ready" &&
         openedSnapshot !== null &&
         exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) &&
         existingContext !== null &&
@@ -2219,7 +2274,12 @@ export function NotesOutlinePane() {
         (isPreparedSelectionAuthorityCurrent?.(
           existingContext.ownership.authority
         ) ?? false);
-      if (existingContextCurrent) {
+      if (visualPreparation.kind === "invalid") {
+        outlineDragSessionRef.current = Object.freeze({
+          kind: "selected-invalid",
+          reason: visualPreparation.reason
+        });
+      } else if (existingContextCurrent) {
         outlineDragSessionRef.current = startOutlineSelectionDragSession({
           activeId: id,
           selectedNodeIds,
@@ -2335,6 +2395,7 @@ export function NotesOutlinePane() {
           selectionRevision: live.revision,
           rows: Object.freeze([...structuralRows]),
           zoomRootId: state.zoomRootId,
+          preview: visualPreparation,
           preparation
         });
       }
@@ -2358,6 +2419,15 @@ export function NotesOutlinePane() {
     const projection = projectDrag(event);
     if (!projection) {
       setDropPreview(null);
+      return;
+    }
+    if (projection.kind === "selected-preview") {
+      setDropPreview(
+        derivePreparedOutlineSelectionDropPreview(
+          projection.prepared,
+          projection.result
+        )
+      );
       return;
     }
     if (projection.kind === "selected-invalid") {
@@ -2456,6 +2526,9 @@ export function NotesOutlinePane() {
           lateProjection.frozenContext
         );
       });
+      return;
+    }
+    if (projection?.kind === "selected-preview") {
       return;
     }
     if (!projection) {
@@ -2640,7 +2713,7 @@ export function NotesOutlinePane() {
               announcements,
               screenReaderInstructions: outlineScreenReaderInstructions
             }}
-            collisionDetection={closestCenter}
+            collisionDetection={detectOutlineCollisions}
             measuring={{ dragOverlay: { measure: measureDragOverlay } }}
             sensors={sensors}
             onDragStart={handleDragStart}
