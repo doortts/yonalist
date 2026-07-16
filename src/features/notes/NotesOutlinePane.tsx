@@ -109,6 +109,7 @@ import {
   type FlattenedOutlineRow
 } from "./outlineTree";
 import {
+  isOutlineSelectionInteractiveTarget,
   isOutlineSelectionTextSurface,
   isOutlineSelectionToggleModifier,
   OutlineNodeRow
@@ -429,10 +430,13 @@ interface MouseSelectionGesture {
 }
 
 function rowIdFromPointerTarget(target: EventTarget | null): NoteId | null {
-  return target instanceof Element
-    ? (target.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId ??
-        null)
-    : null;
+  if (!(target instanceof Element)) return null;
+  const row =
+    target.closest<HTMLElement>("[data-outline-id]") ??
+    target
+      .closest<HTMLElement>(".notes-outline-item")
+      ?.querySelector<HTMLElement>("[data-outline-id]");
+  return row?.dataset.outlineId ?? null;
 }
 
 export function NotesOutlinePane() {
@@ -510,6 +514,23 @@ export function NotesOutlinePane() {
   const importDroppedImagePathsRef = useRef(actions.importDroppedImagePaths);
   const imagePasteLifecycleRef = useRef({ mounted: true, generation: 0 });
   const outlineIndentPx = useOutlineIndentPx();
+  useEffect(() => {
+    const retireMouseSelectionGesture = (event: globalThis.PointerEvent) => {
+      if (mouseSelectionGestureRef.current?.pointerId === event.pointerId) {
+        mouseSelectionGestureRef.current = null;
+      }
+    };
+    window.addEventListener("pointerup", retireMouseSelectionGesture, true);
+    window.addEventListener("pointercancel", retireMouseSelectionGesture, true);
+    return () => {
+      window.removeEventListener("pointerup", retireMouseSelectionGesture, true);
+      window.removeEventListener(
+        "pointercancel",
+        retireMouseSelectionGesture,
+        true
+      );
+    };
+  }, []);
   const imagePasteExecutionScope = useMemo<ImagePasteExecutionScope>(
     () => ({
       vaultRoot,
@@ -999,7 +1020,7 @@ export function NotesOutlinePane() {
       !gesture ||
       event.pointerId !== gesture.pointerId ||
       event.buttons !== 1 ||
-      !isOutlineSelectionTextSurface(event.target)
+      isOutlineSelectionInteractiveTarget(event.target)
     ) {
       return;
     }
@@ -1026,14 +1047,6 @@ export function NotesOutlinePane() {
     actions.extendSelectionTo(currentRowId);
     event.preventDefault();
   };
-  const clearMouseSelectionGesture = (
-    event: ReactPointerEvent<HTMLOListElement>
-  ): void => {
-    if (mouseSelectionGestureRef.current?.pointerId === event.pointerId) {
-      mouseSelectionGestureRef.current = null;
-    }
-  };
-
   const provisionalSelectionSnapshot = useMemo(
     () =>
       deriveNotesSelectionActionSnapshot({
@@ -2536,10 +2549,8 @@ export function NotesOutlinePane() {
               <ol
                 className="notes-outline-list"
                 data-drag-active={activeDragId === null ? undefined : "true"}
-                onPointerCancelCapture={clearMouseSelectionGesture}
                 onPointerDownCapture={handleMouseSelectionPointerDownCapture}
                 onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
-                onPointerUpCapture={clearMouseSelectionGesture}
                 role="list"
               >
                 {bodyRows.map((row) => (

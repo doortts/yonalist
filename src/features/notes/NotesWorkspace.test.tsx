@@ -3242,6 +3242,40 @@ describe("Notes workspace", () => {
       fireEvent.pointerUp(delta, { button: 0, pointerId: 7 });
     });
 
+    it("promotes a cross-row drag over row padding", async () => {
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      const bravo = await findTitleInput("Bravo");
+      const delta = getTitleInput("Delta #later");
+      const deltaRow = delta.closest<HTMLElement>(".notes-node");
+      if (!deltaRow) {
+        throw new Error("Delta row did not render");
+      }
+
+      fireEvent.pointerDown(bravo, { button: 0, pointerId: 10 });
+      fireEvent.pointerMove(deltaRow, { buttons: 1, pointerId: 10 });
+
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+      fireEvent.pointerUp(deltaRow, { button: 0, pointerId: 10 });
+    });
+
+    it("retires a cross-row drag after an off-list pointer release", async () => {
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      const bravo = await findTitleInput("Bravo");
+      const delta = queryTitleInput("Delta #later");
+      const deltaRow = delta?.closest<HTMLElement>(".notes-node");
+      if (!deltaRow) {
+        throw new Error("Delta row did not render");
+      }
+
+      fireEvent.pointerDown(bravo, { button: 0, pointerId: 11 });
+      fireEvent.pointerUp(document.body, { button: 0, pointerId: 11 });
+      fireEvent.pointerMove(deltaRow, { buttons: 1, pointerId: 11 });
+
+      expect(selectedOutlineIds()).toEqual([]);
+    });
+
     it("promotes an upward cross-row drag and ignores interactive token drags", async () => {
       configureRepository(fourRoots());
       renderNotesWorkspace();

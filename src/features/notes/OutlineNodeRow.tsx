@@ -104,13 +104,24 @@ interface OutlineNodeRowProps {
 // without explanation. Worded to match the pane's writeError banner (0.8).
 const STRUCTURAL_COMMAND_SKIPPED_NOTICE =
   "Command paused — a recent change could not be saved. Retry the save to continue.";
+const OUTLINE_SELECTION_INTERACTIVE_SELECTOR =
+  "button, a, [role='button'], .notes-attachment-list, .notes-image-node-content, .notes-attachment-error";
+
+export function isOutlineSelectionInteractiveTarget(
+  target: EventTarget | null
+): boolean {
+  return (
+    target instanceof Element &&
+    target.closest(OUTLINE_SELECTION_INTERACTIVE_SELECTOR) !== null
+  );
+}
 
 export function isOutlineSelectionTextSurface(
   target: EventTarget | null
 ): boolean {
   return (
     target instanceof Element &&
-    target.closest("button, a, [role='button']") === null &&
+    !isOutlineSelectionInteractiveTarget(target) &&
     Boolean(
       target.closest(".notes-node-title-field, .notes-node-note-field")
     )
