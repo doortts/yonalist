@@ -210,6 +210,17 @@ function NotesLibraryPaneContent() {
         <header className="notes-library-header">
           <h2>Notes</h2>
           <div className="notes-library-header-actions">
+            {libraryView !== "trash" && libraryView !== "archive" && (
+              <button
+                className="primary-button notes-new-page"
+                type="button"
+                disabled={state.status === "loading" || deletingNotesData}
+                onClick={() => void actions.createRoot()}
+              >
+                <Plus size={16} aria-hidden="true" />
+                <span>New page</span>
+              </button>
+            )}
             <IconTooltip label="Notes data settings" side="bottom">
               <button
                 className="notes-library-icon-button"
@@ -225,18 +236,6 @@ function NotesLibraryPaneContent() {
         </header>
 
         <div className="notes-library-discovery">
-          {libraryView !== "trash" && libraryView !== "archive" && (
-            <button
-              className="primary-button notes-new-page"
-              type="button"
-              disabled={state.status === "loading" || deletingNotesData}
-              onClick={() => void actions.createRoot()}
-            >
-              <Plus size={16} aria-hidden="true" />
-              <span>New page</span>
-            </button>
-          )}
-
           <label className="notes-search-field">
             <Search size={15} aria-hidden="true" />
             <input
@@ -310,7 +309,9 @@ function NotesLibraryPaneContent() {
                 </p>
               )}
               {!searchError && !searching && results.length === 0 && (
-                <p className="notes-pane-state">No matches.</p>
+                <p className="notes-pane-state" role="status">
+                  No matches.
+                </p>
               )}
               {results.length > 0 && (
                 <div role="listbox" aria-label="Search results">
@@ -353,7 +354,9 @@ function NotesLibraryPaneContent() {
           {showingTags && (
             <div className="notes-tag-list" aria-label="Note tags">
               {tagSummaries.length === 0 ? (
-                <p className="notes-pane-state">No tags yet.</p>
+                <p className="notes-pane-state" role="status">
+                  No tags yet.
+                </p>
               ) : (
                 tagSummaries.map((summary) => {
                   const label = `${summary.prefix}${summary.displayTag}`;
@@ -382,14 +385,20 @@ function NotesLibraryPaneContent() {
 
         {!choosingTag && (
           <div className="notes-library-list">
-            {initialLoading && <p className="notes-pane-state">Loading notes...</p>}
+            {initialLoading && (
+              <p className="notes-pane-state" role="status">
+                Loading notes...
+              </p>
+            )}
             {state.status === "error" && (
-              <p className="notes-pane-state notes-pane-error">{state.error}</p>
+              <p className="notes-pane-state notes-pane-error" role="alert">
+                {state.error}
+              </p>
             )}
             {!initialLoading &&
               state.status !== "error" &&
               state.rootIds.length === 0 && (
-                <p className="notes-pane-state">
+                <p className="notes-pane-state" role="status">
                   {libraryView === "trash"
                     ? "Trash is empty."
                     : libraryView === "archive"

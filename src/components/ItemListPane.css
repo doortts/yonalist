@@ -36,3 +36,8 @@
 .item-meta .item-number {
   flex: 0 0 auto;
 }
+
+.item-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}

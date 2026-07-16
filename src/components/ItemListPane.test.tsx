@@ -162,6 +162,8 @@ function renderPaneWith(
     connection?: GithubConnection;
     demoMode?: boolean;
     online?: boolean;
+    loading?: boolean;
+    error?: string | null;
   } = {}
 ) {
   return render(
@@ -173,8 +175,8 @@ function renderPaneWith(
         selectedPath={null}
         stateFilter="open"
         query=""
-        loading={false}
-        error={null}
+        loading={overrides.loading ?? false}
+        error={overrides.error ?? null}
         demoMode={overrides.demoMode ?? false}
         online={overrides.online ?? true}
         onStateFilterChange={vi.fn()}
@@ -191,6 +193,21 @@ describe("ItemListPane", () => {
   beforeEach(() => {
     fetchUserProfilesMock.mockReset();
     fetchUserProfilesMock.mockResolvedValue({});
+  });
+
+  it("exposes loading, empty, and error list states with correct precedence", () => {
+    const loading = renderPaneWith([], { loading: true });
+    expect(screen.getByRole("status")).toHaveTextContent("Loading items...");
+    expect(screen.queryByText("No items match this view.")).toBeNull();
+    expect(loading.container.querySelector(".list-pane")).toHaveAttribute(
+      "aria-busy",
+      "true"
+    );
+    loading.unmount();
+
+    renderPaneWith([], { error: "Load failed" });
+    expect(screen.getByRole("alert")).toHaveTextContent("Load failed");
+    expect(screen.queryByText("No items match this view.")).toBeNull();
   });
 
   it("paints labels in the list with their GitHub label colors", () => {

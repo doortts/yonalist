@@ -40,7 +40,7 @@
   flex-shrink: 0;
   width: 15px;
   height: 15px;
-  border: 1.5px solid var(--border-strong);
+  border: 1.5px solid var(--control-border);
   border-radius: 50%;
   background: var(--bg-input);
   transition: border-color 120ms ease;
@@ -65,7 +65,7 @@
 }
 
 .theme-option:focus-visible {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -83,7 +83,7 @@
   flex-shrink: 0;
   width: 16px;
   height: 16px;
-  border: 1.5px solid var(--border-strong);
+  border: 1.5px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   transition: border-color 120ms ease, background-color 120ms ease;
@@ -106,7 +106,7 @@
 }
 
 .settings-check:focus-visible {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -152,7 +152,7 @@
 }
 
 .server-radio:focus-visible {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -187,6 +187,6 @@
 }
 
 .settings-section button.segment:focus-visible {
-  outline: 2px solid var(--accent-soft);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }

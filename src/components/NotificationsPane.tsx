@@ -205,7 +205,11 @@ export const NotificationsPane = memo(function NotificationsPane({
   }
 
   return (
-    <section className="notifications-pane" aria-label="Notifications">
+    <section
+      className="notifications-pane"
+      aria-label="Notifications"
+      aria-busy={state.loading}
+    >
       <div className="pane-titlebar-spacer" />
       <div className="notifications-header">
         <div className="notifications-header-lead">
@@ -252,11 +256,23 @@ export const NotificationsPane = memo(function NotificationsPane({
           GitHub inbox.
         </p>
       )}
-      {state.error && <p className="notifications-error">{state.error}</p>}
+      {state.error && (
+        <p
+          className="surface-state surface-state-error notifications-error"
+          role="alert"
+        >
+          {state.error}
+        </p>
+      )}
 
       <div className="notifications-list">
-        {groups.length === 0 && (
-          <p className="empty-copy list-empty">
+        {groups.length === 0 && state.loading && !state.error && (
+          <p className="surface-state list-empty" role="status">
+            Loading notifications...
+          </p>
+        )}
+        {groups.length === 0 && !state.loading && !state.error && (
+          <p className="surface-state list-empty" role="status">
             No notifications.
           </p>
         )}
