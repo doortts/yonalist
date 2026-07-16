@@ -1,4 +1,8 @@
 import { normalizeNoteTagIdentity } from "./noteTagIdentity";
+import {
+  isUnicodeLetterOrNumber,
+  isUnicodeMark
+} from "./noteUnicodeCategories";
 
 export type NoteTagPrefix = "#" | "@";
 
@@ -53,8 +57,6 @@ export type NoteTextToken =
   | NoteFormatToken
   | NoteUrlToken;
 
-const unicodeLetterOrNumber = /^[\p{L}\p{N}]$/u;
-const unicodeMark = /^\p{M}$/u;
 const unicodeWhitespace = /^\s$/u;
 
 function scalarAt(source: string, offsetUtf16: number): string {
@@ -80,15 +82,11 @@ function scalarBefore(source: string, offsetUtf16: number): string {
 }
 
 function isTagBodyStartCharacter(character: string): boolean {
-  return (
-    character === "_" ||
-    character === "-" ||
-    unicodeLetterOrNumber.test(character)
-  );
+  return character === "_" || character === "-" || isUnicodeLetterOrNumber(character);
 }
 
 function isTagBodyContinuationCharacter(character: string): boolean {
-  return isTagBodyStartCharacter(character) || unicodeMark.test(character);
+  return isTagBodyStartCharacter(character) || isUnicodeMark(character);
 }
 
 function hasTagBoundary(source: string, markerOffsetUtf16: number): boolean {

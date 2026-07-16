@@ -1,3 +1,4 @@
+import { isUnicodeWordCharacter } from "./noteUnicodeCategories";
 import { tokenizeNoteText } from "./noteTokens";
 
 export interface LocalDate {
@@ -62,7 +63,6 @@ export interface NoteDateParseOptions {
 
 const minimumYear = 1;
 const maximumYear = 9999;
-const unicodeWordCharacter = /^[\p{L}\p{N}\p{M}_]$/u;
 const unicodeWhitespace = /^\s$/u;
 const naturalPhrases: readonly NaturalDatePhrase[] = [
   "yesterday",
@@ -260,10 +260,6 @@ function scalarBefore(source: string, offsetUtf16: number): string {
   return source.slice(startUtf16, offsetUtf16);
 }
 
-function isWordCharacter(character: string): boolean {
-  return unicodeWordCharacter.test(character);
-}
-
 function isWhitespace(character: string): boolean {
   return unicodeWhitespace.test(character);
 }
@@ -273,7 +269,7 @@ function hasStartBoundary(source: string, startUtf16: number): boolean {
     return true;
   }
   const previous = scalarBefore(source, startUtf16);
-  return !isWordCharacter(previous) && previous !== "/";
+  return !isUnicodeWordCharacter(previous) && previous !== "/";
 }
 
 function hasNumericStartBoundary(source: string, startUtf16: number): boolean {
@@ -284,7 +280,10 @@ function hasNumericStartBoundary(source: string, startUtf16: number): boolean {
 }
 
 function hasNaturalEndBoundary(source: string, endUtf16: number): boolean {
-  return endUtf16 === source.length || !isWordCharacter(scalarAt(source, endUtf16));
+  return (
+    endUtf16 === source.length ||
+    !isUnicodeWordCharacter(scalarAt(source, endUtf16))
+  );
 }
 
 function hasNumericEndBoundary(source: string, endUtf16: number): boolean {
@@ -292,7 +291,7 @@ function hasNumericEndBoundary(source: string, endUtf16: number): boolean {
     return true;
   }
   const next = scalarAt(source, endUtf16);
-  return !isWordCharacter(next) && next !== "/" && next !== "-";
+  return !isUnicodeWordCharacter(next) && next !== "/" && next !== "-";
 }
 
 function isAsciiDigit(character: string | undefined): boolean {
