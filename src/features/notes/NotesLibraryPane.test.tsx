@@ -138,6 +138,27 @@ function renderLibrary(workspace = activeWorkspace()) {
 }
 
 describe("NotesLibraryPane", () => {
+  it("uses geometry-neutral separators for the compact 144px budget", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-library-header\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border\);/s
+    );
+    expect(notesStyles).toMatch(
+      /\.notes-library-discovery\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border\);/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-library-header\s*\{[^}]*border-bottom:\s*1px/s
+    );
+    expect(notesStyles).not.toMatch(
+      /\.notes-library-discovery\s*\{[^}]*border-bottom:\s*1px/s
+    );
+  });
+
+  it("keeps compact view labels on one ellipsized line", () => {
+    expect(notesStyles).toMatch(
+      /\.notes-library-views button span\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s
+    );
+  });
+
   it("keeps New page in the title row and all six views in a compact grid", () => {
     renderLibrary();
 
