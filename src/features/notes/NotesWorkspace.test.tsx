@@ -4192,6 +4192,173 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
+    it("clears a pending selected pointer preview when frozen authority rejects", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
+        node({ id: "d", sortKey: 4, title: "Delta" })
+      ];
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: alpha,
+        coords: { clientX: 9, clientY: 14 }
+      });
+      await user.pointer({
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+
+      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "2 selected"
+      );
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).toHaveAttribute("data-selection-dragging", "true");
+      }
+
+      await act(async () =>
+        hydration.reject(new Error("authority unavailable"))
+      );
+
+      await waitFor(() =>
+        expect(
+          within(screen.getByLabelText("Status bar feedback")).getByRole(
+            "alert"
+          )
+        ).toHaveTextContent(
+          "Can't move selection: the selected rows cannot be moved together."
+        )
+      );
+      expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).not.toHaveAttribute("data-selection-dragging");
+      }
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("clears an active pending pointer preview when selection changes", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({ id: "a", sortKey: 1, title: "Alpha" }),
+        node({ id: "b", sortKey: 2, title: "Bravo" }),
+        node({ id: "c", sortKey: 3, title: "Charlie" }),
+        node({ id: "d", sortKey: 4, title: "Delta" })
+      ];
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      const bravo = screen.getByRole("button", { name: "Zoom into Bravo" });
+      mockOutlineRowRects();
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: alpha,
+        coords: { clientX: 9, clientY: 14 }
+      });
+      await user.pointer({
+        target: bravo,
+        coords: { clientX: 9, clientY: 42 }
+      });
+
+      expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "2 selected"
+      );
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b", "c"]));
+
+      await waitFor(() =>
+        expect(
+          within(screen.getByLabelText("Status bar feedback")).getByRole(
+            "alert"
+          )
+        ).toHaveTextContent(
+          "Can't move selection: the selected rows cannot be moved together."
+        )
+      );
+      expect(document.querySelector(".notes-outline-drop-preview")).toBeNull();
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).not.toHaveAttribute("data-selection-dragging");
+      }
+
+      await act(async () =>
+        hydration.reject(new Error("authority unavailable"))
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("moves five selected sibling roots as one pointer-dragged block from a middle bullet", async () => {
       const user = userEvent.setup();
       const movingIds = ["a", "b", "c", "d", "e"];

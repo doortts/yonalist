@@ -2197,7 +2197,7 @@ export function NotesOutlinePane() {
     };
   }, [state.nodesById]);
 
-  const rejectSelectedDrag = () => {
+  const rejectSelectedDrag = useCallback(() => {
     setDraggedNodeIds([]);
     setDropPreview(null);
     if (!selectionDragRejectionPublishedRef.current) {
@@ -2207,7 +2207,23 @@ export function NotesOutlinePane() {
         message: selectionDragRejectedMessage
       });
     }
-  };
+  }, [publishNotesFeedback]);
+  useEffect(() => {
+    const pendingSession = outlineDragSessionRef.current;
+    if (
+      pendingSession?.kind !== "selected-pending" ||
+      pendingSession.selectionRevision === selectionRevision ||
+      outlineDragSessionRef.current !== pendingSession ||
+      outlineDragAttemptEpochRef.current !== pendingSession.attemptEpoch
+    ) {
+      return;
+    }
+    outlineDragSessionRef.current = Object.freeze({
+      kind: "selected-invalid",
+      reason: "selection-authority-mismatch"
+    });
+    rejectSelectedDrag();
+  }, [rejectSelectedDrag, selectionRevision]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
@@ -2387,7 +2403,7 @@ export function NotesOutlinePane() {
             });
           })
         );
-        outlineDragSessionRef.current = Object.freeze({
+        const pendingSession = Object.freeze({
           kind: "selected-pending",
           attemptEpoch,
           activeId: id,
@@ -2397,6 +2413,21 @@ export function NotesOutlinePane() {
           zoomRootId: state.zoomRootId,
           preview: visualPreparation,
           preparation
+        });
+        outlineDragSessionRef.current = pendingSession;
+        void pendingSession.preparation.promise.then(() => {
+          if (
+            outlineDragSessionRef.current !== pendingSession ||
+            outlineDragAttemptEpochRef.current !== pendingSession.attemptEpoch ||
+            selectionRevisionRef.current !== pendingSession.selectionRevision
+          ) {
+            return;
+          }
+          const promotedSession = promotePendingSelectionDrag(pendingSession);
+          outlineDragSessionRef.current = promotedSession;
+          if (promotedSession.kind === "selected-invalid") {
+            rejectSelectedDrag();
+          }
         });
       }
       selectedDragNodeIdsRef.current = selectedNodeIds;
