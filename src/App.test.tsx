@@ -3702,6 +3702,20 @@ describe("Yonalist app shell", () => {
     expect(navigationResizer).toHaveAttribute("aria-valuenow", "256");
 
     fireEvent.keyDown(navigationResizer, {
+      key: "ArrowRight",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--sidebar-width: 304px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "304");
+
+    fireEvent.keyDown(navigationResizer, {
+      key: "ArrowLeft",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--sidebar-width: 256px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "256");
+
+    fireEvent.keyDown(navigationResizer, {
       key: "ArrowLeft",
       shiftKey: true
     });
@@ -3719,6 +3733,20 @@ describe("Yonalist app shell", () => {
     expect(navigationResizer).toHaveAttribute("aria-valuenow", "420");
 
     fireEvent.keyDown(listResizer, { key: "ArrowRight" });
+    expect(layout).toHaveStyle("--list-width: 356px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "356");
+
+    fireEvent.keyDown(listResizer, {
+      key: "ArrowRight",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--list-width: 404px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "404");
+
+    fireEvent.keyDown(listResizer, {
+      key: "ArrowLeft",
+      shiftKey: true
+    });
     expect(layout).toHaveStyle("--list-width: 356px");
     expect(listResizer).toHaveAttribute("aria-valuenow", "356");
 
