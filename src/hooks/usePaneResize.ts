@@ -29,6 +29,11 @@ export interface PaneCollapsed {
   list: boolean;
 }
 
+export interface EffectivePaneGeometry {
+  widths: PaneWidths;
+  maxWidths: PaneWidths;
+}
+
 const defaultPaneCollapsed: PaneCollapsed = {
   sidebar: false,
   list: false
@@ -36,6 +41,10 @@ const defaultPaneCollapsed: PaneCollapsed = {
 
 const paneWidthStorageKey = "yonalist.paneWidths.v1";
 const paneCollapsedStorageKey = "yonalist.paneCollapsed.v1";
+const desktopPaneBreakpoint = 981;
+const shellHorizontalInsets = 16;
+const paneSeparatorWidth = 1;
+const detailMinimumWidth = 320;
 
 function clampPaneWidth(pane: ResizablePane, width: number): number {
   const limits = paneWidthLimits[pane];
@@ -95,19 +104,99 @@ function persistPaneCollapsed(collapsed: PaneCollapsed) {
   }
 }
 
+export function getEffectivePaneGeometry(
+  requested: PaneWidths,
+  viewportWidth: number,
+  collapsed: PaneCollapsed
+): EffectivePaneGeometry {
+  const unconstrained = {
+    widths: {
+      sidebar: collapsed.sidebar ? 0 : requested.sidebar,
+      list: collapsed.list ? 0 : requested.list
+    },
+    maxWidths: {
+      sidebar: collapsed.sidebar ? 0 : paneWidthLimits.sidebar.max,
+      list: collapsed.list ? 0 : paneWidthLimits.list.max
+    }
+  };
+
+  if (viewportWidth < desktopPaneBreakpoint) {
+    return unconstrained;
+  }
+
+  const visiblePaneCount = Number(!collapsed.sidebar) + Number(!collapsed.list);
+  const availableWidth = Math.max(
+    0,
+    viewportWidth -
+      shellHorizontalInsets -
+      visiblePaneCount * paneSeparatorWidth -
+      detailMinimumWidth
+  );
+
+  if (collapsed.sidebar && collapsed.list) {
+    return unconstrained;
+  }
+  if (collapsed.sidebar) {
+    const listMax = Math.min(paneWidthLimits.list.max, availableWidth);
+    return {
+      widths: { sidebar: 0, list: Math.min(requested.list, listMax) },
+      maxWidths: { sidebar: 0, list: listMax }
+    };
+  }
+  if (collapsed.list) {
+    const sidebarMax = Math.min(paneWidthLimits.sidebar.max, availableWidth);
+    return {
+      widths: {
+        sidebar: Math.min(requested.sidebar, sidebarMax),
+        list: 0
+      },
+      maxWidths: { sidebar: sidebarMax, list: 0 }
+    };
+  }
+
+  const sidebarMax = Math.max(
+    0,
+    Math.min(
+      paneWidthLimits.sidebar.max,
+      availableWidth - paneWidthLimits.list.min
+    )
+  );
+  const sidebar = Math.min(requested.sidebar, sidebarMax);
+  const listMax = Math.max(
+    0,
+    Math.min(paneWidthLimits.list.max, availableWidth - sidebar)
+  );
+  const list = Math.min(requested.list, Math.max(0, availableWidth - sidebar));
+
+  return {
+    widths: { sidebar, list },
+    maxWidths: { sidebar: sidebarMax, list: listMax }
+  };
+}
+
 export function usePaneResize() {
-  const [paneWidths, setPaneWidths] = useState<PaneWidths>(() => loadPaneWidths());
+  const [requestedPaneWidths, setRequestedPaneWidths] = useState<PaneWidths>(() =>
+    loadPaneWidths()
+  );
   const [paneCollapsed, setPaneCollapsed] = useState<PaneCollapsed>(() =>
     loadPaneCollapsed()
   );
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   // Whether the detail pane is maximized (both siblings hidden). Memory-only:
   // the collapse booleans themselves persist under their own key, so a reload
   // lands on the collapsed layout without carrying this transient flag.
   const [detailMaximized, setDetailMaximized] = useState(false);
-  const paneWidthsRef = useRef(paneWidths);
-  paneWidthsRef.current = paneWidths;
   const paneCollapsedRef = useRef(paneCollapsed);
   paneCollapsedRef.current = paneCollapsed;
+  const viewportWidthRef = useRef(viewportWidth);
+  viewportWidthRef.current = viewportWidth;
+  const paneGeometry = getEffectivePaneGeometry(
+    requestedPaneWidths,
+    viewportWidth,
+    paneCollapsed
+  );
+  const paneWidthsRef = useRef(paneGeometry.widths);
+  paneWidthsRef.current = paneGeometry.widths;
   const detailMaximizedRef = useRef(detailMaximized);
   detailMaximizedRef.current = detailMaximized;
   // Collapse layout captured when entering the maximized view and replayed on
@@ -116,6 +205,15 @@ export function usePaneResize() {
   const cleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => () => cleanupRef.current?.(), []);
+
+  useEffect(() => {
+    function handleResize() {
+      setViewportWidth(window.innerWidth);
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     persistPaneCollapsed(paneCollapsed);
@@ -147,7 +245,7 @@ export function usePaneResize() {
   }, []);
 
   const updatePaneWidth = useCallback((pane: ResizablePane, width: number) => {
-    setPaneWidths((current) => {
+    setRequestedPaneWidths((current) => {
       const next = {
         ...current,
         [pane]: clampPaneWidth(pane, width)
@@ -157,12 +255,15 @@ export function usePaneResize() {
   }, []);
 
   useEffect(() => {
-    persistPaneWidths(paneWidths);
-  }, [paneWidths]);
+    persistPaneWidths(requestedPaneWidths);
+  }, [requestedPaneWidths]);
 
   const startResize = useCallback(
     (pane: ResizablePane, event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) {
+        return;
+      }
+      if (paneCollapsedRef.current[pane]) {
         return;
       }
 
@@ -202,16 +303,27 @@ export function usePaneResize() {
       event.preventDefault();
       const step = event.shiftKey ? 48 : 16;
       const direction = event.key === "ArrowRight" ? 1 : -1;
-      setPaneWidths((current) => ({
-        ...current,
-        [pane]: clampPaneWidth(pane, current[pane] + step * direction)
-      }));
+      setRequestedPaneWidths((current) => {
+        if (paneCollapsedRef.current[pane]) {
+          return current;
+        }
+        const effectiveWidth = getEffectivePaneGeometry(
+          current,
+          viewportWidthRef.current,
+          paneCollapsedRef.current
+        ).widths[pane];
+        return {
+          ...current,
+          [pane]: clampPaneWidth(pane, effectiveWidth + step * direction)
+        };
+      });
     },
     []
   );
 
   return {
-    paneWidths,
+    paneWidths: paneGeometry.widths,
+    paneWidthMax: paneGeometry.maxWidths,
     paneCollapsed,
     detailMaximized,
     togglePaneCollapsed,

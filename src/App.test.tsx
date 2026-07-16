@@ -66,6 +66,17 @@ function installLocalStorageMock() {
   });
 }
 
+function setViewportWidth(width: number, notify = false) {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: width
+  });
+  if (notify) {
+    fireEvent(window, new Event("resize"));
+  }
+}
+
 function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
     parentId: null,
@@ -95,6 +106,7 @@ function deferred<T>() {
 
 describe("Yonalist app shell", () => {
   beforeEach(() => {
+    setViewportWidth(1024);
     installLocalStorageMock();
     notificationDetailInputs.mockClear();
     loadVaultStateOverride.mockReset();
@@ -3681,7 +3693,125 @@ describe("Yonalist app shell", () => {
     expect(layout).toHaveStyle("--list-width: 320px");
   });
 
+  it("aligns constrained panes, titlebar geometry, and keyboard semantics", () => {
+    setViewportWidth(981);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const navigationResizer = screen.getByRole("separator", {
+      name: "Resize navigation pane"
+    });
+    const listResizer = screen.getByRole("separator", {
+      name: "Resize item list pane"
+    });
+    const paneToggleGroup = screen.getByRole("group", { name: "Pane layout" });
+
+    expect(layout).toHaveStyle("--sidebar-width: 323px");
+    expect(layout).toHaveStyle("--list-width: 320px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "323");
+    expect(navigationResizer).toHaveAttribute("aria-valuemax", "323");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "320");
+    expect(listResizer).toHaveAttribute("aria-valuemax", "320");
+    expect(paneToggleGroup.style.left).toContain("var(--sidebar-width");
+
+    fireEvent.keyDown(navigationResizer, {
+      key: "ArrowLeft",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--sidebar-width: 275px");
+  });
+
+  it("starts constrained pointer resizing from the rendered pane width", () => {
+    setViewportWidth(981);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const navigationResizer = screen.getByRole("separator", {
+      name: "Resize navigation pane"
+    });
+
+    expect(layout).toHaveStyle("--sidebar-width: 323px");
+    fireEvent.pointerDown(navigationResizer, { clientX: 323, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 307 });
+    fireEvent.pointerUp(window);
+    expect(layout).toHaveStyle("--sidebar-width: 307px");
+  });
+
+  it("resizes a constrained list immediately from its rendered width", () => {
+    setViewportWidth(1280);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const listResizer = screen.getByRole("separator", {
+      name: "Resize item list pane"
+    });
+
+    expect(layout).toHaveStyle("--sidebar-width: 420px");
+    expect(layout).toHaveStyle("--list-width: 522px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "522");
+    expect(listResizer).toHaveAttribute("aria-valuemax", "522");
+
+    fireEvent.keyDown(listResizer, { key: "ArrowLeft" });
+    expect(layout).toHaveStyle("--list-width: 506px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "506");
+  });
+
+  it("restores requested pane widths after a constrained window expands", () => {
+    setViewportWidth(981);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    expect(layout).toHaveStyle("--sidebar-width: 323px");
+    expect(layout).toHaveStyle("--list-width: 320px");
+
+    setViewportWidth(1600, true);
+
+    expect(layout).toHaveStyle("--sidebar-width: 420px");
+    expect(layout).toHaveStyle("--list-width: 640px");
+    expect(
+      JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
+    ).toEqual({ sidebar: 420, list: 640 });
+  });
+
+  it("restores constrained geometry after detail maximize", async () => {
+    setViewportWidth(981);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    const user = userEvent.setup();
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const maximizeToggle = screen.getByRole("button", { name: "상세 최대화" });
+
+    await user.click(maximizeToggle);
+    expect(layout).toHaveStyle("--sidebar-width: 0px");
+    expect(layout).toHaveStyle("--list-width: 0px");
+
+    await user.click(maximizeToggle);
+    expect(layout).toHaveStyle("--sidebar-width: 323px");
+    expect(layout).toHaveStyle("--list-width: 320px");
+  });
+
   it("resizes and clamps both panes from the keyboard", async () => {
+    setViewportWidth(1600);
     render(<App />);
 
     const layout = screen.getByLabelText("Yonalist layout");

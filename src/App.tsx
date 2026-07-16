@@ -312,6 +312,7 @@ export default function App({ initialOnline }: AppProps) {
   const [settingsStatus, setSettingsStatus] = useState("");
   const {
     paneWidths,
+    paneWidthMax,
     paneCollapsed,
     detailMaximized,
     togglePaneCollapsed,
@@ -1202,10 +1203,10 @@ export default function App({ initialOnline }: AppProps) {
 
   const layoutStyle = {
     ...navigationListAccentStyle,
-    // Collapsing zeroes the effective column width while the stored width is
-    // preserved in the hook, so expanding restores the previous size.
-    "--sidebar-width": paneCollapsed.sidebar ? "0px" : `${paneWidths.sidebar}px`,
-    "--list-width": paneCollapsed.list ? "0px" : `${paneWidths.list}px`
+    // The hook preserves requested widths while exposing viewport-safe
+    // effective widths, including zeroes for collapsed panes.
+    "--sidebar-width": `${paneWidths.sidebar}px`,
+    "--list-width": `${paneWidths.list}px`
   } as CSSProperties;
 
   useEffect(() => {
@@ -1739,8 +1740,8 @@ export default function App({ initialOnline }: AppProps) {
         role="separator"
         aria-label="Resize navigation pane"
         aria-orientation="vertical"
-        aria-valuemin={paneWidthLimits.sidebar.min}
-        aria-valuemax={paneWidthLimits.sidebar.max}
+        aria-valuemin={paneCollapsed.sidebar ? 0 : paneWidthLimits.sidebar.min}
+        aria-valuemax={paneWidthMax.sidebar}
         aria-valuenow={paneWidths.sidebar}
         tabIndex={0}
         onPointerDown={(event) => startResize("sidebar", event)}
@@ -1760,8 +1761,8 @@ export default function App({ initialOnline }: AppProps) {
             role="separator"
             aria-label="Resize item list pane"
             aria-orientation="vertical"
-            aria-valuemin={paneWidthLimits.list.min}
-            aria-valuemax={paneWidthLimits.list.max}
+            aria-valuemin={paneCollapsed.list ? 0 : paneWidthLimits.list.min}
+            aria-valuemax={paneWidthMax.list}
             aria-valuenow={paneWidths.list}
             tabIndex={0}
             onPointerDown={(event) => startResize("list", event)}

@@ -3844,7 +3844,7 @@ body.is-resizing-pane {
 }
 
 .markdown-style-options {
-  flex-wrap: wrap;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }
 
 .markdown-style-options .theme-option {

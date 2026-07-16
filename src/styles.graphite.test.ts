@@ -177,6 +177,9 @@ describe("Graphite & Mist CSS contract", () => {
   });
 
   it("wraps markdown choice copy without changing ordinary theme labels", () => {
+    expect(
+      declarations(".markdown-style-options")["grid-template-columns"]
+    ).toBe("repeat(auto-fit, minmax(min(220px, 100%), 1fr))");
     expect(declarations(".markdown-style-options .theme-option")["min-width"])
       .toBe("0");
     expect(
