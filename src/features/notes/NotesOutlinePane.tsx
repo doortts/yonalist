@@ -2209,13 +2209,25 @@ export function NotesOutlinePane() {
     }
   }, [publishNotesFeedback]);
   useEffect(() => {
-    const pendingSession = outlineDragSessionRef.current;
-    if (
-      pendingSession?.kind !== "selected-pending" ||
-      pendingSession.selectionRevision === selectionRevision ||
-      outlineDragSessionRef.current !== pendingSession ||
-      outlineDragAttemptEpochRef.current !== pendingSession.attemptEpoch
-    ) {
+    const session = outlineDragSessionRef.current;
+    if (session?.kind === "selected-pending") {
+      if (
+        session.selectionRevision === selectionRevision ||
+        outlineDragSessionRef.current !== session ||
+        outlineDragAttemptEpochRef.current !== session.attemptEpoch
+      ) {
+        return;
+      }
+    } else if (session?.kind === "selected-ready") {
+      const authority = session.frozenContext.ownership.authority;
+      if (
+        (authority.selectionRevision === selectionRevision &&
+          (isPreparedSelectionAuthorityCurrent?.(authority) ?? false)) ||
+        outlineDragSessionRef.current !== session
+      ) {
+        return;
+      }
+    } else {
       return;
     }
     outlineDragSessionRef.current = Object.freeze({
@@ -2223,7 +2235,7 @@ export function NotesOutlinePane() {
       reason: "selection-authority-mismatch"
     });
     rejectSelectedDrag();
-  }, [rejectSelectedDrag, selectionRevision]);
+  });
 
   const handleDragStart = (event: DragStartEvent) => {
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
