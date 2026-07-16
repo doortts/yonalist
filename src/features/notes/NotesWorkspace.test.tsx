@@ -2589,9 +2589,44 @@ describe("Notes workspace", () => {
       expect(
         document.querySelector('[data-outline-id="a"]')
       ).toHaveAttribute("data-range-selected", "true");
+      expect(document.querySelector('[data-outline-id="a"]')).toHaveAttribute(
+        "data-range-position",
+        "single"
+      );
       expect(
         screen.queryByRole("navigation", { name: "Notes breadcrumb" })
       ).toBeNull();
+    });
+
+    it("marks a visible selected range as first, middle, and last", async () => {
+      configureRepository([
+        node({ id: "a", title: "Alpha", sortKey: 1 }),
+        node({ id: "b", title: "Bravo", sortKey: 2 }),
+        node({ id: "c", title: "Charlie", sortKey: 3 })
+      ]);
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+
+      act(() => alpha.focus());
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      const bravo = getTitleInput("Bravo");
+      act(() => bravo.focus());
+      await waitFor(() => expect(bravo).toHaveFocus());
+      fireEvent.keyDown(bravo, {
+        key: "ArrowDown",
+        shiftKey: true
+      });
+
+      await screen.findByRole("toolbar", {
+        name: "Actions for 3 selected notes"
+      });
+      expect(
+        ["a", "b", "c"].map((id) =>
+          document
+            .querySelector(`[data-outline-id="${id}"]`)
+            ?.getAttribute("data-range-position")
+        )
+      ).toEqual(["first", "middle", "last"]);
     });
 
     it("moves focus between an outline editor and the selection toolbar with F6", async () => {

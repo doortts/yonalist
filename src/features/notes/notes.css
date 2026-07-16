@@ -1153,11 +1153,22 @@ button.notes-date-token:hover {
   opacity: 0.72;
 }
 
-/* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
-   row's title line, in the spirit of Workflowy's range highlight. */
 .notes-node[data-range-selected="true"] > .notes-node-main {
-  background: var(--accent-soft);
-  border-radius: 4px;
+  background: var(--selection-bg);
+  border-radius: 0;
+  box-shadow: inset 2px 0 0 var(--selection-rail);
+}
+
+.notes-node[data-range-position="single"] > .notes-node-main {
+  border-radius: 6px;
+}
+
+.notes-node[data-range-position="first"] > .notes-node-main {
+  border-radius: 6px 6px 0 0;
+}
+
+.notes-node[data-range-position="last"] > .notes-node-main {
+  border-radius: 0 0 6px 6px;
 }
 
 .notes-node-guides {

@@ -53,6 +53,12 @@ import {
   supportingNoteFocusTarget
 } from "./outlineKeyboard";
 
+export type NotesSelectionRangePosition =
+  | "single"
+  | "first"
+  | "middle"
+  | "last";
+
 interface OutlineNodeRowProps {
   nodeId: NoteId;
   depth: number;
@@ -74,10 +80,10 @@ interface OutlineNodeRowProps {
   // decide targets or mutate the workspace inside a row.
   onSelectionAction(action: NotesSelectionActionIntent): void;
   selectionBridge?: NotesBulletMenuSelectionBridge;
-  // Atomic membership flag for the multi-node selection range, derived in the
-  // pane from a stable id Set. A plain boolean so a range change re-renders only
-  // the rows whose membership actually flipped.
-  isSelected?: boolean;
+  // Atomic presentation position for the multi-node selection range. A
+  // primitive string so a range change re-renders only rows whose presentation
+  // actually changed.
+  rangePosition?: NotesSelectionRangePosition;
   // Atomic drafts-slice reads, hoisted to props so the row does NOT subscribe to
   // the high-volatility drafts context. A keystroke in another row therefore
   // leaves these props referentially unchanged and the memo bails out.
@@ -112,7 +118,7 @@ function OutlineNodeRowComponent({
   getSelection,
   onSelectionAction,
   selectionBridge,
-  isSelected = false,
+  rangePosition,
   draft,
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
@@ -323,7 +329,8 @@ function OutlineNodeRowComponent({
         data-outline-id={nodeId}
         data-guide-end-id={visibleDescendantEndId ?? undefined}
         data-selected={state.selectedId === nodeId ? "true" : undefined}
-        data-range-selected={isSelected ? "true" : undefined}
+        data-range-selected={rangePosition ? "true" : undefined}
+        data-range-position={rangePosition}
         style={rowStyle}
       >
         {guides}
@@ -669,7 +676,8 @@ function OutlineNodeRowComponent({
       data-dragging={isDragging ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
-      data-range-selected={isSelected ? "true" : undefined}
+      data-range-selected={rangePosition ? "true" : undefined}
+      data-range-position={rangePosition}
       data-notes-attachment-target={
         imageAttachmentTargetEnabled ? nodeId : undefined
       }

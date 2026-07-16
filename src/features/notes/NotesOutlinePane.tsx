@@ -103,7 +103,10 @@ import {
   parentTrail,
   type FlattenedOutlineRow
 } from "./outlineTree";
-import { OutlineNodeRow } from "./OutlineNodeRow";
+import {
+  OutlineNodeRow,
+  type NotesSelectionRangePosition
+} from "./OutlineNodeRow";
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
@@ -891,12 +894,23 @@ export function NotesOutlinePane() {
     () => selectionRangeIds(selection ?? null, bodyVisibleIds),
     [bodyVisibleIds, selection]
   );
-  // Hand each memoized row only an atomic membership bit. Rows that stay in or
-  // out of the range retain every prop identity across a selection update.
-  const selectedIdSet = useMemo(
-    () => new Set(materializedSelectionIds),
-    [materializedSelectionIds]
-  );
+  const selectedRangePositions = useMemo(() => {
+    const positions = new Map<NoteId, NotesSelectionRangePosition>();
+    const lastIndex = materializedSelectionIds.length - 1;
+    materializedSelectionIds.forEach((id, index) => {
+      positions.set(
+        id,
+        lastIndex === 0
+          ? "single"
+          : index === 0
+            ? "first"
+            : index === lastIndex
+              ? "last"
+              : "middle"
+      );
+    });
+    return positions;
+  }, [materializedSelectionIds]);
   // Rows read the live selection at keydown time (to extend the head) through
   // this stable accessor, mirroring getVisibleNodeIds — the row never subscribes
   // to the selection, so its memo is preserved.
@@ -2417,11 +2431,11 @@ export function NotesOutlinePane() {
                       getSelection={getSelection}
                       onSelectionAction={executeSelectionAction}
                       selectionBridge={
-                        selectedIdSet.has(row.id)
+                        selectedRangePositions.get(row.id)
                           ? selectionMenuBridge
                           : undefined
                       }
-                      isSelected={selectedIdSet.has(row.id)}
+                      rangePosition={selectedRangePositions.get(row.id)}
                       draft={draftsByNodeId[row.id]}
                       attachmentUploadError={
                         attachmentUploadErrorsByNodeId?.[row.id]
