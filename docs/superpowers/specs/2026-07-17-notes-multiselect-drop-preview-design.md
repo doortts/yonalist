@@ -65,8 +65,10 @@ feedback is published.
 
 ## Collision and Preview Rules
 
-- Rows in the selected forest are excluded from drop collision candidates for
-  a selected drag because they can never be valid destinations.
+- Rows in the selected forest are excluded from pointer collision candidates
+  for a selected drag because they can never be valid pointer destinations.
+- Keyboard-sensor collision behavior remains unchanged; this fix must not turn
+  an existing rejected keyboard selected drag into a move.
 - Ordinary single-row drag collision behavior remains unchanged.
 - A valid visual projection is converted through the existing
   `derivePreparedOutlineSelectionDropPreview()` path. No second insertion-line

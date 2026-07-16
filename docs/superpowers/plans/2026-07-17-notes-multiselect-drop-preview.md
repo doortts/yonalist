@@ -4,7 +4,7 @@
 
 **Goal:** Render the existing Notes insertion line immediately during a multi-row pointer drag while preserving authoritative validation for the eventual batch move.
 
-**Architecture:** Prepare one read-only visual selection geometry snapshot synchronously from the rendered outline and store it on a pending selected-drag session. Reuse the existing prepared projection and preview derivation for pointer feedback, filter selected-forest rows from collision candidates, and continue to require the existing asynchronous frozen authority before executing a reorder.
+**Architecture:** Prepare one read-only visual selection geometry snapshot synchronously from the rendered outline and store it on a pending selected-drag session. Reuse the existing prepared projection and preview derivation for pointer feedback, filter selected-forest rows from pointer collision candidates, and continue to require the existing asynchronous frozen authority before executing a reorder.
 
 **Tech Stack:** React 19, TypeScript 6, dnd-kit 6, Vitest 4, Testing Library
 
@@ -363,7 +363,7 @@ const detectOutlineCollisions = useCallback<CollisionDetection>((args) => {
         ? session.preview
         : null;
   return closestCenter(
-    prepared === null
+    prepared === null || args.pointerCoordinates === null
       ? args
       : {
           ...args,
@@ -382,7 +382,9 @@ Change only the existing Dnd context collision prop:
 collisionDetection={detectOutlineCollisions}
 ```
 
-This leaves ordinary sessions on the unmodified `closestCenter(args)` path.
+This leaves ordinary sessions and keyboard-sensor collisions on the unmodified
+`closestCenter(args)` path, preserving existing keyboard selected-drag
+behavior.
 
 - [ ] **Step 7: Run the focused integration test and verify GREEN**
 
