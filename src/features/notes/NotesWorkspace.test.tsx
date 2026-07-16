@@ -6718,7 +6718,7 @@ describe("Notes workspace", () => {
       /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-3px;/s
     );
     expect(appStyles).toMatch(
-      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*0px;[^}]*--notes-node-title-edit-offset:\s*0px;[^}]*font-family:/s
+      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-1px;[^}]*font-family:/s
     );
     const customFontThemes = appStyles.matchAll(
       /:root\[data-theme="([^"]+)"\]\s*{([^}]*font-family:[^}]*)}/gs

@@ -57,3 +57,34 @@ git diff --check
 ```
 
 Expected: every command exits 0.
+
+### Task 2: Calibrate the Soft Paper editing offsets
+
+**Files:**
+- Modify: `src/styles.css:140`
+- Test: `src/features/notes/NotesWorkspace.test.tsx:6720-6722`
+
+**Interfaces:**
+- Consumes: `--notes-text-edit-offset` used by page-title and general Notes textareas.
+- Produces: Soft Paper general and row-title offsets of `-1px`.
+
+- [x] **Step 1: Change the Soft Paper contract assertion to `-1px` / `-1px`**
+
+```typescript
+expect(appStyles).toMatch(
+  /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-1px;[^}]*font-family:/s
+);
+```
+
+- [x] **Step 2: Run the focused test and confirm it fails against the current row-title offset**
+
+Run: `npm test -- src/features/notes/NotesWorkspace.test.tsx -t "uses stable Workflowy row geometry"`
+
+- [x] **Step 3: Set the measured Soft Paper offsets**
+
+```css
+--notes-text-edit-offset: -1px;
+--notes-node-title-edit-offset: -1px;
+```
+
+- [x] **Step 4: Run the focused test, full NotesWorkspace test, lint, build, and `git diff --check`**

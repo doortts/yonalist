@@ -137,8 +137,8 @@
   --scrollbar-thumb: rgb(43 36 31 / 22%);
   --scrollbar-thumb-hover: rgb(43 36 31 / 40%);
   --shadow-modal: 0 24px 64px rgb(91 73 61 / 22%);
-  --notes-text-edit-offset: 0px;
-  --notes-node-title-edit-offset: 0px;
+  --notes-text-edit-offset: -1px;
+  --notes-node-title-edit-offset: -1px;
 
   font-family:
     "Avenir Next", "Segoe UI Variable", "Helvetica Neue", ui-sans-serif,
