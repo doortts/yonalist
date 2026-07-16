@@ -57,7 +57,7 @@ export function ItemDetail({
 
   if (!item) {
     return (
-      <div className="detail-empty" role="status" aria-label="Empty detail">
+      <div className="detail-empty" aria-label="Empty detail">
         <Inbox size={32} />
         <h2>Nothing selected</h2>
         <p className="empty-copy">Select an item from the list or create a new issue.</p>
@@ -183,22 +183,16 @@ export function ItemDetail({
         />
 
         {thread.loading && (
-          <div
-            className="detail-loading"
-            role="status"
-            aria-label="Loading comments"
-          >
+          <div className="detail-loading" aria-label="Loading comments">
             <Loader2 size={18} className="spinning" />
             <span>Loading comments...</span>
           </div>
         )}
         {thread.error && (
-          <p className="notifications-error detail-error" role="alert">
-            {thread.error}
-          </p>
+          <p className="notifications-error detail-error">{thread.error}</p>
         )}
         {thread.thread?.commentsError && (
-          <p className="notifications-error detail-error" role="alert">
+          <p className="notifications-error detail-error">
             Comments could not be loaded. Check the connection and reopen this
             item to retry.
           </p>

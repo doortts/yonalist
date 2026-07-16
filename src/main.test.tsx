@@ -25,8 +25,6 @@ describe("renderer startup error handling", () => {
     createRootMock.mockClear();
     renderMock.mockClear();
     document.body.innerHTML = '<div id="root"></div>';
-    window.localStorage.clear();
-    document.documentElement.removeAttribute("data-theme");
   });
 
   afterEach(() => {
@@ -53,32 +51,5 @@ describe("renderer startup error handling", () => {
     expect(document.getElementById("root")).not.toHaveTextContent(
       "Yonalist failed to start"
     );
-  });
-
-  it("applies the stored resolved theme before the mocked App renders", async () => {
-    window.localStorage.setItem("yonalist.themeMode.v1", "light");
-    window.localStorage.setItem("yonalist.lightTheme.v1", "graphite");
-
-    await import("./main");
-
-    expect(document.documentElement.dataset.theme).toBe("graphite");
-  });
-
-  it("renders startup failures with Graphite fallback colors", async () => {
-    renderMock.mockImplementationOnce(() => {
-      throw new Error("boot failed");
-    });
-
-    await import("./main");
-
-    await vi.waitFor(() =>
-      expect(document.getElementById("root")).toHaveTextContent(
-        "Yonalist failed to start"
-      )
-    );
-    expect(document.querySelector("#root > main")).toHaveStyle({
-      background: "#d9dee5",
-      color: "#1f2732"
-    });
   });
 });

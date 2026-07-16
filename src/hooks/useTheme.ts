@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 export type ThemeMode = "light" | "dark" | "system";
 export type LightTheme =
-  | "graphite"
+  | "soft-paper"
   | "default"
   | "yona"
   | "yonal-light"
@@ -43,11 +43,8 @@ function loadThemeMode(): ThemeMode {
 
 function loadLightTheme(): LightTheme {
   const stored = readStoredValue(lightThemeStorageKey);
-  if (stored === "soft-paper") {
-    return "graphite";
-  }
   if (
-    stored === "graphite" ||
+    stored === "soft-paper" ||
     stored === "default" ||
     stored === "yona" ||
     stored === "yonal-light" ||
@@ -55,9 +52,7 @@ function loadLightTheme(): LightTheme {
   ) {
     return stored;
   }
-  return readStoredValue(themeModeStorageKey) === "yona"
-    ? "yona"
-    : "graphite";
+  return readStoredValue(themeModeStorageKey) === "yona" ? "yona" : "soft-paper";
 }
 
 function loadDarkTheme(): DarkTheme {
@@ -72,30 +67,6 @@ function systemPrefersDark(): boolean {
   return (
     typeof window.matchMedia === "function" &&
     window.matchMedia("(prefers-color-scheme: dark)").matches
-  );
-}
-
-function resolveTheme(
-  mode: ThemeMode,
-  lightTheme: LightTheme,
-  darkTheme: DarkTheme,
-  systemDark: boolean
-): ResolvedTheme {
-  return mode === "system"
-    ? systemDark
-      ? darkTheme
-      : lightTheme
-    : mode === "dark"
-      ? darkTheme
-      : lightTheme;
-}
-
-export function loadInitialResolvedTheme(): ResolvedTheme {
-  return resolveTheme(
-    loadThemeMode(),
-    loadLightTheme(),
-    loadDarkTheme(),
-    systemPrefersDark()
   );
 }
 
@@ -121,7 +92,14 @@ export function useTheme() {
     return () => media.removeListener(handleChange);
   }, []);
 
-  const resolvedTheme = resolveTheme(mode, lightTheme, darkTheme, systemDark);
+  const resolvedTheme: ResolvedTheme =
+    mode === "system"
+      ? systemDark
+        ? darkTheme
+        : lightTheme
+      : mode === "dark"
+        ? darkTheme
+        : lightTheme;
 
   useEffect(() => {
     document.documentElement.dataset.theme = resolvedTheme;

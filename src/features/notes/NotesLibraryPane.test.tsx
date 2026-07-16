@@ -1,7 +1,5 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
@@ -13,11 +11,6 @@ import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
-
-const notesStyles = readFileSync(
-  join(process.cwd(), "src/features/notes/notes.css"),
-  "utf8"
-);
 
 function deletedRoot(): NoteNode {
   return {
@@ -133,78 +126,7 @@ function activeWorkspace(
   return workspace;
 }
 
-function renderLibrary(workspace = activeWorkspace()) {
-  return render(
-    <VaultRootContext.Provider value="/vault">
-      <NotesWorkspaceContext.Provider value={workspace}>
-        <NotesLibraryPane />
-      </NotesWorkspaceContext.Provider>
-    </VaultRootContext.Provider>
-  );
-}
-
 describe("NotesLibraryPane", () => {
-  it("uses geometry-neutral separators for the compact 144px budget", () => {
-    expect(notesStyles).toMatch(
-      /\.notes-library-header\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border\);/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-discovery\s*\{[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border\);/s
-    );
-    expect(notesStyles).not.toMatch(
-      /\.notes-library-header\s*\{[^}]*border-bottom:\s*1px/s
-    );
-    expect(notesStyles).not.toMatch(
-      /\.notes-library-discovery\s*\{[^}]*border-bottom:\s*1px/s
-    );
-  });
-
-  it("keeps compact view labels on one ellipsized line", () => {
-    expect(notesStyles).toMatch(
-      /\.notes-library-views button span\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;/s
-    );
-  });
-
-  it("keeps New page in the title row and all six views in a compact grid", () => {
-    renderLibrary();
-
-    const library = screen.getByRole("region", { name: "Notes library" });
-    const header = library.querySelector(".notes-library-header");
-    expect(header).not.toBeNull();
-    expect(
-      within(header as HTMLElement).getByRole("button", { name: "New page" })
-    ).toBeVisible();
-
-    const views = within(library).getByRole("group", {
-      name: "Notes library views"
-    });
-    expect(
-      within(views).getAllByRole("button").map((button) => button.textContent)
-    ).toEqual(["All", "Starred", "Recent", "Tags", "Archive", "Trash"]);
-
-    expect(notesStyles).toMatch(
-      /\.notes-library-views\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-header\s*\{[^}]*min-height:\s*40px;[^}]*padding-block:\s*4px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-search-field\s*\{[^}]*min-height:\s*36px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-discovery\s*\{[^}]*padding:\s*4px 10px 2px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-views\s*\{[^}]*gap:\s*2px 4px;[^}]*margin-top:\s*4px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-views button\s*\{[^}]*min-height:\s*28px;/s
-    );
-    expect(notesStyles).toMatch(
-      /\.notes-library-list\s*\{[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s
-    );
-  });
-
   it("renames the active root through a title draft and flush", async () => {
     const user = userEvent.setup();
     const root = activeRoot();

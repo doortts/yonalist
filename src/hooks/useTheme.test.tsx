@@ -86,7 +86,7 @@ describe("useTheme", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses Graphite as the fresh light theme", () => {
+  it("uses Soft Paper as the fresh light theme", () => {
     installLocalStorageMock();
     installMatchMediaMock(false);
 
@@ -94,38 +94,9 @@ describe("useTheme", () => {
 
     expect(screen.getByLabelText("Theme")).toHaveAttribute(
       "data-light-theme",
-      "graphite"
-    );
-    expect(document.documentElement.dataset.theme).toBe("graphite");
-  });
-
-  it("maps stored Soft Paper to Graphite without rewriting the legacy value", () => {
-    installLocalStorageMock();
-    installMatchMediaMock(false);
-    window.localStorage.setItem("yonalist.themeMode.v1", "light");
-    window.localStorage.setItem("yonalist.lightTheme.v1", "soft-paper");
-
-    render(<ThemeProbe />);
-
-    expect(screen.getByLabelText("Theme")).toHaveAttribute(
-      "data-light-theme",
-      "graphite"
-    );
-    expect(document.documentElement.dataset.theme).toBe("graphite");
-    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe(
       "soft-paper"
     );
-  });
-
-  it("restores an explicitly selected Graphite theme", () => {
-    installLocalStorageMock();
-    installMatchMediaMock(false);
-    window.localStorage.setItem("yonalist.themeMode.v1", "light");
-    window.localStorage.setItem("yonalist.lightTheme.v1", "graphite");
-
-    render(<ThemeProbe />);
-
-    expect(document.documentElement.dataset.theme).toBe("graphite");
+    expect(document.documentElement.dataset.theme).toBe("soft-paper");
   });
 
   it("uses the selected light and dark themes when system mode changes", () => {

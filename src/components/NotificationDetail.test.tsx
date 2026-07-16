@@ -85,7 +85,6 @@ interface RenderOverrides {
   detailMaximized?: boolean;
   onToggleMaximize?: () => void;
   onHeaderVisibilityChange?: (visible: boolean) => void;
-  state?: UseNotificationDetailResult;
 }
 
 function renderDetail(
@@ -95,7 +94,7 @@ function renderDetail(
   return render(
     <NotificationDetail
       notification={notification}
-      state={overrides.state ?? makeState()}
+      state={makeState()}
       online
       commentDraft=""
       onOpenInBrowser={noop}
@@ -107,22 +106,6 @@ function renderDetail(
     />
   );
 }
-
-describe("NotificationDetail states", () => {
-  it("exposes conversation loading and failures semantically", () => {
-    const loading = renderDetail(makeNotification(), {
-      state: { ...makeState(), loading: true }
-    });
-    expect(screen.getByRole("status", { name: "Loading conversation" }))
-      .toHaveTextContent("Loading conversation...");
-    loading.unmount();
-
-    renderDetail(makeNotification(), {
-      state: { ...makeState(), error: "Conversation failed" }
-    });
-    expect(screen.getByRole("alert")).toHaveTextContent("Conversation failed");
-  });
-});
 
 describe("NotificationDetail sticky title", () => {
   it("does not show the sticky title bar while the header is visible", () => {

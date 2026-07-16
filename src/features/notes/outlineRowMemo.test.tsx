@@ -443,9 +443,7 @@ describe("outline row memoization", () => {
 
     await act(async () => batch.reject(new Error("batch failed")));
     expect(
-      await within(toolbar.parentElement!).findByText(
-        /command couldn't be completed/i
-      )
+      await within(toolbar).findByText(/command couldn't be completed/i)
     ).toBeVisible();
     const errorChurn = [...before].flatMap(([nodeId, count]) =>
       !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count

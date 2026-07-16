@@ -551,15 +551,6 @@ function mockNotesContentWidth(width: number, viewportWidth = 900): void {
 }
 
 describe("Notes workspace", () => {
-  it("styles the completed filter only when aria-pressed is true", () => {
-    expect(notesStyles).toMatch(
-      /\.notes-completed-toggle\[aria-pressed="true"\]\s*\{[^}]*background:\s*var\(--selection-bg\);[^}]*color:\s*var\(--accent\);/s
-    );
-    expect(notesStyles).not.toContain(
-      '.notes-completed-toggle[aria-pressed="false"]'
-    );
-  });
-
   beforeEach(() => {
     mockNarrowViewport(false);
     configureRepository();
@@ -2435,10 +2426,6 @@ describe("Notes workspace", () => {
     await user.click(toggle);
 
     expect(screen.getByText("Completed items are hidden.")).toBeVisible();
-    expect(screen.getByText("Completed items are hidden.")).toHaveAttribute(
-      "role",
-      "status"
-    );
     expect(screen.queryByText("No outline yet.")).toBeNull();
     expect(queryTitleInput("Completed project")).toBeNull();
 
@@ -2472,10 +2459,6 @@ describe("Notes workspace", () => {
     ).toBeVisible();
     expect(queryTitleInput("Hidden child")).toBeNull();
     expect(screen.getByText("Completed items are hidden.")).toBeVisible();
-    expect(screen.getByText("Completed items are hidden.")).toHaveAttribute(
-      "role",
-      "status"
-    );
     const menu = await openNodeMenu("Completed project", user);
     expect(
       within(menu).getByRole("menuitem", { name: "Uncomplete" })
@@ -3191,44 +3174,9 @@ describe("Notes workspace", () => {
       expect(
         document.querySelector('[data-outline-id="a"]')
       ).toHaveAttribute("data-range-selected", "true");
-      expect(document.querySelector('[data-outline-id="a"]')).toHaveAttribute(
-        "data-range-position",
-        "single"
-      );
       expect(
         screen.queryByRole("navigation", { name: "Notes breadcrumb" })
       ).toBeNull();
-    });
-
-    it("marks a visible selected range as first, middle, and last", async () => {
-      configureRepository([
-        node({ id: "a", title: "Alpha", sortKey: 1 }),
-        node({ id: "b", title: "Bravo", sortKey: 2 }),
-        node({ id: "c", title: "Charlie", sortKey: 3 })
-      ]);
-      renderNotesWorkspace();
-      const alpha = await findTitleInput("Alpha");
-
-      act(() => alpha.focus());
-      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
-      const bravo = getTitleInput("Bravo");
-      act(() => bravo.focus());
-      await waitFor(() => expect(bravo).toHaveFocus());
-      fireEvent.keyDown(bravo, {
-        key: "ArrowDown",
-        shiftKey: true
-      });
-
-      await screen.findByRole("toolbar", {
-        name: "Actions for 3 selected notes"
-      });
-      expect(
-        ["a", "b", "c"].map((id) =>
-          document
-            .querySelector(`[data-outline-id="${id}"]`)
-            ?.getAttribute("data-range-position")
-        )
-      ).toEqual(["first", "middle", "last"]);
     });
 
     it("moves focus between an outline editor and the selection toolbar with F6", async () => {
@@ -3725,9 +3673,7 @@ describe("Notes workspace", () => {
         expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
-        expect(
-          await within(toolbar.parentElement!).findByText("Copied.")
-        ).toBeVisible();
+        expect(await within(toolbar).findByText("Copied.")).toBeVisible();
       } finally {
         restoreClipboard();
       }
@@ -3815,7 +3761,7 @@ describe("Notes workspace", () => {
         await user.click(screen.getByRole("menuitem", { name: "Cut" }));
 
         expect(
-          await within(toolbar.parentElement!).findByText(
+          await within(toolbar).findByText(
             "The clipboard could not be written."
           )
         ).toBeVisible();
@@ -4600,9 +4546,7 @@ describe("Notes workspace", () => {
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
 
-      expect(
-        await within(toolbar.parentElement!).findByText(/couldn't open/i)
-      ).toBeVisible();
+      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
 
@@ -4660,11 +4604,7 @@ describe("Notes workspace", () => {
       await act(async () =>
         chooserAuthority.reject(new Error("stale authority failure"))
       );
-      expect(
-        within(toolbar.parentElement!).queryByText(
-          /couldn't open|selection changed/i
-        )
-      ).toBeNull();
+      expect(within(toolbar).queryByText(/couldn't open|selection changed/i)).toBeNull();
       expect(charlie).toHaveFocus();
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
@@ -4703,9 +4643,7 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 2 selected notes"
       });
-      expect(
-        await within(toolbar.parentElement!).findByText(/couldn't open/i)
-      ).toBeVisible();
+      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
       await waitFor(() => expect(bravo).toHaveFocus());
     });
 
@@ -4996,7 +4934,7 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 5 selected notes"
       });
-      const status = within(toolbar.parentElement!).getByRole("status");
+      const status = within(toolbar).getByRole("status");
       expect(status).toHaveTextContent(
         /^First item stayed: no preceding sibling\.$/
       );
@@ -5977,7 +5915,6 @@ describe("Notes workspace", () => {
     await waitFor(() => expect(chips).toHaveTextContent("#work0"));
     expect(queryTitleInput("No tag")).toBeNull();
     expect(screen.getByText("No pages yet.")).toBeVisible();
-    expect(screen.getByText("No pages yet.")).toHaveAttribute("role", "status");
   });
 
   it("keeps only the newest asynchronous search results", async () => {
@@ -6639,10 +6576,6 @@ describe("Notes workspace", () => {
     ).toBeLessThan(notesStoreMock.deleteDatabase.mock.invocationCallOrder[0]);
     expect(queryTextareaByName("Edit node title")).toBeNull();
     expect(screen.getByText("No outline yet.")).toBeInTheDocument();
-    expect(screen.getByText("No outline yet.")).toHaveAttribute(
-      "role",
-      "status"
-    );
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
   });
 
@@ -6699,21 +6632,16 @@ describe("Notes workspace", () => {
     notesStoreMock.loadWorkspace.mockRejectedValueOnce(new Error("Load failed"));
     renderNotesWorkspace();
 
-    const library = screen.getByLabelText("Notes library");
-    const outline = screen.getByLabelText("Notes outline");
-    expect(within(library).getByRole("status")).toHaveTextContent(
-      "Loading notes..."
-    );
-    expect(
-      within(outline).getByText("Loading notes...", {
-        selector: '[role="status"]'
-      })
-    ).toHaveTextContent("Loading notes...");
+    expect(screen.getAllByText("Loading notes...")).toHaveLength(2);
     expect(screen.getByRole("button", { name: "New page" })).toBeDisabled();
-    expect(await within(library).findByRole("alert")).toHaveTextContent(
-      "Load failed"
-    );
-    expect(within(outline).getByRole("alert")).toHaveTextContent("Load failed");
+    expect(await screen.findAllByText("Load failed")).toHaveLength(2);
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(
+      within(screen.getByLabelText("Notes outline")).getByRole("alert")
+    ).toHaveTextContent("Load failed");
+    expect(
+      within(screen.getByLabelText("Notes library")).queryByRole("alert")
+    ).not.toBeInTheDocument();
   });
 
   it("keeps long titles and one compact menu trigger in stable layout hooks", async () => {
@@ -6946,8 +6874,8 @@ describe("Notes workspace", () => {
       const normalizeColor = (value: string) => value.replace(/\s*\/\s*/gu, "/");
       expect(normalizeColor(lightHalo)).toBe("rgb(17 24 39/5%)");
       expect(normalizeColor(lightHaloStrong)).toBe("rgb(17 24 39/8%)");
-      expect(normalizeColor(darkHalo)).toBe("rgb(237 242 247/7%)");
-      expect(normalizeColor(darkHaloStrong)).toBe("#2b3a4d");
+      expect(normalizeColor(darkHalo)).toBe("rgb(255 255 255/6%)");
+      expect(normalizeColor(darkHaloStrong)).toBe("rgb(255 255 255/10%)");
     expect(darkHalo).not.toBe(lightHalo);
     expect(darkHaloStrong).not.toBe(lightHaloStrong);
     expect(notesStyles).toMatch(

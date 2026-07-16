@@ -63,7 +63,7 @@ const themeModeOptions: Array<{ value: ThemeMode; label: string }> = [
 ];
 
 const lightThemeOptions: Array<{ value: LightTheme; label: string }> = [
-  { value: "graphite", label: "Graphite" },
+  { value: "soft-paper", label: "Soft Paper" },
   { value: "default", label: "Default" },
   { value: "yona", label: "Yona" },
   { value: "yonal-light", label: "Yonal Light" },
@@ -430,7 +430,6 @@ export function SettingsPage({
             {resetProgress.steps.length > 0 && (
               <div
                 className={`reset-progress reset-progress-${resetProgress.status}`}
-                role={resetProgress.status === "failed" ? "alert" : "status"}
                 aria-label="Reset progress"
                 aria-live="polite"
               >
@@ -464,9 +463,7 @@ export function SettingsPage({
 
       {(section === "appearance" || section === "vault") && (
         <footer className="settings-actions">
-          <span role="status" aria-live="polite" aria-atomic="true">
-            {status}
-          </span>
+          <span>{status}</span>
           <button className="primary-button" type="submit">
             <CheckCircle2 size={16} />
             Save settings

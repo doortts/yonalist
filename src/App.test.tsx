@@ -66,17 +66,6 @@ function installLocalStorageMock() {
   });
 }
 
-function setViewportWidth(width: number, notify = false) {
-  Object.defineProperty(window, "innerWidth", {
-    configurable: true,
-    writable: true,
-    value: width
-  });
-  if (notify) {
-    fireEvent(window, new Event("resize"));
-  }
-}
-
 function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
     nodeKind: "text",
@@ -107,7 +96,6 @@ function deferred<T>() {
 
 describe("Yonalist app shell", () => {
   beforeEach(() => {
-    setViewportWidth(1024);
     installLocalStorageMock();
     notificationDetailInputs.mockClear();
     loadVaultStateOverride.mockReset();
@@ -2492,10 +2480,6 @@ describe("Yonalist app shell", () => {
     await user.click(screen.getByRole("button", { name: "Save settings" }));
 
     expect(screen.getByText("Settings saved")).toBeInTheDocument();
-    const settingsPage = screen.getByLabelText("Settings page");
-    expect(within(settingsPage).getByRole("status")).toHaveTextContent(
-      "Settings saved"
-    );
     expect(window.localStorage.getItem("yonalist.settings.v1")).toContain(
       "/Users/doortts/Yonalist"
     );
@@ -2508,7 +2492,6 @@ describe("Yonalist app shell", () => {
       JSON.stringify({ vaultFolder: "/Users/doortts/CustomVault" })
     );
     window.localStorage.setItem("yonalist.themeMode.v1", "dark");
-    window.localStorage.setItem("yonalist.lightTheme.v1", "yona");
     window.localStorage.setItem("yonalist.repositorySummaries.v1", "{\"cache\":true}");
     window.localStorage.setItem(
       "yonalist.vaultDocuments.v1",
@@ -2528,9 +2511,7 @@ describe("Yonalist app shell", () => {
         name: /Reset/
       })
     );
-    await user.click(
-      await screen.findByRole("button", { name: "Reset settings and caches" })
-    );
+    await user.click(screen.getByRole("button", { name: "Reset settings and caches" }));
     const dialog = await screen.findByRole("alertdialog", {
       name: "Reset all settings and caches?"
     });
@@ -2548,12 +2529,8 @@ describe("Yonalist app shell", () => {
       expect(within(progress).getAllByText("Done")).toHaveLength(5);
       expect(window.localStorage.getItem("yonalist.settings.v1")).toBeNull();
       expect(window.localStorage.getItem("yonalist.themeMode.v1")).toBe("system");
-      expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe("graphite");
-      expect(window.localStorage.getItem("yonalist.darkTheme.v1")).toBe("dark");
-      expect(document.documentElement.dataset.theme).toBe("graphite");
       expect(window.localStorage.getItem("yonalist.repositorySummaries.v1")).toBeNull();
     });
-    expect(progress).toHaveAttribute("role", "status");
     expect(window.localStorage.getItem("yonalist.vaultDocuments.v1")).toContain(
       "github.com/acme/app/issues/1/issue.md"
     );
@@ -3595,26 +3572,10 @@ describe("Yonalist app shell", () => {
   });
 
   it("switches themes from the settings page and persists the choice", async () => {
-    window.localStorage.setItem("yonalist.lightTheme.v1", "default");
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Settings" }));
-    expect(
-      screen.getByRole("radio", { name: "Graphite light theme" })
-    ).toBeInTheDocument();
-    expect(
-      screen.queryByRole("radio", { name: "Soft Paper light theme" })
-    ).not.toBeInTheDocument();
-
-    await user.click(
-      screen.getByRole("radio", { name: "Graphite light theme" })
-    );
-    expect(document.documentElement.dataset.theme).toBe("graphite");
-    expect(window.localStorage.getItem("yonalist.lightTheme.v1")).toBe(
-      "graphite"
-    );
-
     await user.click(await screen.findByRole("radio", { name: "Yona light theme" }));
 
     expect(document.documentElement.dataset.theme).toBe("yona");
@@ -3692,253 +3653,6 @@ describe("Yonalist app shell", () => {
     fireEvent.pointerUp(window);
 
     expect(layout).toHaveStyle("--list-width: 320px");
-  });
-
-  it("aligns constrained panes, titlebar geometry, and keyboard semantics", () => {
-    setViewportWidth(981);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const navigationResizer = screen.getByRole("separator", {
-      name: "Resize navigation pane"
-    });
-    const listResizer = screen.getByRole("separator", {
-      name: "Resize item list pane"
-    });
-    const paneToggleGroup = screen.getByRole("group", { name: "Pane layout" });
-
-    expect(layout).toHaveStyle("--sidebar-width: 323px");
-    expect(layout).toHaveStyle("--list-width: 320px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "323");
-    expect(navigationResizer).toHaveAttribute("aria-valuemax", "323");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "320");
-    expect(listResizer).toHaveAttribute("aria-valuemax", "320");
-    expect(paneToggleGroup.style.left).toContain("var(--sidebar-width");
-
-    fireEvent.keyDown(navigationResizer, {
-      key: "ArrowLeft",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--sidebar-width: 275px");
-  });
-
-  it("starts constrained pointer resizing from the rendered pane width", () => {
-    setViewportWidth(981);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const navigationResizer = screen.getByRole("separator", {
-      name: "Resize navigation pane"
-    });
-
-    expect(layout).toHaveStyle("--sidebar-width: 323px");
-    fireEvent.pointerDown(navigationResizer, { clientX: 323, button: 0 });
-    fireEvent.pointerMove(window, { clientX: 307 });
-    fireEvent.pointerUp(window);
-    expect(layout).toHaveStyle("--sidebar-width: 307px");
-  });
-
-  it("resizes a constrained list immediately from its rendered width", () => {
-    setViewportWidth(1280);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const listResizer = screen.getByRole("separator", {
-      name: "Resize item list pane"
-    });
-
-    expect(layout).toHaveStyle("--sidebar-width: 420px");
-    expect(layout).toHaveStyle("--list-width: 522px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "522");
-    expect(listResizer).toHaveAttribute("aria-valuemax", "522");
-
-    fireEvent.keyDown(listResizer, { key: "ArrowLeft" });
-    expect(layout).toHaveStyle("--list-width: 506px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "506");
-  });
-
-  it("restores requested pane widths after a constrained window expands", () => {
-    setViewportWidth(981);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    expect(layout).toHaveStyle("--sidebar-width: 323px");
-    expect(layout).toHaveStyle("--list-width: 320px");
-
-    setViewportWidth(1600, true);
-
-    expect(layout).toHaveStyle("--sidebar-width: 420px");
-    expect(layout).toHaveStyle("--list-width: 640px");
-    expect(
-      JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
-    ).toEqual({ sidebar: 420, list: 640 });
-  });
-
-  it("preserves constrained requests after impossible keyboard and pointer input", () => {
-    setViewportWidth(981);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const navigationResizer = screen.getByRole("separator", {
-      name: "Resize navigation pane"
-    });
-    const listResizer = screen.getByRole("separator", {
-      name: "Resize item list pane"
-    });
-
-    fireEvent.keyDown(navigationResizer, { key: "ArrowRight" });
-    fireEvent.keyDown(listResizer, { key: "ArrowLeft" });
-    fireEvent.pointerDown(navigationResizer, { clientX: 323, button: 0 });
-    fireEvent.pointerMove(window, { clientX: 339 });
-    fireEvent.pointerUp(window);
-    fireEvent.pointerDown(listResizer, { clientX: 320, button: 0 });
-    fireEvent.pointerMove(window, { clientX: 304 });
-    fireEvent.pointerUp(window);
-
-    expect(layout).toHaveStyle("--sidebar-width: 323px");
-    expect(layout).toHaveStyle("--list-width: 320px");
-    expect(
-      JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
-    ).toEqual({ sidebar: 420, list: 640 });
-
-    setViewportWidth(1600, true);
-    expect(layout).toHaveStyle("--sidebar-width: 420px");
-    expect(layout).toHaveStyle("--list-width: 640px");
-  });
-
-  it("restores constrained geometry after detail maximize", async () => {
-    setViewportWidth(981);
-    window.localStorage.setItem(
-      "yonalist.paneWidths.v1",
-      JSON.stringify({ sidebar: 420, list: 640 })
-    );
-    const user = userEvent.setup();
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const maximizeToggle = screen.getByRole("button", { name: "상세 최대화" });
-
-    await user.click(maximizeToggle);
-    expect(layout).toHaveStyle("--sidebar-width: 0px");
-    expect(layout).toHaveStyle("--list-width: 0px");
-
-    await user.click(maximizeToggle);
-    expect(layout).toHaveStyle("--sidebar-width: 323px");
-    expect(layout).toHaveStyle("--list-width: 320px");
-  });
-
-  it("resizes and clamps both panes from the keyboard", async () => {
-    setViewportWidth(1600);
-    render(<App />);
-
-    const layout = screen.getByLabelText("Yonalist layout");
-    const navigationResizer = screen.getByRole("separator", {
-      name: "Resize navigation pane"
-    });
-    const listResizer = screen.getByRole("separator", {
-      name: "Resize item list pane"
-    });
-
-    expect(layout).toHaveStyle("--sidebar-width: 240px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "240");
-    expect(layout).toHaveStyle("--list-width: 340px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "340");
-
-    fireEvent.keyDown(navigationResizer, { key: "ArrowRight" });
-    expect(layout).toHaveStyle("--sidebar-width: 256px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "256");
-
-    fireEvent.keyDown(navigationResizer, {
-      key: "ArrowRight",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--sidebar-width: 304px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "304");
-
-    fireEvent.keyDown(navigationResizer, {
-      key: "ArrowLeft",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--sidebar-width: 256px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "256");
-
-    fireEvent.keyDown(navigationResizer, {
-      key: "ArrowLeft",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--sidebar-width: 220px");
-    expect(navigationResizer).toHaveAttribute("aria-valuemin", "220");
-    expect(navigationResizer).toHaveAttribute("aria-valuemax", "420");
-
-    for (let index = 0; index < 10; index += 1) {
-      fireEvent.keyDown(navigationResizer, {
-        key: "ArrowRight",
-        shiftKey: true
-      });
-    }
-    expect(layout).toHaveStyle("--sidebar-width: 420px");
-    expect(navigationResizer).toHaveAttribute("aria-valuenow", "420");
-
-    fireEvent.keyDown(listResizer, { key: "ArrowRight" });
-    expect(layout).toHaveStyle("--list-width: 356px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "356");
-
-    fireEvent.keyDown(listResizer, {
-      key: "ArrowRight",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--list-width: 404px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "404");
-
-    fireEvent.keyDown(listResizer, {
-      key: "ArrowLeft",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--list-width: 356px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "356");
-
-    fireEvent.keyDown(listResizer, {
-      key: "ArrowLeft",
-      shiftKey: true
-    });
-    expect(layout).toHaveStyle("--list-width: 320px");
-    expect(listResizer).toHaveAttribute("aria-valuemin", "320");
-    expect(listResizer).toHaveAttribute("aria-valuemax", "640");
-
-    for (let index = 0; index < 10; index += 1) {
-      fireEvent.keyDown(listResizer, {
-        key: "ArrowRight",
-        shiftKey: true
-      });
-    }
-    expect(layout).toHaveStyle("--list-width: 640px");
-    expect(listResizer).toHaveAttribute("aria-valuenow", "640");
-
-    await waitFor(() => {
-      expect(
-        JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
-      ).toEqual({ sidebar: 420, list: 640 });
-    });
   });
 
   // The detail maximize control moves between the header (inline, while the

@@ -107,10 +107,7 @@ import {
   parentTrail,
   type FlattenedOutlineRow
 } from "./outlineTree";
-import {
-  OutlineNodeRow,
-  type NotesSelectionRangePosition
-} from "./OutlineNodeRow";
+import { OutlineNodeRow } from "./OutlineNodeRow";
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
@@ -939,23 +936,12 @@ export function NotesOutlinePane() {
     () => selectionRangeIds(selection ?? null, bodyVisibleIds),
     [bodyVisibleIds, selection]
   );
-  const selectedRangePositions = useMemo(() => {
-    const positions = new Map<NoteId, NotesSelectionRangePosition>();
-    const lastIndex = materializedSelectionIds.length - 1;
-    materializedSelectionIds.forEach((id, index) => {
-      positions.set(
-        id,
-        lastIndex === 0
-          ? "single"
-          : index === 0
-            ? "first"
-            : index === lastIndex
-              ? "last"
-              : "middle"
-      );
-    });
-    return positions;
-  }, [materializedSelectionIds]);
+  // Hand each memoized row only an atomic membership bit. Rows that stay in or
+  // out of the range retain every prop identity across a selection update.
+  const selectedIdSet = useMemo(
+    () => new Set(materializedSelectionIds),
+    [materializedSelectionIds]
+  );
   // Rows read the live selection at keydown time (to extend the head) through
   // this stable accessor, mirroring getVisibleNodeIds — the row never subscribes
   // to the selection, so its memo is preserved.
@@ -2401,9 +2387,7 @@ export function NotesOutlinePane() {
             onPasteCapture={handlePasteCapture}
           >
           {initialLoading && (
-            <p className="notes-pane-state" role="status">
-              Loading notes...
-            </p>
+            <p className="notes-pane-state">Loading notes...</p>
           )}
           {state.status === "error" && state.rootIds.length === 0 && (
             <p className="notes-pane-state notes-pane-error" role="alert">
@@ -2413,16 +2397,12 @@ export function NotesOutlinePane() {
           {!initialLoading &&
             state.status !== "error" &&
             completedItemsHidden && (
-              <p className="notes-pane-state" role="status">
-                Completed items are hidden.
-              </p>
+              <p className="notes-pane-state">Completed items are hidden.</p>
             )}
           {!initialLoading &&
             state.status !== "error" &&
             allStructuralRows.length === 0 && (
-              <p className="notes-pane-state" role="status">
-                No outline yet.
-              </p>
+              <p className="notes-pane-state">No outline yet.</p>
             )}
           {state.status === "error" && state.rootIds.length > 0 && (
             <p className="notes-inline-error" role="alert">
@@ -2496,11 +2476,11 @@ export function NotesOutlinePane() {
                       getSelection={getSelection}
                       onSelectionAction={executeSelectionAction}
                       selectionBridge={
-                        selectedRangePositions.get(row.id)
+                        selectedIdSet.has(row.id)
                           ? selectionMenuBridge
                           : undefined
                       }
-                      rangePosition={selectedRangePositions.get(row.id)}
+                      isSelected={selectedIdSet.has(row.id)}
                       draft={draftsByNodeId[row.id]}
                       attachmentUploadError={
                         attachmentUploadErrorsByNodeId?.[row.id]

@@ -93,17 +93,16 @@ interface RenderOverrides {
   detailMaximized?: boolean;
   onToggleMaximize?: () => void;
   onHeaderVisibilityChange?: (visible: boolean) => void;
-  thread?: UseItemThreadResult;
 }
 
 function renderDetail(
-  item: ItemDocument | null = makeItem(),
+  item: ItemDocument = makeItem(),
   overrides: RenderOverrides = {}
 ) {
   return render(
     <ItemDetail
-      item={item ?? undefined}
-      thread={overrides.thread ?? makeThread()}
+      item={item}
+      thread={makeThread()}
       online
       commentDraft=""
       onCommentDraftChange={noop}
@@ -115,26 +114,6 @@ function renderDetail(
     />
   );
 }
-
-describe("ItemDetail states", () => {
-  it("exposes empty, loading, and failed detail states semantically", () => {
-    const empty = renderDetail(null);
-    expect(screen.getByRole("status")).toHaveTextContent("Nothing selected");
-    empty.unmount();
-
-    const loading = renderDetail(makeItem(), {
-      thread: { ...makeThread(), loading: true }
-    });
-    expect(screen.getByRole("status", { name: "Loading comments" }))
-      .toHaveTextContent("Loading comments...");
-    loading.unmount();
-
-    renderDetail(makeItem(), {
-      thread: { ...makeThread(), error: "Comments failed" }
-    });
-    expect(screen.getByRole("alert")).toHaveTextContent("Comments failed");
-  });
-});
 
 describe("ItemDetail sticky title", () => {
   it("does not show the sticky title bar while the header is visible", () => {

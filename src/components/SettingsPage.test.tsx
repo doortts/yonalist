@@ -11,7 +11,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultSettings } from "../appSettings";
-import type { ResetProgressStatus } from "../resetProgress";
 import { SettingsPage } from "./SettingsPage";
 
 const scrollIntoView = vi.fn();
@@ -149,33 +148,5 @@ describe("SettingsPage Notes targets", () => {
     expect(appStyles).toMatch(
       /@media \(prefers-reduced-motion:\s*reduce\)\s*{[\s\S]*\.settings-target-highlight\s*{[^}]*animation:\s*none;/s
     );
-  });
-});
-
-function renderResetProgress(status: Exclude<ResetProgressStatus, "idle">) {
-  const stepStatus = status === "done" ? "done" : status;
-  render(
-    <SettingsPage
-      {...settingsPageProps()}
-      section="reset"
-      lightTheme="graphite"
-      resetProgress={{
-        status,
-        message: `${status} reset`,
-        steps: [{ id: "cache", label: "Cache", status: stepStatus }]
-      }}
-    />
-  );
-}
-
-describe("SettingsPage reset feedback", () => {
-  it.each([
-    ["running", "status"],
-    ["done", "status"],
-    ["failed", "alert"]
-  ] as const)("uses %s reset semantics", (status, role) => {
-    renderResetProgress(status);
-    expect(screen.getByRole(role, { name: "Reset progress" }))
-      .toHaveTextContent(`${status} reset`);
   });
 });

@@ -2,9 +2,6 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { tracePerf } from "./services/perfTrace";
 import "./styles.css";
-import { loadInitialResolvedTheme } from "./hooks/useTheme";
-
-document.documentElement.dataset.theme = loadInitialResolvedTheme();
 
 function startupErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -23,8 +20,8 @@ function renderStartupError(error: unknown) {
   container.style.cssText = [
     "min-height: 100vh",
     "padding: 32px",
-    "background: #d9dee5",
-    "color: #1f2732",
+    "background: #15171c",
+    "color: #e7eaef",
     "font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
     "white-space: pre-wrap"
   ].join(";");

@@ -349,7 +349,7 @@ export const ItemListPane = memo(function ItemListPane({
   }, [listIdentity, query, stateFilter]);
 
   return (
-    <section className="list-pane" aria-label="Items" aria-busy={loading}>
+    <section className="list-pane" aria-label="Items">
       <div className="pane-titlebar-spacer" />
       <div className="search-row">
         <Search size={18} />
@@ -451,26 +451,18 @@ export const ItemListPane = memo(function ItemListPane({
       {demoMode && (
         <p className="list-note">Sample items. Sign in from Settings to load yours.</p>
       )}
-      {error && (
-        <p className="surface-state surface-state-error list-error" role="alert">
-          {error}
-        </p>
-      )}
+      {error && <p className="list-error">{error}</p>}
 
       <div
         className={items.length > VIRTUALIZE_AT ? "item-list virtualized" : "item-list"}
         ref={listRef}
         onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
       >
-        {items.length === 0 && loading && !error && (
-          <p className="surface-state list-empty" role="status">
-            Loading items...
-          </p>
+        {items.length === 0 && !loading && (
+          <p className="empty-copy list-empty">No items match this view.</p>
         )}
-        {items.length === 0 && !loading && !error && (
-          <p className="surface-state list-empty" role="status">
-            No items match this view.
-          </p>
+        {items.length === 0 && loading && (
+          <p className="empty-copy list-empty">Loading items...</p>
         )}
         <ItemRows
           items={items}

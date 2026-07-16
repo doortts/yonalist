@@ -10,9 +10,3 @@
   gap: 10px;
   min-width: 0;
 }
-
-.notification-main:focus-visible {
-  border-radius: var(--radius);
-  outline: 2px solid var(--focus-ring);
-  outline-offset: -2px;
-}
