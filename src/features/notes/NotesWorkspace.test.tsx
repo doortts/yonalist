@@ -4706,6 +4706,92 @@ describe("Notes workspace", () => {
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
 
+    it("does not restore a pre-revision router status after a chooser error clears", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+      const statusBar = screen.getByLabelText("Status bar feedback");
+
+      await user.click(within(toolbar).getByRole("button", { name: "Complete" }));
+      expect(await within(statusBar).findByRole("status")).toHaveTextContent(
+        "Completed selection."
+      );
+
+      notesStoreMock.loadWorkspace.mockRejectedValueOnce(
+        new Error("authority unavailable")
+      );
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      expect(await within(statusBar).findByRole("alert")).toHaveTextContent(
+        /couldn't open/i
+      );
+
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Clear selection" })
+      );
+      await waitFor(() => {
+        expect(within(statusBar).queryByRole("status")).toBeNull();
+        expect(within(statusBar).queryByRole("alert")).toBeNull();
+      });
+    });
+
+    it("does not restore a pre-revision router error after a chooser error clears", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const title = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(title, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const toolbar = screen.getByRole("toolbar", {
+        name: "Actions for 2 selected notes"
+      });
+      const statusBar = screen.getByLabelText("Status bar feedback");
+
+      fireEvent.keyDown(title, { key: "Tab" });
+      expect(await within(statusBar).findByRole("alert")).toHaveTextContent(
+        "Can't indent selection"
+      );
+
+      notesStoreMock.loadWorkspace.mockRejectedValueOnce(
+        new Error("authority unavailable")
+      );
+      await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
+      await waitFor(() =>
+        expect(within(statusBar).getByRole("alert")).toHaveTextContent(
+          /couldn't open/i
+        )
+      );
+
+      await user.click(
+        within(toolbar).getByRole("button", { name: "Clear selection" })
+      );
+      await waitFor(() => {
+        expect(within(statusBar).queryByRole("status")).toBeNull();
+        expect(within(statusBar).queryByRole("alert")).toBeNull();
+      });
+    });
+
     it("cancels stale chooser preparation when the selection revision changes", async () => {
       const user = userEvent.setup();
       configureRepository(threeRoots());
@@ -5002,6 +5088,11 @@ describe("Notes workspace", () => {
       });
       // The surviving neighbor takes focus.
       await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
+      expect(
+        await within(
+          screen.getByLabelText("Status bar feedback")
+        ).findByRole("status")
+      ).toHaveTextContent("Deleted selection.");
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 

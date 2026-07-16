@@ -1290,7 +1290,8 @@ export function NotesOutlinePane() {
     useNotesFeedback();
   useEffect(() => {
     clearNotesFeedback();
-  }, [clearNotesFeedback, selectionRevision]);
+    clearSelectionRouterFeedback();
+  }, [clearNotesFeedback, clearSelectionRouterFeedback, selectionRevision]);
   useEffect(() => {
     if (selectionFeedbackError) {
       publishNotesFeedback({

@@ -21,6 +21,15 @@ function FeedbackPublisher({
   return null;
 }
 
+function FeedbackControls({
+  onPublish
+}: {
+  onPublish(publish: ReturnType<typeof useNotesFeedback>["publish"]): void;
+}) {
+  onPublish(useNotesFeedback().publish);
+  return null;
+}
+
 function renderFeedbackTree({
   active,
   message
@@ -73,5 +82,25 @@ describe("NotesFeedbackProvider", () => {
     rerender(renderFeedbackTree({ active: false, message: null }));
 
     expect(screen.queryByText("Moved selection.")).not.toBeInTheDocument();
+  });
+
+  it("ignores feedback published after Notes becomes inactive", () => {
+    let publish: ReturnType<typeof useNotesFeedback>["publish"] | undefined;
+    const tree = (active: boolean) => (
+      <NotesFeedbackProvider active={active}>
+        <FeedbackControls onPublish={(next) => (publish = next)} />
+        <NotesStatusBarMessage />
+      </NotesFeedbackProvider>
+    );
+    const { rerender } = render(tree(true));
+    act(() => publish?.({ kind: "status", message: "Copied." }));
+    expect(screen.getByRole("status")).toHaveTextContent("Copied.");
+
+    rerender(tree(false));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    act(() => publish?.({ kind: "error", message: "Late failure." }));
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText("Late failure.")).not.toBeInTheDocument();
   });
 });
