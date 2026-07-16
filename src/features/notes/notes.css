@@ -1134,6 +1134,47 @@ button.notes-date-token:hover {
   opacity: 0.72;
 }
 
+.notes-outline-item[data-selection-dragging="true"] > .notes-node {
+  opacity: 0.42;
+}
+
+.notes-selection-drag-preview {
+  display: grid;
+  min-width: 196px;
+  max-width: min(320px, calc(100vw - 24px));
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+  color: var(--text-1);
+  pointer-events: none;
+}
+
+.notes-selection-drag-preview-stack {
+  display: grid;
+  gap: 2px;
+}
+
+.notes-selection-drag-preview-row {
+  min-width: 0;
+  padding: 4px 7px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  font-size: 13px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-selection-drag-preview-count {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 /* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
    row's title line, in the spirit of Workflowy's range highlight. */
 .notes-node[data-range-selected="true"] > .notes-node-main {

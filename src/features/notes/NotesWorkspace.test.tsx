@@ -1946,6 +1946,9 @@ describe("Notes workspace", () => {
       "data-dragging",
       "true"
     );
+    expect(
+      screen.queryByTestId("notes-selection-drag-preview")
+    ).not.toBeInTheDocument();
     await user.pointer({
       target: parentBullet,
       coords: { clientX: 36, clientY: 42 }
@@ -4142,11 +4145,41 @@ describe("Notes workspace", () => {
         target: destination,
         coords: { clientX: 50, clientY: 210 }
       });
+
+      const selectionDragPreview = screen.getByTestId(
+        "notes-selection-drag-preview"
+      );
+      expect(selectionDragPreview).toHaveTextContent("Alpha");
+      expect(selectionDragPreview).toHaveTextContent("Bravo");
+      expect(selectionDragPreview).toHaveTextContent("Charlie");
+      expect(selectionDragPreview).not.toHaveTextContent("Delta");
+      expect(selectionDragPreview).toHaveTextContent("5 selected");
+      expect(document.body).toHaveTextContent(
+        "5 selected notes are over Destination."
+      );
+      for (const nodeId of movingIds) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).toHaveAttribute("data-selection-dragging", "true");
+      }
       await user.pointer({
         keys: "[/MouseLeft]",
         target: destination,
         coords: { clientX: 50, clientY: 210 }
       });
+
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      for (const nodeId of movingIds) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).not.toHaveAttribute("data-selection-dragging");
+      }
 
       await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
@@ -4174,6 +4207,55 @@ describe("Notes workspace", () => {
       expect(confirmedNodes.find(({ id }) => id === "c-child")?.parentId).toBe(
         "c"
       );
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
+    it("clears every selected source ghost when a group drag is cancelled", async () => {
+      const user = userEvent.setup();
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      const bullet = screen.getByRole("button", { name: "Zoom into Alpha" });
+      mockOutlineRowRects();
+
+      bullet.focus();
+      await user.keyboard("[Space]");
+
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "2 selected"
+      );
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).toHaveAttribute("data-selection-dragging", "true");
+      }
+
+      await user.keyboard("[Escape]");
+
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).not.toHaveAttribute("data-selection-dragging");
+      }
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -4416,7 +4498,12 @@ describe("Notes workspace", () => {
       await user.keyboard("[Space][ArrowDown][Space]");
 
       await waitFor(() =>
-        expect(document.body).toHaveTextContent("No move was made for Alpha.")
+        expect(document.body).toHaveTextContent(
+          "No move was made for 2 selected notes."
+        )
+      );
+      expect(screen.getByLabelText("Status bar feedback")).toHaveTextContent(
+        "Can't move selection: the selected rows cannot be moved together."
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import {
   closestCenter,
   DndContext,
+  DragOverlay,
   KeyboardSensor,
   PointerSensor,
   type Announcements,
@@ -65,6 +66,7 @@ import {
   NotesSelectionActionBar,
   type NotesSelectionActionBarAction
 } from "./NotesSelectionActionBar";
+import { NotesSelectionDragPreview } from "./NotesSelectionDragPreview";
 import {
   useNotesActions,
   useNotesDrafts,
@@ -129,6 +131,9 @@ const outlineScreenReaderInstructions = {
   draggable:
     "To pick up a note, press Space or Enter. Use Arrow Up and Arrow Down to choose a visible row. Press Space or Enter to drop, or Escape to cancel."
 };
+
+const selectionDragRejectedMessage =
+  "Can't move selection: the selected rows cannot be moved together.";
 
 interface ImageIngestError {
   readonly label: "Image drop failed" | "Image paste failed";
@@ -472,6 +477,7 @@ export function NotesOutlinePane() {
   const selectionChooserLifecycleKey = `${selectionRevision}\u0002${selectionChooserScopeKey}`;
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
+  const [draggedNodeIds, setDraggedNodeIds] = useState<readonly NoteId[]>([]);
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [quickJumpOpen, setQuickJumpOpen] = useState(false);
@@ -508,6 +514,8 @@ export function NotesOutlinePane() {
     useRef<OutlineSelectionDragFrozenContext | null>(null);
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
+  const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
+  const selectionDragRejectionPublishedRef = useRef(false);
   const imageDropPathsRef = useRef<readonly string[]>([]);
   const imageDropAvailableRef = useRef(false);
   const imageDropFallbackTargetIdRef = useRef(state.zoomRootId);
@@ -696,6 +704,17 @@ export function NotesOutlinePane() {
     overId: NoteId | null;
     projection: PaneDragProjection | null;
   } | null>(null);
+  const measureDragOverlay = useCallback(
+    (overlayNode: HTMLElement) => {
+      const sourceNode = Array.from(
+        dropSurfaceRef.current?.querySelectorAll<HTMLElement>(
+          "[data-outline-id]"
+        ) ?? []
+      ).find((node) => node.dataset.outlineId === activeDragId);
+      return (sourceNode ?? overlayNode).getBoundingClientRect();
+    },
+    [activeDragId]
+  );
   const sensors = useSensors(
     useSensor(PointerSensor, pointerSensorOptions),
     useSensor(KeyboardSensor, keyboardSensorOptions)
@@ -2076,17 +2095,29 @@ export function NotesOutlinePane() {
         ? noteNodeNavigationLabel(node, node.title, "Untitled node")
         : "Untitled node";
     };
+    const subjectFor = (id: string | number) => {
+      const selectedNodeIds = selectedDragNodeIdsRef.current;
+      return selectedNodeIds
+        ? {
+            label: `${selectedNodeIds.length} selected ${selectedNodeIds.length === 1 ? "note" : "notes"}`,
+            plural: selectedNodeIds.length !== 1
+          }
+        : { label: labelFor(id), plural: false };
+    };
 
     return {
-      onDragStart: ({ active }) => `Picked up ${labelFor(active.id)}.`,
-      onDragOver: ({ active, over }) =>
-        over
-          ? `${labelFor(active.id)} is over ${labelFor(over.id)}.`
-          : `${labelFor(active.id)} is no longer over a valid row.`,
+      onDragStart: ({ active }) => `Picked up ${subjectFor(active.id).label}.`,
+      onDragOver: ({ active, over }) => {
+        const subject = subjectFor(active.id);
+        return over
+          ? `${subject.label} ${subject.plural ? "are" : "is"} over ${labelFor(over.id)}.`
+          : `${subject.label} ${subject.plural ? "are" : "is"} no longer over a valid row.`;
+      },
       onDragEnd: ({ active, over }) => {
         const result = dragEndProjection.current;
         const activeId = String(active.id);
         const overId = over ? String(over.id) : null;
+        const subject = subjectFor(active.id).label;
         const projectedMove =
           result?.projection?.kind === "ordinary-move" ||
           result?.projection?.kind === "selected-move";
@@ -2096,18 +2127,34 @@ export function NotesOutlinePane() {
           result.overId === overId &&
           projectedMove
         ) {
-          return `Queued move for ${labelFor(active.id)} at ${labelFor(over.id)}.`;
+          return `Queued move for ${subject} at ${labelFor(over.id)}.`;
         }
-        return `No move was made for ${labelFor(active.id)}.`;
+        return `No move was made for ${subject}.`;
       },
-      onDragCancel: ({ active }) => `Cancelled moving ${labelFor(active.id)}.`
+      onDragCancel: ({ active }) =>
+        `Cancelled moving ${subjectFor(active.id).label}.`
     };
   }, [state.nodesById]);
+
+  const rejectSelectedDrag = () => {
+    setDraggedNodeIds([]);
+    setDropPreview(null);
+    if (!selectionDragRejectionPublishedRef.current) {
+      selectionDragRejectionPublishedRef.current = true;
+      publishNotesFeedback({
+        kind: "error",
+        message: selectionDragRejectedMessage
+      });
+    }
+  };
 
   const handleDragStart = (event: DragStartEvent) => {
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
     const id = String(event.active.id);
+    selectedDragNodeIdsRef.current = null;
+    selectionDragRejectionPublishedRef.current = false;
     dragEndProjection.current = null;
+    setDraggedNodeIds([]);
     setDropPreview(null);
     if (
       dragUnavailable ||
@@ -2274,19 +2321,34 @@ export function NotesOutlinePane() {
           preparation
         });
       }
+      selectedDragNodeIdsRef.current = selectedNodeIds;
+      if (outlineDragSessionRef.current.kind === "selected-invalid") {
+        rejectSelectedDrag();
+      } else {
+        setDraggedNodeIds(selectedNodeIds);
+      }
     } else {
       outlineDragSessionRef.current = Object.freeze({
         kind: "ordinary",
         activeId: id
       });
+      setDraggedNodeIds([id]);
     }
     setActiveDragId(id);
   };
 
   const handleDragMove = (event: DragMoveEvent) => {
     const projection = projectDrag(event);
-    if (!projection || projection.kind === "selected-invalid") {
+    if (!projection) {
       setDropPreview(null);
+      return;
+    }
+    if (projection.kind === "selected-invalid") {
+      if (outlineDragSessionRef.current?.kind === "selected-invalid") {
+        rejectSelectedDrag();
+      } else {
+        setDropPreview(null);
+      }
       return;
     }
     if (projection.kind === "ordinary-move") {
@@ -2327,6 +2389,7 @@ export function NotesOutlinePane() {
     };
     outlineDragSessionRef.current = null;
     setActiveDragId(null);
+    setDraggedNodeIds([]);
     setDropPreview(null);
     if (
       droppedSession?.kind === "selected-pending" &&
@@ -2342,6 +2405,7 @@ export function NotesOutlinePane() {
         }
         const readySession = promotePendingSelectionDrag(droppedSession);
         if (readySession.kind !== "selected-ready") {
+          rejectSelectedDrag();
           return;
         }
         const lateProjection = projectOutlineSelectionDragSession(
@@ -2369,7 +2433,11 @@ export function NotesOutlinePane() {
       });
       return;
     }
-    if (!projection || projection.kind === "selected-invalid") {
+    if (!projection) {
+      return;
+    }
+    if (projection.kind === "selected-invalid") {
+      rejectSelectedDrag();
       return;
     }
     if (projection.kind === "selected-move") {
@@ -2548,6 +2616,7 @@ export function NotesOutlinePane() {
               screenReaderInstructions: outlineScreenReaderInstructions
             }}
             collisionDetection={closestCenter}
+            measuring={{ dragOverlay: { measure: measureDragOverlay } }}
             sensors={sensors}
             onDragStart={handleDragStart}
             onDragMove={handleDragMove}
@@ -2556,6 +2625,7 @@ export function NotesOutlinePane() {
               outlineDragAttemptEpochRef.current += 1;
               outlineDragSessionRef.current = null;
               setActiveDragId(null);
+              setDraggedNodeIds([]);
               setDropPreview(null);
             }}
             onDragEnd={handleDragEnd}
@@ -2576,6 +2646,12 @@ export function NotesOutlinePane() {
                     className="notes-outline-item"
                     key={row.id}
                     aria-level={row.depth + 1}
+                    data-selection-dragging={
+                      selectedDragNodeIdsRef.current !== null &&
+                      draggedNodeIds.includes(row.id)
+                        ? "true"
+                        : undefined
+                    }
                     role="listitem"
                   >
                     {bodyDropPreview?.beforeId === row.id && (
@@ -2641,6 +2717,21 @@ export function NotesOutlinePane() {
                 )}
               </ol>
             </SortableContext>
+            {draggedNodeIds.length > 1 && (
+              <DragOverlay dropAnimation={null}>
+                <NotesSelectionDragPreview
+                  labels={draggedNodeIds.map((nodeId) => {
+                    const node = state.nodesById[nodeId];
+                    return noteNodePresentationLabel(
+                      node,
+                      node.title,
+                      "Untitled"
+                    );
+                  })}
+                  total={draggedNodeIds.length}
+                />
+              </DragOverlay>
+            )}
           </DndContext>
           {state.zoomRootId !== null && state.nodesById[state.zoomRootId] && (
             <NotesChildComposer
