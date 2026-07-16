@@ -3849,7 +3849,14 @@ body.is-resizing-pane {
 
 .markdown-style-options .theme-option {
   align-items: flex-start;
+  min-width: 0;
   max-width: 360px;
+}
+
+.markdown-style-options .theme-option > span:not(.ui-radio) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .markdown-comparison-grid {

@@ -176,6 +176,21 @@ describe("Graphite & Mist CSS contract", () => {
     );
   });
 
+  it("wraps markdown choice copy without changing ordinary theme labels", () => {
+    expect(declarations(".markdown-style-options .theme-option")["min-width"])
+      .toBe("0");
+    expect(
+      declarations(
+        ".markdown-style-options .theme-option > span:not(.ui-radio)"
+      )
+    ).toMatchObject({
+      "min-width": "0",
+      "white-space": "normal",
+      "overflow-wrap": "anywhere"
+    });
+    expect(declarations(".theme-option span")["white-space"]).toBe("nowrap");
+  });
+
   it("enforces the compact control rhythm and radius scale", () => {
     expect(styles).toMatch(
       /:root\s*\{[^}]*--radius-sm:\s*4px;[^}]*--radius:\s*5px;[^}]*--radius-lg:\s*8px;/s
