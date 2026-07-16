@@ -6709,11 +6709,28 @@ describe("Notes workspace", () => {
 
   it("uses stable Workflowy row geometry without action overlap", () => {
     expect(notesStyles).toMatch(
-      /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(-1px\);/s
+      /\.notes-text-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-text-edit-offset\)\);/s
     );
     expect(notesStyles).toMatch(
-      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(-3px\);/s
+      /\.notes-node-title-field\s*>\s*textarea\s*{[^}]*transform:\s*translateY\(var\(--notes-node-title-edit-offset\)\);/s
     );
+    expect(appStyles).toMatch(
+      /:root\s*{[^}]*--notes-text-edit-offset:\s*-1px;[^}]*--notes-node-title-edit-offset:\s*-3px;/s
+    );
+    expect(appStyles).toMatch(
+      /:root\[data-theme="soft-paper"\]\s*{[^}]*--notes-text-edit-offset:\s*0px;[^}]*--notes-node-title-edit-offset:\s*0px;[^}]*font-family:/s
+    );
+    const customFontThemes = appStyles.matchAll(
+      /:root\[data-theme="([^"]+)"\]\s*{([^}]*font-family:[^}]*)}/gs
+    );
+    for (const [, theme, declarations] of customFontThemes) {
+      expect(declarations, `${theme} text editing offset`).toContain(
+        "--notes-text-edit-offset:"
+      );
+      expect(declarations, `${theme} title editing offset`).toContain(
+        "--notes-node-title-edit-offset:"
+      );
+    }
     expect(notesStyles).toMatch(
       /\.notes-outline\s*{[^}]*--notes-outline-indent:\s*36px;[^}]*--notes-menu-width:\s*24px;[^}]*--notes-bullet-center-offset:\s*61px;[^}]*--notes-content-offset:\s*74px;/s
     );

@@ -865,11 +865,11 @@
 }
 
 .notes-text-field > textarea {
-  transform: translateY(-1px);
+  transform: translateY(var(--notes-text-edit-offset));
 }
 
 .notes-node-title-field > textarea {
-  transform: translateY(-3px);
+  transform: translateY(var(--notes-node-title-edit-offset));
 }
 
 .notes-tag-token {
