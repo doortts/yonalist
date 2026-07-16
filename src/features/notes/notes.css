@@ -435,17 +435,25 @@
   background: var(--bg-detail);
 }
 
-.notes-selection-action-bar {
+.notes-selection-action-region {
   position: sticky;
   top: 0;
   z-index: 3;
+  container-name: notes-selection-toolbar;
+  container-type: inline-size;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-detail);
+}
+
+.notes-selection-action-bar {
+  position: static;
   display: flex;
   align-items: center;
   gap: 4px;
   min-width: 0;
   min-height: 48px;
   padding: 0 12px;
-  border-bottom: 1px solid var(--border);
+  border: 0;
   background: var(--bg-detail);
   color: var(--text-2);
 }
@@ -453,6 +461,9 @@
 .notes-selection-count {
   flex: 0 0 auto;
   min-width: 62px;
+  margin-inline-end: 4px;
+  padding-inline-end: 8px;
+  border-inline-end: 1px solid var(--border);
   color: var(--text-1);
   font-size: 12px;
   font-weight: 650;
@@ -520,19 +531,32 @@
 }
 
 .notes-selection-action-status {
-  min-width: 0;
-  max-width: min(230px, 28vw);
-  margin-inline-start: auto;
-  overflow: hidden;
-  color: var(--text-3);
-  font-size: 11.5px;
-  line-height: 16px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  box-sizing: border-box;
+  display: flex;
+  width: 100%;
+  max-width: none;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 12px 8px;
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.notes-selection-action-status:not([data-kind]) {
+  display: none;
+}
+
+.notes-selection-action-status[data-kind="status"] {
+  border-top: 1px solid var(--status-success-border);
+  background: var(--status-success-bg);
+  color: var(--status-success-fg);
 }
 
 .notes-selection-action-status[data-kind="error"] {
-  color: var(--danger);
+  border-top: 1px solid var(--status-error-border);
+  background: var(--status-error-bg);
+  color: var(--status-error-fg);
 }
 
 .notes-selection-action-menu-root {
@@ -1945,10 +1969,6 @@ button.notes-date-token:hover {
     display: none;
   }
 
-  .notes-selection-action-status {
-    max-width: min(140px, 22vw);
-  }
-
   .notes-outline-rows {
     padding-inline: 12px;
   }
@@ -2000,7 +2020,7 @@ button.notes-date-token:hover {
   }
 }
 
-@media (max-width: 480px) {
+@container notes-selection-toolbar (max-width: 480px) {
   .notes-selection-action-button > span:not(.notes-selection-visually-hidden) {
     position: absolute;
     width: 1px;
@@ -2008,10 +2028,6 @@ button.notes-date-token:hover {
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
-  }
-
-  .notes-selection-action-status {
-    max-width: 72px;
   }
 }
 

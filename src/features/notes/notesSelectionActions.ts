@@ -390,7 +390,7 @@ function indentEligibility(
   return eligibleRootIds.length > 0
     ? eligibleTargets(eligibleRootIds)
     : unavailable(
-        "Indent requires a visible preceding sibling outside the selection."
+        "The first selected item cannot be indented because it has no visible unselected sibling above it."
       );
 }
 

@@ -1,7 +1,9 @@
 import {
+  AlertCircle,
   ArrowDown,
   ArrowUp,
   Check,
+  CheckCircle2,
   Copy,
   CopyPlus,
   FolderInput,
@@ -17,6 +19,7 @@ import {
   forwardRef,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
   useEffect,
   useId,
   useLayoutEffect,
@@ -29,7 +32,7 @@ import type {
   NotesSelectionEligibility
 } from "./notesSelectionActions";
 
-const COMPACT_ACTIONS_QUERY = "(max-width: 720px)";
+const COMPACT_ACTIONS_WIDTH = 720;
 const BUSY_REASON = "Another selection action is in progress.";
 
 export type NotesSelectionActionBarAction = NotesSelectionActionIntent;
@@ -68,25 +71,31 @@ interface ToolbarActionButtonProps {
   readonly onPress: () => void;
 }
 
-function useCompactActions(): boolean {
-  const [compact, setCompact] = useState(() =>
-    typeof window.matchMedia === "function"
-      ? window.matchMedia(COMPACT_ACTIONS_QUERY).matches
-      : false
-  );
+function useCompactActions(
+  toolbarRef: RefObject<HTMLDivElement | null>
+): boolean {
+  const [compact, setCompact] = useState(false);
 
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") {
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) {
       return;
     }
-    const media = window.matchMedia(COMPACT_ACTIONS_QUERY);
-    const handleChange = (event: MediaQueryListEvent) => {
-      setCompact(event.matches);
+    const publish = (width: number) => {
+      if (width > 0) {
+        setCompact(width <= COMPACT_ACTIONS_WIDTH);
+      }
     };
-    setCompact(media.matches);
-    media.addEventListener("change", handleChange);
-    return () => media.removeEventListener("change", handleChange);
-  }, []);
+    publish(toolbar.getBoundingClientRect().width);
+    if (typeof ResizeObserver !== "function") {
+      return;
+    }
+    const observer = new ResizeObserver(([entry]) => {
+      publish(entry.contentRect.width);
+    });
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, [toolbarRef]);
 
   return compact;
 }
@@ -179,12 +188,12 @@ export const NotesSelectionActionBar = forwardRef<
   },
   forwardedRef
 ) {
-  const compact = useCompactActions();
+  const toolbarRef = useRef<HTMLDivElement | null>(null);
+  const compact = useCompactActions(toolbarRef);
   const [rovingKey, setRovingKey] = useState<ToolbarItemKey>("clear");
   const [locallyBusy, setLocallyBusy] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [moreActiveIndex, setMoreActiveIndex] = useState(0);
-  const toolbarRef = useRef<HTMLDivElement | null>(null);
   const moreRef = useRef<HTMLDivElement | null>(null);
   const moreTriggerRef = useRef<HTMLButtonElement | null>(null);
   const submissionRef = useRef(false);
@@ -408,254 +417,280 @@ export const NotesSelectionActionBar = forwardRef<
       : 0;
 
   return (
-    <div
-      ref={setRootRef}
-      className="notes-selection-action-bar"
-      role="toolbar"
-      aria-label={`Actions for ${snapshot.selectedNodeIds.length} selected notes`}
-      aria-busy={commandBusy}
-      data-compact={compact ? "true" : "false"}
-      tabIndex={-1}
-      onFocus={(event) => {
-        if (event.currentTarget === event.target) {
-          event.currentTarget
-            .querySelector<HTMLButtonElement>(
-              `button[data-action-key="${activeKey}"]`
-            )
-            ?.focus();
-        }
-      }}
-      onKeyDown={handleToolbarKeyDown}
-    >
-      <ToolbarActionButton
-        actionKey="clear"
-        activeKey={activeKey}
-        availability={alwaysAvailable}
-        icon={<X size={16} aria-hidden="true" />}
-        label="Clear selection"
-        reasonId={`${reasonBaseId}-clear`}
-        onFocus={setRovingKey}
-        onPress={() => {
-          onClearSelection();
-          onReturnFocus();
-        }}
-      />
-
-      <span
-        className="notes-selection-count"
-        aria-label={`${snapshot.selectedNodeIds.length} notes selected`}
-      >
-        {snapshot.selectedNodeIds.length} selected
-      </span>
-
-      <ToolbarActionButton
-        actionKey="toggleComplete"
-        activeKey={activeKey}
-        availability={availability.toggleComplete}
-        icon={<Check size={16} aria-hidden="true" />}
-        label={completeLabel}
-        reasonId={`${reasonBaseId}-toggleComplete`}
-        showLabel
-        onFocus={setRovingKey}
-        onPress={() => invoke("toggleComplete")}
-      />
-      <ToolbarActionButton
-        actionKey="moveTo"
-        activeKey={activeKey}
-        availability={availability.moveTo}
-        icon={<FolderInput size={16} aria-hidden="true" />}
-        label="Move To"
-        reasonId={`${reasonBaseId}-moveTo`}
-        showLabel
-        onFocus={setRovingKey}
-        onPress={() => invoke("moveTo")}
-      />
-
-      {!compact && (
-        <div className="notes-selection-wide-actions">
-          <ToolbarActionButton
-            actionKey="moveUp"
-            activeKey={activeKey}
-            availability={availability.moveUp}
-            className="notes-selection-action-wide"
-            icon={<ArrowUp size={16} aria-hidden="true" />}
-            label="Move up"
-            reasonId={`${reasonBaseId}-moveUp`}
-            onFocus={setRovingKey}
-            onPress={() => invoke("moveUp")}
-          />
-          <ToolbarActionButton
-            actionKey="moveDown"
-            activeKey={activeKey}
-            availability={availability.moveDown}
-            className="notes-selection-action-wide"
-            icon={<ArrowDown size={16} aria-hidden="true" />}
-            label="Move down"
-            reasonId={`${reasonBaseId}-moveDown`}
-            onFocus={setRovingKey}
-            onPress={() => invoke("moveDown")}
-          />
-          <ToolbarActionButton
-            actionKey="indent"
-            activeKey={activeKey}
-            availability={availability.indent}
-            className="notes-selection-action-wide"
-            icon={<IndentIncrease size={16} aria-hidden="true" />}
-            label="Indent"
-            reasonId={`${reasonBaseId}-indent`}
-            onFocus={setRovingKey}
-            onPress={() => invoke("indent")}
-          />
-          <ToolbarActionButton
-            actionKey="outdent"
-            activeKey={activeKey}
-            availability={availability.outdent}
-            className="notes-selection-action-wide"
-            icon={<IndentDecrease size={16} aria-hidden="true" />}
-            label="Outdent"
-            reasonId={`${reasonBaseId}-outdent`}
-            onFocus={setRovingKey}
-            onPress={() => invoke("outdent")}
-          />
-          <ToolbarActionButton
-            actionKey="duplicate"
-            activeKey={activeKey}
-            availability={availability.duplicate}
-            className="notes-selection-action-wide"
-            icon={<CopyPlus size={16} aria-hidden="true" />}
-            label="Duplicate"
-            reasonId={`${reasonBaseId}-duplicate`}
-            onFocus={setRovingKey}
-            onPress={() => invoke("duplicate")}
-          />
-        </div>
-      )}
-
-      <ToolbarActionButton
-        actionKey="tags"
-        activeKey={activeKey}
-        availability={availability.tags}
-        icon={<Tags size={16} aria-hidden="true" />}
-        label="Tags"
-        reasonId={`${reasonBaseId}-tags`}
-        showLabel
-        onFocus={setRovingKey}
-        onPress={() => invoke("tags")}
-      />
-
+    <div className="notes-selection-action-region">
       <div
-        ref={moreRef}
-        className="notes-selection-action-menu-root"
-        onBlur={(event) => {
-          const nextTarget = event.relatedTarget;
-          if (
-            moreOpen &&
-            (!nextTarget || !event.currentTarget.contains(nextTarget as Node))
-          ) {
-            setMoreOpen(false);
+        ref={setRootRef}
+        className="notes-selection-action-bar"
+        role="toolbar"
+        aria-label={`Actions for ${snapshot.selectedNodeIds.length} selected notes`}
+        aria-busy={commandBusy}
+        data-compact={compact ? "true" : "false"}
+        tabIndex={-1}
+        onFocus={(event) => {
+          if (event.currentTarget === event.target) {
+            event.currentTarget
+              .querySelector<HTMLButtonElement>(
+                `button[data-action-key="${activeKey}"]`
+              )
+              ?.focus();
           }
         }}
+        onKeyDown={handleToolbarKeyDown}
       >
-        <button
-          ref={moreTriggerRef}
-          className="notes-selection-action-button"
-          type="button"
-          data-notes-selection-toolbar-item="true"
-          data-action-key="more"
-          aria-label="More actions"
-          aria-haspopup="menu"
-          aria-expanded={moreOpen}
-          aria-controls={moreOpen ? moreMenuId : undefined}
-          title="More actions"
-          tabIndex={activeKey === "more" ? 0 : -1}
-          onFocus={() => setRovingKey("more")}
-          onClick={() => {
-            if (!moreOpen) {
-              setMoreActiveIndex(0);
+        <span
+          className="notes-selection-count"
+          aria-label={`${snapshot.selectedNodeIds.length} notes selected`}
+        >
+          {snapshot.selectedNodeIds.length} selected
+        </span>
+
+        <ToolbarActionButton
+          actionKey="clear"
+          activeKey={activeKey}
+          availability={alwaysAvailable}
+          icon={<X size={16} aria-hidden="true" />}
+          label="Clear selection"
+          reasonId={`${reasonBaseId}-clear`}
+          onFocus={setRovingKey}
+          onPress={() => {
+            onClearSelection();
+            onReturnFocus();
+          }}
+        />
+
+        <ToolbarActionButton
+          actionKey="toggleComplete"
+          activeKey={activeKey}
+          availability={availability.toggleComplete}
+          icon={<Check size={16} aria-hidden="true" />}
+          label={completeLabel}
+          reasonId={`${reasonBaseId}-toggleComplete`}
+          showLabel
+          onFocus={setRovingKey}
+          onPress={() => invoke("toggleComplete")}
+        />
+        <ToolbarActionButton
+          actionKey="moveTo"
+          activeKey={activeKey}
+          availability={availability.moveTo}
+          icon={<FolderInput size={16} aria-hidden="true" />}
+          label="Move To"
+          reasonId={`${reasonBaseId}-moveTo`}
+          showLabel
+          onFocus={setRovingKey}
+          onPress={() => invoke("moveTo")}
+        />
+
+        {!compact && (
+          <div className="notes-selection-wide-actions">
+            <ToolbarActionButton
+              actionKey="moveUp"
+              activeKey={activeKey}
+              availability={availability.moveUp}
+              className="notes-selection-action-wide"
+              icon={<ArrowUp size={16} aria-hidden="true" />}
+              label="Move up"
+              reasonId={`${reasonBaseId}-moveUp`}
+              onFocus={setRovingKey}
+              onPress={() => invoke("moveUp")}
+            />
+            <ToolbarActionButton
+              actionKey="moveDown"
+              activeKey={activeKey}
+              availability={availability.moveDown}
+              className="notes-selection-action-wide"
+              icon={<ArrowDown size={16} aria-hidden="true" />}
+              label="Move down"
+              reasonId={`${reasonBaseId}-moveDown`}
+              onFocus={setRovingKey}
+              onPress={() => invoke("moveDown")}
+            />
+            <ToolbarActionButton
+              actionKey="indent"
+              activeKey={activeKey}
+              availability={availability.indent}
+              className="notes-selection-action-wide"
+              icon={<IndentIncrease size={16} aria-hidden="true" />}
+              label="Indent"
+              reasonId={`${reasonBaseId}-indent`}
+              onFocus={setRovingKey}
+              onPress={() => invoke("indent")}
+            />
+            <ToolbarActionButton
+              actionKey="outdent"
+              activeKey={activeKey}
+              availability={availability.outdent}
+              className="notes-selection-action-wide"
+              icon={<IndentDecrease size={16} aria-hidden="true" />}
+              label="Outdent"
+              reasonId={`${reasonBaseId}-outdent`}
+              onFocus={setRovingKey}
+              onPress={() => invoke("outdent")}
+            />
+            <ToolbarActionButton
+              actionKey="duplicate"
+              activeKey={activeKey}
+              availability={availability.duplicate}
+              className="notes-selection-action-wide"
+              icon={<CopyPlus size={16} aria-hidden="true" />}
+              label="Duplicate"
+              reasonId={`${reasonBaseId}-duplicate`}
+              onFocus={setRovingKey}
+              onPress={() => invoke("duplicate")}
+            />
+          </div>
+        )}
+
+        <ToolbarActionButton
+          actionKey="tags"
+          activeKey={activeKey}
+          availability={availability.tags}
+          icon={<Tags size={16} aria-hidden="true" />}
+          label="Tags"
+          reasonId={`${reasonBaseId}-tags`}
+          showLabel
+          onFocus={setRovingKey}
+          onPress={() => invoke("tags")}
+        />
+
+        <div
+          ref={moreRef}
+          className="notes-selection-action-menu-root"
+          onBlur={(event) => {
+            const nextTarget = event.relatedTarget;
+            if (
+              moreOpen &&
+              (!nextTarget || !event.currentTarget.contains(nextTarget as Node))
+            ) {
+              setMoreOpen(false);
             }
-            setMoreOpen((current) => !current);
           }}
         >
-          <MoreHorizontal size={16} aria-hidden="true" />
-        </button>
-        {moreOpen && (
-          <div
-            id={moreMenuId}
-            className="notes-selection-action-menu"
-            role="menu"
-            aria-label="More selection actions"
-            onKeyDown={(event) => {
-              event.stopPropagation();
-              if (event.key === "F6" && event.shiftKey) {
-                event.preventDefault();
-                setMoreOpen(false);
-                onReturnFocus();
-                return;
+          <button
+            ref={moreTriggerRef}
+            className="notes-selection-action-button"
+            type="button"
+            data-notes-selection-toolbar-item="true"
+            data-action-key="more"
+            aria-label="More actions"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            aria-controls={moreOpen ? moreMenuId : undefined}
+            title="More actions"
+            tabIndex={activeKey === "more" ? 0 : -1}
+            onFocus={() => setRovingKey("more")}
+            onClick={() => {
+              if (!moreOpen) {
+                setMoreActiveIndex(0);
               }
-              const items = Array.from(
-                event.currentTarget.querySelectorAll<HTMLButtonElement>(
-                  '[role="menuitem"]'
-                )
-              );
-              const currentIndex = items.indexOf(
-                document.activeElement as HTMLButtonElement
-              );
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setMoreOpen(false);
-                moreTriggerRef.current?.focus();
-              } else if (
-                event.key === "ArrowDown" ||
-                event.key === "ArrowUp" ||
-                event.key === "Home" ||
-                event.key === "End"
-              ) {
-                event.preventDefault();
-                const nextIndex =
-                  event.key === "Home"
-                    ? 0
-                    : event.key === "End"
-                      ? items.length - 1
-                      : event.key === "ArrowDown"
-                        ? (currentIndex + 1) % items.length
-                        : currentIndex <= 0
-                          ? items.length - 1
-                          : currentIndex - 1;
-                setMoreActiveIndex(nextIndex);
-                items[nextIndex]?.focus();
-              }
+              setMoreOpen((current) => !current);
             }}
           >
-            {moreActions.map((item, index) => {
-              const reasonId = `${reasonBaseId}-${item.action}`;
-              return (
-                <button
-                  key={item.action}
-                  type="button"
-                  role="menuitem"
-                  className="notes-selection-action-menu-item"
-                  aria-disabled={!item.availability.available}
-                  aria-describedby={
-                    item.availability.reason ? reasonId : undefined
-                  }
-                  title={item.availability.reason ?? item.label}
-                  tabIndex={index === visibleMoreActiveIndex ? 0 : -1}
-                  onFocus={() => setMoreActiveIndex(index)}
-                  onClick={() => {
-                    if (!item.availability.available) {
-                      return;
+            <MoreHorizontal size={16} aria-hidden="true" />
+          </button>
+          {moreOpen && (
+            <div
+              id={moreMenuId}
+              className="notes-selection-action-menu"
+              role="menu"
+              aria-label="More selection actions"
+              onKeyDown={(event) => {
+                event.stopPropagation();
+                if (event.key === "F6" && event.shiftKey) {
+                  event.preventDefault();
+                  setMoreOpen(false);
+                  onReturnFocus();
+                  return;
+                }
+                const items = Array.from(
+                  event.currentTarget.querySelectorAll<HTMLButtonElement>(
+                    '[role="menuitem"]'
+                  )
+                );
+                const currentIndex = items.indexOf(
+                  document.activeElement as HTMLButtonElement
+                );
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setMoreOpen(false);
+                  moreTriggerRef.current?.focus();
+                } else if (
+                  event.key === "ArrowDown" ||
+                  event.key === "ArrowUp" ||
+                  event.key === "Home" ||
+                  event.key === "End"
+                ) {
+                  event.preventDefault();
+                  const nextIndex =
+                    event.key === "Home"
+                      ? 0
+                      : event.key === "End"
+                        ? items.length - 1
+                        : event.key === "ArrowDown"
+                          ? (currentIndex + 1) % items.length
+                          : currentIndex <= 0
+                            ? items.length - 1
+                            : currentIndex - 1;
+                  setMoreActiveIndex(nextIndex);
+                  items[nextIndex]?.focus();
+                }
+              }}
+            >
+              {moreActions.map((item, index) => {
+                const reasonId = `${reasonBaseId}-${item.action}`;
+                return (
+                  <button
+                    key={item.action}
+                    type="button"
+                    role="menuitem"
+                    className="notes-selection-action-menu-item"
+                    aria-disabled={!item.availability.available}
+                    aria-describedby={
+                      item.availability.reason ? reasonId : undefined
                     }
-                    setMoreOpen(false);
-                    moreTriggerRef.current?.focus();
-                    invoke(item.action);
-                  }}
-                >
-                  {item.icon}
-                  <span>{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+                    title={item.availability.reason ?? item.label}
+                    tabIndex={index === visibleMoreActiveIndex ? 0 : -1}
+                    onFocus={() => setMoreActiveIndex(index)}
+                    onClick={() => {
+                      if (!item.availability.available) {
+                        return;
+                      }
+                      setMoreOpen(false);
+                      moreTriggerRef.current?.focus();
+                      invoke(item.action);
+                    }}
+                  >
+                    {item.icon}
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <ToolbarActionButton
+          actionKey="delete"
+          activeKey={activeKey}
+          availability={availability.delete}
+          className="notes-selection-action-danger"
+          icon={<Trash2 size={16} aria-hidden="true" />}
+          label="Delete"
+          reasonId={`${reasonBaseId}-delete`}
+          onFocus={setRovingKey}
+          onPress={() => invoke("delete")}
+        />
+
+        {Object.entries(availability).map(([action, value]) =>
+          value.reason ? (
+            <span
+              key={action}
+              id={`${reasonBaseId}-${action}`}
+              className="notes-selection-visually-hidden"
+            >
+              {value.reason}
+            </span>
+          ) : null
         )}
       </div>
 
@@ -666,32 +701,13 @@ export const NotesSelectionActionBar = forwardRef<
         aria-atomic="true"
         data-kind={error ? "error" : status ? "status" : undefined}
       >
-        {error ?? status ?? ""}
+        {error ? (
+          <AlertCircle size={15} aria-hidden="true" />
+        ) : status ? (
+          <CheckCircle2 size={15} aria-hidden="true" />
+        ) : null}
+        <span>{error ?? status ?? ""}</span>
       </span>
-
-      <ToolbarActionButton
-        actionKey="delete"
-        activeKey={activeKey}
-        availability={availability.delete}
-        className="notes-selection-action-danger"
-        icon={<Trash2 size={16} aria-hidden="true" />}
-        label="Delete"
-        reasonId={`${reasonBaseId}-delete`}
-        onFocus={setRovingKey}
-        onPress={() => invoke("delete")}
-      />
-
-      {Object.entries(availability).map(([action, value]) =>
-        value.reason ? (
-          <span
-            key={action}
-            id={`${reasonBaseId}-${action}`}
-            className="notes-selection-visually-hidden"
-          >
-            {value.reason}
-          </span>
-        ) : null
-      )}
     </div>
   );
 });

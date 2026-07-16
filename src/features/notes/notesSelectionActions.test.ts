@@ -400,7 +400,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "The first selected item cannot be indented because it has no visible unselected sibling above it."
     });
     expect(result?.eligibility.outdent).toEqual({
       eligible: false,
@@ -506,7 +507,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "The first selected item cannot be indented because it has no visible unselected sibling above it."
     });
   });
 
@@ -572,7 +574,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "The first selected item cannot be indented because it has no visible unselected sibling above it."
     });
     expect(result?.eligibility.moveUp).toEqual({
       eligible: true,

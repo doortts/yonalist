@@ -3123,7 +3123,9 @@ describe("Notes workspace", () => {
         expect(writeText).toHaveBeenCalledWith("- Alpha\n- Bravo");
         expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
-        expect(await within(toolbar).findByText("Copied.")).toBeVisible();
+        expect(
+          await within(toolbar.parentElement!).findByText("Copied.")
+        ).toBeVisible();
       } finally {
         restoreClipboard();
       }
@@ -3211,7 +3213,7 @@ describe("Notes workspace", () => {
         await user.click(screen.getByRole("menuitem", { name: "Cut" }));
 
         expect(
-          await within(toolbar).findByText(
+          await within(toolbar.parentElement!).findByText(
             "The clipboard could not be written."
           )
         ).toBeVisible();
@@ -3996,7 +3998,9 @@ describe("Notes workspace", () => {
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
 
-      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      expect(
+        await within(toolbar.parentElement!).findByText(/couldn't open/i)
+      ).toBeVisible();
       expect(screen.queryByRole("dialog", { name: "Edit tags" })).toBeNull();
     });
 
@@ -4054,7 +4058,11 @@ describe("Notes workspace", () => {
       await act(async () =>
         chooserAuthority.reject(new Error("stale authority failure"))
       );
-      expect(within(toolbar).queryByText(/couldn't open|selection changed/i)).toBeNull();
+      expect(
+        within(toolbar.parentElement!).queryByText(
+          /couldn't open|selection changed/i
+        )
+      ).toBeNull();
       expect(charlie).toHaveFocus();
 
       await user.click(within(toolbar).getByRole("button", { name: "Tags" }));
@@ -4093,7 +4101,9 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 2 selected notes"
       });
-      expect(await within(toolbar).findByText(/couldn't open/i)).toBeVisible();
+      expect(
+        await within(toolbar.parentElement!).findByText(/couldn't open/i)
+      ).toBeVisible();
       await waitFor(() => expect(bravo).toHaveFocus());
     });
 
@@ -4384,7 +4394,7 @@ describe("Notes workspace", () => {
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 5 selected notes"
       });
-      const status = within(toolbar).getByRole("status");
+      const status = within(toolbar.parentElement!).getByRole("status");
       expect(status).toHaveTextContent(
         /^First item stayed: no preceding sibling\.$/
       );

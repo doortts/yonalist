@@ -32,6 +32,25 @@ function mockCompactViewport(compact: boolean): void {
   );
 }
 
+function mockToolbarWidth(width: number): void {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+
+      observe(target: Element) {
+        this.callback(
+          [{ target, contentRect: { width } } as ResizeObserverEntry],
+          this as unknown as ResizeObserver
+        );
+      }
+
+      disconnect() {}
+      unobserve() {}
+    }
+  );
+}
+
 function snapshot(
   overrides: Partial<NotesSelectionActionSnapshot> = {}
 ): NotesSelectionActionSnapshot {
@@ -100,6 +119,8 @@ describe("NotesSelectionActionBar", () => {
     expect(
       within(toolbar).getByText("2 selected", { selector: "span" })
     ).toHaveAccessibleName("2 notes selected");
+    expect(toolbar.firstElementChild).toHaveClass("notes-selection-count");
+    expect(toolbar.children[1]).toHaveAccessibleName("Clear selection");
     expect(
       within(toolbar).getAllByRole("button").map((button) => button.ariaLabel)
     ).toEqual([
@@ -185,6 +206,19 @@ describe("NotesSelectionActionBar", () => {
     expect(regions[0]).toHaveAttribute("data-kind", "error");
   });
 
+  it("places complete feedback below the toolbar without truncation", () => {
+    const message =
+      "The first selected item cannot be indented because it has no visible unselected sibling above it.";
+    renderBar({ error: message });
+
+    const toolbar = screen.getByRole("toolbar");
+    const feedback = screen.getByRole("status");
+    expect(toolbar.parentElement).toContainElement(feedback);
+    expect(toolbar).not.toContainElement(feedback);
+    expect(feedback).toHaveTextContent(message);
+    expect(feedback.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+  });
+
   it("uses one roving tab stop and handles arrows, Home, and End", () => {
     mockCompactViewport(false);
     renderBar();
@@ -262,21 +296,23 @@ describe("NotesSelectionActionBar", () => {
     ).toEqual(["Copy", "Cut"]);
   });
 
-  it("moves structural actions into More at or below 720px", async () => {
-    mockCompactViewport(true);
+  it("moves structural actions into More from toolbar width, not viewport width", async () => {
+    mockCompactViewport(false);
+    mockToolbarWidth(640);
     renderBar();
-    const user = userEvent.setup();
 
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Move up" })
+      ).not.toBeInTheDocument()
+    );
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: "More actions" })
+    );
     expect(
-      screen.queryByRole("button", { name: "Move up" })
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "More actions" }));
-
-    const menu = await screen.findByRole("menu", {
-      name: "More selection actions"
-    });
-    expect(
-      within(menu).getAllByRole("menuitem").map((item) => item.textContent)
+      within(await screen.findByRole("menu"))
+        .getAllByRole("menuitem")
+        .map((item) => item.textContent)
     ).toEqual([
       "Move up",
       "Move down",
