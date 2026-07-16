@@ -3153,9 +3153,114 @@ describe("Notes workspace", () => {
       ];
     }
 
+    function fourRoots(): NoteNode[] {
+      return [
+        ...threeRoots(),
+        node({ id: "d", sortKey: 4, title: "Delta #later" })
+      ];
+    }
+
     function useCtrlPlatform(): void {
       vi.spyOn(window.navigator, "platform", "get").mockReturnValue("Win32");
     }
+
+    it.each([
+      { platform: "MacIntel", modifier: "Meta" },
+      { platform: "Win32", modifier: "Ctrl" }
+    ])(
+      "uses Shift click for a range and $modifier click to toggle a row on $platform",
+      async ({ platform, modifier }) => {
+        vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
+        configureRepository(threeRoots());
+        renderNotesWorkspace();
+        const alpha = await findTitleInput("Alpha");
+        const bravo = getTitleInput("Bravo");
+        const charlie = getTitleInput("Charlie");
+
+        act(() => alpha.focus());
+        expect(alpha).toHaveFocus();
+        fireEvent.pointerDown(alpha, { button: 0 });
+        fireEvent.click(alpha);
+        fireEvent.pointerDown(charlie, { button: 0, shiftKey: true });
+        fireEvent.click(charlie, { shiftKey: true });
+        expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
+
+        fireEvent.pointerDown(bravo, {
+          button: 0,
+          ...(modifier === "Meta" ? { metaKey: true } : { ctrlKey: true })
+        });
+        expect(selectedOutlineIds()).toEqual(["a", "c"]);
+      }
+    );
+
+    it("clears a multi-selection on a plain row text click while preserving edit focus", async () => {
+      configureRepository(threeRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      fireEvent.keyDown(alpha, { key: "ArrowDown", shiftKey: true });
+      expect(selectedOutlineIds()).toEqual(["a", "b"]);
+
+      const charlie = queryTitleInput("Charlie");
+      if (!charlie) {
+        throw new Error("Charlie title did not render");
+      }
+      const charlieRow = charlie.closest<HTMLElement>(".notes-node");
+      if (!charlieRow) {
+        throw new Error("Charlie row did not render");
+      }
+      const charliePresentation = within(charlieRow).getByRole("group", {
+        name: "Edit node title"
+      });
+      fireEvent.pointerDown(charliePresentation, { button: 0, pointerId: 4 });
+      fireEvent.pointerUp(charliePresentation, { button: 0, pointerId: 4 });
+
+      expect(selectedOutlineIds()).toEqual([]);
+      await waitFor(() => expect(charlie).toHaveFocus());
+    });
+
+    it("keeps a same-row text drag native and promotes a downward cross-row drag", async () => {
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      const titles = screen.getAllByLabelText<HTMLTextAreaElement>(
+        "Edit node title",
+        { selector: "textarea" }
+      );
+      const bravo = titles[1];
+      const delta = titles[3];
+
+      fireEvent.focus(bravo);
+      bravo.setSelectionRange(0, 3);
+      fireEvent.pointerDown(bravo, { button: 0, pointerId: 7 });
+      fireEvent.pointerMove(bravo, { buttons: 1, pointerId: 7 });
+      expect(selectedOutlineIds()).toEqual([]);
+      expect([bravo.selectionStart, bravo.selectionEnd]).toEqual([0, 3]);
+
+      fireEvent.pointerMove(delta, { buttons: 1, pointerId: 7 });
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
+      expect(screen.getByLabelText("3 notes selected")).toBeVisible();
+      fireEvent.pointerUp(delta, { button: 0, pointerId: 7 });
+    });
+
+    it("promotes an upward cross-row drag and ignores interactive token drags", async () => {
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      const alpha = await findTitleInput("Alpha");
+      const charlie = getTitleInput("Charlie");
+
+      fireEvent.pointerDown(charlie, { button: 0, pointerId: 8 });
+      fireEvent.pointerMove(alpha, { buttons: 1, pointerId: 8 });
+      fireEvent.pointerUp(alpha, { button: 0, pointerId: 8 });
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
+
+      const tag = screen.getByRole("button", {
+        name: "#later tag filter is inactive"
+      });
+      fireEvent.pointerDown(tag, { button: 0, pointerId: 9 });
+      fireEvent.pointerMove(alpha, { buttons: 1, pointerId: 9 });
+      fireEvent.pointerUp(alpha, { button: 0, pointerId: 9 });
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
+    });
 
     it("treats a one-row range as selection mode and swaps in the contextual toolbar", async () => {
       configureRepository(threeRoots());

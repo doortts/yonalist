@@ -20,6 +20,7 @@ import {
   type CSSProperties,
   type ClipboardEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
   useCallback,
   useContext,
   useEffect,
@@ -107,7 +108,11 @@ import {
   parentTrail,
   type FlattenedOutlineRow
 } from "./outlineTree";
-import { OutlineNodeRow } from "./OutlineNodeRow";
+import {
+  isOutlineSelectionTextSurface,
+  isOutlineSelectionToggleModifier,
+  OutlineNodeRow
+} from "./OutlineNodeRow";
 import {
   useNotesSelectionCommandRouter,
   type NotesSelectionCommandOwnership,
@@ -417,6 +422,19 @@ function useOutlineIndentPx(): number {
 const pointerSensorOptions = { activationConstraint: { distance: 4 } };
 const keyboardSensorOptions = { coordinateGetter: sortableKeyboardCoordinates };
 
+interface MouseSelectionGesture {
+  readonly pointerId: number;
+  readonly anchorId: NoteId;
+  promoted: boolean;
+}
+
+function rowIdFromPointerTarget(target: EventTarget | null): NoteId | null {
+  return target instanceof Element
+    ? (target.closest<HTMLElement>("[data-outline-id]")?.dataset.outlineId ??
+        null)
+    : null;
+}
+
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const {
@@ -473,6 +491,7 @@ export function NotesOutlinePane() {
   const contentRef = useRef<HTMLDivElement>(null);
   const dropSurfaceRef = useRef<HTMLDivElement>(null);
   const selectionToolbarRef = useRef<HTMLDivElement>(null);
+  const mouseSelectionGestureRef = useRef<MouseSelectionGesture | null>(null);
   const lastSelectionHeadRef = useRef<NoteId | null>(null);
   const selectionAuthorityRequestRef = useRef(0);
   const selectionChooserPreparationRequestRef = useRef(0);
@@ -951,6 +970,69 @@ export function NotesOutlinePane() {
     () => getLiveSelectionSnapshot?.().selection ?? selectionRef.current,
     [getLiveSelectionSnapshot]
   );
+  const handleMouseSelectionPointerDownCapture = (
+    event: ReactPointerEvent<HTMLOListElement>
+  ): void => {
+    mouseSelectionGestureRef.current = null;
+    if (
+      event.button !== 0 ||
+      event.shiftKey ||
+      isOutlineSelectionToggleModifier(event) ||
+      !isOutlineSelectionTextSurface(event.target)
+    ) {
+      return;
+    }
+    const anchorId = rowIdFromPointerTarget(event.target);
+    if (anchorId && bodyVisibleIdsRef.current.includes(anchorId)) {
+      mouseSelectionGestureRef.current = {
+        pointerId: event.pointerId,
+        anchorId,
+        promoted: false
+      };
+    }
+  };
+  const handleMouseSelectionPointerMoveCapture = (
+    event: ReactPointerEvent<HTMLOListElement>
+  ): void => {
+    const gesture = mouseSelectionGestureRef.current;
+    if (
+      !gesture ||
+      event.pointerId !== gesture.pointerId ||
+      event.buttons !== 1 ||
+      !isOutlineSelectionTextSurface(event.target)
+    ) {
+      return;
+    }
+    const currentRowId = rowIdFromPointerTarget(event.target);
+    if (
+      !currentRowId ||
+      (!gesture.promoted && currentRowId === gesture.anchorId)
+    ) {
+      return;
+    }
+    if (!gesture.promoted) {
+      window.getSelection()?.removeAllRanges();
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLTextAreaElement &&
+        event.currentTarget.contains(active)
+      ) {
+        active.setSelectionRange(active.selectionStart, active.selectionStart);
+        active.blur();
+      }
+      actions.setSelectionAnchor(gesture.anchorId);
+      gesture.promoted = true;
+    }
+    actions.extendSelectionTo(currentRowId);
+    event.preventDefault();
+  };
+  const clearMouseSelectionGesture = (
+    event: ReactPointerEvent<HTMLOListElement>
+  ): void => {
+    if (mouseSelectionGestureRef.current?.pointerId === event.pointerId) {
+      mouseSelectionGestureRef.current = null;
+    }
+  };
 
   const provisionalSelectionSnapshot = useMemo(
     () =>
@@ -2454,6 +2536,10 @@ export function NotesOutlinePane() {
               <ol
                 className="notes-outline-list"
                 data-drag-active={activeDragId === null ? undefined : "true"}
+                onPointerCancelCapture={clearMouseSelectionGesture}
+                onPointerDownCapture={handleMouseSelectionPointerDownCapture}
+                onPointerMoveCapture={handleMouseSelectionPointerMoveCapture}
+                onPointerUpCapture={clearMouseSelectionGesture}
                 role="list"
               >
                 {bodyRows.map((row) => (

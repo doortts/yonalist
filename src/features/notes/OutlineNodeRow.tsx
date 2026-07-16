@@ -7,6 +7,7 @@ import {
   type ClipboardEvent,
   type CSSProperties,
   type KeyboardEvent,
+  type PointerEvent,
   memo,
   useEffect,
   useLayoutEffect,
@@ -103,6 +104,27 @@ interface OutlineNodeRowProps {
 // without explanation. Worded to match the pane's writeError banner (0.8).
 const STRUCTURAL_COMMAND_SKIPPED_NOTICE =
   "Command paused — a recent change could not be saved. Retry the save to continue.";
+
+export function isOutlineSelectionTextSurface(
+  target: EventTarget | null
+): boolean {
+  return (
+    target instanceof Element &&
+    target.closest("button, a, [role='button']") === null &&
+    Boolean(
+      target.closest(".notes-node-title-field, .notes-node-note-field")
+    )
+  );
+}
+
+export function isOutlineSelectionToggleModifier(event: {
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+}): boolean {
+  return detectOutlineShortcutPlatform() === "mac"
+    ? event.metaKey
+    : event.ctrlKey;
+}
 
 function OutlineNodeRowComponent({
   nodeId,
@@ -222,6 +244,40 @@ function OutlineNodeRowComponent({
     return activeRowId && getSelectionVisibleNodeIds().includes(activeRowId)
       ? activeRowId
       : null;
+  };
+
+  const extendSelectionToThisRow = (anchorId: NoteId | null): void => {
+    if (!getSelection()) {
+      const selectionVisibleIds = getSelectionVisibleNodeIds();
+      const fallbackRowId =
+        state.selectedId !== null &&
+        selectionVisibleIds.includes(state.selectedId)
+          ? state.selectedId
+          : nodeId;
+      actions.setSelectionAnchor(anchorId ?? fallbackRowId);
+    }
+    actions.extendSelectionTo(nodeId);
+  };
+
+  const handleSelectionPointerDownCapture = (
+    event: PointerEvent<HTMLDivElement>
+  ): void => {
+    if (event.button !== 0 || !isOutlineSelectionTextSurface(event.target)) {
+      return;
+    }
+    if (event.shiftKey) {
+      event.preventDefault();
+      extendSelectionToThisRow(activeSelectionRowId());
+      return;
+    }
+    if (isOutlineSelectionToggleModifier(event)) {
+      event.preventDefault();
+      actions.toggleSelectionNode(nodeId, getSelectionVisibleNodeIds());
+      return;
+    }
+    if (getSelection()) {
+      actions.clearSelection();
+    }
   };
 
   useAutoGrowTextarea(titleRef, titleValue);
@@ -857,6 +913,7 @@ function OutlineNodeRowComponent({
       data-image-drop-active={
         imageDropEnabled && imageDropActive ? "true" : undefined
       }
+      onPointerDownCapture={handleSelectionPointerDownCapture}
       style={rowStyle}
     >
       {guides}
@@ -1023,22 +1080,13 @@ function OutlineNodeRowComponent({
             // still zooms.
             if (event.shiftKey) {
               event.preventDefault();
-              if (!getSelection()) {
-                const selectionVisibleIds = getSelectionVisibleNodeIds();
-                const capturedAnchorId = shiftClickAnchorRef.current;
-                shiftClickAnchorRef.current = undefined;
-                const activeRowId =
-                  capturedAnchorId === undefined
-                    ? activeSelectionRowId()
-                    : capturedAnchorId;
-                const fallbackRowId =
-                  state.selectedId !== null &&
-                    selectionVisibleIds.includes(state.selectedId)
-                    ? state.selectedId
-                    : nodeId;
-                actions.setSelectionAnchor(activeRowId ?? fallbackRowId);
-              }
-              actions.extendSelectionTo(nodeId);
+              const capturedAnchorId = shiftClickAnchorRef.current;
+              shiftClickAnchorRef.current = undefined;
+              extendSelectionToThisRow(
+                capturedAnchorId === undefined
+                  ? activeSelectionRowId()
+                  : capturedAnchorId
+              );
               return;
             }
             void actions.zoomTo(nodeId);
