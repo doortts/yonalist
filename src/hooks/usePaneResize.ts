@@ -174,6 +174,34 @@ export function getEffectivePaneGeometry(
   };
 }
 
+export function resizePaneRequest(
+  requested: PaneWidths,
+  pane: ResizablePane,
+  nextWidth: number,
+  viewportWidth: number,
+  collapsed: PaneCollapsed
+): PaneWidths {
+  if (collapsed[pane]) {
+    return requested;
+  }
+
+  const geometry = getEffectivePaneGeometry(
+    requested,
+    viewportWidth,
+    collapsed
+  );
+  const nextEffectiveWidth = Math.min(
+    geometry.maxWidths[pane],
+    clampPaneWidth(pane, nextWidth)
+  );
+
+  if (nextEffectiveWidth === geometry.widths[pane]) {
+    return requested;
+  }
+
+  return { ...requested, [pane]: nextEffectiveWidth };
+}
+
 export function usePaneResize() {
   const [requestedPaneWidths, setRequestedPaneWidths] = useState<PaneWidths>(() =>
     loadPaneWidths()
@@ -245,13 +273,15 @@ export function usePaneResize() {
   }, []);
 
   const updatePaneWidth = useCallback((pane: ResizablePane, width: number) => {
-    setRequestedPaneWidths((current) => {
-      const next = {
-        ...current,
-        [pane]: clampPaneWidth(pane, width)
-      };
-      return next;
-    });
+    setRequestedPaneWidths((current) =>
+      resizePaneRequest(
+        current,
+        pane,
+        width,
+        viewportWidthRef.current,
+        paneCollapsedRef.current
+      )
+    );
   }, []);
 
   useEffect(() => {
@@ -304,18 +334,18 @@ export function usePaneResize() {
       const step = event.shiftKey ? 48 : 16;
       const direction = event.key === "ArrowRight" ? 1 : -1;
       setRequestedPaneWidths((current) => {
-        if (paneCollapsedRef.current[pane]) {
-          return current;
-        }
         const effectiveWidth = getEffectivePaneGeometry(
           current,
           viewportWidthRef.current,
           paneCollapsedRef.current
         ).widths[pane];
-        return {
-          ...current,
-          [pane]: clampPaneWidth(pane, effectiveWidth + step * direction)
-        };
+        return resizePaneRequest(
+          current,
+          pane,
+          effectiveWidth + step * direction,
+          viewportWidthRef.current,
+          paneCollapsedRef.current
+        );
       });
     },
     []

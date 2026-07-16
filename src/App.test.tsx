@@ -3789,6 +3789,42 @@ describe("Yonalist app shell", () => {
     ).toEqual({ sidebar: 420, list: 640 });
   });
 
+  it("preserves constrained requests after impossible keyboard and pointer input", () => {
+    setViewportWidth(981);
+    window.localStorage.setItem(
+      "yonalist.paneWidths.v1",
+      JSON.stringify({ sidebar: 420, list: 640 })
+    );
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const navigationResizer = screen.getByRole("separator", {
+      name: "Resize navigation pane"
+    });
+    const listResizer = screen.getByRole("separator", {
+      name: "Resize item list pane"
+    });
+
+    fireEvent.keyDown(navigationResizer, { key: "ArrowRight" });
+    fireEvent.keyDown(listResizer, { key: "ArrowLeft" });
+    fireEvent.pointerDown(navigationResizer, { clientX: 323, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 339 });
+    fireEvent.pointerUp(window);
+    fireEvent.pointerDown(listResizer, { clientX: 320, button: 0 });
+    fireEvent.pointerMove(window, { clientX: 304 });
+    fireEvent.pointerUp(window);
+
+    expect(layout).toHaveStyle("--sidebar-width: 323px");
+    expect(layout).toHaveStyle("--list-width: 320px");
+    expect(
+      JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
+    ).toEqual({ sidebar: 420, list: 640 });
+
+    setViewportWidth(1600, true);
+    expect(layout).toHaveStyle("--sidebar-width: 420px");
+    expect(layout).toHaveStyle("--list-width: 640px");
+  });
+
   it("restores constrained geometry after detail maximize", async () => {
     setViewportWidth(981);
     window.localStorage.setItem(

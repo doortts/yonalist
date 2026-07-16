@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   defaultPaneWidths,
   getEffectivePaneGeometry,
-  paneWidthLimits
+  paneWidthLimits,
+  resizePaneRequest
 } from "./usePaneResize";
 
 const expanded = { sidebar: false, list: false };
@@ -56,5 +57,17 @@ describe("getEffectivePaneGeometry", () => {
     ).toEqual({ sidebar: 0, list: 0 });
     expect(getEffectivePaneGeometry(requestedMax, 981, expanded).widths)
       .toEqual({ sidebar: 323, list: 320 });
+  });
+
+  it("preserves hidden requests when resize input cannot cross a boundary", () => {
+    expect(
+      resizePaneRequest(requestedMax, "sidebar", 339, 981, expanded)
+    ).toBe(requestedMax);
+    expect(
+      resizePaneRequest(requestedMax, "list", 304, 981, expanded)
+    ).toBe(requestedMax);
+    expect(
+      resizePaneRequest(requestedMax, "sidebar", 307, 981, expanded)
+    ).toEqual({ sidebar: 307, list: 640 });
   });
 });
