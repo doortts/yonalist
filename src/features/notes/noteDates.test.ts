@@ -359,18 +359,6 @@ describe("parseNoteDateExpression", () => {
 });
 
 describe("findNoteDateMatches", () => {
-  it("uses Unicode 17 word boundaries independently of the host runtime", () => {
-    for (const source of ["꟎today", "a᫏today"]) {
-      expect(findNoteDateMatches(source, { today })).toEqual([]);
-    }
-
-    expect(
-      findNoteDateMatches("!today 😀tomorrow", { today }).map(
-        (match) => match.raw
-      )
-    ).toEqual(["today", "tomorrow"]);
-  });
-
   it.each(noteDateFixtures)("matches shared fixture: $name", (fixture) => {
     const matches = findNoteDateMatches(fixture.source, {
       today: localDateFromIso(fixture.today),

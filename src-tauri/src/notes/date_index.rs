@@ -1,7 +1,7 @@
 use crate::notes::tags::tokenize_note_text;
 use rusqlite::Connection;
 use serde::Deserialize;
-use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_properties::{GeneralCategoryGroup, UnicodeGeneralCategory};
 
 const MIN_YEAR: i32 = 1;
 const MAX_YEAR: i32 = 9999;
@@ -198,17 +198,14 @@ fn start_of_week(date: LocalDate, week_starts_on: WeekStartsOn) -> Option<LocalD
     add_days(date, -(weekday - first_day).rem_euclid(7))
 }
 
-fn is_mark(character: char) -> bool {
-    matches!(
-        get_general_category(character),
-        GeneralCategory::NonspacingMark
-            | GeneralCategory::SpacingMark
-            | GeneralCategory::EnclosingMark
-    )
-}
-
 fn is_word_character(character: char) -> bool {
-    character == '_' || character.is_alphanumeric() || is_mark(character)
+    character == '_'
+        || matches!(
+            character.general_category_group(),
+            GeneralCategoryGroup::Letter
+                | GeneralCategoryGroup::Number
+                | GeneralCategoryGroup::Mark
+        )
 }
 
 fn has_start_boundary(scalars: &[Scalar], index: usize) -> bool {

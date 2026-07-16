@@ -6145,7 +6145,6 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-runtime",
  "tempfile",
- "unicode-general-category",
  "unicode-normalization",
  "unicode-properties",
  "ureq",

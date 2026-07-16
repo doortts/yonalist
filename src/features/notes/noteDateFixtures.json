@@ -35,6 +35,16 @@
     ]
   },
   {
+    "name": "Unicode 17 word boundaries",
+    "source": "꟎today a᫏today !today 😀tomorrow",
+    "today": "2026-07-11",
+    "weekStartsOn": "monday",
+    "matches": [
+      { "raw": "today", "startUtf16": 16, "endUtf16": 21, "normalizedStart": "2026-07-11", "normalizedEnd": "2026-07-11" },
+      { "raw": "tomorrow", "startUtf16": 24, "endUtf16": 32, "normalizedStart": "2026-07-12", "normalizedEnd": "2026-07-12" }
+    ]
+  },
+  {
     "name": "official Monday week phrases",
     "source": "last week this week next week",
     "today": "2026-12-31",

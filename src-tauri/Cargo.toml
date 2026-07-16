@@ -34,7 +34,6 @@ tauri-plugin-dialog = "2.7.1"
 tauri-plugin-notification = "2.3.3"
 tauri-runtime = "=2.11.3"
 tempfile = "3"
-unicode-general-category = "1.1.0"
 unicode-normalization = "0.1"
 unicode-properties = { version = "=0.1.4", default-features = false, features = ["general-category"] }
 ureq = "3.3"
