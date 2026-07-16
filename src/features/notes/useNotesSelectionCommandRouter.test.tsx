@@ -1772,4 +1772,21 @@ describe("useNotesSelectionCommandRouter", () => {
     expect(result.current.status).toBe("Completed selection.");
     expect(result.current.error).toBeNull();
   });
+
+  it("advances feedback identity for repeated identical command results", async () => {
+    const harness = dependencies();
+    const { result } = renderHook(() =>
+      useNotesSelectionCommandRouter(harness.deps)
+    );
+
+    await act(async () => result.current.execute({ type: "complete" }));
+    expect(result.current.status).toBe("Completed selection.");
+    const firstFeedbackRevision = result.current.feedbackRevision;
+
+    await act(async () => result.current.execute({ type: "complete" }));
+    expect(result.current.status).toBe("Completed selection.");
+    expect(result.current.feedbackRevision).toBeGreaterThan(
+      firstFeedbackRevision
+    );
+  });
 });

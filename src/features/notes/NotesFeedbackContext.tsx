@@ -14,10 +14,12 @@ export type NotesFeedback = Readonly<{
   message: string;
 }>;
 
+type PublishedNotesFeedback = NotesFeedback & Readonly<{ eventId: number }>;
+
 interface NotesFeedbackValue {
   publish(feedback: NotesFeedback): void;
   clear(): void;
-  feedback: NotesFeedback | null;
+  feedback: PublishedNotesFeedback | null;
 }
 
 const emptyNotesFeedback: NotesFeedbackValue = {
@@ -33,11 +35,14 @@ export function NotesFeedbackProvider({
   active,
   children
 }: PropsWithChildren<{ active: boolean }>) {
-  const [feedback, setFeedback] = useState<NotesFeedback | null>(null);
+  const [feedback, setFeedback] = useState<PublishedNotesFeedback | null>(null);
+  const nextEventIdRef = useRef(0);
   const activeRef = useRef(active);
   activeRef.current = active;
   const publish = useCallback((next: NotesFeedback) => {
-    if (activeRef.current) setFeedback(next);
+    if (activeRef.current) {
+      setFeedback({ ...next, eventId: ++nextEventIdRef.current });
+    }
   }, []);
   const clear = useCallback(() => setFeedback(null), []);
 
@@ -72,6 +77,7 @@ export function NotesStatusBarMessage() {
   if (!feedback) return null;
   return (
     <span
+      key={feedback.eventId}
       className="statusbar-message"
       role={feedback.kind === "error" ? "alert" : "status"}
       data-kind={feedback.kind}

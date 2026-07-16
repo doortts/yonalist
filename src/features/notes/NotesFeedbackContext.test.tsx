@@ -72,6 +72,28 @@ describe("NotesFeedbackProvider", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("remounts and restarts the timeout for a repeated identical message", () => {
+    vi.useFakeTimers();
+    let publish: ReturnType<typeof useNotesFeedback>["publish"] | undefined;
+    render(
+      <NotesFeedbackProvider active>
+        <FeedbackControls onPublish={(next) => (publish = next)} />
+        <NotesStatusBarMessage />
+      </NotesFeedbackProvider>
+    );
+
+    act(() => publish?.({ kind: "status", message: "Copied." }));
+    const firstRegion = screen.getByRole("status");
+    act(() => vi.advanceTimersByTime(3000));
+    act(() => publish?.({ kind: "status", message: "Copied." }));
+
+    expect(screen.getByRole("status")).not.toBe(firstRegion);
+    act(() => vi.advanceTimersByTime(5999));
+    expect(screen.getByRole("status")).toHaveTextContent("Copied.");
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("clears Notes feedback when Notes becomes inactive", () => {
     const { rerender } = renderFeedback({
       active: true,

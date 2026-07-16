@@ -1101,6 +1101,7 @@ export interface UseNotesSelectionCommandRouterResult<
   readonly busy: boolean;
   readonly status: string | null;
   readonly error: string | null;
+  readonly feedbackRevision: number;
   readonly clearFeedback: () => void;
 }
 
@@ -1114,7 +1115,8 @@ export function useNotesSelectionCommandRouter<
   const [state, setState] = useState({
     busy: false,
     status: null as string | null,
-    error: null as string | null
+    error: null as string | null,
+    feedbackRevision: 0
   });
   const routerRef = useRef<NotesSelectionCommandRouter<Authority> | null>(null);
   if (routerRef.current === null) {
@@ -1146,7 +1148,12 @@ export function useNotesSelectionCommandRouter<
         dependenciesRef.current.onBusyChange?.(busy);
       },
       onFeedback: ({ status, error }) => {
-        setState((current) => ({ ...current, status, error }));
+        setState((current) => ({
+          ...current,
+          status,
+          error,
+          feedbackRevision: current.feedbackRevision + 1
+        }));
         dependenciesRef.current.onFeedback?.({ status, error });
       }
     });

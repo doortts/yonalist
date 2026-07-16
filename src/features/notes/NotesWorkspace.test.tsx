@@ -413,6 +413,15 @@ function getTitleInput(value: string): HTMLTextAreaElement {
   return input;
 }
 
+function getTitlePresentation(value: string): HTMLElement {
+  const input = queryTitleInput(value);
+  const row = input?.closest<HTMLElement>(".notes-node");
+  if (!row) {
+    throw new Error(`Unable to find a node title presentation for ${value}`);
+  }
+  return within(row).getByRole("group", { name: "Edit node title" });
+}
+
 async function findTitleInput(value: string): Promise<HTMLTextAreaElement> {
   return waitFor(() => getTitleInput(value));
 }
@@ -3182,25 +3191,31 @@ describe("Notes workspace", () => {
     ])(
       "uses Shift click for a range and $modifier click to toggle a row on $platform",
       async ({ platform, modifier }) => {
+        const user = userEvent.setup();
         vi.spyOn(window.navigator, "platform", "get").mockReturnValue(platform);
         configureRepository(threeRoots());
         renderNotesWorkspace();
-        const alpha = await findTitleInput("Alpha");
-        const bravo = getTitleInput("Bravo");
-        const charlie = getTitleInput("Charlie");
+        const alphaInput = await waitFor(() => {
+          const input = queryTitleInput("Alpha");
+          if (!input) throw new Error("Alpha title did not render");
+          return input;
+        });
+        const alpha = getTitlePresentation("Alpha");
+        const bravo = getTitlePresentation("Bravo");
+        const charlie = getTitlePresentation("Charlie");
 
-        act(() => alpha.focus());
-        expect(alpha).toHaveFocus();
-        fireEvent.pointerDown(alpha, { button: 0 });
-        fireEvent.click(alpha);
-        fireEvent.pointerDown(charlie, { button: 0, shiftKey: true });
-        fireEvent.click(charlie, { shiftKey: true });
+        expect(alphaInput.style.pointerEvents).toBe("none");
+        expect(alpha.style.pointerEvents).toBe("auto");
+        await user.pointer({ keys: "[MouseLeft]", target: alpha });
+        await waitFor(() => expect(alphaInput).toHaveFocus());
+        await user.keyboard("{Shift>}");
+        await user.pointer({ keys: "[MouseLeft]", target: charlie });
+        await user.keyboard("{/Shift}");
         expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
 
-        fireEvent.pointerDown(bravo, {
-          button: 0,
-          ...(modifier === "Meta" ? { metaKey: true } : { ctrlKey: true })
-        });
+        await user.keyboard(modifier === "Meta" ? "{Meta>}" : "{Control>}");
+        await user.pointer({ keys: "[MouseLeft]", target: bravo });
+        await user.keyboard(modifier === "Meta" ? "{/Meta}" : "{/Control}");
         expect(selectedOutlineIds()).toEqual(["a", "c"]);
       }
     );
@@ -3252,6 +3267,32 @@ describe("Notes workspace", () => {
       expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
       expect(screen.getByLabelText("3 notes selected")).toBeVisible();
       fireEvent.pointerUp(delta, { button: 0, pointerId: 7 });
+    });
+
+    it("promotes a user pointer drag across browser-reachable title presentations", async () => {
+      const user = userEvent.setup();
+      configureRepository(fourRoots());
+      renderNotesWorkspace();
+      await findTitleInput("Alpha");
+      const bravo = getTitlePresentation("Bravo");
+      const delta = getTitlePresentation("Delta #later");
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: bravo,
+        coords: { clientX: 80, clientY: 42 }
+      });
+      await user.pointer({
+        target: delta,
+        coords: { clientX: 80, clientY: 98 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: delta,
+        coords: { clientX: 80, clientY: 98 }
+      });
+
+      expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
     });
 
     it("promotes a cross-row drag over row padding", async () => {
@@ -4259,6 +4300,65 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
+    it("suppresses the active-row drag transform as soon as a selected drag is rejected", async () => {
+      const user = userEvent.setup();
+      const activeNodes = threeRoots();
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      await act(async () => undefined);
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      const alphaRow = alpha.closest<HTMLElement>(".notes-node");
+      if (!alphaRow) {
+        throw new Error("Alpha row did not render");
+      }
+      mockOutlineRowRects();
+
+      alpha.focus();
+      await user.keyboard("[Space]");
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "2 selected"
+      );
+      await act(async () => hydration.reject(new Error("authority unavailable")));
+      await user.keyboard("[ArrowDown]");
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("Status bar feedback")).toHaveTextContent(
+          "Can't move selection: the selected rows cannot be moved together."
+        )
+      );
+
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      expect(alphaRow).not.toHaveAttribute("data-dragging");
+      expect(alphaRow.style.transform).toBe("");
+      await user.keyboard("[Space]");
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+    });
+
     it("reports a pending selected drop that resolves to an invalid projection", async () => {
       const user = userEvent.setup();
       const activeNodes = threeRoots();
@@ -4334,6 +4434,60 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
       await act(async () => undefined);
+    });
+
+    it("silently retires a pending selected drop after the selection revision changes", async () => {
+      const user = userEvent.setup();
+      const activeNodes = threeRoots();
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      mockOutlineRowRects();
+
+      alpha.focus();
+      await user.keyboard("[Space][ArrowDown][Space]");
+      fireEvent.click(
+        screen.getByRole("button", { name: "Zoom into Charlie" }),
+        { shiftKey: true }
+      );
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c"]);
+
+      await act(async () => {
+        deferAuthority = false;
+        hydration.resolve(workspace(activeNodes));
+        await hydration.promise;
+      });
+      await act(async () => undefined);
+
+      expect(
+        within(screen.getByLabelText("Status bar feedback")).queryByRole(
+          "alert"
+        )
+      ).toBeNull();
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
     it("executes only the latest selected drop while frozen authority is hydrating", async () => {

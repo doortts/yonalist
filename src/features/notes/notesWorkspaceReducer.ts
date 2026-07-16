@@ -104,7 +104,10 @@ export function notesSelectionReducer(
           };
     }
     case "replaceSelection": {
-      if (!action.selection) {
+      if (
+        !action.selection ||
+        action.selection.explicitNodeIds?.length === 0
+      ) {
         return null;
       }
       return action.selection.explicitNodeIds

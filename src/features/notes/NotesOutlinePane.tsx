@@ -478,6 +478,18 @@ export function NotesOutlinePane() {
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
   const [draggedNodeIds, setDraggedNodeIds] = useState<readonly NoteId[]>([]);
+  const draggedNodeIdSet = useMemo(
+    () => new Set(draggedNodeIds),
+    [draggedNodeIds]
+  );
+  const draggedNodeLabels = useMemo(
+    () =>
+      draggedNodeIds.slice(0, 3).map((nodeId) => {
+        const node = state.nodesById[nodeId];
+        return noteNodePresentationLabel(node, node.title, "Untitled");
+      }),
+    [draggedNodeIds, state.nodesById]
+  );
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
   const [quickJumpOpen, setQuickJumpOpen] = useState(false);
@@ -1323,7 +1335,12 @@ export function NotesOutlinePane() {
         message: selectionRouter.status
       });
     }
-  }, [publishNotesFeedback, selectionFeedbackError, selectionRouter.status]);
+  }, [
+    publishNotesFeedback,
+    selectionFeedbackError,
+    selectionRouter.feedbackRevision,
+    selectionRouter.status
+  ]);
   const rejectDisabledSelectionOperation = useCallback(
     (operation: Parameters<typeof notesSelectionOperationDisabledReason>[0]) => {
       const reason = notesSelectionOperationDisabledReason(
@@ -2403,6 +2420,13 @@ export function NotesOutlinePane() {
         if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
           return;
         }
+        const live = getLiveSelectionSnapshot?.() ?? {
+          selection: selectionRef.current,
+          revision: selectionRevisionRef.current
+        };
+        if (live.revision !== droppedSession.selectionRevision) {
+          return;
+        }
         const readySession = promotePendingSelectionDrag(droppedSession);
         if (readySession.kind !== "selected-ready") {
           rejectSelectedDrag();
@@ -2649,7 +2673,7 @@ export function NotesOutlinePane() {
                     aria-level={row.depth + 1}
                     data-selection-dragging={
                       selectedDragNodeIdsRef.current !== null &&
-                      draggedNodeIds.includes(row.id)
+                      draggedNodeIdSet.has(row.id)
                         ? "true"
                         : undefined
                     }
@@ -2692,6 +2716,11 @@ export function NotesOutlinePane() {
                       dragDisabled={
                         dragUnavailable || row.id === state.zoomRootId
                       }
+                      suppressDragPresentation={
+                        activeDragId === row.id &&
+                        outlineDragSessionRef.current?.kind ===
+                          "selected-invalid"
+                      }
                       imageDropActive={imageDropTargetId === row.id}
                       showDropPlaceholder={false}
                     />
@@ -2721,14 +2750,7 @@ export function NotesOutlinePane() {
             {draggedNodeIds.length > 1 && (
               <DragOverlay dropAnimation={null}>
                 <NotesSelectionDragPreview
-                  labels={draggedNodeIds.map((nodeId) => {
-                    const node = state.nodesById[nodeId];
-                    return noteNodePresentationLabel(
-                      node,
-                      node.title,
-                      "Untitled"
-                    );
-                  })}
+                  labels={draggedNodeLabels}
                   total={draggedNodeIds.length}
                 />
               </DragOverlay>

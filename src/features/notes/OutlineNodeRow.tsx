@@ -92,6 +92,7 @@ interface OutlineNodeRowProps {
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   dragDisabled: boolean;
+  suppressDragPresentation?: boolean;
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
   locallyExpanded?: boolean;
@@ -152,6 +153,7 @@ function OutlineNodeRowComponent({
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
   dragDisabled,
+  suppressDragPresentation = false,
   disabled = false,
   readOnlyMode,
   locallyExpanded = false,
@@ -383,12 +385,13 @@ function OutlineNodeRowComponent({
   const completed = node.completedAt !== null;
   const isCollapsed = node.isCollapsed && !locallyExpanded;
   const dragEnabled = !disabled && !dragDisabled && !readOnly;
+  const dragPresentationActive = isDragging && !suppressDragPresentation;
   const rowStyle = {
     "--notes-depth": depth,
-    transform: transform
+    transform: !suppressDragPresentation && transform
       ? `translate3d(${transform.x}px, ${transform.y}px, 0) scaleX(${transform.scaleX}) scaleY(${transform.scaleY})`
       : undefined,
-    transition
+    transition: suppressDragPresentation ? undefined : transition
   } as CSSProperties;
   const guides = ancestorGuideDepths.length > 0 && (
     <span
@@ -914,7 +917,7 @@ function OutlineNodeRowComponent({
       className="notes-node"
       data-outline-id={nodeId}
       data-completed={completed ? "true" : undefined}
-      data-dragging={isDragging ? "true" : undefined}
+      data-dragging={dragPresentationActive ? "true" : undefined}
       data-guide-end-id={visibleDescendantEndId ?? undefined}
       data-selected={state.selectedId === nodeId ? "true" : undefined}
       data-range-selected={isSelected ? "true" : undefined}

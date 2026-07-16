@@ -862,6 +862,22 @@ describe("notesSelectionReducer", () => {
     expect(Object.isFrozen(replaced?.explicitNodeIds)).toBe(true);
   });
 
+  it("replaceSelection normalizes an empty explicit selection to null", () => {
+    expect(
+      notesSelectionReducer(
+        { anchorId: "a", headId: "b" },
+        {
+          type: "replaceSelection",
+          selection: {
+            anchorId: "c",
+            headId: "c",
+            explicitNodeIds: []
+          }
+        }
+      )
+    ).toBeNull();
+  });
+
   it("replaceSelection atomically clears the range", () => {
     expect(
       notesSelectionReducer(
