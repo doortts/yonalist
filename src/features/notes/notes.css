@@ -67,14 +67,15 @@
   gap: 6px;
   min-height: 36px;
   padding: 0 10px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
   background: var(--bg-input);
   color: var(--text-3);
 }
 
 .notes-search-field:focus-within {
-  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .notes-search-field input {

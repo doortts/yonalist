@@ -3,20 +3,27 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const styles = readFileSync(join(process.cwd(), "src/styles.css"), "utf8");
+const notesStyles = readFileSync(
+  join(process.cwd(), "src/features/notes/notes.css"),
+  "utf8"
+);
 const baseThemeStyles = readFileSync(
   join(process.cwd(), "src/themes/base-ui-pure.css"),
   "utf8"
 );
 
-function declarations(selector: string): Record<string, string> {
-  const start = styles.indexOf(`${selector} {`);
+function declarations(
+  selector: string,
+  source = styles
+): Record<string, string> {
+  const start = source.indexOf(`${selector} {`);
   if (start < 0) {
     throw new Error(`Missing CSS selector: ${selector}`);
   }
-  const open = styles.indexOf("{", start);
-  const close = styles.indexOf("}", open);
+  const open = source.indexOf("{", start);
+  const close = source.indexOf("}", open);
   return Object.fromEntries(
-    styles
+    source
       .slice(open + 1, close)
       .split(";")
       .map((value) => value.trim())
@@ -269,5 +276,48 @@ describe("Graphite & Mist CSS contract", () => {
       declarations(".icon-button.login-required-button:focus-visible").outline
     ).toBe("2px solid var(--focus-ring)");
     expect(styles).not.toContain("outline: 2px solid rgb(220 38 38 / 34%)");
+  });
+
+  it("uses accessible semantic contrast for solid danger buttons", () => {
+    const root = declarations(":root");
+    const dark = declarations(':root[data-theme="dark"]');
+    const yonaDark = declarations(':root[data-theme="yona-dark"]');
+
+    expect(root["--danger-contrast"]).toBe("#ffffff");
+    expect(dark["--danger-contrast"]).toBe("#0d1724");
+    expect(yonaDark["--danger-contrast"]).toBe("#1a1020");
+    expect(contrast(dark["--danger-contrast"], dark["--danger"]))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(contrast(dark["--danger-contrast"], dark["--danger-hover"]))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(contrast(yonaDark["--danger-contrast"], yonaDark["--danger"]))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(contrast(yonaDark["--danger-contrast"], yonaDark["--danger-hover"]))
+      .toBeGreaterThanOrEqual(4.5);
+    expect(declarations(".danger-button").color).toBe(
+      "var(--danger-contrast)"
+    );
+    expect(baseThemeStyles).toMatch(
+      /:root\[data-theme="base-light"\] \.danger-button,[\s\S]*?:root\[data-theme="base-dark"\] \.danger-button\s*\{[^}]*background:\s*transparent;[^}]*color:\s*var\(--danger\);/s
+    );
+  });
+
+  it("keeps every pane flat through the shared root token", () => {
+    expect(declarations(":root")["--shadow-pane"]).toBe("none");
+  });
+
+  it("shows semantic two-pixel focus on Inbox and Notes search wrappers", () => {
+    expect(styles).toMatch(
+      /\.search-row:focus-within\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\);/s
+    );
+    expect(declarations(".notes-search-field", notesStyles).border).toBe(
+      "1px solid var(--control-border)"
+    );
+    const notesFocus = declarations(
+      ".notes-search-field:focus-within",
+      notesStyles
+    );
+    expect(notesFocus.outline).toBe("2px solid var(--focus-ring)");
+    expect(notesFocus).not.toHaveProperty("border-color");
   });
 });

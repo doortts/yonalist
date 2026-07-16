@@ -44,6 +44,7 @@
   --favorite: #e75135;
   --danger: #c2402a;
   --danger-hover: #a53522;
+  --danger-contrast: #ffffff;
   --danger-soft: #fdf0ec;
   /* Notification reason accents (dark theme lightens these for contrast) */
   --reason-mention: #7c4dff;
@@ -85,7 +86,7 @@
   --sidebar-divider: var(--border);
   --selection-rail: var(--list-selected-border);
   --selection-bg: var(--list-selected-bg);
-  --shadow-pane: 0 12px 32px rgb(50 39 31 / 7%);
+  --shadow-pane: none;
   --shadow-menu: var(--shadow-modal);
   --status-success-fg: var(--success);
   --status-success-bg: var(--bg-card);
@@ -316,6 +317,7 @@
   --favorite: #f0a35b;
   --danger: #ff8b82;
   --danger-hover: #ffaaa4;
+  --danger-contrast: #0d1724;
   --danger-soft: #432727;
   --reason-mention: #b39dff;
   --reason-comment: #4dd0c4;
@@ -380,6 +382,7 @@
   --favorite: #ff8a3d;
   --danger: #f47067;
   --danger-hover: #f78b84;
+  --danger-contrast: #1a1020;
   --danger-soft: rgb(244 112 103 / 12%);
   --reason-mention: #c8a6ff;
   --reason-comment: #4dd0c4;
@@ -1327,7 +1330,7 @@ body.is-resizing-pane {
   padding: 7px 12px;
   border-color: var(--danger);
   background: var(--danger);
-  color: #ffffff;
+  color: var(--danger-contrast);
 }
 
 .danger-button:hover {
@@ -1498,6 +1501,11 @@ body.is-resizing-pane {
   padding: 10px 16px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text-3);
+}
+
+.search-row:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .search-row,
