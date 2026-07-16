@@ -22,6 +22,10 @@ import {
   NotesStateContext
 } from "./NotesWorkspaceContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import {
+  NotesFeedbackProvider,
+  NotesStatusBarMessage
+} from "./NotesFeedbackContext";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import type { NotesBatchCommandSettlement } from "./notesCommands";
 import {
@@ -187,15 +191,20 @@ function Harness({
     [applyPreparedSelectionBatch, baseActions]
   );
   return (
-    <NotesImageResidencyProvider scopeKey="memo-test">
-      <NotesActionsContext.Provider value={actionsValue}>
-        <NotesStateContext.Provider value={value.stateSlice ?? value}>
-          <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
-            <NotesOutlinePane />
-          </NotesDraftsContext.Provider>
-        </NotesStateContext.Provider>
-      </NotesActionsContext.Provider>
-    </NotesImageResidencyProvider>
+    <NotesFeedbackProvider active>
+      <NotesImageResidencyProvider scopeKey="memo-test">
+        <NotesActionsContext.Provider value={actionsValue}>
+          <NotesStateContext.Provider value={value.stateSlice ?? value}>
+            <NotesDraftsContext.Provider value={value.draftsSlice ?? value}>
+              <NotesOutlinePane />
+            </NotesDraftsContext.Provider>
+          </NotesStateContext.Provider>
+        </NotesActionsContext.Provider>
+      </NotesImageResidencyProvider>
+      <div aria-label="Status bar feedback">
+        <NotesStatusBarMessage />
+      </div>
+    </NotesFeedbackProvider>
   );
 }
 
@@ -443,8 +452,10 @@ describe("outline row memoization", () => {
 
     await act(async () => batch.reject(new Error("batch failed")));
     expect(
-      await within(toolbar).findByText(/command couldn't be completed/i)
-    ).toBeVisible();
+      await within(screen.getByLabelText("Status bar feedback")).findByRole(
+        "alert"
+      )
+    ).toHaveTextContent(/command couldn't be completed/i);
     const errorChurn = [...before].flatMap(([nodeId, count]) =>
       !selectedIds.includes(nodeId) && rowRenderCounts.get(nodeId) !== count
         ? [nodeId]
