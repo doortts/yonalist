@@ -86,6 +86,7 @@ function trashWorkspace(): UseNotesWorkspaceResult {
     redo: resolved(),
     setSelectionAnchor: vi.fn(),
     extendSelectionTo: vi.fn(),
+    toggleSelectionNode: vi.fn(),
     clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
 

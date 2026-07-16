@@ -11909,6 +11909,39 @@ describe("useNotesWorkspace multi-node selection", () => {
     return { result, store };
   }
 
+  it("toggles explicit selection in visible order and advances its revision", async () => {
+    const store = threeNodeStore();
+    const { result } = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/vault", repository: store })
+    );
+    await waitFor(() => expect(result.current.state.status).toBe("ready"));
+    const visible = ["a", "b", "c"];
+    const initialRevision = result.current.selectionRevision!;
+    const toggleSelectionNode = result.current.actions.toggleSelectionNode;
+
+    act(() => toggleSelectionNode("c", visible));
+    expect(result.current.selection).toEqual({
+      anchorId: "c",
+      headId: "c",
+      explicitNodeIds: ["c"]
+    });
+    expect(result.current.selectionRevision).toBe(initialRevision + 1);
+    expect(result.current.actions.toggleSelectionNode).toBe(
+      toggleSelectionNode
+    );
+
+    act(() => toggleSelectionNode("a", visible));
+    expect(result.current.selection).toEqual({
+      anchorId: "a",
+      headId: "a",
+      explicitNodeIds: ["a", "c"]
+    });
+    expect(result.current.selectionRevision).toBe(initialRevision + 2);
+    expect(result.current.actions.toggleSelectionNode).toBe(
+      toggleSelectionNode
+    );
+  });
+
   it("clears the selection when the caret moves (focusNode)", async () => {
     const { result } = await withSelectedRange();
     await act(async () => result.current.actions.focusNode("second"));

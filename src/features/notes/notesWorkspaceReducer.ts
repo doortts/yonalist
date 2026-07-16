@@ -31,11 +31,10 @@ export type UiState = Pick<
 >;
 
 /**
- * Multi-node selection anchor/head pair (plan Phase 4.1). The selection is the
+ * Multi-node selection (plan Phase 4.1). By default the selection is the
  * inclusive range between `anchorId` and `headId` computed against the visible
- * outline row ordering — see {@link selectionRangeIds}. Storing only the two
- * endpoints (rather than the materialized id set) keeps the range live: it is
- * re-derived against the current visible rows whenever those change.
+ * outline row ordering. Mouse toggles instead store an explicit ordered id set
+ * while keeping anchor/head available for the next range gesture.
  *
  * Selection is deliberately NOT a field of {@link NormalizedNotesWorkspace}. The
  * memoized outline rows (Phase 2.2) read the workspace projection off the state
@@ -50,11 +49,17 @@ export type UiState = Pick<
 export interface NotesSelection {
   anchorId: NoteId;
   headId: NoteId;
+  explicitNodeIds?: readonly NoteId[];
 }
 
 export type NotesSelectionAction =
   | { type: "setSelectionAnchor"; anchorId: NoteId }
   | { type: "extendSelectionTo"; headId: NoteId }
+  | {
+      type: "toggleSelectionNode";
+      nodeId: NoteId;
+      visibleNodeIds: readonly NoteId[];
+    }
   | { type: "replaceSelection"; selection: NotesSelection | null }
   | { type: "clearSelection" };
 
@@ -78,18 +83,48 @@ export function notesSelectionReducer(
         anchorId: state ? state.anchorId : action.headId,
         headId: action.headId
       };
-    case "replaceSelection":
-      return action.selection;
+    case "toggleSelectionNode": {
+      const selected = new Set(
+        selectionRangeIds(state, action.visibleNodeIds)
+      );
+      if (selected.has(action.nodeId)) {
+        selected.delete(action.nodeId);
+      } else {
+        selected.add(action.nodeId);
+      }
+      const explicitNodeIds = action.visibleNodeIds.filter((id) =>
+        selected.has(id)
+      );
+      return explicitNodeIds.length === 0
+        ? null
+        : {
+            anchorId: action.nodeId,
+            headId: action.nodeId,
+            explicitNodeIds: Object.freeze(explicitNodeIds)
+          };
+    }
+    case "replaceSelection": {
+      if (!action.selection) {
+        return null;
+      }
+      return action.selection.explicitNodeIds
+        ? {
+            ...action.selection,
+            explicitNodeIds: Object.freeze([
+              ...action.selection.explicitNodeIds
+            ])
+          }
+        : { ...action.selection };
+    }
     case "clearSelection":
       return null;
   }
 }
 
 /**
- * Materialize the selected ids as the inclusive slice of `visibleNodeIds`
- * between the anchor and head (in either order). An empty selection, or one
- * whose endpoints are not both currently visible (e.g. a collapsed or filtered
- * row), yields an empty range rather than a partial guess.
+ * Materialize the selected ids in visible outline order. Explicit selections
+ * are filtered against `visibleNodeIds`; range selections are the inclusive
+ * slice between anchor and head. Missing range endpoints yield no partial range.
  */
 export function selectionRangeIds(
   selection: NotesSelection | null,
@@ -97,6 +132,10 @@ export function selectionRangeIds(
 ): NoteId[] {
   if (!selection) {
     return [];
+  }
+  if (selection.explicitNodeIds) {
+    const explicit = new Set(selection.explicitNodeIds);
+    return visibleNodeIds.filter((nodeId) => explicit.has(nodeId));
   }
   const anchorIndex = visibleNodeIds.indexOf(selection.anchorId);
   const headIndex = visibleNodeIds.indexOf(selection.headId);

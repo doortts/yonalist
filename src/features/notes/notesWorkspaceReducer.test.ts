@@ -772,6 +772,64 @@ describe("notesSelectionReducer", () => {
     ).toEqual({ anchorId: "d", headId: "d" });
   });
 
+  it("toggles visible rows into an explicit outline-ordered selection", () => {
+    const visible = ["a", "b", "c", "d"];
+    const anchored = notesSelectionReducer(null, {
+      type: "setSelectionAnchor",
+      anchorId: "b"
+    });
+    const added = notesSelectionReducer(anchored, {
+      type: "toggleSelectionNode",
+      nodeId: "d",
+      visibleNodeIds: visible
+    });
+
+    expect(added).toEqual({
+      anchorId: "d",
+      headId: "d",
+      explicitNodeIds: ["b", "d"]
+    });
+    expect(selectionRangeIds(added, visible)).toEqual(["b", "d"]);
+  });
+
+  it("removes a toggled row and clears the final selected row", () => {
+    const visible = ["a", "b", "c"];
+    const explicit: NotesSelection = {
+      anchorId: "c",
+      headId: "c",
+      explicitNodeIds: ["a", "c"]
+    };
+    const removed = notesSelectionReducer(explicit, {
+      type: "toggleSelectionNode",
+      nodeId: "c",
+      visibleNodeIds: visible
+    });
+
+    expect(selectionRangeIds(removed, visible)).toEqual(["a"]);
+    expect(
+      notesSelectionReducer(removed, {
+        type: "toggleSelectionNode",
+        nodeId: "a",
+        visibleNodeIds: visible
+      })
+    ).toBeNull();
+  });
+
+  it("replaces an explicit selection with a Shift range", () => {
+    const explicit: NotesSelection = {
+      anchorId: "b",
+      headId: "b",
+      explicitNodeIds: ["b", "d"]
+    };
+
+    expect(
+      notesSelectionReducer(explicit, {
+        type: "extendSelectionTo",
+        headId: "c"
+      })
+    ).toEqual({ anchorId: "b", headId: "c" });
+  });
+
   it("replaceSelection atomically replaces both endpoints", () => {
     expect(
       notesSelectionReducer(
@@ -782,6 +840,26 @@ describe("notesSelectionReducer", () => {
         }
       )
     ).toEqual({ anchorId: "copy-1", headId: "copy-3" });
+  });
+
+  it("replaceSelection owns an immutable copy of explicit node ids", () => {
+    const explicitNodeIds = ["a", "c"];
+    const replaced = notesSelectionReducer(null, {
+      type: "replaceSelection",
+      selection: {
+        anchorId: "c",
+        headId: "c",
+        explicitNodeIds
+      }
+    });
+
+    explicitNodeIds[0] = "mutated";
+    expect(replaced).toEqual({
+      anchorId: "c",
+      headId: "c",
+      explicitNodeIds: ["a", "c"]
+    });
+    expect(Object.isFrozen(replaced?.explicitNodeIds)).toBe(true);
   });
 
   it("replaceSelection atomically clears the range", () => {

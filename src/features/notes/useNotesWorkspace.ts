@@ -291,6 +291,10 @@ export interface NotesWorkspaceActions {
   // Multi-node selection (Phase 4.1). Stable identity.
   setSelectionAnchor(anchorId: NoteId): void;
   extendSelectionTo(headId: NoteId): void;
+  toggleSelectionNode(
+    nodeId: NoteId,
+    visibleNodeIds: readonly NoteId[]
+  ): void;
   clearSelection(): void;
   replaceSelection?(
     selection: NotesSelection | null,
@@ -2788,6 +2792,16 @@ export function useNotesWorkspace({
       headId
     });
   }, [updateSelection]);
+  const toggleSelectionNode = useCallback(
+    (nodeId: NoteId, visibleNodeIds: readonly NoteId[]): void => {
+      updateSelection({
+        type: "toggleSelectionNode",
+        nodeId,
+        visibleNodeIds
+      });
+    },
+    [updateSelection]
+  );
   const clearSelection = useCallback((): void => {
     if (selectionRef.current === null) {
       return;
@@ -4664,6 +4678,7 @@ export function useNotesWorkspace({
       redo: gate(redo),
       setSelectionAnchor,
       extendSelectionTo,
+      toggleSelectionNode,
       clearSelection,
       replaceSelection,
       getSelectionSnapshot
@@ -4720,6 +4735,7 @@ export function useNotesWorkspace({
     redo,
     setSelectionAnchor,
     extendSelectionTo,
+    toggleSelectionNode,
     clearSelection,
     replaceSelection,
     getSelectionSnapshot
