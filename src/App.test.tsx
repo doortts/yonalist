@@ -3681,6 +3681,71 @@ describe("Yonalist app shell", () => {
     expect(layout).toHaveStyle("--list-width: 320px");
   });
 
+  it("resizes and clamps both panes from the keyboard", async () => {
+    render(<App />);
+
+    const layout = screen.getByLabelText("Yonalist layout");
+    const navigationResizer = screen.getByRole("separator", {
+      name: "Resize navigation pane"
+    });
+    const listResizer = screen.getByRole("separator", {
+      name: "Resize item list pane"
+    });
+
+    expect(layout).toHaveStyle("--sidebar-width: 240px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "240");
+    expect(layout).toHaveStyle("--list-width: 340px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "340");
+
+    fireEvent.keyDown(navigationResizer, { key: "ArrowRight" });
+    expect(layout).toHaveStyle("--sidebar-width: 256px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "256");
+
+    fireEvent.keyDown(navigationResizer, {
+      key: "ArrowLeft",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--sidebar-width: 220px");
+    expect(navigationResizer).toHaveAttribute("aria-valuemin", "220");
+    expect(navigationResizer).toHaveAttribute("aria-valuemax", "420");
+
+    for (let index = 0; index < 10; index += 1) {
+      fireEvent.keyDown(navigationResizer, {
+        key: "ArrowRight",
+        shiftKey: true
+      });
+    }
+    expect(layout).toHaveStyle("--sidebar-width: 420px");
+    expect(navigationResizer).toHaveAttribute("aria-valuenow", "420");
+
+    fireEvent.keyDown(listResizer, { key: "ArrowRight" });
+    expect(layout).toHaveStyle("--list-width: 356px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "356");
+
+    fireEvent.keyDown(listResizer, {
+      key: "ArrowLeft",
+      shiftKey: true
+    });
+    expect(layout).toHaveStyle("--list-width: 320px");
+    expect(listResizer).toHaveAttribute("aria-valuemin", "320");
+    expect(listResizer).toHaveAttribute("aria-valuemax", "640");
+
+    for (let index = 0; index < 10; index += 1) {
+      fireEvent.keyDown(listResizer, {
+        key: "ArrowRight",
+        shiftKey: true
+      });
+    }
+    expect(layout).toHaveStyle("--list-width: 640px");
+    expect(listResizer).toHaveAttribute("aria-valuenow", "640");
+
+    await waitFor(() => {
+      expect(
+        JSON.parse(window.localStorage.getItem("yonalist.paneWidths.v1")!)
+      ).toEqual({ sidebar: 420, list: 640 });
+    });
+  });
+
   // The detail maximize control moves between the header (inline, while the
   // header is on screen) and the fixed titlebar corner (once the header scrolls
   // away), so it never overlaps the header's own actions.
