@@ -6,6 +6,7 @@ import {
   derivePreparedOutlineSelectionDropPreview,
   OUTLINE_INDENT_PX,
   prepareOutlineSelectionDrag,
+  preparedOutlineSelectionDragContainsNode,
   projectOutlineDrop,
   projectPreparedOutlineSelectionDrop,
   projectOutlineSelectionDrop,
@@ -855,5 +856,38 @@ describe("projectOutlineSelectionDrop", () => {
       derivePreparedOutlineSelectionDropPreview(prepared, nestedResult)
     ).toEqual({ beforeId: "tail", parentId: "target", depth: 1 });
     expect(sourceChildMapReads).toBe(readsAfterPreparation);
+  });
+
+  it("identifies every node owned by a prepared selected forest", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "selected", sortKey: 1 }),
+        node({ id: "selected-child", parentId: "selected" }),
+        node({ id: "target", sortKey: 2 })
+      ]
+    } satisfies NotesWorkspace);
+    const prepared = prepareOutlineSelectionDrag(
+      "selected",
+      ["selected"],
+      flattenVisibleOutlineRows(state, null),
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+    if (prepared.kind !== "ready") {
+      throw new Error("Expected drag preparation to succeed.");
+    }
+
+    expect(preparedOutlineSelectionDragContainsNode(prepared, "selected")).toBe(
+      true
+    );
+    expect(
+      preparedOutlineSelectionDragContainsNode(prepared, "selected-child")
+    ).toBe(true);
+    expect(preparedOutlineSelectionDragContainsNode(prepared, "target")).toBe(
+      false
+    );
   });
 });

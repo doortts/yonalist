@@ -502,6 +502,13 @@ const preparedSelectionDragStates = new WeakMap<
   PreparedOutlineSelectionDragState
 >();
 
+export function preparedOutlineSelectionDragContainsNode(
+  prepared: PreparedOutlineSelectionDrag,
+  nodeId: NoteId
+): boolean {
+  return preparedSelectionDragStates.get(prepared)?.forestNodeIds.has(nodeId) ?? false;
+}
+
 /** Normalizes the selected forest and removes it from pointer-time geometry. */
 export function prepareOutlineSelectionDrag(
   activeId: NoteId,
