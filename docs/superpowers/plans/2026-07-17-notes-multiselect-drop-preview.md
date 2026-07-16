@@ -204,13 +204,17 @@ it("shows a selected drop line before frozen authority resolves", async () => {
     nodeIds: ["a", "b"],
     parentId: null,
     afterId: "c",
-    beforeId: "d"
+    beforeId: null
   });
   expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
 });
 ```
 
-The pointer intentionally remains over selected row `b`. Once selected-forest collision candidates are removed, the nearest valid destination is `c`, represented by an insertion line before `d`.
+The pointer intentionally remains over selected row `b`. Once selected-forest
+collision candidates are removed, the nearest valid destination is `c`,
+represented by an insertion line before `d`. The command expresses that same
+destination with the single valid anchor `afterId: "c"`; Notes batch commands
+must not send `afterId` and `beforeId` together.
 
 - [ ] **Step 2: Run the regression test and verify RED**
 
