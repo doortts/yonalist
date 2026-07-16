@@ -2415,6 +2415,7 @@ export function NotesOutlinePane() {
           outlineIndentPx
         );
         if (lateProjection.kind !== "selected-move") {
+          rejectSelectedDrag();
           return;
         }
         if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {

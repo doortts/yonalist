@@ -4259,6 +4259,83 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
+    it("reports a pending selected drop that resolves to an invalid projection", async () => {
+      const user = userEvent.setup();
+      const activeNodes = threeRoots();
+      const hydration = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return hydration.promise;
+          }
+          return workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      const alphaTitle = await findTitleInput("Alpha");
+      const activeLoadsBeforeSelection = notesStoreMock.loadWorkspace.mock.calls
+        .filter(([, scope]) => scope.kind === "active").length;
+      deferAuthority = true;
+      fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(
+          notesStoreMock.loadWorkspace.mock.calls.filter(
+            ([, scope]) => scope.kind === "active"
+          ).length
+        ).toBeGreaterThan(activeLoadsBeforeSelection)
+      );
+      const alpha = screen.getByRole("button", { name: "Zoom into Alpha" });
+      mockOutlineRowRects();
+
+      alpha.focus();
+      await user.keyboard("[Space]");
+
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "2 selected"
+      );
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).toHaveAttribute("data-selection-dragging", "true");
+      }
+
+      await user.keyboard("[ArrowDown][Space]");
+
+      expect(
+        screen.queryByTestId("notes-selection-drag-preview")
+      ).not.toBeInTheDocument();
+      for (const nodeId of ["a", "b"]) {
+        expect(
+          document
+            .querySelector(`[data-outline-id="${nodeId}"]`)
+            ?.closest(".notes-outline-item")
+        ).not.toHaveAttribute("data-selection-dragging");
+      }
+
+      await act(async () => {
+        deferAuthority = false;
+        hydration.resolve(workspace(activeNodes));
+        await hydration.promise;
+      });
+
+      await waitFor(() =>
+        expect(
+          within(screen.getByLabelText("Status bar feedback")).getByRole(
+            "alert"
+          )
+        ).toHaveTextContent(
+          "Can't move selection: the selected rows cannot be moved together."
+        )
+      );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
+      expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      await act(async () => undefined);
+    });
+
     it("executes only the latest selected drop while frozen authority is hydrating", async () => {
       const user = userEvent.setup();
       const activeNodes = threeRoots();
