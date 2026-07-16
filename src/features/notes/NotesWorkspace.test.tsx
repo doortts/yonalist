@@ -5021,7 +5021,7 @@ describe("Notes workspace", () => {
       expect(queryTitleInput("Charlie")).not.toHaveFocus();
     });
 
-    it("indents the trailing rows beneath a selected first sibling", async () => {
+    it("rejects indent atomically when the selected first sibling has no outside predecessor", async () => {
       const before = [
         node({ id: "parent", sortKey: 1, title: "Parent" }),
         node({ id: "a", parentId: "parent", sortKey: 1, title: "Alpha" }),
@@ -5031,16 +5031,7 @@ describe("Notes workspace", () => {
         node({ id: "e", parentId: "parent", sortKey: 5, title: "Echo" }),
         node({ id: "f", parentId: "parent", sortKey: 6, title: "Foxtrot" })
       ];
-      const after = before.map((current) =>
-        ["b", "c", "d", "e"].includes(current.id)
-          ? { ...current, parentId: "a" }
-          : current
-      );
       configureRepository(before);
-      notesStoreMock.applyBatch.mockImplementationOnce(async () => {
-        confirmedNodes = after;
-        return workspace(after);
-      });
       renderNotesWorkspace();
       const alpha = await findTitleInput("Alpha");
       act(() => alpha.focus());
@@ -5052,34 +5043,21 @@ describe("Notes workspace", () => {
 
       fireEvent.keyDown(alpha, { key: "Tab" });
 
-      await waitFor(() =>
-        expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
-          op: "indent",
-          nodeIds: ["b", "c", "d", "e"]
-        })
-      );
-      expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce();
-      await waitFor(() =>
-        expect(selectedOutlineIds()).toEqual(["a", "b", "c", "d", "e"])
-      );
-      await waitFor(() =>
-        expect(
-          document
-            .querySelector<HTMLElement>('[data-outline-id="b"]')
-            ?.style.getPropertyValue("--notes-depth")
-        ).toBe("2")
-      );
+      expect(selectedOutlineIds()).toEqual(["a", "b", "c", "d", "e"]);
       expect(alpha).toHaveFocus();
       const toolbar = screen.getByRole("toolbar", {
         name: "Actions for 5 selected notes"
       });
       const status = within(toolbar).getByRole("status");
-      expect(status).toHaveTextContent(
-        /^First item stayed: no preceding sibling\.$/
+      await waitFor(() =>
+        expect(status).toHaveTextContent(
+          /^Can't indent selection: the first selected item has no preceding sibling outside the selection\.$/
+        )
       );
+      expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(status).toHaveAttribute("aria-live", "polite");
       expect(status).toHaveAttribute("aria-atomic", "true");
-      expect(status).toHaveAttribute("data-kind", "status");
+      expect(status).toHaveAttribute("data-kind", "error");
     });
 
     it.each([

@@ -60,7 +60,7 @@ function snapshot(
       cut: eligible(["a", "b", "c"]),
       delete: eligible(["a", "b", "c"]),
       duplicate: eligible(["a", "b", "c"]),
-      indent: eligible(["b", "c"]),
+      indent: eligible(["a", "b", "c"]),
       outdent: eligible(["a", "b"]),
       moveUp: {
         ...eligible(["a", "b", "c"]),
@@ -643,32 +643,36 @@ describe("createNotesSelectionCommandRouter", () => {
     expect(harness.deps.applyBatch).not.toHaveBeenCalled();
   });
 
-  it("uses the exact partially eligible indent targets and reports why the first root stayed", async () => {
+  it("rejects an atomically ineligible indent selection without mutation", async () => {
     const feedback = vi.fn();
-    const harness = dependencies({ onFeedback: feedback });
-    vi.mocked(harness.deps.prepareAuthority).mockImplementation(
-      async (nodeIds) => authority(nodeIds)
-    );
+    const targetedSnapshot = snapshot({
+      eligibility: {
+        ...snapshot().eligibility,
+        indent: unavailable(
+          "Can't indent selection: the first selected item has no preceding sibling outside the selection."
+        )
+      }
+    });
+    const harness = dependencies({
+      getSnapshot: () => targetedSnapshot,
+      onFeedback: feedback
+    });
     const router = createNotesSelectionCommandRouter(harness.deps);
 
-    await router.execute({ type: "indent" });
+    const result = await router.execute({ type: "indent" });
 
-    expect(harness.deps.prepareAuthority).toHaveBeenCalledWith(["b", "c"]);
-    expect(harness.deps.applyBatch).toHaveBeenCalledWith(
-      expect.objectContaining({ selectedNodeIds: ["b", "c"] }),
-      { type: "indent" },
-      undefined
-    );
+    expect(result).toEqual({ outcome: "skipped", mutationCommitted: false });
+    expect(harness.deps.prepareAuthority).not.toHaveBeenCalled();
+    expect(harness.deps.applyBatch).not.toHaveBeenCalled();
     expect(feedback).toHaveBeenLastCalledWith({
-      status: "First item stayed: no preceding sibling.",
-      error: null
+      status: null,
+      error:
+        "Can't indent selection: the first selected item has no preceding sibling outside the selection."
     });
   });
 
-  it.each([
-    { label: "every structural root is eligible", nodeIds: ["a", "b", "c"] },
-    { label: "another partial shape is eligible", nodeIds: ["a", "c"] }
-  ])("keeps the general indent status when $label", async ({ nodeIds }) => {
+  it("reports the general indent status when every structural root is eligible", async () => {
+    const nodeIds = ["a", "b", "c"];
     const feedback = vi.fn();
     const targetedSnapshot = snapshot({
       eligibility: {

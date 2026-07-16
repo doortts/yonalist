@@ -126,7 +126,7 @@ export interface NotesSelectionCommandRouterDependencies<
   ) => readonly NoteId[];
   readonly flushDrafts: () => Promise<boolean>;
   /** `nodeIds` is the exact operation target subset, not the whole visible
-   * range. Indent/outdent may therefore prepare fewer IDs than selected. */
+   * range. Outdent may therefore prepare fewer IDs than selected. */
   readonly prepareAuthority: (
     nodeIds: readonly NoteId[]
   ) => Promise<Authority>;
@@ -257,11 +257,7 @@ function resolveCommand(
         kind: "batch",
         nodeIds,
         op: { type: "indent" },
-        successStatus:
-          snapshot.structuralRootIds.length > 1 &&
-          exactIds(nodeIds, snapshot.structuralRootIds.slice(1))
-            ? "First item stayed: no preceding sibling."
-            : "Indented selection."
+        successStatus: "Indented selection."
       }));
     case "outdent":
       return eligibleCommand(snapshot.eligibility.outdent, (nodeIds) => ({

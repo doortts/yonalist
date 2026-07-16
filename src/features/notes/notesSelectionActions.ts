@@ -90,6 +90,8 @@ export interface DeriveNotesSelectionActionSnapshotInput {
 
 const COMPLETE_STRUCTURE_REASON =
   "This action requires the complete active workspace.";
+const INDENT_UNAVAILABLE_REASON =
+  "Can't indent selection: the first selected item has no preceding sibling outside the selection.";
 
 function unavailable(reason: string): NotesSelectionUnavailable {
   return Object.freeze({ eligible: false, reason });
@@ -371,27 +373,21 @@ function indentEligibility(
 ): NotesSelectionEligibility {
   const selectedRoots = new Set(rootIds);
   const visible = new Set(visibleNodeIds);
-  const eligibleRootIds = rootIds.filter((nodeId) => {
+  const canIndentEveryRoot = rootIds.every((nodeId) => {
     const node = workspace.nodesById[nodeId];
     const siblings =
       node.parentId === null
         ? workspace.rootIds
         : (workspace.childIdsByParent[node.parentId] ?? []);
     let index = siblings.indexOf(nodeId) - 1;
-    let hasPrecedingSelectedRoot = false;
     while (index >= 0 && selectedRoots.has(siblings[index])) {
-      hasPrecedingSelectedRoot = true;
       index -= 1;
     }
-    return index >= 0
-      ? visible.has(siblings[index])
-      : hasPrecedingSelectedRoot;
+    return index >= 0 && visible.has(siblings[index]);
   });
-  return eligibleRootIds.length > 0
-    ? eligibleTargets(eligibleRootIds)
-    : unavailable(
-        "Indent requires a visible preceding sibling outside the selection."
-      );
+  return canIndentEveryRoot
+    ? eligibleTargets(rootIds)
+    : unavailable(INDENT_UNAVAILABLE_REASON);
 }
 
 function outdentEligibility(

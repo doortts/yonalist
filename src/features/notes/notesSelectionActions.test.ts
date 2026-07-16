@@ -401,7 +401,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "Can't indent selection: the first selected item has no preceding sibling outside the selection."
     });
     expect(result?.eligibility.outdent).toEqual({
       eligible: false,
@@ -441,7 +442,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
       selection: { anchorId: "e", headId: "a" }
     }
   ])(
-    "uses the leading selected sibling as the indent parent for a $label range that starts first",
+    "rejects indent for a $label range when its leading root has no outside sibling",
     ({ selection }) => {
       const nodes = [
         node({ id: "parent" }),
@@ -457,8 +458,9 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
       expect(result?.structuralRootIds).toEqual(["a", "b", "c", "d", "e"]);
       expect(result?.eligibility.indent).toEqual({
-        eligible: true,
-        nodeIds: ["b", "c", "d", "e"]
+        eligible: false,
+        reason:
+          "Can't indent selection: the first selected item has no preceding sibling outside the selection."
       });
     }
   );
@@ -507,7 +509,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "Can't indent selection: the first selected item has no preceding sibling outside the selection."
     });
   });
 
@@ -573,7 +576,8 @@ describe("deriveNotesSelectionActionSnapshot", () => {
 
     expect(result?.eligibility.indent).toEqual({
       eligible: false,
-      reason: "Indent requires a visible preceding sibling outside the selection."
+      reason:
+        "Can't indent selection: the first selected item has no preceding sibling outside the selection."
     });
     expect(result?.eligibility.moveUp).toEqual({
       eligible: true,
@@ -606,7 +610,7 @@ describe("deriveNotesSelectionActionSnapshot", () => {
     });
   });
 
-  it("returns only action-eligible indent roots across mixed parents", () => {
+  it("rejects the whole indent selection when one mixed-parent root is ineligible", () => {
     const projectedNodes = [
       node({ id: "right-prior", parentId: "right-parent" }),
       node({ id: "left-selected", parentId: "left-parent" }),
@@ -635,8 +639,9 @@ describe("deriveNotesSelectionActionSnapshot", () => {
       "right-selected"
     ]);
     expect(result?.eligibility.indent).toEqual({
-      eligible: true,
-      nodeIds: ["right-selected"]
+      eligible: false,
+      reason:
+        "Can't indent selection: the first selected item has no preceding sibling outside the selection."
     });
   });
 
