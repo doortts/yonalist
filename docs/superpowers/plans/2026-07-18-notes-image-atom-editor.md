@@ -14,7 +14,7 @@
 
 ## File Responsibility Map
 
-- `schema.rs`, `repository.rs`, `types.rs`: v3 persistence, UTF-16 validation, derived/search rows, authoritative workspace/export shapes.
+- `schema.rs`, `repository.rs`, `types.rs`: current persistence, UTF-16 validation, derived/search rows, authoritative workspace/export shapes.
 - `history.rs`, new `image_atom.rs`, `commands.rs`: TEMP receipts, protected history pruning, atomic edit/paste/import transactions, and Tauri boundaries.
 - `attachment_ingest.rs`, `attachments.rs`, `notesAttachmentRawIpc.ts`: bounded raw-byte framing, validation, file publication, and reconciliation.
 - New `imageAtomModel.ts` and `imageAtomDomSelection.ts`: pure logical coordinates and the only DOM/logical mapping boundary.
@@ -26,7 +26,7 @@
 
 ## Global Constraints
 
-- This plan starts from persistent schema version 2 and migrates exactly to version 3. Never implement a direct version-1-to-3 path.
+- Treat the image-atom DDL as the pre-release current schema: do not increment `CURRENT_NOTES_SCHEMA_VERSION`, add a migration, or preserve old development databases. The existing version guard remains untouched.
 - An image node has exactly one owned primary attachment during ordinary writable operation. Removing the atom converts the node to `text`; generic attachment removal remains forbidden for image nodes.
 - Persist `title = beforeText + afterText`; never persist U+FFFC or caret-aid characters. Text nodes always store offset zero.
 - Validate offsets in UTF-16 units on both sides of IPC. Reject negative, out-of-range, unsafe-integer, and surrogate-splitting offsets before mutation.
@@ -56,7 +56,6 @@
 **Interfaces required by Task 1:**
 
 ```text
-CURRENT_NOTES_SCHEMA_VERSION == 2
 main.notes_history_entries and main.notes_history_changes do not exist
 temp.notes_history_epoch, temp.notes_history_entries, temp.notes_history_changes exist
 NotesHistoryContext includes historyEpoch
@@ -79,13 +78,13 @@ cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests
 cargo test --manifest-path src-tauri/Cargo.toml notes::history::tests
 ```
 
-Expected: PASS. Inspect a writable test connection and prove the schema/epoch assertions above. If `CURRENT_NOTES_SCHEMA_VERSION` is still `1`, stop; Task 1's migration would otherwise clear legacy image titles before the required TEMP-history generation exists.
+Expected: PASS. Inspect a writable test connection and prove the schema/epoch assertions above. The prerequisite must leave the existing schema-version marker unchanged and install TEMP history after fresh current-schema initialization.
 
 - [ ] **Step 3: Preserve the prerequisite commit boundary**
 
 No new commit is created for this gate. The prerequisite plan's task commits are the Task 0 evidence; begin image work from their completed head.
 
-### Task 1: Migrate the persistent model from v2 to v3 and thread the offset DTO
+### Task 1: Define the current image-atom schema and thread the offset DTO
 
 **Files:**
 - Modify: `src-tauri/src/notes/schema.rs`
@@ -135,8 +134,6 @@ No new commit is created for this gate. The prerequisite plan's task commits are
 **Interfaces:**
 
 ```rust
-pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 3;
-
 pub(crate) fn validate_image_offset_utf16(
     title: &str,
     node_kind: NoteNodeKind,
@@ -173,34 +170,24 @@ export interface UpdateNoteNodeInput {
 }
 ```
 
-The canonical v3 column is:
+The canonical current-schema column is:
 
 ```sql
 image_offset_utf16 INTEGER NOT NULL DEFAULT 0
   CHECK (image_offset_utf16 >= 0)
 ```
 
-- [ ] **Step 1: Write failing migration, validation, replay, import, and DTO tests**
+- [ ] **Step 1: Write failing fresh-schema, validation, replay, import, and DTO tests**
 
 Add focused tests covering:
 
 ```rust
 #[test]
-fn v2_to_v3_clears_valid_image_titles_but_preserves_filename_note_tree_and_bytes() {
-    let mut db = seeded_v2_image_database("legacy-photo.png", one_attachment());
-    initialize_notes_db(&mut db).expect("migrate v2 to v3");
-    let node = loaded_node(&db);
-    assert_eq!(node.node_kind, NoteNodeKind::Image);
-    assert_eq!(node.title, "");
-    assert_eq!(node.image_offset_utf16, 0);
-    assert_eq!(owned_attachment(&db).original_name, "legacy-photo.png");
-    assert_eq!(node.note, "supporting note");
-    assert_eq!(schema_version(&db), 3);
-}
-
-#[test]
-fn v2_to_v3_repairs_zero_and_multiple_attachment_images_as_text_without_data_loss() {
-    // Assert title/note/children and every legacy attachment survive.
+fn fresh_current_schema_defines_image_offset_and_attachment_search() {
+    let db = test_connection();
+    assert!(table_columns(&db, "notes_nodes").contains(&"image_offset_utf16".to_string()));
+    assert_eq!(fts_columns(&db, "notes_search"), ["node_id", "title", "note", "attachment_name"]);
+    assert_eq!(notes_image_search_title(&db, "A😀B", "image", 3), "A😀 B");
 }
 
 #[test]
@@ -210,35 +197,25 @@ fn image_offset_rejects_a_split_surrogate() {
 }
 ```
 
-Also assert migration rollback on an injected FTS/derived failure leaves `user_version = 2` and the legacy title intact; audit JSON round-trips the offset; Undo/Redo restores it; new path/raw image imports create empty title, empty note, and zero offset; and strict TS validators reject missing, fractional, negative, or unsafe offsets. Add v3 connection tests proving `notes_image_search_title("A😀B", "image", 3)` returns `"A😀 B"` and fresh/migrated FTS schemas have `attachment_name` without using SQLite code-point offsets.
+Also assert audit JSON round-trips the offset; Undo/Redo restores it; new path/raw image imports create empty title, empty note, and zero offset; and strict TS validators reject missing, fractional, negative, or unsafe offsets. Prove the fresh current FTS schemas have `attachment_name` and the registered `notes_image_search_title("A😀B", "image", 3)` scalar returns `"A😀 B"` without using SQLite code-point offsets. Keep malformed zero/multiple-attachment recovery tests, but construct the malformed state directly as corruption evidence rather than as migration fixtures.
 
 - [ ] **Step 2: Run RED**
 
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::v2_to_v3_clears_valid_image_titles_but_preserves_filename_note_tree_and_bytes -- --exact
+cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests::fresh_current_schema_defines_image_offset_and_attachment_search -- --exact
 cargo test --manifest-path src-tauri/Cargo.toml notes::history::tests::notes_history_replays_image_offset -- --exact
 npm test -- src/domain/notes.test.ts src/services/notesStore.test.ts src/services/notesStore.tauri.test.ts
 ```
 
-Expected: FAIL because the schema is v2, `NoteNode`/audit JSON/update inputs lack the field, and image import still stores `original_name` in `notes_nodes.title`.
+Expected: FAIL because the current schema, `NoteNode`/audit JSON/update inputs, FTS definitions, and image import do not yet implement the field and filename separation.
 
-- [ ] **Step 3: Implement the atomic v2-to-v3 migration**
+- [ ] **Step 3: Implement the fresh current schema and SQL scalar**
 
-First enable rusqlite's existing `functions` feature and register the deterministic `notes_image_search_title` scalar on every writable connection before schema creation or migration. Implement it with `validate_image_offset_utf16`; never use SQLite `substr`/`length`, whose code-point units disagree with the persisted UTF-16 offset.
+Enable rusqlite's existing `functions` feature and register the deterministic `notes_image_search_title` scalar on every writable connection before current-schema creation. Implement it with `validate_image_offset_utf16`; never use SQLite `substr`/`length`, whose code-point units disagree with the persisted UTF-16 offset.
 
-Then, in one `TransactionBehavior::Immediate` transaction:
-
-1. add the column;
-2. identify image rows and count owned attachments;
-3. clear `title` and set offset zero only for exactly-one-attachment rows;
-4. convert zero/multiple-attachment rows to text with offset zero without changing their old title or attachment rows;
-5. replace both FTS tables with four-column `node_id/title/note/attachment_name` definitions and install node/attachment triggers that call the registered scalar;
-6. rebuild active/lifecycle FTS and tag/date derived rows;
-7. update `user_version` last.
-
-Keep a test-only failure hook between steps 4 and 7 so rollback is proven, rather than simulating a failure before any destructive statement.
+Modify only the authoritative fresh `CURRENT_SCHEMA_SQL`: add the non-negative offset column, define both FTS tables with `node_id/title/note/attachment_name`, and install node/attachment triggers that call the registered scalar. Keep `CURRENT_NOTES_SCHEMA_VERSION`, `user_version` dispatch, and all version guards unchanged; do not add `ALTER TABLE`, legacy-row conversion, migration failure hooks, or runtime database deletion. Existing development databases are deleted outside the app before testing.
 
 - [ ] **Step 4: Thread the field through every authoritative row shape**
 
@@ -305,7 +282,7 @@ fn install_notes_sql_functions(connection: &Connection) -> Result<(), String>;
 fn image_search_title(title: &str, kind: &str, offset: i64) -> Result<String, String>;
 ```
 
-FTS5 v3 columns are:
+The current FTS5 columns are:
 
 ```sql
 node_id UNINDEXED,
@@ -1648,8 +1625,8 @@ If no file changed in Step 3, skip this commit. Verification alone is not a comm
 ## Dependency and Interface Order
 
 ```text
-Task 0: schema v2 + TEMP history epoch/mixed timeline
-  -> Task 1: schema v3 + imageOffsetUtf16 + UTF-16 FTS scalar/schema
+Task 0: current schema + TEMP history epoch/mixed timeline
+  -> Task 1: current imageOffsetUtf16 + UTF-16 FTS scalar/schema
        -> Task 2: search classification, derived boundaries, labels
        -> Task 3: TEMP receipts + protected pruning
        -> Task 4: byte-free structural edit
@@ -1668,11 +1645,11 @@ Task 13 -> Task 14: bounded Markdown import round trip
 Tasks 0-14 -> Task 15: accessibility and complete verification
 ```
 
-Execute the numbered tasks in order. Within Task 1, register the deterministic UTF-16 scalar before any v3 schema creation/migration calls it. Task 8 cannot start before Task 1 supplies the domain field, and Task 10 cannot start before Tasks 3-5 supply edit/paste/receipt Store APIs. Land receipts before wiring frontend retries. Within the frontend branch, keep Task 6 pure and DOM-free, then establish the Task 7 mapper before constructing the editor. Do not integrate row/header handlers before the editor, clipboard, coordinator, and byte-residency interfaces exist.
+Execute the numbered tasks in order. Within Task 1, register the deterministic UTF-16 scalar before fresh current-schema creation calls it. Task 8 cannot start before Task 1 supplies the domain field, and Task 10 cannot start before Tasks 3-5 supply edit/paste/receipt Store APIs. Land receipts before wiring frontend retries. Within the frontend branch, keep Task 6 pure and DOM-free, then establish the Task 7 mapper before constructing the editor. Do not integrate row/header handlers before the editor, clipboard, coordinator, and byte-residency interfaces exist.
 
 ## Spec Coverage Self-Review
 
-- **Persistence and migration:** Task 0 establishes the required history generation; Task 1 performs only v2-to-v3, clears valid legacy image titles, repairs malformed ownership without deleting data, threads `imageOffsetUtf16`, and proves rollback.
+- **Current persistence:** Task 0 establishes the required TEMP history generation; Task 1 directly defines the fresh current image schema, threads `imageOffsetUtf16`, validates malformed ownership as corruption, and adds no migration or version increment.
 - **UTF-16 search correctness:** Task 1 registers the deterministic rusqlite scalar before schema work, enables rusqlite's `functions` feature, and creates the four-column FTS storage; Task 2 keeps query/classification and tag/date-derived content aligned with the before/after boundary.
 - **Atomicity and retry:** Tasks 3-5 write history and fingerprinted TEMP receipts in the same transaction. History pruning excludes the current operation entry and every unacknowledged receipt entry; acknowledgement releases the pin. Raw IPC carries bounded bytes only for paste and never stores them in history or receipts.
 - **Editor semantics:** Tasks 6-8 define one atom in logical coordinates, composition-safe edits, selection mapping, draft flushing, Enter/Delete conversions, and supporting-note delegation without persisting U+FFFC.

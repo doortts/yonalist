@@ -16,7 +16,7 @@
 
 - History is in memory only: it is discarded on final Vault-session close, connection replacement, or app quit; live Notes rows and attachment files remain persistent.
 - Do not add dependencies or a second Rust replay engine; retain the current audited SQLite transaction/replay model in `src-tauri/src/notes/history.rs`.
-- Main schema migrates exactly from version `1` to `2`; v2 contains no persistent history entry/change tables. Read-only export connections install no TEMP history.
+- Treat the new persistent DDL as the pre-release current schema: do not increment `CURRENT_NOTES_SCHEMA_VERSION`, add a migration, or preserve old development databases. The existing version guard remains untouched. Read-only export connections install no TEMP history.
 - TEMP history is limited to 100 mutation entries and 50 MiB total before/after JSON; one entry may not exceed 50 MiB. The frontend exposes at most 100 mixed entries.
 - Every history-aware backend response includes `historyEpoch`, `nextUndoEntryId`, `nextRedoEntryId`, and `prunedEntryIds`; a mutation result lists every history ID the backend deleted during redo invalidation or hard-cap enforcement.
 - `NotesHistoryContext` includes the expected `historyEpoch`; stale text and structural mutations fail before any persistent row changes.
@@ -31,7 +31,7 @@
 
 | File | Responsibility |
 | --- | --- |
-| `src-tauri/src/notes/schema.rs` | Persistent v2 schema and explicit v1→v2 history-table removal migration. |
+| `src-tauri/src/notes/schema.rs` | Pre-release current persistent schema, which directly omits history tables. |
 | `src-tauri/src/notes/repository.rs` | Schema-version dispatch and `empty_trash` transaction integration. |
 | `src-tauri/src/notes/history.rs` | TEMP table installation, epoch/status/pruning, exact-entry replay, navigation preparation, reset/close helpers. |
 | `src-tauri/src/notes/types.rs` | Tauri wire structs for history epoch, commands, and discriminated replay/reset results. |
@@ -51,7 +51,7 @@ Existing focused tests stay next to their subject: Rust unit tests in `history.r
 
 ---
 
-### Task 1: Install TEMP history and migrate the persistent schema to v2
+### Task 1: Install TEMP history in the pre-release current schema
 
 **Files:**
 - Modify: `src-tauri/src/notes/schema.rs:3-173`
@@ -65,26 +65,26 @@ Existing focused tests stay next to their subject: Rust unit tests in `history.r
 - Produces:
 
 ```rust
-pub(crate) const CURRENT_NOTES_SCHEMA_VERSION: i64 = 2;
-pub(crate) fn migrate_v1_to_v2(transaction: &Transaction<'_>) -> Result<(), String>;
 pub(crate) fn install_session_history(connection: &Connection) -> Result<(), String>;
 pub(crate) fn history_epoch(connection: &Connection) -> Result<String, String>;
 ```
 
 - `install_session_history` must run only after main-schema initialization, execute `PRAGMA temp_store = MEMORY`, and create `temp.notes_history_epoch`, `temp.notes_history_entries`, `temp.notes_history_changes`, plus the existing audit/helper TEMP tables/triggers.
 
-- [ ] **Step 1: Write failing migration and TEMP-schema tests**
+- [ ] **Step 1: Write failing fresh-schema and TEMP-history tests**
 
 ```rust
 #[test]
-fn notes_history_v1_migrates_to_temp_v2_without_losing_live_nodes() {
-    let mut connection = seeded_v1_connection();
-    initialize_notes_db(&mut connection).expect("migrate v1");
-    assert_eq!(schema_version(&connection), 2);
+fn notes_history_fresh_current_schema_uses_temp_tables_only() {
+    let vault = test_vault();
+    let connection = connect_notes_db(&vault).expect("open fresh current database");
     assert!(table_exists(&connection, "main", "notes_nodes"));
     assert!(!table_exists(&connection, "main", "notes_history_entries"));
+    assert!(!table_exists(&connection, "main", "notes_history_changes"));
     assert!(table_exists(&connection, "temp", "notes_history_entries"));
+    assert!(table_exists(&connection, "temp", "notes_history_changes"));
     assert_ne!(history_epoch(&connection).unwrap(), "");
+    assert_eq!(temp_store(&connection), 2);
 }
 
 #[test]
@@ -100,16 +100,17 @@ fn notes_history_reopening_keeps_live_rows_but_allocates_a_new_temp_epoch() {
 }
 
 #[test]
-fn notes_history_v0_runs_sequential_migrations_and_leaves_no_main_history_tables() {
-    let mut connection = seeded_v0_connection();
-    initialize_notes_db(&mut connection).expect("migrate v0 through v2");
-    assert_eq!(schema_version(&connection), 2);
-    assert!(!table_exists(&connection, "main", "notes_history_entries"));
-    assert_eq!(load_workspace(&connection, NotesWorkspaceScope::Active).unwrap().nodes.len(), 1);
+fn notes_history_export_connection_installs_no_temp_history() {
+    let vault = test_vault();
+    drop(connect_notes_db(&vault).expect("create current database"));
+    let connection = open_notes_export_db(&vault).expect("open export database");
+    assert!(!table_exists(&connection, "temp", "notes_history_epoch"));
+    assert!(!table_exists(&connection, "temp", "notes_history_entries"));
+    assert!(!table_exists(&connection, "temp", "notes_history_changes"));
 }
 ```
 
-Also assert `PRAGMA temp_store` reports `2` (`MEMORY`) on a writable connection, a fresh v2 main schema never contains history tables, and `open_notes_export_db` installs no TEMP history/epoch tables.
+Update the existing fresh-schema assertions that currently expect main history tables/indexes. Keep the current schema-version constant and all existing future-version guards unchanged. Rewrite initialization namespace tests that seeded persistent history: initialization validates only live node/attachment collisions because no history table exists until the post-commit TEMP installer; normal post-installer mutation checks must still reserve IDs referenced by TEMP replay data.
 
 - [ ] **Step 2: Run the focused tests and verify RED**
 
@@ -120,20 +121,11 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --list | rg 'notes_history_'
 cargo test --manifest-path src-tauri/Cargo.toml notes_history_ -- --nocapture
 ```
 
-Expected: FAIL because schema version remains `1`, main history tables still exist, and `history_epoch`/TEMP tables do not exist.
+Expected: FAIL because main history tables still exist and `history_epoch`/TEMP history tables do not exist.
 
 - [ ] **Step 3: Implement the smallest schema and installer change**
 
 ```rust
-// schema.rs
-pub(crate) fn migrate_v1_to_v2(transaction: &Transaction<'_>) -> Result<(), String> {
-    transaction.execute_batch(
-        "DROP TABLE IF EXISTS notes_history_changes; \
-         DROP INDEX IF EXISTS notes_history_session_sequence; \
-         DROP TABLE IF EXISTS notes_history_entries;",
-    ).map_err(|error| format!("Could not migrate Notes history to v2: {error}"))
-}
-
 // history.rs; include the existing audit tables/triggers in this TEMP batch.
 pub(crate) fn install_session_history(connection: &Connection) -> Result<(), String> {
     connection.execute_batch(
@@ -159,7 +151,7 @@ pub(crate) fn install_session_history(connection: &Connection) -> Result<(), Str
 }
 ```
 
-Dispatch migrations sequentially: an existing version-0 database first runs the current `0 -> 1` work and then `migrate_v1_to_v2`; version 1 runs only `1 -> 2`; a fresh database creates canonical v2 directly. Update `user_version` in the same initialization transaction, then call `install_session_history(connection)` only after that transaction commits. Remove persistent history DDL from `CURRENT_SCHEMA_SQL`; preserve all other DDL byte-for-byte. Read-only export connections must never call the TEMP installer.
+Remove only the persistent history entry/change/index DDL from `CURRENT_SCHEMA_SQL`; preserve every other DDL statement byte-for-byte. Do not change `CURRENT_NOTES_SCHEMA_VERSION`, `user_version` dispatch, or add any migration helper. `initialize_notes_db` must complete and commit main-schema setup first; then the writable `connect_notes_db` path calls `install_session_history(connection)` before returning. The initialization-time namespace validator checks live node/attachment tables only because TEMP history does not exist yet. Keep the normal `id_namespace_in_use` mutation helper unqualified so it resolves TEMP history after installation. Read-only export connections never call the installer. Existing development databases are deleted outside the app before testing; do not add runtime auto-deletion.
 
 - [ ] **Step 4: Run GREEN and regression tests**
 
@@ -170,7 +162,7 @@ cargo test --manifest-path src-tauri/Cargo.toml notes::repository::tests
 cargo test --manifest-path src-tauri/Cargo.toml notes::history::tests
 ```
 
-Expected: PASS; schema tests prove v1 live data survives, main history tables are gone, TEMP tables exist only on writable connections, and a reopen has a different epoch.
+Expected: PASS; fresh-schema tests prove main history tables are absent, TEMP tables exist only on writable connections, and a reopen preserves live rows while receiving a different epoch.
 
 - [ ] **Step 5: Commit the isolated backend schema task**
 
@@ -1107,7 +1099,7 @@ Do not create a verification-only commit. If a command exposes a defect, return 
 
 ## Spec Coverage Self-Review
 
-- TEMP-only history, v1→v2 migration, epoch creation/replacement, limits, attachment reconciliation, and final-close cleanup: Tasks 1–2.
+- TEMP-only history in the pre-release current schema, epoch creation/replacement, limits, attachment reconciliation, and final-close cleanup: Tasks 1–2.
 - Exact entry ID replay, discriminated errors, next IDs, pruning/floor, and backend reset: Task 2 plus Task 4 tests.
 - Strict frontend wire validation: Task 3.
 - Vault-shared timeline, text coalescing, owner token, controller transfer, final-close/reopen race, and expansion pooling: Task 4.
