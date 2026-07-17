@@ -74,43 +74,24 @@ Text nodes require offset zero and ignore it. Image nodes require:
 - the offset is not between the two UTF-16 code units of a surrogate pair; and
 - exactly one owned primary attachment for normal writable operations.
 
-An image row damaged after migration by a missing or ambiguous attachment set
-remains visible through the existing recovery presentation but does not expose
-the primary editor. Normal mutations never create that state.
+An image row damaged by external corruption with a missing or ambiguous
+attachment set remains visible through the existing recovery presentation but
+does not expose the primary editor. Normal mutations never create that state.
 
-### Schema transition
+### Pre-release current-schema policy
 
-This change follows the in-memory-history version-2 schema and increments it to
-version 3. Version 3 adds the offset column and updates the canonical fresh
-schema.
+The product is not released, so this feature does not introduce a schema
+version, upgrade path, or compatibility migration. The authoritative current
+schema directly defines `image_offset_utf16`, the attachment-aware FTS columns,
+and their triggers. Existing development databases may be deleted once before
+running the new build; the app does not automatically delete them at runtime.
 
-For every valid existing `node_kind = 'image'` row with exactly one attachment,
-migration:
-
-1. preserves the filename in its owned attachment's `original_name` when that
-   attachment exists;
-2. clears the protected filename value from `notes_nodes.title`;
-3. sets `image_offset_utf16 = 0`;
-4. leaves `note`, hierarchy, flags, timestamps, display width, and attachment
-   bytes unchanged; and
-5. rebuilds affected active/lifecycle search and derived tag/date rows.
-
-The attachment's `original_name` remains the filename authority for menus,
-accessibility, recovery labels, downloads, filename search, and the fallback
-label used by breadcrumbs/search/navigation when primary text is empty.
-
-A malformed legacy image row with zero or multiple attachments does not abort
-the Vault migration and does not lose its only recovery label. Migration
-converts that row to a text node, sets its offset to zero, and retains its old
-title, note, children, and every attachment as ordinary legacy text-node
-content. This is the only migration repair; normal valid image rows follow the
-empty-title contract above. New image imports create `title = ''`,
-`imageOffsetUtf16 = 0`, and `note = ''`.
-
-The version-2-to-3 column addition, image-row conversion, derived tag/date
-refresh, FTS rebuild, and schema-version update run in one transaction. Any
-failure rolls the database back to a readable version 2 without clearing a
-legacy title or attachment.
+The existing schema-version guard remains untouched infrastructure, but this
+work neither increments it nor dispatches a migration. New image imports create
+`title = ''`, `imageOffsetUtf16 = 0`, and `note = ''`. The attachment's
+`original_name` remains the filename authority for menus, accessibility,
+recovery labels, downloads, filename search, and the fallback label used by
+breadcrumbs/search/navigation when primary text is empty.
 
 ### Filename and user text
 
@@ -427,7 +408,7 @@ not start storing ranges merely because this optional field exists.
 The image frame menu's content action is renamed to **Remove image** and invokes
 this same conversion. Deleting or moving the complete outline item remains in
 the ordinary row menu (`Move to Trash`) and whole-row keyboard/selection
-commands. Post-migration damaged recovery rows stay non-editable rather than
+commands. Damaged recovery rows stay non-editable rather than
 attempting an unsafe replay through an invalid attachment state.
 
 ## Enter and Shift+Enter
@@ -731,23 +712,19 @@ that primary text segment.
 
 Follow strict RED/GREEN development.
 
-### Model and migration
+### Model and current schema
 
-1. Migrate existing image nodes to empty title/zero offset while preserving
-   attachment filename, note, hierarchy, and bytes.
-2. Convert malformed zero/multiple-attachment legacy image rows to text while
-   preserving their title, note, children, and every legacy attachment.
-3. Roll back the complete version-2-to-3 migration and version marker on an
-   injected offset/FTS/derived-content failure.
-4. Reject negative, out-of-range, and surrogate-splitting offsets.
-5. Preserve one-primary-attachment invariants through load, mutation, replay,
+1. Verify a fresh current database creates the offset column,
+   attachment-aware FTS fields, and their triggers directly.
+2. Reject negative, out-of-range, and surrogate-splitting offsets.
+3. Preserve one-primary-attachment invariants through load, mutation, replay,
    duplicate, import, and export.
-6. Verify new imports use empty title, empty note, and offset zero.
-7. Keep filename search through the attachment FTS field/classification and use
+4. Verify new imports use empty title, empty note, and offset zero.
+5. Keep filename search through the attachment FTS field/classification and use
    filename fallback in breadcrumbs, trails, quick jump, and search results.
-8. Index `foo[atom]bar` as separate `foo`/`bar` terms, reject `foobar`, and
+6. Index `foo[atom]bar` as separate `foo`/`bar` terms, reject `foobar`, and
    verify matched-field priority plus raw-title/offset/display-label DTOs.
-9. Verify tags/dates ignore filename metadata and cannot span the atom.
+7. Verify tags/dates ignore filename metadata and cannot span the atom.
 
 ### Selection mapping and IME
 

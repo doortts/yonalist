@@ -39,9 +39,9 @@ Notes currently has two coordinated history stores:
 The backend history is already session-scoped. A new runtime creates a new
 session ID, and today's `notes_initialize` clears old history before exposing
 Notes. Persisting history rows therefore adds disk writes without providing an
-app-restart Undo feature. After this migration, the one-time schema upgrade
-drops those old rows and every fresh TEMP history starts empty; runtime startup
-no longer relies on clearing main-schema history.
+app-restart Undo feature. The pre-release current schema now omits those rows,
+and every fresh TEMP history starts empty; runtime startup no longer relies on
+clearing main-schema history.
 
 Page changes currently bypass both stores. `zoomTo`, breadcrumb navigation,
 library scope changes, and quick navigation update the reducer or load another
@@ -90,9 +90,9 @@ It then creates connection-local TEMP forms of:
 - `notes_history_changes`; and
 - the existing audit, mutation-result, and pruned-attachment helper tables.
 
-Schema version 3 from the companion image-atom design also installs its compact
-operation-receipt table in TEMP storage. It follows the same epoch, reset, and
-connection lifetime; it never enters the persistent main schema.
+The companion image-atom design also installs its compact operation-receipt
+table in TEMP storage. It follows the same epoch, reset, and connection
+lifetime; it never enters the persistent main schema.
 
 The TEMP entry/change schemas retain the existing columns, foreign key,
 sequence index, and cascading deletion behavior. Existing unqualified history
@@ -115,20 +115,20 @@ rows; a mismatch returns the current epoch and performs no mutation. This closes
 the same stale-generation hole for autosaved text and structural edits that the
 navigation preflight closes for page moves.
 
-### Persistent-schema transition
+### Pre-release current-schema policy
 
-This change increments the current main schema from version 1 to version 2. Its
-migration:
+The product is not released, so this feature does not introduce a schema
+version, upgrade path, or compatibility migration. The authoritative current
+schema directly omits `notes_history_entries`, `notes_history_changes`, and
+their sequence index. Existing development databases may be deleted once
+before running the new build.
 
-1. discards the old session-only `notes_history_changes` rows;
-2. discards `notes_history_entries` and their sequence index; and
-3. removes both persistent history tables from the authoritative current
-   schema.
-
-No node, attachment, tag, date, search, archive, or trash data is removed. A
-fresh version-2 database creates only the persistent application tables; TEMP
-history is installed after the writable connection has finished main-schema
-initialization. Read-only export connections do not install history storage.
+The existing schema-version guard remains untouched infrastructure, but this
+work neither increments it nor dispatches a migration. A fresh current database
+creates only persistent application tables. TEMP history is installed after a
+writable connection finishes main-schema initialization. Read-only export
+connections do not install history storage. The app does not automatically
+delete database files at runtime.
 
 ### Limits and lifetime
 
@@ -472,8 +472,8 @@ Follow strict RED/GREEN development.
    together on failure.
 3. Verify history disappears after closing and reopening the connection while
    live Notes data remains.
-4. Cover migration from the current schema: live data survives and persistent
-   history tables disappear.
+4. Verify a fresh current database contains every live-data table but no
+   persistent history table or history index.
 5. Preserve 100-entry, 50-MiB, coalescing, redo invalidation, and attachment
    reconciliation tests against TEMP storage.
 6. Reject an Undo/Redo whose expected entry ID is not next without changing
