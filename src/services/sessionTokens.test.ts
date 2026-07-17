@@ -8,8 +8,7 @@ import {
 const URL_A = "https://oss.navercorp.com/api/v3";
 const URL_B = "https://api.github.com";
 
-// These tests exercise the browser fallback (localStorage); the Tauri build
-// routes the same calls to the OS keychain via store_token/load_token.
+// These tests exercise browser web storage (localStorage).
 describe("sessionTokens (web fallback)", () => {
   beforeEach(() => {
     window.localStorage.clear();

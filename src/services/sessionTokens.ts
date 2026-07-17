@@ -2,13 +2,20 @@ import { isTauri } from "./oauth";
 
 /**
  * Persistence for OAuth session tokens so a restart signs back in without
- * asking. The desktop build keeps tokens in the OS keychain (via the
- * store_token/load_token/delete_token commands); the browser build falls back
- * to localStorage, matching how personal tokens are already stored there.
+ * asking. Release desktop builds keep tokens in the OS keychain; debug desktop
+ * and browser builds use localStorage.
  */
 
 const KEYCHAIN_SERVICE = "Yonalist GitHub";
 const WEB_STORAGE_KEY = "yonalist.github.sessionTokens.v1";
+
+type SessionTokenBackend = "web" | "keychain";
+
+async function sessionTokenBackend(): Promise<SessionTokenBackend> {
+  if (!isTauri()) return "web";
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<SessionTokenBackend>("session_token_storage_backend");
+}
 
 function loadWebTokens(): Record<string, string> {
   try {
@@ -35,6 +42,12 @@ function persistWebTokens(tokens: Record<string, string>): boolean {
   }
 }
 
+function removeWebToken(url: string): void {
+  const tokens = loadWebTokens();
+  delete tokens[url];
+  persistWebTokens(tokens);
+}
+
 function normalize(token: string | null | undefined): string | null {
   const trimmed = token?.trim();
   return trimmed ? trimmed : null;
@@ -47,67 +60,62 @@ export async function saveSessionToken(url: string, token: string): Promise<void
     return;
   }
 
-  const persistFallback = () =>
+  if ((await sessionTokenBackend()) === "web") {
     persistWebTokens({ ...loadWebTokens(), [url]: normalized });
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("store_token", {
+    service: KEYCHAIN_SERVICE,
+    account: url,
+    token: normalized
+  });
+  removeWebToken(url);
+}
 
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
+export async function loadSessionToken(url: string): Promise<string | null> {
+  const webToken = normalize(loadWebTokens()[url]);
+  if ((await sessionTokenBackend()) === "web") return webToken;
+
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    const keychainToken = normalize(
+      await invoke<string | null>("load_token", {
+        service: KEYCHAIN_SERVICE,
+        account: url
+      })
+    );
+    if (keychainToken) {
+      removeWebToken(url);
+      return keychainToken;
+    }
+    if (!webToken) return null;
     try {
       await invoke("store_token", {
         service: KEYCHAIN_SERVICE,
         account: url,
-        token: normalized
+        token: webToken
       });
-    } catch (error) {
-      if (!persistFallback()) {
-        throw error;
-      }
-      return;
-    }
-    persistFallback();
-    return;
-  }
-  persistFallback();
-}
-
-export async function loadSessionToken(url: string): Promise<string | null> {
-  const fallbackToken = normalize(loadWebTokens()[url]);
-  if (isTauri()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      const keychainToken = normalize(
-        await invoke<string | null>("load_token", {
-          service: KEYCHAIN_SERVICE,
-          account: url
-        })
-      );
-      if (keychainToken) {
-        persistWebTokens({ ...loadWebTokens(), [url]: keychainToken });
-        return keychainToken;
-      }
+      removeWebToken(url);
     } catch {
-      // A locked/unavailable keychain should not block startup.
+      // Keep the legacy copy and retry migration on a later launch.
     }
-    return fallbackToken;
+    return webToken;
+  } catch {
+    return webToken;
   }
-  return fallbackToken;
 }
 
 export async function clearSessionToken(url: string): Promise<void> {
-  const tokens = loadWebTokens();
-  delete tokens[url];
-  persistWebTokens(tokens);
-
-  if (isTauri()) {
-    try {
-      const { invoke } = await import("@tauri-apps/api/core");
-      await invoke("delete_token", {
-        service: KEYCHAIN_SERVICE,
-        account: url
-      });
-    } catch {
-      // Nothing sensible to do; the gate will still require a fresh login.
-    }
-    return;
+  removeWebToken(url);
+  if ((await sessionTokenBackend()) === "web") return;
+  const { invoke } = await import("@tauri-apps/api/core");
+  try {
+    await invoke("delete_token", {
+      service: KEYCHAIN_SERVICE,
+      account: url
+    });
+  } catch {
+    // Logout still clears the active and web-stored session.
   }
 }
