@@ -131,13 +131,23 @@ function seededNodes(): NoteNode[] {
 function repository(nodes: NoteNode[]): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
   const replay = vi.fn().mockResolvedValue({
-    workspace: workspace([]),
-    replayedEntryId: null,
+    kind: "entryMissing" as const,
     canUndo: false,
-    canRedo: false
+    canRedo: false,
+    historyEpoch: "epoch-a",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
   });
   return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn().mockResolvedValue({
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
     loadWorkspace: vi.fn().mockResolvedValue(workspace(nodes)),
     createNode: empty,
     updateNode: empty,
@@ -156,6 +166,32 @@ function repository(nodes: NoteNode[]): NotesStore {
     unarchiveNode: empty,
     undo: replay,
     redo: replay,
+    clearHistory: vi.fn().mockResolvedValue({
+      historyReset: true,
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue({
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
+    prepareNavigation: vi.fn().mockResolvedValue({
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
@@ -596,17 +632,26 @@ describe("outline row memoization", () => {
         workspace: workspace(after),
         historyEntryId: moveEntryId,
         canUndo: true,
-        canRedo: false
+        canRedo: false,
+        historyEpoch: "epoch-a",
+        nextUndoEntryId: moveEntryId,
+        nextRedoEntryId: null,
+        prunedEntryIds: []
       };
     });
     const undo = vi.mocked(store.undo!);
     undo.mockImplementation(async () => {
       active = before;
       return {
+        kind: "applied" as const,
         workspace: workspace(before),
-        replayedEntryId: moveEntryId,
+        replayedEntryId: moveEntryId!,
         canUndo: false,
-        canRedo: true
+        canRedo: true,
+        historyEpoch: "epoch-a",
+        nextUndoEntryId: null,
+        nextRedoEntryId: moveEntryId,
+        prunedEntryIds: []
       };
     });
     vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");

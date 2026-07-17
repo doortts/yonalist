@@ -23,6 +23,8 @@ import type {
   NoteNode,
   NoteNodeKind,
   NoteSearchResult,
+  NotesHistoryContext,
+  NotesHistoryState,
   NotesWorkspace,
   UpdateNoteNodeInput
 } from "../../domain/notes";
@@ -58,7 +60,49 @@ const notesStoreMock = vi.hoisted(() => ({
   deleteDatabase: vi.fn()
 }));
 
-vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
+vi.mock("../../services/notesStore", () => {
+  const historyMutationMethods = new Set([
+    "createNode",
+    "updateNode",
+    "splitNode",
+    "moveNode",
+    "applyBatch",
+    "toggleComplete",
+    "toggleCollapsed",
+    "toggleStar",
+    "duplicateNode",
+    "removeEmptyNode",
+    "softDeleteNode",
+    "restoreNode",
+    "archiveNode",
+    "unarchiveNode",
+    "importAttachmentPaths",
+    "importImageNodePaths",
+    "importImageNodeBytes",
+    "resizeAttachment",
+    "removeAttachment"
+  ]);
+  return {
+    notesStore: new Proxy(notesStoreMock, {
+      get(target, property: string) {
+        const method = target[property as keyof typeof target];
+        if (!historyMutationMethods.has(property)) {
+          return method;
+        }
+        return (...args: unknown[]) => {
+          try {
+            return method(...args);
+          } finally {
+            // These integration assertions predate the history protocol and
+            // intentionally inspect only the command payload. The proxy still
+            // forwards the required context to every mock implementation.
+            method.mock.calls.at(-1)?.pop();
+          }
+        };
+      }
+    })
+  };
+});
 
 import { NotesFeatureProvider } from "./NotesFeature";
 import {
@@ -171,6 +215,20 @@ function workspace(
   };
 }
 
+function historyState(
+  overrides: Partial<NotesHistoryState> = {}
+): NotesHistoryState {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: [],
+    ...overrides
+  };
+}
+
 function attachment(
   overrides: Partial<NoteAttachment> & Pick<NoteAttachment, "id" | "nodeId">
 ): NoteAttachment {
@@ -213,7 +271,7 @@ function configureRepository(
     method.mockReset();
   }
 
-  notesStoreMock.initialize.mockResolvedValue(undefined);
+  notesStoreMock.initialize.mockResolvedValue(historyState());
   notesStoreMock.loadWorkspace.mockImplementation(async () =>
     workspace(confirmedNodes)
   );
@@ -586,7 +644,10 @@ describe("Notes workspace", () => {
 
     expect(await findTitleInput("Project")).toBeInTheDocument();
     expect(notesStoreMock.initialize).toHaveBeenCalledOnce();
-    expect(notesStoreMock.initialize).toHaveBeenCalledWith("/vault");
+    expect(notesStoreMock.initialize).toHaveBeenCalledWith(
+      "/vault",
+      expect.objectContaining({ sessionId: expect.any(String) })
+    );
     expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith("/vault", {
       kind: "active"
     });
@@ -741,7 +802,7 @@ describe("Notes workspace", () => {
     };
     mockNotesContentWidth(700, 480);
     notesStoreMock.importImageNodePaths.mockImplementation(
-      async (_vaultRoot, input) => {
+      async (_vaultRoot, input, context: NotesHistoryContext) => {
         const item = input.items[0]!;
         const imported = attachment({
           id: item.attachmentId,
@@ -760,9 +821,11 @@ describe("Notes workspace", () => {
         confirmedAttachmentsByNodeId = { [item.nodeId]: [imported] };
         return {
           workspace: workspace(confirmedNodes),
-          historyEntryId: null,
-          canUndo: true,
-          canRedo: false,
+          historyEntryId: context.entryId,
+          ...historyState({
+            canUndo: true,
+            nextUndoEntryId: context.entryId
+          }),
           importedRootIds: [item.nodeId]
         };
       }
@@ -859,34 +922,38 @@ describe("Notes workspace", () => {
     mockNotesContentWidth(480);
     notesStoreMock.importImageNodePaths
       .mockRejectedValueOnce(new Error("disk full"))
-      .mockImplementation(async (_vaultRoot, input) => {
-        const item = input.items[0]!;
-        const imported = attachment({
-          id: item.attachmentId,
-          nodeId: item.nodeId,
-          originalName: "diagram.png"
-        });
-        confirmedNodes = [
-          ...confirmedNodes,
-          node({
-            id: item.nodeId,
-            nodeKind: "image",
-            sortKey: 2,
-            title: "diagram.png"
-          })
-        ];
-        confirmedAttachmentsByNodeId = {
-          ...confirmedAttachmentsByNodeId,
-          [item.nodeId]: [imported]
-        };
-        return {
-          workspace: workspace(confirmedNodes),
-          historyEntryId: null,
-          canUndo: true,
-          canRedo: false,
-          importedRootIds: [item.nodeId]
-        };
-      });
+      .mockImplementation(
+        async (_vaultRoot, input, context: NotesHistoryContext) => {
+          const item = input.items[0]!;
+          const imported = attachment({
+            id: item.attachmentId,
+            nodeId: item.nodeId,
+            originalName: "diagram.png"
+          });
+          confirmedNodes = [
+            ...confirmedNodes,
+            node({
+              id: item.nodeId,
+              nodeKind: "image",
+              sortKey: 2,
+              title: "diagram.png"
+            })
+          ];
+          confirmedAttachmentsByNodeId = {
+            ...confirmedAttachmentsByNodeId,
+            [item.nodeId]: [imported]
+          };
+          return {
+            workspace: workspace(confirmedNodes),
+            historyEntryId: context.entryId,
+            ...historyState({
+              canUndo: true,
+              nextUndoEntryId: context.entryId
+            }),
+            importedRootIds: [item.nodeId]
+          };
+        }
+      );
     notesStoreMock.readAttachmentBytes.mockResolvedValue(
       new Uint8Array([137, 80, 78, 71])
     );
@@ -988,9 +1055,11 @@ describe("Notes workspace", () => {
         };
         return {
           workspace: workspace(confirmedNodes),
-          historyEntryId: context?.entryId ?? null,
-          canUndo: true,
-          canRedo: false,
+          historyEntryId: context.entryId,
+          ...historyState({
+            canUndo: true,
+            nextUndoEntryId: context.entryId
+          }),
           importedRootIds: [item.nodeId]
         };
       });
@@ -3315,7 +3384,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Submitted title",
-        note: "Submitted note"
+        note: "Project note"
       })
     );
 
@@ -3462,7 +3531,7 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "source",
       title: "alphaXYZomega!",
-      note: "draft note"
+      note: "old note"
     });
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
@@ -3868,7 +3937,11 @@ describe("Notes workspace", () => {
       const user = userEvent.setup();
       configureRepository(threeRoots());
       notesStoreMock.applyBatch.mockImplementationOnce(
-        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+        async (
+          _vaultRoot: string,
+          input: ApplyNotesBatchInput,
+          context: NotesHistoryContext
+        ) => {
           if (input.op !== "duplicate") {
             throw new Error("Expected a duplicate batch");
           }
@@ -3879,9 +3952,11 @@ describe("Notes workspace", () => {
           ];
           return {
             workspace: workspace(confirmedNodes),
-            historyEntryId: null,
-            canUndo: false,
-            canRedo: false,
+            historyEntryId: context.entryId,
+            ...historyState({
+              canUndo: true,
+              nextUndoEntryId: context.entryId
+            }),
             duplicatedRootIds: ["copy-a", "copy-b"]
           };
         }
@@ -3917,7 +3992,11 @@ describe("Notes workspace", () => {
       vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
       configureRepository(threeRoots());
       notesStoreMock.applyBatch.mockImplementationOnce(
-        async (_vaultRoot: string, input: ApplyNotesBatchInput) => {
+        async (
+          _vaultRoot: string,
+          input: ApplyNotesBatchInput,
+          context: NotesHistoryContext
+        ) => {
           if (input.op !== "duplicate") {
             throw new Error("Expected a duplicate batch");
           }
@@ -3928,9 +4007,11 @@ describe("Notes workspace", () => {
           ];
           return {
             workspace: workspace(confirmedNodes),
-            historyEntryId: null,
-            canUndo: false,
-            canRedo: false,
+            historyEntryId: context.entryId,
+            ...historyState({
+              canUndo: true,
+              nextUndoEntryId: context.entryId
+            }),
             duplicatedRootIds: ["copy-a", "copy-b"]
           };
         }
@@ -8539,7 +8620,10 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.emptyTrash).not.toHaveBeenCalled();
     const confirm = screen.getByRole("alertdialog", { name: "Empty trash?" });
     await user.click(within(confirm).getByRole("button", { name: "Empty trash" }));
-    expect(notesStoreMock.emptyTrash).toHaveBeenCalledWith("/vault");
+    expect(notesStoreMock.emptyTrash).toHaveBeenCalledWith("/vault", {
+      sessionId: expect.any(String),
+      historyEpoch: "history-epoch"
+    });
   });
 
   it("does not expose deleted rows for editing while choosing a tag", async () => {

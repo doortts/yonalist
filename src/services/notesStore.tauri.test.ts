@@ -16,8 +16,8 @@ import type {
   MoveNoteNodeInput,
   NoteAttachment,
   NotesHistoryContext,
-  NotesHistoryReplayResult,
-  NotesHistoryStatus,
+  NotesHistoryReplayOutcome,
+  NotesHistoryState,
   NotesMutationResult,
   NoteStructuredSearchQuery,
   NotesWorkspace,
@@ -47,11 +47,14 @@ import {
   notesListTagsWithCounts,
   notesLoadWorkspace,
   notesMoveNode,
+  notesCloseHistorySession,
   notesDownloadAttachment,
   notesOpenAttachmentOriginal,
   notesReadAttachmentBytes,
   notesRemoveAttachment,
   notesRemoveEmptyNode,
+  notesPrepareNavigation,
+  notesPruneHistoryEntries,
   notesRestoreNode,
   notesRestoreAttachment,
   notesResizeAttachment,
@@ -132,20 +135,29 @@ const normalizedWorkspace: NotesWorkspace = {
 };
 const historyContext: NotesHistoryContext = {
   sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  historyEpoch: "epoch-a",
   entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
   commandKind: "updateText"
 };
+function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
+  return {
+    canUndo: true,
+    canRedo: false,
+    historyEpoch,
+    nextUndoEntryId: historyContext.entryId,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
+}
 const mutationResult: NotesMutationResult = {
   workspace,
   historyEntryId: historyContext.entryId,
-  canUndo: true,
-  canRedo: false
+  ...historyState()
 };
 const unjournaledMutationResult: NotesMutationResult = {
   workspace,
   historyEntryId: null,
-  canUndo: false,
-  canRedo: false
+  ...historyState()
 };
 const normalizedMutationResult: NotesMutationResult = {
   ...mutationResult,
@@ -216,19 +228,45 @@ describe("notesStore in Tauri", () => {
   });
 
   it("initializes and loads the requested workspace scope", async () => {
-    invokeMock.mockResolvedValueOnce(undefined).mockResolvedValueOnce(workspace);
+    invokeMock
+      .mockResolvedValueOnce(historyState())
+      .mockResolvedValueOnce(workspace);
 
-    await expect(notesInitialize(vaultPath)).resolves.toBeUndefined();
+    await expect(
+      notesInitialize(vaultPath, { sessionId: historyContext.sessionId })
+    ).resolves.toEqual(historyState());
     await expect(
       notesLoadWorkspace(vaultPath, { kind: "trash" })
     ).resolves.toEqual({ ...workspace, attachmentsByNodeId: {} });
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_initialize", {
-      vaultPath
+      vaultPath,
+      input: { sessionId: historyContext.sessionId }
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_load_workspace", {
       vaultPath,
       scope: { kind: "trash" }
+    });
+  });
+
+  it.each([
+    "canUndo",
+    "canRedo",
+    "historyEpoch",
+    "nextUndoEntryId",
+    "nextRedoEntryId",
+    "prunedEntryIds"
+  ] as const)("rejects initialize results missing %s", async (key) => {
+    const invalid = { ...historyState() };
+    delete invalid[key];
+    invokeMock.mockResolvedValue(invalid);
+
+    await expect(
+      notesInitialize(vaultPath, { sessionId: historyContext.sessionId })
+    ).rejects.toMatchObject({
+      message: "Notes initialize returned an invalid history state.",
+      operation: "load",
+      retryable: false
     });
   });
 
@@ -543,7 +581,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message: "Notes image-node path import input is invalid.",
       operation: "write",
@@ -556,7 +594,7 @@ describe("notesStore in Tauri", () => {
         afterId: null,
         items: [{ nodeId, attachmentId, sourcePath: "/tmp/first.png" }],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({ operation: "write", retryable: false });
 
     const sparseItems = [
@@ -575,7 +613,7 @@ describe("notesStore in Tauri", () => {
         afterId: null,
         items: sparseItems,
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message: "Notes image-node byte import input is invalid.",
       operation: "write",
@@ -596,7 +634,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({ operation: "write", retryable: false });
 
     expect(readBlob).not.toHaveBeenCalled();
@@ -1112,7 +1150,7 @@ describe("notesStore in Tauri", () => {
           { id: attachmentId, sourcePath: "/tmp/second.png" }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({ operation: "write", retryable: false });
 
     await expect(
@@ -1127,7 +1165,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({ operation: "write", retryable: false });
 
     expect(invokeMock).not.toHaveBeenCalled();
@@ -1151,7 +1189,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message:
         'Attachment "oversized-photo.png" exceeds the 20 MiB per-file limit.',
@@ -1200,7 +1238,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message:
         'Attachment "crossing-file.png" causes the batch to exceed the 64 MiB total limit.',
@@ -1236,7 +1274,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      } as unknown as ImportNoteAttachmentBytesBatchInput)
+      } as unknown as ImportNoteAttachmentBytesBatchInput, historyContext)
     ).rejects.toMatchObject({
       message: "Notes attachment byte batch input is invalid.",
       operation: "write",
@@ -1287,7 +1325,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      } as unknown as ImportNoteAttachmentBytesBatchInput)
+      } as unknown as ImportNoteAttachmentBytesBatchInput, historyContext)
     ).rejects.toMatchObject({
       message: "Notes attachment byte batch input is invalid.",
       operation: "write",
@@ -1316,7 +1354,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message: "Notes attachment byte batch input is invalid.",
       operation: "write",
@@ -1343,7 +1381,7 @@ describe("notesStore in Tauri", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      } as unknown as ImportNoteAttachmentBytesBatchInput)
+      } as unknown as ImportNoteAttachmentBytesBatchInput, historyContext)
     ).rejects.toMatchObject({
       message: "Notes attachment byte batch input is invalid.",
       operation: "write",
@@ -1493,7 +1531,9 @@ describe("notesStore in Tauri", () => {
       workspace: workspaceWithAttachments
     });
 
-    await expect(notesImportAttachment(vaultPath, input)).resolves.toEqual({
+    await expect(
+      notesImportAttachment(vaultPath, input, historyContext)
+    ).resolves.toEqual({
       ...unjournaledMutationResult,
       workspace: workspaceWithAttachments
     });
@@ -1504,7 +1544,7 @@ describe("notesStore in Tauri", () => {
         attachments: [{ id: attachmentId, sourcePath: input.sourcePath }],
         initialMaxDisplayWidth: input.initialMaxDisplayWidth
       },
-      historyContext: null
+      historyContext
     });
   });
 
@@ -1515,7 +1555,7 @@ describe("notesStore in Tauri", () => {
       sourcePath: "/tmp/diagram.png"
     } as ImportNoteAttachmentInput;
 
-    await expect(notesImportAttachment(vaultPath, input)).rejects.toMatchObject({
+    await expect(notesImportAttachment(vaultPath, input, historyContext)).rejects.toMatchObject({
       message: "Notes attachment import input is invalid."
     });
     expect(invokeMock).not.toHaveBeenCalled();
@@ -1532,7 +1572,7 @@ describe("notesStore in Tauri", () => {
           id: attachmentId,
           nodeId,
           sourcePath: "/tmp/diagram.png"
-        } as ImportNoteAttachmentInput)
+        } as ImportNoteAttachmentInput, historyContext)
       ).rejects.toMatchObject({
         message: "Notes attachment import input is invalid."
       });
@@ -1551,7 +1591,7 @@ describe("notesStore in Tauri", () => {
           nodeId,
           sourcePath: "/tmp/diagram.png",
           initialMaxDisplayWidth
-        })
+        }, historyContext)
       ).rejects.toMatchObject({
         message: "Notes attachment import input is invalid.",
         operation: "write",
@@ -1569,7 +1609,9 @@ describe("notesStore in Tauri", () => {
       initialMaxDisplayWidth: 480
     }) as ImportNoteAttachmentInput;
 
-    await expect(notesImportAttachment(vaultPath, input)).rejects.toMatchObject({
+    await expect(
+      notesImportAttachment(vaultPath, input, historyContext)
+    ).rejects.toMatchObject({
       message: "Notes attachment import input is invalid.",
       operation: "write",
       retryable: false
@@ -1582,12 +1624,16 @@ describe("notesStore in Tauri", () => {
       .mockRejectedValueOnce("Could not import attachment")
       .mockRejectedValueOnce(new Error("Could not read attachment"));
 
-    const importError = await notesImportAttachment(vaultPath, {
-      id: attachmentId,
-      nodeId,
-      sourcePath: "/tmp/diagram.png",
-      initialMaxDisplayWidth: 480
-    }).catch((rejection: unknown) => rejection);
+    const importError = await notesImportAttachment(
+      vaultPath,
+      {
+        id: attachmentId,
+        nodeId,
+        sourcePath: "/tmp/diagram.png",
+        initialMaxDisplayWidth: 480
+      },
+      historyContext
+    ).catch((rejection: unknown) => rejection);
     const readError = await notesReadAttachmentBytes(
       vaultPath,
       attachmentId
@@ -1817,7 +1863,11 @@ describe("notesStore in Tauri", () => {
     });
 
     await expect(
-      notesResizeAttachment(vaultPath, { id: attachmentId, displayWidth: 180 })
+      notesResizeAttachment(
+        vaultPath,
+        { id: attachmentId, displayWidth: 180 },
+        historyContext
+      )
     ).rejects.toMatchObject({
       message: "Notes mutation returned an invalid result.",
       operation: "write",
@@ -1869,7 +1919,7 @@ describe("notesStore in Tauri", () => {
       notesLoadWorkspace(vaultPath, { kind: "tag", tag: "roadmap" })
     ).resolves.toEqual(normalizedWorkspace);
     await expect(notesSearch(vaultPath, "target")).resolves.toBe(searchResults);
-    await expect(notesToggleStar(vaultPath, nodeId)).resolves.toEqual(
+    await expect(notesToggleStar(vaultPath, nodeId, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
     await expect(notesListTags(vaultPath)).resolves.toEqual(["offline", "roadmap"]);
@@ -1902,7 +1952,7 @@ describe("notesStore in Tauri", () => {
         "notes_search",
         { vaultPath, query: "target", scope: { kind: "active" } }
       ],
-      ["notes_toggle_star", { vaultPath, nodeId, historyContext: null }],
+      ["notes_toggle_star", { vaultPath, nodeId, historyContext }],
       ["notes_list_tags", { vaultPath }],
       ["notes_list_tags_with_counts", { vaultPath }],
       ["notes_delete_database", { vaultPath }]
@@ -2101,38 +2151,38 @@ describe("notesStore in Tauri", () => {
     };
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesCreateNode(vaultPath, createInput)).resolves.toEqual(
+    await expect(notesCreateNode(vaultPath, createInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
-    await expect(notesUpdateNode(vaultPath, updateInput)).resolves.toEqual(
+    await expect(notesUpdateNode(vaultPath, updateInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
-    await expect(notesSplitNode(vaultPath, splitInput)).resolves.toEqual(
+    await expect(notesSplitNode(vaultPath, splitInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
-    await expect(notesMoveNode(vaultPath, moveInput)).resolves.toEqual(
+    await expect(notesMoveNode(vaultPath, moveInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_create_node", {
       vaultPath,
       input: createInput,
-      historyContext: null
+      historyContext
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_update_node", {
       vaultPath,
       input: updateInput,
-      historyContext: null
+      historyContext
     });
     expect(invokeMock).toHaveBeenNthCalledWith(3, "notes_split_node", {
       vaultPath,
       input: splitInput,
-      historyContext: null
+      historyContext
     });
     expect(invokeMock).toHaveBeenNthCalledWith(4, "notes_move_node", {
       vaultPath,
       input: moveInput,
-      historyContext: null
+      historyContext
     });
   });
 
@@ -2164,7 +2214,7 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
     for (const input of inputs) {
-      await expect(notesApplyBatch(vaultPath, input)).resolves.toEqual(
+      await expect(notesApplyBatch(vaultPath, input, historyContext)).resolves.toEqual(
         normalizedUnjournaledMutationResult
       );
     }
@@ -2173,7 +2223,7 @@ describe("notesStore in Tauri", () => {
       expect(invokeMock).toHaveBeenNthCalledWith(index + 1, "notes_apply_batch", {
         vaultPath,
         input,
-        historyContext: null
+        historyContext
       });
     });
   });
@@ -2208,7 +2258,7 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
     await expect(
-      notesApplyBatch(vaultPath, { op: "delete", nodeIds })
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds }, historyContext)
     ).rejects.toThrow("10,000");
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -2220,7 +2270,7 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
     await expect(
-      notesApplyBatch(vaultPath, { op: "delete", nodeIds })
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds }, historyContext)
     ).resolves.toEqual(normalizedUnjournaledMutationResult);
     expect(invokeMock).toHaveBeenCalledOnce();
     expect(invokeMock.mock.calls[0]?.[1]).toMatchObject({
@@ -2232,7 +2282,7 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
     await expect(
-      notesApplyBatch(vaultPath, { op: "delete", nodeIds: [] })
+      notesApplyBatch(vaultPath, { op: "delete", nodeIds: [] }, historyContext)
     ).rejects.toThrow("at least one node");
     expect(invokeMock).not.toHaveBeenCalled();
   });
@@ -2244,12 +2294,12 @@ describe("notesStore in Tauri", () => {
       notesApplyBatch(vaultPath, {
         op: "delete",
         nodeIds: [secondNodeId, nodeId, secondNodeId]
-      })
+      }, historyContext)
     ).resolves.toEqual(normalizedUnjournaledMutationResult);
     expect(invokeMock).toHaveBeenCalledWith("notes_apply_batch", {
       vaultPath,
       input: { op: "delete", nodeIds: [secondNodeId, nodeId] },
-      historyContext: null
+      historyContext
     });
   });
 
@@ -2280,7 +2330,11 @@ describe("notesStore in Tauri", () => {
       });
 
     await expect(
-      notesUpdateNode(vaultPath, { id: nodeId, title: "Invalid", note: "" })
+      notesUpdateNode(
+        vaultPath,
+        { id: nodeId, title: "Invalid", note: "" },
+        historyContext
+      )
     ).rejects.toMatchObject({
       message: "Notes mutation returned an invalid result.",
       operation: "write",
@@ -2313,22 +2367,22 @@ describe("notesStore in Tauri", () => {
     };
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(notesMoveNode(vaultPath, beforeInput)).resolves.toEqual(
+    await expect(notesMoveNode(vaultPath, beforeInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
-    await expect(notesMoveNode(vaultPath, legacyInput)).resolves.toEqual(
+    await expect(notesMoveNode(vaultPath, legacyInput, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, "notes_move_node", {
       vaultPath,
       input: beforeInput,
-      historyContext: null
+      historyContext
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, "notes_move_node", {
       vaultPath,
       input: legacyInput,
-      historyContext: null
+      historyContext
     });
   });
 
@@ -2371,7 +2425,7 @@ describe("notesStore in Tauri", () => {
         parentId: null,
         afterId: null,
         nodes: [{ title: "x", children: [] }]
-      })
+      }, historyContext)
     ).rejects.toMatchObject({
       message: "Notes mutation returned an invalid result.",
       operation: "write",
@@ -2389,14 +2443,14 @@ describe("notesStore in Tauri", () => {
   ] as const)("maps %s to the exact nodeId payload", async (command, adapter) => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toEqual(
+    await expect(adapter(vaultPath, nodeId, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
       vaultPath,
       nodeId,
-      historyContext: null
+      historyContext
     });
   });
 
@@ -2428,31 +2482,45 @@ describe("notesStore in Tauri", () => {
   ] as const)("maps %s to the exact root node payload", async (command, adapter) => {
     invokeMock.mockResolvedValue(unjournaledMutationResult);
 
-    await expect(adapter(vaultPath, nodeId)).resolves.toEqual(
+    await expect(adapter(vaultPath, nodeId, historyContext)).resolves.toEqual(
       normalizedUnjournaledMutationResult
     );
 
     expect(invokeMock).toHaveBeenCalledWith(command, {
       vaultPath,
       nodeId,
-      historyContext: null
+      historyContext
     });
   });
 
   it("passes explicit history context and exposes replay and status commands", async () => {
-    const replay: NotesHistoryReplayResult = {
+    const replay: NotesHistoryReplayOutcome = {
+      kind: "applied",
       workspace,
       replayedEntryId: historyContext.entryId,
-      canUndo: false,
-      canRedo: true
+      ...historyState()
     };
-    const status: NotesHistoryStatus = { canUndo: true, canRedo: false };
+    const status = historyState();
+    const replayRequest = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      expectedEntryId: historyContext.entryId,
+      scope: { kind: "active" as const }
+    };
+    const resetInput = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch
+    };
     invokeMock
       .mockResolvedValueOnce(mutationResult)
       .mockResolvedValueOnce(replay)
-      .mockResolvedValueOnce(replay)
+      .mockResolvedValueOnce({ kind: "entryNotNext", ...historyState() })
       .mockResolvedValueOnce(status)
-      .mockResolvedValueOnce({ canUndo: false, canRedo: false });
+      .mockResolvedValueOnce({
+        workspace,
+        historyReset: true,
+        ...historyState("epoch-b")
+      });
 
     await expect(
       notesUpdateNode(
@@ -2461,18 +2529,20 @@ describe("notesStore in Tauri", () => {
         historyContext
       )
     ).resolves.toEqual(normalizedMutationResult);
+    await expect(notesUndo(vaultPath, replayRequest)).resolves.toEqual({
+      ...replay,
+      workspace: normalizedWorkspace
+    });
     await expect(
-      notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
-    ).resolves.toEqual({ ...replay, workspace: normalizedWorkspace });
-    await expect(
-      notesRedo(vaultPath, historyContext.sessionId, { kind: "trash" })
-    ).resolves.toEqual({ ...replay, workspace: normalizedWorkspace });
+      notesRedo(vaultPath, { ...replayRequest, scope: { kind: "trash" } })
+    ).resolves.toEqual({ kind: "entryNotNext", ...historyState() });
     await expect(
       notesHistoryStatus(vaultPath, historyContext.sessionId)
     ).resolves.toBe(status);
-    await expect(
-      notesClearHistory(vaultPath, historyContext.sessionId)
-    ).resolves.toEqual({ canUndo: false, canRedo: false });
+    await expect(notesClearHistory(vaultPath, resetInput)).resolves.toEqual({
+      historyReset: true,
+      ...historyState("epoch-b")
+    });
 
     expect(invokeMock.mock.calls).toEqual([
       [
@@ -2487,20 +2557,21 @@ describe("notesStore in Tauri", () => {
         "notes_undo",
         {
           vaultPath,
-          sessionId: historyContext.sessionId,
-          scope: { kind: "active" }
+          input: replayRequest
         }
       ],
       [
         "notes_redo",
         {
           vaultPath,
-          sessionId: historyContext.sessionId,
-          scope: { kind: "trash" }
+          input: { ...replayRequest, scope: { kind: "trash" } }
         }
       ],
-      ["notes_history_status", { vaultPath, sessionId: historyContext.sessionId }],
-      ["notes_clear_history", { vaultPath, sessionId: historyContext.sessionId }]
+      [
+        "notes_history_status",
+        { vaultPath, sessionId: historyContext.sessionId }
+      ],
+      ["notes_clear_history", { vaultPath, input: resetInput }]
     ]);
   });
 
@@ -2511,6 +2582,7 @@ describe("notesStore in Tauri", () => {
     "rejects malformed attachment metadata returned by %s",
     async (_name, replayAdapter) => {
       invokeMock.mockResolvedValue({
+        kind: "applied",
         workspace: {
           ...workspaceWithAttachments,
           attachmentsByNodeId: {
@@ -2518,12 +2590,16 @@ describe("notesStore in Tauri", () => {
           }
         },
         replayedEntryId: historyContext.entryId,
-        canUndo: false,
-        canRedo: true
+        ...historyState()
       });
 
       await expect(
-        replayAdapter(vaultPath, historyContext.sessionId, { kind: "active" })
+        replayAdapter(vaultPath, {
+          sessionId: historyContext.sessionId,
+          historyEpoch: historyContext.historyEpoch,
+          expectedEntryId: historyContext.entryId,
+          scope: { kind: "active" }
+        })
       ).rejects.toMatchObject({
         message: "Notes history replay returned an invalid result.",
         operation: "write",
@@ -2536,7 +2612,12 @@ describe("notesStore in Tauri", () => {
     invokeMock.mockRejectedValue(new Error("Replay database is busy"));
 
     await expect(
-      notesUndo(vaultPath, historyContext.sessionId, { kind: "active" })
+      notesUndo(vaultPath, {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch,
+        expectedEntryId: historyContext.entryId,
+        scope: { kind: "active" }
+      })
     ).rejects.toMatchObject({
       message: "Replay database is busy",
       operation: "write",
@@ -2544,24 +2625,123 @@ describe("notesStore in Tauri", () => {
     });
   });
 
-  it("empties trash with only the vault path", async () => {
-    invokeMock.mockResolvedValue(workspace);
+  it("rejects an applied replay without an exact history state", async () => {
+    invokeMock.mockResolvedValue({ kind: "applied", workspace });
 
-    await expect(notesEmptyTrash(vaultPath)).resolves.toEqual(normalizedWorkspace);
+    await expect(
+      notesUndo(vaultPath, {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch,
+        expectedEntryId: historyContext.entryId,
+        scope: { kind: "active" }
+      })
+    ).rejects.toMatchObject({
+      message: "Notes history replay returned an invalid result.",
+      operation: "write",
+      retryable: false
+    });
+  });
 
-    expect(invokeMock).toHaveBeenCalledWith("notes_empty_trash", { vaultPath });
+  it("sends navigation preparation and pruning as camelCase request inputs", async () => {
+    const navigationInput = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      unreachableRedoEntryIds: [historyContext.entryId]
+    };
+    const pruneInput = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      entryIds: [historyContext.entryId]
+    };
+    invokeMock.mockResolvedValue(historyState());
+
+    await expect(
+      notesPrepareNavigation(vaultPath, navigationInput)
+    ).resolves.toEqual(historyState());
+    await expect(
+      notesPruneHistoryEntries(vaultPath, pruneInput)
+    ).resolves.toEqual(historyState());
+
+    expect(invokeMock.mock.calls).toEqual([
+      ["notes_prepare_navigation", { vaultPath, input: navigationInput }],
+      ["notes_prune_history_entries", { vaultPath, input: pruneInput }]
+    ]);
+  });
+
+  it("validates pruned history state and closes the exact epoch session", async () => {
+    const pruneInput = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch,
+      entryIds: [historyContext.entryId]
+    };
+    const { nextRedoEntryId: _missingNextRedoEntryId, ...invalid } =
+      historyState();
+    invokeMock.mockResolvedValueOnce(invalid).mockResolvedValueOnce(undefined);
+
+    await expect(
+      notesPruneHistoryEntries(vaultPath, pruneInput)
+    ).rejects.toMatchObject({
+      message: "Notes history operation returned an invalid state.",
+      operation: "write",
+      retryable: false
+    });
+    await expect(
+      notesCloseHistorySession(vaultPath, {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch
+      })
+    ).resolves.toBeUndefined();
+    expect(invokeMock).toHaveBeenLastCalledWith("notes_close_history_session", {
+      vaultPath,
+      input: {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch
+      }
+    });
+  });
+
+  it("empties trash with an epoch reset request", async () => {
+    const input = {
+      sessionId: historyContext.sessionId,
+      historyEpoch: historyContext.historyEpoch
+    };
+    invokeMock.mockResolvedValue({
+      workspace,
+      historyReset: true,
+      ...historyState("epoch-b")
+    });
+
+    await expect(notesEmptyTrash(vaultPath, input)).resolves.toEqual({
+      workspace: normalizedWorkspace,
+      historyReset: true,
+      ...historyState("epoch-b")
+    });
+
+    expect(invokeMock).toHaveBeenCalledWith("notes_empty_trash", {
+      vaultPath,
+      input
+    });
   });
 
   it("rejects malformed empty-trash workspaces with a non-retryable write error", async () => {
     invokeMock.mockResolvedValue({
-      ...workspaceWithAttachments,
-      attachmentsByNodeId: {
-        [secondNodeId]: [{ ...attachment, nodeId: secondNodeId }]
-      }
+      workspace: {
+        ...workspaceWithAttachments,
+        attachmentsByNodeId: {
+          [secondNodeId]: [{ ...attachment, nodeId: secondNodeId }]
+        }
+      },
+      historyReset: true,
+      ...historyState("epoch-b")
     });
 
-    await expect(notesEmptyTrash(vaultPath)).rejects.toMatchObject({
-      message: "Notes empty trash returned an invalid workspace.",
+    await expect(
+      notesEmptyTrash(vaultPath, {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch
+      })
+    ).rejects.toMatchObject({
+      message: "Notes empty trash returned an invalid reset result.",
       operation: "write",
       retryable: false
     });
@@ -2570,7 +2750,12 @@ describe("notesStore in Tauri", () => {
   it("maps native empty-trash failures to retryable write errors", async () => {
     invokeMock.mockRejectedValue(new Error("Trash database is busy"));
 
-    await expect(notesEmptyTrash(vaultPath)).rejects.toMatchObject({
+    await expect(
+      notesEmptyTrash(vaultPath, {
+        sessionId: historyContext.sessionId,
+        historyEpoch: historyContext.historyEpoch
+      })
+    ).rejects.toMatchObject({
       message: "Trash database is busy",
       operation: "write",
       retryable: true

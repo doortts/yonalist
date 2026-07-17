@@ -48,8 +48,16 @@ function workspace(nodes: NoteNode[]): NotesWorkspace {
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
+  const initialHistoryState = {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
   return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn().mockResolvedValue(initialHistoryState),
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
@@ -78,6 +86,13 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
       canUndo: false,
       canRedo: false
     }),
+    clearHistory: vi.fn().mockResolvedValue({
+      ...initialHistoryState,
+      historyReset: true
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue(initialHistoryState),
+    prepareNavigation: vi.fn().mockResolvedValue(initialHistoryState),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),

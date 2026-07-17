@@ -8,6 +8,7 @@ import {
 } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isNotesMutationResult,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
   MAX_NOTE_IMAGE_NODE_IMPORT_BATCH_ITEMS,
@@ -15,6 +16,9 @@ import {
   type NoteAttachment,
   type NoteNode,
   type NotesHistoryContext,
+  type NotesHistoryReplayOutcome,
+  type NotesHistoryState,
+  type NotesMutationResponse,
   type NotesMutationResult,
   type NotesStore,
   type NotesWorkspace,
@@ -58,27 +62,22 @@ vi.mock("./notesHistory", async (importOriginal) => {
       options?: Parameters<typeof actual.createNotesHistorySession>[0]
     ) => {
       const session = actual.createNotesHistorySession(options);
-      return {
-        ...session,
-        beginStructuralEntry(
-          commandKind: string,
-          before: Parameters<typeof session.beginStructuralEntry>[1]
-        ) {
-          notesHistorySpies.beginStructural(commandKind, before);
-          return session.beginStructuralEntry(commandKind, before);
-        },
-        discard(entryId: string) {
-          notesHistorySpies.discard(entryId);
-          session.discard(entryId);
-        },
-        rememberAfter(
-          entryId: string,
-          after: Parameters<typeof session.rememberAfter>[1]
-        ) {
-          notesHistorySpies.rememberAfter(entryId, after);
-          session.rememberAfter(entryId, after);
-        }
+      const beginStructuralEntry = session.beginStructuralEntry.bind(session);
+      const discard = session.discard.bind(session);
+      const rememberAfter = session.rememberAfter.bind(session);
+      session.beginStructuralEntry = (commandKind, before) => {
+        notesHistorySpies.beginStructural(commandKind, before);
+        return beginStructuralEntry(commandKind, before);
       };
+      session.discard = (entryId) => {
+        notesHistorySpies.discard(entryId);
+        discard(entryId);
+      };
+      session.rememberAfter = (entryId, after) => {
+        notesHistorySpies.rememberAfter(entryId, after);
+        rememberAfter(entryId, after);
+      };
+      return session;
     }
   };
 });
@@ -105,6 +104,105 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
 
 function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
+}
+
+function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch,
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
+}
+
+function mutationResult(
+  resultWorkspace: NotesWorkspace,
+  context: NotesHistoryContext
+): NotesMutationResult {
+  return {
+    workspace: resultWorkspace,
+    historyEntryId: context.entryId,
+    ...historyState(context.historyEpoch),
+    canUndo: true,
+    nextUndoEntryId: context.entryId
+  };
+}
+
+function appliedReplay(
+  resultWorkspace: NotesWorkspace,
+  replayedEntryId: string | null,
+  direction: "undo" | "redo"
+): NotesHistoryReplayOutcome {
+  if (replayedEntryId === null) {
+    throw new Error("Applied replay fixtures require an entry ID.");
+  }
+  return {
+    kind: "applied",
+    workspace: resultWorkspace,
+    replayedEntryId,
+    ...historyState(),
+    canUndo: direction === "redo",
+    canRedo: direction === "undo",
+    nextUndoEntryId: direction === "redo" ? replayedEntryId : null,
+    nextRedoEntryId: direction === "undo" ? replayedEntryId : null
+  };
+}
+
+function withEpochAwareMutation<
+  TArgument,
+  TResult extends NotesMutationResponse
+>(
+  operation: (
+    vaultRoot: string,
+    input: TArgument,
+    context: NotesHistoryContext
+  ) => Promise<TResult>
+): (
+  vaultRoot: string,
+  input: TArgument,
+  context: NotesHistoryContext
+) => Promise<TResult> {
+  return vi.fn(async (vaultRoot, input, context): Promise<TResult> => {
+    const result = await operation(vaultRoot, input, context);
+    if (
+      isNotesMutationResult(result) &&
+      result.canUndo &&
+      result.nextUndoEntryId === null &&
+      result.historyEntryId === context.entryId
+    ) {
+      return { ...result, nextUndoEntryId: context.entryId };
+    }
+    return result;
+  });
+}
+
+function withEpochAwareReplay(
+  direction: "undo" | "redo",
+  operation: NonNullable<NotesStore["undo"]>
+): NonNullable<NotesStore["undo"]> {
+  return vi.fn(async (vaultRoot, input) => {
+    const result = await operation(vaultRoot, input);
+    if (result.kind !== "applied") {
+      return result;
+    }
+    if (
+      direction === "undo" &&
+      result.canRedo &&
+      result.nextRedoEntryId === null
+    ) {
+      return { ...result, nextRedoEntryId: result.replayedEntryId };
+    }
+    if (
+      direction === "redo" &&
+      result.canUndo &&
+      result.nextUndoEntryId === null
+    ) {
+      return { ...result, nextUndoEntryId: result.replayedEntryId };
+    }
+    return result;
+  });
 }
 
 function attachment(
@@ -174,8 +272,8 @@ function suspenseMode({ children }: PropsWithChildren) {
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
-  return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+  const store: NotesStore = {
+    initialize: vi.fn().mockResolvedValue(historyState()),
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
@@ -193,33 +291,91 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     archiveNode: empty,
     unarchiveNode: empty,
     undo: vi.fn().mockResolvedValue({
-      workspace: workspace([]),
-      replayedEntryId: null,
-      canUndo: false,
-      canRedo: false
+      kind: "entryMissing",
+      ...historyState()
     }),
     redo: vi.fn().mockResolvedValue({
-      workspace: workspace([]),
-      replayedEntryId: null,
-      canUndo: false,
-      canRedo: false
+      kind: "entryMissing",
+      ...historyState()
     }),
+    clearHistory: vi.fn().mockResolvedValue({
+      ...historyState(),
+      historyReset: true
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue(historyState()),
+    prepareNavigation: vi.fn().mockResolvedValue(historyState()),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
     listTagsWithCounts: vi.fn().mockResolvedValue([]),
-    deleteDatabase: vi.fn().mockResolvedValue({ attachmentCleanupFailed: false }),
+    deleteDatabase: vi
+      .fn()
+      .mockResolvedValue({ attachmentCleanupFailed: false }),
     importAttachmentPaths: vi.fn().mockResolvedValue(workspace([])),
     importAttachmentBytes: vi.fn().mockResolvedValue(workspace([])),
     importImageNodePaths: vi.fn().mockResolvedValue(workspace([])),
     importImageNodeBytes: vi.fn().mockResolvedValue(workspace([])),
     ...overrides
   };
+  return {
+    ...store,
+    createNode: withEpochAwareMutation(store.createNode),
+    updateNode: withEpochAwareMutation(store.updateNode),
+    splitNode: withEpochAwareMutation(store.splitNode),
+    moveNode: withEpochAwareMutation(store.moveNode),
+    applyBatch: withEpochAwareMutation(store.applyBatch),
+    importSubtree: withEpochAwareMutation(store.importSubtree),
+    toggleComplete: withEpochAwareMutation(store.toggleComplete),
+    toggleCollapsed: withEpochAwareMutation(store.toggleCollapsed),
+    toggleStar: withEpochAwareMutation(store.toggleStar),
+    duplicateNode: withEpochAwareMutation(store.duplicateNode),
+    removeEmptyNode: withEpochAwareMutation(store.removeEmptyNode),
+    softDeleteNode: withEpochAwareMutation(store.softDeleteNode),
+    restoreNode: withEpochAwareMutation(store.restoreNode),
+    archiveNode: withEpochAwareMutation(store.archiveNode),
+    unarchiveNode: withEpochAwareMutation(store.unarchiveNode),
+    undo: withEpochAwareReplay("undo", store.undo),
+    redo: withEpochAwareReplay("redo", store.redo),
+    importAttachment: store.importAttachment
+      ? withEpochAwareMutation(store.importAttachment)
+      : undefined,
+    importAttachmentPaths: withEpochAwareMutation(store.importAttachmentPaths),
+    importAttachmentBytes: withEpochAwareMutation(store.importAttachmentBytes),
+    importImageNodePaths: store.importImageNodePaths
+      ? withEpochAwareMutation(store.importImageNodePaths)
+      : undefined,
+    importImageNodeBytes: store.importImageNodeBytes
+      ? withEpochAwareMutation(store.importImageNodeBytes)
+      : undefined,
+    resizeAttachment: store.resizeAttachment
+      ? withEpochAwareMutation(store.resizeAttachment)
+      : undefined,
+    removeAttachment: store.removeAttachment
+      ? withEpochAwareMutation(store.removeAttachment)
+      : undefined,
+    restoreAttachment: store.restoreAttachment
+      ? withEpochAwareMutation(store.restoreAttachment)
+      : undefined,
+    expandAll: store.expandAll
+      ? withEpochAwareMutation(store.expandAll)
+      : undefined,
+    collapseAll: store.collapseAll
+      ? withEpochAwareMutation(store.collapseAll)
+      : undefined,
+    sortSubtreeAscending: store.sortSubtreeAscending
+      ? withEpochAwareMutation(store.sortSubtreeAscending)
+      : undefined,
+    sortSubtreeDescending: store.sortSubtreeDescending
+      ? withEpochAwareMutation(store.sortSubtreeDescending)
+      : undefined
+  };
 }
 
 function historyContext(commandKind: string) {
   return expect.objectContaining({
     sessionId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+    historyEpoch: "epoch-a",
     entryId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
     commandKind
   });
@@ -347,6 +503,7 @@ describe("useNotesWorkspace", () => {
             attachmentsByNodeId: importedAttachments
           },
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [firstNodeId, secondNodeId]
@@ -457,6 +614,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: importedWorkspace,
           historyEntryId: importedEntryId,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [firstNodeId, secondNodeId]
@@ -466,12 +624,16 @@ describe("useNotesWorkspace", () => {
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: initialWorkspace,
       replayedEntryId: importedEntryId,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
     const redo = vi.fn().mockImplementation(async () => ({
       workspace: importedWorkspace,
       replayedEntryId: importedEntryId,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: true,
       canRedo: false
     }));
@@ -543,9 +705,13 @@ describe("useNotesWorkspace", () => {
 
     expect(undo).toHaveBeenCalledOnce();
     expect(undo).toHaveBeenCalledWith(
-      "/vault",
+      "/vault", {
+      sessionId:
       importContext?.sessionId,
-      { kind: "active" }
+      historyEpoch: "epoch-a",
+      expectedEntryId: importContext?.entryId,
+      scope:
+      { kind: "active" } }
     );
     expect(result.current.state.rootIds).toEqual([root.id]);
     expect(result.current.state.nodesById[firstNodeId]).toBeUndefined();
@@ -561,9 +727,13 @@ describe("useNotesWorkspace", () => {
 
     expect(redo).toHaveBeenCalledOnce();
     expect(redo).toHaveBeenCalledWith(
-      "/vault",
+      "/vault", {
+      sessionId:
       importContext?.sessionId,
-      { kind: "active" }
+      historyEpoch: "epoch-a",
+      expectedEntryId: importContext?.entryId,
+      scope:
+      { kind: "active" } }
     );
     expect(result.current.state.rootIds).toEqual([
       root.id,
@@ -600,6 +770,7 @@ describe("useNotesWorkspace", () => {
       async (_vaultRoot, _input, context) => ({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [ids[0], ids[2]]
@@ -653,6 +824,7 @@ describe("useNotesWorkspace", () => {
       async (_vaultRoot, _input, context) => ({
         workspace: workspace([root]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: ["21000000-0000-4000-8000-000000000001"]
@@ -810,6 +982,7 @@ describe("useNotesWorkspace", () => {
     move.resolve({
       workspace: workspace([parentA, parentB, movedTarget]),
       historyEntryId: vi.mocked(store.moveNode).mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -1078,6 +1251,7 @@ describe("useNotesWorkspace", () => {
       async (_vaultRoot, _input, context) => ({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [ids[0], ids[2]]
@@ -1352,6 +1526,7 @@ describe("useNotesWorkspace", () => {
           )
         ]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: input.items.map((item) => item.nodeId)
@@ -1493,6 +1668,7 @@ describe("useNotesWorkspace", () => {
         return Promise.resolve({
           workspace: workspace([node({ id: "root" })]),
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         });
@@ -1554,6 +1730,7 @@ describe("useNotesWorkspace", () => {
       pendingImport.resolve({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       });
@@ -1595,6 +1772,7 @@ describe("useNotesWorkspace", () => {
       ) => ({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [vaultRoot === "/vault-b" ? "imported-b" : "imported-a"]
@@ -1690,6 +1868,7 @@ describe("useNotesWorkspace", () => {
       ) => ({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -1794,6 +1973,7 @@ describe("useNotesWorkspace", () => {
         return Promise.resolve({
           workspace: workspace([node({ id: "root" })]),
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         });
@@ -1857,6 +2037,7 @@ describe("useNotesWorkspace", () => {
     firstImport.resolve({
       workspace: workspace([node({ id: "root" })]),
       historyEntryId: firstContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -1921,6 +2102,7 @@ describe("useNotesWorkspace", () => {
           }
         },
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [ids[0], ids[2]]
@@ -1992,6 +2174,7 @@ describe("useNotesWorkspace", () => {
         const result = (importedRootIds: string[]): NotesMutationResult => ({
           workspace: backendWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds
@@ -2220,6 +2403,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: backendWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: importedIds
@@ -2355,6 +2539,7 @@ describe("useNotesWorkspace", () => {
         return Promise.resolve({
           workspace: backendWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: importedIds
@@ -2472,6 +2657,7 @@ describe("useNotesWorkspace", () => {
       .mockImplementation(async (_vaultRoot, _input, context) => ({
         workspace: workspace([node({ id: "root" })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [nodeId]
@@ -2615,6 +2801,7 @@ describe("useNotesWorkspace", () => {
         }
       },
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: ["60000000-0000-4000-8000-000000000001"]
@@ -2722,6 +2909,7 @@ describe("useNotesWorkspace", () => {
             attachmentsByNodeId: { [imageNodeId]: [imported] }
           },
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [imageNodeId]
@@ -2787,6 +2975,7 @@ describe("useNotesWorkspace", () => {
           attachmentsByNodeId: { [imageNodeId]: [imported] }
         },
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [imageNodeId]
@@ -2846,6 +3035,7 @@ describe("useNotesWorkspace", () => {
       .mockImplementation(async (_vaultRoot, _input, context) => ({
         workspace: workspace([root]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: []
@@ -2872,6 +3062,7 @@ describe("useNotesWorkspace", () => {
     firstImport.resolve({
       workspace: { nodes: [root], attachmentsByNodeId: {} },
       historyEntryId: null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -2958,6 +3149,7 @@ describe("useNotesWorkspace", () => {
           }
         },
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [ids[2]]
@@ -2986,6 +3178,7 @@ describe("useNotesWorkspace", () => {
         attachmentsByNodeId: { [ids[0]]: [firstAttachment] }
       },
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [ids[0]]
@@ -3100,6 +3293,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [ids[2]!]
@@ -3117,6 +3311,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [ids[4]!]
@@ -3185,6 +3380,7 @@ describe("useNotesWorkspace", () => {
     firstImport.resolve({
       workspace: activeWorkspace,
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [ids[0]!]
@@ -3343,6 +3539,7 @@ describe("useNotesWorkspace", () => {
           return {
             workspace: activeWorkspace,
             historyEntryId: context?.entryId ?? null,
+            ...historyState(),
             canUndo: true,
             canRedo: false,
             importedRootIds: [ids[2]!]
@@ -3368,6 +3565,7 @@ describe("useNotesWorkspace", () => {
           return {
             workspace: activeWorkspace,
             historyEntryId: context?.entryId ?? null,
+            ...historyState(),
             canUndo: true,
             canRedo: false,
             importedRootIds: [ids[4]!]
@@ -3415,6 +3613,7 @@ describe("useNotesWorkspace", () => {
         workspace: activeWorkspace,
         historyEntryId:
           importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [ids[0]!]
@@ -3579,6 +3778,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [ids[2]]
@@ -3596,6 +3796,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [ids[4]]
@@ -3640,6 +3841,7 @@ describe("useNotesWorkspace", () => {
     firstImport.resolve({
       workspace: activeWorkspace,
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [ids[0]]
@@ -3730,6 +3932,7 @@ describe("useNotesWorkspace", () => {
         attachmentsByNodeId: { [imageNodeId]: [importedAttachment] }
       },
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [imageNodeId]
@@ -3852,6 +4055,7 @@ describe("useNotesWorkspace", () => {
           ]
         },
         historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [imageNodeId]
@@ -3993,6 +4197,7 @@ describe("useNotesWorkspace", () => {
         attachmentsByNodeId: { [imageNodeId]: [importedAttachment] }
       },
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [imageNodeId]
@@ -4152,6 +4357,7 @@ describe("useNotesWorkspace", () => {
           },
           historyEntryId:
             importImageNodePaths.mock.calls[1]?.[2]?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [imageNodeId]
@@ -4241,6 +4447,7 @@ describe("useNotesWorkspace", () => {
         ]
       },
       historyEntryId: importImageNodePaths.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: [imageNodeId]
@@ -4287,6 +4494,7 @@ describe("useNotesWorkspace", () => {
           })
         ]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [input.items[0]!.nodeId]
@@ -4295,6 +4503,7 @@ describe("useNotesWorkspace", () => {
       .mockImplementation(async (_vaultRoot, _input, context) => ({
         workspace: workspace([root]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: []
@@ -4348,6 +4557,7 @@ describe("useNotesWorkspace", () => {
       },
       historyEntryId:
         importImageNodePaths.mock.calls[2]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: []
@@ -4427,6 +4637,7 @@ describe("useNotesWorkspace", () => {
           })
         ]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: [input.items[0]!.nodeId]
@@ -4439,6 +4650,7 @@ describe("useNotesWorkspace", () => {
           attachmentsByNodeId: { [root.id]: [imported] }
         },
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: []
@@ -4500,6 +4712,7 @@ describe("useNotesWorkspace", () => {
         attachmentsByNodeId: { [root.id]: [imported] }
       },
       historyEntryId: importImageNodePaths.mock.calls[3]?.[2]?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false,
       importedRootIds: []
@@ -4659,6 +4872,7 @@ describe("useNotesWorkspace", () => {
           attachmentsByNodeId: { [root.id]: [resized] }
         },
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -4712,6 +4926,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: withoutImage,
           historyEntryId,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         };
@@ -4723,12 +4938,16 @@ describe("useNotesWorkspace", () => {
       undo: vi.fn().mockImplementation(async () => ({
         workspace: withImage,
         replayedEntryId: historyEntryId,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       })),
       redo: vi.fn().mockImplementation(async () => ({
         workspace: withoutImage,
         replayedEntryId: historyEntryId,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: true,
         canRedo: false
       }))
@@ -4988,6 +5207,7 @@ describe("useNotesWorkspace", () => {
         async (_vaultRoot, _input, context) => ({
           workspace: updated,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: [imageNodeId]
@@ -5079,7 +5299,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("exposes loading on the first render before the workspace effect runs", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise)
     });
@@ -5095,14 +5315,14 @@ describe("useNotesWorkspace", () => {
 
     expect(renderedStatuses[0]).toBe("loading");
 
-    await act(async () => initialization.resolve());
+    await act(async () => initialization.resolve(historyState()));
     await waitFor(() => expect(result.current.status).toBe("ready"));
   });
 
   it.each(["layout", "passive"] as const)(
     "flushes a child %s-effect command through the session after loading",
     async (effect) => {
-      const initialization = deferred<void>();
+      const initialization = deferred<ReturnType<typeof historyState>>();
       createNoteIdMock.mockReturnValue("pre-session-root");
       const store = repository({
         initialize: vi.fn().mockReturnValue(initialization.promise),
@@ -5127,7 +5347,7 @@ describe("useNotesWorkspace", () => {
 
       expect(store.createNode).not.toHaveBeenCalled();
 
-      await act(async () => initialization.resolve());
+      await act(async () => initialization.resolve(historyState()));
       await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
       await act(async () => Promise.all(completions));
 
@@ -5150,7 +5370,7 @@ describe("useNotesWorkspace", () => {
   );
 
   it("does not duplicate a buffered child command during StrictMode replay", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     createNoteIdMock.mockReturnValue("strict-root");
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise),
@@ -5174,7 +5394,7 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(store.initialize).toHaveBeenCalledOnce();
-    await act(async () => initialization.resolve());
+    await act(async () => initialization.resolve(historyState()));
     await waitFor(() => expect(store.createNode).toHaveBeenCalledOnce());
     await act(async () => Promise.all(completions));
 
@@ -5183,11 +5403,11 @@ describe("useNotesWorkspace", () => {
   });
 
   it("routes a child layout-effect command after a vault change only to the new vault", async () => {
-    const oldInitialization = deferred<void>();
+    const oldInitialization = deferred<ReturnType<typeof historyState>>();
     createNoteIdMock.mockReturnValue("new-vault-root");
     const store = repository({
       initialize: vi.fn((vaultRoot) =>
-        vaultRoot === "/old" ? oldInitialization.promise : Promise.resolve()
+        vaultRoot === "/old" ? oldInitialization.promise : Promise.resolve(historyState())
       ),
       loadWorkspace: vi.fn().mockResolvedValue(workspace([])),
       createNode: vi
@@ -5222,7 +5442,7 @@ describe("useNotesWorkspace", () => {
       historyContext("create")
     );
 
-    await act(async () => oldInitialization.resolve());
+    await act(async () => oldInitialization.resolve(historyState()));
     await act(async () => Promise.all(completions));
     expect(store.createNode).toHaveBeenCalledOnce();
   });
@@ -5235,7 +5455,8 @@ describe("useNotesWorkspace", () => {
     );
 
     await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
-    expect(store.initialize).toHaveBeenCalledWith("/vault-a");
+    expect(store.initialize).toHaveBeenCalledWith("/vault-a",
+      expect.objectContaining({ sessionId: expect.any(String) }));
     expect(store.loadWorkspace).toHaveBeenCalledWith("/vault-a", { kind: "active" });
 
     rerender({ vaultRoot: "/vault-a", repository: store });
@@ -5243,11 +5464,12 @@ describe("useNotesWorkspace", () => {
 
     rerender({ vaultRoot: "/vault-b", repository: store });
     await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledTimes(2));
-    expect(store.initialize).toHaveBeenLastCalledWith("/vault-b");
+    expect(store.initialize).toHaveBeenLastCalledWith("/vault-b",
+      expect.objectContaining({ sessionId: expect.any(String) }));
   });
 
   it("deduplicates initialization and loading during StrictMode effect replay", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise)
     });
@@ -5258,7 +5480,7 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(store.initialize).toHaveBeenCalledOnce();
-    await act(async () => initialization.resolve());
+    await act(async () => initialization.resolve(historyState()));
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(store.loadWorkspace).toHaveBeenCalledOnce();
   });
@@ -5290,7 +5512,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("runs a command only after initialization and loading, then retains the loaded tree on failure", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise),
       loadWorkspace: vi
@@ -5317,7 +5539,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).not.toHaveBeenCalled();
     expect(store.loadWorkspace).not.toHaveBeenCalled();
 
-    await act(async () => initialization.resolve());
+    await act(async () => initialization.resolve(historyState()));
     await waitFor(() => expect(store.loadWorkspace).toHaveBeenCalledOnce());
     await act(async () => {
       await completion;
@@ -5332,7 +5554,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("invokes initialization, loading, and commands in FIFO order", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     const initialLoad = deferred<NotesWorkspace>();
     const firstCommand = deferred<NotesWorkspace>();
     const secondCommand = deferred<NotesWorkspace>();
@@ -5373,7 +5595,7 @@ describe("useNotesWorkspace", () => {
 
     expect(invocations).toEqual(["initialize"]);
 
-    await act(async () => initialization.resolve());
+    await act(async () => initialization.resolve(historyState()));
     expect(invocations).toEqual(["initialize", "load"]);
 
     await act(async () =>
@@ -5506,6 +5728,7 @@ describe("useNotesWorkspace", () => {
       Promise.resolve({
         workspace: saved,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -5534,7 +5757,7 @@ describe("useNotesWorkspace", () => {
     );
 
     expect(store.updateNode).toHaveBeenCalledOnce();
-    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(historyStatus).not.toHaveBeenCalled();
     expect(store.splitNode).toHaveBeenCalledWith(
       "/vault",
       {
@@ -5568,6 +5791,7 @@ describe("useNotesWorkspace", () => {
       Promise.resolve({
         workspace: updated,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -5581,13 +5805,13 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/atomic-result", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
-    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(historyStatus).not.toHaveBeenCalled();
 
     await act(async () =>
       result.current.actions.updateNode("root", { title: "Updated", note: "" })
     );
 
-    expect(historyStatus).toHaveBeenCalledOnce();
+    expect(historyStatus).not.toHaveBeenCalled();
     expect(result.current.state.nodesById.root.title).toBe("Updated");
     expect(result.current).toMatchObject({ canUndo: true, canRedo: false });
   });
@@ -5624,6 +5848,7 @@ describe("useNotesWorkspace", () => {
       const updateNode = vi.fn().mockResolvedValue({
         workspace: inlineWorkspace,
         historyEntryId: null,
+        ...historyState(),
         canUndo: false,
         canRedo: false
       });
@@ -5631,6 +5856,7 @@ describe("useNotesWorkspace", () => {
         Promise.resolve({
           workspace: finalWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         })
@@ -5638,6 +5864,8 @@ describe("useNotesWorkspace", () => {
       const undo = vi.fn(async () => ({
         workspace: finalWorkspace,
         replayedEntryId: updateNode.mock.calls[0]?.[2]?.entryId ?? null,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       }));
@@ -5714,16 +5942,19 @@ describe("useNotesWorkspace", () => {
         archivedAt: "2026-07-11T00:00:00Z"
       })
     ]);
-    const updateNode = vi.fn().mockResolvedValue(saved);
+    const updateNode = vi.fn(async (_vaultRoot, _input, context) =>
+      mutationResult(saved, context)
+    );
     const loadWorkspace = vi.fn((_vaultRoot, scope) =>
       Promise.resolve(scope?.kind === "archive" ? archived : active)
     );
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: active,
-      replayedEntryId: updateNode.mock.calls[0]?.[2]?.entryId ?? null,
-      canUndo: false,
-      canRedo: true
-    }));
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        active,
+        updateNode.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace,
       updateNode,
@@ -5854,7 +6085,7 @@ describe("useNotesWorkspace", () => {
   });
 
   it("does not launch loading or queued commands after unmount during initialization", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<ReturnType<typeof historyState>>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise)
     });
@@ -5871,7 +6102,7 @@ describe("useNotesWorkspace", () => {
     });
     unmount();
     await act(async () => {
-      initialization.resolve();
+      initialization.resolve(historyState());
       await completion;
     });
 
@@ -6123,13 +6354,16 @@ describe("useNotesWorkspace", () => {
       node({ id: "moving", sortKey: 2048 }),
       node({ id: "other", sortKey: 3072 })
     ]);
-    const toggleCollapsed = vi.fn().mockResolvedValue(expanded);
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: initial,
-      replayedEntryId: toggleCollapsed.mock.calls[0]?.[2]?.entryId ?? null,
-      canUndo: false,
-      canRedo: true
-    }));
+    const toggleCollapsed = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(expanded, context)
+    );
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        initial,
+        toggleCollapsed.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       toggleCollapsed,
@@ -6398,19 +6632,21 @@ describe("useNotesWorkspace", () => {
     ]);
     const activeReload = deferred<NotesWorkspace>();
     let activeLoads = 0;
-    const createNode = vi.fn().mockResolvedValue(
-      workspace([
-        node({ id: "root" }),
-        node({ id: "other", sortKey: 2048 }),
-        node({ id: "created", sortKey: 3072 })
-      ])
+    const createdWorkspace = workspace([
+      node({ id: "root" }),
+      node({ id: "other", sortKey: 2048 }),
+      node({ id: "created", sortKey: 3072 })
+    ]);
+    const createNode = vi.fn(async (_vaultRoot, _input, context) =>
+      mutationResult(createdWorkspace, context)
     );
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: initial,
-      replayedEntryId: createNode.mock.calls[0]?.[2]?.entryId ?? null,
-      canUndo: false,
-      canRedo: true
-    }));
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        initial,
+        createNode.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace: vi.fn((_vaultRoot, scope) => {
         if (scope?.kind === "active") {
@@ -6716,6 +6952,7 @@ describe("useNotesWorkspace", () => {
         async (_vaultRoot, _nodeId, context) => ({
           workspace: after,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         })
@@ -6723,6 +6960,8 @@ describe("useNotesWorkspace", () => {
       const undo = vi.fn().mockImplementation(async () => ({
         workspace: before,
         replayedEntryId: atomic.mock.calls[0]?.[2]?.entryId ?? null,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       }));
@@ -6776,6 +7015,7 @@ describe("useNotesWorkspace", () => {
     const atomic = vi.fn().mockResolvedValue({
       workspace: initial,
       historyEntryId: null,
+        ...historyState(),
       canUndo: false,
       canRedo: false
     });
@@ -6809,6 +7049,7 @@ describe("useNotesWorkspace", () => {
       async (_vaultRoot, _input, context) => ({
         workspace: moved,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -6816,6 +7057,8 @@ describe("useNotesWorkspace", () => {
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: initial,
       replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
@@ -6871,6 +7114,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: moved,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         };
@@ -6879,6 +7123,8 @@ describe("useNotesWorkspace", () => {
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: initial,
       replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
@@ -6905,9 +7151,15 @@ describe("useNotesWorkspace", () => {
       "child",
       "inbox"
     ]);
-    const outcome = await result.current.commitPreparedMove!(prepared, null);
 
-    expect(outcome).toEqual({ ok: true });
+    let outcome: Awaited<
+      ReturnType<NonNullable<typeof result.current.commitPreparedMove>>
+    >;
+    await act(async () => {
+      outcome = await result.current.commitPreparedMove!(prepared, null);
+    });
+
+    expect(outcome!).toEqual({ ok: true });
     expect(moveNode).toHaveBeenCalledOnce();
     expect(moveNode).toHaveBeenCalledWith(
       "/prepared-root",
@@ -7005,6 +7257,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         };
@@ -7041,6 +7294,7 @@ describe("useNotesWorkspace", () => {
     earlier.resolve({
       workspace: sourceMoved,
       historyEntryId: earlierContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7078,6 +7332,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         };
@@ -7112,6 +7367,7 @@ describe("useNotesWorkspace", () => {
     earlier.resolve({
       workspace: targetMoved,
       historyEntryId: earlierContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7137,6 +7393,7 @@ describe("useNotesWorkspace", () => {
     const moveNode = vi.fn().mockResolvedValue({
       workspace: targetRemoved,
       historyEntryId: null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7163,6 +7420,7 @@ describe("useNotesWorkspace", () => {
     earlier.resolve({
       workspace: targetRemoved,
       historyEntryId: earlierContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7192,6 +7450,7 @@ describe("useNotesWorkspace", () => {
         return {
           workspace: activeWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         };
@@ -7223,6 +7482,7 @@ describe("useNotesWorkspace", () => {
     earlier.resolve({
       workspace: initial,
       historyEntryId: earlierContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7276,6 +7536,7 @@ describe("useNotesWorkspace", () => {
     earlier.resolve({
       workspace: initial,
       historyEntryId: earlierContext?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -7305,6 +7566,8 @@ describe("useNotesWorkspace", () => {
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: initial,
       replayedEntryId: moveNode.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
@@ -7326,10 +7589,13 @@ describe("useNotesWorkspace", () => {
     pendingMove.resolve({
       workspace: moved,
       historyEntryId: context?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
-    expect(await completion).toEqual({ ok: true });
+    await act(async () => {
+      await expect(completion).resolves.toEqual({ ok: true });
+    });
 
     await act(async () => result.current.actions.undo!());
     expect(moveNode).toHaveBeenCalledOnce();
@@ -7349,6 +7615,7 @@ describe("useNotesWorkspace", () => {
       async (_vaultRoot, _nodeId, context) => ({
         workspace: expanded,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -7387,6 +7654,7 @@ describe("useNotesWorkspace", () => {
     const collapseAll = vi.fn().mockResolvedValue({
       workspace: collapsed,
       historyEntryId: null,
+      ...historyState(),
       canUndo: false,
       canRedo: false
     });
@@ -7511,6 +7779,7 @@ describe("useNotesWorkspace", () => {
         Promise.resolve({
           workspace: atomicWorkspace,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         })
@@ -7521,6 +7790,8 @@ describe("useNotesWorkspace", () => {
       const undo = vi.fn(async () => ({
         workspace: scopedBefore,
         replayedEntryId: atomicMutation.mock.calls[0]?.[2]?.entryId ?? null,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       }));
@@ -8100,17 +8371,17 @@ describe("useNotesWorkspace", () => {
       node({ id: "child", parentId: "root", title: "Child" })
     ]);
     let replayedEntryId: string | null = null;
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(active, context)
+    );
     const store = repository({
       loadWorkspace: vi.fn(async (_vaultRoot, scope) =>
         scope.kind === "tags" ? filtered : active
       ),
-      toggleStar: vi.fn().mockResolvedValue(active),
-      undo: vi.fn().mockImplementation(async () => ({
-        workspace: active,
-        replayedEntryId,
-        canUndo: false,
-        canRedo: true
-      }))
+      toggleStar,
+      undo: vi.fn().mockImplementation(async () =>
+          appliedReplay(active, replayedEntryId, "undo")
+        )
     });
     const { result } = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
@@ -8128,7 +8399,7 @@ describe("useNotesWorkspace", () => {
       await result.current.actions.focusNode("child");
       await result.current.actions.toggleStar("child");
     });
-    replayedEntryId = vi.mocked(store.toggleStar).mock.calls[0][2]?.entryId ?? null;
+        replayedEntryId =toggleStar.mock.calls[0]?.[2]?.entryId ?? null;
 
     await act(async () =>
       result.current.actions.toggleTagFilter({
@@ -8422,6 +8693,7 @@ describe("useNotesWorkspace", () => {
             )
           ]),
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           importedRootIds: input.items.map((item) => item.nodeId)
@@ -9199,19 +9471,22 @@ describe("useNotesWorkspace", () => {
       node({ id: "target", sortKey: 3072 }),
       node({ id: "other", sortKey: 4096 })
     ]);
-    const blockerWrite = deferred<NotesWorkspace>();
+    const blockerWrite = deferred<NotesMutationResult>();
     const order: string[] = [];
-    const updateNode = vi.fn((_vaultRoot, input, _context) => {
+    const updateNode = vi.fn((_vaultRoot, input, context) => {
       order.push(`update:${input.id}:${input.title}:${input.note}`);
       if (input.id === "blocker") {
         return blockerWrite.promise;
       }
       return Promise.resolve(
-        input.note === "note edit"
-          ? noteSaved
-          : input.title === "title edit"
-            ? titleSaved
-            : preCutoffSaved
+        mutationResult(
+          input.note === "note edit"
+            ? noteSaved
+            : input.title === "title edit"
+              ? titleSaved
+              : preCutoffSaved,
+          context
+        )
       );
     });
     const toggleStar = vi.fn().mockImplementation(async () => {
@@ -9224,12 +9499,17 @@ describe("useNotesWorkspace", () => {
         ([, input]) => input.id === "root"
       );
       const callIndex = undoIndex++;
+      const replayedEntryId =
+        rootCalls[callIndex === 0 ? 2 : 1]?.[2]?.entryId ?? null;
       return {
-        workspace: callIndex === 0 ? titleSaved : preCutoffSaved,
-        replayedEntryId:
-          rootCalls[callIndex === 0 ? 2 : 1]?.[2]?.entryId ?? null,
+        ...appliedReplay(
+          callIndex === 0 ? titleSaved : preCutoffSaved,
+          replayedEntryId,
+          "undo"
+        ),
         canUndo: callIndex === 0,
-        canRedo: true
+        nextUndoEntryId:
+          callIndex === 0 ? (rootCalls[1]?.[2]?.entryId ?? null) : null
       };
     });
     const store = repository({
@@ -9280,7 +9560,8 @@ describe("useNotesWorkspace", () => {
     expect(updateNode).toHaveBeenCalledOnce();
 
     await act(async () => {
-      blockerWrite.resolve(initial);
+      blockerWrite.resolve(
+        mutationResult(initial, updateNode.mock.calls[0]![2]));
       await Promise.all([blockerFlush, structural]);
     });
     await act(async () => result.current.actions.flushAllDrafts());
@@ -9346,6 +9627,8 @@ describe("useNotesWorkspace", () => {
       const undo = vi.fn(async () => ({
         workspace: removed,
         replayedEntryId: ids[3],
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       }));
@@ -9661,7 +9944,7 @@ describe("useNotesWorkspace", () => {
       node({ id: "root" }),
       node({ id: "blocker", sortKey: 2048 })
     ]);
-    const blockedWrite = deferred<NotesWorkspace>();
+    const blockedWrite = deferred<NotesMutationResult>();
     const successfulEntryIds: string[] = [];
     let rootAttempt = 0;
     const updateNode = vi.fn((_vaultRoot, input, history) => {
@@ -9674,14 +9957,16 @@ describe("useNotesWorkspace", () => {
       if (input.id === "root" && history) {
         successfulEntryIds.push(history.entryId);
       }
-      return Promise.resolve(initial);
+      return Promise.resolve(mutationResult(initial, history));
     });
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: initial,
-      replayedEntryId: successfulEntryIds.at(-1) ?? null,
-      canUndo: successfulEntryIds.length > 1,
-      canRedo: successfulEntryIds.length > 0
-    }));
+    const undo = vi.fn().mockImplementation(async () => {
+      const replayedEntryId = successfulEntryIds.at(-1) ?? null;
+      return {
+        ...appliedReplay(initial, replayedEntryId, "undo"),
+        canUndo: successfulEntryIds.length > 1,
+        nextUndoEntryId: successfulEntryIds.at(-2) ?? null
+      };
+    });
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode,
@@ -9721,10 +10006,10 @@ describe("useNotesWorkspace", () => {
     const explicitRetry = editor.result.current.retryFailedDraft("root");
     editor.unmount();
 
-    blockedWrite.resolve(initial);
-    await act(async () =>
-      Promise.all([blockerFlush, explicitRetry, replay])
+    blockedWrite.resolve(
+      mutationResult(initial, updateNode.mock.calls.at(-1)![2])
     );
+    await act(async () => Promise.all([blockerFlush, explicitRetry, replay]));
 
     const rootCalls = vi
       .mocked(store.updateNode)
@@ -9742,18 +10027,20 @@ describe("useNotesWorkspace", () => {
       node({ id: "root", title: "before" }),
       node({ id: "other", sortKey: 2048 })
     ]);
-    const updateNode = vi.fn().mockResolvedValue(
-      workspace([
-        node({ id: "root", title: "before", note: "supporting" }),
-        node({ id: "other", sortKey: 2048 })
-      ])
+    const updated = workspace([
+      node({ id: "root", title: "before", note: "supporting" }),
+      node({ id: "other", sortKey: 2048 })
+    ]);
+    const updateNode = vi.fn(async (_vaultRoot, _input, context) =>
+      mutationResult(updated, context)
     );
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: initial,
-      replayedEntryId: updateNode.mock.calls[0]?.[2]?.entryId ?? null,
-      canUndo: false,
-      canRedo: true
-    }));
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        initial,
+        updateNode.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       updateNode,
@@ -9784,11 +10071,12 @@ describe("useNotesWorkspace", () => {
     expect(updateNode.mock.invocationCallOrder[0]).toBeLessThan(
       undo.mock.invocationCallOrder[0]!
     );
-    expect(undo).toHaveBeenCalledWith(
-      "/vault",
-      updateNode.mock.calls[0]?.[2]?.sessionId,
-      { kind: "active" }
-    );
+    expect(undo).toHaveBeenCalledWith("/vault", {
+      sessionId: updateNode.mock.calls[0]?.[2]?.sessionId,
+      historyEpoch: "epoch-a",
+      expectedEntryId: updateNode.mock.calls[0]?.[2]?.entryId,
+      scope: { kind: "active" }
+    });
     expect(result.current.state).toMatchObject({
       selectedId: "root",
       zoomRootId: "root",
@@ -9821,12 +10109,19 @@ describe("useNotesWorkspace", () => {
     let undoIndex = 0;
     const undo = vi.fn(async () => {
       const callIndex = undoIndex++;
+      const replayedEntryId =
+        updateNode.mock.calls[callIndex === 0 ? 1 : 0]?.[2]?.entryId ?? null;
       return {
-        workspace: callIndex === 0 ? titleSaved : initial,
-        replayedEntryId:
-          updateNode.mock.calls[callIndex === 0 ? 1 : 0]?.[2]?.entryId ?? null,
+        ...appliedReplay(
+          callIndex === 0 ? titleSaved : initial,
+          replayedEntryId,
+          "undo"
+        ),
         canUndo: callIndex === 0,
-        canRedo: true
+        nextUndoEntryId:
+          callIndex === 0
+            ? (updateNode.mock.calls[0]?.[2]?.entryId ?? null)
+            : null
       };
     });
     const store = repository({
@@ -9864,6 +10159,7 @@ describe("useNotesWorkspace", () => {
       titleWrite.resolve({
         workspace: titleSaved,
         historyEntryId: titleContext?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       });
@@ -9880,6 +10176,7 @@ describe("useNotesWorkspace", () => {
       noteWrite.resolve({
         workspace: noteSaved,
         historyEntryId: noteContext?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       });
@@ -9895,7 +10192,6 @@ describe("useNotesWorkspace", () => {
       pendingFocusId: "root",
       pendingFocusField: "note"
     });
-
     await act(async () => result.current.actions.focusNode("other"));
     await act(async () => result.current.actions.undo!());
     expect(result.current.state).toMatchObject({
@@ -9907,13 +10203,21 @@ describe("useNotesWorkspace", () => {
 
   it("applies replayed backend data and normalizes live UI without a snapshot", async () => {
     const initial = workspace([node({ id: "root" })]);
+    const replayedEntryId = "90000000-0000-4000-8000-000000000009";
     const undo = vi.fn().mockResolvedValue({
       workspace: workspace([node({ id: "other" })]),
-      replayedEntryId: "90000000-0000-4000-8000-000000000009",
+      replayedEntryId,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     });
     const store = repository({
+      initialize: vi.fn().mockResolvedValue({
+        ...historyState(),
+        canUndo: true,
+        nextUndoEntryId: replayedEntryId
+      }),
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       undo
     });
@@ -9941,21 +10245,30 @@ describe("useNotesWorkspace", () => {
     const initial = workspace([node({ id: "root" })]);
     const starred = workspace([node({ id: "root", isStarred: true })]);
     const completed = workspace([
-      node({ id: "root", isStarred: false, completedAt: "2026-07-11T00:00:00Z" })
+      node({
+        id: "root",
+        isStarred: false,
+        completedAt: "2026-07-11T00:00:00Z"
+      })
     ]);
-    const toggleStar = vi.fn().mockResolvedValue(starred);
-    const toggleComplete = vi.fn().mockResolvedValue(completed);
-    const undo = vi.fn().mockImplementation(async () => ({
-      workspace: initial,
-      replayedEntryId: toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
-      canUndo: false,
-      canRedo: true
-    }));
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const toggleComplete = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(completed, context)
+    );
+    const undo = vi
+      .fn()
+      .mockImplementation(async () =>
+        appliedReplay(
+          initial,
+          toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+          "undo"
+        )
+      );
     const redo = vi.fn().mockResolvedValue({
-      workspace: completed,
-      replayedEntryId: null,
-      canUndo: true,
-      canRedo: false
+      kind: "entryMissing" as const,
+      ...historyState()
     });
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
@@ -9968,7 +10281,6 @@ describe("useNotesWorkspace", () => {
       useNotesWorkspace({ vaultRoot: "/vault", repository: store })
     );
     await waitFor(() => expect(result.current.status).toBe("ready"));
-
     await act(async () => result.current.actions.toggleStar("root"));
     await act(async () => result.current.actions.undo!());
     await act(async () => result.current.actions.toggleComplete("root"));
@@ -9977,24 +10289,23 @@ describe("useNotesWorkspace", () => {
     expect(toggleComplete.mock.calls[0]?.[2]?.entryId).not.toBe(
       toggleStar.mock.calls[0]?.[2]?.entryId
     );
-    expect(redo).toHaveBeenCalledWith(
-      "/vault",
-      toggleStar.mock.calls[0]?.[2]?.sessionId,
-      { kind: "active" }
-    );
+    expect(redo).not.toHaveBeenCalled();
     expect(result.current.state.nodesById.root.completedAt).not.toBeNull();
   });
 
   it("broadcasts mutation and replay authority to sibling hooks without replacing local navigation", async () => {
     const initial = workspace([node({ id: "root" })]);
     const starred = workspace([node({ id: "root", isStarred: true })]);
-    const toggleStar = vi.fn().mockResolvedValue(starred);
-    const undo = vi.fn().mockResolvedValue({
-      workspace: initial,
-      replayedEntryId: null,
-      canUndo: false,
-      canRedo: true
-    });
+    const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) =>
+      mutationResult(starred, context)
+    );
+    const undo = vi.fn().mockImplementation(async () =>
+      appliedReplay(
+        initial,
+        toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+        "undo"
+      )
+    );
     const store = repository({
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       toggleStar,
@@ -10035,6 +10346,8 @@ describe("useNotesWorkspace", () => {
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: initial,
       replayedEntryId: splitNode.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
@@ -10096,14 +10409,14 @@ describe("useNotesWorkspace", () => {
       node({ id: "root" }),
       node({ id: "other", sortKey: 2048 })
     ]);
-    const replay = deferred<{
-      workspace: NotesWorkspace;
-      replayedEntryId: string | null;
-      canUndo: boolean;
-      canRedo: boolean;
-    }>();
+    const replay = deferred<NotesHistoryReplayOutcome>();
     const undo = vi.fn().mockReturnValue(replay.promise);
     const store = repository({
+      initialize: vi.fn().mockResolvedValue({
+        ...historyState(),
+        canUndo: true,
+        nextUndoEntryId: "history-entry"
+      }),
       loadWorkspace: vi.fn().mockResolvedValue(initial),
       undo
     });
@@ -10130,7 +10443,9 @@ describe("useNotesWorkspace", () => {
         node({ id: "after-undo" }),
         node({ id: "other", sortKey: 2048 })
       ]),
-      replayedEntryId: null,
+      replayedEntryId: "history-entry",
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     });
@@ -10232,7 +10547,8 @@ describe("useNotesWorkspace", () => {
       await sibling.result.current.actions.selectLibraryView("archive");
     });
 
-    const completion = owner.result.current.actions.unarchiveNode("archive-root");
+    const completion =
+      owner.result.current.actions.unarchiveNode("archive-root");
     await waitFor(() => expect(store.unarchiveNode).toHaveBeenCalledOnce());
     owner.unmount();
     committed.resolve(afterUnarchive);
@@ -10240,11 +10556,17 @@ describe("useNotesWorkspace", () => {
 
     await waitFor(() =>
       expect(
-        loadWorkspace.mock.calls.filter(([, scope]) => scope?.kind === "archive")
+        loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope?.kind === "archive"
+        )
       ).toHaveLength(3)
     );
-    expect(sibling.result.current.state.nodesById["archive-other"]).toBeDefined();
-    expect(sibling.result.current.state.nodesById["active-root"]).toBeUndefined();
+    expect(
+      sibling.result.current.state.nodesById["archive-other"]
+    ).toBeDefined();
+    expect(
+      sibling.result.current.state.nodesById["active-root"]
+    ).toBeUndefined();
   });
 
   it("reloads each sibling's own scope instead of installing the owner's projection", async () => {
@@ -10255,9 +10577,11 @@ describe("useNotesWorkspace", () => {
     const loadWorkspace = vi.fn((_vaultRoot, scope) =>
       Promise.resolve(scope?.kind === "archive" ? archived : active)
     );
-    const toggleStar = vi.fn().mockResolvedValue(
-      workspace([node({ id: "active-root", isStarred: true })])
-    );
+    const toggleStar = vi
+      .fn()
+      .mockResolvedValue(
+        workspace([node({ id: "active-root", isStarred: true })])
+      );
     const store = repository({ loadWorkspace, toggleStar });
     const all = renderHook(() =>
       useNotesWorkspace({ vaultRoot: "/scoped-siblings", repository: store })
@@ -10272,17 +10596,25 @@ describe("useNotesWorkspace", () => {
     await act(async () =>
       archive.result.current.actions.selectLibraryView("archive")
     );
-    expect(archive.result.current.state.nodesById["archive-root"]).toBeDefined();
+    expect(
+      archive.result.current.state.nodesById["archive-root"]
+    ).toBeDefined();
 
     await act(async () => all.result.current.actions.toggleStar("active-root"));
 
     await waitFor(() =>
       expect(
-        loadWorkspace.mock.calls.filter(([, scope]) => scope?.kind === "archive")
+        loadWorkspace.mock.calls.filter(
+          ([, scope]) => scope?.kind === "archive"
+        )
       ).toHaveLength(2)
     );
-    expect(archive.result.current.state.nodesById["archive-root"]).toBeDefined();
-    expect(archive.result.current.state.nodesById["active-root"]).toBeUndefined();
+    expect(
+      archive.result.current.state.nodesById["archive-root"]
+    ).toBeDefined();
+    expect(
+      archive.result.current.state.nodesById["active-root"]
+    ).toBeUndefined();
     expect(all.result.current.state.nodesById["active-root"]?.isStarred).toBe(
       true
     );
@@ -10329,10 +10661,12 @@ describe("useNotesWorkspace", () => {
     );
 
     await waitFor(() => {
-      expect(tagged.result.current.state.nodesById["active-root"]?.isStarred)
-        .toBe(true);
-      expect(all.result.current.state.nodesById["active-root"]?.isStarred)
-        .toBe(true);
+      expect(
+        tagged.result.current.state.nodesById["active-root"]?.isStarred
+      ).toBe(true);
+      expect(all.result.current.state.nodesById["active-root"]?.isStarred).toBe(
+        true
+      );
     });
     expect(tagged.result.current.activeTagFilters).toEqual([
       { prefix: "#", normalizedTag: "work" }
@@ -10356,11 +10690,13 @@ describe("useNotesWorkspace", () => {
       })
     ]);
     let latestStatus = false;
-    const historyStatus = vi.fn().mockImplementation(async () =>
-      latestStatus
-        ? { canUndo: true, canRedo: false }
-        : { canUndo: false, canRedo: false }
-    );
+    const historyStatus = vi
+      .fn()
+      .mockImplementation(async () =>
+        latestStatus
+          ? { canUndo: true, canRedo: false }
+          : { canUndo: false, canRedo: false }
+      );
     const store = repository({
       loadWorkspace: vi.fn((_vaultRoot, scope) =>
         Promise.resolve(scope?.kind === "archive" ? archived : active)
@@ -10369,6 +10705,8 @@ describe("useNotesWorkspace", () => {
       undo: vi.fn().mockResolvedValue({
         workspace: active,
         replayedEntryId: null,
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       })
@@ -10403,30 +10741,46 @@ describe("useNotesWorkspace", () => {
   });
 
   it("resets and generation-guards activation history status across vaults", async () => {
-    const firstStatus = deferred<{ canUndo: boolean; canRedo: boolean }>();
-    const secondStatus = deferred<{ canUndo: boolean; canRedo: boolean }>();
-    const historyStatus = vi.fn((vaultRoot: string) =>
-      vaultRoot === "/first" ? firstStatus.promise : secondStatus.promise
+    const firstInitialization = deferred<ReturnType<typeof historyState>>();
+    const secondInitialization = deferred<ReturnType<typeof historyState>>();
+    const initialize = vi.fn((vaultRoot: string) =>
+      vaultRoot === "/first"
+        ? firstInitialization.promise
+        : secondInitialization.promise
     );
-    const store = repository({ historyStatus });
+    const store = repository({ initialize });
     const { result, rerender } = renderHook(
       ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
       { initialProps: { vaultRoot: "/first" } }
     );
     await waitFor(() =>
-      expect(historyStatus).toHaveBeenCalledWith("/first", expect.any(String))
+      expect(initialize).toHaveBeenCalledWith(
+        "/first",
+        expect.objectContaining({ sessionId: expect.any(String) })
+      )
     );
 
     rerender({ vaultRoot: "/second" });
     expect(result.current.canUndo).toBe(false);
     expect(result.current.canRedo).toBe(false);
     await waitFor(() =>
-      expect(historyStatus).toHaveBeenCalledWith("/second", expect.any(String))
+      expect(initialize).toHaveBeenCalledWith(
+        "/second",
+        expect.objectContaining({ sessionId: expect.any(String) })
+      )
     );
 
-    secondStatus.resolve({ canUndo: false, canRedo: true });
+    secondInitialization.resolve({
+      ...historyState(),
+      canRedo: true,
+      nextRedoEntryId: "redo-entry"
+    });
     await waitFor(() => expect(result.current.canRedo).toBe(true));
-    firstStatus.resolve({ canUndo: true, canRedo: false });
+    firstInitialization.resolve({
+      ...historyState(),
+      canUndo: true,
+      nextUndoEntryId: "undo-entry"
+    });
     await Promise.resolve();
     expect(result.current.canUndo).toBe(false);
     expect(result.current.canRedo).toBe(true);
@@ -10517,12 +10871,16 @@ describe("useNotesWorkspace", () => {
   it("does not let a late old-vault draft poison the next history UI snapshot", async () => {
     const oldWrite = deferred<NotesWorkspace>();
     const newWorkspace = workspace([node({ id: "new-root" })]);
-    const toggleStar = vi.fn().mockResolvedValue(
-      workspace([node({ id: "new-root", isStarred: true })])
-    );
+    const toggleStar = vi
+      .fn()
+      .mockResolvedValue(
+        workspace([node({ id: "new-root", isStarred: true })])
+      );
     const undo = vi.fn().mockImplementation(async () => ({
       workspace: newWorkspace,
       replayedEntryId: toggleStar.mock.calls[0]?.[2]?.entryId ?? null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     }));
@@ -10808,6 +11166,7 @@ describe("useNotesWorkspace", () => {
     const store = repository({
       initialize: vi.fn(async () => {
         invocations.push("initialize");
+        return historyState();
       }),
       loadWorkspace: vi.fn(() => {
         loadCount += 1;
@@ -11783,6 +12142,7 @@ describe("useNotesWorkspace incremental delta wiring", () => {
         Promise.resolve({
           workspace: workspace([after]),
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           changedNodes: [after],
@@ -11821,6 +12181,7 @@ describe("useNotesWorkspace incremental delta wiring", () => {
         Promise.resolve({
           workspace: workspace([authoritativeAfter]),
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false,
           // A delta that disagrees with the authoritative workspace: only the
@@ -11979,6 +12340,7 @@ describe("useNotesWorkspace multi-node selection", () => {
           node({ id: "second", sortKey: 2 })
         ]),
         historyEntryId: null,
+        ...historyState(),
         canUndo: false,
         canRedo: false
       })
@@ -12019,6 +12381,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -12060,6 +12423,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings()),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -12127,6 +12491,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings()),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -12170,6 +12535,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings()),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -12197,6 +12563,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       earlier.resolve({
         workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
         historyEntryId: "earlier-entry",
+        ...historyState(),
         canUndo: true,
         canRedo: false
       });
@@ -12239,6 +12606,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       unwrapNotesMutation({
         workspace: workspace(threeSiblings()),
         historyEntryId: "entry",
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         duplicatedRootIds: ["copy-a", "copy-b"]
@@ -12607,6 +12975,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: all,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         duplicatedRootIds: ["copy-a", "copy-b"]
@@ -12662,6 +13031,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: after,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         duplicatedRootIds: ["copy-a", "copy-b"]
@@ -12739,6 +13109,7 @@ describe("useNotesWorkspace multi-node selection", () => {
         Promise.resolve({
           workspace: after,
           historyEntryId: context?.entryId ?? null,
+          ...historyState(),
           canUndo: true,
           canRedo: false
         })
@@ -12805,6 +13176,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       return {
         workspace: after,
         historyEntryId: batchEntryId,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       };
@@ -12813,7 +13185,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = before;
       return {
         workspace: before,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       };
@@ -12822,7 +13196,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = after;
       return {
         workspace: after,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: true,
         canRedo: false
       };
@@ -12907,6 +13283,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     pending.resolve({
       workspace: after,
       historyEntryId: "batch-entry",
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -12937,7 +13314,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = before;
       return {
         workspace: before,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       };
@@ -12946,7 +13325,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = after;
       return {
         workspace: after,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: true,
         canRedo: false
       };
@@ -12954,6 +13335,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) => ({
       workspace: after,
       historyEntryId: context?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     }));
@@ -13002,6 +13384,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     pending.resolve({
       workspace: after,
       historyEntryId: batchEntryId,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -13077,6 +13460,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     const toggleStar = vi.fn(async (_vaultRoot, _nodeId, context) => ({
       workspace: after,
       historyEntryId: context?.entryId ?? null,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     }));
@@ -13122,6 +13506,7 @@ describe("useNotesWorkspace multi-node selection", () => {
     pending.resolve({
       workspace: after,
       historyEntryId: batchEntryId,
+      ...historyState(),
       canUndo: true,
       canRedo: false
     });
@@ -13167,6 +13552,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       return {
         workspace: after,
         historyEntryId: batchEntryId,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       };
@@ -13175,7 +13561,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = before;
       return {
         workspace: before,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: false,
         canRedo: true
       };
@@ -13184,7 +13572,9 @@ describe("useNotesWorkspace multi-node selection", () => {
       active = after;
       return {
         workspace: after,
-        replayedEntryId: batchEntryId,
+        replayedEntryId: batchEntryId ?? "history-entry",
+        ...historyState(),
+        kind: "applied" as const,
         canUndo: true,
         canRedo: false
       };
@@ -13333,6 +13723,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings()),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -13370,6 +13761,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace(threeSiblings("2026-07-10T01:00:00Z")),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -13377,6 +13769,8 @@ describe("useNotesWorkspace multi-node selection", () => {
     const undo = vi.fn().mockResolvedValue({
       workspace: workspace(threeSiblings()),
       replayedEntryId: null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     });
@@ -13411,6 +13805,7 @@ describe("useNotesWorkspace multi-node selection", () => {
       Promise.resolve({
         workspace: workspace([node({ id: "c", sortKey: 3 })]),
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -13495,6 +13890,7 @@ describe("importSubtree (plan Phase 4.4b, paste import)", () => {
       Promise.resolve({
         workspace: importedNodes,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: ["imported-a", "imported-b"]
@@ -13561,6 +13957,7 @@ describe("importSubtree (plan Phase 4.4b, paste import)", () => {
       Promise.resolve({
         workspace: importedNodes,
         historyEntryId: context?.entryId ?? null,
+        ...historyState(),
         canUndo: true,
         canRedo: false,
         importedRootIds: ["imported-a"]
@@ -13569,6 +13966,8 @@ describe("importSubtree (plan Phase 4.4b, paste import)", () => {
     const undo = vi.fn().mockResolvedValue({
       workspace: workspace([node({ id: "root" })]),
       replayedEntryId: null,
+      ...historyState(),
+      kind: "applied" as const,
       canUndo: false,
       canRedo: true
     });

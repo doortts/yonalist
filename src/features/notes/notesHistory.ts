@@ -1,6 +1,7 @@
 import type {
   NoteId,
   NotesHistoryContext,
+  NotesHistoryState,
   NotesWorkspaceScope
 } from "../../domain/notes";
 
@@ -38,7 +39,13 @@ export interface CreateNotesHistorySessionOptions {
 
 export interface NotesHistorySession {
   readonly sessionId: string;
-  beginTextBurst(nodeId: NoteId, before: NotesHistorySnapshot): NotesHistoryContext;
+  readonly historyEpoch: string;
+  bindInitialization(state: NotesHistoryState): void;
+  reset(historyEpoch: string): void;
+  beginTextBurst(
+    nodeId: NoteId,
+    before: NotesHistorySnapshot
+  ): NotesHistoryContext;
   closeTextBurst(entryId?: string): void;
   beginStructuralEntry(
     commandKind: string,
@@ -145,6 +152,7 @@ export function createNotesHistorySession({
   maxSnapshots = 100
 }: CreateNotesHistorySessionOptions = {}): NotesHistorySession {
   const sessionId = createId();
+  let historyEpoch: string | null = null;
   const snapshots = new Map<string, NotesHistorySnapshotPair>();
   let textBurst: {
     nodeId: NoteId;
@@ -163,14 +171,36 @@ export function createNotesHistorySession({
     });
   };
 
-  const context = (entryId: string, commandKind: string): NotesHistoryContext => ({
+  const requireHistoryEpoch = (): string => {
+    if (historyEpoch === null) {
+      throw new Error("Notes history session is not initialized.");
+    }
+    return historyEpoch;
+  };
+
+  const context = (
+    entryId: string,
+    commandKind: string
+  ): NotesHistoryContext => ({
     sessionId,
+    historyEpoch: requireHistoryEpoch(),
     entryId,
     commandKind
   });
 
   return {
     sessionId,
+    get historyEpoch() {
+      return requireHistoryEpoch();
+    },
+    bindInitialization(state) {
+      historyEpoch = state.historyEpoch;
+    },
+    reset(nextHistoryEpoch) {
+      historyEpoch = nextHistoryEpoch;
+      textBurst = null;
+      snapshots.clear();
+    },
     beginTextBurst(nodeId, before) {
       const field =
         before.focus?.nodeId === nodeId ? before.focus.field : "title";

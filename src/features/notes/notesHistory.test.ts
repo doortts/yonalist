@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { NotesWorkspaceScope } from "../../domain/notes";
+import type {
+  NotesHistoryState,
+  NotesWorkspaceScope
+} from "../../domain/notes";
 import {
   createNotesHistoryOwnerRegistry,
   createNotesHistorySession,
@@ -34,7 +37,53 @@ function snapshot(
   };
 }
 
+function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch,
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
+}
+
+function createBoundNotesHistorySession(
+  options: Parameters<typeof createNotesHistorySession>[0] = {}
+) {
+  const history = createNotesHistorySession(options);
+  history.bindInitialization(historyState());
+  return history;
+}
+
 describe("notes history session", () => {
+  it("rejects public history access until initialization binds an epoch", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+
+    expect(() => history.historyEpoch).toThrow("not initialized");
+    expect(() => history.beginTextBurst("node-a", snapshot("node-a"))).toThrow(
+      "not initialized"
+    );
+  });
+
+  it("binds and resets the epoch used by every new history context", () => {
+    const history = createNotesHistorySession({ createId: idFactory() });
+    history.bindInitialization(historyState("epoch-a"));
+
+    const first = history.beginTextBurst("node-a", snapshot("node-a"));
+    expect(history.historyEpoch).toBe("epoch-a");
+    expect(first.historyEpoch).toBe("epoch-a");
+
+    history.reset("epoch-b");
+    expect(history.snapshotCount()).toBe(0);
+    expect(
+      history.beginStructuralEntry("move", snapshot("node-a"))
+    ).toMatchObject({
+      sessionId: history.sessionId,
+      historyEpoch: "epoch-b",
+      commandKind: "move"
+    });
+  });
   it("bounds completed owners without evicting in-flight metadata", () => {
     const owners = createNotesHistoryOwnerRegistry<string>(2);
     owners.begin("one", "owner");
@@ -59,7 +108,7 @@ describe("notes history session", () => {
   });
 
   it("allocates a stable text entry when a draft begins and replaces it after closure", () => {
-    const history = createNotesHistorySession({ createId: idFactory() });
+    const history = createBoundNotesHistorySession({ createId: idFactory() });
 
     const first = history.beginTextBurst("node-a", snapshot("node-a"));
     const continued = history.beginTextBurst("node-a", snapshot("node-a"));
@@ -77,7 +126,7 @@ describe("notes history session", () => {
   });
 
   it("closes the active burst when editing switches fields on the same node", () => {
-    const history = createNotesHistorySession({ createId: idFactory() });
+    const history = createBoundNotesHistorySession({ createId: idFactory() });
 
     const title = history.beginTextBurst(
       "node-a",
@@ -98,7 +147,7 @@ describe("notes history session", () => {
   });
 
   it("closes text before allocating a distinct structural entry", () => {
-    const history = createNotesHistorySession({ createId: idFactory() });
+    const history = createBoundNotesHistorySession({ createId: idFactory() });
     const text = history.beginTextBurst("node-a", snapshot("node-a"));
 
     const structural = history.beginStructuralEntry(
@@ -117,7 +166,7 @@ describe("notes history session", () => {
   });
 
   it("merges before and latest after snapshots for a backend entry", () => {
-    const history = createNotesHistorySession({ createId: idFactory() });
+    const history = createBoundNotesHistorySession({ createId: idFactory() });
     const context = history.beginTextBurst("node-a", snapshot("node-a"));
 
     history.rememberAfter(context.entryId, snapshot("node-a", "note"));
@@ -135,7 +184,7 @@ describe("notes history session", () => {
   });
 
   it("returns null for missing or evicted snapshots", () => {
-    const history = createNotesHistorySession({
+    const history = createBoundNotesHistorySession({
       createId: idFactory(),
       maxSnapshots: 2
     });
@@ -154,7 +203,7 @@ describe("notes history session", () => {
   });
 
   it("never evicts entries that are still awaiting authoritative completion", () => {
-    const history = createNotesHistorySession({
+    const history = createBoundNotesHistorySession({
       createId: idFactory(),
       maxSnapshots: 1
     });
@@ -179,7 +228,7 @@ describe("notes history session", () => {
 
   it("discards settled failures without leaking snapshots or the active burst", () => {
     let sequence = 0;
-    const history = createNotesHistorySession({
+    const history = createBoundNotesHistorySession({
       createId: () => `history-${sequence++}`,
       maxSnapshots: 2
     });

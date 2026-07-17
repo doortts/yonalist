@@ -1,7 +1,9 @@
 import {
   isNoteSearchResult,
-  isNotesHistoryReplayResult,
+  isNotesHistoryReplayOutcome,
+  isNotesHistoryState,
   isNotesMutationResult,
+  isNotesWorkspaceResetResult,
   isRetryableNotesErrorCode,
   MAX_NOTE_ATTACHMENT_BATCH_BYTES,
   MAX_NOTE_ATTACHMENT_BYTES,
@@ -37,13 +39,22 @@ import type {
   NoteStructuredSearchQuery,
   NoteTagSummary,
   NotesHistoryContext,
-  NotesHistoryReplayResult,
+  NotesHistoryCloseInput,
+  NotesHistoryReplayInput,
+  NotesHistoryReplayOutcome,
+  NotesHistoryResetInput,
+  NotesHistoryResetResult,
+  NotesHistoryState,
   NotesHistoryStatus,
+  NotesInitializeInput,
+  NotesPrepareNavigationInput,
+  NotesPruneHistoryInput,
   NotesDeleteDatabaseResult,
   NotesMutationResult,
   NotesStore,
   NotesStoreError,
   NotesWorkspace,
+  NotesWorkspaceResetResult,
   NotesWorkspaceScope,
   ResizeNoteAttachmentInput,
   SplitNoteNodeInput,
@@ -107,14 +118,17 @@ function isCanonicalUuidV4(value: unknown): value is string {
 
 function normalizeAttachmentHistoryContext(
   historyContext: unknown
-): NotesHistoryContext | null | undefined {
-  if (historyContext == null) {
-    return null;
-  }
+): NotesHistoryContext | undefined {
   if (
     !isPlainRecord(historyContext) ||
-    !hasExactKeys(historyContext, ["sessionId", "entryId", "commandKind"]) ||
+    !hasExactKeys(historyContext, [
+      "sessionId",
+      "historyEpoch",
+      "entryId",
+      "commandKind"
+    ]) ||
     !isCanonicalUuidV4(historyContext.sessionId) ||
+    typeof historyContext.historyEpoch !== "string" ||
     !isCanonicalUuidV4(historyContext.entryId) ||
     typeof historyContext.commandKind !== "string"
   ) {
@@ -127,6 +141,7 @@ function normalizeAttachmentHistoryContext(
   }
   return {
     sessionId: historyContext.sessionId,
+    historyEpoch: historyContext.historyEpoch,
     entryId: historyContext.entryId,
     commandKind
   };
@@ -524,12 +539,16 @@ async function invokeNotes<T>(
   return invoke<T>(command, args);
 }
 
-export async function notesInitialize(vaultPath: string): Promise<void> {
-  try {
-    await invokeNotes<void>("notes_initialize", { vaultPath });
-  } catch (cause) {
-    throw notesStoreError("load", cause);
-  }
+export function notesInitialize(
+  vaultPath: string,
+  input: NotesInitializeInput
+): Promise<NotesHistoryState> {
+  return invokeHistoryState(
+    "notes_initialize",
+    { vaultPath, input },
+    "load",
+    "Notes initialize returned an invalid history state."
+  );
 }
 
 export async function notesLoadWorkspace(
@@ -569,7 +588,7 @@ export async function notesLoadWorkspace(
 export function notesCreateNode(
   vaultPath: string,
   input: CreateNoteNodeInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_create_node", { vaultPath, input, historyContext }, historyContext);
 }
@@ -577,7 +596,7 @@ export function notesCreateNode(
 export function notesUpdateNode(
   vaultPath: string,
   input: UpdateNoteNodeInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_update_node", { vaultPath, input, historyContext }, historyContext);
 }
@@ -585,7 +604,7 @@ export function notesUpdateNode(
 export function notesSplitNode(
   vaultPath: string,
   input: SplitNoteNodeInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_split_node", { vaultPath, input, historyContext }, historyContext);
 }
@@ -593,7 +612,7 @@ export function notesSplitNode(
 export function notesMoveNode(
   vaultPath: string,
   input: MoveNoteNodeInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation("notes_move_node", { vaultPath, input, historyContext }, historyContext);
 }
@@ -601,7 +620,7 @@ export function notesMoveNode(
 export function notesApplyBatch(
   vaultPath: string,
   input: ApplyNotesBatchInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   if (input.nodeIds.length === 0) {
     return Promise.reject(
@@ -637,7 +656,7 @@ export function notesApplyBatch(
 export function notesImportSubtree(
   vaultPath: string,
   input: ImportSubtreeInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   // Reuses the shared mutation transport, exactly like notesApplyBatch: the
   // result is validated with isNotesMutationResult (normalizeMutationResult),
@@ -654,7 +673,7 @@ export function notesImportSubtree(
 async function invokeMutation(
   command: string,
   args: Record<string, unknown>,
-  historyContext: NotesHistoryContext | null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   let result: unknown;
   try {
@@ -667,7 +686,7 @@ async function invokeMutation(
 
 function normalizeMutationResult(
   result: unknown,
-  historyContext: NotesHistoryContext | null
+  historyContext: NotesHistoryContext
 ): NotesMutationResult {
   if (!isNotesMutationResult(result)) {
     throw notesStoreError(
@@ -678,7 +697,7 @@ function normalizeMutationResult(
   }
   if (
     result.historyEntryId !== null &&
-    result.historyEntryId !== historyContext?.entryId
+    result.historyEntryId !== historyContext.entryId
   ) {
     throw notesStoreError(
       "write",
@@ -858,7 +877,7 @@ function imageNodeImportDeltaMatchesWorkspace(
 
 function normalizeImageNodeImportResult(
   result: unknown,
-  historyContext: NotesHistoryContext | null,
+  historyContext: NotesHistoryContext,
   input: ImportImageNodePathsInput | ImportImageNodeBytesInput
 ): NotesMutationResult {
   const normalized = normalizeMutationResult(result, historyContext);
@@ -877,8 +896,7 @@ function normalizeImageNodeImportResult(
     );
   }
   if (
-    (historyContext !== null &&
-      normalized.historyEntryId !== historyContext.entryId) ||
+    normalized.historyEntryId !== historyContext.entryId ||
     !imageNodeImportWorkspaceMatchesInput(normalized.workspace, input)
   ) {
     throw notesStoreError(
@@ -959,7 +977,7 @@ function invokeNodeMutation(
   command: string,
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation(
     command,
@@ -971,7 +989,7 @@ function invokeNodeMutation(
 export function notesToggleComplete(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_complete", vaultPath, nodeId, historyContext);
 }
@@ -979,7 +997,7 @@ export function notesToggleComplete(
 export function notesToggleCollapsed(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_collapsed", vaultPath, nodeId, historyContext);
 }
@@ -987,7 +1005,7 @@ export function notesToggleCollapsed(
 export function notesExpandAll(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_expand_all", vaultPath, nodeId, historyContext);
 }
@@ -995,7 +1013,7 @@ export function notesExpandAll(
 export function notesCollapseAll(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_collapse_all", vaultPath, nodeId, historyContext);
 }
@@ -1003,7 +1021,7 @@ export function notesCollapseAll(
 export function notesSortSubtreeAscending(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation(
     "notes_sort_subtree_ascending",
@@ -1016,7 +1034,7 @@ export function notesSortSubtreeAscending(
 export function notesSortSubtreeDescending(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation(
     "notes_sort_subtree_descending",
@@ -1029,7 +1047,7 @@ export function notesSortSubtreeDescending(
 export function notesToggleStar(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_toggle_star", vaultPath, nodeId, historyContext);
 }
@@ -1037,7 +1055,7 @@ export function notesToggleStar(
 export function notesDuplicateNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_duplicate_node", vaultPath, nodeId, historyContext);
 }
@@ -1045,7 +1063,7 @@ export function notesDuplicateNode(
 export function notesRemoveEmptyNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_remove_empty_node", vaultPath, nodeId, historyContext);
 }
@@ -1053,7 +1071,7 @@ export function notesRemoveEmptyNode(
 export function notesSoftDeleteNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_soft_delete_node", vaultPath, nodeId, historyContext);
 }
@@ -1061,7 +1079,7 @@ export function notesSoftDeleteNode(
 export function notesRestoreNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_restore_node", vaultPath, nodeId, historyContext);
 }
@@ -1069,7 +1087,7 @@ export function notesRestoreNode(
 export function notesArchiveNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_archive_node", vaultPath, nodeId, historyContext);
 }
@@ -1077,73 +1095,133 @@ export function notesArchiveNode(
 export function notesUnarchiveNode(
   vaultPath: string,
   nodeId: NoteId,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeNodeMutation("notes_unarchive_node", vaultPath, nodeId, historyContext);
 }
 
 export function notesUndo(
   vaultPath: string,
-  sessionId: string,
-  scope: NotesWorkspaceScope
-): Promise<NotesHistoryReplayResult> {
-  return invokeHistoryReplay("notes_undo", { vaultPath, sessionId, scope });
+  input: NotesHistoryReplayInput
+): Promise<NotesHistoryReplayOutcome> {
+  return invokeHistoryReplay("notes_undo", { vaultPath, input });
 }
 
 export function notesRedo(
   vaultPath: string,
-  sessionId: string,
-  scope: NotesWorkspaceScope
-): Promise<NotesHistoryReplayResult> {
-  return invokeHistoryReplay("notes_redo", { vaultPath, sessionId, scope });
+  input: NotesHistoryReplayInput
+): Promise<NotesHistoryReplayOutcome> {
+  return invokeHistoryReplay("notes_redo", { vaultPath, input });
 }
 
 async function invokeHistoryReplay(
   command: string,
   args: Record<string, unknown>
-): Promise<NotesHistoryReplayResult> {
+): Promise<NotesHistoryReplayOutcome> {
   let result: unknown;
   try {
     result = await invokeNotes<unknown>(command, args);
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  if (!isNotesHistoryReplayResult(result)) {
+  if (!isNotesHistoryReplayOutcome(result)) {
     throw notesStoreError(
       "write",
       "Notes history replay returned an invalid result.",
       false
     );
   }
-  const workspace = normalizeNotesWorkspace(result.workspace);
-  if (workspace === null) {
-    throw notesStoreError(
-      "write",
-      "Notes history replay returned an invalid result.",
-      false
-    );
+  if (result.kind === "applied") {
+    const workspace = normalizeNotesWorkspace(result.workspace);
+    if (workspace === null) {
+      throw notesStoreError(
+        "write",
+        "Notes history replay returned an invalid result.",
+        false
+      );
+    }
+    return { ...result, workspace };
   }
-  return { ...result, workspace };
+  return result;
+}
+
+async function invokeHistoryState(
+  command: string,
+  args: Record<string, unknown>,
+  operation: NotesStoreError["operation"] = "write",
+  invalidMessage = "Notes history operation returned an invalid state."
+): Promise<NotesHistoryState> {
+  let result: unknown;
+  try {
+    result = await invokeNotes<unknown>(command, args);
+  } catch (cause) {
+    throw notesStoreError(operation, cause);
+  }
+  if (!isNotesHistoryState(result)) {
+    throw notesStoreError(operation, invalidMessage, false);
+  }
+  return result;
 }
 
 export function notesHistoryStatus(
   vaultPath: string,
   sessionId: string
 ): Promise<NotesHistoryStatus> {
-  return invokeNotes<NotesHistoryStatus>("notes_history_status", { vaultPath, sessionId });
+  return invokeHistoryState(
+    "notes_history_status",
+    { vaultPath, sessionId },
+    "write",
+    "Notes history status returned an invalid state."
+  );
 }
 
-export function notesClearHistory(
+export async function notesClearHistory(
   vaultPath: string,
-  sessionId: string
-): Promise<NotesHistoryStatus> {
-  return invokeNotes<NotesHistoryStatus>("notes_clear_history", { vaultPath, sessionId });
+  input: NotesHistoryResetInput
+): Promise<NotesHistoryResetResult> {
+  const { workspace: _workspace, ...result } = await invokeWorkspaceReset(
+    "notes_clear_history",
+    { vaultPath, input },
+    "Notes clear history returned an invalid reset result."
+  );
+  return result;
+}
+
+export function notesPrepareNavigation(
+  vaultPath: string,
+  input: NotesPrepareNavigationInput
+): Promise<NotesHistoryState> {
+  return invokeHistoryState("notes_prepare_navigation", { vaultPath, input });
+}
+
+export function notesPruneHistoryEntries(
+  vaultPath: string,
+  input: NotesPruneHistoryInput
+): Promise<NotesHistoryState> {
+  return invokeHistoryState("notes_prune_history_entries", {
+    vaultPath,
+    input
+  });
+}
+
+export async function notesCloseHistorySession(
+  vaultPath: string,
+  input: NotesHistoryCloseInput
+): Promise<void> {
+  try {
+    await invokeNotes<void>("notes_close_history_session", {
+      vaultPath,
+      input
+    });
+  } catch (cause) {
+    throw notesStoreError("write", cause);
+  }
 }
 
 export function notesImportAttachment(
   vaultPath: string,
   input: ImportNoteAttachmentInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   const normalizedInput = normalizeImportAttachmentInput(input);
   if (normalizedInput === null) {
@@ -1171,7 +1249,7 @@ export function notesImportAttachment(
 export function notesImportAttachmentPaths(
   vaultPath: string,
   input: ImportNoteAttachmentPathBatchInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   const normalizedInput = normalizeImportAttachmentPathBatchInput(input);
   const normalizedHistoryContext =
@@ -1195,7 +1273,7 @@ export function notesImportAttachmentPaths(
 export async function notesImportAttachmentBytes(
   vaultPath: string,
   input: ImportNoteAttachmentBytesBatchInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   const normalization = normalizeImportAttachmentBytesBatchInput(input);
   const normalizedHistoryContext =
@@ -1232,7 +1310,7 @@ export async function notesImportAttachmentBytes(
 export async function notesImportImageNodePaths(
   vaultPath: string,
   input: ImportImageNodePathsInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   const normalization = normalizeImportImageNodePathsInput(input);
   const normalizedHistoryContext =
@@ -1265,7 +1343,7 @@ export async function notesImportImageNodePaths(
 export async function notesImportImageNodeBytes(
   vaultPath: string,
   input: ImportImageNodeBytesInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   const normalization = normalizeImportImageNodeBytesInput(input);
   const normalizedHistoryContext =
@@ -1403,7 +1481,7 @@ export function notesDownloadAttachment(
 export function notesResizeAttachment(
   vaultPath: string,
   input: ResizeNoteAttachmentInput,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation(
     "notes_resize_attachment",
@@ -1415,7 +1493,7 @@ export function notesResizeAttachment(
 export function notesRemoveAttachment(
   vaultPath: string,
   attachmentId: string,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation(
     "notes_remove_attachment",
@@ -1427,7 +1505,7 @@ export function notesRemoveAttachment(
 export function notesRestoreAttachment(
   vaultPath: string,
   attachmentId: string,
-  historyContext: NotesHistoryContext | null = null
+  historyContext: NotesHistoryContext
 ): Promise<NotesMutationResult> {
   return invokeMutation(
     "notes_restore_attachment",
@@ -1437,23 +1515,35 @@ export function notesRestoreAttachment(
 }
 
 export async function notesEmptyTrash(
-  vaultPath: string
-): Promise<NotesWorkspace> {
+  vaultPath: string,
+  input: NotesHistoryResetInput
+): Promise<NotesWorkspaceResetResult> {
+  return invokeWorkspaceReset(
+    "notes_empty_trash",
+    { vaultPath, input },
+    "Notes empty trash returned an invalid reset result."
+  );
+}
+
+async function invokeWorkspaceReset(
+  command: string,
+  args: Record<string, unknown>,
+  invalidMessage: string
+): Promise<NotesWorkspaceResetResult> {
   let result: unknown;
   try {
-    result = await invokeNotes<unknown>("notes_empty_trash", { vaultPath });
+    result = await invokeNotes<unknown>(command, args);
   } catch (cause) {
     throw notesStoreError("write", cause);
   }
-  const workspace = normalizeNotesWorkspace(result);
-  if (workspace === null) {
-    throw notesStoreError(
-      "write",
-      "Notes empty trash returned an invalid workspace.",
-      false
-    );
+  if (!isNotesWorkspaceResetResult(result)) {
+    throw notesStoreError("write", invalidMessage, false);
   }
-  return workspace;
+  const workspace = normalizeNotesWorkspace(result.workspace);
+  if (workspace === null) {
+    throw notesStoreError("write", invalidMessage, false);
+  }
+  return { ...result, workspace };
 }
 
 export async function notesSearch(
@@ -1543,6 +1633,9 @@ export const notesStore: NotesStore = {
   redo: notesRedo,
   historyStatus: notesHistoryStatus,
   clearHistory: notesClearHistory,
+  pruneHistoryEntries: notesPruneHistoryEntries,
+  prepareNavigation: notesPrepareNavigation,
+  closeHistorySession: notesCloseHistorySession,
   importAttachment: notesImportAttachment,
   importAttachmentPaths: notesImportAttachmentPaths,
   importAttachmentBytes: notesImportAttachmentBytes,

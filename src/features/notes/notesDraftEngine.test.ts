@@ -64,8 +64,16 @@ function deferred<T>() {
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
+  const initialHistoryState = {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "epoch-a",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
   return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn().mockResolvedValue(initialHistoryState),
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
@@ -84,6 +92,13 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     unarchiveNode: empty,
     undo: empty,
     redo: empty,
+    clearHistory: vi.fn().mockResolvedValue({
+      ...initialHistoryState,
+      historyReset: true
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue(initialHistoryState),
+    prepareNavigation: vi.fn().mockResolvedValue(initialHistoryState),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
@@ -127,7 +142,10 @@ function createSession(options: {
   store: NotesStore;
   vaultRoot: string;
   confirmedWorkspace: NotesWorkspace;
-}): { session: NotesWorkspaceCoordinatorSession; close: ReturnType<typeof vi.fn> } {
+}): {
+  session: NotesWorkspaceCoordinatorSession;
+  close: ReturnType<typeof vi.fn>;
+} {
   const { store, vaultRoot, confirmedWorkspace } = options;
   const close = vi.fn();
   let tail: Promise<unknown> = Promise.resolve();
@@ -183,6 +201,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const newHistoryContext = () => ({
     sessionId: "session-0",
+    historyEpoch: "epoch-a",
     entryId: `entry-${entryIds.next++}`,
     commandKind: "text" as const
   });
@@ -202,6 +221,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
       const { nodeId, draft, historyContext } = attempt;
       if (!normalizeWorkspace(context.confirmedWorkspace).nodesById[nodeId]) {
         return { kind: "skipped" };
+      }
+      if (!historyContext) {
+        throw new Error("A draft mutation requires a history context.");
       }
       try {
         const response = await context.repository.updateNode(

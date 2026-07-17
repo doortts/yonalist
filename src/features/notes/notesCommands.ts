@@ -1634,11 +1634,14 @@ export function emptyTrashCommand(
   }
   const scope = ctx.activeScopeRef.current;
   return record.session.enqueueStructural(async (context) => {
-    const workspace = await context.repository.emptyTrash(context.vaultRoot);
-    record.session.history.clearSnapshots();
+    const reset = await context.repository.emptyTrash(context.vaultRoot, {
+      sessionId: record.session.history.sessionId,
+      historyEpoch: record.session.history.historyEpoch
+    });
+    record.session.history.reset(reset.historyEpoch);
     const projectedWorkspace = await workspaceForScope(
       context,
-      workspace,
+      reset.workspace,
       scope
     );
     const isOwnerActive = ownerStillActive(ctx, record);
@@ -1653,7 +1656,7 @@ export function emptyTrashCommand(
             pendingFocusField: null
           }
         : undefined,
-      undefined,
+      reset,
       { invalidatesTagSummaries: true }
     );
   });

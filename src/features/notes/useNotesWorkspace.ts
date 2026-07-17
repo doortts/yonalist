@@ -893,7 +893,7 @@ export interface StructuralCommandOptions {
 export function authoritative(
   workspace: NotesWorkspace,
   uiUpdate?: NotesWorkspaceUiUpdate,
-  historyStatus?: { canUndo: boolean; canRedo: boolean },
+  historyStatus?: NotesHistoryStatus,
   options?: Pick<
     Extract<NotesWorkspaceQueueResult, { kind: "authoritative" }>,
     | "scopeAgnostic"
@@ -955,7 +955,11 @@ export function unwrapNotesMutation(
       historyEntryId: response.historyEntryId,
       historyStatus: {
         canUndo: response.canUndo,
-        canRedo: response.canRedo
+        canRedo: response.canRedo,
+        historyEpoch: response.historyEpoch,
+        nextUndoEntryId: response.nextUndoEntryId,
+        nextRedoEntryId: response.nextRedoEntryId,
+        prunedEntryIds: response.prunedEntryIds
       },
       atomic: true,
       delta,
@@ -1052,12 +1056,22 @@ export function appliedHistoryContext(
 
 export function historyArguments(
   context: NotesHistoryContext | null | undefined
-): [] | [NotesHistoryContext] {
-  return context ? [context] : [];
+): [NotesHistoryContext] {
+  if (!context) {
+    throw new Error("A Notes user mutation requires a history context.");
+  }
+  return [context];
 }
 
-function supportsHistory(repository: NotesStore): boolean {
-  return repository.undo !== undefined && repository.redo !== undefined;
+function emptyHistoryState(): NotesHistoryStatus {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
 }
 
 export function expansionsOutsideSubtree(
@@ -1718,10 +1732,10 @@ export function useNotesWorkspace({
     getNotesDataDeletionSnapshot,
     getNotesDataDeletionSnapshot
   );
-  const [historyStatus, setHistoryStatus] = useState({
-    canUndo: false,
-    canRedo: false
-  });
+  const [historyStatus, setHistoryStatus] =
+    useState<NotesHistoryStatus>(emptyHistoryState);
+  const historyStatusRef = useRef(historyStatus);
+  historyStatusRef.current = historyStatus;
   const activeScopeRef = useRef<NotesWorkspaceScope>({ kind: "active" });
   const activeWorkspaceGenerationRef = useRef(0);
   const movePreparationTokenRef = useRef(0);
@@ -2080,7 +2094,9 @@ export function useNotesWorkspace({
     setAttachmentUploadErrorsByNodeId({});
     setAttachmentUploadRetryAttemptIdsByNodeId({});
     discardAttachmentUploadAttempts();
-    setHistoryStatus({ canUndo: false, canRedo: false });
+    const resetHistoryStatus = emptyHistoryState();
+    historyStatusRef.current = resetHistoryStatus;
+    setHistoryStatus(resetHistoryStatus);
     activeScopeRef.current = { kind: "active" };
     activeWorkspaceGenerationRef.current += 1;
     movePreparationTokenRef.current += 1;
@@ -2134,6 +2150,7 @@ export function useNotesWorkspace({
           event.result.kind !== "skipped" &&
           event.result.historyStatus
         ) {
+          historyStatusRef.current = event.result.historyStatus;
           setHistoryStatus(event.result.historyStatus);
         }
         if (
@@ -2421,16 +2438,14 @@ export function useNotesWorkspace({
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
       focus: NotesHistoryFocus
-    ): NotesHistoryContext | null =>
-      supportsHistory(record.repository)
-        ? registerHistoryOwner(
-            record.session.history.beginTextBurst(
-              nodeId,
-              captureHistorySnapshot(focus)
-            ),
-            record.session
-          )
-        : null,
+    ): NotesHistoryContext =>
+      registerHistoryOwner(
+        record.session.history.beginTextBurst(
+          nodeId,
+          captureHistorySnapshot(focus)
+        ),
+        record.session
+      ),
     [captureHistorySnapshot, registerHistoryOwner]
   );
 
@@ -2439,10 +2454,7 @@ export function useNotesWorkspace({
       record: NotesWorkspaceSessionRecord,
       nodeId: NoteId,
       focus: NotesHistoryFocus
-    ): NotesHistoryContext | null => {
-      if (!supportsHistory(record.repository)) {
-        return null;
-      }
+    ): NotesHistoryContext => {
       record.session.history.closeTextBurst();
       const context = registerHistoryOwner(
         record.session.history.beginTextBurst(
@@ -2465,10 +2477,7 @@ export function useNotesWorkspace({
     (
       record: NotesWorkspaceSessionRecord,
       commandKind: string
-    ): NotesHistoryContext | null => {
-      if (!supportsHistory(record.repository)) {
-        return null;
-      }
+    ): NotesHistoryContext => {
       return registerHistoryOwner(
         record.session.history.beginStructuralEntry(
           commandKind,
@@ -2896,11 +2905,32 @@ export function useNotesWorkspace({
           return { kind: "skipped" };
         }
         const currentScope = activeScopeRef.current;
+        const expectedEntryId =
+          direction === "undo"
+            ? historyStatusRef.current.nextUndoEntryId
+            : historyStatusRef.current.nextRedoEntryId;
+        if (expectedEntryId === null) {
+          return { kind: "skipped" };
+        }
         const result = await replay(
           context.vaultRoot,
-          session.history.sessionId,
-          currentScope
+          {
+            sessionId: session.history.sessionId,
+            historyEpoch: session.history.historyEpoch,
+            expectedEntryId,
+            scope: currentScope
+          }
         );
+        if (result.kind !== "applied") {
+          if (result.historyEpoch !== session.history.historyEpoch) {
+            session.history.reset(result.historyEpoch);
+          }
+          return authoritative(
+            context.confirmedWorkspace,
+            undefined,
+            result
+          );
+        }
         if (
           record.closing ||
           sessionRecordRef.current !== record ||
@@ -2909,10 +2939,7 @@ export function useNotesWorkspace({
           return authoritative(
             result.workspace,
             undefined,
-            {
-              canUndo: result.canUndo,
-              canRedo: result.canRedo
-            },
+            result,
             {
               scopeAgnostic: currentScope.kind !== "active",
               invalidatesTagSummaries: true
@@ -2966,10 +2993,7 @@ export function useNotesWorkspace({
             return authoritative(
               result.workspace,
               undefined,
-              {
-                canUndo: result.canUndo,
-                canRedo: result.canRedo
-              },
+              result,
               {
                 scopeAgnostic: currentScope.kind !== "active",
                 invalidatesTagSummaries: true
@@ -2996,7 +3020,7 @@ export function useNotesWorkspace({
                 pendingFocusField: focus?.field ?? null
               }
             : undefined,
-          { canUndo: result.canUndo, canRedo: result.canRedo },
+          result,
           { invalidatesTagSummaries: true }
         );
       });

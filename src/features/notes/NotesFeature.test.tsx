@@ -3,7 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 
 const notesStoreMock = vi.hoisted(() => ({
-  initialize: vi.fn().mockResolvedValue(undefined),
+  initialize: vi.fn().mockResolvedValue({
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  }),
   loadWorkspace: vi.fn().mockResolvedValue({ nodes: [] }),
   createNode: vi.fn().mockResolvedValue({ nodes: [] }),
   updateNode: vi.fn().mockResolvedValue({ nodes: [] }),
@@ -56,7 +63,10 @@ describe("NotesFeature", () => {
     );
     expect(screen.getByLabelText("Notes outline")).toBeInTheDocument();
     expect(await screen.findByText("No pages yet.")).toBeInTheDocument();
-    expect(notesStoreMock.initialize).toHaveBeenCalledWith("/feature-vault");
+    expect(notesStoreMock.initialize).toHaveBeenCalledWith(
+      "/feature-vault",
+      expect.objectContaining({ sessionId: expect.any(String) })
+    );
     expect(notesStoreMock.loadWorkspace).toHaveBeenCalledWith(
       "/feature-vault",
       { kind: "active" }

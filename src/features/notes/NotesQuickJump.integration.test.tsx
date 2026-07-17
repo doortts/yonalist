@@ -79,7 +79,14 @@ function configureRepository(nodes: NoteNode[] = initialNodes()): void {
   for (const method of Object.values(notesStoreMock)) {
     method.mockReset();
   }
-  notesStoreMock.initialize.mockResolvedValue(undefined);
+  notesStoreMock.initialize.mockResolvedValue({
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  });
   notesStoreMock.loadWorkspace.mockResolvedValue(workspaceOf(nodes));
   notesStoreMock.search.mockResolvedValue([]);
   notesStoreMock.searchStructured.mockResolvedValue([]);

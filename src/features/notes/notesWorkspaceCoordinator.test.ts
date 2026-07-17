@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   NoteNode,
+  NotesHistoryState,
   NotesStore,
   NotesWorkspace,
   NotesWorkspaceScope
@@ -31,6 +32,17 @@ function workspace(nodes: NoteNode[]): NotesWorkspace {
   return { nodes };
 }
 
+function historyState(historyEpoch = "epoch-a"): NotesHistoryState {
+  return {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch,
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (cause: unknown) => void;
@@ -44,7 +56,7 @@ function deferred<T>() {
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue(workspace([]));
   return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn().mockResolvedValue(historyState()),
     loadWorkspace: vi.fn().mockResolvedValue(workspace([node({ id: "root" })])),
     createNode: empty,
     updateNode: empty,
@@ -64,17 +76,20 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     importAttachmentPaths: empty,
     importAttachmentBytes: empty,
     undo: vi.fn().mockResolvedValue({
-      workspace: workspace([]),
-      replayedEntryId: null,
-      canUndo: false,
-      canRedo: false
+      kind: "entryMissing",
+      ...historyState()
     }),
     redo: vi.fn().mockResolvedValue({
-      workspace: workspace([]),
-      replayedEntryId: null,
-      canUndo: false,
-      canRedo: false
+      kind: "entryMissing",
+      ...historyState()
     }),
+    clearHistory: vi.fn().mockResolvedValue({
+      ...historyState(),
+      historyReset: true
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue(historyState()),
+    prepareNavigation: vi.fn().mockResolvedValue(historyState()),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     emptyTrash: empty,
     search: vi.fn().mockResolvedValue([]),
     listTags: vi.fn().mockResolvedValue([]),
@@ -514,8 +529,8 @@ describe("notesWorkspaceCoordinator registry", () => {
     const confirmed = workspace([node({ id: "saved-draft" })]);
     const store = repository({
       historyStatus: vi.fn().mockResolvedValue({
-        canUndo: true,
-        canRedo: false
+        ...historyState(),
+        canUndo: true
       })
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
@@ -547,7 +562,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure",
         error: "move failed",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false },
+        historyStatus: { ...historyState(), canUndo: true },
         historyVersion: 2
       },
       hasPendingWork: false
@@ -560,7 +575,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure",
         error: "move failed",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false },
+        historyStatus: { ...historyState(), canUndo: true },
         historyVersion: 2
       }
     });
@@ -649,7 +664,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       kind: "failure" as const,
       error: "Projection reload failed",
       workspace: confirmed,
-      historyStatus: { canUndo: true, canRedo: false },
+      historyStatus: { ...historyState(), canUndo: true },
       scopeAgnostic: true
     }));
 
@@ -659,7 +674,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         sourceScope: null,
         result: expect.objectContaining({
           workspace: confirmed,
-          historyStatus: { canUndo: true, canRedo: false }
+          historyStatus: { ...historyState(), canUndo: true }
         })
       })
     );
@@ -764,6 +779,7 @@ describe("notesWorkspaceCoordinator registry", () => {
     const running = deferred<NotesWorkspace>();
     const store = repository({
       historyStatus: vi.fn().mockResolvedValue({
+        ...historyState(),
         canUndo: true,
         canRedo: false
       })
@@ -807,7 +823,7 @@ describe("notesWorkspaceCoordinator registry", () => {
       result: {
         kind: "authoritative",
         workspace: confirmed,
-        historyStatus: { canUndo: true, canRedo: false },
+        historyStatus: { ...historyState(), canUndo: true },
         historyVersion: 2
       }
     });
@@ -910,7 +926,7 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure" as const,
         error: "Projection reload failed",
         workspace: rawActive,
-        historyStatus: { canUndo: true, canRedo: false },
+        historyStatus: { ...historyState(), canUndo: true },
         scopeAgnostic: true,
         committedHistoryEntryIds: ["committed-entry"]
       };
@@ -927,8 +943,8 @@ describe("notesWorkspaceCoordinator registry", () => {
         kind: "failure",
         error: "Projection reload failed",
         workspace: rawActive,
-        historyStatus: { canUndo: true, canRedo: false },
-        historyVersion: 1,
+        historyStatus: { ...historyState(), canUndo: true },
+        historyVersion: 2,
         scopeAgnostic: true,
         committedHistoryEntryIds: ["committed-entry"]
       }
@@ -937,9 +953,9 @@ describe("notesWorkspaceCoordinator registry", () => {
   });
 
   it("settles activation only after loading authoritative history status", async () => {
-    const history = deferred<{ canUndo: boolean; canRedo: boolean }>();
+    const history = deferred<NotesHistoryState>();
     const store = repository({
-      historyStatus: vi.fn().mockReturnValue(history.promise)
+      initialize: vi.fn().mockReturnValue(history.promise)
     });
     const registry = createNotesWorkspaceCoordinatorRegistry();
     const events = vi.fn();
@@ -952,21 +968,84 @@ describe("notesWorkspaceCoordinator registry", () => {
     void session.activation.then(() => {
       activated = true;
     });
-    await vi.waitFor(() => expect(store.historyStatus).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(store.initialize).toHaveBeenCalledOnce());
     expect(activated).toBe(false);
 
-    history.resolve({ canUndo: false, canRedo: true });
+    history.resolve({
+      ...historyState(),
+      canRedo: true,
+      nextRedoEntryId: "redo-entry"
+    });
     await session.activation;
     expect(events).toHaveBeenCalledWith({
       type: "settled",
       result: {
         kind: "authoritative",
         workspace: workspace([node({ id: "root" })]),
-        historyStatus: { canUndo: false, canRedo: true },
+        historyStatus: {
+          ...historyState(),
+          canRedo: true,
+          nextRedoEntryId: "redo-entry"
+        },
         historyVersion: 1
       },
       hasPendingWork: false
     });
+    session.close();
+  });
+
+  it("binds the shared history epoch from the exact initialization session", async () => {
+    const initialization = deferred<NotesHistoryState>();
+    const store = repository({
+      initialize: vi.fn().mockReturnValue(initialization.promise),
+      historyStatus: undefined
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/bound-history",
+      onEvent: vi.fn()
+    });
+
+    expect(store.initialize).toHaveBeenCalledWith("/bound-history", {
+      sessionId: session.history.sessionId
+    });
+    expect(() => session.history.historyEpoch).toThrow("not initialized");
+
+    initialization.resolve(historyState("epoch-bound"));
+    await session.activation;
+
+    expect(session.history.historyEpoch).toBe("epoch-bound");
+    session.close();
+  });
+
+  it("rejects malformed initialization state before binding the session", async () => {
+    const store = repository({
+      initialize: vi.fn().mockResolvedValue({
+        ...historyState(),
+        nextUndoEntryId: 42
+      })
+    });
+    const registry = createNotesWorkspaceCoordinatorRegistry();
+    const events = vi.fn();
+    const session = registry.openSession({
+      repository: store,
+      vaultRoot: "/malformed-history-state",
+      onEvent: events
+    });
+
+    await session.activation;
+
+    expect(events).toHaveBeenCalledWith({
+      type: "settled",
+      result: {
+        kind: "failure",
+        error: "Notes initialization returned an invalid history state."
+      },
+      hasPendingWork: false
+    });
+    expect(() => session.history.historyEpoch).toThrow("not initialized");
+    expect(store.loadWorkspace).not.toHaveBeenCalled();
     session.close();
   });
 
@@ -1085,7 +1164,7 @@ describe("notesWorkspaceCoordinator registry", () => {
   });
 
   it("removes an idle entry after deferred initialization settles without a session", async () => {
-    const initialization = deferred<void>();
+    const initialization = deferred<NotesHistoryState>();
     const store = repository({
       initialize: vi.fn().mockReturnValue(initialization.promise)
     });
@@ -1098,7 +1177,7 @@ describe("notesWorkspaceCoordinator registry", () => {
 
     expect(registry.hasCoordinator(store, "/vault")).toBe(true);
     session.close();
-    initialization.resolve();
+    initialization.resolve(historyState());
     await session.activation;
 
     expect(store.loadWorkspace).not.toHaveBeenCalled();

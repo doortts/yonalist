@@ -137,8 +137,16 @@ function note(
 
 function repository(overrides: Partial<NotesStore> = {}): NotesStore {
   const empty = vi.fn().mockResolvedValue({ nodes: [] });
+  const initialHistoryState = {
+    canUndo: false,
+    canRedo: false,
+    historyEpoch: "history-epoch",
+    nextUndoEntryId: null,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
   return {
-    initialize: vi.fn().mockResolvedValue(undefined),
+    initialize: vi.fn().mockResolvedValue(initialHistoryState),
     loadWorkspace: vi.fn().mockResolvedValue({
       nodes: [
         note("page", "Page title", null),
@@ -160,6 +168,31 @@ function repository(overrides: Partial<NotesStore> = {}): NotesStore {
     restoreNode: empty,
     archiveNode: empty,
     unarchiveNode: empty,
+    undo: vi.fn().mockResolvedValue({
+      kind: "entryMissing",
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "history-epoch",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
+    redo: vi.fn().mockResolvedValue({
+      kind: "entryMissing",
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "history-epoch",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: []
+    }),
+    clearHistory: vi.fn().mockResolvedValue({
+      ...initialHistoryState,
+      historyReset: true
+    }),
+    pruneHistoryEntries: vi.fn().mockResolvedValue(initialHistoryState),
+    prepareNavigation: vi.fn().mockResolvedValue(initialHistoryState),
+    closeHistorySession: vi.fn().mockResolvedValue(undefined),
     importAttachmentPaths: empty,
     importAttachmentBytes: empty,
     emptyTrash: empty,
@@ -734,11 +767,18 @@ describe("NotesExportMenu", () => {
     expect(await within(exportControl!).findByRole("alert")).toHaveTextContent(
       "Save this note before exporting."
     );
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
-      id: "selected",
-      title: "Unsaved child",
-      note: ""
-    });
+    expect(store.updateNode).toHaveBeenCalledWith(
+      "/vault",
+      {
+        id: "selected",
+        title: "Unsaved child",
+        note: ""
+      },
+      expect.objectContaining({
+        historyEpoch: "history-epoch",
+        commandKind: "text"
+      })
+    );
     expect(exportServiceMock.saveNotesExport).not.toHaveBeenCalled();
     expect(exportServiceMock.renderPdfExport).not.toHaveBeenCalled();
   });

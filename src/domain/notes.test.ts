@@ -3,7 +3,10 @@ import {
   createNoteId,
   isNoteAttachment,
   isNoteNode,
-  isNotesHistoryReplayResult,
+  isNotesHistoryReplayOutcome,
+  isNotesHistoryState,
+  isNotesHistoryResetResult,
+  isNotesWorkspaceResetResult,
   isNotesMutationResult,
   isNoteSearchResult,
   isNoteStructuredSearchQuery,
@@ -90,6 +93,17 @@ function indexedUuid(prefix: string, index: number): string {
   return `${prefix}0000000-0000-4000-8000-${index
     .toString(16)
     .padStart(12, "0")}`;
+}
+
+function historyState(historyEpoch = "epoch-a") {
+  return {
+    canUndo: true,
+    canRedo: false,
+    historyEpoch,
+    nextUndoEntryId: UUID,
+    nextRedoEntryId: null,
+    prunedEntryIds: []
+  };
 }
 
 afterEach(() => {
@@ -338,8 +352,7 @@ describe("Notes domain contract", () => {
     const result: NotesMutationResult = {
       workspace: { nodes: [makeNoteNode()] },
       historyEntryId: UUID,
-      canUndo: true,
-      canRedo: false
+      ...historyState()
     };
 
     expect(isNotesMutationResult(result)).toBe(true);
@@ -369,12 +382,36 @@ describe("Notes domain contract", () => {
     ).toBe(false);
   });
 
+  it("requires every history state key on mutation results", () => {
+    const result = {
+      workspace: { nodes: [makeNoteNode()] },
+      historyEntryId: UUID,
+      canUndo: true,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: UUID,
+      nextRedoEntryId: null,
+      prunedEntryIds: [ATTACHMENT_UUID]
+    };
+
+    expect(isNotesMutationResult(result)).toBe(true);
+    for (const key of [
+      "historyEpoch",
+      "nextUndoEntryId",
+      "nextRedoEntryId",
+      "prunedEntryIds"
+    ] as const) {
+      const missing = { ...result };
+      delete missing[key];
+      expect(isNotesMutationResult(missing), key).toBe(false);
+    }
+  });
+
   it("accepts and passes through the optional mutation delta fields", () => {
     const result: NotesMutationResult = {
       workspace: { nodes: [makeNoteNode()] },
       historyEntryId: UUID,
-      canUndo: true,
-      canRedo: false
+      ...historyState()
     };
 
     expect(
@@ -407,8 +444,7 @@ describe("Notes domain contract", () => {
     const result: NotesMutationResult = {
       workspace: { nodes: [makeNoteNode()] },
       historyEntryId: UUID,
-      canUndo: true,
-      canRedo: false
+      ...historyState()
     };
 
     expect(
@@ -450,25 +486,55 @@ describe("Notes domain contract", () => {
     }>();
   });
 
-  it("recognizes only strict history replay result payloads", () => {
+  it("requires every exact key on history state payloads", () => {
+    const state = {
+      canUndo: true,
+      canRedo: false,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: UUID,
+      nextRedoEntryId: null,
+      prunedEntryIds: [ATTACHMENT_UUID]
+    };
+
+    expect(isNotesHistoryState(state)).toBe(true);
+    for (const key of Object.keys(state) as Array<keyof typeof state>) {
+      const missing = { ...state };
+      delete missing[key];
+      expect(isNotesHistoryState(missing), key).toBe(false);
+    }
+    expect(isNotesHistoryState({ ...state, extra: true })).toBe(false);
+  });
+
+  it("recognizes only strict history replay outcome payloads", () => {
+    const state = {
+      canUndo: false,
+      canRedo: true,
+      historyEpoch: "epoch-a",
+      nextUndoEntryId: null,
+      nextRedoEntryId: ATTACHMENT_UUID,
+      prunedEntryIds: []
+    };
     const replay = {
+      kind: "applied",
       workspace: { nodes: [makeNoteNode()] },
       replayedEntryId: ATTACHMENT_UUID,
-      canUndo: false,
-      canRedo: true
+      ...state
     };
     const customReplay = Object.assign(
       Object.create({ inherited: true }),
       replay
     );
 
-    expect(isNotesHistoryReplayResult(replay)).toBe(true);
-    expect(isNotesHistoryReplayResult({ ...replay, replayedEntryId: null })).toBe(
-      true
-    );
-    expect(isNotesHistoryReplayResult(customReplay)).toBe(false);
+    expect(isNotesHistoryReplayOutcome(replay)).toBe(true);
     expect(
-      isNotesHistoryReplayResult({
+      isNotesHistoryReplayOutcome({ kind: "epochMismatch", ...state })
+    ).toBe(true);
+    expect(
+      isNotesHistoryReplayOutcome({ ...replay, replayedEntryId: null })
+    ).toBe(false);
+    expect(isNotesHistoryReplayOutcome(customReplay)).toBe(false);
+    expect(
+      isNotesHistoryReplayOutcome({
         ...replay,
         workspace: {
           nodes: [makeNoteNode()],
@@ -478,6 +544,36 @@ describe("Notes domain contract", () => {
         }
       })
     ).toBe(false);
+    for (const key of Object.keys(state) as Array<keyof typeof state>) {
+      const missing = { ...replay };
+      delete missing[key];
+      expect(isNotesHistoryReplayOutcome(missing), key).toBe(false);
+    }
+  });
+
+  it("requires exact history reset result payloads", () => {
+    const reset = {
+      historyReset: true,
+      canUndo: false,
+      canRedo: false,
+      historyEpoch: "epoch-b",
+      nextUndoEntryId: null,
+      nextRedoEntryId: null,
+      prunedEntryIds: [UUID]
+    } as const;
+
+    expect(isNotesHistoryResetResult(reset)).toBe(true);
+    expect(
+      isNotesWorkspaceResetResult({ ...reset, workspace: { nodes: [] } })
+    ).toBe(true);
+    expect(isNotesHistoryResetResult({ ...reset, historyReset: false })).toBe(
+      false
+    );
+    for (const key of Object.keys(reset) as Array<keyof typeof reset>) {
+      const missing = { ...reset };
+      delete missing[key];
+      expect(isNotesHistoryResetResult(missing), key).toBe(false);
+    }
   });
 
   it("rejects incomplete Notes node payloads", () => {
@@ -664,7 +760,7 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         input: ImportNoteAttachmentInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<NonNullable<NotesStore["readAttachmentBytes"]>>().toEqualTypeOf<
@@ -674,21 +770,21 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         input: ResizeNoteAttachmentInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<NonNullable<NotesStore["removeAttachment"]>>().toEqualTypeOf<
       (
         vaultPath: string,
         attachmentId: string,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<NonNullable<NotesStore["restoreAttachment"]>>().toEqualTypeOf<
       (
         vaultPath: string,
         attachmentId: string,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<keyof ImportNoteAttachmentPathBatchInput>().toEqualTypeOf<
@@ -707,14 +803,14 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         input: ImportNoteAttachmentPathBatchInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<NonNullable<NotesStore["importAttachmentBytes"]>>().toEqualTypeOf<
       (
         vaultPath: string,
         input: ImportNoteAttachmentBytesBatchInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
   });
@@ -740,14 +836,14 @@ describe("Notes domain contract", () => {
       (
         vaultPath: string,
         input: ImportImageNodePathsInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
     expectTypeOf<NonNullable<NotesStore["importImageNodeBytes"]>>().toEqualTypeOf<
       (
         vaultPath: string,
         input: ImportImageNodeBytesInput,
-        historyContext?: import("./notes").NotesHistoryContext | null
+        historyContext: import("./notes").NotesHistoryContext
       ) => Promise<NotesMutationResponse>
     >();
   });
@@ -756,7 +852,7 @@ describe("Notes domain contract", () => {
     type SubtreeMutation = (
       vaultPath: string,
       nodeId: import("./notes").NoteId,
-      historyContext?: import("./notes").NotesHistoryContext | null
+      historyContext: import("./notes").NotesHistoryContext
     ) => Promise<NotesMutationResult>;
 
     expectTypeOf<NonNullable<NotesStore["expandAll"]>>().toEqualTypeOf<SubtreeMutation>();

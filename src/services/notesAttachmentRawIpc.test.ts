@@ -23,6 +23,7 @@ const FIRST_ID = "22222222-2222-4222-8222-222222222222";
 const SECOND_ID = "33333333-3333-4333-8333-333333333333";
 const HISTORY_CONTEXT: NotesHistoryContext = {
   sessionId: "44444444-4444-4444-8444-444444444444",
+  historyEpoch: "epoch-a",
   entryId: "55555555-5555-4555-8555-555555555555",
   commandKind: "importAttachmentBytes"
 };

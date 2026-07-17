@@ -60,16 +60,56 @@ export type NormalizedNotesWorkspace = NotesWorkspace & {
 
 export interface NotesHistoryContext {
   sessionId: string;
+  historyEpoch: string;
   entryId: string;
   commandKind: string;
 }
 
-export interface NotesHistoryStatus {
+export interface NotesHistoryState {
   canUndo: boolean;
   canRedo: boolean;
+  historyEpoch: string;
+  nextUndoEntryId: string | null;
+  nextRedoEntryId: string | null;
+  prunedEntryIds: string[];
 }
 
-export interface NotesMutationResult extends NotesHistoryStatus {
+export type NotesHistoryStatus = NotesHistoryState;
+
+export interface NotesInitializeInput {
+  sessionId: string;
+}
+
+export interface NotesHistoryReplayInput {
+  sessionId: string;
+  historyEpoch: string;
+  expectedEntryId: string;
+  scope: NotesWorkspaceScope;
+}
+
+export interface NotesPruneHistoryInput {
+  sessionId: string;
+  historyEpoch: string;
+  entryIds: readonly string[];
+}
+
+export interface NotesPrepareNavigationInput {
+  sessionId: string;
+  historyEpoch: string;
+  unreachableRedoEntryIds: readonly string[];
+}
+
+export interface NotesHistoryCloseInput {
+  sessionId: string;
+  historyEpoch: string;
+}
+
+export interface NotesHistoryResetInput {
+  sessionId: string;
+  historyEpoch: string;
+}
+
+export interface NotesMutationResult extends NotesHistoryState {
   workspace: NotesWorkspace;
   historyEntryId: string | null;
   /**
@@ -97,9 +137,22 @@ export interface NotesMutationResult extends NotesHistoryStatus {
 
 export type NotesMutationResponse = NotesWorkspace | NotesMutationResult;
 
-export interface NotesHistoryReplayResult extends NotesHistoryStatus {
+export type NotesHistoryReplayOutcome =
+  | ({
+      kind: "applied";
+      workspace: NotesWorkspace;
+      replayedEntryId: string;
+    } & NotesHistoryState)
+  | ({
+      kind: "epochMismatch" | "entryMissing" | "entryNotNext";
+    } & NotesHistoryState);
+
+export interface NotesHistoryResetResult extends NotesHistoryState {
+  historyReset: true;
+}
+
+export interface NotesWorkspaceResetResult extends NotesHistoryResetResult {
   workspace: NotesWorkspace;
-  replayedEntryId: string | null;
 }
 
 export type NoteTagPrefix = "#" | "@";
@@ -391,59 +444,165 @@ export interface ImportSubtreeInput {
 }
 
 export interface NotesStore {
-  initialize(vaultPath: string): Promise<void>;
-  loadWorkspace(vaultPath: string, scope: NotesWorkspaceScope): Promise<NotesWorkspace>;
-  createNode(vaultPath: string, input: CreateNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  updateNode(vaultPath: string, input: UpdateNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  splitNode(vaultPath: string, input: SplitNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  moveNode(vaultPath: string, input: MoveNoteNodeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
+  initialize(
+    vaultPath: string,
+    input: NotesInitializeInput
+  ): Promise<NotesHistoryState>;
+  loadWorkspace(
+    vaultPath: string,
+    scope: NotesWorkspaceScope
+  ): Promise<NotesWorkspace>;
+  createNode(
+    vaultPath: string,
+    input: CreateNoteNodeInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  updateNode(
+    vaultPath: string,
+    input: UpdateNoteNodeInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  splitNode(
+    vaultPath: string,
+    input: SplitNoteNodeInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  moveNode(
+    vaultPath: string,
+    input: MoveNoteNodeInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
   // Structural batch (plan Phase 4.1): one operation applied to a whole node set
   // as a single transaction / single history entry (one undo step).
-  applyBatch(vaultPath: string, input: ApplyNotesBatchInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
+  applyBatch(
+    vaultPath: string,
+    input: ApplyNotesBatchInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
   // Paste import (plan Phase 4.4): insert a caller-supplied forest of new
   // nodes as one contiguous block, one transaction / one history entry.
-  importSubtree(vaultPath: string, input: ImportSubtreeInput, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  toggleComplete(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  toggleCollapsed(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  expandAll?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;
-  collapseAll?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;
-  sortSubtreeAscending?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;
-  sortSubtreeDescending?(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResult>;
-  toggleStar(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  duplicateNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  removeEmptyNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  softDeleteNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  restoreNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  archiveNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  unarchiveNode(vaultPath: string, nodeId: NoteId, historyContext?: NotesHistoryContext | null): Promise<NotesMutationResponse>;
-  undo?(vaultPath: string, sessionId: string, scope: NotesWorkspaceScope): Promise<NotesHistoryReplayResult>;
-  redo?(vaultPath: string, sessionId: string, scope: NotesWorkspaceScope): Promise<NotesHistoryReplayResult>;
-  historyStatus?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
-  clearHistory?(vaultPath: string, sessionId: string): Promise<NotesHistoryStatus>;
+  importSubtree(
+    vaultPath: string,
+    input: ImportSubtreeInput,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  toggleComplete(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  toggleCollapsed(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  expandAll?(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResult>;
+  collapseAll?(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResult>;
+  sortSubtreeAscending?(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResult>;
+  sortSubtreeDescending?(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResult>;
+  toggleStar(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  duplicateNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  removeEmptyNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  softDeleteNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  restoreNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  archiveNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  unarchiveNode(
+    vaultPath: string,
+    nodeId: NoteId,
+    historyContext: NotesHistoryContext
+  ): Promise<NotesMutationResponse>;
+  undo(
+    vaultPath: string,
+    input: NotesHistoryReplayInput
+  ): Promise<NotesHistoryReplayOutcome>;
+  redo(
+    vaultPath: string,
+    input: NotesHistoryReplayInput
+  ): Promise<NotesHistoryReplayOutcome>;
+  historyStatus?(
+    vaultPath: string,
+    sessionId: string
+  ): Promise<NotesHistoryStatus>;
+  clearHistory(
+    vaultPath: string,
+    input: NotesHistoryResetInput
+  ): Promise<NotesHistoryResetResult>;
+  pruneHistoryEntries(
+    vaultPath: string,
+    input: NotesPruneHistoryInput
+  ): Promise<NotesHistoryState>;
+  prepareNavigation(
+    vaultPath: string,
+    input: NotesPrepareNavigationInput
+  ): Promise<NotesHistoryState>;
+  closeHistorySession(
+    vaultPath: string,
+    input: NotesHistoryCloseInput
+  ): Promise<void>;
   importAttachment?(
     vaultPath: string,
     input: ImportNoteAttachmentInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   importAttachmentPaths(
     vaultPath: string,
     input: ImportNoteAttachmentPathBatchInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   importAttachmentBytes(
     vaultPath: string,
     input: ImportNoteAttachmentBytesBatchInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   importImageNodePaths?(
     vaultPath: string,
     input: ImportImageNodePathsInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   importImageNodeBytes?(
     vaultPath: string,
     input: ImportImageNodeBytesInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   openAttachmentOriginal?(
     vaultPath: string,
@@ -460,21 +619,31 @@ export interface NotesStore {
   resizeAttachment?(
     vaultPath: string,
     input: ResizeNoteAttachmentInput,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   removeAttachment?(
     vaultPath: string,
     attachmentId: string,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
   restoreAttachment?(
     vaultPath: string,
     attachmentId: string,
-    historyContext?: NotesHistoryContext | null
+    historyContext: NotesHistoryContext
   ): Promise<NotesMutationResponse>;
-  emptyTrash(vaultPath: string): Promise<NotesWorkspace>;
-  search(vaultPath: string, query: string, scope?: NoteSearchScope): Promise<NoteSearchResult[]>;
-  searchStructured?(vaultPath: string, query: NoteStructuredSearchQuery): Promise<NoteSearchResult[]>;
+  emptyTrash(
+    vaultPath: string,
+    input: NotesHistoryResetInput
+  ): Promise<NotesWorkspaceResetResult>;
+  search(
+    vaultPath: string,
+    query: string,
+    scope?: NoteSearchScope
+  ): Promise<NoteSearchResult[]>;
+  searchStructured?(
+    vaultPath: string,
+    query: NoteStructuredSearchQuery
+  ): Promise<NoteSearchResult[]>;
   listTags(vaultPath: string): Promise<string[]>;
   listTagsWithCounts(vaultPath: string): Promise<NoteTagSummary[]>;
   deleteDatabase(vaultPath: string): Promise<NotesDeleteDatabaseResult>;
@@ -745,11 +914,42 @@ export function isNotesWorkspace(value: unknown): value is NotesWorkspace {
   return normalizeNotesWorkspace(value) !== null;
 }
 
+const NOTES_HISTORY_STATE_KEYS = [
+  "canUndo",
+  "canRedo",
+  "historyEpoch",
+  "nextUndoEntryId",
+  "nextRedoEntryId",
+  "prunedEntryIds"
+] as const;
+
+function hasNotesHistoryState(value: Record<string, unknown>): boolean {
+  return (
+    NOTES_HISTORY_STATE_KEYS.every((key) =>
+      Object.prototype.hasOwnProperty.call(value, key)
+    ) &&
+    typeof value.canUndo === "boolean" &&
+    typeof value.canRedo === "boolean" &&
+    typeof value.historyEpoch === "string" &&
+    isNullableString(value.nextUndoEntryId) &&
+    isNullableString(value.nextRedoEntryId) &&
+    isDenseArray(value.prunedEntryIds) &&
+    value.prunedEntryIds.every((entryId) => typeof entryId === "string")
+  );
+}
+
+export function isNotesHistoryState(value: unknown): value is NotesHistoryState {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, NOTES_HISTORY_STATE_KEYS) &&
+    hasNotesHistoryState(value)
+  );
+}
+
 const NOTES_MUTATION_RESULT_REQUIRED_KEYS = [
   "workspace",
   "historyEntryId",
-  "canUndo",
-  "canRedo"
+  ...NOTES_HISTORY_STATE_KEYS
 ] as const;
 
 const NOTES_MUTATION_RESULT_OPTIONAL_KEYS = [
@@ -765,7 +965,9 @@ const NOTES_MUTATION_RESULT_ALLOWED_KEYS = new Set<string>([
   ...NOTES_MUTATION_RESULT_OPTIONAL_KEYS
 ]);
 
-export function isNotesMutationResult(value: unknown): value is NotesMutationResult {
+export function isNotesMutationResult(
+  value: unknown
+): value is NotesMutationResult {
   if (!isRecord(value)) {
     return false;
   }
@@ -777,8 +979,7 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
     !keys.every((key) => NOTES_MUTATION_RESULT_ALLOWED_KEYS.has(key)) ||
     !isNotesWorkspace(value.workspace) ||
     !isNullableString(value.historyEntryId) ||
-    typeof value.canUndo !== "boolean" ||
-    typeof value.canRedo !== "boolean"
+    !hasNotesHistoryState(value)
   ) {
     return false;
   }
@@ -829,21 +1030,56 @@ export function isNotesMutationResult(value: unknown): value is NotesMutationRes
   return true;
 }
 
-export function isNotesHistoryReplayResult(
+export function isNotesHistoryReplayOutcome(
   value: unknown
-): value is NotesHistoryReplayResult {
+): value is NotesHistoryReplayOutcome {
+  if (!isRecord(value) || !hasNotesHistoryState(value)) {
+    return false;
+  }
+  if (value.kind === "applied") {
+    return (
+      hasExactKeys(value, [
+        "kind",
+        "workspace",
+        "replayedEntryId",
+        ...NOTES_HISTORY_STATE_KEYS
+      ]) &&
+      isNotesWorkspace(value.workspace) &&
+      typeof value.replayedEntryId === "string"
+    );
+  }
+  return (
+    (value.kind === "epochMismatch" ||
+      value.kind === "entryMissing" ||
+      value.kind === "entryNotNext") &&
+    hasExactKeys(value, ["kind", ...NOTES_HISTORY_STATE_KEYS])
+  );
+}
+
+export function isNotesHistoryResetResult(
+  value: unknown
+): value is NotesHistoryResetResult {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, ["historyReset", ...NOTES_HISTORY_STATE_KEYS]) &&
+    value.historyReset === true &&
+    hasNotesHistoryState(value)
+  );
+}
+
+export function isNotesWorkspaceResetResult(
+  value: unknown
+): value is NotesWorkspaceResetResult {
   return (
     isRecord(value) &&
     hasExactKeys(value, [
       "workspace",
-      "replayedEntryId",
-      "canUndo",
-      "canRedo"
+      "historyReset",
+      ...NOTES_HISTORY_STATE_KEYS
     ]) &&
     isNotesWorkspace(value.workspace) &&
-    isNullableString(value.replayedEntryId) &&
-    typeof value.canUndo === "boolean" &&
-    typeof value.canRedo === "boolean"
+    value.historyReset === true &&
+    hasNotesHistoryState(value)
   );
 }
 

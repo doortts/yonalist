@@ -9,6 +9,12 @@ import {
 
 const tauriCoreFactoryEvaluated = vi.hoisted(() => ({ current: false }));
 const invokeMock = vi.hoisted(() => vi.fn());
+const historyContext = {
+  sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  historyEpoch: "epoch-a",
+  entryId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  commandKind: "attachment"
+};
 
 vi.mock("@tauri-apps/api/core", () => {
   tauriCoreFactoryEvaluated.current = true;
@@ -48,31 +54,39 @@ describe("notesStore outside Tauri", () => {
     const attachmentId = "22222222-2222-4222-8222-222222222222";
 
     await expect(
-      notesImportAttachmentPaths("/vault", {
-        nodeId,
-        attachments: [{ id: attachmentId, sourcePath: "/tmp/image.png" }],
-        initialMaxDisplayWidth: 480
-      })
+      notesImportAttachmentPaths(
+        "/vault",
+        {
+          nodeId,
+          attachments: [{ id: attachmentId, sourcePath: "/tmp/image.png" }],
+          initialMaxDisplayWidth: 480
+        },
+        historyContext
+      )
     ).rejects.toMatchObject({
       message: "Notes requires Tauri desktop storage.",
       operation: "write",
       retryable: true
     });
     await expect(
-      notesImportAttachmentBytes("/vault", {
-        nodeId,
-        attachments: [
-          {
-            id: attachmentId,
-            originalName: "image.png",
-            mimeType: "image/png",
-            blob: new NodeBlob([Uint8Array.of(1)], {
-              type: "image/png"
-            }) as Blob
-          }
-        ],
-        initialMaxDisplayWidth: 480
-      })
+      notesImportAttachmentBytes(
+        "/vault",
+        {
+          nodeId,
+          attachments: [
+            {
+              id: attachmentId,
+              originalName: "image.png",
+              mimeType: "image/png",
+              blob: new NodeBlob([Uint8Array.of(1)], {
+                type: "image/png"
+              }) as Blob
+            }
+          ],
+          initialMaxDisplayWidth: 480
+        },
+        historyContext
+      )
     ).rejects.toMatchObject({
       message: "Notes requires Tauri desktop storage.",
       operation: "write",
@@ -117,7 +131,11 @@ describe("notesStore structured errors", () => {
       message: "Notes vault is already open in another window."
     });
 
-    await expect(notesInitialize("/vault")).rejects.toMatchObject({
+    await expect(
+      notesInitialize("/vault", {
+        sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      })
+    ).rejects.toMatchObject({
       operation: "load",
       code: "vaultBusy",
       retryable: true,
@@ -129,7 +147,11 @@ describe("notesStore structured errors", () => {
     Reflect.set(window, "__TAURI_INTERNALS__", {});
     invokeMock.mockRejectedValue({ detail: "opaque" });
 
-    await expect(notesInitialize("/vault")).rejects.toMatchObject({
+    await expect(
+      notesInitialize("/vault", {
+        sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+      })
+    ).rejects.toMatchObject({
       operation: "load",
       code: "internal",
       message: "Notes request failed."

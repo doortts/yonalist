@@ -1,6 +1,8 @@
 import {
+  isNotesHistoryState,
   parseNotesError,
   type NoteId,
+  type NotesHistoryState,
   type NotesHistoryStatus,
   type NotesStore,
   type NotesWorkspace,
@@ -510,14 +512,24 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
     try {
       if (item.kind === "activation") {
         if (!item.entry.initialized) {
-          let initialization: Promise<void>;
+          let initialization: Promise<NotesHistoryState>;
           try {
-            initialization = item.entry.repository.initialize(item.entry.vaultRoot);
+            initialization = item.entry.repository.initialize(
+              item.entry.vaultRoot,
+              { sessionId: item.entry.history.sessionId }
+            );
           } catch (cause) {
             await Promise.resolve();
             throw cause;
           }
-          await initialization;
+          const initialState = await initialization;
+          if (!isNotesHistoryState(initialState)) {
+            throw new Error(
+              "Notes initialization returned an invalid history state."
+            );
+          }
+          item.entry.history.bindInitialization(initialState);
+          item.entry.historyStatus = initialState;
           item.entry.initialized = true;
         }
         if (!hasLiveActivationSession(item)) {
@@ -527,7 +539,11 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
             item.entry.vaultRoot,
             { kind: "active" }
           );
-          result = { kind: "authoritative", workspace };
+          result = {
+            kind: "authoritative",
+            workspace,
+            historyStatus: item.entry.historyStatus
+          };
         }
       } else {
         const work = item.work;
@@ -619,7 +635,8 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         vaultRoot,
         confirmedWorkspace: { nodes: [] },
         history: createNotesHistorySession(
-          repository.undo && repository.redo
+          typeof repository.undo === "function" &&
+            typeof repository.redo === "function"
             ? undefined
             : { createId: () => LEGACY_HISTORY_SESSION_ID }
         ),
@@ -630,7 +647,14 @@ export function createNotesWorkspaceCoordinatorRegistry(): NotesWorkspaceCoordin
         pendingActivation: null,
         structuralTail: Promise.resolve(),
         pendingStructuralBarriers: 0,
-        historyStatus: { canUndo: false, canRedo: false },
+        historyStatus: {
+          canUndo: false,
+          canRedo: false,
+          historyEpoch: "",
+          nextUndoEntryId: null,
+          nextRedoEntryId: null,
+          prunedEntryIds: []
+        },
         historyVersion: 0,
         imageImportSequences: new Map()
       };

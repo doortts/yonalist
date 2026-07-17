@@ -18,7 +18,12 @@ const IMAGE_NODE_VERSION = 2;
 const HEADER_BYTES = 9;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const HISTORY_CONTEXT_KEYS = ["sessionId", "entryId", "commandKind"] as const;
+const HISTORY_CONTEXT_KEYS = [
+  "sessionId",
+  "historyEpoch",
+  "entryId",
+  "commandKind"
+] as const;
 const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -44,11 +49,14 @@ function normalizeHistoryContext(
     )
   ) {
     throw new Error(
-      "History context must contain exactly sessionId, entryId, and commandKind."
+      "History context must contain exactly sessionId, historyEpoch, entryId, and commandKind."
     );
   }
   if (!isCanonicalUuidV4(historyContext.sessionId)) {
     throw new Error("History session ID must be a canonical UUID v4.");
+  }
+  if (typeof historyContext.historyEpoch !== "string") {
+    throw new Error("History epoch must be a string.");
   }
   if (!isCanonicalUuidV4(historyContext.entryId)) {
     throw new Error("History entry ID must be a canonical UUID v4.");
@@ -65,6 +73,7 @@ function normalizeHistoryContext(
 
   return {
     sessionId: historyContext.sessionId,
+    historyEpoch: historyContext.historyEpoch,
     entryId: historyContext.entryId,
     commandKind
   };

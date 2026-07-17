@@ -41,6 +41,15 @@ import { clearNotificationDetailCache } from "./services/notificationDetail";
 import { clearNotificationCache } from "./services/notifications";
 import * as windowDrag from "./windowDrag";
 
+const initializedHistoryState = {
+  canUndo: false,
+  canRedo: false,
+  historyEpoch: "epoch-a",
+  nextUndoEntryId: null,
+  nextRedoEntryId: null,
+  prunedEntryIds: []
+};
+
 function installLocalStorageMock() {
   let store: Record<string, string> = {};
   const localStorageMock = {
@@ -165,7 +174,9 @@ describe("Yonalist app shell", () => {
 
   it("continues to edit Notes while offline and unsigned in", async () => {
     window.localStorage.removeItem("yonalist.auth.skipLogin.v1");
-    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(
+      initializedHistoryState
+    );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
       nodes: [appTestNote({ id: "offline-note", title: "Offline note" })]
     });
@@ -331,7 +342,7 @@ describe("Yonalist app shell", () => {
     const user = userEvent.setup();
     const initializeSpy = vi
       .spyOn(notesStore, "initialize")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(initializedHistoryState);
     const loadWorkspaceSpy = vi
       .spyOn(notesStore, "loadWorkspace")
       .mockResolvedValue({
@@ -365,7 +376,9 @@ describe("Yonalist app shell", () => {
 
   it("keeps the inactive Notes panes mounted but hidden", async () => {
     const user = userEvent.setup();
-    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(
+      initializedHistoryState
+    );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({ nodes: [] });
     window.localStorage.setItem(activeFeatureStorageKey, "notes");
 
@@ -390,7 +403,9 @@ describe("Yonalist app shell", () => {
 
   it("clears Notes selection feedback when Notes becomes inactive", async () => {
     const user = userEvent.setup();
-    vi.spyOn(notesStore, "initialize").mockResolvedValue(undefined);
+    vi.spyOn(notesStore, "initialize").mockResolvedValue(
+      initializedHistoryState
+    );
     vi.spyOn(notesStore, "loadWorkspace").mockResolvedValue({
       nodes: [
         appTestNote({ id: "alpha", sortKey: 1, title: "Alpha" }),
