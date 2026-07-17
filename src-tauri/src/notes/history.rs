@@ -13,6 +13,7 @@ use crate::notes::types::{
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
+use uuid::Uuid;
 
 pub(crate) const HISTORY_MAX_ENTRIES: i64 = 100;
 pub(crate) const HISTORY_MAX_BYTES: i64 = 50 * 1024 * 1024;
@@ -153,6 +154,43 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(&sql)
         .map_err(|error| format!("Could not prepare Notes history auditing: {error}"))
+}
+
+pub(crate) fn install_session_history(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "PRAGMA temp_store = MEMORY; \
+             CREATE TEMP TABLE IF NOT EXISTS notes_history_epoch (value TEXT NOT NULL); \
+             CREATE TEMP TABLE IF NOT EXISTS notes_history_entries (\
+               id TEXT PRIMARY KEY, session_id TEXT NOT NULL, sequence INTEGER NOT NULL, \
+               is_undone INTEGER NOT NULL DEFAULT 0, estimated_bytes INTEGER NOT NULL DEFAULT 0, \
+               command_kind TEXT NOT NULL); \
+             CREATE UNIQUE INDEX IF NOT EXISTS temp.notes_history_session_sequence \
+               ON notes_history_entries(session_id, sequence); \
+             CREATE TEMP TABLE IF NOT EXISTS notes_history_changes (\
+               entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE, \
+               table_name TEXT NOT NULL, row_id TEXT NOT NULL, ordinal INTEGER NOT NULL, \
+               before_json TEXT, after_json TEXT, PRIMARY KEY(entry_id, table_name, row_id));",
+        )
+        .map_err(|error| format!("Could not install TEMP Notes history: {error}"))?;
+    connection
+        .execute(
+            "INSERT INTO notes_history_epoch(value) SELECT ?1 \
+             WHERE NOT EXISTS (SELECT 1 FROM notes_history_epoch)",
+            [Uuid::new_v4().to_string()],
+        )
+        .map_err(|error| format!("Could not initialize Notes history epoch: {error}"))?;
+    install_audit_infrastructure(connection)
+}
+
+// Consumed by the epoch-aware protocol built on this storage layer.
+#[allow(dead_code)]
+pub(crate) fn history_epoch(connection: &Connection) -> Result<String, String> {
+    connection
+        .query_row("SELECT value FROM notes_history_epoch", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| format!("Could not read the Notes history epoch: {error}"))
 }
 
 fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result<(), String> {
@@ -3546,7 +3584,7 @@ mod tests {
     }
 
     #[test]
-    fn notes_history_session_clear_expiry_and_permanent_operations_are_explicit() {
+    fn notes_history_session_clear_connection_locality_and_permanent_operations_are_explicit() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let vault_path = temp_dir.path().to_str().expect("path");
         let mut connection = connect_notes_db(vault_path).expect("connect");
@@ -3569,7 +3607,11 @@ mod tests {
         .expect("restore");
         crate::notes::commands::notes_initialize_inner(vault_path.to_string())
             .expect("expire sessions at initialize");
-        assert_eq!(entry_count(&connection), 0);
+        assert_eq!(
+            entry_count(&connection),
+            1,
+            "a separate initialization cannot access connection-local history"
+        );
 
         let context = history_context(3, "trash");
         journal(&mut connection, &context, |connection| {
@@ -3607,7 +3649,7 @@ mod tests {
         owned
     }
 
-    /// The persisted `notes_history_changes` rows for an entry are exactly the
+    /// The session `notes_history_changes` rows for an entry are exactly the
     /// compacted audit rows the delta is derived from, so they are the ground
     /// truth for the equivalence assertions below.
     fn persisted_change_ids(

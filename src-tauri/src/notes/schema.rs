@@ -77,27 +77,6 @@ CREATE TABLE notes_attachments (
 CREATE INDEX notes_attachments_node_order
   ON notes_attachments(node_id, sort_key, id);
 
-CREATE TABLE notes_history_entries (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  sequence INTEGER NOT NULL,
-  is_undone INTEGER NOT NULL DEFAULT 0,
-  estimated_bytes INTEGER NOT NULL DEFAULT 0,
-  command_kind TEXT NOT NULL
-);
-CREATE UNIQUE INDEX notes_history_session_sequence
-  ON notes_history_entries(session_id, sequence);
-
-CREATE TABLE notes_history_changes (
-  entry_id TEXT NOT NULL REFERENCES notes_history_entries(id) ON DELETE CASCADE,
-  table_name TEXT NOT NULL,
-  row_id TEXT NOT NULL,
-  ordinal INTEGER NOT NULL,
-  before_json TEXT,
-  after_json TEXT,
-  PRIMARY KEY (entry_id, table_name, row_id)
-);
-
 CREATE VIRTUAL TABLE notes_search USING fts5(
   node_id UNINDEXED,
   title,

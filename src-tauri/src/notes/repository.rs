@@ -609,6 +609,7 @@ pub(crate) fn connect_notes_db(vault_path: &str) -> Result<Connection, String> {
     database.verify_sqlite_connection(&connection, &metadata)?;
     verify_held_notes_files(&metadata, &database, &companions)?;
     initialize_notes_db(&mut connection)?;
+    history::install_session_history(&connection)?;
     app_lock.revalidate_metadata_path()?;
     database.verify_sqlite_connection(&connection, &metadata)?;
     verify_held_notes_files(&metadata, &database, &companions)?;
@@ -799,12 +800,7 @@ fn validate_persisted_id_namespace(connection: &Connection) -> Result<(), String
             "WITH namespace(id, kind) AS (\
                SELECT id, 'node' FROM notes_nodes \
                UNION ALL \
-               SELECT id, 'attachment' FROM notes_attachments \
-               UNION ALL \
-               SELECT row_id, CASE table_name \
-                 WHEN 'notes_nodes' THEN 'node' ELSE 'attachment' END \
-               FROM notes_history_changes \
-               WHERE table_name IN ('notes_nodes', 'notes_attachments')\
+               SELECT id, 'attachment' FROM notes_attachments\
              ) \
              SELECT id FROM namespace \
              GROUP BY id HAVING COUNT(DISTINCT kind) > 1 \
@@ -5114,7 +5110,9 @@ mod tests {
         CURRENT_NOTES_SCHEMA_VERSION, SORT_KEY_STEP,
     };
     use crate::notes::date_index::LocalDate;
-    use crate::notes::history::{redo, undo, with_history_transaction_and_prunes};
+    use crate::notes::history::{
+        history_epoch, install_session_history, redo, undo, with_history_transaction_and_prunes,
+    };
     use crate::notes::types::{
         validate_note_id, ApplyBatchInput, BatchOp, CreateNodeInput, ImportNode,
         ImportSubtreeInput, MoveNodeInput, NoteNodeKind, NoteSearchMatchedField, NoteSearchScope,
@@ -5203,13 +5201,89 @@ mod tests {
             .expect("schema object query")
     }
 
+    fn table_exists(connection: &Connection, schema: &str, name: &str) -> bool {
+        connection
+            .query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {schema}.sqlite_schema \
+                     WHERE type = 'table' AND name = ?1)"
+                ),
+                [name],
+                |row| row.get(0),
+            )
+            .expect("table existence query")
+    }
+
+    fn temp_store(connection: &Connection) -> i64 {
+        connection
+            .pragma_query_value(None, "temp_store", |row| row.get(0))
+            .expect("TEMP storage mode")
+    }
+
     fn test_connection() -> Connection {
         let mut connection = Connection::open_in_memory().expect("in-memory notes database");
         initialize_notes_db(&mut connection).expect("initialize notes database");
+        install_session_history(&connection).expect("install session history");
         connection
             .execute("DELETE FROM notes_nodes", [])
             .expect("clear onboarding nodes from empty test fixture");
         connection
+    }
+
+    #[test]
+    fn notes_history_fresh_current_schema_uses_temp_tables_only() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let connection = connect_notes_db(vault.path().to_str().expect("vault path"))
+            .expect("open fresh current database");
+
+        assert!(table_exists(&connection, "main", "notes_nodes"));
+        assert!(!table_exists(&connection, "main", "notes_history_entries"));
+        assert!(!table_exists(&connection, "main", "notes_history_changes"));
+        assert!(table_exists(&connection, "temp", "notes_history_entries"));
+        assert!(table_exists(&connection, "temp", "notes_history_changes"));
+        assert_ne!(
+            history_epoch(&connection).expect("session history epoch"),
+            ""
+        );
+        assert_eq!(temp_store(&connection), 2);
+    }
+
+    #[test]
+    fn notes_history_reopening_keeps_live_rows_but_allocates_a_new_temp_epoch() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_str().expect("vault path");
+        let first = connect_notes_db(vault_path).expect("open current database");
+        let first_epoch = history_epoch(&first).expect("first session history epoch");
+        first
+            .execute("DELETE FROM notes_nodes", [])
+            .expect("clear onboarding nodes");
+        insert_node(&first, NODE_ID, None, SORT_KEY_STEP, "persisted node");
+        drop(first);
+
+        let second = connect_notes_db(vault_path).expect("reopen current database");
+        assert_ne!(
+            history_epoch(&second).expect("second session history epoch"),
+            first_epoch
+        );
+        assert_eq!(
+            load_workspace(&second, NotesWorkspaceScope::Active)
+                .expect("load persisted workspace")
+                .nodes
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn notes_history_export_connection_installs_no_temp_history() {
+        let vault = tempfile::tempdir().expect("temp vault");
+        let vault_path = vault.path().to_str().expect("vault path");
+        drop(connect_notes_db(vault_path).expect("create current database"));
+        let connection = open_notes_export_db(vault_path).expect("open export database");
+
+        assert!(!table_exists(&connection, "temp", "notes_history_epoch"));
+        assert!(!table_exists(&connection, "temp", "notes_history_entries"));
+        assert!(!table_exists(&connection, "temp", "notes_history_changes"));
     }
 
     #[test]
@@ -6747,7 +6821,7 @@ mod tests {
     }
 
     #[test]
-    fn initialization_rejects_a_live_node_id_reserved_by_attachment_history() {
+    fn initialization_ignores_session_history_when_validating_live_id_namespace() {
         let mut connection = test_connection();
         insert_node(&connection, NODE_ID, None, 1024, "live node");
         let entry_id = "99999999-9999-4999-8999-999999999999";
@@ -6768,14 +6842,12 @@ mod tests {
             )
             .expect("seed retained attachment history");
 
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("live and retained IDs must share one namespace");
-
-        assert!(error.contains("ID namespace"), "{error}");
+        initialize_notes_db(&mut connection)
+            .expect("initialization validates only persisted live rows");
     }
 
     #[test]
-    fn initialization_rejects_node_and_attachment_history_using_the_same_id() {
+    fn initialization_ignores_session_history_only_id_collisions() {
         let mut connection = test_connection();
         let entry_id = "99999999-9999-4999-8999-999999999999";
         connection
@@ -6797,10 +6869,8 @@ mod tests {
                 .expect("seed cross-kind retained history");
         }
 
-        let error = initialize_notes_db(&mut connection)
-            .expect_err("retained node and attachment IDs must not collide");
-
-        assert!(error.contains("ID namespace"), "{error}");
+        initialize_notes_db(&mut connection)
+            .expect("initialization ignores connection-local history rows");
     }
 
     #[test]
@@ -7375,8 +7445,6 @@ mod tests {
             "notes_search_lifecycle",
             "notes_dates",
             "notes_attachments",
-            "notes_history_entries",
-            "notes_history_changes",
         ] {
             assert!(
                 object_exists(&connection, "table", table),
@@ -7391,13 +7459,25 @@ mod tests {
             "notes_tags_prefix_normalized_tag",
             "notes_dates_range",
             "notes_attachments_node_order",
-            "notes_history_session_sequence",
         ] {
             assert!(
                 object_exists(&connection, "index", index),
                 "missing index {index}"
             );
         }
+        assert!(!table_exists(&connection, "main", "notes_history_entries"));
+        assert!(!table_exists(&connection, "main", "notes_history_changes"));
+        assert!(table_exists(&connection, "temp", "notes_history_entries"));
+        assert!(table_exists(&connection, "temp", "notes_history_changes"));
+        let temp_history_index_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM temp.sqlite_schema \
+                 WHERE type = 'index' AND name = 'notes_history_session_sequence')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("TEMP history index query");
+        assert!(temp_history_index_exists);
         assert!(column_exists(&connection, "notes_nodes", "archived_at"));
         assert!(column_exists(&connection, "notes_nodes", "archive_root_id"));
         assert_eq!(
