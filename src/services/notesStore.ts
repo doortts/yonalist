@@ -1104,14 +1104,14 @@ export function notesUndo(
   vaultPath: string,
   input: NotesHistoryReplayInput
 ): Promise<NotesHistoryReplayOutcome> {
-  return invokeHistoryReplay("notes_undo", { vaultPath, input });
+  return invokeHistoryReplay("notes_undo", { vaultPath, request: input });
 }
 
 export function notesRedo(
   vaultPath: string,
   input: NotesHistoryReplayInput
 ): Promise<NotesHistoryReplayOutcome> {
-  return invokeHistoryReplay("notes_redo", { vaultPath, input });
+  return invokeHistoryReplay("notes_redo", { vaultPath, request: input });
 }
 
 async function invokeHistoryReplay(

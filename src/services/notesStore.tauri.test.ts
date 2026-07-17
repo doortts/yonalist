@@ -2557,14 +2557,14 @@ describe("notesStore in Tauri", () => {
         "notes_undo",
         {
           vaultPath,
-          input: replayRequest
+          request: replayRequest
         }
       ],
       [
         "notes_redo",
         {
           vaultPath,
-          input: { ...replayRequest, scope: { kind: "trash" } }
+          request: { ...replayRequest, scope: { kind: "trash" } }
         }
       ],
       [
