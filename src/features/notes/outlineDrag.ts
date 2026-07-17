@@ -566,6 +566,7 @@ function selectionGeometryOrder(
 interface PreparedOutlineSelectionDragState {
   readonly activeRootId: NoteId;
   readonly forestNodeIds: ReadonlySet<NoteId>;
+  readonly orderedForestNodeIds: readonly NoteId[];
   readonly geometryRows: readonly FlattenedOutlineRow[];
   readonly previewRows: readonly FlattenedOutlineRow[];
   readonly geometryOrder: OutlineSiblingOrder;
@@ -581,6 +582,15 @@ export function preparedOutlineSelectionDragContainsNode(
   nodeId: NoteId
 ): boolean {
   return preparedSelectionDragStates.get(prepared)?.forestNodeIds.has(nodeId) ?? false;
+}
+
+export function preparedOutlineSelectionDragForestNodeIds(
+  prepared: PreparedOutlineSelectionDrag
+): readonly NoteId[] {
+  return (
+    preparedSelectionDragStates.get(prepared)?.orderedForestNodeIds ??
+    Object.freeze([] as NoteId[])
+  );
 }
 
 /** Normalizes the selected forest and removes it from pointer-time geometry. */
@@ -616,6 +626,7 @@ export function prepareOutlineSelectionDrag(
   preparedSelectionDragStates.set(prepared, {
     activeRootId: forest.activeRootId,
     forestNodeIds: forest.nodeIds,
+    orderedForestNodeIds: Object.freeze([...forest.nodeIds]),
     geometryRows,
     previewRows,
     geometryOrder: selectionGeometryOrder(

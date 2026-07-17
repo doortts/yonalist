@@ -7,6 +7,7 @@ import {
   OUTLINE_INDENT_PX,
   prepareOutlineSelectionDrag,
   preparedOutlineSelectionDragContainsNode,
+  preparedOutlineSelectionDragForestNodeIds,
   projectOutlineDrop,
   projectOutlineDropAtBoundary,
   projectPreparedOutlineSelectionDrop,
@@ -1024,5 +1025,43 @@ describe("projectOutlineSelectionDrop", () => {
     expect(preparedOutlineSelectionDragContainsNode(prepared, "target")).toBe(
       false
     );
+  });
+
+  it("exposes one frozen source-ordered forest including collapsed descendants", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "parent", sortKey: 1 }),
+        node({ id: "visible-child", parentId: "parent", isCollapsed: true }),
+        node({ id: "hidden-grandchild", parentId: "visible-child" }),
+        node({ id: "second", sortKey: 2 }),
+        node({ id: "second-child", parentId: "second" }),
+        node({ id: "target", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const prepared = prepareOutlineSelectionDrag(
+      "visible-child",
+      ["visible-child", "parent", "second"],
+      flattenVisibleOutlineRows(state, null),
+      {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: null
+      }
+    );
+    if (prepared.kind !== "ready") {
+      throw new Error("Expected drag preparation to succeed.");
+    }
+
+    const forestNodeIds = preparedOutlineSelectionDragForestNodeIds(prepared);
+
+    expect(prepared.nodeIds).toEqual(["parent", "second"]);
+    expect(forestNodeIds).toEqual([
+      "parent",
+      "visible-child",
+      "hidden-grandchild",
+      "second",
+      "second-child"
+    ]);
+    expect(Object.isFrozen(forestNodeIds)).toBe(true);
   });
 });
