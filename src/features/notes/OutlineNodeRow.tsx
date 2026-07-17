@@ -92,6 +92,8 @@ interface OutlineNodeRowProps {
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   dragDisabled: boolean;
+  dragDisabledReason?: string;
+  onDragDisabledAttempt?: () => void;
   suppressDragPresentation?: boolean;
   disabled?: boolean;
   readOnlyMode?: "archive" | "trash";
@@ -153,6 +155,8 @@ function OutlineNodeRowComponent({
   attachmentUploadError,
   attachmentUploadRetryAttemptId,
   dragDisabled,
+  dragDisabledReason,
+  onDragDisabledAttempt,
   suppressDragPresentation = false,
   disabled = false,
   readOnlyMode,
@@ -223,6 +227,7 @@ function OutlineNodeRowComponent({
   const pendingFocusInProgressRef = useRef(false);
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
+  const disabledDragAttemptCleanupRef = useRef<(() => void) | null>(null);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const structuralCommandInFlightRef = useRef(false);
   const shiftClickAnchorRef = useRef<NoteId | null | undefined>(undefined);
@@ -247,6 +252,11 @@ function OutlineNodeRowComponent({
       void actions.flushNodeDraft(nodeId);
     }
   });
+
+  useEffect(
+    () => () => disabledDragAttemptCleanupRef.current?.(),
+    []
+  );
 
   const activeSelectionRowId = (): NoteId | null => {
     const activeRow =
@@ -291,6 +301,45 @@ function OutlineNodeRowComponent({
     if (getSelection()) {
       actions.clearSelection();
     }
+  };
+
+  const trackDisabledDragAttempt = (
+    event: PointerEvent<HTMLButtonElement>
+  ): void => {
+    if (
+      dragEnabled ||
+      !onDragDisabledAttempt ||
+      event.button !== 0 ||
+      event.shiftKey
+    ) {
+      return;
+    }
+    disabledDragAttemptCleanupRef.current?.();
+    const { clientX, clientY, pointerId } = event;
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", cleanup, true);
+      window.removeEventListener("pointercancel", cleanup, true);
+      if (disabledDragAttemptCleanupRef.current === cleanup) {
+        disabledDragAttemptCleanupRef.current = null;
+      }
+    };
+    const handlePointerMove = (moveEvent: globalThis.PointerEvent) => {
+      if (
+        moveEvent.pointerId === pointerId &&
+        Math.hypot(
+          moveEvent.clientX - clientX,
+          moveEvent.clientY - clientY
+        ) >= 4
+      ) {
+        cleanup();
+        onDragDisabledAttempt();
+      }
+    };
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", cleanup, true);
+    window.addEventListener("pointercancel", cleanup, true);
+    disabledDragAttemptCleanupRef.current = cleanup;
   };
 
   useAutoGrowTextarea(titleRef, titleValue);
@@ -1101,10 +1150,12 @@ function OutlineNodeRowComponent({
           {...(dragEnabled ? listeners : {})}
           onKeyDown={handleBulletKeyDown}
           aria-label={`Zoom into ${navigationLabel}`}
+          aria-description={dragDisabledReason}
           disabled={disabled}
           data-collapsed={hasChildren && isCollapsed ? "true" : undefined}
           data-sortable-activator={dragEnabled ? "true" : undefined}
           onPointerDownCapture={(event) => {
+            trackDisabledDragAttempt(event);
             shiftClickAnchorRef.current = event.shiftKey
               ? activeSelectionRowId()
               : undefined;

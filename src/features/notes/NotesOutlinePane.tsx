@@ -148,6 +148,15 @@ const outlineScreenReaderInstructions = {
 
 const selectionDragRejectedMessage =
   "Can't move selection: the selected rows cannot be moved together.";
+const filteredDragPreparingMessage =
+  "Notes are still preparing for drag. Try again.";
+const filteredDragUnavailableMessage =
+  "Can't move notes: the full outline couldn't be prepared. Try again.";
+
+type FilteredDragAuthorityPreparation = Readonly<{
+  status: "idle" | "preparing" | "ready" | "error";
+  authority: NotesPreparedSelectionAuthority | null;
+}>;
 
 interface ImageIngestError {
   readonly label: "Image drop failed" | "Image paste failed";
@@ -551,6 +560,17 @@ export function NotesOutlinePane() {
     useState<ImageIngestError | null>(null);
   const [preparedSelectionAuthority, setPreparedSelectionAuthority] =
     useState<NotesPreparedSelectionAuthority | null>(null);
+  const [selectionAuthorityFailureKey, setSelectionAuthorityFailureKey] =
+    useState<string | null>(null);
+  const [filteredDragAuthorityPreparation, setFilteredDragAuthorityPreparation] =
+    useState<FilteredDragAuthorityPreparation>({
+      status: "idle",
+      authority: null
+    });
+  const [selectionDragContext, setSelectionDragContext] =
+    useState<OutlineSelectionDragFrozenContext | null>(null);
+  const [selectionDragContextFailureKey, setSelectionDragContextFailureKey] =
+    useState<string | null>(null);
   const [selectionChooser, setSelectionChooser] =
     useState<SelectionChooserSession | null>(null);
   const [selectionChooserFeedback, setSelectionChooserFeedback] = useState({
@@ -570,6 +590,7 @@ export function NotesOutlinePane() {
   const selectionChooserPreparingRef = useRef(false);
   const selectionChooserLifecycleRef = useRef(selectionChooserLifecycleKey);
   const selectionClipboardLifecycleRef = useRef(0);
+  const filteredDragAuthorityRequestRef = useRef(0);
   const selectionDragContextRequestRef = useRef(0);
   const selectionDragContextRef =
     useRef<OutlineSelectionDragFrozenContext | null>(null);
@@ -1202,6 +1223,25 @@ export function NotesOutlinePane() {
       }),
     [bodyVisibleIds, currentPreparedAuthority, libraryView, selection, state]
   );
+  const currentSelectionDragContext =
+    selectionDragContext &&
+    selectionSnapshot &&
+    selectionDragContext.ownership.authority.selectionRevision ===
+      selectionRevision &&
+    exactNoteIds(
+      selectionDragContext.ownership.actionSnapshot.selectedNodeIds,
+      selectionSnapshot.selectedNodeIds
+    ) &&
+    exactNoteIds(
+      selectionDragContext.nodeIds,
+      selectionSnapshot.structuralRootIds
+    ) &&
+    (isPreparedSelectionAuthorityCurrent?.(
+      selectionDragContext.ownership.authority
+    ) ?? false)
+      ? selectionDragContext
+      : null;
+  selectionDragContextRef.current = currentSelectionDragContext;
   if (selectionSnapshot) {
     lastSelectionHeadRef.current = selectionSnapshot.selection.headId;
   }
@@ -1212,6 +1252,7 @@ export function NotesOutlinePane() {
   useEffect(() => {
     const requestId = ++selectionAuthorityRequestRef.current;
     setPreparedSelectionAuthority(null);
+    setSelectionAuthorityFailureKey(null);
     if (
       !provisionalSelectionSnapshot ||
       materializedSelectionIds.length === 0 ||
@@ -1224,6 +1265,9 @@ export function NotesOutlinePane() {
     const expectedRevision = selectionRevision;
     void (async () => {
       if (!(await actions.flushAllDrafts())) {
+        if (selectionAuthorityRequestRef.current === requestId) {
+          setSelectionAuthorityFailureKey(selectionChooserLifecycleKey);
+        }
         return;
       }
       if (
@@ -1243,10 +1287,12 @@ export function NotesOutlinePane() {
         isPreparedSelectionAuthorityCurrent(prepared)
       ) {
         setPreparedSelectionAuthority(prepared);
+        setSelectionAuthorityFailureKey(null);
       }
     })().catch(() => {
-      // The provisional snapshot remains mounted with explicit disabled
-      // reasons. The shared router reports command-time failures.
+      if (selectionAuthorityRequestRef.current === requestId) {
+        setSelectionAuthorityFailureKey(selectionChooserLifecycleKey);
+      }
     });
   }, [
     actions,
@@ -1254,7 +1300,93 @@ export function NotesOutlinePane() {
     materializedSelectionIds,
     prepareSelectionAuthority,
     provisionalSelectionSnapshot,
+    selectionChooserLifecycleKey,
     selectionRevision
+  ]);
+
+  const currentFilteredDragAuthority =
+    libraryView !== "all" &&
+    filteredDragAuthorityPreparation.authority &&
+    (isPreparedSelectionAuthorityCurrent?.(
+      filteredDragAuthorityPreparation.authority
+    ) ?? false)
+      ? filteredDragAuthorityPreparation.authority
+      : null;
+  const filteredDragPreflightRequired =
+    libraryView !== "all" && !lifecycleReadOnly;
+  const filteredDragAuthorityReady =
+    !filteredDragPreflightRequired || currentFilteredDragAuthority !== null;
+  const filteredDragAuthorityFailed =
+    filteredDragPreflightRequired &&
+    currentFilteredDragAuthority === null &&
+    filteredDragAuthorityPreparation.status === "error";
+
+  useEffect(() => {
+    const requestId = ++filteredDragAuthorityRequestRef.current;
+    setFilteredDragAuthorityPreparation({ status: "idle", authority: null });
+    if (
+      !filteredDragPreflightRequired ||
+      deletingNotesData ||
+      state.status === "loading" ||
+      bodyVisibleIds.length === 0
+    ) {
+      return;
+    }
+    if (!prepareSelectionAuthority || !isPreparedSelectionAuthorityCurrent) {
+      setFilteredDragAuthorityPreparation({ status: "error", authority: null });
+      return;
+    }
+    if (currentPreparedAuthority) {
+      setFilteredDragAuthorityPreparation({
+        status: "ready",
+        authority: currentPreparedAuthority
+      });
+      return;
+    }
+    if (materializedSelectionIds.length > 0) {
+      setFilteredDragAuthorityPreparation({
+        status:
+          selectionAuthorityFailureKey === selectionChooserLifecycleKey
+            ? "error"
+            : "preparing",
+        authority: null
+      });
+      return;
+    }
+    const seedId = bodyVisibleIds[0];
+    setFilteredDragAuthorityPreparation({
+      status: "preparing",
+      authority: null
+    });
+    void prepareSelectionAuthority([seedId])
+      .then((authority) => {
+        if (
+          filteredDragAuthorityRequestRef.current === requestId &&
+          exactNoteIds(authority.selectedNodeIds, [seedId]) &&
+          isPreparedSelectionAuthorityCurrent(authority)
+        ) {
+          setFilteredDragAuthorityPreparation({ status: "ready", authority });
+        }
+      })
+      .catch(() => {
+        if (filteredDragAuthorityRequestRef.current === requestId) {
+          setFilteredDragAuthorityPreparation({
+            status: "error",
+            authority: null
+          });
+        }
+      });
+  }, [
+    bodyVisibleIds,
+    currentPreparedAuthority,
+    deletingNotesData,
+    filteredDragPreflightRequired,
+    isPreparedSelectionAuthorityCurrent,
+    materializedSelectionIds.length,
+    prepareSelectionAuthority,
+    selectionAuthorityFailureKey,
+    selectionChooserLifecycleKey,
+    state
   ]);
 
   const selectionIdsRef = useRef(materializedSelectionIds);
@@ -1267,6 +1399,10 @@ export function NotesOutlinePane() {
   libraryViewRef.current = libraryView;
   const currentPreparedAuthorityRef = useRef(currentPreparedAuthority);
   currentPreparedAuthorityRef.current = currentPreparedAuthority;
+  const currentFilteredDragAuthorityRef = useRef(
+    currentFilteredDragAuthority
+  );
+  currentFilteredDragAuthorityRef.current = currentFilteredDragAuthority;
   const projectionVisibilityRef = useRef({
     locallyExpandedNodeIds,
     showCompleted,
@@ -1410,6 +1546,21 @@ export function NotesOutlinePane() {
     selectionClipboardError;
   const { publish: publishNotesFeedback, clear: clearNotesFeedback } =
     useNotesFeedback();
+  const publishFilteredDragPreflightFeedback = useCallback(() => {
+    publishNotesFeedback({
+      kind: "error",
+      message:
+        filteredDragAuthorityFailed ||
+        selectionDragContextFailureKey === selectionChooserLifecycleKey
+          ? filteredDragUnavailableMessage
+          : filteredDragPreparingMessage
+    });
+  }, [
+    filteredDragAuthorityFailed,
+    publishNotesFeedback,
+    selectionChooserLifecycleKey,
+    selectionDragContextFailureKey
+  ]);
   useEffect(() => {
     clearNotesFeedback();
     clearSelectionRouterFeedback();
@@ -1674,7 +1825,8 @@ export function NotesOutlinePane() {
   }, [selectionNativeClipboard]);
   useEffect(() => {
     const requestId = ++selectionDragContextRequestRef.current;
-    selectionDragContextRef.current = null;
+    setSelectionDragContext(null);
+    setSelectionDragContextFailureKey(null);
     if (
       !selectionSnapshot ||
       !selectionSnapshot.eligibility.copy.eligible ||
@@ -1682,6 +1834,13 @@ export function NotesOutlinePane() {
       !prepareSelectionAuthority ||
       !isPreparedSelectionAuthorityCurrent
     ) {
+      if (
+        selectionSnapshot &&
+        selectionSnapshot.eligibility.copy.eligible &&
+        (!prepareSelectionAuthority || !isPreparedSelectionAuthorityCurrent)
+      ) {
+        setSelectionDragContextFailureKey(selectionChooserLifecycleKey);
+      }
       return;
     }
     const expectedRevision = selectionRevision;
@@ -1724,10 +1883,11 @@ export function NotesOutlinePane() {
       ) {
         return;
       }
-      selectionDragContextRef.current = Object.freeze({
+      setSelectionDragContext(Object.freeze({
         nodeIds: Object.freeze([...expectedRootIds]),
         ownership: Object.freeze({ actionSnapshot, authority })
-      });
+      }));
+      setSelectionDragContextFailureKey(null);
     };
 
     if (
@@ -1752,7 +1912,9 @@ export function NotesOutlinePane() {
       }
       installContext(await prepareSelectionAuthority(expectedRootIds));
     })().catch(() => {
-      // A selected drag with no current frozen authority remains a no-op.
+      if (selectionDragContextRequestRef.current === requestId) {
+        setSelectionDragContextFailureKey(selectionChooserLifecycleKey);
+      }
     });
   }, [
     actions,
@@ -1760,6 +1922,7 @@ export function NotesOutlinePane() {
     getLiveSelectionSnapshot,
     isPreparedSelectionAuthorityCurrent,
     prepareSelectionAuthority,
+    selectionChooserLifecycleKey,
     selectionRevision,
     selectionSnapshot
   ]);
@@ -2373,6 +2536,13 @@ export function NotesOutlinePane() {
       setActiveDragId(null);
       return;
     }
+    const filteredAuthority = currentFilteredDragAuthorityRef.current;
+    if (filteredDragPreflightRequired && filteredAuthority === null) {
+      outlineDragSessionRef.current = null;
+      setActiveDragId(null);
+      publishFilteredDragPreflightFeedback();
+      return;
+    }
     const live = getLiveSelectionSnapshot?.() ?? {
       selection: selectionRef.current,
       revision: selectionRevisionRef.current
@@ -2392,22 +2562,12 @@ export function NotesOutlinePane() {
         visibleNodeIds,
         workspace: projectedWorkspace,
         authoritativeWorkspace:
+          filteredAuthority?.workspace ??
           currentPreparedAuthorityRef.current?.workspace
       });
       const selectedNodeIds = Object.freeze([...selectedIds]);
-      const visualPreparation = prepareOutlineSelectionDrag(
-        id,
-        selectedNodeIds,
-        structuralRows,
-        {
-          rootIds: state.rootIds,
-          childIdsByParent: state.childIdsByParent,
-          zoomRootId: state.zoomRootId
-        }
-      );
       const existingContext = selectionDragContextRef.current;
       const existingContextCurrent =
-        visualPreparation.kind === "ready" &&
         openedSnapshot !== null &&
         exactNoteIds(openedSnapshot.selectedNodeIds, selectedNodeIds) &&
         existingContext !== null &&
@@ -2424,6 +2584,26 @@ export function NotesOutlinePane() {
         (isPreparedSelectionAuthorityCurrent?.(
           existingContext.ownership.authority
         ) ?? false);
+      if (filteredDragPreflightRequired && !existingContextCurrent) {
+        outlineDragSessionRef.current = null;
+        setActiveDragId(null);
+        publishFilteredDragPreflightFeedback();
+        return;
+      }
+      const presentationWorkspace =
+        filteredDragPreflightRequired && existingContextCurrent
+          ? existingContext.ownership.authority.workspace
+          : projectedWorkspace;
+      const visualPreparation = prepareOutlineSelectionDrag(
+        id,
+        selectedNodeIds,
+        structuralRows,
+        {
+          rootIds: presentationWorkspace.rootIds,
+          childIdsByParent: presentationWorkspace.childIdsByParent,
+          zoomRootId: state.zoomRootId
+        }
+      );
       if (visualPreparation.kind === "invalid") {
         outlineDragSessionRef.current = Object.freeze({
           kind: "selected-invalid",
@@ -2585,17 +2765,33 @@ export function NotesOutlinePane() {
           )
         );
       } else if (visualPreparation.kind === "ready") {
-        // Pending selected sessions may show the projected forest immediately,
-        // but only the matching authoritative promotion can replace it.
+        // All-view presentation is already the complete Active forest while
+        // its exact selection command authority finishes preparing.
         setDragPresentation(
           notesDragPresentationSnapshot(
             visualPreparation,
-            projectedWorkspace,
+            presentationWorkspace,
             presentationTitleFor(visualPreparation.nodeIds[0])
           )
         );
       }
     } else {
+      const presentationWorkspace = filteredAuthority?.workspace ?? state;
+      const visualPreparation = prepareOutlineSelectionDrag(
+        id,
+        [id],
+        structuralRows,
+        {
+          rootIds: presentationWorkspace.rootIds,
+          childIdsByParent: presentationWorkspace.childIdsByParent,
+          zoomRootId: state.zoomRootId
+        }
+      );
+      if (visualPreparation.kind === "invalid") {
+        outlineDragSessionRef.current = null;
+        setActiveDragId(null);
+        return;
+      }
       const ordinarySession = Object.freeze({
         kind: "ordinary",
         activeId: id
@@ -2603,65 +2799,13 @@ export function NotesOutlinePane() {
       outlineDragSessionRef.current = ordinarySession;
       const representativeTitle =
         draftsByNodeId[id]?.title ?? state.nodesById[id]?.title;
-      if (libraryView === "all") {
-        const visualPreparation = prepareOutlineSelectionDrag(
-          id,
-          [id],
-          structuralRows,
-          {
-            rootIds: state.rootIds,
-            childIdsByParent: state.childIdsByParent,
-            zoomRootId: state.zoomRootId
-          }
-        );
-        setDragPresentation(
-          visualPreparation.kind === "ready"
-            ? notesDragPresentationSnapshot(
-                visualPreparation,
-                state,
-                representativeTitle
-              )
-            : null
-        );
-      } else if (
-        prepareSelectionAuthority &&
-        isPreparedSelectionAuthorityCurrent
-      ) {
-        void prepareSelectionAuthority([id])
-          .then((authority) => {
-            if (
-              outlineDragSessionRef.current !== ordinarySession ||
-              outlineDragAttemptEpochRef.current !== attemptEpoch ||
-              authority.selectionRevision !== live.revision ||
-              !exactNoteIds(authority.selectedNodeIds, [id]) ||
-              !isPreparedSelectionAuthorityCurrent(authority)
-            ) {
-              return;
-            }
-            const visualPreparation = prepareOutlineSelectionDrag(
-              id,
-              [id],
-              structuralRows,
-              {
-                rootIds: authority.workspace.rootIds,
-                childIdsByParent: authority.workspace.childIdsByParent,
-                zoomRootId: state.zoomRootId
-              }
-            );
-            if (visualPreparation.kind === "ready") {
-              setDragPresentation(
-                notesDragPresentationSnapshot(
-                  visualPreparation,
-                  authority.workspace,
-                  representativeTitle
-                )
-              );
-            }
-          })
-          .catch(() => {
-            // Ordinary move semantics remain available without a preview.
-          });
-      }
+      setDragPresentation(
+        notesDragPresentationSnapshot(
+          visualPreparation,
+          presentationWorkspace,
+          representativeTitle
+        )
+      );
     }
     setActiveDragId(id);
   };
@@ -3083,7 +3227,34 @@ export function NotesOutlinePane() {
                       disabled={deletingNotesData}
                       locallyExpanded={locallyExpandedNodeIds.has(row.id)}
                       dragDisabled={
-                        dragUnavailable || row.id === state.zoomRootId
+                        dragUnavailable ||
+                        row.id === state.zoomRootId ||
+                        (filteredDragPreflightRequired &&
+                          (!filteredDragAuthorityReady ||
+                            (selectedIdSet.has(row.id) &&
+                              currentSelectionDragContext === null)))
+                      }
+                      dragDisabledReason={
+                        filteredDragPreflightRequired &&
+                        (!filteredDragAuthorityReady ||
+                          (selectedIdSet.has(row.id) &&
+                            currentSelectionDragContext === null))
+                          ? filteredDragAuthorityFailed ||
+                            selectionDragContextFailureKey ===
+                              selectionChooserLifecycleKey
+                            ? filteredDragUnavailableMessage
+                            : filteredDragPreparingMessage
+                          : undefined
+                      }
+                      onDragDisabledAttempt={
+                        !dragUnavailable &&
+                        row.id !== state.zoomRootId &&
+                        filteredDragPreflightRequired &&
+                        (!filteredDragAuthorityReady ||
+                          (selectedIdSet.has(row.id) &&
+                            currentSelectionDragContext === null))
+                          ? publishFilteredDragPreflightFeedback
+                          : undefined
                       }
                       suppressDragPresentation={activeDragId !== null}
                       imageDropActive={imageDropTargetId === row.id}
