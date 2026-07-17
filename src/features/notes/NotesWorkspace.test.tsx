@@ -2054,6 +2054,142 @@ describe("Notes workspace", () => {
     });
   });
 
+  it("uses the filename when a ready image leaves the outline viewport", async () => {
+    const user = userEvent.setup();
+    const imageNode = node({
+      id: "diagram-image",
+      nodeKind: "image",
+      sortKey: 1,
+      title: "diagram.png"
+    });
+    const imageAttachment = attachment({
+      id: "diagram-attachment",
+      nodeId: imageNode.id,
+      originalName: "diagram.png"
+    });
+    configureRepository(
+      [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
+      { [imageNode.id]: [imageAttachment] }
+    );
+    notesStoreMock.readAttachmentBytes.mockResolvedValue(
+      new Uint8Array([137, 80, 78, 71])
+    );
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    let intersectionTarget: Element | undefined;
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(callback: IntersectionObserverCallback) {
+          intersectionCallback = callback;
+        }
+        observe(target: Element) {
+          intersectionTarget = target;
+        }
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:diagram")
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+    renderNotesWorkspace();
+
+    await screen.findByRole("button", { name: "Load image diagram.png" });
+    const notifyVisibleIntersection = intersectionCallback;
+    const visibleTarget = intersectionTarget;
+    if (!notifyVisibleIntersection || !visibleTarget) {
+      throw new Error("Expected the image residency observer to be active.");
+    }
+    act(() => {
+      notifyVisibleIntersection(
+        [
+          {
+            target: visibleTarget,
+            isIntersecting: true
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    await waitFor(() =>
+      expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalled()
+    );
+    const readsBeforeDrag = notesStoreMock.readAttachmentBytes.mock.calls.length;
+    const readyImage = await screen.findByRole("img", { name: "diagram.png" });
+    const imageBullet = screen.getByRole("button", {
+      name: "Zoom into diagram.png"
+    });
+    const rectangle = (top: number, height: number) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 640,
+        bottom: top + height,
+        width: 640,
+        height,
+        toJSON: () => ({})
+      }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.classList.contains("notes-outline-rows")) {
+          return rectangle(0, 100);
+        }
+        const row = this.closest<HTMLElement>("[data-outline-id]");
+        return row?.dataset.outlineId === imageNode.id
+          ? rectangle(-56, 28)
+          : rectangle(28, 28);
+      }
+    );
+
+    vi.useFakeTimers();
+    const notifyHiddenIntersection = intersectionCallback;
+    const hiddenTarget = intersectionTarget;
+    if (!notifyHiddenIntersection || !hiddenTarget) {
+      throw new Error("Expected the image residency observer to be active.");
+    }
+    act(() => {
+      notifyHiddenIntersection(
+        [
+          {
+            target: hiddenTarget,
+            isIntersecting: false
+          } as unknown as IntersectionObserverEntry
+        ],
+        {} as IntersectionObserver
+      );
+    });
+    expect(readyImage).toBeInTheDocument();
+    vi.useRealTimers();
+
+    imageBullet.focus();
+    await user.keyboard("[Space]");
+
+    const preview = screen.getByTestId("notes-selection-drag-preview");
+    expect(preview).toHaveTextContent("diagram.png");
+    expect(screen.queryByTestId("notes-selection-drag-thumbnail")).toBeNull();
+    expect(readyImage).toBeInTheDocument();
+    expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(
+      readsBeforeDrag
+    );
+
+    await user.keyboard("[Escape]");
+  });
+
   it("uses the filename while a dragged image is not loaded", async () => {
     const user = userEvent.setup();
     const imageNode = node({

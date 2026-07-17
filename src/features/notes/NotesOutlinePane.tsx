@@ -239,6 +239,19 @@ function renderedDragImageSource(
   const row = Array.from(
     root?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? []
   ).find((candidate) => candidate.dataset.outlineId === nodeId);
+  const rowBounds = row?.getBoundingClientRect();
+  const rootBounds =
+    root instanceof Element ? root.getBoundingClientRect() : undefined;
+  if (
+    !rowBounds ||
+    !rootBounds ||
+    rowBounds.bottom <= rootBounds.top ||
+    rowBounds.top >= rootBounds.bottom ||
+    rowBounds.right <= rootBounds.left ||
+    rowBounds.left >= rootBounds.right
+  ) {
+    return undefined;
+  }
   const image = row?.querySelector<HTMLImageElement>(
     ".notes-image-node-content img"
   );
