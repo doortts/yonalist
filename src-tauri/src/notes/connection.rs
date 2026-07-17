@@ -1397,17 +1397,18 @@ mod tests {
             replace_database_set(&raced_vault_path, &replacement_vault_path);
         });
 
-        let result = crate::notes::commands::notes_create_node_inner(
-            vault_path.clone(),
-            crate::notes::types::CreateNodeInput {
-                id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
-                parent_id: None,
-                after_id: None,
-                title: "Post-commit validation".to_string(),
-                note: String::new(),
-            },
-            None,
-        );
+        let result =
+            crate::notes::commands::notes_create_node_with_optional_history_context_for_test(
+                vault_path.clone(),
+                crate::notes::types::CreateNodeInput {
+                    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+                    parent_id: None,
+                    after_id: None,
+                    title: "Post-commit validation".to_string(),
+                    note: String::new(),
+                },
+                None,
+            );
 
         assert!(
             result.is_err(),

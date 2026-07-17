@@ -382,13 +382,7 @@ pub(crate) fn with_history_transaction_and_prunes(
     operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<HistoryTransactionResult, String> {
     let Some(context) = context else {
-        return operation(connection).map(|workspace| HistoryTransactionResult {
-            workspace,
-            history_entry_id: None,
-            state: NotesHistoryState::default(),
-            pruned_attachment_paths: Vec::new(),
-            delta: None,
-        });
+        return Err("Notes mutations require a history context.".to_string());
     };
     validate_context(context)?;
     begin_audit(connection, context)?;
@@ -475,13 +469,31 @@ pub(crate) fn with_history_transaction_and_prunes(
 }
 
 #[cfg(test)]
+pub(crate) fn with_untracked_transaction_and_prunes_for_test(
+    connection: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
+) -> Result<HistoryTransactionResult, String> {
+    operation(connection).map(|workspace| HistoryTransactionResult {
+        workspace,
+        history_entry_id: None,
+        state: NotesHistoryState::default(),
+        pruned_attachment_paths: Vec::new(),
+        delta: None,
+    })
+}
+
+#[cfg(test)]
 pub(crate) fn with_history_transaction(
     connection: &mut Connection,
     context: Option<&NotesHistoryContext>,
     operation: impl FnOnce(&mut Connection) -> Result<NotesWorkspace, String>,
 ) -> Result<NotesWorkspace, String> {
-    with_history_transaction_and_prunes(connection, context, operation)
-        .map(|result| result.workspace)
+    match context {
+        Some(context) => with_history_transaction_and_prunes(connection, Some(context), operation)
+            .map(|result| result.workspace),
+        None => with_untracked_transaction_and_prunes_for_test(connection, operation)
+            .map(|result| result.workspace),
+    }
 }
 
 pub(crate) fn has_active_context(connection: &Connection) -> Result<bool, String> {
@@ -947,6 +959,41 @@ pub(crate) fn prune_history_entries(
     transaction
         .commit()
         .map_err(|error| format!("Could not commit pruned Notes history: {error}"))?;
+    Ok(HistoryMaintenanceResult {
+        state,
+        pruned_attachment_paths,
+    })
+}
+
+pub(crate) fn close_all_history(
+    connection: &mut Connection,
+    session_id: &str,
+    history_epoch: &str,
+) -> Result<HistoryMaintenanceResult, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start closing Notes history: {error}"))?;
+    validate_history_id("Notes history session ID", session_id)?;
+    require_epoch(&transaction, history_epoch)?;
+    clear_maintenance_receipts(&transaction)?;
+    record_pruned_attachment_paths(
+        &transaction,
+        "SELECT id FROM notes_history_entries ORDER BY rowid, id",
+        [],
+    )?;
+    let pruned_entry_ids = record_pruned_entry_ids(
+        &transaction,
+        "SELECT id FROM notes_history_entries ORDER BY rowid, id",
+        [],
+    )?;
+    transaction
+        .execute("DELETE FROM notes_history_entries", [])
+        .map_err(|error| format!("Could not close Notes history: {error}"))?;
+    let state = history_state(&transaction, session_id, pruned_entry_ids)?;
+    let pruned_attachment_paths = take_pruned_attachment_paths(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit closing Notes history: {error}"))?;
     Ok(HistoryMaintenanceResult {
         state,
         pruned_attachment_paths,
@@ -4341,22 +4388,27 @@ mod tests {
     }
 
     #[test]
-    fn mutations_without_a_history_context_omit_deltas() {
+    fn notes_history_missing_context_rejects_before_the_mutation_closure() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let mut connection =
             connect_notes_db(temp_dir.path().to_str().expect("path")).expect("connect");
+        let entered = std::cell::Cell::new(false);
+
         let result = with_history_transaction_and_prunes(&mut connection, None, |connection| {
+            entered.set(true);
             create_node(connection, create_input(NODE_ID, None, None, "Root"))
-        })
-        .expect("uncontexted mutation")
-        .into_mutation_result();
-        assert!(result.changed_nodes.is_none());
-        assert!(result.removed_node_ids.is_none());
-        assert!(result.changed_attachments.is_none());
-        assert!(
-            !result.workspace.nodes.is_empty(),
-            "without audit rows the full workspace stays authoritative"
-        );
+        });
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("missing history context must reject"),
+        };
+
+        assert!(error.to_lowercase().contains("history context"), "{error}");
+        assert!(!entered.get(), "missing context entered mutation closure");
+        assert!(active(&connection)
+            .nodes
+            .iter()
+            .all(|node| node.id != NODE_ID));
     }
 
     fn node_audit_json(id: &str, title: &str, is_collapsed: i64, is_starred: i64) -> String {
