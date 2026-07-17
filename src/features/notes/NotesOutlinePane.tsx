@@ -562,6 +562,8 @@ export function NotesOutlinePane() {
     useState<NotesPreparedSelectionAuthority | null>(null);
   const [selectionAuthorityFailureKey, setSelectionAuthorityFailureKey] =
     useState<string | null>(null);
+  const [filteredDragAuthorityRetryNonce, setFilteredDragAuthorityRetryNonce] =
+    useState(0);
   const [filteredDragAuthorityPreparation, setFilteredDragAuthorityPreparation] =
     useState<FilteredDragAuthorityPreparation>({
       status: "idle",
@@ -571,6 +573,8 @@ export function NotesOutlinePane() {
     useState<OutlineSelectionDragFrozenContext | null>(null);
   const [selectionDragContextFailureKey, setSelectionDragContextFailureKey] =
     useState<string | null>(null);
+  const [selectionDragContextRetryNonce, setSelectionDragContextRetryNonce] =
+    useState(0);
   const [selectionChooser, setSelectionChooser] =
     useState<SelectionChooserSession | null>(null);
   const [selectionChooserFeedback, setSelectionChooserFeedback] = useState({
@@ -1296,6 +1300,7 @@ export function NotesOutlinePane() {
     });
   }, [
     actions,
+    filteredDragAuthorityRetryNonce,
     isPreparedSelectionAuthorityCurrent,
     materializedSelectionIds,
     prepareSelectionAuthority,
@@ -1380,6 +1385,7 @@ export function NotesOutlinePane() {
     bodyVisibleIds,
     currentPreparedAuthority,
     deletingNotesData,
+    filteredDragAuthorityRetryNonce,
     filteredDragPreflightRequired,
     isPreparedSelectionAuthorityCurrent,
     materializedSelectionIds.length,
@@ -1547,17 +1553,33 @@ export function NotesOutlinePane() {
   const { publish: publishNotesFeedback, clear: clearNotesFeedback } =
     useNotesFeedback();
   const publishFilteredDragPreflightFeedback = useCallback(() => {
+    const selectionAuthorityFailed =
+      selectionAuthorityFailureKey === selectionChooserLifecycleKey;
+    const selectionContextFailed =
+      selectionDragContextFailureKey === selectionChooserLifecycleKey;
+    if (
+      selectionContextFailed &&
+      !selectionAuthorityFailed &&
+      !filteredDragAuthorityFailed
+    ) {
+      setSelectionDragContextFailureKey(null);
+      setSelectionDragContextRetryNonce((nonce) => nonce + 1);
+    } else if (selectionAuthorityFailed || filteredDragAuthorityFailed) {
+      setSelectionAuthorityFailureKey(null);
+      setFilteredDragAuthorityPreparation({
+        status: "preparing",
+        authority: null
+      });
+      setFilteredDragAuthorityRetryNonce((nonce) => nonce + 1);
+    }
     publishNotesFeedback({
       kind: "error",
-      message:
-        filteredDragAuthorityFailed ||
-        selectionDragContextFailureKey === selectionChooserLifecycleKey
-          ? filteredDragUnavailableMessage
-          : filteredDragPreparingMessage
+      message: filteredDragPreparingMessage
     });
   }, [
     filteredDragAuthorityFailed,
     publishNotesFeedback,
+    selectionAuthorityFailureKey,
     selectionChooserLifecycleKey,
     selectionDragContextFailureKey
   ]);
@@ -1902,6 +1924,9 @@ export function NotesOutlinePane() {
 
     void (async () => {
       if (!(await actions.flushAllDrafts())) {
+        if (selectionDragContextRequestRef.current === requestId) {
+          setSelectionDragContextFailureKey(selectionChooserLifecycleKey);
+        }
         return;
       }
       if (
@@ -1923,6 +1948,7 @@ export function NotesOutlinePane() {
     isPreparedSelectionAuthorityCurrent,
     prepareSelectionAuthority,
     selectionChooserLifecycleKey,
+    selectionDragContextRetryNonce,
     selectionRevision,
     selectionSnapshot
   ]);

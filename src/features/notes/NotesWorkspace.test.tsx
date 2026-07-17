@@ -5251,7 +5251,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
-    it("does not enable a filtered drag from stale or failed authority", async () => {
+    it("retries failed filtered authority without accepting a stale result or zooming", async () => {
+      const user = userEvent.setup();
       const activeNodes = [
         node({ id: "moving", title: "Moving", isStarred: true }),
         node({ id: "target", sortKey: 2, title: "Target", isStarred: true })
@@ -5265,9 +5266,13 @@ describe("Notes workspace", () => {
         async (_vaultRoot: string, scope: { kind: string }) => {
           if (starredScopeLoads > 0 && scope.kind === "active") {
             deferredActiveLoad += 1;
-            return deferredActiveLoad === 1
-              ? staleAuthority.promise
-              : failedAuthority.promise;
+            if (deferredActiveLoad === 1) {
+              return staleAuthority.promise;
+            }
+            if (deferredActiveLoad === 2) {
+              return failedAuthority.promise;
+            }
+            return workspace(activeNodes);
           }
           if (scope.kind === "starred") {
             starredScopeLoads += 1;
@@ -5322,17 +5327,34 @@ describe("Notes workspace", () => {
           "Can't move notes: the full outline couldn't be prepared. Try again."
         )
       );
-      fireEvent.pointerDown(moving, { button: 0, pointerId: 43 });
-      fireEvent.pointerMove(window, {
-        clientX: 5,
-        pointerId: 43
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 0, clientY: 0 }
       });
+      await user.pointer({
+        target: moving,
+        coords: { clientX: 5, clientY: 0 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: moving,
+        coords: { clientX: 5, clientY: 0 }
+      });
+
       expect(
-        within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
-      ).toHaveTextContent(
-        "Can't move notes: the full outline couldn't be prepared. Try again."
+        screen.queryByRole("heading", { name: "Moving", level: 1 })
+      ).not.toBeInTheDocument();
+      await waitFor(() => expect(deferredActiveLoad).toBe(3));
+      await waitFor(() =>
+        expect(moving).toHaveAttribute("data-sortable-activator", "true")
       );
-      fireEvent.pointerUp(moving, { button: 0, pointerId: 43 });
+      moving.focus();
+      await user.keyboard("[Space]");
+      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+        "Moving"
+      );
+      await user.keyboard("[Escape]");
       expect(
         screen.queryByTestId("notes-selection-drag-preview")
       ).not.toBeInTheDocument();
@@ -5377,7 +5399,7 @@ describe("Notes workspace", () => {
       deferAuthority = true;
       await user.click(screen.getByRole("button", { name: "Starred" }));
       await waitFor(() => expect(queryTitleInput("Hidden child")).toBeNull());
-      const moving = screen.getByRole("button", { name: "Zoom into Moving" });
+      let moving = screen.getByRole("button", { name: "Zoom into Moving" });
 
       await waitFor(() =>
         expect(moving).not.toHaveAttribute("data-sortable-activator")
@@ -5386,25 +5408,43 @@ describe("Notes workspace", () => {
         "aria-description",
         "Notes are still preparing for drag. Try again."
       );
-      moving.focus();
-      fireEvent.keyDown(moving, { key: "Enter" });
-      expect(
-        within(screen.getByLabelText("Status bar feedback")).queryByRole(
-          "alert"
-        )
-      ).toBeNull();
-      fireEvent.pointerDown(moving, { button: 0, pointerId: 41 });
-      fireEvent.pointerMove(window, {
-        clientX: 5,
-        pointerId: 41
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 0, clientY: 0 }
+      });
+      await user.pointer({
+        target: moving,
+        coords: { clientX: 5, clientY: 0 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: moving,
+        coords: { clientX: 5, clientY: 0 }
       });
       expect(
         within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
       ).toHaveTextContent("Notes are still preparing for drag. Try again.");
-      fireEvent.pointerUp(moving, { button: 0, pointerId: 41 });
+      expect(
+        screen.queryByRole("heading", { name: "Moving", level: 1 })
+      ).not.toBeInTheDocument();
       expect(
         screen.queryByTestId("notes-selection-drag-preview")
       ).not.toBeInTheDocument();
+
+      await user.click(moving);
+      expect(
+        await screen.findByRole("heading", { name: "Moving", level: 1 })
+      ).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      moving = await screen.findByRole("button", { name: "Zoom into Moving" });
+      moving.focus();
+      await user.keyboard("[Enter]");
+      expect(
+        await screen.findByRole("heading", { name: "Moving", level: 1 })
+      ).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      moving = await screen.findByRole("button", { name: "Zoom into Moving" });
 
       await act(async () => {
         deferAuthority = false;
@@ -5429,6 +5469,78 @@ describe("Notes workspace", () => {
           screen.queryByTestId("notes-selection-drag-preview")
         ).not.toBeInTheDocument()
       );
+    });
+
+    it("clears disabled drag click suppression after an outside release", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({
+          id: "moving",
+          sortKey: 1,
+          title: "Moving",
+          isStarred: true
+        }),
+        node({
+          id: "hidden-child",
+          parentId: "moving",
+          title: "Hidden child"
+        })
+      ];
+      const authority = deferred<NotesWorkspace>();
+      let deferAuthority = false;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (deferAuthority && scope.kind === "active") {
+            return authority.promise;
+          }
+          return scope.kind === "starred"
+            ? workspace(activeNodes.filter((current) => current.isStarred))
+            : workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Moving");
+      deferAuthority = true;
+      const starred = screen.getByRole("button", { name: "Starred" });
+      await user.click(starred);
+      await waitFor(() => expect(queryTitleInput("Hidden child")).toBeNull());
+      const moving = screen.getByRole("button", { name: "Zoom into Moving" });
+      await waitFor(() =>
+        expect(moving).not.toHaveAttribute("data-sortable-activator")
+      );
+
+      await user.pointer({
+        keys: "[MouseLeft>]",
+        target: moving,
+        coords: { clientX: 0, clientY: 0 }
+      });
+      await user.pointer({
+        target: starred,
+        coords: { clientX: 5, clientY: 0 }
+      });
+      await user.pointer({
+        keys: "[/MouseLeft]",
+        target: starred,
+        coords: { clientX: 5, clientY: 0 }
+      });
+      expect(
+        screen.queryByRole("heading", { name: "Moving", level: 1 })
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        deferAuthority = false;
+        authority.resolve(workspace(activeNodes));
+        await authority.promise;
+      });
+      await waitFor(() =>
+        expect(moving).toHaveAttribute("data-sortable-activator", "true")
+      );
+
+      await user.click(moving);
+      expect(
+        await screen.findByRole("heading", { name: "Moving", level: 1 })
+      ).toBeVisible();
     });
 
     it("preflights filtered selected drag presentation before enabling its activator", async () => {
@@ -5517,6 +5629,108 @@ describe("Notes workspace", () => {
         "notes-selection-drag-preview-count"
       );
 
+      await user.keyboard("[Escape]");
+      await waitFor(() =>
+        expect(
+          screen.queryByTestId("notes-selection-drag-preview")
+        ).not.toBeInTheDocument()
+      );
+    });
+
+    it("retries failed filtered selected context from Space without zooming", async () => {
+      const user = userEvent.setup();
+      const activeNodes = [
+        node({
+          id: "parent",
+          sortKey: 1,
+          title: "Parent",
+          isStarred: true
+        }),
+        node({
+          id: "child",
+          parentId: "parent",
+          title: "Child",
+          isStarred: true
+        }),
+        node({
+          id: "hidden",
+          parentId: "child",
+          title: "Hidden"
+        }),
+        node({
+          id: "target",
+          sortKey: 2,
+          title: "Target",
+          isStarred: true
+        })
+      ];
+      let failSelectedContext = false;
+      let allowSelectedContextRetry = false;
+      let activeLoadsAfterSelection = 0;
+      configureRepository(activeNodes);
+      notesStoreMock.loadWorkspace.mockImplementation(
+        async (_vaultRoot: string, scope: { kind: string }) => {
+          if (failSelectedContext && scope.kind === "active") {
+            activeLoadsAfterSelection += 1;
+            if (
+              activeLoadsAfterSelection >= 2 &&
+              !allowSelectedContextRetry
+            ) {
+              throw new Error("selection context unavailable");
+            }
+          }
+          return scope.kind === "starred"
+            ? workspace(activeNodes.filter((current) => current.isStarred))
+            : workspace(activeNodes);
+        }
+      );
+      renderNotesWorkspace();
+      await findTitleInput("Parent");
+      await user.click(screen.getByRole("button", { name: "Starred" }));
+      await waitFor(() => expect(queryTitleInput("Hidden")).toBeNull());
+      const parentTitle = await findTitleInput("Parent");
+      const parent = screen.getByRole("button", { name: "Zoom into Parent" });
+      await waitFor(() =>
+        expect(parent).toHaveAttribute("data-sortable-activator", "true")
+      );
+      failSelectedContext = true;
+
+      fireEvent.keyDown(parentTitle, { key: "ArrowDown", shiftKey: true });
+      await waitFor(() =>
+        expect(selectedOutlineIds()).toEqual(["parent", "child"])
+      );
+      await waitFor(() =>
+        expect(parent).toHaveAttribute(
+          "aria-description",
+          "Can't move notes: the full outline couldn't be prepared. Try again."
+        )
+      );
+      const loadsBeforeRetry = activeLoadsAfterSelection;
+      allowSelectedContextRetry = true;
+
+      parent.focus();
+      await user.keyboard("[Space]");
+
+      expect(
+        screen.queryByRole("heading", { name: "Parent", level: 1 })
+      ).not.toBeInTheDocument();
+      expect(
+        within(screen.getByLabelText("Status bar feedback")).getByRole("alert")
+      ).toHaveTextContent("Notes are still preparing for drag. Try again.");
+      await waitFor(() =>
+        expect(activeLoadsAfterSelection).toBe(loadsBeforeRetry + 1)
+      );
+      await waitFor(() =>
+        expect(parent).toHaveAttribute("data-sortable-activator", "true")
+      );
+
+      parent.focus();
+      await user.keyboard("[Space]");
+      const preview = screen.getByTestId("notes-selection-drag-preview");
+      expect(preview).toHaveTextContent("Parent");
+      expect(within(preview).getByText("3")).toHaveClass(
+        "notes-selection-drag-preview-count"
+      );
       await user.keyboard("[Escape]");
       await waitFor(() =>
         expect(

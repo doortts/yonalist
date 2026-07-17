@@ -228,6 +228,7 @@ function OutlineNodeRowComponent({
   const focusNoteOnOpenRef = useRef(false);
   const dateNoteOnOpenRef = useRef(false);
   const disabledDragAttemptCleanupRef = useRef<(() => void) | null>(null);
+  const suppressNextPointerClickRef = useRef(false);
   const preparedMoveRef = useRef<NotesPreparedMove | null>(null);
   const structuralCommandInFlightRef = useRef(false);
   const shiftClickAnchorRef = useRef<NoteId | null | undefined>(undefined);
@@ -306,6 +307,9 @@ function OutlineNodeRowComponent({
   const trackDisabledDragAttempt = (
     event: PointerEvent<HTMLButtonElement>
   ): void => {
+    if (event.button === 0) {
+      suppressNextPointerClickRef.current = false;
+    }
     if (
       dragEnabled ||
       !onDragDisabledAttempt ||
@@ -332,6 +336,7 @@ function OutlineNodeRowComponent({
           moveEvent.clientY - clientY
         ) >= 4
       ) {
+        suppressNextPointerClickRef.current = true;
         cleanup();
         onDragDisabledAttempt();
       }
@@ -724,6 +729,18 @@ function OutlineNodeRowComponent({
     }
     if (dragEnabled) {
       listeners?.onKeyDown?.(event);
+    } else if (
+      onDragDisabledAttempt &&
+      event.key === " " &&
+      !event.altKey &&
+      !event.ctrlKey &&
+      !event.metaKey &&
+      !event.shiftKey &&
+      !event.repeat &&
+      !event.nativeEvent.isComposing
+    ) {
+      event.preventDefault();
+      onDragDisabledAttempt();
     }
   };
 
@@ -1161,6 +1178,14 @@ function OutlineNodeRowComponent({
               : undefined;
           }}
           onClick={(event) => {
+            if (
+              suppressNextPointerClickRef.current &&
+              event.detail > 0
+            ) {
+              suppressNextPointerClickRef.current = false;
+              event.preventDefault();
+              return;
+            }
             // Shift+Click extends the multi-node selection to this row (head),
             // anchoring at the current caret node the first time. A plain click
             // still zooms.
