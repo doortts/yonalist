@@ -50,8 +50,9 @@ mode, which is production-like during `tauri build --debug`.
 - If a legacy migration cannot reach Keychain, retain and return the web token
   so an existing signed-in user is not unexpectedly logged out; retry migration
   on a later launch.
-- Clear both stores so old development or migration data cannot revive a
-  logged-out session.
+- Clear the web copy immediately and make one best-effort Keychain deletion.
+  Preserve the existing behavior of ignoring native deletion failures; a
+  failed release deletion may therefore be restored on a later launch.
 
 ## Security
 

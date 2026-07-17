@@ -14,6 +14,7 @@
 - Release Tauri builds must continue using the `Yonalist GitHub` Keychain service.
 - Browser builds must continue using `yonalist.github.sessionTokens.v1` in `localStorage`.
 - Release migration must remove a legacy web token only after Keychain storage succeeds.
+- Release logout must remove the web copy immediately, attempt Keychain deletion once, and preserve the existing behavior of ignoring a native deletion failure.
 - No signing identity, Apple credential, token, encryption layer, or dependency may be added.
 
 ---
@@ -345,7 +346,7 @@ git commit -m "fix(auth): skip keychain in debug builds"
 
 **Interfaces:**
 - Consumes: the Rust backend command and unchanged TypeScript public API.
-- Produces: a verified debug-web/release-Keychain storage boundary.
+- Produces: a verified debug-web/release-Keychain storage boundary with the explicitly accepted best-effort release deletion behavior.
 
 - [ ] **Step 1: Run all native tests**
 
