@@ -60,49 +60,7 @@ const notesStoreMock = vi.hoisted(() => ({
   deleteDatabase: vi.fn()
 }));
 
-vi.mock("../../services/notesStore", () => {
-  const historyMutationMethods = new Set([
-    "createNode",
-    "updateNode",
-    "splitNode",
-    "moveNode",
-    "applyBatch",
-    "toggleComplete",
-    "toggleCollapsed",
-    "toggleStar",
-    "duplicateNode",
-    "removeEmptyNode",
-    "softDeleteNode",
-    "restoreNode",
-    "archiveNode",
-    "unarchiveNode",
-    "importAttachmentPaths",
-    "importImageNodePaths",
-    "importImageNodeBytes",
-    "resizeAttachment",
-    "removeAttachment"
-  ]);
-  return {
-    notesStore: new Proxy(notesStoreMock, {
-      get(target, property: string) {
-        const method = target[property as keyof typeof target];
-        if (!historyMutationMethods.has(property)) {
-          return method;
-        }
-        return (...args: unknown[]) => {
-          try {
-            return method(...args);
-          } finally {
-            // These integration assertions predate the history protocol and
-            // intentionally inspect only the command payload. The proxy still
-            // forwards the required context to every mock implementation.
-            method.mock.calls.at(-1)?.pop();
-          }
-        };
-      }
-    })
-  };
-});
+vi.mock("../../services/notesStore", () => ({ notesStore: notesStoreMock }));
 
 import { NotesFeatureProvider } from "./NotesFeature";
 import {
@@ -227,6 +185,15 @@ function historyState(
     prunedEntryIds: [],
     ...overrides
   };
+}
+
+function historyContextMatcher() {
+  return expect.objectContaining({
+    sessionId: expect.stringMatching(/\S/),
+    historyEpoch: expect.stringMatching(/\S/),
+    entryId: expect.stringMatching(/\S/),
+    commandKind: expect.stringMatching(/\S/)
+  });
 }
 
 function attachment(
@@ -873,7 +840,8 @@ describe("Notes workspace", () => {
           }
         ],
         initialMaxDisplayWidth: 480
-      }
+      },
+      historyContextMatcher()
     );
     expect(notesStoreMock.importAttachmentPaths).not.toHaveBeenCalled();
     expect(
@@ -1189,7 +1157,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.removeAttachment).toHaveBeenCalledWith(
         "/vault",
-        image.id
+        image.id,
+        historyContextMatcher()
       )
     );
     await waitFor(() =>
@@ -1545,7 +1514,8 @@ describe("Notes workspace", () => {
         afterId: "image-node",
         title: "",
         note: ""
-      }
+      },
+      historyContextMatcher()
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
     expect(await findTitleInput("")).toHaveFocus();
@@ -1583,7 +1553,7 @@ describe("Notes workspace", () => {
       id: "image-node",
       parentId: "previous",
       afterId: null
-    });
+    }, historyContextMatcher());
 
     content.focus();
     expect(
@@ -1594,7 +1564,7 @@ describe("Notes workspace", () => {
       id: "image-node",
       parentId: null,
       afterId: "previous"
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
   });
@@ -1754,7 +1724,8 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
-      "project"
+      "project",
+      historyContextMatcher()
     );
     expect(screen.getByRole("button", { name: "All notes" })).toHaveAttribute(
       "aria-current",
@@ -1832,7 +1803,8 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
-      "project"
+      "project",
+      historyContextMatcher()
     );
     const pointerMenu = await openNodeMenu("Project", user);
     const uncomplete = within(pointerMenu).getByRole("menuitem", {
@@ -2380,7 +2352,7 @@ describe("Notes workspace", () => {
       parentId: null,
       afterId: null,
       beforeId: "first"
-    });
+    }, historyContextMatcher());
     expect(
       textareasByName("Edit node title")
         .map((input) => input.value)
@@ -2468,13 +2440,14 @@ describe("Notes workspace", () => {
     );
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
-      "parent"
+      "parent",
+      historyContextMatcher()
     );
     expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
       id: "active",
       parentId: "parent",
       afterId: "hidden"
-    });
+    }, historyContextMatcher());
     expect(
       notesStoreMock.toggleCollapsed.mock.invocationCallOrder[0]
     ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
@@ -2637,7 +2610,8 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.createNode).toHaveBeenCalledWith(
       "/vault",
-      expect.objectContaining({ parentId: null, title: "", note: "" })
+      expect.objectContaining({ parentId: null, title: "", note: "" }),
+      historyContextMatcher()
     );
     expect(
       await findTitleInput("")
@@ -2845,7 +2819,8 @@ describe("Notes workspace", () => {
 
     expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
       "/vault",
-      "project"
+      "project",
+      historyContextMatcher()
     );
     await waitFor(() =>
       expect(
@@ -2866,7 +2841,8 @@ describe("Notes workspace", () => {
     );
     expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
       "/vault",
-      "project"
+      "project",
+      historyContextMatcher()
     );
     await waitFor(() => expect(notesStoreMock.toggleComplete).toHaveBeenCalledOnce());
     const updatedMenu = await openNodeMenu("Project", user);
@@ -2983,7 +2959,7 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Renamed project",
         note: "Project note"
-      })
+      }, historyContextMatcher())
     );
   });
 
@@ -3004,7 +2980,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project latest",
       note: "Project note"
-    });
+    }, historyContextMatcher());
   });
 
   it("flushes a title on blur without a later duplicate timer write", async () => {
@@ -3052,7 +3028,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project next",
       note: "Project note"
-    });
+    }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Project next", user);
     expect(
       within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
@@ -3092,7 +3068,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Newest visible title",
       note: "Project note"
-    });
+    }, historyContextMatcher());
     expect(title).toHaveValue("Newest visible title");
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
   });
@@ -3123,7 +3099,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Recovered project",
       note: "Project note"
-    });
+    }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Recovered project", user);
     expect(
       within(savedMenu).queryByRole("menuitem", { name: "Retry save" })
@@ -3163,7 +3139,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Failed project draft",
       note: "Project note"
-    });
+    }, historyContextMatcher());
     const savedProjectMenu = await openNodeMenu("Failed project draft", user);
     expect(
       within(savedProjectMenu).queryByRole("menuitem", { name: "Retry save" })
@@ -3194,7 +3170,7 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "Updated context"
-      })
+      }, historyContextMatcher())
     );
   });
 
@@ -3223,7 +3199,7 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: ""
-      })
+      }, historyContextMatcher())
     );
     expect(getTitleInput("Project")).toBeInTheDocument();
     expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
@@ -3366,7 +3342,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project",
       note: "Latest note"
-    });
+    }, historyContextMatcher());
   });
 
   it("preserves newer title and note drafts when an older blur save resolves", async () => {
@@ -3385,7 +3361,7 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Submitted title",
         note: "Project note"
-      })
+      }, historyContextMatcher())
     );
 
     fireEvent.change(title, { target: { value: "Newer title" } });
@@ -3435,7 +3411,7 @@ describe("Notes workspace", () => {
       newNodeId: "00000000-0000-4000-8000-000000000001",
       prefix: "alpha",
       suffix: "omega"
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(title).toHaveFocus();
 
@@ -3483,7 +3459,7 @@ describe("Notes workspace", () => {
         id: "source",
         title: "alpha omega",
         note: ""
-      })
+      }, historyContextMatcher())
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
     randomUUID.mockRestore();
@@ -3532,7 +3508,7 @@ describe("Notes workspace", () => {
       id: "source",
       title: "alphaXYZomega!",
       note: "old note"
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
     await act(async () =>
@@ -3553,7 +3529,7 @@ describe("Notes workspace", () => {
       newNodeId: "00000000-0000-4000-8000-000000000002",
       prefix: "alpha",
       suffix: "omega!"
-    });
+    }, historyContextMatcher());
 
     expect(
       await findTitleInput("alpha")
@@ -3929,7 +3905,7 @@ describe("Notes workspace", () => {
         op: "complete",
         nodeIds: ["a"],
         completed: true
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
@@ -3976,7 +3952,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
         op: "duplicate",
         nodeIds: ["a", "b"]
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
       await waitFor(() =>
         expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
@@ -4033,7 +4009,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
         op: "duplicate",
         nodeIds: ["a", "b"]
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.duplicateNode).not.toHaveBeenCalled();
       await waitFor(() =>
         expect(selectedOutlineIds()).toEqual(["copy-a", "copy-b"])
@@ -4405,7 +4381,7 @@ describe("Notes workspace", () => {
         expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
           op: "delete",
           nodeIds: ["a", "b"]
-        });
+        }, historyContextMatcher());
         expect(writeText.mock.invocationCallOrder[0]).toBeLessThan(
           notesStoreMock.applyBatch.mock.invocationCallOrder[0]
         );
@@ -4558,7 +4534,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
         op: "delete",
         nodeIds: ["a", "b"]
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.softDeleteNode).not.toHaveBeenCalled();
     });
 
@@ -4599,7 +4575,7 @@ describe("Notes workspace", () => {
         parentId: null,
         afterId: "c",
         beforeId: null
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -4684,7 +4660,7 @@ describe("Notes workspace", () => {
         parentId: null,
         afterId: "c",
         beforeId: null
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -4823,7 +4799,7 @@ describe("Notes workspace", () => {
         parentId: "parent",
         afterId: "c",
         beforeId: null
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -5199,7 +5175,7 @@ describe("Notes workspace", () => {
         parentId: "destination",
         afterId: null,
         beforeId: null
-      });
+      }, historyContextMatcher());
       await waitFor(() => expect(selectedOutlineIds()).toEqual(movingIds));
       await waitFor(() =>
         expect(
@@ -5589,7 +5565,7 @@ describe("Notes workspace", () => {
         parentId: null,
         afterId: null,
         beforeId: "a"
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6243,7 +6219,7 @@ describe("Notes workspace", () => {
         parentId: "parent",
         afterId: "hidden",
         beforeId: null
-      });
+      }, historyContextMatcher());
       await waitFor(() =>
         expect(
           document.querySelector('[data-outline-id="moving"]')
@@ -6335,7 +6311,7 @@ describe("Notes workspace", () => {
         parentId: null,
         afterId: "tail",
         beforeId: null
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6357,7 +6333,7 @@ describe("Notes workspace", () => {
         op: "complete",
         nodeIds: ["a", "b"],
         completed: true
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
 
@@ -6405,7 +6381,7 @@ describe("Notes workspace", () => {
       );
 
       await waitFor(() =>
-        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "c")
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "c", historyContextMatcher())
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
@@ -6441,7 +6417,7 @@ describe("Notes workspace", () => {
         parentId: "c",
         afterId: null,
         beforeId: null
-      });
+      }, historyContextMatcher());
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     });
 
@@ -6471,7 +6447,7 @@ describe("Notes workspace", () => {
         op: "removeTag",
         nodeIds: ["a", "b"],
         tag: { prefix: "#", normalizedTag: "one" }
-      });
+      }, historyContextMatcher());
     });
 
     it("adds a canonical tag payload to every row selected from the toolbar", async () => {
@@ -6500,7 +6476,7 @@ describe("Notes workspace", () => {
           normalizedTag: "strasse",
           displayTag: "Straße"
         }
-      });
+      }, historyContextMatcher());
       expect(selectedOutlineIds()).toEqual(["a", "b"]);
     });
 
@@ -6849,7 +6825,7 @@ describe("Notes workspace", () => {
         op: "complete",
         nodeIds: ["a", "b", "c"],
         completed: true
-      });
+      }, historyContextMatcher());
       // The whole-selection path fully replaces the single-node command.
       expect(notesStoreMock.toggleComplete).not.toHaveBeenCalled();
     });
@@ -6933,7 +6909,8 @@ describe("Notes workspace", () => {
       await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith(
         "/vault",
-        expected
+        expected,
+        historyContextMatcher()
       );
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
       expect(selectedOutlineIds()).toEqual(["b", "c"]);
@@ -6958,7 +6935,7 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
         op: "delete",
         nodeIds: ["a", "b"]
-      });
+      }, historyContextMatcher());
       // The surviving neighbor takes focus.
       await waitFor(() => expect(getTitleInput("Charlie")).toHaveFocus());
       expect(
@@ -7134,7 +7111,7 @@ describe("Notes workspace", () => {
           expect(notesStoreMock.applyBatch).toHaveBeenCalledWith("/vault", {
             op,
             nodeIds: ["a", "b"]
-          })
+          }, historyContextMatcher())
         );
         expect(selectedOutlineIds()).toEqual(["a", "b"]);
         await act(async () => batch.resolve(workspace(after)));
@@ -7172,7 +7149,7 @@ describe("Notes workspace", () => {
       fireEvent.keyDown(title, { key: "Enter", ctrlKey: true });
 
       await waitFor(() =>
-        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "a")
+        expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith("/vault", "a", historyContextMatcher())
       );
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
     });
@@ -7290,7 +7267,7 @@ describe("Notes workspace", () => {
       id: "second",
       parentId: "first",
       afterId: "leaf"
-    });
+    }, historyContextMatcher());
     expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
 
     await act(async () =>
@@ -7330,7 +7307,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.toggleCollapsed).toHaveBeenCalledWith(
         "/vault",
-        "first"
+        "first",
+        historyContextMatcher()
       )
     );
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -7344,7 +7322,7 @@ describe("Notes workspace", () => {
       id: "second",
       parentId: "first",
       afterId: "hidden"
-    });
+    }, historyContextMatcher());
 
     await act(async () =>
       move.resolve(
@@ -7376,12 +7354,12 @@ describe("Notes workspace", () => {
       id: "milestone",
       title: "Milestone edited",
       note: ""
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
       id: "milestone",
       parentId: "project",
       afterId: "plan"
-    });
+    }, historyContextMatcher());
     expect(
       notesStoreMock.updateNode.mock.invocationCallOrder[0]
     ).toBeLessThan(notesStoreMock.moveNode.mock.invocationCallOrder[0]);
@@ -7469,7 +7447,7 @@ describe("Notes workspace", () => {
       id: "project",
       title: "Project edited",
       note: "Project note"
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
     expect(planFocus).toHaveBeenCalledOnce();
@@ -7625,7 +7603,7 @@ describe("Notes workspace", () => {
       id: "empty",
       title: "",
       note: ""
-    });
+    }, historyContextMatcher());
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "All notes" }).focus();
 
@@ -7633,7 +7611,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
         "/vault",
-        "empty"
+        "empty",
+        historyContextMatcher()
       )
     );
     expect(screen.getByRole("button", { name: "All notes" })).toHaveFocus();
@@ -7667,7 +7646,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.removeEmptyNode).toHaveBeenCalledWith(
         "/vault",
-        "empty"
+        "empty",
+        historyContextMatcher()
       )
     );
 
@@ -7744,7 +7724,7 @@ describe("Notes workspace", () => {
         id: "project",
         title: "Project",
         note: "Project note revised"
-      })
+      }, historyContextMatcher())
     );
   });
 
@@ -7789,7 +7769,8 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(notesStoreMock.toggleComplete).toHaveBeenCalledWith(
           "/vault",
-          "outside"
+          "outside",
+          historyContextMatcher()
         )
       );
     }
@@ -7817,7 +7798,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
         "/vault",
-        "outside"
+        "outside",
+        historyContextMatcher()
       )
     );
   });
@@ -7842,7 +7824,8 @@ describe("Notes workspace", () => {
       await waitFor(() =>
         expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
           "/vault",
-          "outside"
+          "outside",
+          historyContextMatcher()
         )
       );
     }
@@ -7883,7 +7866,8 @@ describe("Notes workspace", () => {
     );
     expect(notesStoreMock.duplicateNode).toHaveBeenCalledWith(
       "/vault",
-      "outside"
+      "outside",
+      historyContextMatcher()
     );
 
     const deleteMenu = await openNodeMenu("Outside branch", user);
@@ -7892,7 +7876,8 @@ describe("Notes workspace", () => {
     );
     expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
       "/vault",
-      "outside"
+      "outside",
+      historyContextMatcher()
     );
   });
 
@@ -8292,7 +8277,7 @@ describe("Notes workspace", () => {
     const menu = await openNodeMenu("Project", user);
     await user.click(within(menu).getByRole("menuitem", { name: "Star" }));
 
-    expect(notesStoreMock.toggleStar).toHaveBeenCalledWith("/vault", "project");
+    expect(notesStoreMock.toggleStar).toHaveBeenCalledWith("/vault", "project", historyContextMatcher());
     const updatedMenu = await openNodeMenu("Project", user);
     expect(
       within(updatedMenu).getByRole("menuitem", { name: "Unstar" })
@@ -8406,7 +8391,7 @@ describe("Notes workspace", () => {
     const pageMenu = await screen.findByRole("menu");
     await user.click(within(pageMenu).getByRole("menuitem", { name: "Archive" }));
     await waitFor(() =>
-      expect(notesStoreMock.archiveNode).toHaveBeenCalledWith("/vault", "project")
+      expect(notesStoreMock.archiveNode).toHaveBeenCalledWith("/vault", "project", historyContextMatcher())
     );
     const activeFallbackTitle = await findTextareaByName("Edit page title");
     expect(activeFallbackTitle).toHaveValue("Outside");
@@ -8452,7 +8437,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.softDeleteNode).toHaveBeenCalledWith(
         "/vault",
-        "project"
+        "project",
+        historyContextMatcher()
       )
     );
     expect(await within(library).findByText("Archive is empty.")).toBeVisible();
@@ -8479,7 +8465,8 @@ describe("Notes workspace", () => {
     await waitFor(() =>
       expect(notesStoreMock.restoreNode).toHaveBeenCalledWith(
         "/vault",
-        "project"
+        "project",
+        historyContextMatcher()
       )
     );
     const restoredTitle = await findTextareaByName("Edit page title");
@@ -8602,7 +8589,11 @@ describe("Notes workspace", () => {
     await user.click(
       within(trashMenu).getByRole("menuitem", { name: "Restore" })
     );
-    expect(notesStoreMock.restoreNode).toHaveBeenCalledWith("/vault", "deleted");
+    expect(notesStoreMock.restoreNode).toHaveBeenCalledWith(
+      "/vault",
+      "deleted",
+      historyContextMatcher()
+    );
 
     deletedNodes = [
       node({
