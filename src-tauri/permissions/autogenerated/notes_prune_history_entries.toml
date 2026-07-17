@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-notes-prune-history-entries"
+description = "Enables the notes_prune_history_entries command without any pre-configured scope."
+commands.allow = ["notes_prune_history_entries"]
+
+[[permission]]
+identifier = "deny-notes-prune-history-entries"
+description = "Denies the notes_prune_history_entries command without any pre-configured scope."
+commands.deny = ["notes_prune_history_entries"]

@@ -241,6 +241,7 @@ fn history_entry_id(namespace: u8, index: usize) -> String {
 fn history_context(namespace: u8, index: usize, command_kind: &str) -> NotesHistoryContext {
     NotesHistoryContext {
         session_id: HISTORY_SESSION_ID.to_string(),
+        history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
         entry_id: history_entry_id(namespace, index),
         command_kind: command_kind.to_string(),
     }

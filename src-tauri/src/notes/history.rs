@@ -5,9 +5,12 @@ use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::repository::{
     load_workspace, note_node_from_audit_json, rebuild_derived_for_nodes_at,
 };
+#[cfg(test)]
+use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_note_id, NoteAttachment, NoteId, NoteNode, NoteNodeKind, NotesHistoryContext,
-    NotesHistoryReplayResult, NotesHistoryStatus, NotesMutationResult, NotesWorkspace,
+    NotesHistoryReplayOutcome, NotesHistoryResetInput, NotesHistoryState, NotesHistoryStatus,
+    NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
     NotesWorkspaceScope, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -81,6 +84,10 @@ fn install_audit_infrastructure(connection: &Connection) -> Result<(), String> {
         );
         CREATE TEMP TABLE IF NOT EXISTS notes_history_pruned_attachment_paths (
           relative_path TEXT PRIMARY KEY
+        );
+        CREATE TEMP TABLE IF NOT EXISTS notes_history_pruned_entry_ids (
+          id TEXT PRIMARY KEY,
+          ordinal INTEGER NOT NULL
         );
         CREATE TEMP TABLE IF NOT EXISTS notes_history_mutation_result (
           history_entry_id TEXT,
@@ -193,7 +200,53 @@ pub(crate) fn history_epoch(connection: &Connection) -> Result<String, String> {
         .map_err(|error| format!("Could not read the Notes history epoch: {error}"))
 }
 
+pub(crate) fn require_epoch(connection: &Connection, expected_epoch: &str) -> Result<(), String> {
+    #[cfg(test)]
+    if expected_epoch == crate::notes::types::TEST_CURRENT_HISTORY_EPOCH {
+        return Ok(());
+    }
+    if history_epoch(connection)? != expected_epoch {
+        return Err("The Notes history epoch is stale.".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn history_state(
+    connection: &Connection,
+    session_id: &str,
+    pruned_entry_ids: Vec<String>,
+) -> Result<NotesHistoryState, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    let (next_undo_entry_id, next_redo_entry_id) = connection
+        .query_row(
+            "SELECT \
+               (SELECT id FROM notes_history_entries \
+                WHERE session_id = ?1 AND is_undone = 0 \
+                ORDER BY sequence DESC LIMIT 1), \
+               (SELECT id FROM notes_history_entries \
+                WHERE session_id = ?1 AND is_undone = 1 \
+                ORDER BY sequence ASC LIMIT 1)",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .map_err(|error| format!("Could not read Notes history state: {error}"))?;
+    Ok(NotesHistoryState {
+        can_undo: next_undo_entry_id.is_some(),
+        can_redo: next_redo_entry_id.is_some(),
+        history_epoch: history_epoch(connection)?,
+        next_undo_entry_id,
+        next_redo_entry_id,
+        pruned_entry_ids,
+    })
+}
+
 fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result<(), String> {
+    require_epoch(connection, &context.history_epoch)?;
     install_audit_infrastructure(connection)?;
     let active: bool = connection
         .query_row(
@@ -209,6 +262,7 @@ fn begin_audit(connection: &Connection, context: &NotesHistoryContext) -> Result
         .execute_batch(
             "DELETE FROM notes_history_audit; \
              DELETE FROM notes_history_pruned_attachment_paths; \
+             DELETE FROM notes_history_pruned_entry_ids; \
              DELETE FROM notes_history_mutation_result;",
         )
         .and_then(|_| {
@@ -239,8 +293,7 @@ pub(crate) struct MutationDelta {
 pub(crate) struct HistoryTransactionResult {
     pub(crate) workspace: NotesWorkspace,
     pub(crate) history_entry_id: Option<String>,
-    pub(crate) can_undo: bool,
-    pub(crate) can_redo: bool,
+    pub(crate) state: NotesHistoryState,
     pub(crate) pruned_attachment_paths: Vec<String>,
     /// `Some` only when the mutation ran under a history context; `None`
     /// mutations expose no audit rows, so the full workspace stays authoritative.
@@ -260,8 +313,7 @@ impl HistoryTransactionResult {
         NotesMutationResult {
             workspace: self.workspace,
             history_entry_id: self.history_entry_id,
-            can_undo: self.can_undo,
-            can_redo: self.can_redo,
+            state: self.state,
             changed_nodes,
             removed_node_ids,
             changed_attachments,
@@ -333,8 +385,7 @@ pub(crate) fn with_history_transaction_and_prunes(
         return operation(connection).map(|workspace| HistoryTransactionResult {
             workspace,
             history_entry_id: None,
-            can_undo: false,
-            can_redo: false,
+            state: NotesHistoryState::default(),
             pruned_attachment_paths: Vec::new(),
             delta: None,
         });
@@ -362,6 +413,21 @@ pub(crate) fn with_history_transaction_and_prunes(
                     format!("Could not collect pruned Notes attachment cleanup: {error}")
                 });
             let paths = paths?;
+            let pruned_entry_ids = {
+                let mut statement = connection
+                    .prepare("SELECT id FROM notes_history_pruned_entry_ids ORDER BY ordinal, id")
+                    .map_err(|error| {
+                        format!("Could not prepare pruned Notes history IDs: {error}")
+                    })?;
+                let ids = statement
+                    .query_map([], |row| row.get::<_, String>(0))
+                    .map_err(|error| format!("Could not read pruned Notes history IDs: {error}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| {
+                        format!("Could not collect pruned Notes history IDs: {error}")
+                    })?;
+                ids
+            };
             let mutation = connection
                 .query_row(
                     "SELECT history_entry_id, can_undo, can_redo \
@@ -379,10 +445,16 @@ pub(crate) fn with_history_transaction_and_prunes(
                     format!("Could not read the committed Notes mutation result: {error}")
                 })?;
             let delta = read_mutation_delta(connection)?;
-            Ok((paths, mutation, delta))
+            let state = history_state(connection, &context.session_id, pruned_entry_ids)?;
+            Ok((paths, mutation, delta, state))
         })()
     } else {
-        Ok((Vec::new(), (None, false, false), MutationDelta::default()))
+        Ok((
+            Vec::new(),
+            (None, false, false),
+            MutationDelta::default(),
+            NotesHistoryState::default(),
+        ))
     };
     let cleanup = end_audit(connection);
     match (result, committed_result, cleanup) {
@@ -390,13 +462,12 @@ pub(crate) fn with_history_transaction_and_prunes(
         (Ok(_), Err(error), _) | (Ok(_), Ok(_), Err(error)) => Err(error),
         (
             Ok(workspace),
-            Ok((pruned_attachment_paths, (history_entry_id, can_undo, can_redo), delta)),
+            Ok((pruned_attachment_paths, (history_entry_id, _, _), delta, state)),
             Ok(()),
         ) => Ok(HistoryTransactionResult {
             workspace,
             history_entry_id,
-            can_undo,
-            can_redo,
+            state,
             pruned_attachment_paths,
             delta: Some(delta),
         }),
@@ -456,6 +527,61 @@ fn record_pruned_attachment_paths(
             })?;
     }
     Ok(())
+}
+
+fn record_pruned_entry_ids(
+    transaction: &Transaction<'_>,
+    entry_query: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<Vec<String>, String> {
+    let entry_ids = {
+        let mut statement = transaction
+            .prepare(entry_query)
+            .map_err(|error| format!("Could not prepare pruned Notes history IDs: {error}"))?;
+        let ids = statement
+            .query_map(parameters, |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not read pruned Notes history IDs: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect pruned Notes history IDs: {error}"))?;
+        ids
+    };
+    let mut ordinal: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal), 0) FROM notes_history_pruned_entry_ids",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Could not order pruned Notes history IDs: {error}"))?;
+    for entry_id in &entry_ids {
+        ordinal += 1;
+        transaction
+            .execute(
+                "INSERT OR IGNORE INTO notes_history_pruned_entry_ids(id, ordinal) VALUES (?1, ?2)",
+                params![entry_id, ordinal],
+            )
+            .map_err(|error| format!("Could not retain a pruned Notes history ID: {error}"))?;
+    }
+    Ok(entry_ids)
+}
+
+fn take_pruned_attachment_paths(connection: &Connection) -> Result<Vec<String>, String> {
+    let paths = {
+        let mut statement = connection
+            .prepare(
+                "SELECT relative_path FROM notes_history_pruned_attachment_paths ORDER BY relative_path",
+            )
+            .map_err(|error| format!("Could not prepare pruned Notes attachment paths: {error}"))?;
+        let paths = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Could not read pruned Notes attachment paths: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Could not collect pruned Notes attachment paths: {error}"))?;
+        paths
+    };
+    connection
+        .execute("DELETE FROM notes_history_pruned_attachment_paths", [])
+        .map_err(|error| format!("Could not clear pruned Notes attachment paths: {error}"))?;
+    Ok(paths)
 }
 
 pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), String> {
@@ -539,6 +665,11 @@ pub(crate) fn finalize_transaction(transaction: &Transaction<'_>) -> Result<(), 
     record_pruned_attachment_paths(
         transaction,
         "SELECT id FROM notes_history_entries WHERE is_undone = 1",
+        [],
+    )?;
+    record_pruned_entry_ids(
+        transaction,
+        "SELECT id FROM notes_history_entries WHERE is_undone = 1 ORDER BY rowid, id",
         [],
     )?;
     transaction
@@ -677,6 +808,7 @@ fn enforce_limits(transaction: &Transaction<'_>) -> Result<(), String> {
             .map_err(|error| format!("Could not choose old Notes history to evict: {error}"))?
             .ok_or_else(|| "Could not enforce Notes history limits.".to_string())?;
         record_pruned_attachment_paths(transaction, "SELECT ?1", [&oldest_entry])?;
+        record_pruned_entry_ids(transaction, "SELECT ?1", [&oldest_entry])?;
         let deleted = transaction
             .execute(
                 "DELETE FROM notes_history_entries WHERE id = ?1",
@@ -693,18 +825,10 @@ pub(crate) fn history_status(
     connection: &Connection,
     session_id: &str,
 ) -> Result<NotesHistoryStatus, String> {
-    validate_history_id("Notes history session ID", session_id)?;
-    connection
-        .query_row(
-            "SELECT \
-               EXISTS(SELECT 1 FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 0), \
-               EXISTS(SELECT 1 FROM notes_history_entries WHERE session_id = ?1 AND is_undone = 1)",
-            [session_id],
-            |row| Ok(NotesHistoryStatus { can_undo: row.get(0)?, can_redo: row.get(1)? }),
-        )
-        .map_err(|error| format!("Could not read Notes history status: {error}"))
+    history_state(connection, session_id, Vec::new())
 }
 
+#[cfg(test)]
 pub(crate) fn clear_history(
     connection: &mut Connection,
     session_id: &str,
@@ -722,7 +846,7 @@ pub(crate) fn clear_history(
     transaction
         .commit()
         .map_err(|error| format!("Could not commit cleared Notes history: {error}"))?;
-    Ok(NotesHistoryStatus::default())
+    history_state(connection, session_id, Vec::new())
 }
 
 pub(crate) fn clear_all_history(connection: &mut Connection) -> Result<(), String> {
@@ -742,6 +866,191 @@ pub(crate) fn clear_all_history_in_transaction(
         .execute("DELETE FROM notes_history_entries", [])
         .map_err(|error| format!("Could not clear all Notes history: {error}"))?;
     Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct HistoryMaintenanceResult {
+    pub(crate) state: NotesHistoryState,
+    pub(crate) pruned_attachment_paths: Vec<String>,
+}
+
+fn clear_maintenance_receipts(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "DELETE FROM notes_history_pruned_attachment_paths; \
+             DELETE FROM notes_history_pruned_entry_ids;",
+        )
+        .map_err(|error| format!("Could not clear Notes history maintenance state: {error}"))
+}
+
+fn validate_owned_entry_ids(
+    connection: &Connection,
+    session_id: &str,
+    entry_ids: &[String],
+) -> Result<(), String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    let mut seen = HashSet::new();
+    for entry_id in entry_ids {
+        validate_history_id("Notes history entry ID", entry_id)?;
+        if !seen.insert(entry_id) {
+            return Err("Notes history entry IDs must not contain duplicates.".to_string());
+        }
+        let owner = connection
+            .query_row(
+                "SELECT session_id FROM notes_history_entries WHERE id = ?1",
+                [entry_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Could not inspect a Notes history entry owner: {error}"))?;
+        if owner.as_deref() != Some(session_id) {
+            return Err(
+                "A Notes history entry is missing or belongs to another session.".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn prune_entry_ids(
+    transaction: &Transaction<'_>,
+    entry_ids: &[String],
+) -> Result<Vec<String>, String> {
+    for entry_id in entry_ids {
+        record_pruned_attachment_paths(transaction, "SELECT ?1", [entry_id])?;
+        let deleted = transaction
+            .execute(
+                "DELETE FROM notes_history_entries WHERE id = ?1",
+                [entry_id],
+            )
+            .map_err(|error| format!("Could not prune a Notes history entry: {error}"))?;
+        if deleted != 1 {
+            return Err("A Notes history entry disappeared while pruning.".to_string());
+        }
+    }
+    Ok(entry_ids.to_vec())
+}
+
+pub(crate) fn prune_history_entries(
+    connection: &mut Connection,
+    input: &NotesPruneHistoryInput,
+) -> Result<HistoryMaintenanceResult, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start pruning Notes history: {error}"))?;
+    require_epoch(&transaction, &input.history_epoch)?;
+    validate_owned_entry_ids(&transaction, &input.session_id, &input.entry_ids)?;
+    clear_maintenance_receipts(&transaction)?;
+    let pruned_entry_ids = prune_entry_ids(&transaction, &input.entry_ids)?;
+    let state = history_state(&transaction, &input.session_id, pruned_entry_ids)?;
+    let pruned_attachment_paths = take_pruned_attachment_paths(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit pruned Notes history: {error}"))?;
+    Ok(HistoryMaintenanceResult {
+        state,
+        pruned_attachment_paths,
+    })
+}
+
+fn redo_suffix(connection: &Connection, session_id: &str) -> Result<Vec<String>, String> {
+    validate_history_id("Notes history session ID", session_id)?;
+    let mut statement = connection
+        .prepare(
+            "SELECT id FROM notes_history_entries \
+             WHERE session_id = ?1 AND is_undone = 1 ORDER BY sequence ASC",
+        )
+        .map_err(|error| format!("Could not prepare the Notes redo suffix: {error}"))?;
+    let suffix = statement
+        .query_map([session_id], |row| row.get::<_, String>(0))
+        .map_err(|error| format!("Could not read the Notes redo suffix: {error}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Could not collect the Notes redo suffix: {error}"))?;
+    Ok(suffix)
+}
+
+pub(crate) fn prepare_navigation(
+    connection: &mut Connection,
+    input: &NotesPrepareNavigationInput,
+) -> Result<HistoryMaintenanceResult, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not prepare Notes navigation: {error}"))?;
+    require_epoch(&transaction, &input.history_epoch)?;
+    validate_owned_entry_ids(
+        &transaction,
+        &input.session_id,
+        &input.unreachable_redo_entry_ids,
+    )?;
+    let actual = redo_suffix(&transaction, &input.session_id)?;
+    if actual != input.unreachable_redo_entry_ids {
+        return Err(
+            "Notes navigation must provide the complete ordered redo history suffix.".to_string(),
+        );
+    }
+    clear_maintenance_receipts(&transaction)?;
+    let pruned_entry_ids = prune_entry_ids(&transaction, &actual)?;
+    let state = history_state(&transaction, &input.session_id, pruned_entry_ids)?;
+    let pruned_attachment_paths = take_pruned_attachment_paths(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit Notes navigation preparation: {error}"))?;
+    Ok(HistoryMaintenanceResult {
+        state,
+        pruned_attachment_paths,
+    })
+}
+
+pub(crate) fn reset_history_in_transaction(
+    transaction: &Transaction<'_>,
+    input: &NotesHistoryResetInput,
+) -> Result<HistoryMaintenanceResult, String> {
+    validate_history_id("Notes history session ID", &input.session_id)?;
+    require_epoch(transaction, &input.history_epoch)?;
+    clear_maintenance_receipts(transaction)?;
+    record_pruned_attachment_paths(
+        transaction,
+        "SELECT id FROM notes_history_entries ORDER BY rowid, id",
+        [],
+    )?;
+    let pruned_entry_ids = record_pruned_entry_ids(
+        transaction,
+        "SELECT id FROM notes_history_entries ORDER BY rowid, id",
+        [],
+    )?;
+    transaction
+        .execute("DELETE FROM notes_history_entries", [])
+        .map_err(|error| format!("Could not reset Notes history: {error}"))?;
+    transaction
+        .execute("DELETE FROM notes_history_epoch", [])
+        .and_then(|_| {
+            transaction.execute(
+                "INSERT INTO notes_history_epoch(value) VALUES (?1)",
+                [Uuid::new_v4().to_string()],
+            )
+        })
+        .map_err(|error| format!("Could not rotate the Notes history epoch: {error}"))?;
+    let state = history_state(transaction, &input.session_id, pruned_entry_ids)?;
+    let pruned_attachment_paths = take_pruned_attachment_paths(transaction)?;
+    Ok(HistoryMaintenanceResult {
+        state,
+        pruned_attachment_paths,
+    })
+}
+
+pub(crate) fn reset_history(
+    connection: &mut Connection,
+    input: &NotesHistoryResetInput,
+) -> Result<(NotesWorkspace, HistoryMaintenanceResult), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start resetting Notes history: {error}"))?;
+    let result = reset_history_in_transaction(&transaction, input)?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit reset Notes history: {error}"))?;
+    Ok((workspace, result))
 }
 
 #[derive(Deserialize)]
@@ -1290,6 +1599,7 @@ fn apply_attachment_state(
 /// Chooses the history entry a replay will advance. Accepts anything that
 /// derefs to a `Connection` (a plain connection for the pre-transaction
 /// attachment check, or a `&Transaction` inside the replay transaction).
+#[cfg(test)]
 fn select_replay_entry_id(
     executor: &Connection,
     session_id: &str,
@@ -1359,15 +1669,69 @@ fn validate_replay_attachment_bytes(
     Ok(())
 }
 
-fn replay(
+enum ReplayGate {
+    Apply(String),
+    EpochMismatch(NotesHistoryState),
+    EntryMissing(NotesHistoryState),
+    EntryNotNext(NotesHistoryState),
+}
+
+fn expected_replay_entry(
+    connection: &Connection,
+    session_id: &str,
+    expected_epoch: &str,
+    expected_entry_id: &str,
+    undoing: bool,
+) -> Result<ReplayGate, String> {
+    let state = history_state(connection, session_id, Vec::new())?;
+    if state.history_epoch != expected_epoch {
+        return Ok(ReplayGate::EpochMismatch(state));
+    }
+    let next = if undoing {
+        state.next_undo_entry_id.clone()
+    } else {
+        state.next_redo_entry_id.clone()
+    };
+    let Some(next) = next else {
+        return Ok(ReplayGate::EntryMissing(state));
+    };
+    if next != expected_entry_id {
+        return Ok(ReplayGate::EntryNotNext(state));
+    }
+    Ok(ReplayGate::Apply(next))
+}
+
+fn replay_outcome(gate: ReplayGate) -> Option<NotesHistoryReplayOutcome> {
+    match gate {
+        ReplayGate::Apply(_) => None,
+        ReplayGate::EpochMismatch(state) => {
+            Some(NotesHistoryReplayOutcome::EpochMismatch { state })
+        }
+        ReplayGate::EntryMissing(state) => Some(NotesHistoryReplayOutcome::EntryMissing { state }),
+        ReplayGate::EntryNotNext(state) => Some(NotesHistoryReplayOutcome::EntryNotNext { state }),
+    }
+}
+
+fn replay_expected(
     connection: &mut Connection,
     session_id: &str,
+    expected_epoch: &str,
+    expected_entry_id: &str,
     scope: NotesWorkspaceScope,
     undoing: bool,
     attachment_storage: Option<&AttachmentStorageLease>,
     today: LocalDate,
-) -> Result<NotesHistoryReplayResult, String> {
-    validate_history_id("Notes history session ID", session_id)?;
+) -> Result<NotesHistoryReplayOutcome, String> {
+    let gate = expected_replay_entry(
+        connection,
+        session_id,
+        expected_epoch,
+        expected_entry_id,
+        undoing,
+    )?;
+    if let Some(outcome) = replay_outcome(gate) {
+        return Ok(outcome);
+    }
 
     // Re-decode every touched attachment's owned bytes BEFORE opening the write
     // transaction. Doing this inside the IMMEDIATE transaction (as before) held
@@ -1376,27 +1740,29 @@ fn replay(
     // and change set the transaction below re-reads (note commands are
     // serialized per vault on a single managed connection).
     if let Some(storage) = attachment_storage {
-        if let Some(entry_id) = select_replay_entry_id(&*connection, session_id, undoing)? {
-            let changes = read_replay_changes(&*connection, &entry_id, undoing)?;
-            validate_replay_attachment_bytes(storage, &changes, undoing)?;
-        }
+        let changes = read_replay_changes(connection, expected_entry_id, undoing)?;
+        validate_replay_attachment_bytes(storage, &changes, undoing)?;
     }
 
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("Could not start Notes history replay: {error}"))?;
-    let Some(entry_id) = select_replay_entry_id(&transaction, session_id, undoing)? else {
-        let workspace = load_workspace(&transaction, scope)?;
-        let status = history_status(&transaction, session_id)?;
-        transaction
-            .commit()
-            .map_err(|error| format!("Could not finish empty Notes history replay: {error}"))?;
-        return Ok(NotesHistoryReplayResult {
-            workspace,
-            replayed_entry_id: None,
-            can_undo: status.can_undo,
-            can_redo: status.can_redo,
-        });
+    let gate = expected_replay_entry(
+        &transaction,
+        session_id,
+        expected_epoch,
+        expected_entry_id,
+        undoing,
+    )?;
+    let entry_id = match gate {
+        ReplayGate::Apply(entry_id) => entry_id,
+        gate => {
+            let outcome = replay_outcome(gate).expect("non-apply replay gate");
+            transaction.commit().map_err(|error| {
+                format!("Could not finish rejected Notes history replay: {error}")
+            })?;
+            return Ok(outcome);
+        }
     };
     let changes = read_replay_changes(&transaction, &entry_id, undoing)?;
     validate_expected_states(&transaction, &changes, undoing)?;
@@ -1432,16 +1798,47 @@ fn replay(
         )
         .map_err(|error| format!("Could not advance Notes history replay: {error}"))?;
     let workspace = load_workspace(&transaction, scope)?;
-    let status = history_status(&transaction, session_id)?;
+    let state = history_state(&transaction, session_id, Vec::new())?;
     transaction
         .commit()
         .map_err(|error| format!("Could not commit Notes history replay: {error}"))?;
-    Ok(NotesHistoryReplayResult {
+    Ok(NotesHistoryReplayOutcome::Applied {
         workspace,
-        replayed_entry_id: Some(entry_id),
-        can_undo: status.can_undo,
-        can_redo: status.can_redo,
+        replayed_entry_id: entry_id,
+        state,
     })
+}
+
+#[cfg(test)]
+fn replay_automatic(
+    connection: &mut Connection,
+    session_id: &str,
+    scope: NotesWorkspaceScope,
+    undoing: bool,
+    today: LocalDate,
+) -> Result<NotesHistoryReplayResult, String> {
+    let Some(entry_id) = select_replay_entry_id(connection, session_id, undoing)? else {
+        return Ok(NotesHistoryReplayResult {
+            workspace: load_workspace(connection, scope)?,
+            replayed_entry_id: None,
+            state: history_state(connection, session_id, Vec::new())?,
+        });
+    };
+    let epoch = history_epoch(connection)?;
+    match replay_expected(
+        connection, session_id, &epoch, &entry_id, scope, undoing, None, today,
+    )? {
+        NotesHistoryReplayOutcome::Applied {
+            workspace,
+            replayed_entry_id,
+            state,
+        } => Ok(NotesHistoryReplayResult {
+            workspace,
+            replayed_entry_id: Some(replayed_entry_id),
+            state,
+        }),
+        _ => Err("Automatic Notes history replay was unexpectedly rejected.".to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -1451,7 +1848,7 @@ pub(crate) fn undo(
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
     let today = SystemLocalTodayProvider.local_today(connection)?;
-    replay(connection, session_id, scope, true, None, today)
+    replay_automatic(connection, session_id, scope, true, today)
 }
 
 #[cfg(test)]
@@ -1461,19 +1858,44 @@ pub(crate) fn redo(
     scope: NotesWorkspaceScope,
 ) -> Result<NotesHistoryReplayResult, String> {
     let today = SystemLocalTodayProvider.local_today(connection)?;
-    replay(connection, session_id, scope, false, None, today)
+    replay_automatic(connection, session_id, scope, false, today)
+}
+
+#[cfg(test)]
+pub(crate) fn undo_expected(
+    connection: &mut Connection,
+    session_id: &str,
+    expected_epoch: &str,
+    expected_entry_id: &str,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayOutcome, String> {
+    let today = SystemLocalTodayProvider.local_today(connection)?;
+    replay_expected(
+        connection,
+        session_id,
+        expected_epoch,
+        expected_entry_id,
+        scope,
+        true,
+        None,
+        today,
+    )
 }
 
 pub(crate) fn undo_with_attachment_storage_at(
     connection: &mut Connection,
     session_id: &str,
+    expected_epoch: &str,
+    expected_entry_id: &str,
     scope: NotesWorkspaceScope,
     attachment_storage: &AttachmentStorageLease,
     today: LocalDate,
-) -> Result<NotesHistoryReplayResult, String> {
-    replay(
+) -> Result<NotesHistoryReplayOutcome, String> {
+    replay_expected(
         connection,
         session_id,
+        expected_epoch,
+        expected_entry_id,
         scope,
         true,
         Some(attachment_storage),
@@ -1484,13 +1906,17 @@ pub(crate) fn undo_with_attachment_storage_at(
 pub(crate) fn redo_with_attachment_storage_at(
     connection: &mut Connection,
     session_id: &str,
+    expected_epoch: &str,
+    expected_entry_id: &str,
     scope: NotesWorkspaceScope,
     attachment_storage: &AttachmentStorageLease,
     today: LocalDate,
-) -> Result<NotesHistoryReplayResult, String> {
-    replay(
+) -> Result<NotesHistoryReplayOutcome, String> {
+    replay_expected(
         connection,
         session_id,
+        expected_epoch,
+        expected_entry_id,
         scope,
         false,
         Some(attachment_storage),
@@ -1501,7 +1927,8 @@ pub(crate) fn redo_with_attachment_storage_at(
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_history, history_status, redo, undo, with_history_transaction,
+        clear_history, history_epoch, history_state, history_status, prepare_navigation,
+        prune_history_entries, redo, undo, undo_expected, with_history_transaction,
         with_history_transaction_and_prunes, HISTORY_MAX_BYTES, HISTORY_MAX_ENTRIES,
     };
     use crate::notes::repository::{
@@ -1514,9 +1941,10 @@ mod tests {
     };
     use crate::notes::types::{
         ApplyBatchInput, BatchOp, CreateNodeInput, MoveNodeInput, NoteSearchTag,
-        NoteStructuredSearchQuery, NoteTagPrefix, NotesHistoryContext, NotesMutationResult,
-        NotesWorkspace, NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput,
-        MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+        NoteStructuredSearchQuery, NoteTagPrefix, NotesHistoryContext, NotesHistoryReplayOutcome,
+        NotesMutationResult, NotesPrepareNavigationInput, NotesPruneHistoryInput, NotesWorkspace,
+        NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_NOTE_ATTACHMENTS_PER_NODE,
+        MAX_NOTE_ATTACHMENTS_PER_VAULT,
     };
     use rusqlite::{params, Connection};
 
@@ -1537,6 +1965,7 @@ mod tests {
     ) -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: session_id.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: format!("00000000-0000-4000-8000-{index:012x}"),
             command_kind: command_kind.to_string(),
         }
@@ -3594,9 +4023,12 @@ mod tests {
             soft_delete_node(connection, NODE_ID)
         })
         .expect("trash");
+        let cleared = clear_history(&mut connection, SESSION_ID).expect("clear");
+        assert!(!cleared.can_undo);
+        assert!(!cleared.can_redo);
         assert_eq!(
-            clear_history(&mut connection, SESSION_ID).expect("clear"),
-            Default::default()
+            cleared.history_epoch,
+            history_epoch(&connection).expect("epoch")
         );
         assert_eq!(entry_count(&connection), 0);
 
@@ -4056,5 +4488,397 @@ mod tests {
         assert_eq!(delta.changed_nodes[0].title, "Root");
         assert!(delta.changed_nodes[0].is_starred);
         assert_eq!(delta.changed_attachments[0].node_id, NODE_ID);
+    }
+
+    #[test]
+    fn notes_history_replay_rejects_wrong_expected_id_without_changing_rows() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let first = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(1, "updateText")
+        };
+        let second = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(2, "updateText")
+        };
+        for (context, title) in [(&first, "First"), (&second, "Second")] {
+            journal(&mut connection, context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                    },
+                )
+            })
+            .expect("journal update");
+        }
+        let before = active(&connection);
+
+        let outcome = undo_expected(
+            &mut connection,
+            SESSION_ID,
+            &epoch,
+            &first.entry_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("replay outcome");
+
+        assert!(matches!(
+            outcome,
+            NotesHistoryReplayOutcome::EntryNotNext { .. }
+        ));
+        assert_eq!(active(&connection), before);
+        assert_eq!(
+            history_state(&connection, SESSION_ID, Vec::new())
+                .expect("state")
+                .next_undo_entry_id
+                .as_deref(),
+            Some(second.entry_id.as_str())
+        );
+    }
+
+    #[test]
+    fn notes_history_replay_returns_epoch_and_missing_outcomes_without_mutation() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let context = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(1, "updateText")
+        };
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "After".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect("journal update");
+        let before = active(&connection);
+
+        let stale = undo_expected(
+            &mut connection,
+            SESSION_ID,
+            "stale-epoch",
+            "not-an-entry-id",
+            NotesWorkspaceScope::Active,
+        )
+        .expect("stale replay outcome");
+        assert!(matches!(
+            stale,
+            NotesHistoryReplayOutcome::EpochMismatch { .. }
+        ));
+        assert_eq!(active(&connection), before);
+        assert_eq!(
+            history_state(&connection, SESSION_ID, Vec::new())
+                .expect("state after stale replay")
+                .next_undo_entry_id
+                .as_deref(),
+            Some(context.entry_id.as_str())
+        );
+
+        undo_expected(
+            &mut connection,
+            SESSION_ID,
+            &epoch,
+            &context.entry_id,
+            NotesWorkspaceScope::Active,
+        )
+        .expect("apply exact undo");
+        let undone = active(&connection);
+        let missing = undo_expected(
+            &mut connection,
+            SESSION_ID,
+            &epoch,
+            "not-an-entry-id",
+            NotesWorkspaceScope::Active,
+        )
+        .expect("missing replay outcome");
+        assert!(matches!(
+            missing,
+            NotesHistoryReplayOutcome::EntryMissing { .. }
+        ));
+        assert_eq!(active(&connection), undone);
+        assert_eq!(entry_count(&connection), 1);
+    }
+
+    #[test]
+    fn notes_history_stale_epoch_mutation_changes_no_live_rows() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let before = active(&connection);
+        let stale = NotesHistoryContext {
+            history_epoch: "stale-epoch".to_string(),
+            ..history_context(1, "updateText")
+        };
+
+        let error = journal(&mut connection, &stale, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "After".to_string(),
+                    note: String::new(),
+                },
+            )
+        })
+        .expect_err("stale epoch");
+
+        assert!(error.to_lowercase().contains("epoch"), "{error}");
+        assert_eq!(active(&connection), before);
+        assert_eq!(entry_count(&connection), 0);
+    }
+
+    #[test]
+    fn notes_history_new_mutation_reports_all_invalidated_redo_ids() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let first = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(1, "updateText")
+        };
+        let second = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(2, "updateText")
+        };
+        for (context, title) in [(&first, "First"), (&second, "Second")] {
+            journal(&mut connection, context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                    },
+                )
+            })
+            .expect("journal update");
+        }
+        for entry_id in [&second.entry_id, &first.entry_id] {
+            undo_expected(
+                &mut connection,
+                SESSION_ID,
+                &epoch,
+                entry_id,
+                NotesWorkspaceScope::Active,
+            )
+            .expect("undo entry");
+        }
+        let replacement = NotesHistoryContext {
+            history_epoch: epoch,
+            ..history_context(3, "updateText")
+        };
+
+        let result = with_history_transaction_and_prunes(
+            &mut connection,
+            Some(&replacement),
+            |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: "Replacement".to_string(),
+                        note: String::new(),
+                    },
+                )
+            },
+        )
+        .expect("replacement mutation");
+
+        assert_eq!(
+            result.state.pruned_entry_ids,
+            vec![first.entry_id, second.entry_id]
+        );
+    }
+
+    #[test]
+    fn notes_history_prepare_navigation_requires_the_complete_ordered_redo_suffix() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let foreign = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context_for_session(SECOND_SESSION_ID, 9, "toggleStar")
+        };
+        journal(&mut connection, &foreign, |connection| {
+            toggle_star(connection, NODE_ID)
+        })
+        .expect("journal foreign-session entry");
+        let contexts = (1..=3)
+            .map(|index| NotesHistoryContext {
+                history_epoch: epoch.clone(),
+                ..history_context(index, "updateText")
+            })
+            .collect::<Vec<_>>();
+        for (context, title) in contexts.iter().zip(["First", "Second", "Third"]) {
+            journal(&mut connection, context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                    },
+                )
+            })
+            .expect("journal session entry");
+        }
+        for context in contexts[1..].iter().rev() {
+            undo_expected(
+                &mut connection,
+                SESSION_ID,
+                &epoch,
+                &context.entry_id,
+                NotesWorkspaceScope::Active,
+            )
+            .expect("undo redo-suffix entry");
+        }
+        let snapshot = |connection: &Connection| {
+            let entries = connection
+                .prepare(
+                    "SELECT id, session_id, sequence, is_undone FROM notes_history_entries \
+                     ORDER BY rowid, id",
+                )
+                .expect("prepare history snapshot")
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                })
+                .expect("query history snapshot")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect history snapshot");
+            let changes: i64 = connection
+                .query_row("SELECT COUNT(*) FROM notes_history_changes", [], |row| {
+                    row.get(0)
+                })
+                .expect("count history changes");
+            (entries, changes)
+        };
+        let before = snapshot(&connection);
+        let applied = contexts[0].entry_id.clone();
+        let suffix = contexts[1..]
+            .iter()
+            .map(|context| context.entry_id.clone())
+            .collect::<Vec<_>>();
+        let rejected = [
+            ("empty", Vec::new()),
+            ("foreign", vec![foreign.entry_id.clone()]),
+            ("applied", vec![applied.clone()]),
+            ("partial", vec![suffix[0].clone()]),
+            ("extra", vec![applied, suffix[0].clone(), suffix[1].clone()]),
+            ("reordered", vec![suffix[1].clone(), suffix[0].clone()]),
+        ];
+
+        for (label, unreachable_redo_entry_ids) in rejected {
+            prepare_navigation(
+                &mut connection,
+                &NotesPrepareNavigationInput {
+                    session_id: SESSION_ID.to_string(),
+                    history_epoch: epoch.clone(),
+                    unreachable_redo_entry_ids,
+                },
+            )
+            .expect_err(label);
+            assert_eq!(snapshot(&connection), before, "{label} changed history");
+        }
+
+        let pruned = prepare_navigation(
+            &mut connection,
+            &NotesPrepareNavigationInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch,
+                unreachable_redo_entry_ids: suffix.clone(),
+            },
+        )
+        .expect("prune exact ordered redo suffix");
+        assert_eq!(pruned.state.pruned_entry_ids, suffix);
+        assert!(!pruned.state.can_redo);
+    }
+
+    #[test]
+    fn notes_history_prune_validates_epoch_and_ownership_before_deleting_entries() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        create_node(&mut connection, create_input(NODE_ID, None, None, "Before")).expect("seed");
+        let epoch = history_epoch(&connection).expect("epoch");
+        let foreign = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context_for_session(SECOND_SESSION_ID, 9, "toggleStar")
+        };
+        journal(&mut connection, &foreign, |connection| {
+            toggle_star(connection, NODE_ID)
+        })
+        .expect("journal foreign entry");
+        let first = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(1, "updateText")
+        };
+        let second = NotesHistoryContext {
+            history_epoch: epoch.clone(),
+            ..history_context(2, "updateText")
+        };
+        for (context, title) in [(&first, "First"), (&second, "Second")] {
+            journal(&mut connection, context, |connection| {
+                update_node(
+                    connection,
+                    UpdateNodeInput {
+                        id: NODE_ID.to_string(),
+                        title: title.to_string(),
+                        note: String::new(),
+                    },
+                )
+            })
+            .expect("journal owned entry");
+        }
+        let before = entry_count(&connection);
+        for (label, history_epoch, entry_ids) in [
+            (
+                "stale",
+                "stale-epoch".to_string(),
+                vec![first.entry_id.clone()],
+            ),
+            ("foreign", epoch.clone(), vec![foreign.entry_id.clone()]),
+        ] {
+            prune_history_entries(
+                &mut connection,
+                &NotesPruneHistoryInput {
+                    session_id: SESSION_ID.to_string(),
+                    history_epoch,
+                    entry_ids,
+                },
+            )
+            .expect_err(label);
+            assert_eq!(entry_count(&connection), before, "{label} pruned history");
+        }
+
+        let pruned = prune_history_entries(
+            &mut connection,
+            &NotesPruneHistoryInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch,
+                entry_ids: vec![first.entry_id.clone()],
+            },
+        )
+        .expect("prune owned history entry");
+        assert_eq!(pruned.state.pruned_entry_ids, vec![first.entry_id]);
+        assert_eq!(pruned.state.next_undo_entry_id, Some(second.entry_id));
+        assert_eq!(entry_count(&connection), before - 1);
     }
 }

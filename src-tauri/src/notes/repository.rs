@@ -13,9 +13,9 @@ use crate::notes::types::{
     ExportNode, ImportNode, ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteId,
     NoteLayoutMode, NoteNode, NoteNodeKind, NoteSearchMatchedField, NoteSearchResult,
     NoteSearchScope, NoteSearchTag, NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix,
-    NoteTagSummary, NotesExportSnapshot, NotesWorkspace, NotesWorkspaceScope, SplitNodeInput,
-    UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS, MAX_NOTES_EXPORT_ATTACHMENTS,
-    MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
+    NoteTagSummary, NotesExportSnapshot, NotesHistoryResetInput, NotesWorkspace,
+    NotesWorkspaceScope, SplitNodeInput, UpdateNodeInput, MAX_IMAGE_NODE_IMPORT_ITEMS,
+    MAX_NOTES_EXPORT_ATTACHMENTS, MAX_NOTE_ATTACHMENTS_PER_NODE, MAX_NOTE_ATTACHMENTS_PER_VAULT,
 };
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt as CapMetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
@@ -5079,6 +5079,7 @@ pub(crate) fn restore_attachment(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace, String> {
     with_workspace_transaction(connection, |transaction| {
         transaction
@@ -5087,6 +5088,24 @@ pub(crate) fn empty_trash(connection: &mut Connection) -> Result<NotesWorkspace,
         history::clear_all_history_in_transaction(transaction)?;
         Ok(())
     })
+}
+
+pub(crate) fn empty_trash_with_history_reset(
+    connection: &mut Connection,
+    input: &NotesHistoryResetInput,
+) -> Result<(NotesWorkspace, history::HistoryMaintenanceResult), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("Could not start emptying Notes trash: {error}"))?;
+    let history = history::reset_history_in_transaction(&transaction, input)?;
+    transaction
+        .execute("DELETE FROM notes_nodes WHERE deleted_at IS NOT NULL", [])
+        .map_err(|error| format!("Could not permanently empty Notes trash: {error}"))?;
+    let workspace = load_workspace(&transaction, NotesWorkspaceScope::Active)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("Could not commit emptied Notes trash: {error}"))?;
+    Ok((workspace, history))
 }
 
 #[cfg(test)]
@@ -5704,6 +5723,7 @@ mod tests {
     fn import_context(command_kind: &str) -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc".to_string(),
             command_kind: command_kind.to_string(),
         }
@@ -6734,6 +6754,7 @@ mod tests {
         create_attachment(&mut connection, attachment).expect("create attachment");
         let context = NotesHistoryContext {
             session_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: "99999999-9999-4999-8999-999999999999".to_string(),
             command_kind: "removeAttachment".to_string(),
         };

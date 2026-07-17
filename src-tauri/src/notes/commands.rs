@@ -10,8 +10,8 @@ use crate::notes::attachments::{
 };
 use crate::notes::connection::{
     acquire_notes_connection, acquire_vault_app_lock, begin_notes_database_deletion,
-    lock_notes_connection, reinitialize_notes_connection, try_acquire_existing_vault_app_lock,
-    validate_notes_connection, NotesConnectionGuard,
+    evict_notes_connection, lock_notes_connection, reinitialize_notes_connection,
+    try_acquire_existing_vault_app_lock, validate_notes_connection, NotesConnectionGuard,
 };
 use crate::notes::date_index::{LocalTodayProvider, SystemLocalTodayProvider};
 use crate::notes::error::{NotesError, NotesErrorCode};
@@ -22,29 +22,34 @@ use crate::notes::export::{
     NotesExportDestinationGuard,
 };
 use crate::notes::history::{
-    clear_all_history, clear_history, history_status, redo_with_attachment_storage_at,
-    undo_with_attachment_storage_at, validate_context as validate_history_context,
-    with_history_transaction_and_prunes,
+    clear_all_history, history_state, history_status, prepare_navigation, prune_history_entries,
+    redo_with_attachment_storage_at, reset_history, undo_with_attachment_storage_at,
+    validate_context as validate_history_context, with_history_transaction_and_prunes,
 };
 use crate::notes::repository::{
     apply_batch_at, archive_node, attachment_by_id, collapse_all,
     create_attachments_coordinated_for_node, create_image_nodes_coordinated, create_node_at,
-    delete_database_from_metadata, duplicate_node_at, empty_trash, expand_all, import_subtree_at,
-    list_tags, list_tags_with_counts, load_workspace, move_node, note_node_from_audit_json,
-    open_notes_export_db, remove_attachment, remove_empty_node, removed_attachment_snapshot,
-    resize_attachment, restore_attachment, restore_node_at, search_nodes_at,
-    search_nodes_structured, soft_delete_node, sort_subtree_ascending, sort_subtree_descending,
-    split_node_at, toggle_collapsed, toggle_complete, toggle_star, unarchive_node, update_node_at,
-    validate_note_tag_filters, validate_structured_search_query_input, validate_vault_path,
-    NewAttachment, NewImageNode, SORT_KEY_STEP,
+    delete_database_from_metadata, duplicate_node_at, empty_trash_with_history_reset, expand_all,
+    import_subtree_at, list_tags, list_tags_with_counts, load_workspace, move_node,
+    note_node_from_audit_json, open_notes_export_db, remove_attachment, remove_empty_node,
+    removed_attachment_snapshot, resize_attachment, restore_attachment, restore_node_at,
+    search_nodes_at, search_nodes_structured, soft_delete_node, sort_subtree_ascending,
+    sort_subtree_descending, split_node_at, toggle_collapsed, toggle_complete, toggle_star,
+    unarchive_node, update_node_at, validate_note_tag_filters,
+    validate_structured_search_query_input, validate_vault_path, NewAttachment, NewImageNode,
+    SORT_KEY_STEP,
 };
+#[cfg(test)]
+use crate::notes::types::NotesHistoryReplayResult;
 use crate::notes::types::{
     validate_image_node_batch_fields, validate_note_id, ApplyBatchInput, CreateNodeInput,
     ImportAttachmentInput, ImportAttachmentPathBatchInput, ImportImageNodePathsInput,
     ImportSubtreeInput, MoveNodeInput, NoteAttachment, NoteNode, NoteSearchResult, NoteSearchScope,
     NoteStructuredSearchQuery, NoteTagSummary, NotesExportFormat, NotesExportResult,
-    NotesExportSnapshot, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
-    NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
+    NotesExportSnapshot, NotesHistoryCloseInput, NotesHistoryContext, NotesHistoryReplayOutcome,
+    NotesHistoryReplayRequest, NotesHistoryResetInput, NotesHistoryResetResult, NotesHistoryState,
+    NotesHistoryStatus, NotesInitializeInput, NotesMutationResult, NotesPrepareNavigationInput,
+    NotesPruneHistoryInput, NotesWorkspace, NotesWorkspaceScope, ResizeAttachmentInput,
     SplitNodeInput, UpdateNodeInput,
 };
 use cap_fs_ext::{
@@ -614,8 +619,11 @@ fn maybe_inject_delete_database_race(vault_path: &str) {
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) async fn notes_initialize(vault_path: String) -> Result<(), NotesError> {
-    run_blocking(move || notes_initialize_inner(vault_path)).await
+pub(crate) async fn notes_initialize(
+    vault_path: String,
+    input: NotesInitializeInput,
+) -> Result<NotesHistoryState, NotesError> {
+    run_blocking(move || notes_initialize_for_session_inner(vault_path, input)).await
 }
 
 pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
@@ -638,6 +646,16 @@ pub(crate) fn notes_initialize_inner(vault_path: String) -> Result<(), String> {
     reconcile_after_committed_attachment_change(&storage, &connection);
     validate_notes_connection(&connection)?;
     Ok(())
+}
+
+pub(crate) fn notes_initialize_for_session_inner(
+    vault_path: String,
+    input: NotesInitializeInput,
+) -> Result<NotesHistoryState, String> {
+    notes_initialize_inner(vault_path.clone())?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let connection = lock_notes_connection(&shared)?;
+    history_state(&connection, &input.session_id, Vec::new())
 }
 
 fn run_mutation(
@@ -712,9 +730,9 @@ pub(crate) fn notes_load_workspace_inner(
 pub(crate) async fn notes_create_node(
     vault_path: String,
     input: CreateNodeInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_create_node_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_create_node_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_create_node_inner(
@@ -734,9 +752,9 @@ pub(crate) fn notes_create_node_inner(
 pub(crate) async fn notes_update_node(
     vault_path: String,
     input: UpdateNodeInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_update_node_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_update_node_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_update_node_inner(
@@ -756,9 +774,9 @@ pub(crate) fn notes_update_node_inner(
 pub(crate) async fn notes_split_node(
     vault_path: String,
     input: SplitNodeInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_split_node_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_split_node_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_split_node_inner(
@@ -778,9 +796,9 @@ pub(crate) fn notes_split_node_inner(
 pub(crate) async fn notes_move_node(
     vault_path: String,
     input: MoveNodeInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_move_node_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_move_node_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_move_node_inner(
@@ -797,9 +815,9 @@ pub(crate) fn notes_move_node_inner(
 pub(crate) async fn notes_apply_batch(
     vault_path: String,
     input: ApplyBatchInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_apply_batch_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_apply_batch_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_apply_batch_inner(
@@ -828,9 +846,9 @@ pub(crate) fn notes_apply_batch_inner(
 pub(crate) async fn notes_import_subtree(
     vault_path: String,
     input: ImportSubtreeInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_import_subtree_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_import_subtree_inner(vault_path, input, Some(history_context))).await
 }
 
 pub(crate) fn notes_import_subtree_inner(
@@ -863,9 +881,10 @@ pub(crate) fn notes_import_subtree_inner(
 pub(crate) async fn notes_toggle_complete(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_toggle_complete_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_toggle_complete_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_toggle_complete_inner(
@@ -882,9 +901,10 @@ pub(crate) fn notes_toggle_complete_inner(
 pub(crate) async fn notes_toggle_collapsed(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_toggle_collapsed_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_toggle_collapsed_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_toggle_collapsed_inner(
@@ -901,9 +921,9 @@ pub(crate) fn notes_toggle_collapsed_inner(
 pub(crate) async fn notes_collapse_all(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_collapse_all_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_collapse_all_inner(vault_path, node_id, Some(history_context))).await
 }
 
 pub(crate) fn notes_collapse_all_inner(
@@ -920,9 +940,9 @@ pub(crate) fn notes_collapse_all_inner(
 pub(crate) async fn notes_expand_all(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_expand_all_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_expand_all_inner(vault_path, node_id, Some(history_context))).await
 }
 
 pub(crate) fn notes_expand_all_inner(
@@ -939,10 +959,12 @@ pub(crate) fn notes_expand_all_inner(
 pub(crate) async fn notes_sort_subtree_ascending(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_sort_subtree_ascending_inner(vault_path, node_id, history_context))
-        .await
+    run_blocking(move || {
+        notes_sort_subtree_ascending_inner(vault_path, node_id, Some(history_context))
+    })
+    .await
 }
 
 pub(crate) fn notes_sort_subtree_ascending_inner(
@@ -959,10 +981,12 @@ pub(crate) fn notes_sort_subtree_ascending_inner(
 pub(crate) async fn notes_sort_subtree_descending(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_sort_subtree_descending_inner(vault_path, node_id, history_context))
-        .await
+    run_blocking(move || {
+        notes_sort_subtree_descending_inner(vault_path, node_id, Some(history_context))
+    })
+    .await
 }
 
 pub(crate) fn notes_sort_subtree_descending_inner(
@@ -979,9 +1003,9 @@ pub(crate) fn notes_sort_subtree_descending_inner(
 pub(crate) async fn notes_toggle_star(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_toggle_star_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_toggle_star_inner(vault_path, node_id, Some(history_context))).await
 }
 
 pub(crate) fn notes_toggle_star_inner(
@@ -998,9 +1022,10 @@ pub(crate) fn notes_toggle_star_inner(
 pub(crate) async fn notes_duplicate_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_duplicate_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_duplicate_node_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_duplicate_node_inner(
@@ -1020,9 +1045,10 @@ pub(crate) fn notes_duplicate_node_inner(
 pub(crate) async fn notes_remove_empty_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_remove_empty_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_remove_empty_node_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_remove_empty_node_inner(
@@ -1039,9 +1065,10 @@ pub(crate) fn notes_remove_empty_node_inner(
 pub(crate) async fn notes_soft_delete_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_soft_delete_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_soft_delete_node_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_soft_delete_node_inner(
@@ -1058,9 +1085,9 @@ pub(crate) fn notes_soft_delete_node_inner(
 pub(crate) async fn notes_restore_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_restore_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_restore_node_inner(vault_path, node_id, Some(history_context))).await
 }
 
 pub(crate) fn notes_restore_node_inner(
@@ -1080,9 +1107,9 @@ pub(crate) fn notes_restore_node_inner(
 pub(crate) async fn notes_archive_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_archive_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_archive_node_inner(vault_path, node_id, Some(history_context))).await
 }
 
 pub(crate) fn notes_archive_node_inner(
@@ -1099,9 +1126,10 @@ pub(crate) fn notes_archive_node_inner(
 pub(crate) async fn notes_unarchive_node(
     vault_path: String,
     node_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_unarchive_node_inner(vault_path, node_id, history_context)).await
+    run_blocking(move || notes_unarchive_node_inner(vault_path, node_id, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_unarchive_node_inner(
@@ -1117,32 +1145,36 @@ pub(crate) fn notes_unarchive_node_inner(
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_undo(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
-) -> Result<NotesHistoryReplayResult, NotesError> {
-    run_blocking(move || notes_undo_inner(vault_path, session_id, scope)).await
+    request: NotesHistoryReplayRequest,
+) -> Result<NotesHistoryReplayOutcome, NotesError> {
+    run_blocking(move || notes_undo_expected_inner(vault_path, request)).await
 }
 
-pub(crate) fn notes_undo_inner(
+pub(crate) fn notes_undo_expected_inner(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
-) -> Result<NotesHistoryReplayResult, String> {
-    notes_undo_with_provider(vault_path, session_id, scope, &SystemLocalTodayProvider)
+    request: NotesHistoryReplayRequest,
+) -> Result<NotesHistoryReplayOutcome, String> {
+    notes_undo_with_provider(vault_path, request, &SystemLocalTodayProvider)
 }
 
 fn notes_undo_with_provider(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
+    request: NotesHistoryReplayRequest,
     today_provider: &impl LocalTodayProvider,
-) -> Result<NotesHistoryReplayResult, String> {
+) -> Result<NotesHistoryReplayOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
     let today = today_provider.local_today(&connection)?;
-    let result =
-        undo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
+    let result = undo_with_attachment_storage_at(
+        &mut connection,
+        &request.session_id,
+        &request.history_epoch,
+        &request.expected_entry_id,
+        request.scope,
+        &storage,
+        today,
+    )?;
     validate_notes_connection(&connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     validate_notes_connection(&connection)?;
@@ -1152,50 +1184,117 @@ fn notes_undo_with_provider(
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_redo(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
-) -> Result<NotesHistoryReplayResult, NotesError> {
-    run_blocking(move || notes_redo_inner(vault_path, session_id, scope)).await
+    request: NotesHistoryReplayRequest,
+) -> Result<NotesHistoryReplayOutcome, NotesError> {
+    run_blocking(move || notes_redo_expected_inner(vault_path, request)).await
 }
 
-pub(crate) fn notes_redo_inner(
+pub(crate) fn notes_redo_expected_inner(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
-) -> Result<NotesHistoryReplayResult, String> {
-    notes_redo_with_provider(vault_path, session_id, scope, &SystemLocalTodayProvider)
+    request: NotesHistoryReplayRequest,
+) -> Result<NotesHistoryReplayOutcome, String> {
+    notes_redo_with_provider(vault_path, request, &SystemLocalTodayProvider)
 }
 
 fn notes_redo_with_provider(
     vault_path: String,
-    session_id: String,
-    scope: NotesWorkspaceScope,
+    request: NotesHistoryReplayRequest,
     today_provider: &impl LocalTodayProvider,
-) -> Result<NotesHistoryReplayResult, String> {
+) -> Result<NotesHistoryReplayOutcome, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
     let today = today_provider.local_today(&connection)?;
-    let result =
-        redo_with_attachment_storage_at(&mut connection, &session_id, scope, &storage, today)?;
+    let result = redo_with_attachment_storage_at(
+        &mut connection,
+        &request.session_id,
+        &request.history_epoch,
+        &request.expected_entry_id,
+        request.scope,
+        &storage,
+        today,
+    )?;
     validate_notes_connection(&connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     validate_notes_connection(&connection)?;
     Ok(result)
 }
 
+#[cfg(test)]
+fn legacy_replay_result(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+    undoing: bool,
+) -> Result<NotesHistoryReplayResult, String> {
+    let state = notes_history_status_inner(vault_path.clone(), session_id.clone())?;
+    let expected_entry_id = if undoing {
+        state.next_undo_entry_id.clone()
+    } else {
+        state.next_redo_entry_id.clone()
+    };
+    let Some(expected_entry_id) = expected_entry_id else {
+        return Ok(NotesHistoryReplayResult {
+            workspace: notes_load_workspace_inner(vault_path, scope)?,
+            replayed_entry_id: None,
+            state,
+        });
+    };
+    let request = NotesHistoryReplayRequest {
+        session_id,
+        history_epoch: state.history_epoch,
+        expected_entry_id,
+        scope,
+    };
+    let outcome = if undoing {
+        notes_undo_expected_inner(vault_path, request)?
+    } else {
+        notes_redo_expected_inner(vault_path, request)?
+    };
+    match outcome {
+        NotesHistoryReplayOutcome::Applied {
+            workspace,
+            replayed_entry_id,
+            state,
+        } => Ok(NotesHistoryReplayResult {
+            workspace,
+            replayed_entry_id: Some(replayed_entry_id),
+            state,
+        }),
+        _ => Err("Legacy Notes history replay was unexpectedly rejected.".to_string()),
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn notes_undo_legacy_inner(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    legacy_replay_result(vault_path, session_id, scope, true)
+}
+
+#[cfg(test)]
+pub(crate) fn notes_redo_legacy_inner(
+    vault_path: String,
+    session_id: String,
+    scope: NotesWorkspaceScope,
+) -> Result<NotesHistoryReplayResult, String> {
+    legacy_replay_result(vault_path, session_id, scope, false)
+}
+
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_history_status(
     vault_path: String,
     session_id: String,
-) -> Result<NotesHistoryStatus, NotesError> {
+) -> Result<NotesHistoryState, NotesError> {
     run_blocking(move || notes_history_status_inner(vault_path, session_id)).await
 }
 
 pub(crate) fn notes_history_status_inner(
     vault_path: String,
     session_id: String,
-) -> Result<NotesHistoryStatus, String> {
+) -> Result<NotesHistoryState, String> {
     let shared = acquire_notes_connection(&vault_path)?;
     let connection = lock_notes_connection(&shared)?;
     history_status(&connection, &session_id)
@@ -1204,39 +1303,188 @@ pub(crate) fn notes_history_status_inner(
 #[tauri::command(rename_all = "camelCase")]
 pub(crate) async fn notes_clear_history(
     vault_path: String,
-    session_id: String,
-) -> Result<NotesHistoryStatus, NotesError> {
-    run_blocking(move || notes_clear_history_inner(vault_path, session_id)).await
+    input: NotesHistoryResetInput,
+) -> Result<NotesHistoryResetResult, NotesError> {
+    run_blocking(move || notes_clear_history_reset_inner(vault_path, input)).await
 }
 
-pub(crate) fn notes_clear_history_inner(
+pub(crate) fn notes_clear_history_reset_inner(
     vault_path: String,
-    session_id: String,
-) -> Result<NotesHistoryStatus, String> {
+    input: NotesHistoryResetInput,
+) -> Result<NotesHistoryResetResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
-    let status = clear_history(&mut connection, &session_id)?;
+    let (workspace, result) = reset_history(&mut connection, &input)?;
     validate_notes_connection(&connection)?;
-    reconcile_after_committed_attachment_change(&storage, &connection);
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
     validate_notes_connection(&connection)?;
-    Ok(status)
+    Ok(NotesHistoryResetResult {
+        workspace,
+        history_reset: true,
+        state: result.state,
+    })
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub(crate) async fn notes_empty_trash(vault_path: String) -> Result<NotesWorkspace, NotesError> {
-    run_blocking(move || notes_empty_trash_inner(vault_path)).await
+pub(crate) async fn notes_empty_trash(
+    vault_path: String,
+    input: NotesHistoryResetInput,
+) -> Result<NotesHistoryResetResult, NotesError> {
+    run_blocking(move || notes_empty_trash_reset_inner(vault_path, input)).await
 }
 
-pub(crate) fn notes_empty_trash_inner(vault_path: String) -> Result<NotesWorkspace, String> {
+pub(crate) fn notes_empty_trash_reset_inner(
+    vault_path: String,
+    input: NotesHistoryResetInput,
+) -> Result<NotesHistoryResetResult, String> {
     let storage = AttachmentStorageLease::acquire(&vault_path)?;
     let shared = acquire_notes_connection(&vault_path)?;
     let mut connection = lock_notes_connection(&shared)?;
-    let workspace = empty_trash(&mut connection)?;
+    let (workspace, result) = empty_trash_with_history_reset(&mut connection, &input)?;
     validate_notes_connection(&connection)?;
     reconcile_after_committed_attachment_change(&storage, &connection);
     validate_notes_connection(&connection)?;
-    Ok(workspace)
+    Ok(NotesHistoryResetResult {
+        workspace,
+        history_reset: true,
+        state: result.state,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn notes_clear_history_legacy_inner(
+    vault_path: String,
+    session_id: String,
+) -> Result<NotesHistoryState, String> {
+    let epoch = notes_history_status_inner(vault_path.clone(), session_id.clone())?.history_epoch;
+    notes_clear_history_reset_inner(
+        vault_path,
+        NotesHistoryResetInput {
+            session_id,
+            history_epoch: epoch,
+        },
+    )
+    .map(|result| result.state)
+}
+
+#[cfg(test)]
+pub(crate) fn notes_empty_trash_legacy_inner(vault_path: String) -> Result<NotesWorkspace, String> {
+    let session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
+    let epoch = notes_history_status_inner(vault_path.clone(), session_id.clone())?.history_epoch;
+    notes_empty_trash_reset_inner(
+        vault_path,
+        NotesHistoryResetInput {
+            session_id,
+            history_epoch: epoch,
+        },
+    )
+    .map(|result| result.workspace)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_prepare_navigation(
+    vault_path: String,
+    input: NotesPrepareNavigationInput,
+) -> Result<NotesHistoryState, NotesError> {
+    run_blocking(move || notes_prepare_navigation_inner(vault_path, input)).await
+}
+
+pub(crate) fn notes_prepare_navigation_inner(
+    vault_path: String,
+    input: NotesPrepareNavigationInput,
+) -> Result<NotesHistoryState, String> {
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let result = prepare_navigation(&mut connection, &input)?;
+    validate_notes_connection(&connection)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
+    validate_notes_connection(&connection)?;
+    Ok(result.state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_prune_history_entries(
+    vault_path: String,
+    input: NotesPruneHistoryInput,
+) -> Result<NotesHistoryState, NotesError> {
+    run_blocking(move || notes_prune_history_entries_inner(vault_path, input)).await
+}
+
+pub(crate) fn notes_prune_history_entries_inner(
+    vault_path: String,
+    input: NotesPruneHistoryInput,
+) -> Result<NotesHistoryState, String> {
+    let storage = AttachmentStorageLease::acquire(&vault_path)?;
+    let shared = acquire_notes_connection(&vault_path)?;
+    let mut connection = lock_notes_connection(&shared)?;
+    let result = prune_history_entries(&mut connection, &input)?;
+    validate_notes_connection(&connection)?;
+    reconcile_candidates_after_committed_change(
+        &storage,
+        &connection,
+        &result.pruned_attachment_paths,
+    );
+    validate_notes_connection(&connection)?;
+    Ok(result.state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub(crate) async fn notes_close_history_session(
+    vault_path: String,
+    input: NotesHistoryCloseInput,
+) -> Result<(), NotesError> {
+    run_blocking(move || notes_close_history_session_inner(vault_path, input)).await
+}
+
+pub(crate) fn notes_close_history_session_inner(
+    vault_path: String,
+    input: NotesHistoryCloseInput,
+) -> Result<(), String> {
+    let result = (|| {
+        let storage = AttachmentStorageLease::acquire(&vault_path)?;
+        let shared = acquire_notes_connection(&vault_path)?;
+        let mut connection = lock_notes_connection(&shared)?;
+        let entry_ids = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id FROM notes_history_entries WHERE session_id = ?1 ORDER BY rowid, id",
+                )
+                .map_err(|error| format!("Could not prepare closing Notes history: {error}"))?;
+            let ids = statement
+                .query_map([&input.session_id], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("Could not read closing Notes history: {error}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| format!("Could not collect closing Notes history: {error}"))?;
+            ids
+        };
+        let maintenance = prune_history_entries(
+            &mut connection,
+            &NotesPruneHistoryInput {
+                session_id: input.session_id,
+                history_epoch: input.history_epoch,
+                entry_ids,
+            },
+        )?;
+        validate_notes_connection(&connection)?;
+        reconcile_candidates_after_committed_change_checked(
+            &storage,
+            &connection,
+            &maintenance.pruned_attachment_paths,
+        )?;
+        validate_notes_connection(&connection)
+    })();
+    evict_notes_connection(&vault_path);
+    result
 }
 
 fn attachment_metadata_error(
@@ -1332,6 +1580,21 @@ fn reconcile_candidates_after_committed_change(
     {
         record_cleanup_warning(storage, error);
     }
+}
+
+fn reconcile_candidates_after_committed_change_checked(
+    storage: &AttachmentStorageLease,
+    connection: &NotesConnectionGuard<'_>,
+    candidates: &[String],
+) -> Result<(), String> {
+    if storage.reconciliation_needed()? {
+        reconcile_attachment_files_for_active_connection(storage, connection)?;
+        storage.clear_reconciliation_marker()?;
+        return Ok(());
+    }
+    let identity = capture_validated_attachment_database_identity(storage, connection)?;
+    reconcile_attachment_candidates_with_identity(storage, connection, &identity, candidates)?;
+    Ok(())
 }
 
 fn reconcile_before_attachment_batch(
@@ -1565,8 +1828,7 @@ fn committed_attachment_batch_retry(
     Ok(Some(NotesMutationResult {
         workspace: load_workspace(connection, NotesWorkspaceScope::Active)?,
         history_entry_id,
-        can_undo: status.can_undo,
-        can_redo: status.can_redo,
+        state: status,
         changed_nodes: deltas_available.then(Vec::new),
         removed_node_ids: deltas_available.then(Vec::new),
         changed_attachments: deltas_available.then(|| existing.clone()),
@@ -2010,8 +2272,7 @@ fn committed_image_node_batch_retry(
     Ok(Some(NotesMutationResult {
         workspace,
         history_entry_id: Some(history_context.entry_id.clone()),
-        can_undo: status.can_undo,
-        can_redo: status.can_redo,
+        state: status,
         changed_nodes: Some(changed_nodes),
         removed_node_ids: Some(Vec::new()),
         changed_attachments: Some(changed_attachments),
@@ -2172,7 +2433,7 @@ fn import_prepared_attachment_batch(
 pub(crate) async fn notes_import_attachment_paths_batch(
     vault_path: String,
     input: ImportAttachmentPathBatchInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     validate_vault_path(&vault_path).map_err(NotesError::from)?;
     let import_permit = acquire_import_permit_for_command().await?;
@@ -2180,7 +2441,7 @@ pub(crate) async fn notes_import_attachment_paths_batch(
         notes_import_attachment_paths_batch_with_permit_inner(
             vault_path,
             input,
-            history_context,
+            Some(history_context),
             import_permit,
         )
     })
@@ -2374,9 +2635,13 @@ fn decode_raw_attachment_body(
     let decoded = decode_raw_body_with(body, decode_raw_attachment_envelope, |decoded| {
         (decoded.metadata, decoded.sources)
     })?;
-    if let Some(history_context) = decoded.metadata.history_context.as_ref() {
-        validate_history_context(history_context)?;
-    }
+    validate_history_context(
+        decoded
+            .metadata
+            .history_context
+            .as_ref()
+            .ok_or_else(|| "A Notes mutation requires a history context.".to_string())?,
+    )?;
     Ok(decoded)
 }
 
@@ -2597,7 +2862,7 @@ fn import_prepared_image_node_batch(
 pub(crate) async fn notes_import_image_node_paths_batch(
     vault_path: String,
     input: ImportImageNodePathsInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     validate_vault_path(&vault_path).map_err(NotesError::from)?;
     let import_permit = acquire_import_permit_for_command().await?;
@@ -2605,7 +2870,7 @@ pub(crate) async fn notes_import_image_node_paths_batch(
         notes_import_image_node_paths_batch_with_permit_inner(
             vault_path,
             input,
-            history_context,
+            Some(history_context),
             import_permit,
         )
     })
@@ -2785,7 +3050,7 @@ pub(crate) async fn notes_import_image_node_bytes(
 pub(crate) async fn notes_import_attachment(
     vault_path: String,
     input: ImportAttachmentInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
     notes_import_attachment_paths_batch(
         vault_path,
@@ -5586,9 +5851,10 @@ pub(crate) fn notes_read_attachment_bytes_inner(
 pub(crate) async fn notes_resize_attachment(
     vault_path: String,
     input: ResizeAttachmentInput,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_resize_attachment_inner(vault_path, input, history_context)).await
+    run_blocking(move || notes_resize_attachment_inner(vault_path, input, Some(history_context)))
+        .await
 }
 
 pub(crate) fn notes_resize_attachment_inner(
@@ -5623,10 +5889,12 @@ pub(crate) fn notes_resize_attachment_inner(
 pub(crate) async fn notes_remove_attachment(
     vault_path: String,
     attachment_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_remove_attachment_inner(vault_path, attachment_id, history_context))
-        .await
+    run_blocking(move || {
+        notes_remove_attachment_inner(vault_path, attachment_id, Some(history_context))
+    })
+    .await
 }
 
 pub(crate) fn notes_remove_attachment_inner(
@@ -5662,10 +5930,12 @@ pub(crate) fn notes_remove_attachment_inner(
 pub(crate) async fn notes_restore_attachment(
     vault_path: String,
     attachment_id: String,
-    history_context: Option<NotesHistoryContext>,
+    history_context: NotesHistoryContext,
 ) -> Result<NotesMutationResult, NotesError> {
-    run_blocking(move || notes_restore_attachment_inner(vault_path, attachment_id, history_context))
-        .await
+    run_blocking(move || {
+        notes_restore_attachment_inner(vault_path, attachment_id, Some(history_context))
+    })
+    .await
 }
 
 pub(crate) fn notes_restore_attachment_inner(
@@ -6009,13 +6279,14 @@ mod tests {
     use super::{
         notes_apply_batch_inner as notes_apply_batch,
         notes_archive_node_inner as notes_archive_node,
-        notes_clear_history_inner as notes_clear_history,
+        notes_clear_history_legacy_inner as notes_clear_history,
         notes_collapse_all_inner as notes_collapse_all,
         notes_create_node_inner as notes_create_node,
         notes_delete_database_inner as notes_delete_database,
         notes_download_attachment_inner as notes_download_attachment,
         notes_duplicate_node_inner as notes_duplicate_node,
-        notes_empty_trash_inner as notes_empty_trash, notes_expand_all_inner as notes_expand_all,
+        notes_empty_trash_legacy_inner as notes_empty_trash,
+        notes_expand_all_inner as notes_expand_all,
         notes_export_markdown_inner as notes_export_markdown,
         notes_export_pdf_inner as notes_export_pdf,
         notes_history_status_inner as notes_history_status,
@@ -6027,7 +6298,8 @@ mod tests {
         notes_load_workspace_inner as notes_load_workspace,
         notes_move_node_inner as notes_move_node,
         notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
-        notes_redo_inner as notes_redo, notes_remove_attachment_inner as notes_remove_attachment,
+        notes_redo_legacy_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
         notes_remove_empty_node_inner as notes_remove_empty_node,
         notes_restore_node_inner as notes_restore_node, notes_search_inner as notes_search,
         notes_search_structured_inner as notes_search_structured,
@@ -6038,13 +6310,13 @@ mod tests {
         notes_toggle_collapsed_inner as notes_toggle_collapsed,
         notes_toggle_complete_inner as notes_toggle_complete,
         notes_toggle_star_inner as notes_toggle_star,
-        notes_unarchive_node_inner as notes_unarchive_node, notes_undo_inner as notes_undo,
+        notes_unarchive_node_inner as notes_unarchive_node, notes_undo_legacy_inner as notes_undo,
         notes_update_node_inner as notes_update_node,
     };
     use crate::notes::attachments::{
-        inject_full_reconciliation_after_quarantine_once,
-        inject_full_reconciliation_after_remove_once, MAX_ATTACHMENT_BATCH_BYTES,
-        MAX_ATTACHMENT_BYTES,
+        inject_cleanup_failure, inject_full_reconciliation_after_quarantine_once,
+        inject_full_reconciliation_after_remove_once, CleanupFailurePoint,
+        MAX_ATTACHMENT_BATCH_BYTES, MAX_ATTACHMENT_BYTES,
     };
     use crate::notes::date_index::LocalDate;
     use crate::notes::types::{
@@ -6119,6 +6391,7 @@ mod tests {
     fn batch_op_context(entry_id: &str, command_kind: &str) -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: entry_id.to_string(),
             command_kind: command_kind.to_string(),
         }
@@ -6163,7 +6436,8 @@ mod tests {
     }
 
     fn history_entry_count(vault_path: &str) -> i64 {
-        let connection = connect_notes_db(vault_path).expect("open vault for history count");
+        let shared = acquire_notes_connection(vault_path).expect("open vault for history count");
+        let connection = lock_notes_connection(&shared).expect("lock vault for history count");
         connection
             .query_row("SELECT COUNT(*) FROM notes_history_entries", [], |row| {
                 row.get(0)
@@ -6325,13 +6599,16 @@ mod tests {
         attachments: &[(&str, &str, &str, &[u8])],
         history_context: Option<&NotesHistoryContext>,
     ) -> Vec<u8> {
-        let history_context = history_context.map(|context| {
-            json!({
-                "sessionId": context.session_id,
-                "entryId": context.entry_id,
-                "commandKind": context.command_kind
-            })
-        });
+        let default_history_context = batch_history_context();
+        let history_context =
+            Some(history_context.unwrap_or(&default_history_context)).map(|context| {
+                json!({
+                    "sessionId": context.session_id,
+                    "historyEpoch": context.history_epoch,
+                    "entryId": context.entry_id,
+                    "commandKind": context.command_kind
+                })
+            });
         let metadata = json!({
             "vaultPath": vault_path,
             "nodeId": ROOT_ID,
@@ -6452,6 +6729,7 @@ mod tests {
     fn batch_history_context() -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: REPLACEMENT_ENTRY_ID.to_string(),
             command_kind: "importAttachmentPaths".to_string(),
         }
@@ -6460,6 +6738,7 @@ mod tests {
     fn image_node_history_context() -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: REPLACEMENT_ENTRY_ID.to_string(),
             command_kind: "importImageNodes".to_string(),
         }
@@ -6500,6 +6779,7 @@ mod tests {
         let history_context = history_context.map(|context| {
             json!({
                 "sessionId": context.session_id,
+                "historyEpoch": context.history_epoch,
                 "entryId": context.entry_id,
                 "commandKind": context.command_kind
             })
@@ -6546,6 +6826,7 @@ mod tests {
         byte_lengths: &[u64],
         payload_bytes: usize,
     ) -> Vec<u8> {
+        let history_context = batch_history_context();
         let metadata = json!({
             "vaultPath": vault_path,
             "nodeId": ROOT_ID,
@@ -6561,7 +6842,12 @@ mod tests {
                 }))
                 .collect::<Vec<_>>(),
             "initialMaxDisplayWidth": 480,
-            "historyContext": null
+            "historyContext": {
+                "sessionId": history_context.session_id,
+                "historyEpoch": history_context.history_epoch,
+                "entryId": history_context.entry_id,
+                "commandKind": history_context.command_kind
+            }
         });
         raw_boundary_envelope(b"YNAB", 1, metadata, payload_bytes)
     }
@@ -6628,6 +6914,7 @@ mod tests {
             payload_bytes,
             json!({
                 "sessionId": history_context.session_id,
+                "historyEpoch": history_context.history_epoch,
                 "entryId": history_context.entry_id,
                 "commandKind": history_context.command_kind
             }),
@@ -6836,6 +7123,7 @@ mod tests {
         let history_context = image_node_history_context();
         let history_context = json!({
             "sessionId": history_context.session_id,
+            "historyEpoch": history_context.history_epoch,
             "entryId": history_context.entry_id,
             "commandKind": history_context.command_kind
         });
@@ -7307,7 +7595,9 @@ mod tests {
     }
 
     fn attachment_history_change_count(vault_path: &str, attachment_id: &str) -> i64 {
-        let connection = connect_notes_db(vault_path).expect("open attachment history database");
+        let shared =
+            acquire_notes_connection(vault_path).expect("open attachment history database");
+        let connection = lock_notes_connection(&shared).expect("lock attachment history database");
         connection
             .query_row(
                 "SELECT COUNT(*) FROM notes_history_changes \
@@ -9290,6 +9580,7 @@ mod tests {
         fs::write(&second_source, encoded_png(5, 4)).expect("write second image");
         let history_context = NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: REPLACEMENT_ENTRY_ID.to_string(),
             command_kind: "importAttachmentPaths".to_string(),
         };
@@ -9323,7 +9614,8 @@ mod tests {
             imported.history_entry_id.as_deref(),
             Some(REPLACEMENT_ENTRY_ID)
         );
-        let connection = connect_notes_db(&vault_path).expect("history database");
+        let shared = acquire_notes_connection(&vault_path).expect("history database");
+        let connection = lock_notes_connection(&shared).expect("lock history database");
         let history_entries: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM notes_history_entries WHERE id = ?1",
@@ -9760,7 +10052,8 @@ mod tests {
             imported.history_entry_id.as_deref(),
             Some(REPLACEMENT_ENTRY_ID)
         );
-        let connection = connect_notes_db(&vault_path).expect("inspect image node history");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect image node history");
+        let connection = lock_notes_connection(&shared).expect("lock image node history");
         let history_changes: i64 = connection
             .query_row(
                 "SELECT COUNT(*) FROM notes_history_changes WHERE entry_id = ?1",
@@ -9768,9 +10061,9 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count image node history changes");
+        drop(connection);
         assert_eq!(history_entry_count(&vault_path), 1);
         assert_eq!(history_changes, 4);
-        drop(connection);
         assert_eq!(asset_directory_entries(&vault_path).len(), 2);
 
         let undone = notes_undo(
@@ -10310,6 +10603,7 @@ mod tests {
                 "same-session different command",
                 NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
+                    history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                     entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                     command_kind: "importImageNodes".to_string(),
                 },
@@ -10318,6 +10612,7 @@ mod tests {
                 "different-session same command",
                 NotesHistoryContext {
                     session_id: "99999999-9999-4999-8999-999999999998".to_string(),
+                    history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                     entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                     command_kind: "importImageNodes".to_string(),
                 },
@@ -10336,6 +10631,7 @@ mod tests {
                 },
                 Some(NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
+                    history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                     entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                     command_kind: "updateNode".to_string(),
                 }),
@@ -10465,6 +10761,7 @@ mod tests {
             None,
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: "invalid".to_string(),
                 command_kind: "importImageNodes".to_string(),
             }),
@@ -10496,6 +10793,7 @@ mod tests {
             None,
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: "invalid".to_string(),
                 command_kind: "importImageNodes".to_string(),
             }),
@@ -10556,7 +10854,8 @@ mod tests {
         .expect_err("invalid second image");
 
         assert!(error.contains("invalid.png"), "{error}");
-        let connection = connect_notes_db(&vault_path).expect("inspect invalid image batch");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect invalid image batch");
+        let connection = lock_notes_connection(&shared).expect("lock invalid image batch history");
         let counts: (i64, i64, i64) = connection
             .query_row(
                 "SELECT \
@@ -10594,7 +10893,9 @@ mod tests {
             )
             .expect_err("injected image node batch failure");
 
-            let connection = connect_notes_db(&vault_path).expect("inspect failed image batch");
+            let shared = acquire_notes_connection(&vault_path).expect("inspect failed image batch");
+            let connection =
+                lock_notes_connection(&shared).expect("lock failed image batch history");
             let counts: (i64, i64, i64) = connection
                 .query_row(
                     "SELECT \
@@ -10728,7 +11029,10 @@ mod tests {
                 error.contains("both a node and attachment ID"),
                 "{overlap}: {error}"
             );
-            let connection = connect_notes_db(&vault_path).expect("inspect rejected path batch");
+            let shared =
+                acquire_notes_connection(&vault_path).expect("inspect rejected path batch");
+            let connection =
+                lock_notes_connection(&shared).expect("lock rejected path batch history");
             let counts: (i64, i64, i64, i64) = connection
                 .query_row(
                     "SELECT \
@@ -10792,7 +11096,9 @@ mod tests {
                 error.contains("both a node and attachment ID"),
                 "{overlap}: {error}"
             );
-            let connection = connect_notes_db(&vault_path).expect("inspect rejected raw batch");
+            let shared = acquire_notes_connection(&vault_path).expect("inspect rejected raw batch");
+            let connection =
+                lock_notes_connection(&shared).expect("lock rejected raw batch history");
             let counts: (i64, i64, i64, i64) = connection
                 .query_row(
                     "SELECT \
@@ -10967,7 +11273,8 @@ mod tests {
         assert_eq!(expected_asset_entries.len(), IMAGE_COUNT);
         assert_eq!(asset_directory_entries(&vault_path), expected_asset_entries);
 
-        let connection = connect_notes_db(&vault_path).expect("inspect imported batch");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect imported batch");
+        let connection = lock_notes_connection(&shared).expect("lock imported batch history");
         let metadata_rows: i64 = connection
             .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
                 row.get(0)
@@ -11006,7 +11313,8 @@ mod tests {
             .map_or(true, Vec::is_empty));
         assert!(!undone.can_undo);
         assert!(undone.can_redo);
-        let connection = connect_notes_db(&vault_path).expect("inspect undone batch");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect undone batch");
+        let connection = lock_notes_connection(&shared).expect("lock undone batch history");
         let metadata_rows: i64 = connection
             .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
                 row.get(0)
@@ -11040,7 +11348,8 @@ mod tests {
         );
         assert!(redone.can_undo);
         assert!(!redone.can_redo);
-        let connection = connect_notes_db(&vault_path).expect("inspect redone batch");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect redone batch");
+        let connection = lock_notes_connection(&shared).expect("lock redone batch history");
         let (metadata_rows, history_entries): (i64, i64) = connection
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM notes_attachments), \
@@ -11085,6 +11394,7 @@ mod tests {
         let second = encoded_png(5, 4);
         let history_context = NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: REPLACEMENT_ENTRY_ID.to_string(),
             command_kind: "importAttachmentBytes".to_string(),
         };
@@ -11341,7 +11651,8 @@ mod tests {
         )
         .expect_err("injected publication failure");
         assert!(error.contains("injected publication failure"), "{error}");
-        let connection = connect_notes_db(&vault_path).expect("inspect publication failure");
+        let shared = acquire_notes_connection(&vault_path).expect("inspect publication failure");
+        let connection = lock_notes_connection(&shared).expect("lock publication failure history");
         let attachment_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM notes_attachments", [], |row| {
                 row.get(0)
@@ -11788,7 +12099,8 @@ mod tests {
         )
         .expect("retry committed batch");
         assert_eq!(retried, committed);
-        let connection = connect_notes_db(&vault_path).expect("retry database");
+        let shared = acquire_notes_connection(&vault_path).expect("retry database");
+        let connection = lock_notes_connection(&shared).expect("lock retry history database");
         let counts: (i64, i64) = connection
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM notes_attachments), \
@@ -12135,6 +12447,7 @@ mod tests {
             },
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: SPLIT_ID.to_string(),
                 command_kind: "create".to_string(),
             }),
@@ -12165,6 +12478,7 @@ mod tests {
             },
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "create".to_string(),
             }),
@@ -12217,6 +12531,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "collapseAll".to_string(),
             }),
@@ -13289,6 +13604,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "expandAll".to_string(),
             }),
@@ -13365,6 +13681,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "sortSubtreeAscending".to_string(),
             }),
@@ -13470,6 +13787,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "sortSubtreeDescending".to_string(),
             }),
@@ -13520,6 +13838,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "collapseAll".to_string(),
             }),
@@ -13535,6 +13854,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: NOOP_ENTRY_ID.to_string(),
                 command_kind: "collapseAll".to_string(),
             }),
@@ -13548,6 +13868,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: NOOP_ENTRY_ID.to_string(),
                 command_kind: "sortSubtreeAscending".to_string(),
             }),
@@ -13651,6 +13972,7 @@ mod tests {
             ROOT_ID.to_string(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "collapseAll".to_string(),
             }),
@@ -13661,11 +13983,10 @@ mod tests {
             error,
             "The Notes tree contains a cycle and cannot be expanded or collapsed."
         );
-        assert_eq!(
-            notes_history_status(vault_path.clone(), SESSION_ID.to_string())
-                .expect("cycle history status"),
-            NotesHistoryStatus::default()
-        );
+        let status = notes_history_status(vault_path.clone(), SESSION_ID.to_string())
+            .expect("cycle history status");
+        assert!(!status.can_undo);
+        assert!(!status.can_redo);
         let connection = connect_notes_db(&vault_path).expect("reopen cycle vault");
         let collapsed_count: i64 = connection
             .query_row(
@@ -13742,6 +14063,7 @@ mod tests {
                 },
                 Some(NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
+                    history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                     entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                     command_kind: "importAttachment".to_string(),
                 }),
@@ -13774,12 +14096,10 @@ mod tests {
                 "{label}"
             );
             assert!(source.exists(), "{label} source remains untouched");
-            assert_eq!(
-                notes_history_status(vault_path, SESSION_ID.to_string())
-                    .expect("history status after rejected import"),
-                NotesHistoryStatus::default(),
-                "{label}"
-            );
+            let status = notes_history_status(vault_path, SESSION_ID.to_string())
+                .expect("history status after rejected import");
+            assert!(!status.can_undo, "{label}");
+            assert!(!status.can_redo, "{label}");
         }
     }
 
@@ -13814,6 +14134,7 @@ mod tests {
             first_attachment_id.clone(),
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: REPLACEMENT_ENTRY_ID.to_string(),
                 command_kind: "removeAttachment".to_string(),
             }),
@@ -13832,6 +14153,7 @@ mod tests {
             },
             Some(NotesHistoryContext {
                 session_id: SESSION_ID.to_string(),
+                history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
                 entry_id: NOOP_ENTRY_ID.to_string(),
                 command_kind: "importAttachment".to_string(),
             }),
@@ -13847,7 +14169,8 @@ mod tests {
                 .map(Vec::len),
             Some(usize::try_from(MAX_NOTE_ATTACHMENTS_PER_NODE).expect("node capacity"))
         );
-        let connection = connect_notes_db(&vault_path).expect("reopen capacity vault");
+        let shared = acquire_notes_connection(&vault_path).expect("reopen capacity vault");
+        let connection = lock_notes_connection(&shared).expect("lock capacity history vault");
         let retained_history: bool = connection
             .query_row(
                 "SELECT EXISTS(\
@@ -15445,5 +15768,218 @@ mod tests {
         assert!(std::fs::read(&destination)
             .expect("read overwritten PDF")
             .starts_with(b"%PDF-"));
+    }
+
+    #[test]
+    fn notes_history_initialize_returns_state_for_the_explicit_session() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+
+        let state = notes_initialize_for_session_inner(
+            vault_path.clone(),
+            NotesInitializeInput {
+                session_id: SESSION_ID.to_string(),
+            },
+        )
+        .expect("initialize explicit history session");
+
+        assert!(uuid::Uuid::parse_str(&state.history_epoch).is_ok());
+        assert_eq!(state.next_undo_entry_id, None);
+        assert_eq!(state.next_redo_entry_id, None);
+        assert_eq!(
+            state,
+            notes_history_status_inner(vault_path, SESSION_ID.to_string())
+                .expect("read initialized session state")
+        );
+    }
+
+    #[test]
+    fn notes_history_empty_trash_reset_is_atomic_and_rotates_the_epoch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        let epoch = notes_history_status_inner(vault_path.clone(), SESSION_ID.to_string())
+            .expect("initial history state")
+            .history_epoch;
+        let context = |entry_id: &str, command_kind: &str| NotesHistoryContext {
+            session_id: SESSION_ID.to_string(),
+            history_epoch: epoch.clone(),
+            entry_id: entry_id.to_string(),
+            command_kind: command_kind.to_string(),
+        };
+        notes_create_node(
+            vault_path.clone(),
+            CreateNodeInput {
+                id: ROOT_ID.to_string(),
+                parent_id: None,
+                after_id: None,
+                title: "Trash me".to_string(),
+                note: String::new(),
+            },
+            Some(context(REPLACEMENT_ENTRY_ID, "create")),
+        )
+        .expect("create tracked node");
+        notes_soft_delete_node(
+            vault_path.clone(),
+            ROOT_ID.to_string(),
+            Some(context(NOOP_ENTRY_ID, "trash")),
+        )
+        .expect("trash tracked node");
+        let snapshot = |vault_path: &str| {
+            let shared = acquire_notes_connection(vault_path).expect("acquire snapshot connection");
+            let connection = lock_notes_connection(&shared).expect("lock snapshot connection");
+            let rows = connection
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM notes_nodes), \
+                            (SELECT COUNT(*) FROM notes_history_entries), \
+                            (SELECT value FROM notes_history_epoch)",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .expect("snapshot rows, history, and epoch");
+            rows
+        };
+        let before = snapshot(&vault_path);
+
+        let stale = notes_empty_trash_reset_inner(
+            vault_path.clone(),
+            NotesHistoryResetInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: "stale-epoch".to_string(),
+            },
+        )
+        .expect_err("reject stale empty-trash reset");
+        assert!(stale.to_lowercase().contains("epoch"), "{stale}");
+        assert_eq!(snapshot(&vault_path), before);
+
+        {
+            let shared = acquire_notes_connection(&vault_path).expect("acquire reset connection");
+            let connection = lock_notes_connection(&shared).expect("lock reset connection");
+            connection
+                .execute_batch(
+                    "CREATE TEMP TRIGGER notes_injected_reset_failure \
+                     BEFORE DELETE ON notes_nodes BEGIN \
+                       SELECT RAISE(ABORT, 'injected reset failure'); \
+                     END;",
+                )
+                .expect("install reset failure trigger");
+        }
+        let failure = notes_empty_trash_reset_inner(
+            vault_path.clone(),
+            NotesHistoryResetInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch.clone(),
+            },
+        )
+        .expect_err("roll back failed empty-trash reset");
+        assert!(failure.contains("injected reset failure"), "{failure}");
+        assert_eq!(snapshot(&vault_path), before);
+        {
+            let shared = acquire_notes_connection(&vault_path).expect("acquire reset connection");
+            let connection = lock_notes_connection(&shared).expect("lock reset connection");
+            connection
+                .execute_batch("DROP TRIGGER notes_injected_reset_failure;")
+                .expect("drop reset failure trigger");
+        }
+
+        let reset = notes_empty_trash_reset_inner(
+            vault_path.clone(),
+            NotesHistoryResetInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: epoch.clone(),
+            },
+        )
+        .expect("commit empty-trash reset");
+        assert!(reset.history_reset);
+        assert_ne!(reset.history_epoch, epoch);
+        assert!(reset.workspace.nodes.is_empty());
+        assert_eq!(reset.next_undo_entry_id, None);
+        assert_eq!(reset.next_redo_entry_id, None);
+        assert_eq!(snapshot(&vault_path).0, 0);
+        assert_eq!(history_entry_count(&vault_path), 0);
+    }
+
+    #[test]
+    fn notes_history_prepare_navigation_rejection_preserves_attachment_files() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        let (imported, attachment) =
+            import_single_independent_raw_image_node(&vault_path, "navigation.png");
+        let asset_path = owned_asset_path(&vault_path, &attachment.relative_path);
+        let bytes = fs::read(&asset_path).expect("read history-held asset");
+        notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo image import");
+        assert!(asset_path.is_file());
+
+        notes_prepare_navigation_inner(
+            vault_path.clone(),
+            NotesPrepareNavigationInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: imported.history_epoch.clone(),
+                unreachable_redo_entry_ids: Vec::new(),
+            },
+        )
+        .expect_err("reject incomplete redo suffix");
+        assert_eq!(history_entry_count(&vault_path), 1);
+        assert_eq!(fs::read(&asset_path).expect("read preserved asset"), bytes);
+
+        let state = notes_prepare_navigation_inner(
+            vault_path.clone(),
+            NotesPrepareNavigationInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: imported.history_epoch.clone(),
+                unreachable_redo_entry_ids: vec![REPLACEMENT_ENTRY_ID.to_string()],
+            },
+        )
+        .expect("prune exact redo suffix");
+        assert_eq!(state.pruned_entry_ids, vec![REPLACEMENT_ENTRY_ID]);
+        assert_eq!(history_entry_count(&vault_path), 0);
+        assert!(!asset_path.exists());
+    }
+
+    #[test]
+    fn notes_history_close_failure_still_evicts_the_cached_connection() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let vault_path = temp_dir.path().to_string_lossy().into_owned();
+        initialize_empty_test_vault(&vault_path);
+        let (imported, _) = import_single_independent_raw_image_node(&vault_path, "close.png");
+        notes_undo(
+            vault_path.clone(),
+            SESSION_ID.to_string(),
+            NotesWorkspaceScope::Active,
+        )
+        .expect("undo image import before close");
+        let cached = acquire_notes_connection(&vault_path).expect("capture cached connection");
+        inject_cleanup_failure(CleanupFailurePoint::Reconcile);
+
+        let error = notes_close_history_session_inner(
+            vault_path.clone(),
+            NotesHistoryCloseInput {
+                session_id: SESSION_ID.to_string(),
+                history_epoch: imported.history_epoch.clone(),
+            },
+        )
+        .expect_err("surface close reconciliation failure");
+        assert!(error.to_lowercase().contains("reconcile"), "{error}");
+
+        let reopened = acquire_notes_connection(&vault_path).expect("reopen after failed close");
+        assert!(!std::sync::Arc::ptr_eq(&cached, &reopened));
+        let connection = lock_notes_connection(&reopened).expect("lock reopened connection");
+        let state = history_state(&connection, SESSION_ID, Vec::new())
+            .expect("read fresh reopened history state");
+        assert_ne!(state.history_epoch, imported.history_epoch);
+        assert_eq!(state.next_undo_entry_id, None);
+        assert_eq!(state.next_redo_entry_id, None);
     }
 }

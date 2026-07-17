@@ -2768,17 +2768,19 @@ mod tests {
     // running the note logic inline (the public commands are now async wrappers
     // that dispatch onto the blocking thread pool). Call sites stay unchanged.
     use crate::notes::commands::{
-        notes_clear_history_inner as notes_clear_history,
+        notes_clear_history_legacy_inner as notes_clear_history,
         notes_delete_database_inner as notes_delete_database,
-        notes_empty_trash_inner as notes_empty_trash,
+        notes_empty_trash_legacy_inner as notes_empty_trash,
         notes_import_attachment_inner as notes_import_attachment,
         notes_initialize_inner as notes_initialize,
         notes_read_attachment_bytes_inner as notes_read_attachment_bytes,
-        notes_redo_inner as notes_redo, notes_remove_attachment_inner as notes_remove_attachment,
+        notes_redo_legacy_inner as notes_redo,
+        notes_remove_attachment_inner as notes_remove_attachment,
         notes_resize_attachment_inner as notes_resize_attachment,
-        notes_restore_attachment_inner as notes_restore_attachment, notes_undo_inner as notes_undo,
-        notes_update_node_inner as notes_update_node,
+        notes_restore_attachment_inner as notes_restore_attachment,
+        notes_undo_legacy_inner as notes_undo, notes_update_node_inner as notes_update_node,
     };
+    use crate::notes::connection::{acquire_notes_connection, lock_notes_connection};
     use crate::notes::history::HISTORY_MAX_ENTRIES;
     use crate::notes::history::{redo, undo};
     use crate::notes::repository::{
@@ -3008,6 +3010,7 @@ mod tests {
     fn history_context(index: usize, command_kind: &str) -> NotesHistoryContext {
         NotesHistoryContext {
             session_id: SESSION_ID.to_string(),
+            history_epoch: crate::notes::types::TEST_CURRENT_HISTORY_EPOCH.to_string(),
             entry_id: format!("00000000-0000-4000-8000-{index:012x}"),
             command_kind: command_kind.to_string(),
         }
@@ -4886,7 +4889,8 @@ mod tests {
             .path()
             .join(".yonalist")
             .join(&imported.workspace.attachments_by_node_id[NODE_ID][0].relative_path);
-        let mut connection = connect_notes_db(&vault_path).expect("connect history");
+        let shared = acquire_notes_connection(&vault_path).expect("connect history");
+        let mut connection = lock_notes_connection(&shared).expect("lock history");
         let undone =
             undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo import");
         assert!(undone.workspace.attachments_by_node_id.is_empty());
@@ -4898,6 +4902,7 @@ mod tests {
             100
         );
         drop(connection);
+        drop(shared);
 
         let resize_context = history_context(2, "resizeAttachment");
         let resized = notes_resize_attachment(
@@ -4915,7 +4920,8 @@ mod tests {
         );
         assert!(resized.can_undo);
         assert!(!resized.can_redo);
-        let mut connection = connect_notes_db(&vault_path).expect("connect resize history");
+        let shared = acquire_notes_connection(&vault_path).expect("connect resize history");
+        let mut connection = lock_notes_connection(&shared).expect("lock resize history");
         assert_eq!(
             undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active)
                 .expect("undo resize")
@@ -4933,6 +4939,7 @@ mod tests {
             180
         );
         drop(connection);
+        drop(shared);
 
         let remove_context = history_context(3, "removeAttachment");
         let removed = notes_remove_attachment(
@@ -5000,7 +5007,8 @@ mod tests {
             Some(history_context(1, "resizeAttachment")),
         )
         .expect("journaled resize");
-        let mut connection = connect_notes_db(&vault_path).expect("connect");
+        let shared = acquire_notes_connection(&vault_path).expect("connect");
+        let mut connection = lock_notes_connection(&shared).expect("lock history");
         connection
             .execute(
                 "UPDATE notes_attachments SET display_width = 170 WHERE id = ?1",
@@ -5064,7 +5072,9 @@ mod tests {
                 error.to_lowercase().contains("attachment"),
                 "{case}: {error}"
             );
-            let connection = connect_notes_db(&vault_path).expect("reopen after replay conflict");
+            let shared =
+                acquire_notes_connection(&vault_path).expect("reopen after replay conflict");
+            let connection = lock_notes_connection(&shared).expect("lock replay-conflict history");
             assert!(
                 load_workspace(&connection, NotesWorkspaceScope::Active)
                     .expect("workspace after replay conflict")

@@ -189,8 +189,8 @@ pub struct NotesWorkspace {
 pub struct NotesMutationResult {
     pub workspace: NotesWorkspace,
     pub history_entry_id: Option<String>,
-    pub can_undo: bool,
-    pub can_redo: bool,
+    #[serde(flatten)]
+    pub state: NotesHistoryState,
     /// Incremental deltas derived from the mutation's history audit rows.
     ///
     /// These are populated only when the mutation ran with a history context
@@ -341,24 +341,143 @@ pub struct ResizeAttachmentInput {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotesHistoryContext {
     pub session_id: String,
+    pub history_epoch: String,
     pub entry_id: String,
     pub command_kind: String,
 }
 
+#[cfg(test)]
+pub(crate) const TEST_CURRENT_HISTORY_EPOCH: &str = "__test_current_history_epoch__";
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct NotesHistoryStatus {
+pub struct NotesHistoryState {
     pub can_undo: bool,
     pub can_redo: bool,
+    pub history_epoch: String,
+    pub next_undo_entry_id: Option<String>,
+    pub next_redo_entry_id: Option<String>,
+    pub pruned_entry_ids: Vec<String>,
+}
+
+pub type NotesHistoryStatus = NotesHistoryState;
+
+impl std::ops::Deref for NotesMutationResult {
+    type Target = NotesHistoryState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesInitializeInput {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryReplayRequest {
+    pub session_id: String,
+    pub history_epoch: String,
+    pub expected_entry_id: String,
+    pub scope: NotesWorkspaceScope,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesPruneHistoryInput {
+    pub session_id: String,
+    pub history_epoch: String,
+    pub entry_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryResetInput {
+    pub session_id: String,
+    pub history_epoch: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum NotesHistoryReplayOutcome {
+    Applied {
+        workspace: NotesWorkspace,
+        replayed_entry_id: String,
+        #[serde(flatten)]
+        state: NotesHistoryState,
+    },
+    EpochMismatch {
+        #[serde(flatten)]
+        state: NotesHistoryState,
+    },
+    EntryMissing {
+        #[serde(flatten)]
+        state: NotesHistoryState,
+    },
+    EntryNotNext {
+        #[serde(flatten)]
+        state: NotesHistoryState,
+    },
+}
+
+/// Internal test/replay compatibility view. Tauri commands expose
+/// [`NotesHistoryReplayOutcome`] so callers must name the exact entry they expect.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[cfg(test)]
+pub struct NotesHistoryReplayResult {
+    pub workspace: NotesWorkspace,
+    pub replayed_entry_id: Option<String>,
+    #[serde(flatten)]
+    pub state: NotesHistoryState,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for NotesHistoryReplayResult {
+    type Target = NotesHistoryState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesPrepareNavigationInput {
+    pub session_id: String,
+    pub history_epoch: String,
+    pub unreachable_redo_entry_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotesHistoryCloseInput {
+    pub session_id: String,
+    pub history_epoch: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct NotesHistoryReplayResult {
+pub struct NotesHistoryResetResult {
     pub workspace: NotesWorkspace,
-    pub replayed_entry_id: Option<String>,
-    pub can_undo: bool,
-    pub can_redo: bool,
+    pub history_reset: bool,
+    #[serde(flatten)]
+    pub state: NotesHistoryState,
+}
+
+impl std::ops::Deref for NotesHistoryResetResult {
+    type Target = NotesHistoryState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -889,7 +1008,7 @@ mod tests {
         ImportImageNodePathsInput, MoveNodeInput, NoteAttachment, NoteLayoutMode, NoteNode,
         NoteNodeKind, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
         NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
-        NotesExportResult, NotesHistoryContext, NotesHistoryReplayResult, NotesHistoryStatus,
+        NotesExportResult, NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryState,
         NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
     };
     use serde_json::json;
@@ -897,6 +1016,17 @@ mod tests {
     const NODE_ID: &str = "11111111-1111-4111-8111-111111111111";
     const SECOND_ID: &str = "22222222-2222-4222-8222-222222222222";
     const THIRD_ID: &str = "33333333-3333-4333-8333-333333333333";
+
+    fn history_state() -> NotesHistoryState {
+        NotesHistoryState {
+            can_undo: true,
+            can_redo: false,
+            history_epoch: THIRD_ID.to_string(),
+            next_undo_entry_id: Some(SECOND_ID.to_string()),
+            next_redo_entry_id: None,
+            pruned_entry_ids: Vec::new(),
+        }
+    }
 
     fn note_node() -> NoteNode {
         NoteNode {
@@ -1634,6 +1764,7 @@ mod tests {
     fn history_contracts_use_exact_camel_case_wire_shapes() {
         let context: NotesHistoryContext = serde_json::from_value(json!({
             "sessionId": NODE_ID,
+            "historyEpoch": THIRD_ID,
             "entryId": SECOND_ID,
             "commandKind": "updateText"
         }))
@@ -1642,27 +1773,27 @@ mod tests {
         assert_eq!(context.entry_id, SECOND_ID);
         assert_eq!(context.command_kind, "updateText");
 
-        let replay = NotesHistoryReplayResult {
+        let replay = NotesHistoryReplayOutcome::Applied {
             workspace: NotesWorkspace {
                 nodes: Vec::new(),
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
-            replayed_entry_id: Some(SECOND_ID.to_string()),
-            can_undo: true,
-            can_redo: false,
+            replayed_entry_id: SECOND_ID.to_string(),
+            state: history_state(),
         };
         assert_eq!(
             serde_json::to_value(replay).expect("history replay result"),
             json!({
                 "workspace": { "nodes": [], "attachmentsByNodeId": {} },
+                "kind": "applied",
                 "replayedEntryId": SECOND_ID,
                 "canUndo": true,
-                "canRedo": false
+                "canRedo": false,
+                "historyEpoch": THIRD_ID,
+                "nextUndoEntryId": SECOND_ID,
+                "nextRedoEntryId": null,
+                "prunedEntryIds": []
             })
-        );
-        assert_eq!(
-            serde_json::to_value(NotesHistoryStatus::default()).expect("history status"),
-            json!({ "canUndo": false, "canRedo": false })
         );
 
         let mutation = NotesMutationResult {
@@ -1671,8 +1802,7 @@ mod tests {
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
             history_entry_id: Some(SECOND_ID.to_string()),
-            can_undo: true,
-            can_redo: false,
+            state: history_state(),
             changed_nodes: None,
             removed_node_ids: None,
             changed_attachments: None,
@@ -1685,7 +1815,11 @@ mod tests {
                 "workspace": { "nodes": [], "attachmentsByNodeId": {} },
                 "historyEntryId": SECOND_ID,
                 "canUndo": true,
-                "canRedo": false
+                "canRedo": false,
+                "historyEpoch": THIRD_ID,
+                "nextUndoEntryId": SECOND_ID,
+                "nextRedoEntryId": null,
+                "prunedEntryIds": []
             })
         );
 
@@ -1695,8 +1829,7 @@ mod tests {
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
             history_entry_id: Some(SECOND_ID.to_string()),
-            can_undo: true,
-            can_redo: false,
+            state: history_state(),
             changed_nodes: None,
             removed_node_ids: None,
             changed_attachments: None,
@@ -1710,6 +1843,10 @@ mod tests {
                 "historyEntryId": SECOND_ID,
                 "canUndo": true,
                 "canRedo": false,
+                "historyEpoch": THIRD_ID,
+                "nextUndoEntryId": SECOND_ID,
+                "nextRedoEntryId": null,
+                "prunedEntryIds": [],
                 "duplicatedRootIds": [NODE_ID, THIRD_ID]
             })
         );
@@ -1741,8 +1878,7 @@ mod tests {
                 attachments_by_node_id: std::collections::BTreeMap::new(),
             },
             history_entry_id: None,
-            can_undo: true,
-            can_redo: false,
+            state: history_state(),
             changed_nodes: Some(vec![node]),
             removed_node_ids: Some(vec![THIRD_ID.to_string()]),
             changed_attachments: Some(vec![attachment]),
@@ -1776,6 +1912,10 @@ mod tests {
                 "historyEntryId": null,
                 "canUndo": true,
                 "canRedo": false,
+                "historyEpoch": THIRD_ID,
+                "nextUndoEntryId": SECOND_ID,
+                "nextRedoEntryId": null,
+                "prunedEntryIds": [],
                 "changedNodes": [{
                     "id": NODE_ID,
                     "nodeKind": "text",
