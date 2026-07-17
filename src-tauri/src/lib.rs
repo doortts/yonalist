@@ -1429,6 +1429,15 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn session_token_storage_backend() -> &'static str {
+    if cfg!(debug_assertions) {
+        "web"
+    } else {
+        "keychain"
+    }
+}
+
+#[tauri::command]
 fn store_token(service: String, account: String, token: String) -> Result<(), String> {
     let entry = keyring::Entry::new(&service, &account).map_err(|error| error.to_string())?;
     entry
@@ -1540,6 +1549,7 @@ pub fn run() {
             delete_vault_document_hash,
             move_vault_document_hash,
             clear_vault_cache,
+            session_token_storage_backend,
             store_token,
             load_token,
             delete_token,
@@ -1610,6 +1620,12 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     const APP_COMMAND_PERMISSION_SET: &str = "main-window-app-commands";
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_build_uses_web_session_token_storage() {
+        assert_eq!(session_token_storage_backend(), "web");
+    }
 
     fn tauri_project_path(relative: impl AsRef<Path>) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
