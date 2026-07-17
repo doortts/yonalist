@@ -1877,6 +1877,59 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
   });
 
+  it("keeps an ordinary parent forest fixed and counts a collapsed descendant", async () => {
+    const user = userEvent.setup();
+    configureRepository([
+      node({ id: "parent", sortKey: 1, title: "Parent" }),
+      node({
+        id: "child",
+        parentId: "parent",
+        sortKey: 1,
+        title: "Child",
+        isCollapsed: true
+      }),
+      node({ id: "hidden", parentId: "child", title: "Hidden" }),
+      node({ id: "target", sortKey: 2, title: "Target" })
+    ]);
+    renderNotesWorkspace();
+    const parent = await screen.findByRole("button", { name: "Zoom into Parent" });
+    const target = screen.getByRole("button", { name: "Zoom into Target" });
+    mockOutlineRowRects();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: parent,
+      coords: { clientX: 9, clientY: 14 }
+    });
+    await user.pointer({
+      target,
+      coords: { clientX: 14, clientY: 70 }
+    });
+
+    const preview = screen.getByTestId("notes-selection-drag-preview");
+    expect(preview).toHaveTextContent("Parent");
+    expect(within(preview).getByText("3")).toHaveClass(
+      "notes-selection-drag-preview-count"
+    );
+    for (const nodeId of ["parent", "child"]) {
+      expect(
+        document
+          .querySelector(`[data-outline-id="${nodeId}"]`)
+          ?.closest(".notes-outline-item")
+      ).toHaveAttribute("data-drag-source", "true");
+    }
+    expect(document.querySelector('[data-outline-id="hidden"]')).toBeNull();
+    for (const row of document.querySelectorAll<HTMLElement>(".notes-node")) {
+      expect(row.style.transform).toBe("");
+      expect(row).not.toHaveAttribute("data-dragging");
+    }
+
+    await user.keyboard("[Escape]");
+
+    expect(screen.queryByTestId("notes-selection-drag-preview")).toBeNull();
+    expect(document.querySelector("[data-drag-source]")).toBeNull();
+  });
+
   it("uses exact image filenames in drag announcements without rendering them visibly", async () => {
     const user = userEvent.setup();
     configureRepository([
@@ -1996,13 +2049,15 @@ describe("Notes workspace", () => {
       target: parentBullet,
       coords: { clientX: 14, clientY: 20 }
     });
-    expect(activeBullet.closest(".notes-node")).toHaveAttribute(
-      "data-dragging",
-      "true"
+    expect(activeBullet.closest(".notes-node")).not.toHaveAttribute(
+      "data-dragging"
     );
-    expect(
-      screen.queryByTestId("notes-selection-drag-preview")
-    ).not.toBeInTheDocument();
+    expect(activeBullet.closest<HTMLElement>(".notes-node")?.style.transform).toBe(
+      ""
+    );
+    expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
+      "Active"
+    );
     await user.pointer({
       target: parentBullet,
       coords: { clientX: 36, clientY: 42 }
@@ -4439,7 +4494,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).toHaveAttribute("data-selection-dragging", "true");
+        ).toHaveAttribute("data-drag-source", "true");
       }
 
       await act(async () =>
@@ -4464,7 +4519,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -4541,7 +4596,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
 
       await act(async () =>
@@ -4633,7 +4688,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -4718,7 +4773,7 @@ describe("Notes workspace", () => {
       expect(selectionDragPreview).not.toHaveTextContent("Bravo");
       expect(selectionDragPreview).not.toHaveTextContent("Charlie");
       expect(selectionDragPreview).not.toHaveTextContent("Delta");
-      expect(within(selectionDragPreview).getByText("5")).toHaveClass(
+      expect(within(selectionDragPreview).getByText("6")).toHaveClass(
         "notes-selection-drag-preview-count"
       );
       expect(selectionDragPreview).not.toHaveTextContent("5 selected");
@@ -4730,7 +4785,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).toHaveAttribute("data-selection-dragging", "true");
+        ).toHaveAttribute("data-drag-source", "true");
       }
       await user.pointer({
         keys: "[/MouseLeft]",
@@ -4746,7 +4801,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
 
       await waitFor(() => expect(notesStoreMock.applyBatch).toHaveBeenCalledOnce());
@@ -4808,7 +4863,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).toHaveAttribute("data-selection-dragging", "true");
+        ).toHaveAttribute("data-drag-source", "true");
       }
 
       await user.keyboard("[Escape]");
@@ -4821,7 +4876,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
       expect(notesStoreMock.applyBatch).not.toHaveBeenCalled();
       expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -4927,7 +4982,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).toHaveAttribute("data-selection-dragging", "true");
+        ).toHaveAttribute("data-drag-source", "true");
       }
 
       await user.keyboard("[ArrowDown][Space]");
@@ -4940,7 +4995,7 @@ describe("Notes workspace", () => {
           document
             .querySelector(`[data-outline-id="${nodeId}"]`)
             ?.closest(".notes-outline-item")
-        ).not.toHaveAttribute("data-selection-dragging");
+        ).not.toHaveAttribute("data-drag-source");
       }
 
       await act(async () => {
@@ -5070,9 +5125,8 @@ describe("Notes workspace", () => {
           ([, scope]) => scope.kind === "active"
         ).length
       ).toBe(activeLoadsBeforeFirstDrag + 1);
-      expect(bravo.closest(".notes-node")).toHaveAttribute(
-        "data-dragging",
-        "true"
+      expect(bravo.closest(".notes-node")).not.toHaveAttribute(
+        "data-dragging"
       );
 
       await user.pointer({
@@ -5096,9 +5150,8 @@ describe("Notes workspace", () => {
         target: alpha,
         coords: { clientX: 14, clientY: 14 }
       });
-      expect(bravo.closest(".notes-node")).toHaveAttribute(
-        "data-dragging",
-        "true"
+      expect(bravo.closest(".notes-node")).not.toHaveAttribute(
+        "data-dragging"
       );
       await user.pointer({
         target: alpha,

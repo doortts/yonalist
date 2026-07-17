@@ -93,6 +93,7 @@ import {
   OUTLINE_NARROW_MEDIA_QUERY,
   prepareOutlineSelectionDrag,
   preparedOutlineSelectionDragContainsNode,
+  preparedOutlineSelectionDragForestNodeIds,
   projectPreparedOutlineSelectionDrop,
   projectPreparedOutlineSelectionDropAtBoundary,
   projectOutlineDrop,
@@ -102,6 +103,7 @@ import {
   type OutlineSelectionDropResult,
   type PreparedOutlineSelectionDrag
 } from "./outlineDrag";
+import { NOTES_DRAG_OVERLAY_MODIFIERS } from "./notesDragOverlay";
 import {
   resolveOutlinePointerBoundary,
   type OutlinePointerBoundary
@@ -214,6 +216,20 @@ type PaneDragSession =
   | PendingPaneSelectionDragSession;
 type PanePointerDropBoundary = OutlinePointerBoundary &
   Readonly<{ activeId: NoteId }>;
+
+interface NotesDragPresentationSnapshot {
+  readonly rootIds: readonly NoteId[];
+  readonly forestNodeIds: readonly NoteId[];
+}
+
+function notesDragPresentationSnapshot(
+  prepared: PreparedOutlineSelectionDrag
+): NotesDragPresentationSnapshot {
+  return Object.freeze({
+    rootIds: prepared.nodeIds,
+    forestNodeIds: preparedOutlineSelectionDragForestNodeIds(prepared)
+  });
+}
 
 function trackPendingSelectionDragPreparation(
   promise: Promise<OutlineSelectionDragFrozenContext | null>
@@ -501,18 +517,19 @@ export function NotesOutlinePane() {
   const selectionChooserLifecycleKey = `${selectionRevision}\u0002${selectionChooserScopeKey}`;
   const getLiveSelectionSnapshot = actions.getSelectionSnapshot;
   const [activeDragId, setActiveDragId] = useState<NoteId | null>(null);
-  const [draggedNodeIds, setDraggedNodeIds] = useState<readonly NoteId[]>([]);
-  const draggedNodeIdSet = useMemo(
-    () => new Set(draggedNodeIds),
-    [draggedNodeIds]
+  const [dragPresentation, setDragPresentation] =
+    useState<NotesDragPresentationSnapshot | null>(null);
+  const dragSourceNodeIdSet = useMemo(
+    () => new Set(dragPresentation?.forestNodeIds ?? []),
+    [dragPresentation]
   );
   const draggedNodeLabels = useMemo(
     () =>
-      draggedNodeIds.slice(0, 3).map((nodeId) => {
+      (dragPresentation?.rootIds.slice(0, 1) ?? []).map((nodeId) => {
         const node = state.nodesById[nodeId];
         return noteNodePresentationLabel(node, node.title, "Untitled");
       }),
-    [draggedNodeIds, state.nodesById]
+    [dragPresentation, state.nodesById]
   );
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
@@ -2291,7 +2308,7 @@ export function NotesOutlinePane() {
 
   const rejectSelectedDrag = useCallback(() => {
     pointerDropBoundaryRef.current = null;
-    setDraggedNodeIds([]);
+    setDragPresentation(null);
     setDropPreview(null);
     if (!selectionDragRejectionPublishedRef.current) {
       selectionDragRejectionPublishedRef.current = true;
@@ -2337,7 +2354,7 @@ export function NotesOutlinePane() {
     selectedDragNodeIdsRef.current = null;
     selectionDragRejectionPublishedRef.current = false;
     dragEndProjection.current = null;
-    setDraggedNodeIds([]);
+    setDragPresentation(null);
     setDropPreview(null);
     if (
       dragUnavailable ||
@@ -2539,15 +2556,29 @@ export function NotesOutlinePane() {
       selectedDragNodeIdsRef.current = selectedNodeIds;
       if (outlineDragSessionRef.current.kind === "selected-invalid") {
         rejectSelectedDrag();
-      } else {
-        setDraggedNodeIds(selectedNodeIds);
+      } else if (visualPreparation.kind === "ready") {
+        setDragPresentation(notesDragPresentationSnapshot(visualPreparation));
       }
     } else {
+      const visualPreparation = prepareOutlineSelectionDrag(
+        id,
+        [id],
+        structuralRows,
+        {
+          rootIds: state.rootIds,
+          childIdsByParent: state.childIdsByParent,
+          zoomRootId: state.zoomRootId
+        }
+      );
       outlineDragSessionRef.current = Object.freeze({
         kind: "ordinary",
         activeId: id
       });
-      setDraggedNodeIds([id]);
+      setDragPresentation(
+        visualPreparation.kind === "ready"
+          ? notesDragPresentationSnapshot(visualPreparation)
+          : null
+      );
     }
     setActiveDragId(id);
   };
@@ -2623,7 +2654,7 @@ export function NotesOutlinePane() {
     outlineDragSessionRef.current = null;
     pointerDropBoundaryRef.current = null;
     setActiveDragId(null);
-    setDraggedNodeIds([]);
+    setDragPresentation(null);
     setDropPreview(null);
     if (
       droppedSession?.kind === "selected-pending" &&
@@ -2908,7 +2939,7 @@ export function NotesOutlinePane() {
               outlineDragSessionRef.current = null;
               pointerDropBoundaryRef.current = null;
               setActiveDragId(null);
-              setDraggedNodeIds([]);
+              setDragPresentation(null);
               setDropPreview(null);
             }}
             onDragEnd={handleDragEnd}
@@ -2929,11 +2960,8 @@ export function NotesOutlinePane() {
                     className="notes-outline-item"
                     key={row.id}
                     aria-level={row.depth + 1}
-                    data-selection-dragging={
-                      selectedDragNodeIdsRef.current !== null &&
-                      draggedNodeIdSet.has(row.id)
-                        ? "true"
-                        : undefined
+                    data-drag-source={
+                      dragSourceNodeIdSet.has(row.id) ? "true" : undefined
                     }
                     role="listitem"
                   >
@@ -2974,11 +3002,7 @@ export function NotesOutlinePane() {
                       dragDisabled={
                         dragUnavailable || row.id === state.zoomRootId
                       }
-                      suppressDragPresentation={
-                        activeDragId === row.id &&
-                        outlineDragSessionRef.current?.kind ===
-                          "selected-invalid"
-                      }
+                      suppressDragPresentation={activeDragId !== null}
                       imageDropActive={imageDropTargetId === row.id}
                       showDropPlaceholder={false}
                     />
@@ -3005,11 +3029,14 @@ export function NotesOutlinePane() {
                 )}
               </ol>
             </SortableContext>
-            {draggedNodeIds.length > 1 && (
-              <DragOverlay dropAnimation={null}>
+            {dragPresentation !== null && (
+              <DragOverlay
+                dropAnimation={null}
+                modifiers={NOTES_DRAG_OVERLAY_MODIFIERS}
+              >
                 <NotesSelectionDragPreview
                   labels={draggedNodeLabels}
-                  total={draggedNodeIds.length}
+                  total={dragPresentation.forestNodeIds.length}
                 />
               </DragOverlay>
             )}

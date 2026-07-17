@@ -1134,8 +1134,11 @@ button.notes-date-token:hover {
   opacity: 0.72;
 }
 
-.notes-outline-item[data-selection-dragging="true"] > .notes-node {
-  opacity: 0.42;
+.notes-outline-item[data-drag-source="true"]
+  > .notes-node
+  > .notes-node-main {
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .notes-selection-drag-preview {
