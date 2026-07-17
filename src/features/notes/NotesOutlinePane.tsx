@@ -218,16 +218,25 @@ type PanePointerDropBoundary = OutlinePointerBoundary &
   Readonly<{ activeId: NoteId }>;
 
 interface NotesDragPresentationSnapshot {
-  readonly rootIds: readonly NoteId[];
   readonly forestNodeIds: readonly NoteId[];
+  readonly representativeLabel: string;
 }
 
 function notesDragPresentationSnapshot(
-  prepared: PreparedOutlineSelectionDrag
+  prepared: PreparedOutlineSelectionDrag,
+  workspace: Pick<NormalizedNotesWorkspace, "nodesById">,
+  representativeTitle?: string
 ): NotesDragPresentationSnapshot {
+  const representativeNode = workspace.nodesById[prepared.nodeIds[0]];
   return Object.freeze({
-    rootIds: prepared.nodeIds,
-    forestNodeIds: preparedOutlineSelectionDragForestNodeIds(prepared)
+    forestNodeIds: preparedOutlineSelectionDragForestNodeIds(prepared),
+    representativeLabel: representativeNode
+      ? noteNodePresentationLabel(
+          representativeNode,
+          representativeTitle ?? representativeNode.title,
+          "Untitled"
+        )
+      : "Untitled"
   });
 }
 
@@ -525,11 +534,10 @@ export function NotesOutlinePane() {
   );
   const draggedNodeLabels = useMemo(
     () =>
-      (dragPresentation?.rootIds.slice(0, 1) ?? []).map((nodeId) => {
-        const node = state.nodesById[nodeId];
-        return noteNodePresentationLabel(node, node.title, "Untitled");
-      }),
-    [dragPresentation, state.nodesById]
+      dragPresentation === null
+        ? []
+        : [dragPresentation.representativeLabel],
+    [dragPresentation]
   );
   const [dropPreview, setDropPreview] = useState<OutlineDropPreview | null>(null);
   const [emptyTrashConfirmOpen, setEmptyTrashConfirmOpen] = useState(false);
@@ -2376,6 +2384,9 @@ export function NotesOutlinePane() {
     if (selectedIds.includes(id)) {
       const visibleNodeIds = Object.freeze([...bodyVisibleIdsRef.current]);
       const projectedWorkspace = stateRef.current;
+      const presentationTitleFor = (nodeId: NoteId): string | undefined =>
+        draftsByNodeId[nodeId]?.title ??
+        projectedWorkspace.nodesById[nodeId]?.title;
       const openedSnapshot = deriveNotesSelectionActionSnapshot({
         selection: live.selection,
         visibleNodeIds,
@@ -2550,35 +2561,107 @@ export function NotesOutlinePane() {
           outlineDragSessionRef.current = promotedSession;
           if (promotedSession.kind === "selected-invalid") {
             rejectSelectedDrag();
+          } else if (promotedSession.kind === "selected-ready") {
+            setDragPresentation(
+              notesDragPresentationSnapshot(
+                promotedSession.prepared,
+                promotedSession.frozenContext.ownership.authority.workspace,
+                presentationTitleFor(promotedSession.prepared.nodeIds[0])
+              )
+            );
           }
         });
       }
       selectedDragNodeIdsRef.current = selectedNodeIds;
-      if (outlineDragSessionRef.current.kind === "selected-invalid") {
+      const startedSession = outlineDragSessionRef.current;
+      if (startedSession.kind === "selected-invalid") {
         rejectSelectedDrag();
+      } else if (startedSession.kind === "selected-ready") {
+        setDragPresentation(
+          notesDragPresentationSnapshot(
+            startedSession.prepared,
+            startedSession.frozenContext.ownership.authority.workspace,
+            presentationTitleFor(startedSession.prepared.nodeIds[0])
+          )
+        );
       } else if (visualPreparation.kind === "ready") {
-        setDragPresentation(notesDragPresentationSnapshot(visualPreparation));
+        // Pending selected sessions may show the projected forest immediately,
+        // but only the matching authoritative promotion can replace it.
+        setDragPresentation(
+          notesDragPresentationSnapshot(
+            visualPreparation,
+            projectedWorkspace,
+            presentationTitleFor(visualPreparation.nodeIds[0])
+          )
+        );
       }
     } else {
-      const visualPreparation = prepareOutlineSelectionDrag(
-        id,
-        [id],
-        structuralRows,
-        {
-          rootIds: state.rootIds,
-          childIdsByParent: state.childIdsByParent,
-          zoomRootId: state.zoomRootId
-        }
-      );
-      outlineDragSessionRef.current = Object.freeze({
+      const ordinarySession = Object.freeze({
         kind: "ordinary",
         activeId: id
       });
-      setDragPresentation(
-        visualPreparation.kind === "ready"
-          ? notesDragPresentationSnapshot(visualPreparation)
-          : null
-      );
+      outlineDragSessionRef.current = ordinarySession;
+      const representativeTitle =
+        draftsByNodeId[id]?.title ?? state.nodesById[id]?.title;
+      if (libraryView === "all") {
+        const visualPreparation = prepareOutlineSelectionDrag(
+          id,
+          [id],
+          structuralRows,
+          {
+            rootIds: state.rootIds,
+            childIdsByParent: state.childIdsByParent,
+            zoomRootId: state.zoomRootId
+          }
+        );
+        setDragPresentation(
+          visualPreparation.kind === "ready"
+            ? notesDragPresentationSnapshot(
+                visualPreparation,
+                state,
+                representativeTitle
+              )
+            : null
+        );
+      } else if (
+        prepareSelectionAuthority &&
+        isPreparedSelectionAuthorityCurrent
+      ) {
+        void prepareSelectionAuthority([id])
+          .then((authority) => {
+            if (
+              outlineDragSessionRef.current !== ordinarySession ||
+              outlineDragAttemptEpochRef.current !== attemptEpoch ||
+              authority.selectionRevision !== live.revision ||
+              !exactNoteIds(authority.selectedNodeIds, [id]) ||
+              !isPreparedSelectionAuthorityCurrent(authority)
+            ) {
+              return;
+            }
+            const visualPreparation = prepareOutlineSelectionDrag(
+              id,
+              [id],
+              structuralRows,
+              {
+                rootIds: authority.workspace.rootIds,
+                childIdsByParent: authority.workspace.childIdsByParent,
+                zoomRootId: state.zoomRootId
+              }
+            );
+            if (visualPreparation.kind === "ready") {
+              setDragPresentation(
+                notesDragPresentationSnapshot(
+                  visualPreparation,
+                  authority.workspace,
+                  representativeTitle
+                )
+              );
+            }
+          })
+          .catch(() => {
+            // Ordinary move semantics remain available without a preview.
+          });
+      }
     }
     setActiveDragId(id);
   };
