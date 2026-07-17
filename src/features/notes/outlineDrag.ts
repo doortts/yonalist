@@ -22,6 +22,11 @@ export interface OutlineDropPreview {
   depth: number;
 }
 
+export interface OutlineBoundaryDropResult {
+  readonly projection: OutlineDropProjection;
+  readonly noOp: boolean;
+}
+
 export type OutlineSelectionDropInvalidReason =
   | "empty-selection"
   | "invalid-geometry"
@@ -48,6 +53,15 @@ export type OutlineSelectionDropResult =
       readonly kind: "valid";
       readonly nodeIds: readonly NoteId[];
       readonly projection: OutlineDropProjection;
+    }
+  | OutlineSelectionDropInvalid;
+
+export type OutlineSelectionBoundaryDropResult =
+  | {
+      readonly kind: "valid";
+      readonly nodeIds: readonly NoteId[];
+      readonly projection: OutlineDropProjection;
+      readonly noOp: boolean;
     }
   | OutlineSelectionDropInvalid;
 
@@ -282,14 +296,18 @@ function isNoOp(
   return destinationIndex >= 0 && destinationIndex === originalIndex;
 }
 
-export function projectOutlineDrop(
+type OutlineDropLocation =
+  | Readonly<{ kind: "over"; overId: NoteId }>
+  | Readonly<{ kind: "boundary"; beforeId: NoteId | null }>;
+
+function projectOutlineDropLocation(
   activeId: NoteId,
-  overId: NoteId,
+  location: OutlineDropLocation,
   horizontalOffset: number,
   rows: readonly FlattenedOutlineRow[],
   order: OutlineSiblingOrder,
   indentPx = OUTLINE_INDENT_PX
-): OutlineDropProjection | null {
+): OutlineBoundaryDropResult | null {
   if (
     !Number.isFinite(horizontalOffset) ||
     !Number.isFinite(indentPx) ||
@@ -300,19 +318,23 @@ export function projectOutlineDrop(
   }
 
   const activeIndex = rows.findIndex((row) => row.id === activeId);
-  const overIndex = rows.findIndex((row) => row.id === overId);
-  if (activeIndex < 0 || overIndex < 0) {
+  const overIndex =
+    location.kind === "over"
+      ? rows.findIndex((row) => row.id === location.overId)
+      : -1;
+  if (activeIndex < 0 || (location.kind === "over" && overIndex < 0)) {
     return null;
   }
 
   const active = rows[activeIndex];
-  const over = rows[overIndex];
-  const isSelfOver = activeId === overId;
+  const over = location.kind === "over" ? rows[overIndex] : undefined;
+  const isSelfOver = over?.id === activeId;
   if (
     activeId === order.zoomRootId ||
     !isInsideZoom(active, order.zoomRootId) ||
-    !isInsideZoom(over, order.zoomRootId) ||
-    over.ancestorIds.includes(activeId)
+    (over !== undefined &&
+      (!isInsideZoom(over, order.zoomRootId) ||
+        over.ancestorIds.includes(activeId)))
   ) {
     return null;
   }
@@ -326,7 +348,10 @@ export function projectOutlineDrop(
   }
   if (
     rows.slice(activeEnd).some((row) => row.ancestorIds.includes(activeId)) ||
-    (!isSelfOver && overIndex >= activeIndex && overIndex < activeEnd)
+    (location.kind === "over" &&
+      !isSelfOver &&
+      overIndex >= activeIndex &&
+      overIndex < activeEnd)
   ) {
     return null;
   }
@@ -335,9 +360,21 @@ export function projectOutlineDrop(
     ...rows.slice(0, activeIndex),
     ...rows.slice(activeEnd)
   ];
-  let insertionIndex = activeIndex;
-  if (!isSelfOver) {
-    const remainingOverIndex = remaining.findIndex((row) => row.id === overId);
+  let insertionIndex: number;
+  if (location.kind === "boundary") {
+    insertionIndex =
+      location.beforeId === null
+        ? remaining.length
+        : remaining.findIndex((row) => row.id === location.beforeId);
+    if (insertionIndex < 0) {
+      return null;
+    }
+  } else if (isSelfOver) {
+    insertionIndex = activeIndex;
+  } else {
+    const remainingOverIndex = remaining.findIndex(
+      (row) => row.id === location.overId
+    );
     if (remainingOverIndex < 0) {
       return null;
     }
@@ -382,7 +419,7 @@ export function projectOutlineDrop(
       afterId: lastChildId,
       expandNodeId: parentRow.id
     };
-    return isNoOp(active, projection, order) ? null : projection;
+    return { projection, noOp: isNoOp(active, projection, order) };
   }
 
   const previousSibling = previousDirectSibling(
@@ -413,7 +450,44 @@ export function projectOutlineDrop(
     projection = { parentId, afterId: null };
   }
 
-  return isNoOp(active, projection, order) ? null : projection;
+  return { projection, noOp: isNoOp(active, projection, order) };
+}
+
+export function projectOutlineDrop(
+  activeId: NoteId,
+  overId: NoteId,
+  horizontalOffset: number,
+  rows: readonly FlattenedOutlineRow[],
+  order: OutlineSiblingOrder,
+  indentPx = OUTLINE_INDENT_PX
+): OutlineDropProjection | null {
+  const result = projectOutlineDropLocation(
+    activeId,
+    { kind: "over", overId },
+    horizontalOffset,
+    rows,
+    order,
+    indentPx
+  );
+  return !result || result.noOp ? null : result.projection;
+}
+
+export function projectOutlineDropAtBoundary(
+  activeId: NoteId,
+  beforeId: NoteId | null,
+  horizontalOffset: number,
+  rows: readonly FlattenedOutlineRow[],
+  order: OutlineSiblingOrder,
+  indentPx = OUTLINE_INDENT_PX
+): OutlineBoundaryDropResult | null {
+  return projectOutlineDropLocation(
+    activeId,
+    { kind: "boundary", beforeId },
+    horizontalOffset,
+    rows,
+    order,
+    indentPx
+  );
 }
 
 interface OutlineSelectedForest {
@@ -589,6 +663,49 @@ export function projectPreparedOutlineSelectionDrop(
     return { kind: "invalid", reason: "selected-forest-target" };
   }
   return { kind: "valid", nodeIds: prepared.nodeIds, projection };
+}
+
+export function projectPreparedOutlineSelectionDropAtBoundary(
+  prepared: PreparedOutlineSelectionDrag,
+  beforeId: NoteId | null,
+  horizontalOffset: number,
+  indentPx = OUTLINE_INDENT_PX
+): OutlineSelectionBoundaryDropResult {
+  const state = preparedSelectionDragStates.get(prepared);
+  if (!state) {
+    return { kind: "invalid", reason: "invalid-geometry" };
+  }
+  if (beforeId !== null && state.forestNodeIds.has(beforeId)) {
+    return { kind: "invalid", reason: "selected-forest-target" };
+  }
+  const result = projectOutlineDropAtBoundary(
+    state.activeRootId,
+    beforeId,
+    horizontalOffset,
+    state.geometryRows,
+    state.geometryOrder,
+    indentPx
+  );
+  if (!result) {
+    return { kind: "invalid", reason: "invalid-geometry" };
+  }
+  const { projection } = result;
+  if (
+    (projection.parentId !== null &&
+      state.forestNodeIds.has(projection.parentId)) ||
+    (projection.afterId !== null &&
+      state.forestNodeIds.has(projection.afterId)) ||
+    (projection.beforeId != null &&
+      state.forestNodeIds.has(projection.beforeId))
+  ) {
+    return { kind: "invalid", reason: "selected-forest-target" };
+  }
+  return {
+    kind: "valid",
+    nodeIds: prepared.nodeIds,
+    projection,
+    noOp: result.noOp
+  };
 }
 
 export function projectOutlineSelectionDrop(

@@ -94,12 +94,18 @@ import {
   prepareOutlineSelectionDrag,
   preparedOutlineSelectionDragContainsNode,
   projectPreparedOutlineSelectionDrop,
+  projectPreparedOutlineSelectionDropAtBoundary,
   projectOutlineDrop,
+  projectOutlineDropAtBoundary,
   type OutlineDropProjection,
   type OutlineDropPreview,
   type OutlineSelectionDropResult,
   type PreparedOutlineSelectionDrag
 } from "./outlineDrag";
+import {
+  resolveOutlinePointerBoundary,
+  type OutlinePointerBoundary
+} from "./outlinePointerDrop";
 import {
   projectOutlineSelectionDragSession,
   startOutlineSelectionDragSession,
@@ -178,6 +184,10 @@ type PaneDragProjection =
       projection: OutlineDropProjection;
     }>
   | Readonly<{
+      kind: "ordinary-preview";
+      projection: OutlineDropProjection;
+    }>
+  | Readonly<{
       kind: "selected-preview";
       prepared: PreparedOutlineSelectionDrag;
       result: OutlineSelectionDropResult;
@@ -202,6 +212,8 @@ type PendingPaneSelectionDragSession = Readonly<{
 type PaneDragSession =
   | OutlineSelectionDragSession
   | PendingPaneSelectionDragSession;
+type PanePointerDropBoundary = OutlinePointerBoundary &
+  Readonly<{ activeId: NoteId }>;
 
 function trackPendingSelectionDragPreparation(
   promise: Promise<OutlineSelectionDragFrozenContext | null>
@@ -538,6 +550,8 @@ export function NotesOutlinePane() {
     useRef<OutlineSelectionDragFrozenContext | null>(null);
   const outlineDragAttemptEpochRef = useRef(0);
   const outlineDragSessionRef = useRef<PaneDragSession | null>(null);
+  const pointerDropBoundaryRef = useRef<PanePointerDropBoundary | null>(null);
+  const structuralRowsRef = useRef<readonly FlattenedOutlineRow[]>([]);
   const selectedDragNodeIdsRef = useRef<readonly NoteId[] | null>(null);
   const selectionDragRejectionPublishedRef = useRef(false);
   const imageDropPathsRef = useRef<readonly string[]>([]);
@@ -740,26 +754,43 @@ export function NotesOutlinePane() {
     [activeDragId]
   );
   const detectOutlineCollisions = useCallback<CollisionDetection>((args) => {
+    if (args.pointerCoordinates === null) {
+      pointerDropBoundaryRef.current = null;
+      return closestCenter(args);
+    }
+
+    const activeId = String(args.active.id);
     const session = outlineDragSessionRef.current;
     const prepared =
-      args.pointerCoordinates === null
-        ? null
-        : session?.kind === "selected-ready"
-          ? session.prepared
-          : session?.kind === "selected-pending"
-            ? session.preview
-            : null;
-    return closestCenter(
-      prepared === null
-        ? args
-        : {
-            ...args,
-            droppableContainers: args.droppableContainers.filter(
-              ({ id }) =>
-                !preparedOutlineSelectionDragContainsNode(prepared, String(id))
-            )
-          }
+      session?.kind === "selected-ready"
+        ? session.prepared
+        : session?.kind === "selected-pending"
+          ? session.preview
+          : null;
+    const measuredRows = structuralRowsRef.current.flatMap((row) => {
+      const dragged =
+        prepared !== null
+          ? preparedOutlineSelectionDragContainsNode(prepared, row.id)
+          : row.id === activeId || row.ancestorIds.includes(activeId);
+      const rect = args.droppableRects.get(row.id);
+      return dragged || !rect
+        ? []
+        : [{ id: row.id, top: rect.top, bottom: rect.bottom }];
+    });
+    const boundary = resolveOutlinePointerBoundary(
+      args.pointerCoordinates.y,
+      measuredRows
     );
+    pointerDropBoundaryRef.current = { activeId, ...boundary };
+    if (boundary.overId === null) {
+      return [];
+    }
+    return closestCenter({
+      ...args,
+      droppableContainers: args.droppableContainers.filter(
+        ({ id }) => String(id) === boundary.overId
+      )
+    });
   }, []);
   const sensors = useSensors(
     useSensor(PointerSensor, pointerSensorOptions),
@@ -1003,6 +1034,7 @@ export function NotesOutlinePane() {
           ),
     [allStructuralRows, showCompleted, state.nodesById, state.zoomRootId]
   );
+  structuralRowsRef.current = structuralRows;
   const bodyRows = useMemo(
     () => deriveOutlineBodyRows(structuralRows, state.zoomRootId),
     [structuralRows, state.zoomRootId]
@@ -2084,9 +2116,13 @@ export function NotesOutlinePane() {
       event: Pick<DragMoveEvent, "active" | "delta" | "over">
     ): PaneDragProjection | null => {
       const activeId = String(event.active.id);
+      const pointerBoundary =
+        pointerDropBoundaryRef.current?.activeId === activeId
+          ? pointerDropBoundaryRef.current
+          : null;
       if (
         dragUnavailable ||
-        !event.over ||
+        (pointerBoundary === null && !event.over) ||
         activeId === state.zoomRootId ||
         (activeDragId !== null && activeDragId !== activeId)
       ) {
@@ -2099,22 +2135,61 @@ export function NotesOutlinePane() {
       session = promotePendingSelectionDrag(session);
       outlineDragSessionRef.current = session;
       if (session.kind === "selected-pending") {
-        const result = projectPreparedOutlineSelectionDrop(
-          session.preview,
-          String(event.over.id),
-          event.delta.x,
-          outlineIndentPx
-        );
+        const result =
+          pointerBoundary === null
+            ? projectPreparedOutlineSelectionDrop(
+                session.preview,
+                String(event.over!.id),
+                event.delta.x,
+                outlineIndentPx
+              )
+            : projectPreparedOutlineSelectionDropAtBoundary(
+                session.preview,
+                pointerBoundary.beforeId,
+                event.delta.x,
+                outlineIndentPx
+              );
         return Object.freeze({
           kind: "selected-preview",
           prepared: session.preview,
           result
         });
       }
-      if (session.kind !== "ordinary") {
+      if (session.kind === "selected-invalid") {
+        return session;
+      }
+      if (session.kind === "selected-ready") {
+        if (pointerBoundary !== null) {
+          const result = projectPreparedOutlineSelectionDropAtBoundary(
+            session.prepared,
+            pointerBoundary.beforeId,
+            event.delta.x,
+            outlineIndentPx
+          );
+          if (result.kind === "invalid") {
+            return Object.freeze({
+              kind: "selected-invalid",
+              reason: result.reason
+            });
+          }
+          if (result.noOp) {
+            return Object.freeze({
+              kind: "selected-preview",
+              prepared: session.prepared,
+              result
+            });
+          }
+          const { expandNodeId, ...target } = result.projection;
+          return Object.freeze({
+            kind: "selected-move",
+            target: Object.freeze(target),
+            ...(expandNodeId === undefined ? {} : { expandNodeId }),
+            frozenContext: session.frozenContext
+          });
+        }
         return projectOutlineSelectionDragSession(
           session,
-          String(event.over.id),
+          String(event.over!.id),
           event.delta.x,
           outlineIndentPx
         );
@@ -2122,16 +2197,33 @@ export function NotesOutlinePane() {
       if (session.activeId !== activeId) {
         return null;
       }
+      const order = {
+        rootIds: state.rootIds,
+        childIdsByParent: state.childIdsByParent,
+        zoomRootId: state.zoomRootId
+      };
+      if (pointerBoundary !== null) {
+        const result = projectOutlineDropAtBoundary(
+          activeId,
+          pointerBoundary.beforeId,
+          event.delta.x,
+          structuralRows,
+          order,
+          outlineIndentPx
+        );
+        return result
+          ? Object.freeze({
+              kind: result.noOp ? "ordinary-preview" : "ordinary-move",
+              projection: result.projection
+            })
+          : null;
+      }
       const projection = projectOutlineDrop(
         activeId,
-        String(event.over.id),
+        String(event.over!.id),
         event.delta.x,
         structuralRows,
-        {
-          rootIds: state.rootIds,
-          childIdsByParent: state.childIdsByParent,
-          zoomRootId: state.zoomRootId
-        },
+        order,
         outlineIndentPx
       );
       return projection
@@ -2198,6 +2290,7 @@ export function NotesOutlinePane() {
   }, [state.nodesById]);
 
   const rejectSelectedDrag = useCallback(() => {
+    pointerDropBoundaryRef.current = null;
     setDraggedNodeIds([]);
     setDropPreview(null);
     if (!selectionDragRejectionPublishedRef.current) {
@@ -2240,6 +2333,7 @@ export function NotesOutlinePane() {
   const handleDragStart = (event: DragStartEvent) => {
     const attemptEpoch = ++outlineDragAttemptEpochRef.current;
     const id = String(event.active.id);
+    pointerDropBoundaryRef.current = null;
     selectedDragNodeIdsRef.current = null;
     selectionDragRejectionPublishedRef.current = false;
     dragEndProjection.current = null;
@@ -2481,7 +2575,10 @@ export function NotesOutlinePane() {
       }
       return;
     }
-    if (projection.kind === "ordinary-move") {
+    if (
+      projection.kind === "ordinary-move" ||
+      projection.kind === "ordinary-preview"
+    ) {
       setDropPreview(
         deriveOutlineDropPreview(
           String(event.active.id),
@@ -2511,23 +2608,30 @@ export function NotesOutlinePane() {
   const handleDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const droppedSession = outlineDragSessionRef.current;
+    const droppedPointerBoundary =
+      pointerDropBoundaryRef.current?.activeId === activeId
+        ? pointerDropBoundaryRef.current
+        : null;
     const projection = projectDrag(event);
     dragEndProjection.current = {
       activeId,
-      overId: event.over ? String(event.over.id) : null,
+      overId:
+        droppedPointerBoundary?.overId ??
+        (event.over ? String(event.over.id) : null),
       projection
     };
     outlineDragSessionRef.current = null;
+    pointerDropBoundaryRef.current = null;
     setActiveDragId(null);
     setDraggedNodeIds([]);
     setDropPreview(null);
     if (
       droppedSession?.kind === "selected-pending" &&
-      event.over !== null &&
+      (droppedPointerBoundary !== null || event.over !== null) &&
       !dragUnavailable &&
       droppedSession.activeId === activeId
     ) {
-      const overId = String(event.over.id);
+      const overId = event.over === null ? null : String(event.over.id);
       const horizontalOffset = event.delta.x;
       void droppedSession.preparation.promise.then(() => {
         if (droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current) {
@@ -2543,6 +2647,40 @@ export function NotesOutlinePane() {
         const readySession = promotePendingSelectionDrag(droppedSession);
         if (readySession.kind !== "selected-ready") {
           rejectSelectedDrag();
+          return;
+        }
+        if (droppedPointerBoundary !== null) {
+          const boundaryResult =
+            projectPreparedOutlineSelectionDropAtBoundary(
+              readySession.prepared,
+              droppedPointerBoundary.beforeId,
+              horizontalOffset,
+              outlineIndentPx
+            );
+          if (boundaryResult.kind === "invalid") {
+            rejectSelectedDrag();
+            return;
+          }
+          if (boundaryResult.noOp) {
+            return;
+          }
+          if (
+            droppedSession.attemptEpoch !== outlineDragAttemptEpochRef.current
+          ) {
+            return;
+          }
+          const { expandNodeId, ...target } = boundaryResult.projection;
+          void executeGuardedSelectionCommand(
+            {
+              type: "reorder",
+              target,
+              ...(expandNodeId === undefined ? {} : { expandNodeId })
+            },
+            readySession.frozenContext
+          );
+          return;
+        }
+        if (overId === null) {
           return;
         }
         const lateProjection = projectOutlineSelectionDragSession(
@@ -2571,7 +2709,10 @@ export function NotesOutlinePane() {
       });
       return;
     }
-    if (projection?.kind === "selected-preview") {
+    if (
+      projection?.kind === "selected-preview" ||
+      projection?.kind === "ordinary-preview"
+    ) {
       return;
     }
     if (!projection) {
@@ -2765,6 +2906,7 @@ export function NotesOutlinePane() {
             onDragCancel={() => {
               outlineDragAttemptEpochRef.current += 1;
               outlineDragSessionRef.current = null;
+              pointerDropBoundaryRef.current = null;
               setActiveDragId(null);
               setDraggedNodeIds([]);
               setDropPreview(null);

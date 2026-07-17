@@ -8,7 +8,9 @@ import {
   prepareOutlineSelectionDrag,
   preparedOutlineSelectionDragContainsNode,
   projectOutlineDrop,
+  projectOutlineDropAtBoundary,
   projectPreparedOutlineSelectionDrop,
+  projectPreparedOutlineSelectionDropAtBoundary,
   projectOutlineSelectionDrop,
   type OutlineDropPreview,
   type OutlineSiblingOrder
@@ -544,6 +546,139 @@ describe("projectOutlineDrop", () => {
       const anchor = current.nodes.find((item) => item.id === anchors[0]);
       expect(anchor?.parentId).toBe(result?.parentId);
     }
+  });
+});
+
+describe("projectOutlineDropAtBoundary", () => {
+  it("distinguishes the original boundary from a move", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "a", sortKey: 1 }),
+        node({ id: "c", sortKey: 2 }),
+        node({ id: "d", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const order = {
+      rootIds: state.rootIds,
+      childIdsByParent: state.childIdsByParent,
+      zoomRootId: null
+    } satisfies OutlineSiblingOrder;
+
+    expect(projectOutlineDropAtBoundary("a", "c", 0, rows, order)).toEqual({
+      projection: { parentId: null, afterId: null, beforeId: "c" },
+      noOp: true
+    });
+    expect(projectOutlineDropAtBoundary("a", "d", 0, rows, order)).toEqual({
+      projection: { parentId: null, afterId: "c" },
+      noOp: false
+    });
+    expect(projectOutlineDropAtBoundary("a", null, 0, rows, order)).toEqual({
+      projection: { parentId: null, afterId: "d" },
+      noOp: false
+    });
+    expect(
+      projectOutlineDropAtBoundary("a", "missing", 0, rows, order)
+    ).toBeNull();
+  });
+
+  it("keeps horizontal depth projection at an explicit boundary", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "active", sortKey: 1 }),
+        node({ id: "parent", sortKey: 2 }),
+        node({ id: "child", parentId: "parent" }),
+        node({ id: "tail", sortKey: 3 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+
+    expect(
+      projectOutlineDropAtBoundary(
+        "active",
+        "tail",
+        OUTLINE_INDENT_PX,
+        rows,
+        {
+          rootIds: state.rootIds,
+          childIdsByParent: state.childIdsByParent,
+          zoomRootId: null
+        }
+      )
+    ).toEqual({
+      projection: { parentId: "parent", afterId: "child" },
+      noOp: false
+    });
+  });
+
+  it("keeps a prepared selected forest visible at its original boundary", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "a", sortKey: 1 }),
+        node({ id: "b", sortKey: 2 }),
+        node({ id: "c", sortKey: 3 }),
+        node({ id: "d", sortKey: 4 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const prepared = prepareOutlineSelectionDrag("a", ["a", "b"], rows, {
+      rootIds: state.rootIds,
+      childIdsByParent: state.childIdsByParent,
+      zoomRootId: null
+    });
+    if (prepared.kind !== "ready") {
+      throw new Error("Expected drag preparation to succeed.");
+    }
+
+    const result = projectPreparedOutlineSelectionDropAtBoundary(
+      prepared,
+      "c",
+      0
+    );
+
+    expect(result).toEqual({
+      kind: "valid",
+      nodeIds: ["a", "b"],
+      projection: { parentId: null, afterId: null, beforeId: "c" },
+      noOp: true
+    });
+    expect(
+      derivePreparedOutlineSelectionDropPreview(prepared, result)
+    ).toEqual({ beforeId: "c", parentId: null, depth: 0 });
+  });
+
+  it("keeps the sole tail boundary when every row is selected", () => {
+    const state = normalizeWorkspace({
+      nodes: [
+        node({ id: "a", sortKey: 1 }),
+        node({ id: "b", sortKey: 2 })
+      ]
+    } satisfies NotesWorkspace);
+    const rows = flattenVisibleOutlineRows(state, null);
+    const prepared = prepareOutlineSelectionDrag("a", ["a", "b"], rows, {
+      rootIds: state.rootIds,
+      childIdsByParent: state.childIdsByParent,
+      zoomRootId: null
+    });
+    if (prepared.kind !== "ready") {
+      throw new Error("Expected drag preparation to succeed.");
+    }
+
+    const result = projectPreparedOutlineSelectionDropAtBoundary(
+      prepared,
+      null,
+      0
+    );
+
+    expect(result).toEqual({
+      kind: "valid",
+      nodeIds: ["a", "b"],
+      projection: { parentId: null, afterId: null },
+      noOp: true
+    });
+    expect(
+      derivePreparedOutlineSelectionDropPreview(prepared, result)
+    ).toEqual({ beforeId: null, parentId: null, depth: 0 });
   });
 });
 
