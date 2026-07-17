@@ -6,6 +6,7 @@ describe("NotesSelectionDragPreview", () => {
   it("renders one plain card without a badge", () => {
     render(<NotesSelectionDragPreview labels={["Alpha"]} total={1} />);
     const preview = screen.getByTestId("notes-selection-drag-preview");
+    expect(preview).toHaveAttribute("aria-hidden", "true");
     expect(preview).not.toHaveAttribute("data-multiple");
     expect(
       preview.querySelector(".notes-selection-drag-preview-count")
