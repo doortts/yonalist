@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { NotesSelectionDragPreview } from "./NotesSelectionDragPreview";
 
 describe("NotesSelectionDragPreview", () => {
-  it("shows three titles and the full selected count", () => {
+  it("shows only the first title and the full selected count", () => {
     render(
       <NotesSelectionDragPreview
         labels={["Alpha", "Bravo", "Charlie", "Delta"]}
@@ -14,10 +14,13 @@ describe("NotesSelectionDragPreview", () => {
     const preview = screen.getByTestId("notes-selection-drag-preview");
     expect(preview).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByText("Alpha")).toBeInTheDocument();
-    expect(screen.getByText("Bravo")).toBeInTheDocument();
-    expect(screen.getByText("Charlie")).toBeInTheDocument();
+    expect(screen.queryByText("Bravo")).not.toBeInTheDocument();
+    expect(screen.queryByText("Charlie")).not.toBeInTheDocument();
     expect(screen.queryByText("Delta")).not.toBeInTheDocument();
-    expect(screen.getByText("4 selected")).toBeInTheDocument();
+    expect(screen.getByText("4")).toHaveClass(
+      "notes-selection-drag-preview-count"
+    );
+    expect(screen.queryByText("4 selected")).not.toBeInTheDocument();
   });
 
   it("uses Untitled for an empty presentation label", () => {

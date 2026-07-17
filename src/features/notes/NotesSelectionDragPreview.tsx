@@ -12,18 +12,11 @@ export function NotesSelectionDragPreview({
       aria-hidden="true"
     >
       <div className="notes-selection-drag-preview-stack">
-        {labels.slice(0, 3).map((label, index) => (
-          <div
-            className="notes-selection-drag-preview-row"
-            key={`${index}:${label}`}
-          >
-            {label || "Untitled"}
-          </div>
-        ))}
+        <div className="notes-selection-drag-preview-row">
+          {labels[0] || "Untitled"}
+        </div>
       </div>
-      <span className="notes-selection-drag-preview-count">
-        {total} selected
-      </span>
+      <span className="notes-selection-drag-preview-count">{total}</span>
     </div>
   );
 }

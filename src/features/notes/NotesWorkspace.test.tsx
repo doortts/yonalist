@@ -4431,9 +4431,9 @@ describe("Notes workspace", () => {
       });
 
       expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document
@@ -4517,9 +4517,9 @@ describe("Notes workspace", () => {
       });
 
       expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b", "c"]));
 
@@ -4598,9 +4598,9 @@ describe("Notes workspace", () => {
       });
 
       expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       await act(async () => {
         deferAuthority = false;
         hydration.resolve(workspace(activeNodes));
@@ -4609,9 +4609,9 @@ describe("Notes workspace", () => {
       await act(async () => undefined);
 
       expect(document.querySelector(".notes-outline-drop-preview")).not.toBeNull();
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       fireEvent.keyDown(alphaTitle, { key: "ArrowDown", shiftKey: true });
       await waitFor(() => expect(selectedOutlineIds()).toEqual(["a", "b", "c"]));
 
@@ -4715,10 +4715,13 @@ describe("Notes workspace", () => {
         "notes-selection-drag-preview"
       );
       expect(selectionDragPreview).toHaveTextContent("Alpha");
-      expect(selectionDragPreview).toHaveTextContent("Bravo");
-      expect(selectionDragPreview).toHaveTextContent("Charlie");
+      expect(selectionDragPreview).not.toHaveTextContent("Bravo");
+      expect(selectionDragPreview).not.toHaveTextContent("Charlie");
       expect(selectionDragPreview).not.toHaveTextContent("Delta");
-      expect(selectionDragPreview).toHaveTextContent("5 selected");
+      expect(within(selectionDragPreview).getByText("5")).toHaveClass(
+        "notes-selection-drag-preview-count"
+      );
+      expect(selectionDragPreview).not.toHaveTextContent("5 selected");
       expect(document.body).toHaveTextContent(
         "5 selected notes are over Destination."
       );
@@ -4797,9 +4800,9 @@ describe("Notes workspace", () => {
       bullet.focus();
       await user.keyboard("[Space]");
 
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document
@@ -4861,9 +4864,9 @@ describe("Notes workspace", () => {
 
       alpha.focus();
       await user.keyboard("[Space]");
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       await act(async () => hydration.reject(new Error("authority unavailable")));
       await user.keyboard("[ArrowDown]");
 
@@ -4916,9 +4919,9 @@ describe("Notes workspace", () => {
       alpha.focus();
       await user.keyboard("[Space]");
 
-      expect(screen.getByTestId("notes-selection-drag-preview")).toHaveTextContent(
-        "2 selected"
-      );
+      expect(
+        within(screen.getByTestId("notes-selection-drag-preview")).getByText("2")
+      ).toHaveClass("notes-selection-drag-preview-count");
       for (const nodeId of ["a", "b"]) {
         expect(
           document

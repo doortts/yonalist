@@ -1139,40 +1139,85 @@ button.notes-date-token:hover {
 }
 
 .notes-selection-drag-preview {
-  display: grid;
+  position: relative;
   min-width: 196px;
-  max-width: min(320px, calc(100vw - 24px));
-  gap: 6px;
-  padding: 7px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+  max-width: min(280px, calc(100vw - 36px));
+  padding: 0 10px 10px 0;
   color: var(--text-1);
   pointer-events: none;
 }
 
 .notes-selection-drag-preview-stack {
-  display: grid;
-  gap: 2px;
+  position: relative;
+  isolation: isolate;
+}
+
+.notes-selection-drag-preview-stack::before,
+.notes-selection-drag-preview-stack::after {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-card);
+  content: "";
+}
+
+.notes-selection-drag-preview-stack::before {
+  z-index: -1;
+  transform: translate(5px, 5px);
+}
+
+.notes-selection-drag-preview-stack::after {
+  z-index: -2;
+  opacity: 0.82;
+  transform: translate(9px, 9px);
 }
 
 .notes-selection-drag-preview-row {
+  position: relative;
+  z-index: 1;
   min-width: 0;
-  padding: 4px 7px;
+  padding: 7px 28px 7px 27px;
   overflow: hidden;
-  border-radius: 4px;
-  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-card);
+  box-shadow: 0 5px 14px rgb(0 0 0 / 18%);
   font-size: 13px;
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.notes-selection-drag-preview-row::before {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 11px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-3);
+  content: "";
+  transform: translateY(-50%);
+}
+
 .notes-selection-drag-preview-count {
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 650;
+  position: absolute;
+  z-index: 2;
+  inset-block-start: -7px;
+  inset-inline-end: 2px;
+  display: grid;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--bg-card);
+  border-radius: 999px;
+  place-items: center;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* Multi-node selection range highlight (Phase 4.1) — a subtle band across the
