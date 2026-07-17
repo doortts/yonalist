@@ -229,23 +229,42 @@ type PanePointerDropBoundary = OutlinePointerBoundary &
 interface NotesDragPresentationSnapshot {
   readonly forestNodeIds: readonly NoteId[];
   readonly representativeLabel: string;
+  readonly representativeThumbnailSrc?: string;
+}
+
+function renderedDragImageSource(
+  root: ParentNode | null,
+  nodeId: NoteId
+): string | undefined {
+  const row = Array.from(
+    root?.querySelectorAll<HTMLElement>("[data-outline-id]") ?? []
+  ).find((candidate) => candidate.dataset.outlineId === nodeId);
+  const image = row?.querySelector<HTMLImageElement>(
+    ".notes-image-node-content img"
+  );
+  return image?.currentSrc || image?.src || undefined;
 }
 
 function notesDragPresentationSnapshot(
   prepared: PreparedOutlineSelectionDrag,
   workspace: Pick<NormalizedNotesWorkspace, "nodesById">,
-  representativeTitle?: string
+  representativeTitle?: string,
+  representativeThumbnailSrc?: string
 ): NotesDragPresentationSnapshot {
   const representativeNode = workspace.nodesById[prepared.nodeIds[0]];
   return Object.freeze({
     forestNodeIds: preparedOutlineSelectionDragForestNodeIds(prepared),
     representativeLabel: representativeNode
-      ? noteNodePresentationLabel(
+      ? noteNodeNavigationLabel(
           representativeNode,
           representativeTitle ?? representativeNode.title,
           "Untitled"
         )
-      : "Untitled"
+      : "Untitled",
+    representativeThumbnailSrc:
+      representativeNode?.nodeKind === "image"
+        ? representativeThumbnailSrc
+        : undefined
   });
 }
 
@@ -2630,6 +2649,13 @@ export function NotesOutlinePane() {
           zoomRootId: state.zoomRootId
         }
       );
+      const representativeThumbnailSrc =
+        visualPreparation.kind === "ready"
+          ? renderedDragImageSource(
+              dropSurfaceRef.current,
+              visualPreparation.nodeIds[0]
+            )
+          : undefined;
       if (visualPreparation.kind === "invalid") {
         outlineDragSessionRef.current = Object.freeze({
           kind: "selected-invalid",
@@ -2772,7 +2798,8 @@ export function NotesOutlinePane() {
               notesDragPresentationSnapshot(
                 promotedSession.prepared,
                 promotedSession.frozenContext.ownership.authority.workspace,
-                presentationTitleFor(promotedSession.prepared.nodeIds[0])
+                presentationTitleFor(promotedSession.prepared.nodeIds[0]),
+                representativeThumbnailSrc
               )
             );
           }
@@ -2787,7 +2814,8 @@ export function NotesOutlinePane() {
           notesDragPresentationSnapshot(
             startedSession.prepared,
             startedSession.frozenContext.ownership.authority.workspace,
-            presentationTitleFor(startedSession.prepared.nodeIds[0])
+            presentationTitleFor(startedSession.prepared.nodeIds[0]),
+            representativeThumbnailSrc
           )
         );
       } else if (visualPreparation.kind === "ready") {
@@ -2797,7 +2825,8 @@ export function NotesOutlinePane() {
           notesDragPresentationSnapshot(
             visualPreparation,
             presentationWorkspace,
-            presentationTitleFor(visualPreparation.nodeIds[0])
+            presentationTitleFor(visualPreparation.nodeIds[0]),
+            representativeThumbnailSrc
           )
         );
       }
@@ -2818,6 +2847,10 @@ export function NotesOutlinePane() {
         setActiveDragId(null);
         return;
       }
+      const representativeThumbnailSrc = renderedDragImageSource(
+        dropSurfaceRef.current,
+        visualPreparation.nodeIds[0]
+      );
       const ordinarySession = Object.freeze({
         kind: "ordinary",
         activeId: id
@@ -2829,7 +2862,8 @@ export function NotesOutlinePane() {
         notesDragPresentationSnapshot(
           visualPreparation,
           presentationWorkspace,
-          representativeTitle
+          representativeTitle,
+          representativeThumbnailSrc
         )
       );
     }
@@ -3317,6 +3351,7 @@ export function NotesOutlinePane() {
                 <NotesSelectionDragPreview
                   labels={draggedNodeLabels}
                   total={dragPresentation.forestNodeIds.length}
+                  thumbnailSrc={dragPresentation.representativeThumbnailSrc}
                 />
               </DragOverlay>
             )}

@@ -1976,6 +1976,131 @@ describe("Notes workspace", () => {
     });
   });
 
+  it("reuses a ready image URL in the drag preview without attachment work", async () => {
+    const user = userEvent.setup();
+    const imageNode = node({
+      id: "diagram-image",
+      nodeKind: "image",
+      sortKey: 1,
+      title: "diagram.png"
+    });
+    const imageAttachment = attachment({
+      id: "diagram-attachment",
+      nodeId: imageNode.id,
+      originalName: "diagram.png"
+    });
+    configureRepository(
+      [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
+      { [imageNode.id]: [imageAttachment] }
+    );
+    notesStoreMock.readAttachmentBytes.mockResolvedValue(
+      new Uint8Array([137, 80, 78, 71])
+    );
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      }
+    );
+    const createObjectURL = vi.fn(() => "blob:diagram");
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn()
+    });
+    renderNotesWorkspace();
+
+    await user.click(
+      await screen.findByRole("button", { name: "Load image diagram.png" })
+    );
+    await screen.findByRole("img", { name: "diagram.png" });
+    const imageBullet = screen.getByRole("button", {
+      name: "Zoom into diagram.png"
+    });
+    const targetBullet = screen.getByRole("button", { name: "Zoom into Target" });
+    mockOutlineRowRects();
+    const readsBeforeDrag = notesStoreMock.readAttachmentBytes.mock.calls.length;
+    const urlsBeforeDrag = createObjectURL.mock.calls.length;
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: imageBullet,
+      coords: { clientX: 9, clientY: 14 }
+    });
+    await user.pointer({
+      target: targetBullet,
+      coords: { clientX: 14, clientY: 42 }
+    });
+
+    expect(screen.getByTestId("notes-selection-drag-thumbnail")).toHaveAttribute(
+      "src",
+      "blob:diagram"
+    );
+    expect(notesStoreMock.readAttachmentBytes).toHaveBeenCalledTimes(
+      readsBeforeDrag
+    );
+    expect(createObjectURL).toHaveBeenCalledTimes(urlsBeforeDrag);
+
+    await user.keyboard("[Escape]");
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: targetBullet,
+      coords: { clientX: 14, clientY: 42 }
+    });
+  });
+
+  it("uses the filename while a dragged image is not loaded", async () => {
+    const user = userEvent.setup();
+    const imageNode = node({
+      id: "diagram-image",
+      nodeKind: "image",
+      sortKey: 1,
+      title: "diagram.png"
+    });
+    const imageAttachment = attachment({
+      id: "diagram-attachment",
+      nodeId: imageNode.id,
+      originalName: "diagram.png"
+    });
+    configureRepository(
+      [imageNode, node({ id: "target", sortKey: 2, title: "Target" })],
+      { [imageNode.id]: [imageAttachment] }
+    );
+    renderNotesWorkspace();
+    const imageBullet = await screen.findByRole("button", {
+      name: "Zoom into diagram.png"
+    });
+    const targetBullet = screen.getByRole("button", { name: "Zoom into Target" });
+    mockOutlineRowRects();
+
+    await user.pointer({
+      keys: "[MouseLeft>]",
+      target: imageBullet,
+      coords: { clientX: 9, clientY: 14 }
+    });
+    await user.pointer({
+      target: targetBullet,
+      coords: { clientX: 14, clientY: 42 }
+    });
+
+    const preview = screen.getByTestId("notes-selection-drag-preview");
+    expect(preview).toHaveTextContent("diagram.png");
+    expect(screen.queryByTestId("notes-selection-drag-thumbnail")).toBeNull();
+    expect(notesStoreMock.readAttachmentBytes).not.toHaveBeenCalled();
+
+    await user.keyboard("[Escape]");
+    await user.pointer({
+      keys: "[/MouseLeft]",
+      target: targetBullet,
+      coords: { clientX: 14, clientY: 42 }
+    });
+  });
+
   it("uses exact image filenames in drag announcements without rendering them visibly", async () => {
     const user = userEvent.setup();
     configureRepository([
