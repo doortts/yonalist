@@ -658,6 +658,26 @@ function OutlineNodeRowComponent({
     }
   };
 
+  const handleBulletKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const historyShortcut = resolveNotesHistoryShortcut({
+      key: event.key,
+      altKey: event.altKey,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      platform: detectOutlineShortcutPlatform()
+    });
+    if (historyShortcut) {
+      event.preventDefault();
+      void actions[historyShortcut]?.();
+      return;
+    }
+    if (dragEnabled) {
+      listeners?.onKeyDown?.(event);
+    }
+  };
+
   const handleTitleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     const historyShortcut = resolveNotesHistoryShortcut({
       key: event.key,
@@ -1079,6 +1099,7 @@ function OutlineNodeRowComponent({
           type="button"
           {...(dragEnabled ? attributes : {})}
           {...(dragEnabled ? listeners : {})}
+          onKeyDown={handleBulletKeyDown}
           aria-label={`Zoom into ${navigationLabel}`}
           disabled={disabled}
           data-collapsed={hasChildren && isCollapsed ? "true" : undefined}

@@ -573,4 +573,90 @@ describe("outline row memoization", () => {
     expect(captured!.actions.getNavigationVersion!()).toBe(focusedVersion);
   });
 
+  it("undoes one completed keyboard drop from the still-focused bullet", async () => {
+    const before = [
+      node({ id: "first", sortKey: 1, title: "First" }),
+      node({ id: "second", sortKey: 2, title: "Second" })
+    ];
+    const after = [
+      node({ id: "second", sortKey: 1, title: "Second" }),
+      node({ id: "first", sortKey: 2, title: "First" })
+    ];
+    let active = before;
+    let moveEntryId: string | null = null;
+    const store = repository(before);
+    vi.mocked(store.loadWorkspace).mockImplementation(async () =>
+      workspace(active)
+    );
+    const moveNode = vi.mocked(store.moveNode);
+    moveNode.mockImplementation(async (_vaultRoot, _input, context) => {
+      active = after;
+      moveEntryId = context?.entryId ?? null;
+      return {
+        workspace: workspace(after),
+        historyEntryId: moveEntryId,
+        canUndo: true,
+        canRedo: false
+      };
+    });
+    const undo = vi.mocked(store.undo!);
+    undo.mockImplementation(async () => {
+      active = before;
+      return {
+        workspace: workspace(before),
+        replayedEntryId: moveEntryId,
+        canUndo: false,
+        canRedo: true
+      };
+    });
+    vi.spyOn(window.navigator, "platform", "get").mockReturnValue("MacIntel");
+    const user = userEvent.setup();
+    render(<Harness store={store} />);
+    await waitFor(() => expect(captured?.status).toBe("ready"));
+    const rectangle = (top: number) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        left: 0,
+        right: 640,
+        bottom: top + 28,
+        width: 640,
+        height: 28,
+        toJSON: () => ({})
+      }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        const row = this.closest<HTMLElement>(".notes-node");
+        const rows = Array.from(document.querySelectorAll(".notes-node"));
+        return rectangle(row ? rows.indexOf(row) * 28 : 0);
+      }
+    );
+    const bullet = await screen.findByRole("button", {
+      name: "Zoom into Second"
+    });
+
+    bullet.focus();
+    await user.keyboard("[Space][ArrowUp][Space]");
+    await waitFor(() => expect(moveNode).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        Array.from(document.querySelectorAll<HTMLElement>("[data-outline-id]")).map(
+          (row) => row.dataset.outlineId
+        )
+      ).toEqual(["second", "first"])
+    );
+    expect(bullet).toHaveFocus();
+
+    expect(fireEvent.keyDown(bullet, { key: "z", metaKey: true })).toBe(false);
+    await waitFor(() => expect(undo).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(
+        Array.from(document.querySelectorAll<HTMLElement>("[data-outline-id]")).map(
+          (row) => row.dataset.outlineId
+        )
+      ).toEqual(["first", "second"])
+    );
+  });
+
 });
