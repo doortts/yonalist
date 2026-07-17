@@ -1,6 +1,6 @@
 # Debug Session Token Storage Design
 
-**Status:** Awaiting written-spec review
+**Status:** Approved for implementation
 
 ## Goal
 

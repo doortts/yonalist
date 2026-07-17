@@ -1,6 +1,6 @@
 # Notes Drag Preview Card and Image Thumbnail Design
 
-**Status:** Awaiting written-spec review
+**Status:** Approved for implementation
 
 ## Goal
 
