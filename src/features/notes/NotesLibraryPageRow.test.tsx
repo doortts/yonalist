@@ -28,6 +28,7 @@ function node(overrides: Partial<NoteNode> = {}): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }

@@ -115,6 +115,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }
@@ -3106,7 +3107,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Renamed project",
-        note: "Project note"
+        note: "Project note",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
   });
@@ -3127,7 +3129,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "project",
       title: "Project latest",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
   });
 
@@ -3175,7 +3178,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
       id: "project",
       title: "Project next",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Project next", user);
     expect(
@@ -3215,7 +3219,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
       id: "project",
       title: "Newest visible title",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(title).toHaveValue("Newest visible title");
     await waitFor(() => expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(2));
@@ -3246,7 +3251,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(2, "/vault", {
       id: "project",
       title: "Recovered project",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     const savedMenu = await openNodeMenu("Recovered project", user);
     expect(
@@ -3286,7 +3292,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenNthCalledWith(3, "/vault", {
       id: "project",
       title: "Failed project draft",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     const savedProjectMenu = await openNodeMenu("Failed project draft", user);
     expect(
@@ -3317,7 +3324,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Project",
-        note: "Updated context"
+        note: "Updated context",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
   });
@@ -3346,7 +3354,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Project",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
     expect(getTitleInput("Project")).toBeInTheDocument();
@@ -3402,7 +3411,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Project",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
   });
@@ -3429,7 +3439,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "outside",
       title: "Outside branch",
-      note: "Committed IME note"
+      note: "Committed IME note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).toHaveBeenCalledTimes(1);
     await act(async () => vi.advanceTimersByTimeAsync(300));
@@ -3549,7 +3560,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "project",
       title: "Project",
-      note: "Latest note"
+      note: "Latest note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
   });
 
@@ -3568,7 +3580,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Submitted title",
-        note: "Project note"
+        note: "Project note",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
 
@@ -3668,7 +3681,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "source",
         title: "alpha omega",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
@@ -3716,7 +3730,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "source",
       title: "alphaXYZomega!",
-      note: "old note"
+      note: "old note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
 
@@ -7590,7 +7605,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "milestone",
       title: "Milestone edited",
-      note: ""
+      note: "",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
       id: "milestone",
@@ -7683,7 +7699,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "project",
       title: "Project edited",
-      note: "Project note"
+      note: "Project note",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).toHaveBeenCalledOnce();
     expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
@@ -7839,7 +7856,8 @@ describe("Notes workspace", () => {
     expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
       id: "empty",
       title: "",
-      note: ""
+      note: "",
+      imageOffsetUtf16: 0
     }, historyContextMatcher());
     expect(notesStoreMock.removeEmptyNode).not.toHaveBeenCalled();
     screen.getByRole("button", { name: "All notes" }).focus();
@@ -7960,7 +7978,8 @@ describe("Notes workspace", () => {
       expect(notesStoreMock.updateNode).toHaveBeenCalledWith("/vault", {
         id: "project",
         title: "Project",
-        note: "Project note revised"
+        note: "Project note revised",
+        imageOffsetUtf16: 0
       }, historyContextMatcher())
     );
   });

@@ -44,6 +44,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }
@@ -228,7 +229,12 @@ function createHarness(options: HarnessOptions = {}): Harness {
       try {
         const response = await context.repository.updateNode(
           context.vaultRoot,
-          { id: nodeId, title: draft.title, note: draft.note },
+          {
+            id: nodeId,
+            title: draft.title,
+            note: draft.note,
+            imageOffsetUtf16: 0
+          },
           historyContext
         );
         return {
@@ -330,7 +336,12 @@ describe("NotesDraftEngine", () => {
       expect(store.updateNode).toHaveBeenCalledOnce();
       expect(store.updateNode).toHaveBeenCalledWith(
         "/vault",
-        { id: "root", title: "latest draft", note: "latest note" },
+        {
+          id: "root",
+          title: "latest draft",
+          note: "latest note",
+          imageOffsetUtf16: 0
+        },
         textHistoryContext
       );
       expect(engine.getDraftsSnapshot()).toEqual({});
@@ -422,7 +433,12 @@ describe("NotesDraftEngine", () => {
       expect(calls[1]?.[2]?.entryId).not.toBe(calls[0]?.[2]?.entryId);
       expect(calls[1]).toEqual([
         "/vault",
-        { id: "root", title: "saved on retry", note: "" },
+        {
+          id: "root",
+          title: "saved on retry",
+          note: "",
+          imageOffsetUtf16: 0
+        },
         textHistoryContext
       ]);
       expect(engine.getDraftsSnapshot()).toEqual({});
@@ -554,7 +570,12 @@ describe("NotesDraftEngine", () => {
       const calls = vi.mocked(store.updateNode).mock.calls;
       expect(calls[1]).toEqual([
         "/vault",
-        { id: "root", title: "saved on unmount", note: "" },
+        {
+          id: "root",
+          title: "saved on unmount",
+          note: "",
+          imageOffsetUtf16: 0
+        },
         textHistoryContext
       ]);
       expect(close).toHaveBeenCalled();

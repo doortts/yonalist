@@ -113,6 +113,7 @@ const workspace: NotesWorkspace = {
       sortKey: 1024,
       title: "Page",
       note: "Supporting note",
+      imageOffsetUtf16: 0,
       layoutMode: "bullets",
       isCollapsed: false,
       isStarred: false,
@@ -2136,7 +2137,8 @@ describe("notesStore in Tauri", () => {
     const updateInput: UpdateNoteNodeInput = {
       id: nodeId,
       title: "Updated page",
-      note: "Context"
+      note: "Context",
+      imageOffsetUtf16: 3
     };
     const splitInput: SplitNoteNodeInput = {
       id: nodeId,
@@ -2309,14 +2311,14 @@ describe("notesStore in Tauri", () => {
     await expect(
       notesUpdateNode(
         vaultPath,
-        { id: nodeId, title: "Journaled", note: "" },
+        { id: nodeId, title: "Journaled", note: "", imageOffsetUtf16: 0 },
         historyContext
       )
     ).resolves.toEqual(normalizedMutationResult);
 
     expect(invokeMock).toHaveBeenCalledWith("notes_update_node", {
       vaultPath,
-      input: { id: nodeId, title: "Journaled", note: "" },
+      input: { id: nodeId, title: "Journaled", note: "", imageOffsetUtf16: 0 },
       historyContext
     });
   });
@@ -2332,7 +2334,7 @@ describe("notesStore in Tauri", () => {
     await expect(
       notesUpdateNode(
         vaultPath,
-        { id: nodeId, title: "Invalid", note: "" },
+        { id: nodeId, title: "Invalid", note: "", imageOffsetUtf16: 0 },
         historyContext
       )
     ).rejects.toMatchObject({
@@ -2343,7 +2345,7 @@ describe("notesStore in Tauri", () => {
     await expect(
       notesUpdateNode(
         vaultPath,
-        { id: nodeId, title: "Mismatched", note: "" },
+        { id: nodeId, title: "Mismatched", note: "", imageOffsetUtf16: 0 },
         historyContext
       )
     ).rejects.toMatchObject({
@@ -2525,7 +2527,7 @@ describe("notesStore in Tauri", () => {
     await expect(
       notesUpdateNode(
         vaultPath,
-        { id: nodeId, title: "Journaled", note: "" },
+        { id: nodeId, title: "Journaled", note: "", imageOffsetUtf16: 0 },
         historyContext
       )
     ).resolves.toEqual(normalizedMutationResult);
@@ -2549,7 +2551,7 @@ describe("notesStore in Tauri", () => {
         "notes_update_node",
         {
           vaultPath,
-          input: { id: nodeId, title: "Journaled", note: "" },
+          input: { id: nodeId, title: "Journaled", note: "", imageOffsetUtf16: 0 },
           historyContext
         }
       ],

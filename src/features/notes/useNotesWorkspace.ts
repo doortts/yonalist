@@ -1126,6 +1126,7 @@ export function samePreparedMoveNode(
       prepared.sortKey === current.sortKey &&
       prepared.title === current.title &&
       prepared.note === current.note &&
+      prepared.imageOffsetUtf16 === current.imageOffsetUtf16 &&
       prepared.layoutMode === current.layoutMode &&
       prepared.isCollapsed === current.isCollapsed &&
       prepared.isStarred === current.isStarred &&
@@ -3328,7 +3329,9 @@ export function useNotesWorkspace({
             {
               id: nodeId,
               title: draft.title,
-              note: draft.note
+              note: draft.note,
+              imageOffsetUtf16:
+                confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
             },
             ...historyArguments(historyContext)
           )

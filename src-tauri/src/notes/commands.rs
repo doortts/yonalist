@@ -3017,7 +3017,7 @@ fn import_prepared_image_node_batch(
         };
         nodes.push(NewImageNode {
             id: node_id,
-            title: prepared.original_name.clone(),
+            title: String::new(),
             attachment,
         });
     }
@@ -7824,8 +7824,9 @@ mod tests {
             .expect("imported image node");
         assert_eq!(node.node_kind, NoteNodeKind::Image);
         assert_eq!(node.parent_id.as_deref(), parent_id);
-        assert_eq!(node.title, title);
+        assert_eq!(node.title, "");
         assert_eq!(node.note, "");
+        assert_eq!(node.image_offset_utf16, 0);
         let attachments = workspace
             .attachments_by_node_id
             .get(node_id)
@@ -7848,14 +7849,16 @@ mod tests {
             .find(|node| node.id == node_id)
             .expect("image node");
         assert_eq!(node.node_kind, NoteNodeKind::Image);
-        assert_eq!(node.title, title);
+        assert_eq!(node.title, "");
         assert_eq!(node.note, "");
+        assert_eq!(node.image_offset_utf16, 0);
         let attachments = workspace
             .attachments_by_node_id
             .get(node_id)
             .expect("image node attachment");
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0].node_id, node_id);
+        assert_eq!(attachments[0].original_name, title);
         assert_eq!(attachments[0].relative_path, relative_path);
         &attachments[0]
     }
@@ -11016,6 +11019,7 @@ mod tests {
                     id: ROOT_ID.to_string(),
                     title: format!("Root updated for {label}"),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
                 Some(NotesHistoryContext {
                     session_id: SESSION_ID.to_string(),
@@ -12657,6 +12661,7 @@ mod tests {
                 sort_key: 1024,
                 title: "Page".to_string(),
                 note: "Supporting note".to_string(),
+                image_offset_utf16: 0,
                 layout_mode: NoteLayoutMode::Bullets,
                 is_collapsed: false,
                 is_starred: false,
@@ -12679,6 +12684,7 @@ mod tests {
                     "sortKey": 1024,
                     "title": "Page",
                     "note": "Supporting note",
+                    "imageOffsetUtf16": 0,
                     "layoutMode": "bullets",
                     "isCollapsed": false,
                     "isStarred": false,
@@ -12727,6 +12733,7 @@ mod tests {
                 id: ROOT_ID.to_string(),
                 title: "Updated page".to_string(),
                 note: "Context".to_string(),
+                image_offset_utf16: 0,
             },
             None,
         )

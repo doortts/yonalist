@@ -91,6 +91,7 @@ function appTestNote(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteN
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }

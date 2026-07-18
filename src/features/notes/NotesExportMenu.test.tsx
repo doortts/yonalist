@@ -131,7 +131,8 @@ function note(
     updatedAt: "2026-07-10T00:00:00Z",
     deletedAt: null,
     archivedAt: null,
-    archiveRootId: null
+    archiveRootId: null,
+    imageOffsetUtf16: 0
   };
 }
 
@@ -694,7 +695,8 @@ describe("NotesExportMenu", () => {
       {
         id: "selected",
         title: "Edited child",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       },
       expect.objectContaining({ commandKind: "text" })
     );
@@ -772,7 +774,8 @@ describe("NotesExportMenu", () => {
       {
         id: "selected",
         title: "Unsaved child",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       },
       expect.objectContaining({
         historyEpoch: "history-epoch",

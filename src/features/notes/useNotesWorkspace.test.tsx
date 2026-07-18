@@ -143,6 +143,7 @@ function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }
@@ -5830,7 +5831,8 @@ describe("useNotesWorkspace", () => {
       {
         id: "root",
         title: "prefixsuffix",
-        note: "saved note"
+        note: "saved note",
+        imageOffsetUtf16: 0
       },
       historyContext("text")
     );
@@ -7026,7 +7028,12 @@ describe("useNotesWorkspace", () => {
     await act(async () => result.current.actions.deleteNode("root"));
     await act(async () => result.current.actions.restoreNode("root"));
 
-    expect(store.updateNode).toHaveBeenCalledWith("/vault", { id: "root", title: "Title", note: "Note" }, historyContext("update"));
+    expect(store.updateNode).toHaveBeenCalledWith("/vault", {
+      id: "root",
+      title: "Title",
+      note: "Note",
+      imageOffsetUtf16: 0
+    }, historyContext("update"));
     expect(store.splitNode).toHaveBeenCalledWith("/vault", { id: "root", newNodeId: "split", prefix: "pre", suffix: "post" }, historyContext("split"));
     expect(store.moveNode).toHaveBeenCalledWith("/vault", { id: "child", parentId: null, afterId: "root" }, historyContext("move"));
     expect(store.toggleComplete).toHaveBeenCalledWith("/vault", "root", historyContext("complete"));
@@ -11377,7 +11384,8 @@ describe("useNotesWorkspace", () => {
       {
         id: "old-root",
         title: "old draft",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       },
       historyContext("text")
     );
@@ -11525,7 +11533,8 @@ describe("useNotesWorkspace", () => {
       {
         id: "old-root",
         title: "Recovered old draft",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       },
       historyContext("text")
     );
@@ -11771,13 +11780,13 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       1,
       "/vault-a",
-      { id: "before-a1", title: "A1", note: "" },
+      { id: "before-a1", title: "A1", note: "", imageOffsetUtf16: 0 },
       historyContext("update")
     );
     expect(store.updateNode).toHaveBeenNthCalledWith(
       2,
       "/vault-a",
-      { id: "a1-response", title: "A3", note: "" },
+      { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 },
       historyContext("update")
     );
     expect(invocations).toEqual([
@@ -11845,7 +11854,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       2,
       "/vault-b",
-      { id: "b-root", title: "B1", note: "" },
+      { id: "b-root", title: "B1", note: "", imageOffsetUtf16: 0 },
       historyContext("update")
     );
 
@@ -11879,7 +11888,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       3,
       "/vault-a",
-      { id: "a1-response", title: "A3", note: "" },
+      { id: "a1-response", title: "A3", note: "", imageOffsetUtf16: 0 },
       historyContext("update")
     );
     expect(result.current.state.nodesById["a3-updated"]).toBeDefined();
@@ -11939,7 +11948,7 @@ describe("useNotesWorkspace", () => {
     expect(store.updateNode).toHaveBeenNthCalledWith(
       2,
       "/vault-a",
-      { id: "root", title: "committed-A2", note: "" },
+      { id: "root", title: "committed-A2", note: "", imageOffsetUtf16: 0 },
       historyContext("update")
     );
   });
@@ -12218,7 +12227,8 @@ describe("useNotesWorkspace", () => {
       {
         id: "second-child",
         title: "Saved before archive",
-        note: ""
+        note: "",
+        imageOffsetUtf16: 0
       },
       historyContext("text")
     );

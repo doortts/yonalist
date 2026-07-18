@@ -19,6 +19,7 @@ export interface NoteNode {
   sortKey: number;
   title: string;
   note: string;
+  imageOffsetUtf16: number;
   layoutMode: NoteLayoutMode;
   isCollapsed: boolean;
   isStarred: boolean;
@@ -298,6 +299,7 @@ export interface UpdateNoteNodeInput {
   id: NoteId;
   title: string;
   note: string;
+  imageOffsetUtf16: number;
 }
 
 export interface MoveNoteNodeInput {
@@ -796,6 +798,7 @@ const NOTE_NODE_KEYS = [
   "sortKey",
   "title",
   "note",
+  "imageOffsetUtf16",
   "layoutMode",
   "isCollapsed",
   "isStarred",
@@ -823,6 +826,10 @@ export function isNoteNode(value: unknown): value is NoteNode {
     Number.isSafeInteger(value.sortKey) &&
     typeof value.title === "string" &&
     typeof value.note === "string" &&
+    typeof value.imageOffsetUtf16 === "number" &&
+    Number.isSafeInteger(value.imageOffsetUtf16) &&
+    value.imageOffsetUtf16 >= 0 &&
+    (value.nodeKind === "image" || value.imageOffsetUtf16 === 0) &&
     value.layoutMode === "bullets" &&
     typeof value.isCollapsed === "boolean" &&
     typeof value.isStarred === "boolean" &&

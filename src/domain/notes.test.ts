@@ -64,6 +64,7 @@ function makeNoteNode(overrides: Partial<NoteNode> = {}): NoteNode {
     deletedAt: null,
     archivedAt: null,
     archiveRootId: null,
+    imageOffsetUtf16: 0,
     ...overrides
   };
 }
@@ -330,6 +331,12 @@ describe("Notes domain contract", () => {
     expect(isNoteNode({ ...makeNoteNode(), parentId: 42 })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), layoutMode: "board" })).toBe(false);
     expect(isNoteNode({ ...makeNoteNode(), updatedAt: null })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), imageOffsetUtf16: 1.5 })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), imageOffsetUtf16: -1 })).toBe(false);
+    expect(isNoteNode({ ...makeNoteNode(), imageOffsetUtf16: 1 })).toBe(false);
+    expect(
+      isNoteNode({ ...makeNoteNode(), imageOffsetUtf16: Number.MAX_SAFE_INTEGER + 1 })
+    ).toBe(false);
   });
 
   it("requires an own text or image node kind", () => {
@@ -580,10 +587,12 @@ describe("Notes domain contract", () => {
     const { note: _note, ...missingNote } = makeNoteNode();
     const { archivedAt: _archivedAt, ...missingArchivedAt } = makeNoteNode();
     const { archiveRootId: _archiveRootId, ...missingArchiveRootId } = makeNoteNode();
+    const { imageOffsetUtf16: _imageOffsetUtf16, ...missingImageOffsetUtf16 } = makeNoteNode();
 
     expect(isNoteNode(missingNote)).toBe(false);
     expect(isNoteNode(missingArchivedAt)).toBe(false);
     expect(isNoteNode(missingArchiveRootId)).toBe(false);
+    expect(isNoteNode(missingImageOffsetUtf16)).toBe(false);
     expect(isNoteNode(null)).toBe(false);
   });
 

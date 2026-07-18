@@ -23,7 +23,7 @@ pub(crate) const HISTORY_MAX_BYTES: i64 = 50 * 1024 * 1024;
 
 const NODE_JSON_NEW: &str = "json_object(\
   'id', NEW.id, 'parent_id', NEW.parent_id, 'sort_key', NEW.sort_key, \
-  'title', NEW.title, 'note', NEW.note, 'layout_mode', NEW.layout_mode, \
+  'title', NEW.title, 'note', NEW.note, 'image_offset_utf16', NEW.image_offset_utf16, 'layout_mode', NEW.layout_mode, \
   'is_collapsed', NEW.is_collapsed, 'is_starred', NEW.is_starred, \
   'completed_at', NEW.completed_at, 'created_at', NEW.created_at, \
   'updated_at', NEW.updated_at, 'deleted_at', NEW.deleted_at, \
@@ -31,7 +31,7 @@ const NODE_JSON_NEW: &str = "json_object(\
   'archive_root_id', NEW.archive_root_id, 'nodeKind', NEW.node_kind)";
 const NODE_JSON_OLD: &str = "json_object(\
   'id', OLD.id, 'parent_id', OLD.parent_id, 'sort_key', OLD.sort_key, \
-  'title', OLD.title, 'note', OLD.note, 'layout_mode', OLD.layout_mode, \
+  'title', OLD.title, 'note', OLD.note, 'image_offset_utf16', OLD.image_offset_utf16, 'layout_mode', OLD.layout_mode, \
   'is_collapsed', OLD.is_collapsed, 'is_starred', OLD.is_starred, \
   'completed_at', OLD.completed_at, 'created_at', OLD.created_at, \
   'updated_at', OLD.updated_at, 'deleted_at', OLD.deleted_at, \
@@ -1109,6 +1109,7 @@ struct NodeSnapshot {
     sort_key: i64,
     title: String,
     note: String,
+    image_offset_utf16: i64,
     layout_mode: String,
     is_collapsed: i64,
     is_starred: i64,
@@ -1573,22 +1574,23 @@ fn apply_node_state(
     transaction
         .execute(
             "INSERT INTO notes_nodes(\
-               id, parent_id, sort_key, title, note, layout_mode, is_collapsed, is_starred, \
+               id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, is_starred, \
                completed_at, created_at, updated_at, deleted_at, deleted_batch_id, archived_at, \
                archive_root_id, node_kind\
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17) \
              ON CONFLICT(id) DO UPDATE SET \
                parent_id = excluded.parent_id, sort_key = excluded.sort_key, title = excluded.title, \
-               note = excluded.note, layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
+               note = excluded.note, image_offset_utf16 = excluded.image_offset_utf16, \
+               layout_mode = excluded.layout_mode, is_collapsed = excluded.is_collapsed, \
                is_starred = excluded.is_starred, completed_at = excluded.completed_at, \
                created_at = excluded.created_at, updated_at = excluded.updated_at, deleted_at = excluded.deleted_at, \
                deleted_batch_id = excluded.deleted_batch_id, archived_at = excluded.archived_at, \
                archive_root_id = excluded.archive_root_id, node_kind = excluded.node_kind",
             params![
-                node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode,
-                node.is_collapsed, node.is_starred, node.completed_at, node.created_at,
-                node.updated_at, node.deleted_at, node.deleted_batch_id, node.archived_at,
-                node.archive_root_id, node.node_kind.as_str()
+                node.id, node.parent_id, node.sort_key, node.title, node.note,
+                node.image_offset_utf16, node.layout_mode, node.is_collapsed, node.is_starred,
+                node.completed_at, node.created_at, node.updated_at, node.deleted_at,
+                node.deleted_batch_id, node.archived_at, node.archive_root_id, node.node_kind.as_str()
             ],
         )
         .map_err(|error| format!("Could not restore a Note row during history replay: {error}"))?;
@@ -2761,6 +2763,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             })
@@ -2792,6 +2795,51 @@ mod tests {
                 .title,
             "After"
         );
+    }
+
+    #[test]
+    fn notes_history_replays_image_offset() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let mut connection = connect_empty_history_db(temp_dir.path().to_str().expect("path"));
+        insert_history_image_node(&connection, NODE_ID, 1024);
+        insert_history_attachment(&connection, 1, NODE_ID);
+        let context = history_context(1, "updateImageOffset");
+
+        journal(&mut connection, &context, |connection| {
+            update_node(
+                connection,
+                UpdateNodeInput {
+                    id: NODE_ID.to_string(),
+                    title: "A😀B".to_string(),
+                    note: String::new(),
+                    image_offset_utf16: 3,
+                },
+            )
+        })
+        .expect("record image offset");
+        let audit_json: String = connection
+            .query_row(
+                "SELECT after_json FROM notes_history_changes WHERE entry_id = ?1 AND table_name = 'notes_nodes'",
+                [&context.entry_id],
+                |row| row.get(0),
+            )
+            .expect("read image audit");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&audit_json).expect("audit JSON")
+                ["image_offset_utf16"],
+            3
+        );
+
+        undo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("undo image offset");
+        redo(&mut connection, SESSION_ID, NotesWorkspaceScope::Active).expect("redo image offset");
+        let restored: i64 = connection
+            .query_row(
+                "SELECT image_offset_utf16 FROM notes_nodes WHERE id = ?1",
+                [NODE_ID],
+                |row| row.get(0),
+            )
+            .expect("read replayed offset");
+        assert_eq!(restored, 3);
     }
 
     #[test]
@@ -3196,6 +3244,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "After #after 07/12/2026".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3290,6 +3339,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: filename.to_string(),
                 note: "Before #before 07/15/2026".to_string(),
+                image_offset_utf16: 0,
             },
         )
         .expect("seed image note projections");
@@ -3302,6 +3352,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: filename.to_string(),
                     note: "After #after 07/16/2026".to_string(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3402,6 +3453,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3414,6 +3466,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3445,6 +3498,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3464,6 +3518,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3504,6 +3559,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session B journaled".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3516,6 +3572,7 @@ mod tests {
                     id: CHILD_ID.to_string(),
                     title: "Session A first burst".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3539,6 +3596,7 @@ mod tests {
                     id: CHILD_ID.to_string(),
                     title: "Session A coalesced burst".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3582,6 +3640,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Journaled".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3593,6 +3652,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: "Newer unjournaled state".to_string(),
                 note: String::new(),
+                image_offset_utf16: 0,
             },
         )
         .expect("newer unjournaled update");
@@ -3629,6 +3689,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Updated root".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3691,6 +3752,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Updated root".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3874,6 +3936,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session A".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3886,6 +3949,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session B".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3898,6 +3962,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "Session A late burst".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3943,6 +4008,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: large_before,
                 note: String::new(),
+                image_offset_utf16: 0,
             },
         )
         .expect("large seed");
@@ -3954,6 +4020,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: large_middle,
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -3966,6 +4033,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: large_after,
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -4020,6 +4088,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: replacement_title,
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         });
@@ -4240,6 +4309,7 @@ mod tests {
                     id: CHILD_ID.to_string(),
                     title: "Renamed".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         });
@@ -4414,7 +4484,7 @@ mod tests {
     fn node_audit_json(id: &str, title: &str, is_collapsed: i64, is_starred: i64) -> String {
         format!(
             "{{\"id\":\"{id}\",\"parent_id\":null,\"sort_key\":1024,\"title\":\"{title}\",\
-              \"note\":\"\",\"layout_mode\":\"bullets\",\"is_collapsed\":{is_collapsed},\
+              \"note\":\"\",\"image_offset_utf16\":0,\"layout_mode\":\"bullets\",\"is_collapsed\":{is_collapsed},\
               \"is_starred\":{is_starred},\"completed_at\":null,\
               \"created_at\":\"2026-07-10T00:00:00.000Z\",\
               \"updated_at\":\"2026-07-10T00:00:00.000Z\",\"deleted_at\":null,\
@@ -4564,6 +4634,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             })
@@ -4611,6 +4682,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "After".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -4681,6 +4753,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: "After".to_string(),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
             )
         })
@@ -4713,6 +4786,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             })
@@ -4743,6 +4817,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: "Replacement".to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             },
@@ -4783,6 +4858,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             })
@@ -4894,6 +4970,7 @@ mod tests {
                         id: NODE_ID.to_string(),
                         title: title.to_string(),
                         note: String::new(),
+                        image_offset_utf16: 0,
                     },
                 )
             })

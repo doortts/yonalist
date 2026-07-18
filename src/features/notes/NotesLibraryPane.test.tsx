@@ -28,7 +28,8 @@ function deletedRoot(): NoteNode {
     updatedAt: "2026-07-11T00:00:00Z",
     deletedAt: "2026-07-11T02:00:00Z",
     archivedAt: null,
-    archiveRootId: null
+    archiveRootId: null,
+    imageOffsetUtf16: 0
   };
 }
 

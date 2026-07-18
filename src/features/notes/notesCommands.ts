@@ -425,7 +425,12 @@ export async function splitNodeCommand(
           run: async () => {
             const response = await context.repository.updateNode(
               context.vaultRoot,
-              { id: nodeId, ...inlineDraft },
+              {
+                id: nodeId,
+                ...inlineDraft,
+                imageOffsetUtf16:
+                  confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+              },
               ...historyArguments(inlineTextContext)
             );
             const mutation = unwrapNotesMutation(response);
@@ -526,7 +531,9 @@ export async function updateNodeCommand(
       context.vaultRoot,
       {
         id: nodeId,
-        ...patch
+        ...patch,
+        imageOffsetUtf16:
+          confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
       },
       ...historyArguments(historyContext)
     ));
@@ -581,7 +588,12 @@ export async function moveNodeCommand(
         run: async () => {
           const response = await context.repository.updateNode(
             context.vaultRoot,
-            { id: input.id, ...inlineDraft },
+            {
+              id: input.id,
+              ...inlineDraft,
+              imageOffsetUtf16:
+                confirmedState(context).nodesById[input.id]!.imageOffsetUtf16
+            },
             ...historyArguments(inlineTextContext)
           );
           const mutation = unwrapNotesMutation(response);
@@ -1588,7 +1600,12 @@ export async function removeEmptyNodeCommand(
         run: async () => {
           const response = await context.repository.updateNode(
             context.vaultRoot,
-            { id: nodeId, ...inlineDraft },
+            {
+              id: nodeId,
+              ...inlineDraft,
+              imageOffsetUtf16:
+                confirmedState(context).nodesById[nodeId]!.imageOffsetUtf16
+            },
             ...historyArguments(inlineTextContext)
           );
           const mutation = unwrapNotesMutation(response);

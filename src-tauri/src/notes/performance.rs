@@ -686,6 +686,7 @@ fn measure_vault(vault: &mut PerfVault) -> Vec<Measurement> {
                         id: vault.archive_root_id.clone(),
                         title: updated_title,
                         note: vault.root_note.clone(),
+                        image_offset_utf16: 0,
                     },
                     fixed_today(),
                 )

@@ -57,6 +57,7 @@ pub struct NoteNode {
     pub sort_key: i64,
     pub title: String,
     pub note: String,
+    pub image_offset_utf16: i64,
     pub layout_mode: NoteLayoutMode,
     pub is_collapsed: bool,
     pub is_starred: bool,
@@ -613,6 +614,7 @@ pub struct UpdateNodeInput {
     pub id: NoteId,
     pub title: String,
     pub note: String,
+    pub image_offset_utf16: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -925,7 +927,11 @@ impl CreateNodeInput {
 
 impl UpdateNodeInput {
     pub(crate) fn validate(&self) -> Result<(), String> {
-        validate_note_id(&self.id)
+        validate_note_id(&self.id)?;
+        if self.image_offset_utf16 < 0 {
+            return Err("A Notes image offset must not be negative.".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -1009,7 +1015,7 @@ mod tests {
         NoteNodeKind, NoteSearchMatchedField, NoteSearchResult, NoteSearchScope, NoteSearchTag,
         NoteStructuredSearchQuery, NoteTagFilter, NoteTagPrefix, NoteTagSummary, NotesExportFormat,
         NotesExportResult, NotesHistoryContext, NotesHistoryReplayOutcome, NotesHistoryState,
-        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope,
+        NotesMutationResult, NotesWorkspace, NotesWorkspaceScope, UpdateNodeInput,
     };
     use serde_json::json;
 
@@ -1036,6 +1042,7 @@ mod tests {
             sort_key: 1024,
             title: "Root".to_string(),
             note: String::new(),
+            image_offset_utf16: 0,
             layout_mode: NoteLayoutMode::Bullets,
             is_collapsed: false,
             is_starred: true,
@@ -1064,6 +1071,28 @@ mod tests {
                 "accepted invalid ID {invalid}"
             );
         }
+    }
+
+    #[test]
+    fn update_node_input_requires_an_image_offset() {
+        assert!(serde_json::from_value::<UpdateNodeInput>(json!({
+            "id": NODE_ID,
+            "title": "A😀B",
+            "note": ""
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn image_offset_rejects_a_split_surrogate() {
+        assert!(
+            crate::notes::schema::validate_image_offset_utf16("A😀B", NoteNodeKind::Image, 2,)
+                .is_err()
+        );
+        assert!(
+            crate::notes::schema::validate_image_offset_utf16("A😀B", NoteNodeKind::Image, 3,)
+                .is_ok()
+        );
     }
 
     #[test]

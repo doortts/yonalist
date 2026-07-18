@@ -707,6 +707,7 @@ pub(crate) fn open_notes_export_db(vault_path: &str) -> Result<Connection, Strin
 }
 
 fn initialize_notes_db(connection: &mut Connection) -> Result<(), String> {
+    crate::notes::schema::install_notes_sql_functions(connection)?;
     let preflight_version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| format!("Could not read the Notes schema version: {error}"))?;
@@ -918,6 +919,7 @@ struct StoredNode {
     sort_key: i64,
     title: String,
     note: String,
+    image_offset_utf16: i64,
     layout_mode: String,
     is_collapsed: bool,
     is_starred: bool,
@@ -936,6 +938,7 @@ fn stored_node_from_row(row: &Row<'_>) -> rusqlite::Result<StoredNode> {
         sort_key: row.get(2)?,
         title: row.get(3)?,
         note: row.get(4)?,
+        image_offset_utf16: row.get(14)?,
         layout_mode: row.get(5)?,
         is_collapsed: row.get::<_, i64>(6)? != 0,
         is_starred: row.get::<_, i64>(7)? != 0,
@@ -987,6 +990,7 @@ fn note_node_from_row(row: &Row<'_>) -> rusqlite::Result<NoteNode> {
         sort_key: row.get(2)?,
         title: row.get(3)?,
         note: row.get(4)?,
+        image_offset_utf16: row.get(15)?,
         layout_mode,
         is_collapsed: row.get::<_, i64>(6)? != 0,
         is_starred: row.get::<_, i64>(7)? != 0,
@@ -1011,6 +1015,7 @@ struct AuditNodeRow {
     sort_key: i64,
     title: String,
     note: String,
+    image_offset_utf16: i64,
     layout_mode: String,
     is_collapsed: i64,
     is_starred: i64,
@@ -1039,6 +1044,7 @@ pub(crate) fn note_node_from_audit_json(after_json: &str) -> Result<NoteNode, St
         sort_key: row.sort_key,
         title: row.title,
         note: row.note,
+        image_offset_utf16: row.image_offset_utf16,
         layout_mode,
         is_collapsed: row.is_collapsed != 0,
         is_starred: row.is_starred != 0,
@@ -1586,7 +1592,7 @@ pub(crate) fn load_workspace(
     const ACTIVE_SQL: &str =
         "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                 is_starred, completed_at, created_at, updated_at, deleted_at, \
-                archived_at, archive_root_id, node_kind \
+                archived_at, archive_root_id, node_kind, image_offset_utf16 \
          FROM notes_nodes WHERE deleted_at IS NULL AND archived_at IS NULL \
          ORDER BY CASE WHEN parent_id IS NULL THEN 0 ELSE 1 END, parent_id, sort_key, id";
     const STARRED_SQL: &str = "WITH RECURSIVE included(id, parent_id) AS (\
@@ -1600,7 +1606,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind \
+                node.node_kind, node.image_offset_utf16 \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -1620,7 +1626,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind \
+                node.node_kind, node.image_offset_utf16 \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -1637,7 +1643,7 @@ pub(crate) fn load_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, node.layout_mode, \
                 node.is_collapsed, node.is_starred, node.completed_at, node.created_at, \
                 node.updated_at, node.deleted_at, node.archived_at, node.archive_root_id, \
-                node.node_kind \
+                node.node_kind, node.image_offset_utf16 \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id";
@@ -1648,7 +1654,8 @@ pub(crate) fn load_workspace(
                 ) THEN node.parent_id ELSE NULL END, \
                 node.sort_key, node.title, node.note, node.layout_mode, node.is_collapsed, \
                 node.is_starred, node.completed_at, node.created_at, node.updated_at, \
-                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind \
+                node.deleted_at, node.archived_at, node.archive_root_id, node.node_kind, \
+                node.image_offset_utf16 \
          FROM notes_nodes node WHERE node.deleted_at IS NOT NULL \
          ORDER BY CASE WHEN node.parent_id IS NULL OR NOT EXISTS (\
                     SELECT 1 FROM notes_nodes parent \
@@ -1657,7 +1664,7 @@ pub(crate) fn load_workspace(
     const ARCHIVE_SQL: &str = "SELECT node.id, node.parent_id, node.sort_key, node.title, \
                 node.note, node.layout_mode, node.is_collapsed, node.is_starred, \
                 node.completed_at, node.created_at, node.updated_at, node.deleted_at, \
-                node.archived_at, node.archive_root_id, node.node_kind \
+                node.archived_at, node.archive_root_id, node.node_kind, node.image_offset_utf16 \
          FROM notes_nodes node \
          WHERE node.deleted_at IS NULL AND node.archived_at IS NOT NULL \
            AND node.archive_root_id IS NOT NULL \
@@ -1727,7 +1734,7 @@ fn load_tag_workspace(
          SELECT node.id, node.parent_id, node.sort_key, node.title, node.note, \
                 node.layout_mode, node.is_collapsed, node.is_starred, node.completed_at, \
                 node.created_at, node.updated_at, node.deleted_at, node.archived_at, \
-                node.archive_root_id, node.node_kind \
+                node.archive_root_id, node.node_kind, node.image_offset_utf16 \
          FROM notes_nodes node JOIN included ON included.id = node.id \
          ORDER BY CASE WHEN node.parent_id IS NULL THEN 0 ELSE 1 END, \
                   node.parent_id, node.sort_key, node.id",
@@ -2341,7 +2348,7 @@ fn node_by_id(transaction: &Transaction<'_>, node_id: &str) -> Result<Option<Sto
         .query_row(
             "SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind \
+                    archive_root_id, node_kind, image_offset_utf16 \
              FROM notes_nodes WHERE id = ?1",
             [node_id],
             stored_node_from_row,
@@ -2717,17 +2724,17 @@ pub(crate) fn update_node_at(
     input.validate()?;
     with_workspace_transaction(connection, |transaction| {
         let source = require_active_node(transaction, &input.id)?;
-        if source.node_kind == NoteNodeKind::Image && input.title != source.title {
-            return Err(
-                "An image node filename cannot be changed by a generic Note update.".to_string(),
-            );
-        }
+        crate::notes::schema::validate_image_offset_utf16(
+            &input.title,
+            source.node_kind,
+            input.image_offset_utf16,
+        )?;
         transaction
             .execute(
-                "UPDATE notes_nodes SET title = ?1, note = ?2, \
+                "UPDATE notes_nodes SET title = ?1, note = ?2, image_offset_utf16 = ?3, \
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') \
-                 WHERE id = ?3 AND deleted_at IS NULL AND archived_at IS NULL",
-                params![input.title, input.note, input.id],
+                 WHERE id = ?4 AND deleted_at IS NULL AND archived_at IS NULL",
+                params![input.title, input.note, input.image_offset_utf16, input.id],
             )
             .map_err(|error| format!("Could not update the Note node: {error}"))?;
         let derived_title = derived_title_for_node_kind(source.node_kind, &input.title);
@@ -3149,7 +3156,7 @@ fn active_subtree(transaction: &Transaction<'_>, root_id: &str) -> Result<Vec<St
              ) \
              SELECT id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
                     is_starred, completed_at, deleted_at, deleted_batch_id, archived_at, \
-                    archive_root_id, node_kind \
+                    archive_root_id, node_kind, image_offset_utf16 \
              FROM notes_nodes WHERE id IN subtree",
         )
         .map_err(|error| format!("Could not prepare the Note subtree: {error}"))?;
@@ -3418,10 +3425,10 @@ fn duplicate_forest_in_transaction(
             transaction
                 .execute(
                     "INSERT INTO notes_nodes (\
-                       id, parent_id, sort_key, title, note, layout_mode, is_collapsed, \
+                       id, parent_id, sort_key, title, note, image_offset_utf16, layout_mode, is_collapsed, \
                        is_starred, completed_at, node_kind, created_at, updated_at\
                      ) VALUES (\
-                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, \
+                       ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                      )",
@@ -3431,6 +3438,7 @@ fn duplicate_forest_in_transaction(
                         sort_key,
                         original.title,
                         original.note,
+                        original.image_offset_utf16,
                         original.layout_mode,
                         original.is_collapsed,
                         original.is_starred,
@@ -4816,12 +4824,6 @@ fn validate_image_node_batch_preflight(
                 "A Notes image node attachment must belong to its new image node.".to_string(),
             );
         }
-        if node.title != node.attachment.original_name {
-            return Err(
-                "A Notes image node title must equal its attachment's original filename."
-                    .to_string(),
-            );
-        }
         if !attachment_ids.insert(node.attachment.id.as_str()) {
             return Err(format!(
                 "A Notes image node batch contains duplicate attachment ID {}.",
@@ -4901,9 +4903,9 @@ pub(crate) fn create_image_nodes_coordinated(
         transaction
             .execute(
                 "INSERT INTO notes_nodes (\
-                   id, parent_id, sort_key, title, note, node_kind, created_at, updated_at\
+                   id, parent_id, sort_key, title, note, image_offset_utf16, node_kind, created_at, updated_at\
                  ) VALUES (\
-                   ?1, ?2, ?3, ?4, '', 'image', \
+                   ?1, ?2, ?3, ?4, '', 0, 'image', \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now')\
                  )",
@@ -5247,6 +5249,61 @@ mod tests {
             .execute("DELETE FROM notes_nodes", [])
             .expect("clear onboarding nodes from empty test fixture");
         connection
+    }
+
+    #[test]
+    fn fresh_current_schema_defines_image_offset_and_attachment_search() {
+        let connection = test_connection();
+
+        assert!(
+            table_columns(&connection, "notes_nodes").contains(&"image_offset_utf16".to_string())
+        );
+        assert_eq!(
+            table_columns(&connection, "notes_search"),
+            ["node_id", "title", "note", "attachment_name"]
+        );
+        assert_eq!(
+            table_columns(&connection, "notes_search_lifecycle"),
+            ["node_id", "title", "note", "attachment_name"]
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT notes_image_search_title(?1, ?2, ?3)",
+                    params!["A😀B", "image", 3i64],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("image title search scalar"),
+            "A😀 B"
+        );
+
+        insert_node(&connection, NODE_ID, None, 1024, "First");
+        insert_node(&connection, CHILD_ID, None, 2048, "Second");
+        let attachment_id = insert_test_attachment(&connection, 1, NODE_ID);
+        connection
+            .execute(
+                "UPDATE notes_attachments SET node_id = ?1 WHERE id = ?2",
+                params![CHILD_ID, attachment_id],
+            )
+            .expect("move attachment");
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let source_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [NODE_ID],
+                    |row| row.get(0),
+                )
+                .expect("source attachment search name");
+            let target_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [CHILD_ID],
+                    |row| row.get(0),
+                )
+                .expect("target attachment search name");
+            assert_eq!(source_name, "");
+            assert_eq!(target_name, "image.png");
+        }
     }
 
     #[test]
@@ -6175,7 +6232,7 @@ mod tests {
     }
 
     #[test]
-    fn image_node_ownership_rejects_generic_content_and_attachment_mutations_but_allows_resize() {
+    fn image_node_ownership_allows_semantic_content_updates_but_rejects_attachment_mutations() {
         let mut connection = test_connection();
         connection
             .execute(
@@ -6195,25 +6252,35 @@ mod tests {
             )
             .expect("seed resizable image attachment");
 
-        let rename_error = update_node_at(
+        let renamed = update_node_at(
             &mut connection,
             UpdateNodeInput {
                 id: NODE_ID.to_string(),
                 title: "renamed.png".to_string(),
                 note: "description".to_string(),
+                image_offset_utf16: 0,
             },
             fixed_today(),
         )
-        .expect_err("generic update must not rename an image node");
-        assert!(rename_error.contains("filename"), "{rename_error}");
+        .expect("image content update");
+        let renamed_node = renamed
+            .nodes
+            .iter()
+            .find(|node| node.id == NODE_ID)
+            .expect("renamed image node");
+        assert_eq!(renamed_node.title, "renamed.png");
+        assert_eq!(renamed_node.note, "description");
         let unchanged: (String, String) = connection
             .query_row(
                 "SELECT title, note FROM notes_nodes WHERE id = ?1",
                 [NODE_ID],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .expect("unchanged image node content");
-        assert_eq!(unchanged, ("image.png".to_string(), String::new()));
+            .expect("updated image node content");
+        assert_eq!(
+            unchanged,
+            ("renamed.png".to_string(), "description".to_string())
+        );
 
         let updated = update_node_at(
             &mut connection,
@@ -6221,6 +6288,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: "image.png".to_string(),
                 note: "supporting description".to_string(),
+                image_offset_utf16: 0,
             },
             fixed_today(),
         )
@@ -7784,6 +7852,8 @@ mod tests {
         connection
             .execute_batch("PRAGMA foreign_keys = ON;")
             .expect("enable foreign keys");
+        crate::notes::schema::install_notes_sql_functions(&connection)
+            .expect("install Notes SQL functions");
         let transaction = connection.transaction().expect("begin schema transaction");
         assert!(
             crate::notes::schema::create_if_missing(&transaction).expect("create current schema")
@@ -10067,6 +10137,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: "After #Project".to_string(),
                 note: "Details #project #Next-Step".to_string(),
+                image_offset_utf16: 0,
             },
         )
         .expect("update node");
@@ -10113,6 +10184,7 @@ mod tests {
                 id: CHILD_ID.to_string(),
                 title: "#Roadmap search target".to_string(),
                 note: "#Offline detail #ROADMAP".to_string(),
+                image_offset_utf16: 0,
             },
         )
         .expect("update");
@@ -10282,6 +10354,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: "#new 07/13/2026".to_string(),
                 note: "next week".to_string(),
+                image_offset_utf16: 0,
             },
             fixed_today(),
         )
@@ -10371,6 +10444,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: "tomorrow #new".to_string(),
                 note: String::new(),
+                image_offset_utf16: 0,
             },
             fixed_today(),
         )
@@ -10919,6 +10993,7 @@ mod tests {
                 id: NODE_ID.to_string(),
                 title: filename.to_string(),
                 note: "Caption #same 07/15/2026".to_string(),
+                image_offset_utf16: 0,
             },
             fixed_today(),
         )

@@ -5143,6 +5143,7 @@ mod tests {
                     id: NODE_ID.to_string(),
                     title: format!("ordinary edit {index}"),
                     note: String::new(),
+                    image_offset_utf16: 0,
                 },
                 Some(history_context(
                     usize::try_from(index + 2).expect("history index"),
