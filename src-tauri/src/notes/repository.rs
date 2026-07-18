@@ -5619,6 +5619,9 @@ mod tests {
             assert_eq!(target_name, "");
         }
 
+        let mut image_attachment = test_new_attachment(2, THIRD_ID);
+        image_attachment.original_name = "initialatom.png".to_string();
+        let image_attachment_id = image_attachment.id.clone();
         create_image_nodes_coordinated(
             &mut connection,
             None,
@@ -5626,7 +5629,7 @@ mod tests {
             vec![NewImageNode {
                 id: THIRD_ID.to_string(),
                 title: String::new(),
-                attachment: test_new_attachment(2, THIRD_ID),
+                attachment: image_attachment,
             }],
             || Ok(()),
             || Ok(()),
@@ -5640,10 +5643,47 @@ mod tests {
                     |row| row.get(0),
                 )
                 .expect("valid image attachment search name");
-            assert_eq!(attachment_name, "image.png");
+            assert_eq!(attachment_name, "initialatom.png");
+            let match_count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1"),
+                    ["initialatom"],
+                    |row| row.get(0),
+                )
+                .expect("initial filename match");
+            assert_eq!(match_count, 1);
         }
 
-        insert_test_attachment(&connection, 3, THIRD_ID);
+        connection
+            .execute(
+                "UPDATE notes_attachments SET original_name = 'renamed.png' WHERE id = ?1",
+                [image_attachment_id.as_str()],
+            )
+            .expect("rename exact image attachment");
+        let renamed = search_nodes(&connection, "renamed").expect("search renamed attachment");
+        assert_eq!(renamed.len(), 1);
+        assert_eq!(renamed[0].node_id, THIRD_ID);
+        assert_eq!(renamed[0].matched_field, NoteSearchMatchedField::Attachment);
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let attachment_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [THIRD_ID],
+                    |row| row.get(0),
+                )
+                .expect("renamed image attachment search name");
+            assert_eq!(attachment_name, "renamed.png");
+            let match_count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1"),
+                    ["renamed"],
+                    |row| row.get(0),
+                )
+                .expect("renamed filename match");
+            assert_eq!(match_count, 1);
+        }
+
+        let second_attachment_id = insert_test_attachment(&connection, 3, THIRD_ID);
         for table in ["notes_search", "notes_search_lifecycle"] {
             let attachment_name: String = connection
                 .query_row(
@@ -5653,6 +5693,106 @@ mod tests {
                 )
                 .expect("invalid image attachment search name");
             assert_eq!(attachment_name, "");
+        }
+
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [second_attachment_id.as_str()],
+            )
+            .expect("restore exact image attachment count");
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let attachment_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [THIRD_ID],
+                    |row| row.get(0),
+                )
+                .expect("restored image attachment search name");
+            assert_eq!(attachment_name, "renamed.png");
+        }
+
+        let fourth_attachment = test_new_attachment(4, FOURTH_ID);
+        let fourth_attachment_id = fourth_attachment.id.clone();
+        create_image_nodes_coordinated(
+            &mut connection,
+            None,
+            None,
+            vec![NewImageNode {
+                id: FOURTH_ID.to_string(),
+                title: String::new(),
+                attachment: fourth_attachment,
+            }],
+            || Ok(()),
+            || Ok(()),
+        )
+        .expect("create empty image owner");
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [fourth_attachment_id.as_str()],
+            )
+            .expect("empty fourth image owner");
+
+        connection
+            .execute(
+                "UPDATE notes_attachments SET node_id = ?1 WHERE id = ?2",
+                params![FOURTH_ID, image_attachment_id],
+            )
+            .expect("move exact image attachment to new image owner");
+        let moved = search_nodes(&connection, "renamed").expect("search moved attachment");
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].node_id, FOURTH_ID);
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let old_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [THIRD_ID],
+                    |row| row.get(0),
+                )
+                .expect("old image owner search name");
+            let new_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [FOURTH_ID],
+                    |row| row.get(0),
+                )
+                .expect("new image owner search name");
+            assert_eq!(old_name, "");
+            assert_eq!(new_name, "renamed.png");
+            let match_count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1"),
+                    ["renamed"],
+                    |row| row.get(0),
+                )
+                .expect("moved filename match");
+            assert_eq!(match_count, 1);
+        }
+
+        connection
+            .execute(
+                "DELETE FROM notes_attachments WHERE id = ?1",
+                [image_attachment_id.as_str()],
+            )
+            .expect("delete final image attachment");
+        for table in ["notes_search", "notes_search_lifecycle"] {
+            let attachment_name: String = connection
+                .query_row(
+                    &format!("SELECT attachment_name FROM {table} WHERE node_id = ?1"),
+                    [FOURTH_ID],
+                    |row| row.get(0),
+                )
+                .expect("deleted image attachment search name");
+            assert_eq!(attachment_name, "");
+            let match_count: i64 = connection
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {table} MATCH ?1"),
+                    ["renamed"],
+                    |row| row.get(0),
+                )
+                .expect("deleted filename match");
+            assert_eq!(match_count, 0);
         }
     }
 
@@ -5706,7 +5846,7 @@ mod tests {
     fn image_atom_search_returns_attachment_match_and_shared_label() {
         let mut connection = test_connection();
         let mut attachment = test_new_attachment(96, NODE_ID);
-        attachment.original_name = "priority-diagram.png".to_string();
+        attachment.original_name = "priority-shared-diagram.png".to_string();
         create_image_nodes_coordinated(
             &mut connection,
             None,
@@ -5728,7 +5868,7 @@ mod tests {
             UpdateNodeInput {
                 id: NODE_ID.to_string(),
                 title: title.clone(),
-                note: "priority note".to_string(),
+                note: "priority note shared".to_string(),
                 image_offset_utf16: before.encode_utf16().count() as i64,
             },
             fixed_today(),
@@ -5739,6 +5879,8 @@ mod tests {
         assert_eq!(title_match[0].matched_field, NoteSearchMatchedField::Title);
         let note_match = search_nodes(&connection, "note").expect("note-priority match");
         assert_eq!(note_match[0].matched_field, NoteSearchMatchedField::Note);
+        let shared_match = search_nodes(&connection, "shared").expect("shared match");
+        assert_eq!(shared_match[0].matched_field, NoteSearchMatchedField::Note);
 
         let attachment_match =
             search_nodes(&connection, "diagram").expect("attachment filename match");
@@ -5749,7 +5891,7 @@ mod tests {
             result["imageOffsetUtf16"],
             before.encode_utf16().count() as i64
         );
-        assert_eq!(result["attachmentName"], "priority-diagram.png");
+        assert_eq!(result["attachmentName"], "priority-shared-diagram.png");
         assert_eq!(result["displayLabel"], "Priority After");
 
         let mut fallback_attachment = test_new_attachment(97, THIRD_ID);

@@ -675,6 +675,28 @@ function isNullableString(value: unknown): value is string | null {
   return typeof value === "string" || value === null;
 }
 
+function isUtf16ScalarBoundary(text: string, offset: unknown): offset is number {
+  if (
+    typeof offset !== "number" ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    offset > text.length
+  ) {
+    return false;
+  }
+  if (offset === 0 || offset === text.length) {
+    return true;
+  }
+  const before = text.charCodeAt(offset - 1);
+  const after = text.charCodeAt(offset);
+  return !(
+    before >= 0xd800 &&
+    before <= 0xdbff &&
+    after >= 0xdc00 &&
+    after <= 0xdfff
+  );
+}
+
 function hasExactKeys(
   value: Record<string, unknown>,
   expected: readonly string[]
@@ -829,9 +851,7 @@ export function isNoteNode(value: unknown): value is NoteNode {
     Number.isSafeInteger(value.sortKey) &&
     typeof value.title === "string" &&
     typeof value.note === "string" &&
-    typeof value.imageOffsetUtf16 === "number" &&
-    Number.isSafeInteger(value.imageOffsetUtf16) &&
-    value.imageOffsetUtf16 >= 0 &&
+    isUtf16ScalarBoundary(value.title, value.imageOffsetUtf16) &&
     (value.nodeKind === "image" || value.imageOffsetUtf16 === 0) &&
     value.layoutMode === "bullets" &&
     typeof value.isCollapsed === "boolean" &&
@@ -1110,10 +1130,10 @@ export function isNoteSearchResult(value: unknown): value is NoteSearchResult {
     typeof value.nodeId === "string" &&
     (value.nodeKind === "text" || value.nodeKind === "image") &&
     typeof value.title === "string" &&
-    typeof value.imageOffsetUtf16 === "number" &&
-    Number.isSafeInteger(value.imageOffsetUtf16) &&
-    value.imageOffsetUtf16 >= 0 &&
+    isUtf16ScalarBoundary(value.title, value.imageOffsetUtf16) &&
     isNullableString(value.attachmentName) &&
+    (value.nodeKind === "image" ||
+      (value.imageOffsetUtf16 === 0 && value.attachmentName === null)) &&
     typeof value.displayLabel === "string" &&
     isDenseArray(value.parentTrail) &&
     value.parentTrail.every((item) => typeof item === "string") &&

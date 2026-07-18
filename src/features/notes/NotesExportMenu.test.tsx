@@ -11,6 +11,7 @@ import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VaultRootContext } from "../../VaultRootContext";
 import type {
+  NoteAttachment,
   NoteId,
   NoteNode,
   NotesStore,
@@ -281,6 +282,8 @@ interface WorkspaceOptions {
   draftTitle?: string;
   libraryView?: NotesLibraryView;
   pageDraftTitle?: string;
+  pageAttachmentName?: string;
+  pageImageTitle?: string;
   pageNodeKind?: NoteNode["nodeKind"];
   selectedId?: NoteId | null;
   selectedNodeKind?: NoteNode["nodeKind"];
@@ -292,7 +295,9 @@ function workspaceValue(
   options: WorkspaceOptions = {}
 ): UseNotesWorkspaceResult {
   const pageTitle =
-    options.pageNodeKind === "image" ? "page-private.png" : "Page title";
+    options.pageNodeKind === "image"
+      ? (options.pageImageTitle ?? "page-private.png")
+      : "Page title";
   const selectedTitle =
     options.selectedNodeKind === "image"
       ? "selected-private.png"
@@ -301,7 +306,29 @@ function workspaceValue(
     nodes: [
       note("page", pageTitle, null, options.pageNodeKind),
       note("selected", selectedTitle, "page", options.selectedNodeKind)
-    ]
+    ],
+    attachmentsByNodeId:
+      options.pageAttachmentName === undefined
+        ? {}
+        : {
+            page: [
+              {
+                id: "page-attachment",
+                nodeId: "page",
+                sortKey: 1,
+                relativePath: ".yonalist/attachments/page-attachment.png",
+                contentHash: "a".repeat(64),
+                originalName: options.pageAttachmentName,
+                mimeType: "image/png",
+                byteSize: 1,
+                intrinsicWidth: 1,
+                intrinsicHeight: 1,
+                displayWidth: 160,
+                createdAt: "2026-07-10T00:00:00Z",
+                updatedAt: "2026-07-10T00:00:00Z"
+              } satisfies NoteAttachment
+            ]
+          }
   });
   state.selectedId = options.selectedId ?? "selected";
   state.zoomRootId = options.zoomRootId ?? "page";
@@ -1330,12 +1357,17 @@ describe("NotesExportMenu", () => {
     exportServiceMock.saveNotesExport.mockResolvedValue(
       exportResult("markdown")
     );
-    renderNotesPanes({ pageNodeKind: "image", zoomRootId: null });
+    renderNotesPanes({
+      pageNodeKind: "image",
+      pageAttachmentName: "diagram.png",
+      pageImageTitle: "",
+      zoomRootId: null
+    });
     const library = screen.getByTestId("notes-middle-pane");
 
     await user.click(
       within(library).getByRole("button", {
-        name: "Page actions for Image: page-private.png"
+        name: "Page actions for Image: diagram.png"
       })
     );
     const menu = await screen.findByRole("menu");

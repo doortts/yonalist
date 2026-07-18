@@ -67,7 +67,7 @@ describe("noteSearchPresentation", () => {
       parentTrail: ["reference.png", "Visible project"],
       parentTrailKinds: ["image", "text"],
       matchedField: "title"
-    } as unknown as NoteSearchResult;
+    } satisfies NoteSearchResult;
 
     expect(noteSearchPresentation(result)).toEqual({
       title: "Above Below",
@@ -86,11 +86,11 @@ describe("noteSearchPresentation", () => {
       parentTrail: [""],
       parentTrailKinds: ["image"],
       matchedField: "title"
-    } as unknown as NoteSearchResult;
+    } satisfies NoteSearchResult;
 
     expect(noteSearchPresentation(result)).toEqual({
       title: "fallback.png",
-      parentTrail: [""]
+      parentTrail: ["Image"]
     });
   });
 
@@ -110,6 +110,43 @@ describe("noteSearchPresentation", () => {
     expect(noteSearchPresentation(result)).toEqual({
       title: "Visible text result",
       parentTrail: []
+    });
+  });
+
+  it("falls back by kind when valid server labels are empty", () => {
+    const result = {
+      nodeId: "empty-text-result",
+      nodeKind: "text",
+      title: "",
+      imageOffsetUtf16: 0,
+      attachmentName: null,
+      displayLabel: "",
+      parentTrail: ["", ""],
+      parentTrailKinds: ["text", "image"],
+      matchedField: "title"
+    } satisfies NoteSearchResult;
+
+    expect(noteSearchPresentation(result)).toEqual({
+      title: "Untitled note",
+      parentTrail: ["Untitled note", "Image"]
+    });
+  });
+
+  it("fails closed for malformed result kind metadata", () => {
+    const malformedResult = {
+      nodeId: "reparented",
+      title: "private-image-title.png",
+      imageOffsetUtf16: 0,
+      attachmentName: "private-image-title.png",
+      displayLabel: "private-image-title.png",
+      parentTrail: ["private-parent.png"],
+      parentTrailKinds: ["canvas"],
+      matchedField: "attachment"
+    } as unknown as NoteSearchResult;
+
+    expect(noteSearchPresentation(malformedResult)).toEqual({
+      title: "Note",
+      parentTrail: ["Note"]
     });
   });
 

@@ -28,6 +28,7 @@ import {
 import { NotesLibraryPageRow } from "./NotesLibraryPageRow";
 import {
   noteNodeNavigationLabel,
+  noteNodePresentationLabel,
   noteSearchPresentation
 } from "./notesPresentation";
 import {
@@ -416,6 +417,11 @@ function NotesLibraryPaneContent() {
                 "Untitled page",
                 imageAttachmentOriginalName
               );
+              const exportLabel = noteNodePresentationLabel(
+                node,
+                displayTitle,
+                "Untitled page"
+              );
               return (
                 <NotesLibraryPageRow
                   key={nodeId}
@@ -439,7 +445,7 @@ function NotesLibraryPaneContent() {
                   onMoveToTrash={() => void actions.deleteNode(nodeId)}
                   onDuplicate={() => void actions.duplicateNode(nodeId)}
                   onExport={(format) =>
-                    exportController.startExport(nodeId, label, format)
+                    exportController.startExport(nodeId, exportLabel, format)
                   }
                   onRename={async (title) => {
                     if (libraryView === "archive" || libraryView === "trash") {

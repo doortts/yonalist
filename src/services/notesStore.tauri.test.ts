@@ -15,6 +15,7 @@ import type {
   ImportSubtreeInput,
   MoveNoteNodeInput,
   NoteAttachment,
+  NoteSearchResult,
   NotesHistoryContext,
   NotesHistoryReplayOutcome,
   NotesHistoryState,
@@ -1882,11 +1883,14 @@ describe("notesStore in Tauri", () => {
         nodeId,
         nodeKind: "text" as const,
         title: "Page",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Page",
         parentTrail: ["Home"],
         parentTrailKinds: ["image" as const],
         matchedField: "title" as const
       }
-    ];
+    ] satisfies NoteSearchResult[];
     invokeMock
       .mockResolvedValueOnce(workspace)
       .mockResolvedValueOnce(workspace)
@@ -1985,6 +1989,9 @@ describe("notesStore in Tauri", () => {
         nodeId,
         nodeKind: "text",
         title: "Page",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Page",
         parentTrail: ["Home", 42],
         parentTrailKinds: ["text", "text"],
         matchedField: "title"
@@ -2002,11 +2009,14 @@ describe("notesStore in Tauri", () => {
         nodeId,
         nodeKind: "text" as const,
         title: "Archived plan",
+        imageOffsetUtf16: 0,
+        attachmentName: null,
+        displayLabel: "Archived plan",
         parentTrail: [],
         parentTrailKinds: [],
         matchedField: "date" as const
       }
-    ];
+    ] satisfies NoteSearchResult[];
     invokeMock.mockResolvedValue(results);
 
     await expect(
@@ -2038,13 +2048,16 @@ describe("notesStore in Tauri", () => {
     const results = [
       {
         nodeId,
-        nodeKind: "text" as const,
-        title: "Page",
+        nodeKind: "image" as const,
+        title: "",
+        imageOffsetUtf16: 0,
+        attachmentName: "diagram.png",
+        displayLabel: "diagram.png",
         parentTrail: ["Home"],
         parentTrailKinds: ["image" as const],
-        matchedField: "title" as const
+        matchedField: "attachment" as const
       }
-    ];
+    ] satisfies NoteSearchResult[];
     invokeMock.mockResolvedValue(results);
 
     await expect(notesSearchStructured(vaultPath, query)).resolves.toBe(results);

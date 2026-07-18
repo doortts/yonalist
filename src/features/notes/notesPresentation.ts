@@ -55,12 +55,27 @@ export interface NoteSearchPresentation {
   readonly parentTrail: readonly string[];
 }
 
+function searchResultLabel(label: string, kind: unknown): string {
+  if (kind !== "text" && kind !== "image") {
+    return "Note";
+  }
+  if (label.trim()) {
+    return label;
+  }
+  if (kind === "text") {
+    return "Untitled note";
+  }
+  return kind === "image" ? IMAGE_NODE_LABEL : "Note";
+}
+
 export function noteSearchPresentation(
   result: NoteSearchResult,
   _nodesById?: Readonly<Record<NoteId, NoteNode>>
 ): NoteSearchPresentation {
   return {
-    title: result.displayLabel,
-    parentTrail: result.parentTrail
+    title: searchResultLabel(result.displayLabel, result.nodeKind),
+    parentTrail: result.parentTrail.map((label, index) =>
+      searchResultLabel(label, result.parentTrailKinds?.[index])
+    )
   };
 }

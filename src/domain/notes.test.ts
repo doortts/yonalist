@@ -337,6 +337,14 @@ describe("Notes domain contract", () => {
     expect(
       isNoteNode({ ...makeNoteNode(), imageOffsetUtf16: Number.MAX_SAFE_INTEGER + 1 })
     ).toBe(false);
+    const image = makeNoteNode({
+      nodeKind: "image",
+      title: "A😀B",
+      imageOffsetUtf16: 3
+    });
+    expect(isNoteNode(image)).toBe(true);
+    expect(isNoteNode({ ...image, imageOffsetUtf16: 5 })).toBe(false);
+    expect(isNoteNode({ ...image, imageOffsetUtf16: 2 })).toBe(false);
   });
 
   it("requires an own text or image node kind", () => {
@@ -596,12 +604,12 @@ describe("Notes domain contract", () => {
     expect(isNoteNode(null)).toBe(false);
   });
 
-  it("recognizes typed search results and rejects malformed parent trails", () => {
+  it("recognizes typed search results and rejects malformed offsets", () => {
     const result = {
       nodeId: UUID,
       nodeKind: "image",
-      title: "Target",
-      imageOffsetUtf16: 0,
+      title: "A😀B",
+      imageOffsetUtf16: 3,
       attachmentName: "target.png",
       displayLabel: "Target",
       parentTrail: ["Page", "Section"],
@@ -622,10 +630,31 @@ describe("Notes domain contract", () => {
     expect(isNoteSearchResult({ ...result, matchedField: "date" })).toBe(true);
     expect(isNoteSearchResult({ ...result, attachmentName: 42 })).toBe(false);
     expect(isNoteSearchResult({ ...result, displayLabel: null })).toBe(false);
+    expect(isNoteSearchResult({ ...result, imageOffsetUtf16: 1.5 })).toBe(false);
     expect(isNoteSearchResult({ ...result, imageOffsetUtf16: -1 })).toBe(false);
+    expect(
+      isNoteSearchResult({ ...result, imageOffsetUtf16: Number.MAX_SAFE_INTEGER + 1 })
+    ).toBe(false);
+    expect(isNoteSearchResult({ ...result, imageOffsetUtf16: 5 })).toBe(false);
+    expect(isNoteSearchResult({ ...result, imageOffsetUtf16: 2 })).toBe(false);
+    expect(isNoteSearchResult({ ...result, attachmentName: null })).toBe(true);
+    const textResult = {
+      ...result,
+      nodeKind: "text" as const,
+      title: "Text",
+      imageOffsetUtf16: 0,
+      attachmentName: null
+    };
+    expect(isNoteSearchResult(textResult)).toBe(true);
+    expect(isNoteSearchResult({ ...textResult, imageOffsetUtf16: 1 })).toBe(false);
+    expect(isNoteSearchResult({ ...textResult, attachmentName: "text.png" })).toBe(false);
     const { nodeKind: _nodeKind, ...missingNodeKind } = result;
+    const { imageOffsetUtf16: _imageOffsetUtf16, ...missingImageOffsetUtf16 } = result;
+    const { attachmentName: _attachmentName, ...missingAttachmentName } = result;
     const { parentTrailKinds: _parentTrailKinds, ...missingTrailKinds } = result;
     expect(isNoteSearchResult(missingNodeKind)).toBe(false);
+    expect(isNoteSearchResult(missingImageOffsetUtf16)).toBe(false);
+    expect(isNoteSearchResult(missingAttachmentName)).toBe(false);
     expect(isNoteSearchResult(missingTrailKinds)).toBe(false);
     expect(isNoteSearchResult({ ...result, extra: true })).toBe(false);
     const inherited = Object.assign(Object.create({ inherited: true }), result);
