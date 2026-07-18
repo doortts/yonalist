@@ -1,8 +1,9 @@
 use crate::transport::{Hello, PeerEndpoint};
 use crate::{
-    AccessDecision, AccessState, AtomLimits, DeviceId, DeviceSigner, GitOid, GitStore, GrantId,
-    ImmutableFile, LocalCommit, MemberId, PackBytes, PackLimits, PackRequest, Plane, ProjectId,
-    ProjectPolicy, RefAdvertisement, SignedAtom, StoreBatch, StoredAtom, SyncError, SyncErrorCode,
+    git_store::GitStore, protocol::StoreBatch, AccessDecision, AccessState, AtomLimits, DeviceId,
+    DeviceSigner, GitOid, GrantId, ImmutableFile, LocalCommit, MemberId, PackBytes, PackLimits,
+    PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement, SignedAtom, StoredAtom,
+    SyncError, SyncErrorCode,
 };
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -295,6 +296,7 @@ impl<P: ProjectPolicy> Replica<P> {
         );
         Ok(())
     }
+    #[cfg(feature = "test-support")]
     pub(crate) fn reduced_heads(&self, plane: Plane) -> Result<Vec<GitOid>, SyncError> {
         reduced_store_heads(&self.store, plane)
     }

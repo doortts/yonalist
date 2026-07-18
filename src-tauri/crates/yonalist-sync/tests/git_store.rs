@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 use std::{env, ffi::OsStr, path::PathBuf, process::Command};
 
 use yonalist_sync::{
@@ -601,46 +603,54 @@ fn ancestry_redundant_observed_parent_is_removed() {
 fn append_preserves_prior_local_head_as_first_parent() {
     let temp = tempfile::tempdir().unwrap();
     let store = GitStore::init(temp.path(), &test_git_executable()).unwrap();
-    let device = DeviceId::from_bytes([3; 16]);
-    let first = store
+    let device_a = DeviceId::from_bytes([3; 16]);
+    let a1 = store
         .append_local(batch_for(signed_fixture_for(
             Plane::Data,
             EventId::from_bytes([26; 16]),
-            device,
+            device_a,
             9,
         )))
         .unwrap();
-    let observed = (0_u64..)
-        .map(|candidate| {
-            let hash = format!("{candidate:064x}");
-            raw_root_commit(
-                temp.path().as_os_str(),
-                &format!("texts/{}/{}.md", &hash[..2], hash),
-                b"observed",
-            )
-        })
-        .find(|head| head < &first.head)
-        .expect("the candidate range is unbounded");
-    let mut batch = batch_for(signed_fixture_for(
+    let device_b = DeviceId::from_bytes([7; 16]);
+    let b1 = store
+        .append_local(batch_for(signed_fixture_for(
+            Plane::Data,
+            EventId::from_bytes([27; 16]),
+            device_b,
+            8,
+        )))
+        .unwrap();
+    let mut b2_batch = batch_for(signed_fixture_for(
         Plane::Data,
-        EventId::from_bytes([27; 16]),
-        device,
+        EventId::from_bytes([28; 16]),
+        device_b,
+        8,
+    ));
+    b2_batch.expected_head = Some(b1.head);
+    b2_batch.observed_heads.push(a1.head.clone());
+    let b2 = store.append_local(b2_batch).unwrap();
+
+    let mut a2_batch = batch_for(signed_fixture_for(
+        Plane::Data,
+        EventId::from_bytes([29; 16]),
+        device_a,
         9,
     ));
-    batch.expected_head = Some(first.head.clone());
-    batch.observed_heads.push(observed.clone());
+    a2_batch.expected_head = Some(a1.head.clone());
+    a2_batch.observed_heads.push(b2.head.clone());
 
-    let merged = store.append_local(batch).unwrap();
+    let a2 = store.append_local(a2_batch).unwrap();
     let parents = String::from_utf8(git(
         temp.path().as_os_str(),
-        &["rev-list", "--parents", "-n", "1", merged.head.as_str()],
+        &["rev-list", "--parents", "-n", "1", a2.head.as_str()],
         None,
     ))
     .unwrap();
     let fields = parents.split_whitespace().collect::<Vec<_>>();
     assert_eq!(
         fields,
-        vec![merged.head.as_str(), first.head.as_str(), observed.as_str()]
+        vec![a2.head.as_str(), a1.head.as_str(), b2.head.as_str()]
     );
 }
 

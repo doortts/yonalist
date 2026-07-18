@@ -14,12 +14,15 @@ mod transport;
 
 pub use atom::{AtomLimits, SignedAtom, UnsignedAtom, ATOM_SCHEMA_V1};
 pub use error::{SyncError, SyncErrorCode};
+#[cfg(feature = "test-support")]
 pub use git_store::GitStore;
 pub use identity::DeviceSigner;
 pub use ids::{DeviceId, EventId, GitOid, GrantId, MemberId, Plane, ProjectId};
 pub use pack::{CandidateRef, ImportOutcome, PackBytes, PackLimits, PackRequest};
 pub use policy::{AccessDecision, AccessState, ProjectPolicy, StoredAtom};
-pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement, StoreBatch};
+#[cfg(feature = "test-support")]
+pub use protocol::StoreBatch;
+pub use protocol::{ImmutableFile, LocalCommit, RefAdvertisement};
 pub use replica::{LocalBatch, Replica, ReplicaConfig, SyncReport};
 #[cfg(feature = "test-support")]
 pub use test_support::{

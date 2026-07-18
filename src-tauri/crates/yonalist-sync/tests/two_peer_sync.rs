@@ -182,6 +182,33 @@ fn offline_writes_converge_in_both_directions() {
 }
 
 #[test]
+fn local_first_parent_survives_an_observed_descendant_merge() {
+    let mut pair = FixturePair::new();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+
+    pair.alice.append_fixture_data(b"a1").unwrap();
+    pair.bob.append_fixture_data(b"b1").unwrap();
+    pair.bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    pair.bob.append_fixture_data(b"b2-observes-a1").unwrap();
+
+    pair.alice
+        .pull_from(&mut InProcessPeer::new(&pair.bob))
+        .unwrap();
+    pair.alice.append_fixture_data(b"a2-after-b2").unwrap();
+
+    let report = pair
+        .bob
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    assert_eq!(report.data_refs_advanced, 1);
+    assert_eq!(pair.alice.payloads(), pair.bob.payloads());
+}
+
+#[test]
 fn hello_requires_exact_project_member_device_and_grant() {
     let pair = FixturePair::new();
     let valid = pair.bob.local_hello();

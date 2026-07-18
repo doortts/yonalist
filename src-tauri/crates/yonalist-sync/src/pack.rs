@@ -7,9 +7,9 @@ use std::{
 };
 
 use crate::{
-    git_store::{RepositoryWriter, TrustedSnapshot},
-    AtomLimits, DeviceId, GitOid, GitStore, Plane, ProjectId, ProjectPolicy, RefAdvertisement,
-    StoredAtom, SyncError, SyncErrorCode,
+    git_store::{GitStore, RepositoryWriter, TrustedSnapshot},
+    AtomLimits, DeviceId, GitOid, Plane, ProjectId, ProjectPolicy, RefAdvertisement, StoredAtom,
+    SyncError, SyncErrorCode,
 };
 
 static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -618,12 +618,13 @@ fn validate_reachable_heads<P: ProjectPolicy>(
             rollback_commits: vec![],
             error,
         })?;
-    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.boundary, memo)
-        .map_err(|error| ValidationFailure {
+    let owners = candidate_commit_owners(git, repo, candidate_refs, &validation.boundary).map_err(
+        |error| ValidationFailure {
             commit: None,
             rollback_commits: vec![],
             error,
-        })?;
+        },
+    )?;
     for (commit, parents) in commits {
         let result = (|| {
             let entries = memo.tree(git, repo, &commit, plane)?;
@@ -685,10 +686,10 @@ fn validate_reachable_heads<P: ProjectPolicy>(
                 if atom.unsigned.project_id != expected_project_id {
                     return Err(invalid("atom belongs to a different project"));
                 }
-                if owners.get(&commit).is_some_and(|devices| {
+                if !owners.get(&commit).is_some_and(|devices| {
                     devices
                         .iter()
-                        .any(|device| device != &atom.unsigned.actor_device_id)
+                        .all(|device| device == &atom.unsigned.actor_device_id)
                 }) {
                     return Err(invalid("candidate device does not own authored atom"));
                 }
@@ -799,29 +800,26 @@ fn validate_reachable_heads<P: ProjectPolicy>(
     Ok(())
 }
 
-fn candidate_commit_owners<S>(
+fn candidate_commit_owners(
     git: &crate::git_command::GitCommand,
     repo: &PathBuf,
     candidates: &[Candidate],
     trusted_boundary: &[GitOid],
-    memo: &mut ImportMemo<S>,
 ) -> Result<BTreeMap<GitOid, BTreeSet<DeviceId>>, SyncError> {
     let mut owners: BTreeMap<GitOid, BTreeSet<DeviceId>> = BTreeMap::new();
     for candidate in candidates {
         let Some(head) = candidate.current.as_ref() else {
             continue;
         };
-        let mut boundaries = trusted_boundary.to_vec();
-        boundaries.extend(
-            candidates
-                .iter()
-                .filter(|other| other.device != candidate.device)
-                .filter_map(|other| other.current.clone()),
-        );
-        let commits_owned_elsewhere = memo
-            .reachable(git, repo, &boundaries, &[])?
-            .into_iter()
-            .map(|(commit, _)| commit)
+        let exact_boundaries = trusted_boundary
+            .iter()
+            .cloned()
+            .chain(
+                candidates
+                    .iter()
+                    .filter(|other| other.device != candidate.device)
+                    .filter_map(|other| other.current.clone()),
+            )
             .collect::<BTreeSet<_>>();
         for (index, commit) in first_parent_segment(git, repo, candidate.previous.as_ref(), head)?
             .into_iter()
@@ -830,7 +828,7 @@ fn candidate_commit_owners<S>(
             // The advertised head is always the candidate's own assertion. For
             // older first-parent history, stop once another trusted/advertised
             // device head already provides the authorship boundary.
-            if index > 0 && commits_owned_elsewhere.contains(&commit) {
+            if index > 0 && exact_boundaries.contains(&commit) {
                 break;
             }
             owners.entry(commit).or_default().insert(candidate.device);

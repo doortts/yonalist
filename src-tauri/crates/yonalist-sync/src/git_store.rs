@@ -8,8 +8,9 @@ use std::{
 
 use crate::{
     git_command::{bounded_message, GitCommand, GitExecLimits, GitExit, GitRuntime},
+    protocol::StoreBatch,
     AtomLimits, DeviceId, EventId, GitOid, LocalCommit, Plane, RefAdvertisement, SignedAtom,
-    StoreBatch, StoredAtom, SyncError, SyncErrorCode,
+    StoredAtom, SyncError, SyncErrorCode,
 };
 
 pub struct GitStore {
@@ -58,6 +59,7 @@ impl GitStore {
         Ok(Self { repo, git })
     }
 
+    #[cfg(feature = "test-support")]
     pub fn append_local(&self, batch: StoreBatch) -> Result<LocalCommit, SyncError> {
         self.with_writer(|writer| writer.append_local(batch))
     }
@@ -450,9 +452,8 @@ impl GitStore {
         }
         let mut parents = Vec::new();
         if let Some(previous) = previous {
-            if retained.remove(previous) {
-                parents.push(previous.clone());
-            }
+            parents.push(previous.clone());
+            retained.remove(previous);
         }
         parents.extend(retained);
         Ok(parents)
@@ -730,7 +731,9 @@ mod tests {
         let second = GitStore::open(directory.path(), git).unwrap();
         let (held_tx, held_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
         let (entered_tx, entered_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
 
         let holder = thread::spawn(move || {
             first
@@ -740,9 +743,20 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
+            done_tx.send(()).unwrap();
         });
         held_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join("yonalist-private/writer.lock"))
+            .unwrap();
+        assert!(matches!(
+            fs4::FileExt::try_lock(&contender),
+            Err(fs4::TryLockError::WouldBlock)
+        ));
         let waiter = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
             second
                 .with_writer(|_| {
                     entered_tx.send(()).unwrap();
@@ -751,12 +765,10 @@ mod tests {
                 .unwrap();
         });
 
-        assert!(matches!(
-            entered_rx.recv_timeout(Duration::from_millis(200)),
-            Err(mpsc::RecvTimeoutError::Timeout)
-        ));
+        ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         release_tx.send(()).unwrap();
         entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        done_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         holder.join().unwrap();
         waiter.join().unwrap();
     }

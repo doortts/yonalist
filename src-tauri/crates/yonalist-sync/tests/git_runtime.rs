@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 use std::{env, path::PathBuf};
 
 #[cfg(unix)]

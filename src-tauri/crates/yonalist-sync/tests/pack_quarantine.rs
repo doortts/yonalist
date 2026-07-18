@@ -1,3 +1,5 @@
+#![cfg(feature = "test-support")]
+
 use std::{
     collections::BTreeMap,
     env,
@@ -1711,13 +1713,13 @@ fn invalid_atom_hidden_in_omitted_secondary_parent_rejects_merge() {
     assert!(validated.accepted().is_empty());
     assert_eq!(
         validated.rejected(),
-        &[(device, yonalist_sync::SyncErrorCode::PolicyRejected)]
+        &[(device, yonalist_sync::SyncErrorCode::InvalidAtom)]
     );
     assert_eq!(receiver.head(Plane::Data, device).unwrap(), Some(main.head));
 }
 
 #[test]
-fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidates() {
+fn advertised_side_parent_control_commits_keep_causal_boundaries() {
     let source_dir = tempfile::tempdir().unwrap();
     let receiver_dir = tempfile::tempdir().unwrap();
     let source = GitStore::init(source_dir.path(), &git()).unwrap();
@@ -1761,19 +1763,22 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
                 vec![],
             )],
             auxiliary_files: vec![],
-            observed_heads: vec![side.head],
+            observed_heads: vec![side.head.clone()],
         })
         .unwrap();
     let advertised = RefAdvertisement {
         plane: Plane::Control,
-        refs: BTreeMap::from([(device, merge.head.clone())]),
+        refs: BTreeMap::from([
+            (device, merge.head.clone()),
+            (side_device, side.head.clone()),
+        ]),
     };
     let (atom_limits, pack_limits) = limits();
     let pack = source
         .create_pack(
             &PackRequest {
                 plane: Plane::Control,
-                wants: vec![merge.head.clone()],
+                wants: vec![merge.head.clone(), side.head.clone()],
                 haves: vec![],
             },
             &pack_limits,
@@ -1791,9 +1796,14 @@ fn side_parent_control_commits_keep_causal_boundaries_without_becoming_candidate
             &RecordControlBoundaries(calls.clone()),
         )
         .unwrap();
-    assert_eq!(validated.accepted().len(), 1);
-    assert_eq!(validated.accepted()[0].device_id, device);
-    assert_eq!(validated.accepted()[0].accepted_head, merge.head);
+    assert_eq!(validated.accepted().len(), 2);
+    assert!(validated
+        .accepted()
+        .iter()
+        .any(|candidate| candidate.device_id == device && candidate.accepted_head == merge.head));
+    assert!(validated.accepted().iter().any(|candidate| {
+        candidate.device_id == side_device && candidate.accepted_head == side.head
+    }));
     let calls = calls.lock().unwrap();
     assert_eq!(calls.len(), 6);
     assert!(calls.iter().all(|commit| commit.len() == 1));
@@ -1817,6 +1827,7 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
     let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
     let enable_device = DeviceId::from_bytes([1; 16]);
     let merge_devices = [DeviceId::from_bytes([2; 16]), DeviceId::from_bytes([3; 16])];
+    let dependent_device = DeviceId::from_bytes([9; 16]);
     let dependent_atom = atom_for(b"dependent", 242, 9, Plane::Control);
     let dependent = raw_commit(
         source_dir.path(),
@@ -1841,6 +1852,12 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
         .expect("fixture can place dependent before enable in canonical OID order");
     let mut expected = BTreeMap::from([(enable_device, enable.clone())]);
     set_ref(source_dir.path(), Plane::Control, enable_device, &enable);
+    set_ref(
+        source_dir.path(),
+        Plane::Control,
+        dependent_device,
+        &dependent,
+    );
     for (index, device) in merge_devices.into_iter().enumerate() {
         let safe_atom = atom_for(b"safe", 240 + index as u8, 2 + index as u8, Plane::Control);
         let safe = raw_commit(
@@ -1910,6 +1927,10 @@ fn partial_control_prefixes_replay_as_a_canonical_union() {
             ),
             (
                 merge_devices[1],
+                yonalist_sync::SyncErrorCode::PolicyRejected
+            ),
+            (
+                dependent_device,
                 yonalist_sync::SyncErrorCode::PolicyRejected
             ),
         ]
@@ -2196,6 +2217,131 @@ fn duplicate_atom_alias_is_rejected_while_atomless_commit_is_accepted() {
     assert_eq!(stored[0].atom.unsigned.payload, b"shared");
     let attempts = attempts.lock().unwrap();
     assert!(!attempts.is_empty());
+}
+
+#[test]
+fn shared_unadvertised_base_must_be_owned_by_an_advertised_device() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let (atom_limits, pack_limits) = limits();
+
+    let malicious = atom_for(b"unowned", 200, 99, Plane::Data);
+    let base_files = BTreeMap::from([(
+        malicious.repo_path(),
+        malicious.encode(&atom_limits).unwrap(),
+    )]);
+    let base = raw_commit_with_parents(source_dir.path(), &[], &base_files);
+
+    for (device_byte, event) in [(1, 201), (2, 202)] {
+        let device = DeviceId::from_bytes([device_byte; 16]);
+        let owned = atom_with_frontiers(
+            b"owned",
+            event,
+            device_byte,
+            Plane::Data,
+            ProjectId::from_bytes([1; 16]),
+            vec![],
+            vec![base.clone()],
+        );
+        let mut files = base_files.clone();
+        files.insert(owned.repo_path(), owned.encode(&atom_limits).unwrap());
+        let head = raw_commit_with_parents(source_dir.path(), std::slice::from_ref(&base), &files);
+        set_ref(source_dir.path(), Plane::Data, device, &head);
+    }
+
+    let outcome = pull(
+        &source,
+        &receiver,
+        Plane::Data,
+        &atom_limits,
+        &pack_limits,
+        &Allow,
+    );
+    assert!(outcome.accepted().is_empty());
+    assert_eq!(outcome.rejected().len(), 2);
+    assert!(outcome
+        .rejected()
+        .iter()
+        .all(|(_, code)| *code == yonalist_sync::SyncErrorCode::InvalidAtom));
+    assert!(receiver.advertise(Plane::Data).unwrap().refs.is_empty());
+}
+
+#[test]
+fn unadvertised_side_parent_atom_has_no_ref_owner() {
+    let source_dir = tempfile::tempdir().unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    let source = GitStore::init(source_dir.path(), &git()).unwrap();
+    let receiver = GitStore::init(receiver_dir.path(), &git()).unwrap();
+    let (atom_limits, pack_limits) = limits();
+    let device = DeviceId::from_bytes([41; 16]);
+    let main_atom = atom_for(b"main", 206, 41, Plane::Data);
+    let main = source
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: device,
+            expected_head: None,
+            atoms: vec![main_atom.clone()],
+            auxiliary_files: vec![],
+            observed_heads: vec![],
+        })
+        .unwrap();
+    let side_atom = atom_for(b"unadvertised-side", 207, 42, Plane::Data);
+    let side = raw_commit_with_parents(
+        source_dir.path(),
+        &[],
+        &BTreeMap::from([(
+            side_atom.repo_path(),
+            side_atom.encode(&atom_limits).unwrap(),
+        )]),
+    );
+    let merge = raw_commit_with_parents(
+        source_dir.path(),
+        &[main.head.clone(), side],
+        &BTreeMap::from([
+            (
+                main_atom.repo_path(),
+                main_atom.encode(&atom_limits).unwrap(),
+            ),
+            (
+                side_atom.repo_path(),
+                side_atom.encode(&atom_limits).unwrap(),
+            ),
+        ]),
+    );
+    set_ref(source_dir.path(), Plane::Data, device, &merge);
+    let advertised = RefAdvertisement {
+        plane: Plane::Data,
+        refs: BTreeMap::from([(device, merge.clone())]),
+    };
+    let pack = source
+        .create_pack(
+            &PackRequest {
+                plane: Plane::Data,
+                wants: vec![merge],
+                haves: vec![],
+            },
+            &pack_limits,
+        )
+        .unwrap();
+
+    let outcome = receiver
+        .import_pack(
+            ProjectId::from_bytes([1; 16]),
+            Plane::Data,
+            &advertised,
+            pack,
+            &atom_limits,
+            &pack_limits,
+            &Allow,
+        )
+        .unwrap();
+    assert_eq!(outcome.accepted()[0].accepted_head, main.head);
+    assert_eq!(
+        outcome.rejected(),
+        &[(device, yonalist_sync::SyncErrorCode::InvalidAtom)]
+    );
 }
 
 #[test]
@@ -2737,9 +2883,10 @@ fn revocation_race_serializes_validation_and_append() {
     let import_path = receiver_dir.path().to_path_buf();
     let import_limits = atom_limits.clone();
     let import_pack_limits = pack_limits.clone();
+    let (imported_tx, imported_rx) = mpsc::channel();
     let import_thread = thread::spawn(move || {
         let store = GitStore::open(&import_path, &git()).unwrap();
-        store.import_pack(
+        let result = store.import_pack(
             ProjectId::from_bytes([1; 16]),
             Plane::Data,
             &data_advertised,
@@ -2747,9 +2894,19 @@ fn revocation_race_serializes_validation_and_append() {
             &import_limits,
             &import_pack_limits,
             &BlockingCutPolicy(import_gate),
-        )
+        );
+        imported_tx.send(result).unwrap();
     });
     gate.wait_until_entered();
+    let import_lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(receiver_dir.path().join("yonalist-private/writer.lock"))
+        .unwrap();
+    assert!(matches!(
+        fs4::FileExt::try_lock(&import_lock),
+        Err(fs4::TryLockError::WouldBlock)
+    ));
 
     let (mutation_tx, mutation_rx) = mpsc::channel();
     let mut revoker = Replica::open(
@@ -2776,8 +2933,10 @@ fn revocation_race_serializes_validation_and_append() {
         vec![grant.head],
         vec![],
     );
+    let (ready_tx, ready_rx) = mpsc::channel();
     let (revoked_tx, revoked_rx) = mpsc::channel();
     let revoke_thread = thread::spawn(move || {
+        ready_tx.send(()).unwrap();
         let result = revoker.append_local(yonalist_sync::LocalBatch {
             plane: Plane::Control,
             atoms: vec![revoke],
@@ -2785,17 +2944,22 @@ fn revocation_race_serializes_validation_and_append() {
         });
         revoked_tx.send(result).unwrap();
     });
-    assert!(matches!(
-        mutation_rx.recv_timeout(Duration::from_millis(200)),
-        Err(mpsc::RecvTimeoutError::Timeout)
-    ));
+    ready_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     gate.release();
-    assert_eq!(import_thread.join().unwrap().unwrap().accepted, 1);
+    assert_eq!(
+        imported_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap()
+            .accepted,
+        1
+    );
     mutation_rx.recv_timeout(Duration::from_secs(3)).unwrap();
     revoked_rx
         .recv_timeout(Duration::from_secs(3))
         .unwrap()
         .unwrap();
+    import_thread.join().unwrap();
     revoke_thread.join().unwrap();
     assert!(receiver.head(Plane::Data, data_device).unwrap().is_some());
 }

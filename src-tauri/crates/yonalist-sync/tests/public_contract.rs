@@ -31,3 +31,34 @@ fn primitive_ids_reject_values_larger_than_u128() {
     let largest = "7zzzzzzzzzzzzzzzzzzzzzzzzz";
     assert_eq!(largest.parse::<ProjectId>().unwrap().to_string(), largest);
 }
+
+#[test]
+fn default_features_hide_raw_repository_mutation_api() {
+    let consumer = tempfile::tempdir().unwrap();
+    std::fs::create_dir(consumer.path().join("src")).unwrap();
+    let dependency = serde_json::to_string(env!("CARGO_MANIFEST_DIR")).unwrap();
+    std::fs::write(
+        consumer.path().join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"public-contract-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nyonalist-sync = {{ path = {dependency}, default-features = false }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        consumer.path().join("src/main.rs"),
+        "use yonalist_sync::{GitStore, StoreBatch};\nfn main() { let _ = core::mem::size_of::<(GitStore, StoreBatch)>(); }\n",
+    )
+    .unwrap();
+    let output = std::process::Command::new(env!("CARGO"))
+        .args(["check", "--quiet", "--offline"])
+        .current_dir(consumer.path())
+        .env("CARGO_TARGET_DIR", consumer.path().join("target"))
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "default-feature consumer imported raw mutation types"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GitStore") && stderr.contains("StoreBatch"));
+}
