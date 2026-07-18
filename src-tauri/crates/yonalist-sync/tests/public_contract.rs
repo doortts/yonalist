@@ -158,6 +158,36 @@ fn assert_default_features_expose_production_contract() {
     );
 }
 
+fn assert_default_features_hide_replica_method(method: &str, probe: &str) {
+    let consumer = tempfile::tempdir().unwrap();
+    std::fs::create_dir(consumer.path().join("src")).unwrap();
+    let dependency = serde_json::to_string(env!("CARGO_MANIFEST_DIR")).unwrap();
+    std::fs::write(
+        consumer.path().join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"replica-method-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nyonalist-sync = {{ path = {dependency}, default-features = false }}\n"
+        ),
+    )
+    .unwrap();
+    std::fs::write(consumer.path().join("src/main.rs"), probe).unwrap();
+    let output = std::process::Command::new(env!("CARGO"))
+        .args(["check", "--quiet", "--offline"])
+        .current_dir(consumer.path())
+        .env("CARGO_TARGET_DIR", consumer.path().join("target"))
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "default-feature consumer called Replica::{method}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("method `{method}` is private"))
+            || stderr.contains(&format!("no method named `{method}` found")),
+        "missing inaccessible-method diagnostic for Replica::{method}:\n{stderr}"
+    );
+}
+
 #[test]
 fn default_features_hide_git_store() {
     assert_default_features_hide("GitStore");
@@ -177,4 +207,36 @@ fn default_features_hide_raw_promotion_types() {
 #[test]
 fn default_features_expose_only_the_production_contract() {
     assert_default_features_expose_production_contract();
+}
+
+#[test]
+fn default_features_hide_replica_local_hello() {
+    assert_default_features_hide_replica_method(
+        "local_hello",
+        "use yonalist_sync::{ProjectPolicy, Replica};\nfn probe<P: ProjectPolicy>(replica: &Replica<P>) { let _ = replica.local_hello(); }\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn default_features_hide_replica_advertise() {
+    assert_default_features_hide_replica_method(
+        "advertise",
+        "use yonalist_sync::{Plane, ProjectPolicy, Replica};\nfn probe<P: ProjectPolicy>(replica: &Replica<P>) { let _ = replica.advertise(Plane::Data); }\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn default_features_hide_replica_create_pack() {
+    assert_default_features_hide_replica_method(
+        "create_pack",
+        "use yonalist_sync::{PackLimits, PackRequest, Plane, ProjectPolicy, Replica};\nfn probe<P: ProjectPolicy>(replica: &Replica<P>) { let request = PackRequest { plane: Plane::Data, wants: vec![], haves: vec![] }; let _ = replica.create_pack(&request, &PackLimits::default()); }\nfn main() {}\n",
+    );
+}
+
+#[test]
+fn default_features_hide_replica_peer_access() {
+    assert_default_features_hide_replica_method(
+        "peer_access",
+        "use yonalist_sync::{Hello, ProjectPolicy, Replica};\nfn probe<P: ProjectPolicy>(replica: &Replica<P>, hello: &Hello) { let _ = replica.peer_access(hello); }\nfn main() {}\n",
+    );
 }

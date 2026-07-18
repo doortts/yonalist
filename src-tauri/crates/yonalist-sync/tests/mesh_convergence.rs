@@ -3,7 +3,7 @@
 use yonalist_sync::{run_mesh, ScenarioConfig, SyncErrorCode};
 
 #[test]
-#[ignore = "slow: 100 isolated Git repositories and 500 production-pack events; run explicitly for Task 8 CI"]
+#[ignore = "slow: 100 isolated Git repositories and 500 production-pack events; run explicitly for the final hardening gate"]
 fn one_hundred_partitioned_peers_eventually_converge() {
     let summary = run_mesh(ScenarioConfig {
         peers: 100,

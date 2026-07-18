@@ -966,6 +966,7 @@ mod git_command_tests {
             fs::PermissionsExt,
         },
         process::Command,
+        sync::{Mutex, MutexGuard},
         thread,
         time::{Duration, Instant},
     };
@@ -980,6 +981,15 @@ mod git_command_tests {
     const DESCENDANT_EXECUTOR_TIMEOUT: Duration = Duration::from_secs(30);
     #[cfg(unix)]
     const DESCENDANT_PROMPT_BOUND: Duration = Duration::from_secs(5);
+    #[cfg(unix)]
+    static PROCESS_TREE_TEST_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    fn process_tree_test_guard() -> MutexGuard<'static, ()> {
+        PROCESS_TREE_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1276,6 +1286,7 @@ mod git_command_tests {
     #[cfg(unix)]
     #[test]
     fn exit_probe_keeps_the_process_group_leader_waitable() {
+        let _guard = process_tree_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let script = write_executable(temp.path(), "exited-git", "exit 23\n");
         let mut command = base_command(&script);
@@ -1313,6 +1324,7 @@ mod git_command_tests {
     #[cfg(unix)]
     #[test]
     fn stale_running_observation_handles_an_exit_before_killpg() {
+        let _guard = process_tree_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let script = write_executable(temp.path(), "racing-git", "exit 29\n");
         let mut command = base_command(&script);
@@ -1421,6 +1433,7 @@ mod git_command_tests {
             return;
         }
 
+        let _guard = process_tree_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let script = write_executable(temp.path(), "watchdog-git", "while :; do :; done\n");
         let process_group_file = temp.path().join("executor-pgid");
@@ -1582,6 +1595,7 @@ mod git_command_tests {
 
     #[cfg(unix)]
     fn run_helper(test_name: &str, envs: &[(&str, &OsStr)]) {
+        let _guard = process_tree_test_guard();
         let watchdog = tempfile::tempdir().unwrap();
         let process_group_file = watchdog.path().join("executor-pgid");
         let mut child = spawn_helper(test_name, envs, &process_group_file);

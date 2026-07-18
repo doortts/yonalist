@@ -1,6 +1,8 @@
 #![cfg(feature = "test-support")]
 
-use yonalist_sync::test_support::raw_test_support::GitStore;
+use std::process::Command;
+
+use yonalist_sync::test_support::raw_test_support::{GitStore, StoreBatch};
 use yonalist_sync::{
     AccessDecision, AtomLimits, DeviceId, DeviceSigner, EventId, FixtureControl, FixturePair,
     FixturePolicy, FixtureReplica, GitOid, GrantId, Hello, HelloAck, InProcessPeer, LocalBatch,
@@ -9,7 +11,7 @@ use yonalist_sync::{
     ATOM_SCHEMA_V1,
 };
 
-fn same_identity_alice(repository: &std::path::Path) -> FixtureReplica {
+fn open_same_identity_alice(repository: &std::path::Path) -> Result<FixtureReplica, SyncError> {
     let signer = DeviceSigner::from_secret_bytes([8; 32]);
     FixtureReplica::open(
         ReplicaConfig {
@@ -33,7 +35,67 @@ fn same_identity_alice(repository: &std::path::Path) -> FixtureReplica {
         ),
         signer,
     )
-    .unwrap()
+}
+
+fn same_identity_alice(repository: &std::path::Path) -> FixtureReplica {
+    open_same_identity_alice(repository).unwrap()
+}
+
+fn introduce_foreign_atom_on_alice_data_ref(repository: &std::path::Path) {
+    let store = GitStore::open(repository, &test_git()).unwrap();
+    let alice = DeviceId::from_bytes([3; 16]);
+    let foreign = DeviceId::from_bytes([77; 16]);
+    let previous = store.head(Plane::Data, alice).unwrap().unwrap();
+    let atom = DeviceSigner::from_secret_bytes([77; 32])
+        .sign(UnsignedAtom {
+            schema: ATOM_SCHEMA_V1,
+            project_id: ProjectId::from_bytes([1; 16]),
+            event_id: EventId::from_bytes([77; 16]),
+            plane: Plane::Data,
+            actor_member_id: MemberId::from_bytes([78; 16]),
+            actor_device_id: foreign,
+            membership_grant_id: GrantId::from_bytes([79; 16]),
+            control_frontier: vec![],
+            data_frontier: vec![previous.clone()],
+            display_time_ms: 0,
+            payload: b"foreign-atom-on-alice-ref".to_vec(),
+        })
+        .unwrap();
+    let foreign_commit = store
+        .append_local(StoreBatch {
+            plane: Plane::Data,
+            device_id: foreign,
+            expected_head: None,
+            atoms: vec![atom],
+            auxiliary_files: vec![],
+            observed_heads: vec![previous.clone()],
+        })
+        .unwrap();
+    let git_dir = format!("--git-dir={}", repository.display());
+    let local_ref = format!("{}{}", Plane::Data.ref_prefix(), alice);
+    let foreign_ref = format!("{}{}", Plane::Data.ref_prefix(), foreign);
+    let update = Command::new(test_git())
+        .args([
+            git_dir.as_str(),
+            "update-ref",
+            local_ref.as_str(),
+            foreign_commit.head.as_str(),
+            previous.as_str(),
+        ])
+        .status()
+        .unwrap();
+    assert!(update.success());
+    let remove_alias = Command::new(test_git())
+        .args([
+            git_dir.as_str(),
+            "update-ref",
+            "-d",
+            foreign_ref.as_str(),
+            foreign_commit.head.as_str(),
+        ])
+        .status()
+        .unwrap();
+    assert!(remove_alias.success());
 }
 
 fn test_git() -> std::path::PathBuf {
@@ -140,6 +202,50 @@ fn same_device_recovery_decodes_only_its_new_first_parent_atom() {
     same_device
         .append_fixture_data(b"cursor-remains-local")
         .unwrap();
+}
+
+#[test]
+fn reopen_rejects_a_new_foreign_actor_on_the_local_first_parent_chain() {
+    let mut pair = FixturePair::new();
+    pair.alice
+        .append_fixture_data(b"valid-local-event")
+        .unwrap();
+    let walked_before = pair.alice.local_commits_walked();
+    let decoded_before = pair.alice.local_atoms_decoded();
+    let refreshes_before = pair.alice.fixture_event_refresh_count();
+    introduce_foreign_atom_on_alice_data_ref(pair.alice_repository());
+
+    let error = pair.reopen_alice().unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(pair.alice.local_commits_walked(), walked_before);
+    assert_eq!(pair.alice.local_atoms_decoded(), decoded_before);
+    assert_eq!(pair.alice.fixture_event_refresh_count(), refreshes_before);
+}
+
+#[test]
+fn pull_rejects_a_new_foreign_actor_without_advancing_fixture_telemetry() {
+    let mut pair = FixturePair::new();
+    pair.alice
+        .append_fixture_data(b"valid-local-event")
+        .unwrap();
+    let receiver_dir = tempfile::tempdir().unwrap();
+    GitStore::init(receiver_dir.path(), &test_git()).unwrap();
+    let mut receiver = same_identity_alice(receiver_dir.path());
+    receiver
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap();
+    let walked_before = receiver.local_commits_walked();
+    let decoded_before = receiver.local_atoms_decoded();
+    let refreshes_before = receiver.fixture_event_refresh_count();
+    introduce_foreign_atom_on_alice_data_ref(pair.alice_repository());
+
+    let error = receiver
+        .pull_from(&mut InProcessPeer::new(&pair.alice))
+        .unwrap_err();
+    assert_eq!(error.code, SyncErrorCode::InvalidAtom);
+    assert_eq!(receiver.local_commits_walked(), walked_before);
+    assert_eq!(receiver.local_atoms_decoded(), decoded_before);
+    assert_eq!(receiver.fixture_event_refresh_count(), refreshes_before);
 }
 
 #[test]

@@ -42,7 +42,7 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Standalone Git runtime probe
-        run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --test git_runtime -- --nocapture --test-threads=1
+        run: cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test git_runtime -- --nocapture --test-threads=1
       - name: Standalone sync core tests
         run: npm run test:sync
       - name: Rust tests

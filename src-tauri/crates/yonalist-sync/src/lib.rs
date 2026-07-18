@@ -2,7 +2,19 @@
 //! Raw Git storage and pack-promotion internals are deliberately absent.
 //!
 //! ```compile_fail
-//! use yonalist_sync::{CandidateRef, GitStore, StoreBatch, ValidatedPack};
+//! use yonalist_sync::CandidateRef;
+//! ```
+//!
+//! ```compile_fail
+//! use yonalist_sync::GitStore;
+//! ```
+//!
+//! ```compile_fail
+//! use yonalist_sync::StoreBatch;
+//! ```
+//!
+//! ```compile_fail
+//! use yonalist_sync::ValidatedPack;
 //! ```
 //!
 //! The stable production protocol surface remains available without optional

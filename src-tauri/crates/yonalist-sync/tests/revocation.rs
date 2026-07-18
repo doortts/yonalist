@@ -200,7 +200,7 @@ fn removal_only_never_advertises_or_packs_and_replay_is_idempotent() {
 }
 
 #[test]
-fn allowed_token_is_bound_to_endpoint_and_current_membership() {
+fn session_token_is_bound_to_endpoint_and_current_membership() {
     let pair = FixturePair::new();
     let mut first_endpoint = InProcessPeer::new(&pair.alice);
     let mut second_endpoint = InProcessPeer::new(&pair.alice);

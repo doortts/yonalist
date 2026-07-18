@@ -56,6 +56,9 @@ fn repository_documents_and_probes_the_pinned_runtime_versions() {
     let runtime_probe = ci
         .find("--test git_runtime")
         .expect("CI must run the standalone Git runtime probe");
+    assert!(ci.contains(
+        "cargo test --manifest-path src-tauri/crates/yonalist-sync/Cargo.toml --features test-support --test git_runtime -- --nocapture --test-threads=1"
+    ));
     let ordinary_suite = ci
         .find("run: npm run test:sync")
         .expect("CI must run the ordinary standalone suite through npm");
@@ -67,6 +70,21 @@ fn repository_documents_and_probes_the_pinned_runtime_versions() {
         .1;
     assert!(scale_job.contains("timeout-minutes: 30"));
     assert!(scale_job.contains("npm run test:sync:scale"));
+}
+
+#[cfg(unix)]
+#[test]
+fn process_tree_helpers_are_serialized_without_changing_production_limits() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let git_command =
+        std::fs::read_to_string(root.join("src-tauri/crates/yonalist-sync/src/git_command.rs"))
+            .unwrap();
+
+    assert!(git_command.contains("static PROCESS_TREE_TEST_MUTEX"));
+    assert!(git_command.contains("fn process_tree_test_guard()"));
+    assert!(
+        git_command.contains("const HELPER_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(10)")
+    );
 }
 
 #[test]

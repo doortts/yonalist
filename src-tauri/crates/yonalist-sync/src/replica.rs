@@ -1,10 +1,12 @@
 use crate::transport::{Hello, PeerEndpoint};
 use crate::{
     access_lock::AccessLockStore, git_store::GitStore, pack::ImportRequest, protocol::StoreBatch,
-    AccessDecision, AccessState, AtomLimits, DeviceId, GitOid, GrantId, HelloAck, ImmutableFile,
-    LocalCommit, MemberId, PackBytes, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy,
-    RefAdvertisement, SignedAtom, StoredAtom, SyncError, SyncErrorCode,
+    AccessState, AtomLimits, DeviceId, GitOid, GrantId, HelloAck, ImmutableFile, LocalCommit,
+    MemberId, PackLimits, PackRequest, Plane, ProjectId, ProjectPolicy, RefAdvertisement,
+    SignedAtom, StoredAtom, SyncError, SyncErrorCode,
 };
+#[cfg(feature = "test-support")]
+use crate::{AccessDecision, PackBytes};
 use std::{collections::BTreeSet, path::PathBuf};
 
 pub struct ReplicaConfig {
@@ -105,7 +107,7 @@ impl<P: ProjectPolicy> Replica<P> {
             lock_notice,
         })
     }
-    pub fn local_hello(&self) -> Hello {
+    pub(crate) fn local_hello(&self) -> Hello {
         Hello {
             project_id: self.config.project_id,
             member_id: self.config.local_member_id,
@@ -113,7 +115,8 @@ impl<P: ProjectPolicy> Replica<P> {
             grant_id: self.config.local_grant_id,
         }
     }
-    pub fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
         if self.has_valid_access_lock_on_disk()? {
             return Err(access());
         }
@@ -151,7 +154,8 @@ impl<P: ProjectPolicy> Replica<P> {
         self.access_lock
             .fail_once(crate::access_lock::AccessLockFailure::DirectoryBarrier);
     }
-    pub fn create_pack(
+    #[cfg(feature = "test-support")]
+    pub(crate) fn create_pack(
         &self,
         request: &PackRequest,
         limits: &PackLimits,
@@ -274,7 +278,8 @@ impl<P: ProjectPolicy> Replica<P> {
         }
         result
     }
-    pub fn peer_access(&self, hello: &Hello) -> Result<AccessDecision, SyncError> {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn peer_access(&self, hello: &Hello) -> Result<AccessDecision, SyncError> {
         if self.lock_notice.is_some() || self.has_valid_access_lock_on_disk()? {
             return Ok(AccessDecision::Denied);
         }
@@ -374,6 +379,16 @@ impl<P: ProjectPolicy> Replica<P> {
             self.apply_access_lock(lock);
         }
         let outcome = outcome?;
+        if let Some((_, code)) = outcome
+            .rejected
+            .iter()
+            .find(|(device, _)| *device == self.config.local_device_id)
+        {
+            return Err(SyncError {
+                code: *code,
+                message: "peer supplied an invalid candidate for the local device ref".into(),
+            });
+        }
         let advanced = outcome.accepted;
         Ok(PlanePull { advanced, bytes })
     }
@@ -460,6 +475,7 @@ impl<P: ProjectPolicy> Replica<P> {
         Ok(self.report(PlanePull::empty(), PlanePull::empty()))
     }
 
+    #[cfg(feature = "test-support")]
     fn has_valid_access_lock_on_disk(&self) -> Result<bool, SyncError> {
         Ok(
             load_validated_access_lock(&self.store, &self.policy, &self.config, &self.access_lock)?

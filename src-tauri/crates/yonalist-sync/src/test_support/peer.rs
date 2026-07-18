@@ -429,6 +429,26 @@ impl FixtureReplica {
         Self::from_replica(Replica::open(config, policy)?, signer)
     }
 
+    pub fn local_hello(&self) -> Hello {
+        self.replica.local_hello()
+    }
+
+    pub fn advertise(&self, plane: Plane) -> Result<RefAdvertisement, SyncError> {
+        self.replica.advertise(plane)
+    }
+
+    pub fn create_pack(
+        &self,
+        request: &PackRequest,
+        limits: &PackLimits,
+    ) -> Result<PackBytes, SyncError> {
+        self.replica.create_pack(request, limits)
+    }
+
+    pub fn peer_access(&self, hello: &Hello) -> Result<crate::AccessDecision, SyncError> {
+        self.replica.peer_access(hello)
+    }
+
     fn from_replica(
         replica: Replica<FixturePolicy>,
         signer: DeviceSigner,

@@ -468,11 +468,23 @@ impl GitStore {
             Some(after) => OsString::from(format!("{}..{}", after.as_str(), head.as_str())),
             None => OsString::from(head.as_str()),
         });
-        let commits = text(self.git.run(&args, None)?)
+        let mut commits = text(self.git.run(&args, None)?)
             .lines()
             .filter(|line| !line.is_empty())
             .map(GitOid::parse)
             .collect::<Result<Vec<_>, _>>()?;
+        let other_device_heads = self
+            .advertise(plane)?
+            .refs
+            .into_iter()
+            .filter_map(|(advertised_device, head)| (advertised_device != device).then_some(head))
+            .collect::<BTreeSet<_>>();
+        if let Some(boundary) = commits
+            .iter()
+            .rposition(|commit| other_device_heads.contains(commit))
+        {
+            commits = commits.split_off(boundary + 1);
+        }
         let mut atoms = Vec::new();
         let mut decoded = 0_usize;
         for commit in &commits {
@@ -515,13 +527,16 @@ impl GitStore {
                 if atom.unsigned.plane != plane || atom.repo_path() != path {
                     return Err(invalid("atom path does not match atom"));
                 }
-                if atom.unsigned.actor_device_id == device {
-                    atoms.push(StoredAtom {
-                        path,
-                        containing_commit: commit.clone(),
-                        atom,
-                    });
+                if atom.unsigned.actor_device_id != device {
+                    return Err(invalid(
+                        "local first-parent atom belongs to a different device",
+                    ));
                 }
+                atoms.push(StoredAtom {
+                    path,
+                    containing_commit: commit.clone(),
+                    atom,
+                });
             }
         }
         Ok(LocalFirstParentSegment {

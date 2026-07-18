@@ -63,8 +63,7 @@ pub struct CandidateRef {
 #[derive(Debug)]
 pub struct ImportOutcome {
     pub accepted: usize,
-    #[cfg(feature = "test-support")]
-    pub rejected: Vec<(DeviceId, SyncErrorCode)>,
+    pub(crate) rejected: Vec<(DeviceId, SyncErrorCode)>,
     #[cfg(feature = "test-support")]
     pub pack_bytes: usize,
     #[cfg(feature = "test-support")]
@@ -96,7 +95,6 @@ struct PackBudget {
 
 struct ValidationResult {
     accepted: Vec<AcceptedRef>,
-    #[cfg(feature = "test-support")]
     rejected: Vec<(DeviceId, SyncErrorCode)>,
     budget: PackBudget,
 }
@@ -238,6 +236,7 @@ impl ImportOutcome {
 }
 
 impl GitStore {
+    #[cfg(feature = "test-support")]
     pub fn create_pack(
         &self,
         request: &PackRequest,
@@ -352,7 +351,6 @@ impl GitStore {
             if validation.accepted.is_empty() {
                 return Ok(ImportOutcome {
                     accepted: 0,
-                    #[cfg(feature = "test-support")]
                     rejected: validation.rejected,
                     #[cfg(feature = "test-support")]
                     pack_bytes: pack_bytes_len,
@@ -382,7 +380,6 @@ impl GitStore {
             )?;
             Ok(ImportOutcome {
                 accepted: validation.accepted.len(),
-                #[cfg(feature = "test-support")]
                 rejected: validation.rejected,
                 #[cfg(feature = "test-support")]
                 pack_bytes: pack_bytes_len,
@@ -437,12 +434,9 @@ fn audit_pack<P: ProjectPolicy>(
         policy: request.policy,
         snapshot,
     })?;
-    #[cfg(not(feature = "test-support"))]
-    let _ = rejected;
     budget.metadata_bytes = session.git.pack_metadata_bytes()?;
     Ok(ValidationResult {
         accepted,
-        #[cfg(feature = "test-support")]
         rejected,
         budget,
     })
