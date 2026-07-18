@@ -24,25 +24,31 @@ export interface NotesTextSelection {
   readonly endUtf16: number;
 }
 
+type NotesDateFocusElement = HTMLTextAreaElement | HTMLDivElement;
+
 export interface NotesDatePickerTarget {
   readonly field: NotesDateField;
   readonly source: string;
   readonly context: NotesDatePickerContext;
   readonly anchor: HTMLElement;
-  readonly focusElement: HTMLTextAreaElement;
+  readonly focusElement: NotesDateFocusElement;
 }
 
 interface NotesDatePickerHostProps {
   readonly target: NotesDatePickerTarget | null;
   readonly today: LocalDate;
-  readonly onCommit: (field: NotesDateField, value: string) => void;
+  readonly onCommit: (
+    field: NotesDateField,
+    value: string,
+    replacement: NotesDatePickerCommit["replacement"]
+  ) => void;
   readonly onClose: () => void;
   readonly onRequestFocusReturn: (request: NotesDateFocusRequest) => void;
 }
 
 interface NotesDateFocusRequest {
   readonly field: NotesDateField;
-  readonly element: HTMLTextAreaElement;
+  readonly element: NotesDateFocusElement;
   readonly caretUtf16: number;
   readonly expectedValue: string;
 }
@@ -57,7 +63,11 @@ interface UseNotesDatePickerIntegrationOptions {
   readonly refs: Readonly<
     Record<NotesDateField, RefObject<HTMLTextAreaElement | null>>
   >;
-  readonly onCommit: (field: NotesDateField, value: string) => void;
+  readonly onCommit: (
+    field: NotesDateField,
+    value: string,
+    replacement: NotesDatePickerCommit["replacement"]
+  ) => void;
 }
 
 const NotesDateTodayContext = createContext<LocalDate | null>(null);
@@ -285,7 +295,7 @@ export function NotesDatePickerHost({
             replacement.startUtf16 + replacement.text.length,
             nextValue
           );
-          onCommit(target.field, nextValue);
+          onCommit(target.field, nextValue, replacement);
           onClose();
         }}
         onDismiss={() => {
@@ -316,26 +326,27 @@ export function useNotesDatePickerIntegration({
     if (!pendingFocus) {
       return;
     }
-    const currentElement = refs[pendingFocus.field].current;
-    if (
-      currentElement !== pendingFocus.element ||
-      !currentElement?.isConnected
-    ) {
+    const currentElement = pendingFocus.element;
+    if (!currentElement.isConnected) {
       setPendingFocus(null);
       return;
     }
-    if (
-      values[pendingFocus.field] !== pendingFocus.expectedValue ||
-      currentElement.value !== pendingFocus.expectedValue
-    ) {
+    if (currentElement instanceof HTMLTextAreaElement) {
+      if (currentElement.value !== pendingFocus.expectedValue) {
+        return;
+      }
+    }
+    if (values[pendingFocus.field] !== pendingFocus.expectedValue) {
       return;
     }
-    const caretUtf16 = Math.min(
-      pendingFocus.caretUtf16,
-      currentElement.value.length
-    );
     currentElement.focus();
-    currentElement.setSelectionRange(caretUtf16, caretUtf16);
+    if (currentElement instanceof HTMLTextAreaElement) {
+      const caretUtf16 = Math.min(
+        pendingFocus.caretUtf16,
+        currentElement.value.length
+      );
+      currentElement.setSelectionRange(caretUtf16, caretUtf16);
+    }
     setPendingFocus(null);
     // values is decomposed into note/title (the only fields read via
     // values[pendingFocus.field]); depending on the whole object would re-run
@@ -351,15 +362,19 @@ export function useNotesDatePickerIntegration({
   const openExistingDate = (
     field: NotesDateField,
     match: NoteDateMatch,
-    anchor: HTMLButtonElement
+    anchor: HTMLButtonElement,
+    explicitFocusElement?: NotesDateFocusElement
   ) => {
-    const focusElement = refs[field].current;
+    const focusElement = explicitFocusElement ?? refs[field].current;
     if (!focusElement) {
       return;
     }
     openTarget({
       field,
-      source: values[field],
+      source:
+        focusElement instanceof HTMLTextAreaElement
+          ? focusElement.value
+          : values[field],
       context: createExistingDateContext(match),
       anchor,
       focusElement
@@ -369,11 +384,15 @@ export function useNotesDatePickerIntegration({
   const openTypedDate = (
     field: NotesDateField,
     range: { readonly startUtf16: number; readonly endUtf16: number },
-    focusElement: HTMLTextAreaElement
+    focusElement: NotesDateFocusElement,
+    explicitSource?: string
   ) => {
     openTarget({
       field,
-      source: focusElement.value,
+      source:
+        focusElement instanceof HTMLTextAreaElement
+          ? focusElement.value
+          : explicitSource ?? values[field],
       context: { kind: "typed-trigger", ...range },
       anchor: focusElement,
       focusElement

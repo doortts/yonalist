@@ -66,6 +66,7 @@ import {
   workspaceForScope,
   type LiveNotesNavigation,
   type NotesLibraryView,
+  type NotesImageAtomPasteAuthority,
   type NotesLifecycleNavigationSnapshot,
   type NotesLifecycleNavigationTransition,
   type NotesPreparedMove,
@@ -303,6 +304,12 @@ export interface NotesCommandContext {
   readonly libraryViewRef: MutableRefObject<NotesLibraryView>;
   readonly activeWorkspaceGenerationRef: MutableRefObject<number>;
   readonly currentImageAtomPasteMaxDisplayWidth: () => number;
+  readonly isImageAtomPasteAuthorityCurrentAtQueueTurn: (
+    authority: NotesImageAtomPasteAuthority,
+    context: NotesWorkspaceQueueContext,
+    record: NotesWorkspaceSessionRecord,
+    workspace: NormalizedNotesWorkspace
+  ) => boolean;
   readonly setLibraryView: (view: NotesLibraryView) => void;
   readonly setActiveTagFilters: (filters: readonly NoteTagFilter[]) => void;
   readonly runStructuralCommand: (
@@ -1241,7 +1248,8 @@ export function applyImageAtomPasteCommand(
   ctx: NotesCommandContext,
   nodeId: NoteId,
   selection: LogicalSelection,
-  fragment: ParsedImageAtomPaste
+  fragment: ParsedImageAtomPaste,
+  authority?: NotesImageAtomPasteAuthority
 ): Promise<NotesWorkspaceCommandOutcome> {
   const frozenSelection = { ...selection };
   const frozenFragment = freezeImageAtomPasteFragment(fragment);
@@ -1258,6 +1266,17 @@ export function applyImageAtomPasteCommand(
         };
       }
       const workspace = confirmedState(context);
+      if (
+        authority &&
+        !ctx.isImageAtomPasteAuthorityCurrentAtQueueTurn(
+          authority,
+          context,
+          record,
+          workspace
+        )
+      ) {
+        return { kind: "skipped" };
+      }
       const source = workspace.nodesById[nodeId];
       const attachments = workspace.attachmentsByNodeId[nodeId] ?? [];
       const initialMaxDisplayWidth = ctx.currentImageAtomPasteMaxDisplayWidth();

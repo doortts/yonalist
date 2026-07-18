@@ -1,5 +1,6 @@
 import {
   act,
+  createEvent,
   fireEvent,
   render,
   screen,
@@ -17,10 +18,16 @@ import type {
 import { NotesOutlinePane } from "./NotesOutlinePane";
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
+import {
+  createNotesImageAtomEditorRegistry,
+  type NotesImageAtomEditorAuthority
+} from "./notesImageAtomEditorRegistry";
+import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
 import type { NotesWorkspaceCommandOutcome } from "./notesWorkspaceCoordinator";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
 import type {
+  NotesImageAtomPasteAuthority,
   NotesNodeDraft,
   NotesPreparedMove,
   UseNotesWorkspaceResult
@@ -67,17 +74,79 @@ function attachment(
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+async function deferredInternalImagePaste(editor: HTMLElement) {
+  const bytes = new Uint8Array([
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0
+  ]);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes)
+  );
+  const contentHash = Array.from(digest, (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+  const bytesGate = deferred<ArrayBuffer>();
+  const file = new File([bytes], "internal.png", { type: "image/png" });
+  Object.defineProperty(file, "arrayBuffer", {
+    value: () => bytesGate.promise
+  });
+  const custom = JSON.stringify({
+    version: 1,
+    kind: "notes-image-atom",
+    beforeText: "copied-before",
+    afterText: "copied-after",
+    image: {
+      originalName: "internal.png",
+      mimeType: "image/png",
+      byteSize: bytes.byteLength,
+      contentHash
+    }
+  });
+  const event = createEvent.paste(editor, {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: {
+      types: [NOTES_IMAGE_ATOM_CLIPBOARD_MIME, "Files"],
+      items: {
+        0: {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => file
+        },
+        length: 1
+      },
+      getData: (type: string) =>
+        type === NOTES_IMAGE_ATOM_CLIPBOARD_MIME ? custom : ""
+    }
+  });
+  return {
+    event,
+    settle: () => bytesGate.resolve(bytes.slice().buffer)
+  };
+}
+
 function workspaceValue(options: {
   nodeKind?: NoteNode["nodeKind"];
   title?: string;
   note?: string;
+  imageOffsetUtf16?: number;
   childTitle?: string;
   childNote?: string;
+  childNodeKind?: NoteNode["nodeKind"];
+  childImageOffsetUtf16?: number;
   draft?: NotesNodeDraft;
   deletingNotesData?: boolean;
   libraryView?: UseNotesWorkspaceResult["libraryView"];
   pendingFocus?: { nodeId: string; field: "title" | "note" };
   attachments?: NoteAttachment[];
+  childAttachments?: NoteAttachment[];
   attachmentUploadError?: string;
   attachmentUploadRetryAttemptId?: string;
   includeOtherRoot?: boolean;
@@ -90,22 +159,26 @@ function workspaceValue(options: {
         id: "project",
         nodeKind: options.nodeKind ?? "text",
         title: options.title ?? "Project",
-        note: options.note ?? "Project context"
+        note: options.note ?? "Project context",
+        imageOffsetUtf16: options.imageOffsetUtf16 ?? 0
       }),
       node({
         id: "child",
         parentId: "project",
+        nodeKind: options.childNodeKind ?? "text",
         title: options.childTitle ?? "First child",
-        note: options.childNote ?? ""
+        note: options.childNote ?? "",
+        imageOffsetUtf16: options.childImageOffsetUtf16 ?? 0
       }),
       node({ id: "detail", parentId: "child", title: "Detail" }),
       ...(options.includeOtherRoot
         ? [node({ id: "inbox", sortKey: 2048, title: "Inbox" })]
         : [])
     ],
-    attachmentsByNodeId: options.attachments
-      ? { project: options.attachments }
-      : {}
+    attachmentsByNodeId: {
+      ...(options.attachments ? { project: options.attachments } : {}),
+      ...(options.childAttachments ? { child: options.childAttachments } : {})
+    }
   });
   state.zoomRootId = "project";
   state.pendingFocusId = options.pendingFocus?.nodeId ?? null;
@@ -162,6 +235,8 @@ function workspaceValue(options: {
     toggleSelectionNode: vi.fn(),
     clearSelection: vi.fn()
   } as UseNotesWorkspaceResult["actions"];
+  const imagePasteAuthority = {} as NotesImageAtomPasteAuthority;
+  const imageEditorAuthority = {} as NotesImageAtomEditorAuthority;
 
   return {
     state,
@@ -182,10 +257,36 @@ function workspaceValue(options: {
     writeError: options.writeError ?? null,
     retryFailedDraft: resolved(),
     retryLastFailedWrite: options.retryLastFailedWrite ?? resolved(),
+    captureActiveImageAtomEditorAuthority: vi.fn(() => imageEditorAuthority),
+    captureImageAtomPasteAuthority: vi.fn(() => imagePasteAuthority),
+    isImageAtomPasteAuthorityCurrent: vi.fn(() => true),
+    applyImageAtomPasteWithAuthority: vi.fn(
+      (_authority, nodeId, selection, fragment) =>
+        actions.applyImageAtomPaste(nodeId, selection, fragment)
+    ),
     status: "ready",
     loading: false,
     error: null
   };
+}
+
+function connectImagePasteAuthority(
+  workspace: UseNotesWorkspaceResult,
+  registry: ReturnType<typeof createNotesImageAtomEditorRegistry>
+) {
+  workspace.captureActiveImageAtomEditorAuthority = vi.fn(
+    (nodeId, selectionAuthority) =>
+      registry.capturePasteAuthority(nodeId, selectionAuthority)
+  );
+  workspace.captureImageAtomPasteAuthority = vi.fn(
+    (_nodeId, editorAuthority) =>
+      editorAuthority as unknown as NotesImageAtomPasteAuthority
+  );
+  workspace.isImageAtomPasteAuthorityCurrent = vi.fn((authority) =>
+    registry.isPasteAuthorityCurrent(
+      authority as unknown as NotesImageAtomEditorAuthority
+    )
+  );
 }
 
 function zoomedOutline(workspace: UseNotesWorkspaceResult) {
@@ -291,7 +392,7 @@ describe("NotesPageHeader", () => {
     ).toEqual(["1", "2"]);
   });
 
-  it("uses an image node as page primary content with its description beneath", () => {
+  it("uses one image atom editor as page primary content with its description beneath", () => {
     const image = attachment({ id: "image-1", nodeId: "project" });
     renderZoomedOutline(
       workspaceValue({
@@ -306,14 +407,17 @@ describe("NotesPageHeader", () => {
       name: "diagram.png",
       level: 1
     });
-    const content = screen.getByRole("group", {
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    const content = within(editor).getByRole("group", {
       name: "Image: diagram.png"
     });
     const description = getTextareaByName("Supporting note: Image");
 
-    expect(content).toHaveAttribute("tabindex", "0");
+    expect(editor).toHaveAttribute("aria-multiline", "true");
+    expect(editor).toHaveAttribute("contenteditable", "true");
+    expect(editor.querySelectorAll("[data-image-atom-region]")).toHaveLength(3);
     expect(heading).not.toContainElement(content);
-    expect(heading.parentElement).toBe(content.parentElement);
+    expect(heading.parentElement).toBe(editor.parentElement);
     expect(heading.parentElement).toHaveClass("notes-page-primary");
     expect(
       heading.querySelector("button, input, textarea, [tabindex]")
@@ -328,12 +432,160 @@ describe("NotesPageHeader", () => {
     expect(
       screen.getByRole("button", { name: "More actions for Image" })
     ).toBeVisible();
-    expect(heading.closest(".notes-page-header")).not.toHaveTextContent(
-      "diagram.png"
-    );
+    expect(heading.closest(".notes-page-header")).toContainElement(editor);
     expect(
       screen.getByRole("button", { name: "Zoom into First child" })
     ).toBeVisible();
+  });
+
+  it("opens an existing-date picker from the page image atom", async () => {
+    const user = userEvent.setup();
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "Before 07/12/2026 after",
+        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      })
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Edit date 07/12/2026" })
+    );
+
+    expect(screen.getByRole("dialog", { name: "Choose date" })).toBeVisible();
+  });
+
+  it.each([
+    ["archive", { libraryView: "archive" as const }],
+    ["trash", { libraryView: "trash" as const }],
+    ["disabled", { deletingNotesData: true }]
+  ])("does not activate image dates while %s", async (_label, mode) => {
+    const workspace = workspaceValue({
+      ...mode,
+      nodeKind: "image",
+      title: "Before 07/12/2026 after",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    renderZoomedOutline(workspace);
+
+    expect(
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+    ).toBeNull();
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+  });
+
+  it("does not activate a valid standard-row image date while disabled", () => {
+    const workspace = workspaceValue({
+      deletingNotesData: true,
+      childNodeKind: "image",
+      childTitle: "Before 07/12/2026 after",
+      childImageOffsetUtf16: 6,
+      childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
+    });
+    renderZoomedOutline(workspace);
+
+    expect(
+      screen.queryByRole("button", { name: "Edit date 07/12/2026" })
+    ).toBeNull();
+    expect(workspace.actions.updateNodeDraft).not.toHaveBeenCalled();
+    expect(workspace.actions.flushNodeDraft).not.toHaveBeenCalled();
+  });
+
+  it("moves the image offset when an existing date before the atom changes length", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "today after",
+      imageOffsetUtf16: 5,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    renderZoomedOutline(workspace);
+
+    await user.click(screen.getByRole("button", { name: "Edit date today" }));
+    const picker = screen.getByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      {
+        title: "07/11/2026 after",
+        note: "Project context",
+        imageOffsetUtf16: 10
+      },
+      "title"
+    );
+  });
+
+  it("keeps the image offset for an existing date after the atom", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "before today",
+      imageOffsetUtf16: 0,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    renderZoomedOutline(workspace);
+
+    await user.click(screen.getByRole("button", { name: "Edit date today" }));
+    const picker = screen.getByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      {
+        title: "before 07/11/2026",
+        note: "Project context",
+        imageOffsetUtf16: 0
+      },
+      "title"
+    );
+  });
+
+  it("opens a typed-date picker from the latest page image-atom draft", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "before!after",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    renderZoomedOutline(workspace);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    const afterText = editor.querySelector<HTMLElement>(
+      '[data-image-atom-region="after"] [data-image-atom-raw]'
+    )!.firstChild!;
+    const selection = document.getSelection()!;
+    const range = document.createRange();
+    range.setStart(afterText, 1);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    fireEvent(
+      editor,
+      new InputEvent("beforeinput", {
+        bubbles: true,
+        cancelable: true,
+        inputType: "insertText",
+        data: "!"
+      })
+    );
+    const picker = await screen.findByRole("dialog", { name: "Choose date" });
+    await user.click(within(picker).getByRole("button", { name: "Today" }));
+    await user.keyboard("{Enter}");
+
+    expect(workspace.actions.updateNodeDraft).toHaveBeenLastCalledWith(
+      "project",
+      {
+        title: "before 07/11/2026 after",
+        note: "Project context",
+        imageOffsetUtf16: 6
+      },
+      "title"
+    );
   });
 
   it("keeps a zoomed image node actionable when its attachment is missing", () => {
@@ -365,30 +617,494 @@ describe("NotesPageHeader", () => {
     );
   });
 
-  it("opens an image description and creates a text sibling from page-primary keys", () => {
+  it("routes page-primary Enter keys without falling back to legacy text splitting", async () => {
     const workspace = workspaceValue({
       nodeKind: "image",
       title: "diagram.png",
       note: "",
       attachments: [attachment({ id: "image-1", nodeId: "project" })]
     });
+    const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+    workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
     renderZoomedOutline(workspace);
-    const content = screen.getByRole("group", {
-      name: "Image: diagram.png"
-    });
-
-    expect(
-      fireEvent.keyDown(content, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(false);
     expect(getTextareaByName("Supporting note: Image")).toHaveFocus();
 
-    content.focus();
-    expect(fireEvent.keyDown(content, { key: "Enter" })).toBe(false);
-    expect(workspace.actions.createNextTextSibling).toHaveBeenCalledWith(
-      "project"
+    const refreshedEditor = screen.getByRole("textbox", { name: "Image note" });
+    fireEvent.click(
+      refreshedEditor.querySelector<HTMLElement>(
+        '[data-image-atom-region="atom"]'
+      )!
+    );
+    expect(fireEvent.keyDown(refreshedEditor, { key: "Enter" })).toBe(false);
+    await waitFor(() => expect(applyImageAtomEdit).toHaveBeenCalledOnce());
+    expect(applyImageAtomEdit).toHaveBeenCalledWith(
+      "project",
+      expect.objectContaining({ anchorUtf16: 0, focusUtf16: 1 }),
+      expect.objectContaining({ kind: "enter" })
     );
     expect(workspace.actions.splitNode).not.toHaveBeenCalled();
   });
+
+  it("routes a focused page-primary external image paste through the image atom", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    workspace.actions.importClipboardImages = importClipboardImages;
+    renderZoomedOutline(workspace);
+
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    fireEvent.click(
+      editor.querySelector<HTMLElement>("[data-image-atom-region=\"atom\"]")!
+    );
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
+      type: "image/png"
+    });
+    const event = createEvent.paste(editor, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: {
+        types: ["Files"],
+        items: {
+          0: {
+            kind: "file",
+            type: "image/png",
+            getAsFile: () => file
+          },
+          length: 1
+        },
+        getData: () => ""
+      }
+    });
+
+    fireEvent(editor, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() =>
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+    );
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("persists the published image draft before admitting its paste", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    let persisted = false;
+    const authority = {} as NotesImageAtomPasteAuthority;
+    vi.mocked(workspace.actions.flushNodeDraft).mockImplementation(async () => {
+      persisted = true;
+      return true;
+    });
+    workspace.captureImageAtomPasteAuthority = vi.fn(() =>
+      persisted ? authority ?? null : null
+    );
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    renderZoomedOutline(workspace);
+
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    fireEvent.click(editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!);
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
+      type: "image/png"
+    });
+    fireEvent.paste(editor, {
+      clipboardData: {
+        types: ["Files"],
+        items: {
+          0: { kind: "file", type: "image/png", getAsFile: () => file },
+          length: 1
+        },
+        getData: () => ""
+      }
+    });
+
+    await waitFor(() =>
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+    );
+    expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith("project");
+  });
+
+  it.each([
+    [
+      "page header",
+      {
+        nodeKind: "image" as const,
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      },
+      "project"
+    ],
+    [
+      "outline row",
+      {
+        childNodeKind: "image" as const,
+        childTitle: "beforeafter",
+        childImageOffsetUtf16: 6,
+        childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
+      },
+      "child"
+    ]
+  ])(
+    "drops a %s image paste when the same host blurs and refocuses during draft flush",
+    async (_label, options, nodeId) => {
+      const workspace = workspaceValue(options);
+      const registry = createNotesImageAtomEditorRegistry();
+      const flush = deferred<boolean>();
+      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(flush.promise);
+      workspace.registerActiveImageAtomEditor = (editor) =>
+        registry.register(editor);
+      workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+      connectImagePasteAuthority(workspace, registry);
+      renderZoomedOutline(workspace);
+
+      const editor = screen.getByRole("textbox", { name: "Image note" });
+      const atom = editor.querySelector<HTMLElement>(
+        "[data-image-atom-region=atom]"
+      )!;
+      editor.focus();
+      fireEvent.click(atom);
+      const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
+        type: "image/png"
+      });
+      fireEvent.paste(editor, {
+        clipboardData: {
+          types: ["Files"],
+          items: {
+            0: { kind: "file", type: "image/png", getAsFile: () => file },
+            length: 1
+          },
+          getData: () => ""
+        }
+      });
+      await waitFor(() =>
+        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledWith(nodeId)
+      );
+
+      await act(async () => {
+        editor.blur();
+        editor.focus();
+        fireEvent.click(atom);
+      });
+      await act(async () => {
+        flush.resolve(true);
+        await flush.promise;
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    [
+      "page header",
+      {
+        nodeKind: "image" as const,
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      }
+    ],
+    [
+      "outline row",
+      {
+        childNodeKind: "image" as const,
+        childTitle: "beforeafter",
+        childImageOffsetUtf16: 6,
+        childAttachments: [attachment({ id: "image-child", nodeId: "child" })]
+      }
+    ]
+  ])(
+    "commits a %s image paste when ownership stays unchanged during draft flush",
+    async (_label, options) => {
+      const workspace = workspaceValue(options);
+      const registry = createNotesImageAtomEditorRegistry();
+      const flush = deferred<boolean>();
+      vi.mocked(workspace.actions.flushNodeDraft).mockReturnValue(flush.promise);
+      workspace.registerActiveImageAtomEditor = (editor) =>
+        registry.register(editor);
+      workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+      connectImagePasteAuthority(workspace, registry);
+      renderZoomedOutline(workspace);
+
+      const editor = screen.getByRole("textbox", { name: "Image note" });
+      editor.focus();
+      fireEvent.click(
+        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+      );
+      const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
+        type: "image/png"
+      });
+      fireEvent.paste(editor, {
+        clipboardData: {
+          types: ["Files"],
+          items: {
+            0: { kind: "file", type: "image/png", getAsFile: () => file },
+            length: 1
+          },
+          getData: () => ""
+        }
+      });
+      await waitFor(() =>
+        expect(workspace.actions.flushNodeDraft).toHaveBeenCalledOnce()
+      );
+
+      await act(async () => {
+        flush.resolve(true);
+        await flush.promise;
+      });
+
+      await waitFor(() =>
+        expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+      );
+    }
+  );
+
+  it("silently consumes a claimed image paste when its explicit draft save fails", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "diagram.png",
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(workspace.actions.flushNodeDraft).mockResolvedValue(false);
+    workspace.actions.importClipboardImages = importClipboardImages;
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    renderZoomedOutline(workspace);
+
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    fireEvent.click(editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!);
+    const file = new File([new Uint8Array([137, 80, 78, 71])], "external.png", {
+      type: "image/png"
+    });
+    const event = createEvent.paste(editor, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: {
+        types: ["Files"],
+        items: {
+          0: { kind: "file", type: "image/png", getAsFile: () => file },
+          length: 1
+        },
+        getData: () => ""
+      }
+    });
+    fireEvent(editor, event);
+
+    await waitFor(() => expect(workspace.actions.flushNodeDraft).toHaveBeenCalled());
+    expect(event.defaultPrevented).toBe(true);
+    expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("drops a deferred image-atom paste when its exact selection moves", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    workspace.actions.importClipboardImages = importClipboardImages;
+    renderZoomedOutline(workspace);
+
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    fireEvent.click(
+      editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+    );
+    const paste = await deferredInternalImagePaste(editor);
+    fireEvent(editor, paste.event);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const afterText = editor.querySelector<HTMLElement>(
+      "[data-image-atom-region=after] [data-image-atom-raw]"
+    )!.firstChild!;
+    const range = document.createRange();
+    range.setStart(afterText, 2);
+    range.collapse(true);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    await act(async () => {
+      paste.settle();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(workspace.isImageAtomPasteAuthorityCurrent).toHaveBeenCalled()
+    );
+    expect(paste.event.defaultPrevented).toBe(true);
+    expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("drops a deferred image paste after blur and refocus of the same host and range", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    connectImagePasteAuthority(workspace, registry);
+    renderZoomedOutline(workspace);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    fireEvent.click(atom);
+    const paste = await deferredInternalImagePaste(editor);
+    fireEvent(editor, paste.event);
+    await waitFor(() =>
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+    );
+    editor.blur();
+    editor.focus();
+    fireEvent.click(atom);
+    await act(async () => paste.settle());
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+  });
+
+  it("drops a deferred image paste after selection A-to-B-to-A ABA", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    connectImagePasteAuthority(workspace, registry);
+    renderZoomedOutline(workspace);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    fireEvent.click(atom);
+    const paste = await deferredInternalImagePaste(editor);
+    fireEvent(editor, paste.event);
+    await waitFor(() =>
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+    );
+    const afterText = editor.querySelector<HTMLElement>(
+      "[data-image-atom-region=after] [data-image-atom-raw]"
+    )!.firstChild!;
+    const selection = document.getSelection()!;
+    selection.setBaseAndExtent(afterText, 1, afterText, 1);
+    fireEvent(document, new Event("selectionchange"));
+    fireEvent.click(atom);
+    fireEvent(document, new Event("selectionchange"));
+    await act(async () => paste.settle());
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+  });
+
+  it("commits a deferred image paste after a no-op restore and duplicate selection events", async () => {
+    const workspace = workspaceValue({
+      nodeKind: "image",
+      title: "beforeafter",
+      imageOffsetUtf16: 6,
+      attachments: [attachment({ id: "image-1", nodeId: "project" })]
+    });
+    const registry = createNotesImageAtomEditorRegistry();
+    workspace.registerActiveImageAtomEditor = (editor) => registry.register(editor);
+    workspace.claimActiveImageAtomPaste = (event) => registry.claimPaste(event);
+    connectImagePasteAuthority(workspace, registry);
+    renderZoomedOutline(workspace);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    editor.focus();
+    const atom = editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    fireEvent.click(atom);
+    const paste = await deferredInternalImagePaste(editor);
+    fireEvent(editor, paste.event);
+    await waitFor(() =>
+      expect(workspace.captureImageAtomPasteAuthority).toHaveBeenCalled()
+    );
+    fireEvent.click(atom);
+    fireEvent(document, new Event("selectionchange"));
+    fireEvent(document, new Event("selectionchange"));
+    await act(async () => paste.settle());
+
+    await waitFor(() =>
+      expect(workspace.actions.applyImageAtomPaste).toHaveBeenCalledOnce()
+    );
+  });
+
+  it.each(["draft", "attachment", "scope", "workspace generation"])(
+    "drops a deferred image-atom paste when %s authority becomes stale",
+    async () => {
+      const workspace = workspaceValue({
+        nodeKind: "image",
+        title: "beforeafter",
+        imageOffsetUtf16: 6,
+        attachments: [attachment({ id: "image-1", nodeId: "project" })]
+      });
+      const registry = createNotesImageAtomEditorRegistry();
+      let generation = 1;
+      const capture = vi.fn(() => ({ generation }));
+      const isCurrent = vi.fn(
+        (authority: { generation: number }) => authority.generation === generation
+      );
+      Object.assign(workspace, {
+        registerActiveImageAtomEditor: (editor: Parameters<typeof registry.register>[0]) =>
+          registry.register(editor),
+        claimActiveImageAtomPaste: (event: ClipboardEvent) =>
+          registry.claimPaste(event),
+        captureImageAtomPasteAuthority: capture,
+        isImageAtomPasteAuthorityCurrent: isCurrent
+      });
+      renderZoomedOutline(workspace);
+
+      const editor = screen.getByRole("textbox", { name: "Image note" });
+      editor.focus();
+      fireEvent.click(
+        editor.querySelector<HTMLElement>("[data-image-atom-region=atom]")!
+      );
+      const paste = await deferredInternalImagePaste(editor);
+      fireEvent(editor, paste.event);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      generation += 1;
+      await act(async () => {
+        paste.settle();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await waitFor(() => expect(isCurrent).toHaveBeenCalled());
+      expect(paste.event.defaultPrevented).toBe(true);
+      expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+      expect(capture).toHaveBeenCalledOnce();
+    }
+  );
 
   it("exposes an attachment target only for a writable page header", () => {
     const view = render(zoomedOutline(workspaceValue()));
@@ -1662,5 +2378,18 @@ describe("NotesPageHeader", () => {
     expect(
       screen.queryByRole("button", { name: "Retry save" })
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps a damaged image header in recovery without an editable atom host", () => {
+    renderZoomedOutline(
+      workspaceValue({
+        nodeKind: "image",
+        title: "missing.png",
+        attachments: []
+      })
+    );
+
+    expect(screen.queryByRole("textbox", { name: "Image note" })).toBeNull();
+    expect(screen.getByRole("alert", { name: "Image unavailable" })).toBeVisible();
   });
 });

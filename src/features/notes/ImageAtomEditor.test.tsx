@@ -1,5 +1,17 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createRef, StrictMode, type ComponentProps } from "react";
+import {
+  act,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  waitFor
+} from "@testing-library/react";
+import {
+  createRef,
+  StrictMode,
+  type ComponentProps,
+  type KeyboardEvent as ReactKeyboardEvent
+} from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { NoteAttachment } from "../../domain/notes";
 import type { LogicalSelection } from "./imageAtomModel";
@@ -8,16 +20,27 @@ import {
   ImageAtomEditor,
   type ImageAtomEditorHandle
 } from "./ImageAtomEditor";
+import { createNotesImageAtomEditorRegistry } from "./notesImageAtomEditorRegistry";
 
 vi.mock("./NotesImageAttachment", () => ({
   NotesImageNodeContent: ({
     attachment,
-    contentRef
+    contentRef,
+    onKeyDown
   }: {
     attachment: NoteAttachment;
     contentRef?: ComponentProps<"div">["ref"];
+    onKeyDown?: ComponentProps<"div">["onKeyDown"];
   }) => (
-    <div ref={contentRef} data-testid="image-content" role="group" tabIndex={0}>
+    <div
+      ref={contentRef}
+      data-testid="image-content"
+      role="group"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.target === event.currentTarget) onKeyDown?.(event);
+      }}
+    >
       {attachment.originalName}
       <div role="group" aria-label="Image controls">
         <div role="separator" aria-label="Resize image" tabIndex={0} />
@@ -147,6 +170,36 @@ function beforeInput(
 }
 
 describe("ImageAtomEditor", () => {
+  it("moves a focused editor registration to the current workspace identity", () => {
+    const firstRegistry = createNotesImageAtomEditorRegistry();
+    const secondRegistry = createNotesImageAtomEditorRegistry();
+    const firstPaste = vi.fn(() => true);
+    const secondPaste = vi.fn(() => true);
+    const editor = (nodeId: "node-a" | "node-b", registry: typeof firstRegistry) => (
+      <ImageAtomEditor
+        nodeId={nodeId}
+        draft={{ title: "beforeafter", note: "support", imageOffsetUtf16: 6 }}
+        attachment={{ ...attachment, nodeId }}
+        onDraftChange={vi.fn()}
+        onImageAtomPaste={nodeId === "node-a" ? firstPaste : secondPaste}
+        registerActiveEditor={(active) => registry.register(active)}
+      />
+    );
+    const view = render(editor("node-a", firstRegistry));
+    const host = screen.getByRole("textbox");
+
+    host.focus();
+    expect(firstRegistry.claimPaste({} as ClipboardEvent)).toBe(true);
+    expect(firstPaste).toHaveBeenCalledOnce();
+
+    view.rerender(editor("node-b", secondRegistry));
+
+    expect(screen.getByRole("textbox")).toBe(host);
+    expect(firstRegistry.claimPaste({} as ClipboardEvent)).toBe(false);
+    expect(secondRegistry.claimPaste({} as ClipboardEvent)).toBe(true);
+    expect(secondPaste).toHaveBeenCalledOnce();
+  });
+
   it("exposes selection only through an asynchronous flush barrier", async () => {
     const { host, handle } = renderEditor();
     const barrier = handle.current as unknown as {
@@ -422,6 +475,42 @@ describe("ImageAtomEditor", () => {
     expect(drop).toBe(false);
   });
 
+  it("inserts unclaimed plain paste text while leaving empty and read-only pastes untouched", () => {
+    const editable = renderEditor();
+    act(() =>
+      editable.handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 })
+    );
+
+    expect(
+      fireEvent.paste(editable.host, {
+        clipboardData: {
+          getData: (type: string) => (type === "text/plain" ? "X" : "")
+        }
+      })
+    ).toBe(false);
+    expect(editable.onDraftChange).toHaveBeenLastCalledWith({
+      title: "beXforeafter",
+      note: "support",
+      imageOffsetUtf16: 7
+    });
+
+    expect(
+      fireEvent.paste(editable.host, {
+        clipboardData: { getData: () => "" }
+      })
+    ).toBe(true);
+    expect(editable.onDraftChange).toHaveBeenCalledOnce();
+
+    editable.unmount();
+    const readOnly = renderEditor({ readOnly: true });
+    expect(
+      fireEvent.paste(readOnly.host, {
+        clipboardData: { getData: () => "X" }
+      })
+    ).toBe(true);
+    expect(readOnly.onDraftChange).not.toHaveBeenCalled();
+  });
+
   it("routes beforeinput history undo and redo to Notes history", () => {
     const { host, onUndo, onRedo } = renderEditor();
 
@@ -455,14 +544,32 @@ describe("ImageAtomEditor", () => {
     expect(handle.current!.containsAtomSelection()).toBe(false);
   });
 
-  it("keeps a continuous logical range when Shift+Up or Shift+Down crosses the image block", () => {
-    const { host, handle } = renderEditor();
+  it("keeps Shift+Up or Shift+Down inside the atom selection without delegating row actions", () => {
+    const onUnhandledKeyDown = vi.fn();
+    const { host, handle } = renderEditor({ onUnhandledKeyDown });
 
     act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 9 }));
     fireEvent.keyDown(host, { key: "ArrowDown", shiftKey: true });
     expect(handle.current!.containsAtomSelection()).toBe(true);
     fireEvent.keyDown(host, { key: "ArrowUp", shiftKey: true });
     expect(handle.current!.containsAtomSelection()).toBe(true);
+    expect(onUnhandledKeyDown).not.toHaveBeenCalled();
+  });
+
+  it("forwards an image-body key to the row handler without exposing nested controls", () => {
+    const onUnhandledKeyDown = vi.fn(
+      (event: ReactKeyboardEvent<HTMLDivElement>) => event.preventDefault()
+    );
+    renderEditor({ onUnhandledKeyDown });
+
+    const imageBody = screen.getByTestId("image-content");
+    expect(fireEvent.keyDown(imageBody, { key: "Tab" })).toBe(false);
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize image" }), {
+      key: "Tab"
+    });
+    expect(onUnhandledKeyDown).toHaveBeenCalledOnce();
   });
 
   it("extends collapsed vertical selections across the atom in both directions", () => {
@@ -488,6 +595,30 @@ describe("ImageAtomEditor", () => {
     expect(handle.current!.containsAtomSelection()).toBe(true);
   });
 
+  it("versions semantic selection ABA but ignores no-op restores and duplicate events", async () => {
+    const { handle } = renderEditor();
+    act(() =>
+      handle.current!.restoreSelection({ anchorUtf16: 6, focusUtf16: 7 })
+    );
+    const first = await handle.current!.flushAndGetSelectionSnapshot();
+
+    act(() => {
+      handle.current!.restoreSelection({ anchorUtf16: 6, focusUtf16: 7 });
+      fireEvent(document, new Event("selectionchange"));
+      fireEvent(document, new Event("selectionchange"));
+    });
+    const duplicate = await handle.current!.flushAndGetSelectionSnapshot();
+    expect(duplicate?.authority).toBe(first?.authority);
+
+    act(() => {
+      handle.current!.restoreSelection({ anchorUtf16: 8, focusUtf16: 8 });
+      handle.current!.restoreSelection({ anchorUtf16: 6, focusUtf16: 7 });
+    });
+    const returned = await handle.current!.flushAndGetSelectionSnapshot();
+    expect(returned?.selection).toEqual(first?.selection);
+    expect(returned?.authority).not.toBe(first?.authority);
+  });
+
   it("extends a pointer drag from its original text anchor through the atom", () => {
     const { host, handle } = renderEditor();
     const atom = host.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
@@ -498,6 +629,32 @@ describe("ImageAtomEditor", () => {
 
     expect(handle.current!.containsAtomSelection()).toBe(true);
     fireEvent.pointerUp(atom);
+  });
+
+  it("abandons captured atom selection when a parent claims the pointer drag", () => {
+    const { host, handle } = renderEditor();
+    const atom = host.querySelector<HTMLElement>("[data-image-atom-region=atom]")!;
+    const releasePointerCapture = vi.fn();
+    Object.assign(atom, {
+      setPointerCapture: vi.fn(),
+      releasePointerCapture
+    });
+
+    fireEvent.pointerDown(atom, { button: 0, pointerId: 17 });
+    const move = createEvent.pointerMove(atom, {
+      buttons: 1,
+      pointerId: 17,
+      clientX: 100,
+      clientY: 100
+    });
+    move.preventDefault();
+    fireEvent(atom, move);
+
+    expect(releasePointerCapture).toHaveBeenCalledWith(17);
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 2, focusUtf16: 2 }));
+    fireEvent.pointerUp(atom, { pointerId: 17 });
+    fireEvent.click(atom);
+    expect(logicalSelection(host)).toEqual({ anchorUtf16: 2, focusUtf16: 2 });
   });
 
   it("does not turn an image control click into atom selection", () => {
@@ -950,6 +1107,23 @@ describe("ImageAtomEditor", () => {
     beforeInput(host, "insertText", "!");
 
     expect(onDateTrigger).not.toHaveBeenCalled();
+  });
+
+  it("passes the just-edited full title to a typed-date trigger", () => {
+    const onDateTrigger = vi.fn();
+    const { host, handle } = renderEditor({
+      draft: { title: "before!after", note: "support", imageOffsetUtf16: 6 },
+      onDateTrigger
+    });
+    act(() => handle.current!.restoreSelection({ anchorUtf16: 8, focusUtf16: 8 }));
+
+    beforeInput(host, "insertText", "!");
+
+    expect(onDateTrigger).toHaveBeenCalledWith(
+      { startUtf16: 6, endUtf16: 8 },
+      host,
+      "before!!after"
+    );
   });
 
   it("formats before and after segments independently and rejects a cross-atom format range", () => {

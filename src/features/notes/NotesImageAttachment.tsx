@@ -12,7 +12,6 @@ import {
   useState
 } from "react";
 import { AppNavigationContext } from "../../AppNavigationContext";
-import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import type { NoteAttachment, NoteId } from "../../domain/notes";
 import { NotesImageLightbox } from "./NotesImageLightbox";
 import { NotesImageMenu } from "./NotesImageMenu";
@@ -52,6 +51,8 @@ export interface NotesImageAttachmentProps {
   readonly renderActionFailureStatus?: boolean;
   readonly onDisplayWidthCommit: (displayWidth: number) => void;
   readonly onRemove?: () => void;
+  readonly deleteLabel?: string;
+  readonly showRemove?: boolean;
   readonly onViewOriginal?: () => void | Promise<void>;
   readonly onDownload?: () => void | Promise<void>;
   readonly onOpenSettings?: () => void;
@@ -68,6 +69,7 @@ export interface NotesImageNodeContentProps {
   readonly style?: CSSProperties;
   readonly contentRef?: Ref<HTMLDivElement>;
   readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+  readonly onRemoveImage?: () => void;
   readonly readOnly?: boolean;
   readonly disabled?: boolean;
 }
@@ -121,12 +123,6 @@ export interface NotesImageActionFailureController {
   readonly bindDownload: (
     action: NotesImageAction | undefined
   ) => (() => void) | undefined;
-}
-
-interface DeleteConfirmation {
-  readonly nodeId: NoteId;
-  readonly attachmentId: string | undefined;
-  readonly deleteNode: (nodeId: NoteId) => unknown;
 }
 
 interface NotesImageActionControllerIdentity {
@@ -223,7 +219,7 @@ function clampWidth(width: number, limits: WidthLimits): number {
   );
 }
 
-function isValidAttachmentMetadata(
+export function isValidNotesImageAttachmentMetadata(
   attachment: NotesImageAttachmentMetadata
 ): boolean {
   return (
@@ -387,6 +383,8 @@ export function NotesImageAttachment({
   renderActionFailureStatus = true,
   onDisplayWidthCommit,
   onRemove,
+  deleteLabel,
+  showRemove = true,
   onViewOriginal,
   onDownload,
   onOpenSettings,
@@ -421,7 +419,7 @@ export function NotesImageAttachment({
   const unavailableLabel = neutralPresentation
     ? "Image unavailable"
     : `Image unavailable: ${accessibleLabel}`;
-  const metadataValid = isValidAttachmentMetadata(attachment);
+  const metadataValid = isValidNotesImageAttachmentMetadata(attachment);
   const groupRef = useRef<HTMLDivElement>(null);
   const pointerResizeRef = useRef<PointerResize | null>(null);
   const keyboardResizeRef = useRef<KeyboardResize | null>(null);
@@ -729,6 +727,8 @@ export function NotesImageAttachment({
       onViewOriginal={actionController.bindViewOriginal(onViewOriginal)}
       onDownload={actionController.bindDownload(onDownload)}
       onDelete={readOnly ? undefined : onRemove}
+      deleteLabel={deleteLabel}
+      showRemove={showRemove}
       onOpenSettings={resolvedOpenSettings}
     />
   );
@@ -779,6 +779,7 @@ export function NotesImageAttachment({
             width={attachment.intrinsicWidth}
             height={attachment.intrinsicHeight}
             draggable={false}
+            data-image-atom-interactive={disabled ? undefined : "true"}
             style={imageStyle}
             onDoubleClick={disabled ? undefined : () => setLightboxOpen(true)}
             onError={() => setSource({ status: "error" })}
@@ -850,6 +851,7 @@ export function NotesImageNodeContent({
   style,
   contentRef,
   onKeyDown,
+  onRemoveImage,
   readOnly = false,
   disabled = false
 }: NotesImageNodeContentProps) {
@@ -867,16 +869,7 @@ export function NotesImageNodeContent({
   const observerGenerationRef = useRef(0);
   const releaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const attachmentId = attachment?.id;
-  const deleteNodeAction = actions.deleteNode;
-  const canDelete = !readOnly && !disabled && Boolean(deleteNodeAction);
-  const [deleteConfirmation, setDeleteConfirmation] =
-    useState<DeleteConfirmation | null>(null);
-  const deleteConfirmationValid =
-    deleteConfirmation !== null &&
-    canDelete &&
-    deleteConfirmation.nodeId === nodeId &&
-    deleteConfirmation.attachmentId === attachmentId &&
-    deleteConfirmation.deleteNode === deleteNodeAction;
+  const canRemove = !readOnly && !disabled && Boolean(onRemoveImage);
   const actionController = useNotesImageActionFailureController(
     `${nodeId}:${attachmentId ?? "missing"}:${disabled ? "disabled" : "enabled"}`,
     actions.viewImageOriginal,
@@ -914,21 +907,6 @@ export function NotesImageNodeContent({
     () => appNavigation?.openSettings("notes", "images"),
     [appNavigation]
   );
-  const requestDeleteConfirmation = useCallback(() => {
-    if (!deleteNodeAction || readOnly || disabled) return;
-    setDeleteConfirmation({
-      nodeId,
-      attachmentId,
-      deleteNode: deleteNodeAction
-    });
-  }, [attachmentId, deleteNodeAction, disabled, nodeId, readOnly]);
-
-  useEffect(() => {
-    if (deleteConfirmation && !deleteConfirmationValid) {
-      setDeleteConfirmation(null);
-    }
-  }, [deleteConfirmation, deleteConfirmationValid]);
-
   useEffect(
     () => () => {
       menuCloseObserverRef.current?.disconnect();
@@ -1119,7 +1097,9 @@ export function NotesImageNodeContent({
             <NotesImageMenu
               originalName={accessibleOriginalName || "Image"}
               disabled={disabled}
-              onDelete={canDelete ? requestDeleteConfirmation : undefined}
+              onDelete={canRemove ? onRemoveImage : undefined}
+              deleteLabel={canRemove ? "Remove image" : undefined}
+              showRemove={canRemove}
               onOpenSettings={appNavigation ? openImageSettings : undefined}
             />
           </div>
@@ -1133,7 +1113,9 @@ export function NotesImageNodeContent({
             onDisplayWidthCommit={commitWidth}
             onViewOriginal={actions.viewImageOriginal ? viewOriginal : undefined}
             onDownload={actions.downloadImage ? downloadImage : undefined}
-            onRemove={canDelete ? requestDeleteConfirmation : undefined}
+            onRemove={canRemove ? onRemoveImage : undefined}
+            deleteLabel={canRemove ? "Remove image" : undefined}
+            showRemove={canRemove}
             readOnly={readOnly}
             disabled={disabled}
           />
@@ -1160,7 +1142,9 @@ export function NotesImageNodeContent({
               disabled={disabled}
               onViewOriginal={boundViewOriginal}
               onDownload={boundDownload}
-              onDelete={canDelete ? requestDeleteConfirmation : undefined}
+              onDelete={canRemove ? onRemoveImage : undefined}
+              deleteLabel={canRemove ? "Remove image" : undefined}
+              showRemove={canRemove}
               onOpenSettings={appNavigation ? openImageSettings : undefined}
             />
           </div>
@@ -1170,31 +1154,6 @@ export function NotesImageNodeContent({
           maxWidth={attachment?.displayWidth}
         />
       </div>
-      <ConfirmDialog
-        open={deleteConfirmationValid}
-        onOpenChange={(open) => {
-          if (!open) setDeleteConfirmation(null);
-        }}
-        title="Delete image node?"
-        description="Move this image node to Trash?"
-        confirmLabel="Delete image node"
-        cancelLabel="Cancel"
-        danger
-        onConfirm={() => {
-          const confirmation = deleteConfirmation;
-          if (
-            !confirmation ||
-            readOnly ||
-            disabled ||
-            confirmation.nodeId !== nodeId ||
-            confirmation.attachmentId !== attachmentId ||
-            confirmation.deleteNode !== actions.deleteNode
-          ) {
-            return;
-          }
-          void confirmation.deleteNode(confirmation.nodeId);
-        }}
-      />
     </>
   );
 }

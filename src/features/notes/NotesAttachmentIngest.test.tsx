@@ -23,9 +23,21 @@ import type {
 import { NotesDateTodayProvider } from "./NotesDatePickerIntegration";
 import { NotesImageResidencyProvider } from "./NotesImageResidencyContext";
 import { NotesOutlinePane } from "./NotesOutlinePane";
-import { NotesWorkspaceContext } from "./NotesWorkspaceContext";
+import {
+  NotesActionsContext,
+  NotesWorkspaceContext
+} from "./NotesWorkspaceContext";
 import { normalizeWorkspace } from "./notesWorkspaceReducer";
-import type { UseNotesWorkspaceResult } from "./useNotesWorkspace";
+import type {
+  NotesActionsSlice,
+  UseNotesWorkspaceResult
+} from "./useNotesWorkspace";
+import {
+  createNotesImageAtomEditorRegistry,
+  type ImageAtomEditorSelectionAuthority
+} from "./notesImageAtomEditorRegistry";
+import { ImageAtomEditor } from "./ImageAtomEditor";
+import { NOTES_IMAGE_ATOM_CLIPBOARD_MIME } from "./notesImageAtomClipboard";
 
 function node(overrides: Partial<NoteNode> & Pick<NoteNode, "id">): NoteNode {
   return {
@@ -126,6 +138,9 @@ function workspaceValue(options: {
   zoomRootId?: string | null;
   selectedId?: string | null;
   firstNodeKind?: NoteNode["nodeKind"];
+  firstTitle?: string;
+  secondNodeKind?: NoteNode["nodeKind"];
+  attachments?: NoteAttachment[];
   notesByNodeId?: Readonly<Record<string, string>>;
   attachmentNodeId?: string;
   attachmentUploadError?: string;
@@ -152,12 +167,13 @@ function workspaceValue(options: {
       node({
         id: "first",
         nodeKind: options.firstNodeKind ?? "text",
-        title: "First",
+        title: options.firstTitle ?? "First",
         note: options.notesByNodeId?.first ?? "",
         isCollapsed: true
       }),
       node({
         id: "second",
+        nodeKind: options.secondNodeKind ?? "text",
         sortKey: 2,
         title: "Second",
         note: options.notesByNodeId?.second ?? options.secondNoteText ?? ""
@@ -169,12 +185,13 @@ function workspaceValue(options: {
         note: options.notesByNodeId?.child ?? ""
       })
     ],
-    attachmentsByNodeId:
-      options.attachmentNodeId === undefined
+    attachmentsByNodeId: options.attachments
+      ? { first: options.attachments }
+      : options.attachmentNodeId === undefined
         ? {}
         : {
-            [options.attachmentNodeId]: [attachment(options.attachmentNodeId)]
-          }
+              [options.attachmentNodeId]: [attachment(options.attachmentNodeId)]
+            }
   });
   state.zoomRootId = options.zoomRootId ?? null;
   state.selectedId = options.selectedId ?? null;
@@ -267,7 +284,8 @@ function workspaceValue(options: {
 function renderPane(
   workspace: UseNotesWorkspaceResult,
   subscribeToImageDrop: NotesAttachmentUiBoundary["subscribeToImageDrop"],
-  initialVaultRoot = "/vault"
+  initialVaultRoot = "/vault",
+  actionsSlice: NotesActionsSlice | null = null
 ) {
   const attachmentUi: NotesAttachmentUiBoundary = {
     openImageFiles: vi.fn().mockResolvedValue(null),
@@ -279,13 +297,15 @@ function renderPane(
     <NotesDateTodayProvider today={{ year: 2026, month: 7, day: 13 }}>
       <VaultRootContext.Provider value={currentVaultRoot}>
         <NotesAttachmentUiContext.Provider value={attachmentUi}>
-          <NotesWorkspaceContext.Provider value={value}>
-            <NotesImageResidencyProvider scopeKey={currentVaultRoot}>
-              <div className="feature-pane-slot">
-                <NotesOutlinePane />
-              </div>
-            </NotesImageResidencyProvider>
-          </NotesWorkspaceContext.Provider>
+          <NotesActionsContext.Provider value={actionsSlice}>
+            <NotesWorkspaceContext.Provider value={value}>
+              <NotesImageResidencyProvider scopeKey={currentVaultRoot}>
+                <div className="feature-pane-slot">
+                  <NotesOutlinePane />
+                </div>
+              </NotesImageResidencyProvider>
+            </NotesWorkspaceContext.Provider>
+          </NotesActionsContext.Provider>
         </NotesAttachmentUiContext.Provider>
       </VaultRootContext.Provider>
     </NotesDateTodayProvider>
@@ -1983,5 +2003,378 @@ describe("paste import of indented plain text (plan Phase 4.4b)", () => {
     expect(notPrevented).toBe(false);
     expect(importClipboardImages).toHaveBeenCalledOnce();
     expect(importSubtree).not.toHaveBeenCalled();
+  });
+
+  it("renders a valid image row as one editor while damaged image rows remain recovery-only", () => {
+    const valid = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first"
+    });
+    const view = renderPane(valid, idleSubscribe());
+
+    const row = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    const editor = within(row).getByRole("textbox", { name: "Image note" });
+    expect(editor.querySelectorAll("[data-image-atom-region]")).toHaveLength(3);
+    expect(within(editor).getByRole("group", { name: "Image: existing.png" })).toBeVisible();
+
+    view.rerenderWorkspace(workspaceValue({ firstNodeKind: "image" }));
+    const damagedRow = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    expect(within(damagedRow).queryByRole("textbox", { name: "Image note" })).toBeNull();
+    expect(within(damagedRow).getByRole("alert", { name: "Image unavailable" })).toBeVisible();
+  });
+
+  it("opens an existing-date picker from a row image atom", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      firstTitle: "Before 07/12/2026 after",
+      attachmentNodeId: "first"
+    });
+    renderPane(workspace, idleSubscribe());
+
+    const row = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    await user.click(
+      within(row).getByRole("button", { name: "Edit date 07/12/2026" })
+    );
+
+    expect(screen.getByRole("dialog", { name: "Choose date" })).toBeVisible();
+  });
+
+  it("gives a focused editor paste ownership over a later mounted editor", () => {
+    const registry = createNotesImageAtomEditorRegistry();
+    const authority = {} as ImageAtomEditorSelectionAuthority;
+    const firstClaim = vi.fn(() => true);
+    const secondClaim = vi.fn(() => true);
+    const first = {
+      nodeId: "first",
+      flush: vi.fn().mockResolvedValue("flushed" as const),
+      flushAndGetSelection: vi.fn().mockResolvedValue({ anchorUtf16: 0, focusUtf16: 0 }),
+      flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
+        authority
+      }),
+      isSelectionAuthorityCurrent: vi.fn((candidate) => candidate === authority),
+      claimPaste: firstClaim
+    };
+    const second = {
+      nodeId: "second",
+      flush: vi.fn().mockResolvedValue("flushed" as const),
+      flushAndGetSelection: vi.fn().mockResolvedValue({ anchorUtf16: 0, focusUtf16: 0 }),
+      flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+        selection: { anchorUtf16: 0, focusUtf16: 0 },
+        authority
+      }),
+      isSelectionAuthorityCurrent: vi.fn((candidate) => candidate === authority),
+      claimPaste: secondClaim
+    };
+    registry.register(second);
+    registry.register(first);
+
+    expect(registry.claimPaste({} as ClipboardEvent)).toBe(true);
+    expect(firstClaim).toHaveBeenCalledOnce();
+    expect(secondClaim).not.toHaveBeenCalled();
+  });
+
+  it("registers actual focused editors so a later mounted editor cannot steal paste", () => {
+    const registry = createNotesImageAtomEditorRegistry();
+    const workspace = workspaceValue();
+    const firstPaste = vi.fn(() => true);
+    const secondPaste = vi.fn(() => true);
+    const registerActiveEditor = (editor: Parameters<typeof registry.register>[0]) =>
+      registry.register(editor);
+    render(
+      <NotesImageResidencyProvider scopeKey="actual-focused-editor">
+        <NotesWorkspaceContext.Provider value={workspace}>
+          <ImageAtomEditor
+            nodeId="first"
+            draft={{ title: "first", note: "", imageOffsetUtf16: 0 }}
+            attachment={attachment("first")}
+            onDraftChange={vi.fn()}
+            onImageAtomPaste={firstPaste}
+            registerActiveEditor={registerActiveEditor}
+          />
+          <ImageAtomEditor
+            nodeId="second"
+            draft={{ title: "second", note: "", imageOffsetUtf16: 0 }}
+            attachment={attachment("second")}
+            onDraftChange={vi.fn()}
+            onImageAtomPaste={secondPaste}
+            registerActiveEditor={registerActiveEditor}
+          />
+        </NotesWorkspaceContext.Provider>
+      </NotesImageResidencyProvider>
+    );
+
+    fireEvent.focus(screen.getAllByRole("textbox", { name: "Image note" })[0]!);
+    expect(registry.claimPaste({} as ClipboardEvent)).toBe(true);
+    expect(firstPaste).toHaveBeenCalledOnce();
+    expect(secondPaste).not.toHaveBeenCalled();
+  });
+
+  it("moves paste ownership to an editor whose non-control atom body receives focus", () => {
+    const registry = createNotesImageAtomEditorRegistry();
+    const firstPaste = vi.fn(() => true);
+    const secondPaste = vi.fn(() => true);
+    const registerActiveEditor = (editor: Parameters<typeof registry.register>[0]) =>
+      registry.register(editor);
+    render(
+      <NotesImageResidencyProvider scopeKey="focused-atom-body-editor">
+        <NotesWorkspaceContext.Provider value={workspaceValue()}>
+          <ImageAtomEditor
+            nodeId="first"
+            draft={{ title: "first", note: "", imageOffsetUtf16: 0 }}
+            attachment={attachment("first")}
+            onDraftChange={vi.fn()}
+            onImageAtomPaste={firstPaste}
+            registerActiveEditor={registerActiveEditor}
+          />
+          <ImageAtomEditor
+            nodeId="second"
+            draft={{ title: "second", note: "", imageOffsetUtf16: 0 }}
+            attachment={attachment("second")}
+            onDraftChange={vi.fn()}
+            onImageAtomPaste={secondPaste}
+            registerActiveEditor={registerActiveEditor}
+          />
+        </NotesWorkspaceContext.Provider>
+      </NotesImageResidencyProvider>
+    );
+
+    const editors = screen.getAllByRole("textbox", { name: "Image note" });
+    const bodies = screen.getAllByRole("group", { name: "Image: existing.png" });
+    fireEvent.focus(editors[0]!);
+    fireEvent.blur(editors[0]!, { relatedTarget: bodies[1] });
+    fireEvent.focus(bodies[1]!);
+
+    expect(registry.claimPaste({} as ClipboardEvent)).toBe(true);
+    expect(firstPaste).not.toHaveBeenCalled();
+    expect(secondPaste).toHaveBeenCalledOnce();
+  });
+
+  it("asks the active-editor bridge to claim paste before reading clipboard items", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const claimPaste = vi.fn((event: ClipboardEvent) => {
+      event.preventDefault();
+      return true;
+    });
+    const workspace = workspaceValue({ importClipboardImages });
+    renderPane(workspace, idleSubscribe(), "/vault", {
+      ...workspace,
+      claimActiveImageAtomPaste: claimPaste
+    });
+    const target = document.querySelector(".notes-outline-list")!;
+    const clipboardData = Object.defineProperty(
+      { getData: () => "" },
+      "items",
+      {
+        get() {
+          throw new Error("pane inspected clipboard items before editor claim");
+        }
+      }
+    );
+    const event = createEvent.paste(target, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData
+    });
+
+    fireEvent(target, event);
+
+    expect(claimPaste).toHaveBeenCalledOnce();
+    expect(claimPaste.mock.calls[0]?.[0]).toBe(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for a marked atom paste when carrier extraction throws", () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first",
+      importClipboardImages
+    });
+    renderPane(workspace, idleSubscribe());
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    fireEvent.focus(editor);
+    const clipboardData = Object.defineProperty(
+      {
+        getData: () => "",
+        types: [NOTES_IMAGE_ATOM_CLIPBOARD_MIME]
+      },
+      "items",
+      {
+        get() {
+          throw new Error("clipboard carrier access failed");
+        }
+      }
+    );
+    const event = createEvent.paste(editor, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData
+    });
+
+    fireEvent(editor, event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for an invalid marked atom paste without invoking global import", async () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first",
+      importClipboardImages
+    });
+    renderPane(workspace, idleSubscribe());
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    fireEvent.focus(editor);
+    const event = createEvent.paste(editor, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: {
+        items: clipboardItems([]),
+        getData(type: string) {
+          return type === NOTES_IMAGE_ATOM_CLIPBOARD_MIME ? "not-valid-json" : "";
+        }
+      }
+    });
+
+    fireEvent(editor, event);
+    await act(async () => undefined);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+    expect(workspace.actions.applyImageAtomPaste).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unreadable external image paste editor-owned", async () => {
+    const importClipboardImages = vi.fn().mockResolvedValue(undefined);
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first",
+      importClipboardImages
+    });
+    renderPane(workspace, idleSubscribe());
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    fireEvent.focus(editor);
+    const event = createEvent.paste(editor, {
+      bubbles: true,
+      cancelable: true,
+      clipboardData: {
+        items: clipboardItems([clipboardItem("image/png", null)]),
+        getData: () => ""
+      }
+    });
+
+    fireEvent(editor, event);
+    await act(async () => undefined);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(importClipboardImages).not.toHaveBeenCalled();
+  });
+
+  it("routes the valid image-menu removal through one atom edit, not row deletion", async () => {
+    const user = userEvent.setup();
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first"
+    });
+    const applyImageAtomEdit = vi.fn().mockResolvedValue("committed");
+    const deleteNode = vi.fn().mockResolvedValue("committed");
+    workspace.actions.applyImageAtomEdit = applyImageAtomEdit;
+    workspace.actions.deleteNode = deleteNode;
+    renderPane(workspace, idleSubscribe());
+
+    await user.click(
+      within(document.querySelector<HTMLElement>('[data-outline-id="first"]')!).getByRole(
+        "button",
+        { name: "Image actions for existing.png" }
+      )
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Remove image" }));
+
+    expect(applyImageAtomEdit).toHaveBeenCalledOnce();
+    expect(applyImageAtomEdit).toHaveBeenCalledWith(
+      "first",
+      { anchorUtf16: 0, focusUtf16: 1 },
+      { kind: "remove", replacementText: "" }
+    );
+    expect(deleteNode).not.toHaveBeenCalled();
+  });
+
+  it("keeps multiple and invalid-metadata image rows in recovery", async () => {
+    const user = userEvent.setup();
+    const first = attachment("first");
+    const invalid = { ...attachment("first"), intrinsicWidth: 0 } as NoteAttachment;
+    const view = renderPane(
+      workspaceValue({ firstNodeKind: "image", attachments: [first, attachment("first")] }),
+      idleSubscribe()
+    );
+    let row = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    expect(within(row).queryByRole("textbox", { name: "Image note" })).toBeNull();
+    await user.click(
+      within(row).getByRole("button", { name: "Image actions for existing.png" })
+    );
+    expect(screen.queryByRole("menuitem", { name: "Remove image" })).toBeNull();
+    await user.keyboard("{Escape}");
+
+    view.rerenderWorkspace(
+      workspaceValue({ firstNodeKind: "image", attachments: [invalid] })
+    );
+    row = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    expect(within(row).queryByRole("textbox", { name: "Image note" })).toBeNull();
+    await user.click(
+      within(row).getByRole("button", { name: "Image actions for existing.png" })
+    );
+    expect(screen.queryByRole("menuitem", { name: "Remove image" })).toBeNull();
+  });
+
+  it("promotes a native image selection across rows once without starting row drag", () => {
+    const workspace = workspaceValue({
+      firstNodeKind: "image",
+      attachmentNodeId: "first"
+    });
+    const clearNativeSelection = vi.spyOn(window.getSelection()!, "removeAllRanges");
+    const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+      document,
+      "elementFromPoint"
+    );
+    renderPane(workspace, idleSubscribe());
+    const first = document.querySelector<HTMLElement>('[data-outline-id="first"]')!;
+    const second = document.querySelector<HTMLElement>('[data-outline-id="second"]')!;
+    const editor = within(first).getByRole("textbox", { name: "Image note" });
+    const before = editor.querySelector<HTMLElement>('[data-image-atom-region="before"]')!;
+
+    try {
+      fireEvent.pointerDown(before, { button: 0, buttons: 1, pointerId: 7 });
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => second.querySelector("textarea"))
+      });
+      fireEvent.pointerMove(before, {
+        buttons: 1,
+        pointerId: 7,
+        clientX: 12,
+        clientY: 24
+      });
+
+      expect(workspace.actions.setSelectionAnchor).toHaveBeenCalledWith("first");
+      expect(workspace.actions.extendSelectionTo).toHaveBeenCalledWith("second");
+      expect(clearNativeSelection).toHaveBeenCalledOnce();
+      expect(first).not.toHaveAttribute("data-dragging", "true");
+    } finally {
+      clearNativeSelection.mockRestore();
+      if (originalElementFromPoint) {
+        Object.defineProperty(
+          document,
+          "elementFromPoint",
+          originalElementFromPoint
+        );
+      } else {
+        Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    }
   });
 });

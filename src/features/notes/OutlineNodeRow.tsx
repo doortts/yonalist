@@ -20,7 +20,14 @@ import {
   type NoteId
 } from "../../domain/notes";
 import { NotesAttachmentList } from "./NotesAttachmentList";
-import { NotesImageNodeContent } from "./NotesImageAttachment";
+import {
+  isValidNotesImageAttachmentMetadata,
+  NotesImageNodeContent
+} from "./NotesImageAttachment";
+import {
+  ImageAtomEditor,
+  type ImageAtomEditorHandle
+} from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import {
   noteNodeNavigationLabel,
@@ -36,6 +43,10 @@ import {
 } from "./NotesBulletMenu";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import { useNotesExportController } from "./NotesExportController";
+import {
+  parseNotesImageAtomPaste,
+  readNotesImageAtomPasteCandidate
+} from "./notesImageAtomClipboard";
 import {
   extractClipboardImages,
   type ClipboardImageExtraction
@@ -108,15 +119,24 @@ interface OutlineNodeRowProps {
 const STRUCTURAL_COMMAND_SKIPPED_NOTICE =
   "Command paused — a recent change could not be saved. Retry the save to continue.";
 const OUTLINE_SELECTION_INTERACTIVE_SELECTOR =
-  "button, a, [role='button'], .notes-attachment-list, .notes-image-node-content, .notes-attachment-error";
+  "button, a, [role='button'], [role='separator'], .notes-attachment-list, .notes-attachment-error";
+const OUTLINE_NATIVE_SELECTION_CONTROL_SELECTOR =
+  "input, select, textarea, [contenteditable='true'], [data-image-atom-interactive]";
+const OUTLINE_NATIVE_SELECTION_SURFACE_SELECTOR =
+  "[data-notes-native-selection-surface='true']";
 
 export function isOutlineSelectionInteractiveTarget(
   target: EventTarget | null
 ): boolean {
-  return (
-    target instanceof Element &&
-    target.closest(OUTLINE_SELECTION_INTERACTIVE_SELECTOR) !== null
-  );
+  if (!(target instanceof Element)) return false;
+  const surface = target.closest(OUTLINE_NATIVE_SELECTION_SURFACE_SELECTOR);
+  if (surface) {
+    const control = target.closest(
+      `${OUTLINE_SELECTION_INTERACTIVE_SELECTOR}, ${OUTLINE_NATIVE_SELECTION_CONTROL_SELECTOR}`
+    );
+    return control !== null && surface.contains(control);
+  }
+  return target.closest(OUTLINE_SELECTION_INTERACTIVE_SELECTOR) !== null;
 }
 
 export function isOutlineSelectionTextSurface(
@@ -126,7 +146,9 @@ export function isOutlineSelectionTextSurface(
     target instanceof Element &&
     !isOutlineSelectionInteractiveTarget(target) &&
     Boolean(
-      target.closest(".notes-node-title-field, .notes-node-note-field")
+      target.closest(
+        `${OUTLINE_NATIVE_SELECTION_SURFACE_SELECTOR}, .notes-node-title-field, .notes-node-note-field`
+      )
     )
   );
 }
@@ -169,7 +191,12 @@ function OutlineNodeRowComponent({
     commitPreparedMove,
     loadActiveNodesForMove,
     prepareMoveNode,
-    retryFailedDraft
+    retryFailedDraft,
+    registerActiveImageAtomEditor,
+    captureActiveImageAtomEditorAuthority,
+    captureImageAtomPasteAuthority,
+    isImageAtomPasteAuthorityCurrent,
+    applyImageAtomPasteWithAuthority
   } = useNotesActions();
   const { activeTagFilters, libraryView, state } = useNotesState();
   const exportController = useNotesExportController();
@@ -179,6 +206,8 @@ function OutlineNodeRowComponent({
     !disabled &&
     !readOnly &&
     state.status !== "loading";
+  const imageIngestEnabledRef = useRef(imageIngestEnabled);
+  imageIngestEnabledRef.current = imageIngestEnabled;
   // Line B widened the attachment target so a node is a valid drop AND
   // clipboard-paste target; keep that here while OURS' per-action gates below
   // still drive the individual import handlers.
@@ -219,6 +248,7 @@ function OutlineNodeRowComponent({
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
+  const imageEditorRef = useRef<ImageAtomEditorHandle>(null);
   const titleSelectionRef = useRef<{
     startUtf16: number;
     endUtf16: number;
@@ -242,15 +272,29 @@ function OutlineNodeRowComponent({
   const noteValue = draft?.note ?? node?.note ?? "";
   const imageOffsetUtf16 = draft?.imageOffsetUtf16 ?? node?.imageOffsetUtf16 ?? 0;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
+  const primaryImageAttachment =
+    node?.nodeKind === "image" &&
+    attachments.length === 1 &&
+    isValidNotesImageAttachmentMetadata(attachments[0]!)
+      ? attachments[0]!
+      : null;
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
-    onCommit: (field, value) => {
+    onCommit: (field, value, replacement) => {
+      const nextImageOffsetUtf16 =
+        node?.nodeKind === "image" &&
+        field === "title" &&
+        replacement.endUtf16 <= imageOffsetUtf16
+          ? imageOffsetUtf16 +
+            replacement.text.length -
+            (replacement.endUtf16 - replacement.startUtf16)
+          : imageOffsetUtf16;
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue, imageOffsetUtf16 }
-          : { title: titleValue, note: value, imageOffsetUtf16 },
+          ? { title: value, note: noteValue, imageOffsetUtf16: nextImageOffsetUtf16 }
+          : { title: titleValue, note: value, imageOffsetUtf16: nextImageOffsetUtf16 },
         field
       );
       void actions.flushNodeDraft(nodeId);
@@ -494,15 +538,33 @@ function OutlineNodeRowComponent({
             )}
           </div>
           {node.nodeKind === "image" ? (
-            <NotesImageNodeContent
-              nodeId={nodeId}
-              attachment={attachments[0]}
-              originalName={titleValue || node.title}
-              className="notes-node-primary-image"
-              style={{ gridColumn: 2, minWidth: 0 }}
-              readOnly
-              disabled={disabled}
-            />
+            primaryImageAttachment ? (
+              <div style={{ gridColumn: 2, minWidth: 0 }}>
+                <ImageAtomEditor
+                  ref={imageEditorRef}
+                  nodeId={nodeId}
+                  draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
+                  attachment={primaryImageAttachment}
+                  onDraftChange={() => undefined}
+                  registerFlushAdapter={actions.registerImageAtomFlushAdapter}
+                  registerActiveEditor={registerActiveImageAtomEditor}
+                  className="notes-node-primary-image"
+                  contentRef={imageRef}
+                  readOnly
+                  disabled={disabled}
+                />
+              </div>
+            ) : (
+              <NotesImageNodeContent
+                nodeId={nodeId}
+                attachment={attachments[0]}
+                originalName={titleValue || node.title}
+                className="notes-node-primary-image"
+                style={{ gridColumn: 2, minWidth: 0 }}
+                readOnly
+                disabled={disabled}
+              />
+            )
           ) : (
             <span className="notes-node-readonly-title">{label}</span>
           )}
@@ -1020,6 +1082,141 @@ function OutlineNodeRowComponent({
     }
   };
 
+  const updateImageDraft = (nextDraft: {
+    readonly title: string;
+    readonly note: string;
+    readonly imageOffsetUtf16: number;
+  }) => {
+    actions.updateNodeDraft(nodeId, nextDraft, "title");
+  };
+
+  const runImageAtomEnter = () => {
+    runStructuralCommand(async () => {
+      const selection = await imageEditorRef.current?.flushAndGetSelection();
+      if (!selection) return "skipped";
+      let siblingId: NoteId;
+      try {
+        siblingId = createNoteId();
+      } catch {
+        return "skipped";
+      }
+      return actions.applyImageAtomEdit(nodeId, selection, {
+        kind: "enter",
+        siblingId
+      });
+    });
+  };
+
+  const runImageAtomKeyboardRemove = () => {
+    runStructuralCommand(async () => {
+      const selection = await imageEditorRef.current?.flushAndGetSelection();
+      return selection
+        ? actions.applyImageAtomEdit(nodeId, selection, {
+            kind: "remove",
+            replacementText: ""
+          })
+        : "skipped";
+    });
+  };
+
+  const runImageAtomMenuRemove = () => {
+    runStructuralCommand(async () => {
+      const result = await imageEditorRef.current?.flush();
+      if (result !== "flushed" && result !== "deferred") return "skipped";
+      return actions.applyImageAtomEdit(
+        nodeId,
+        {
+          anchorUtf16: imageOffsetUtf16,
+          focusUtf16: imageOffsetUtf16 + 1
+        },
+        { kind: "remove", replacementText: "" }
+      );
+    });
+  };
+
+  const handleImageAtomPaste = (event: globalThis.ClipboardEvent): boolean => {
+    if (!imageIngestEnabled || !event.clipboardData) return false;
+    const clipboardData = event.clipboardData;
+    const candidate = readNotesImageAtomPasteCandidate(clipboardData);
+    if (!candidate.claimed) return false;
+
+    event.preventDefault();
+    const parse = parseNotesImageAtomPaste(candidate).catch(
+      () => ({ kind: "none" as const })
+    );
+    const editor = imageEditorRef.current;
+    void (async () => {
+      const initial = await editor?.flushAndGetSelectionSnapshot();
+      if (!editor || !initial || imageEditorRef.current !== editor) return;
+      const editorAuthority = captureActiveImageAtomEditorAuthority?.(
+        nodeId,
+        initial.authority
+      );
+      if (!editorAuthority) return;
+      let persisted = false;
+      try {
+        persisted = await actions.flushNodeDraft(nodeId);
+      } catch {
+        return;
+      }
+      if (
+        !persisted ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      const admitted = await editor.flushAndGetSelectionSnapshot();
+      if (
+        !admitted ||
+        admitted.selection.anchorUtf16 !== initial.selection.anchorUtf16 ||
+        admitted.selection.focusUtf16 !== initial.selection.focusUtf16 ||
+        admitted.authority !== initial.authority
+      ) {
+        return;
+      }
+      const authority = captureImageAtomPasteAuthority?.(
+        nodeId,
+        editorAuthority
+      );
+      if (!authority || !applyImageAtomPasteWithAuthority) return;
+      const exactSelection = { ...admitted.selection };
+      const parsed = await parse;
+      if (parsed.kind !== "imageAtom" && parsed.kind !== "external") return;
+      if (
+        !isImageAtomPasteAuthorityCurrent?.(authority) ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      const live = await editor.flushAndGetSelectionSnapshot();
+      if (
+        !live ||
+        live.selection.anchorUtf16 !== exactSelection.anchorUtf16 ||
+        live.selection.focusUtf16 !== exactSelection.focusUtf16 ||
+        live.authority !== admitted.authority ||
+        !isImageAtomPasteAuthorityCurrent(authority) ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      runStructuralCommand(() =>
+        applyImageAtomPasteWithAuthority(
+          authority,
+          nodeId,
+          exactSelection,
+          parsed.value
+        )
+      );
+    })().catch(() => undefined);
+    return true;
+  };
+
   return (
     <div
       ref={setNodeRef}
@@ -1229,7 +1426,55 @@ function OutlineNodeRowComponent({
           <span className="notes-node-bullet-dot" aria-hidden="true" />
         </button>
 
-        {node.nodeKind === "image" ? (
+        {node.nodeKind === "image" ? primaryImageAttachment ? (
+          <div style={{ gridColumn: 4, gridRow: 1, minWidth: 0 }}>
+            <ImageAtomEditor
+              ref={imageEditorRef}
+              nodeId={nodeId}
+              draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
+              attachment={primaryImageAttachment}
+              onDraftChange={updateImageDraft}
+              registerFlushAdapter={actions.registerImageAtomFlushAdapter}
+              registerActiveEditor={registerActiveImageAtomEditor}
+              onEnter={runImageAtomEnter}
+              onAtomDelete={runImageAtomKeyboardRemove}
+              onUnhandledKeyDown={handleImageKeyDown}
+              onSupportingNote={openAndFocusNote}
+              onUndo={() => void actions.undo?.()}
+              onRedo={() => void actions.redo?.()}
+              onImageAtomPaste={handleImageAtomPaste}
+              onTagClick={(token) =>
+                void actions.toggleTagFilter({
+                  prefix: token.prefix,
+                  normalizedTag: token.normalized
+                })
+              }
+              onDateClick={disabled ? undefined : (token, anchor) =>
+                datePicker.openExistingDate(
+                  "title",
+                  token,
+                  anchor,
+                  imageRef.current ?? undefined
+                )
+              }
+              onDateTrigger={disabled ? undefined : (range, anchor, source) =>
+                datePicker.openTypedDate("title", range, anchor, source)
+              }
+              isTagActive={(token) =>
+                activeTagFilters.some(
+                  (filter) =>
+                    filter.prefix === token.prefix &&
+                    filter.normalizedTag === token.normalized
+                )
+              }
+              today={datePicker.today}
+              className="notes-node-primary-image"
+              contentRef={imageRef}
+              disabled={disabled}
+              onRemoveImage={runImageAtomMenuRemove}
+            />
+          </div>
+        ) : (
           <NotesImageNodeContent
             nodeId={nodeId}
             attachment={attachments[0]}

@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createNotesImageAtomEditorRegistry,
-  type ActiveImageAtomEditor
+  type ActiveImageAtomEditor,
+  type ImageAtomEditorSelectionAuthority
 } from "./notesImageAtomEditorRegistry";
+
+const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
 
 function editor(overrides: Partial<ActiveImageAtomEditor> = {}): ActiveImageAtomEditor {
   return {
@@ -12,6 +15,13 @@ function editor(overrides: Partial<ActiveImageAtomEditor> = {}): ActiveImageAtom
       anchorUtf16: 0,
       focusUtf16: 0
     }),
+    flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+      selection: { anchorUtf16: 0, focusUtf16: 0 },
+      authority: selectionAuthority
+    }),
+    isSelectionAuthorityCurrent: vi.fn(
+      (authority) => authority === selectionAuthority
+    ),
     claimPaste: vi.fn().mockReturnValue(false),
     ...overrides
   };
@@ -51,6 +61,26 @@ describe("Notes image atom editor registry", () => {
     expect(registry.active()).toBe(shared);
     removeCurrent();
     expect(registry.active()).toBeNull();
+  });
+
+  it("invalidates an old active token when the same editor unregisters and refocuses", () => {
+    const registry = createNotesImageAtomEditorRegistry();
+    const shared = editor();
+    const removeFirst = registry.register(shared);
+    const oldAuthority = registry.capturePasteAuthority(
+      shared.nodeId,
+      selectionAuthority
+    )!;
+
+    removeFirst();
+    registry.register(shared);
+    const currentAuthority = registry.capturePasteAuthority(
+      shared.nodeId,
+      selectionAuthority
+    )!;
+
+    expect(registry.isPasteAuthorityCurrent(oldAuthority)).toBe(false);
+    expect(registry.isPasteAuthorityCurrent(currentAuthority)).toBe(true);
   });
 
   it("awaits the captured latest editor's combined selection barrier", async () => {

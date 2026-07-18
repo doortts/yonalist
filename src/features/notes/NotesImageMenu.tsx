@@ -17,6 +17,8 @@ export interface NotesImageMenuProps {
   readonly onViewOriginal?: () => void;
   readonly onDownload?: () => void;
   readonly onDelete?: () => void;
+  readonly deleteLabel?: string;
+  readonly showRemove?: boolean;
   readonly onOpenSettings?: () => void;
 }
 
@@ -60,6 +62,8 @@ export function NotesImageMenu({
   onViewOriginal,
   onDownload,
   onDelete,
+  deleteLabel = "Delete",
+  showRemove = true,
   onOpenSettings
 }: NotesImageMenuProps) {
   const [open, setOpen] = useState(false);
@@ -110,14 +114,16 @@ export function NotesImageMenu({
             >
               Download
             </ImageMenuItem>
-            <ImageMenuItem
-              danger
-              disabled={!onDelete}
-              icon={<Trash2 size={16} aria-hidden="true" />}
-              onClick={onDelete}
-            >
-              Delete
-            </ImageMenuItem>
+            {showRemove && (
+              <ImageMenuItem
+                danger
+                disabled={!onDelete}
+                icon={<Trash2 size={16} aria-hidden="true" />}
+                onClick={onDelete}
+              >
+                {deleteLabel}
+              </ImageMenuItem>
+            )}
             <ImageMenuItem
               disabled={!onOpenSettings}
               icon={<Settings size={16} aria-hidden="true" />}

@@ -548,11 +548,21 @@ function rowIdFromPointerTarget(target: EventTarget | null): NoteId | null {
   return row?.dataset.outlineId ?? null;
 }
 
+function rowIdFromPointerCoordinates(
+  clientX: number,
+  clientY: number
+): NoteId | null {
+  return typeof document.elementFromPoint === "function"
+    ? rowIdFromPointerTarget(document.elementFromPoint(clientX, clientY))
+    : null;
+}
+
 export function NotesOutlinePane() {
   const attachmentUi = useNotesAttachmentUi();
   const {
     actions,
     applyPreparedSelectionBatch,
+    claimActiveImageAtomPaste,
     isPreparedSelectionAuthorityCurrent,
     prepareSelectionAuthority,
     retryLastFailedWrite
@@ -742,7 +752,17 @@ export function NotesOutlinePane() {
     };
   }, []);
   const handlePasteCapture = (event: ClipboardEvent<HTMLDivElement>) => {
-    const clipboardItems = event.clipboardData.items;
+    if (claimActiveImageAtomPaste?.(event.nativeEvent)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    let clipboardItems: DataTransferItemList;
+    try {
+      clipboardItems = event.clipboardData.items;
+    } catch {
+      return;
+    }
     let hasImageCandidate = false;
     for (let index = 0; index < clipboardItems.length; index += 1) {
       const item = clipboardItems[index];
@@ -1217,7 +1237,11 @@ export function NotesOutlinePane() {
     ) {
       return;
     }
-    const currentRowId = rowIdFromPointerTarget(event.target);
+    const targetRowId = rowIdFromPointerTarget(event.target);
+    const currentRowId =
+      targetRowId === gesture.anchorId
+        ? rowIdFromPointerCoordinates(event.clientX, event.clientY) ?? targetRowId
+        : targetRowId;
     if (
       !currentRowId ||
       (!gesture.promoted && currentRowId === gesture.anchorId)

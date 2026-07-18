@@ -6,7 +6,7 @@ import {
   useState
 } from "react";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import type { NoteId } from "../../domain/notes";
+import { createNoteId, type NoteId } from "../../domain/notes";
 import { NoteTextField } from "./NoteTextField";
 import { useNotesDatePickerIntegration } from "./NotesDatePickerIntegration";
 import {
@@ -15,13 +15,24 @@ import {
   NotesBulletMenu
 } from "./NotesBulletMenu";
 import { NotesAttachmentList } from "./NotesAttachmentList";
-import { NotesImageNodeContent } from "./NotesImageAttachment";
+import {
+  isValidNotesImageAttachmentMetadata,
+  NotesImageNodeContent
+} from "./NotesImageAttachment";
+import {
+  ImageAtomEditor,
+  type ImageAtomEditorHandle
+} from "./ImageAtomEditor";
 import { NotesImageUploadStatus } from "./NotesImageUploadStatus";
 import {
   noteNodeNavigationLabel,
   noteNodePresentationLabel
 } from "./notesPresentation";
 import { useNotesExportController } from "./NotesExportController";
+import {
+  parseNotesImageAtomPaste,
+  readNotesImageAtomPasteCandidate
+} from "./notesImageAtomClipboard";
 import {
   useNotesActions,
   useNotesDrafts,
@@ -59,7 +70,12 @@ export function NotesPageHeader({
     commitPreparedMove,
     loadActiveNodesForMove,
     prepareMoveNode,
-    retryFailedDraft
+    retryFailedDraft,
+    registerActiveImageAtomEditor,
+    captureActiveImageAtomEditorAuthority,
+    captureImageAtomPasteAuthority,
+    isImageAtomPasteAuthorityCurrent,
+    applyImageAtomPasteWithAuthority
   } = useNotesActions();
   const { activeTagFilters, state } = useNotesState();
   const {
@@ -73,6 +89,7 @@ export function NotesPageHeader({
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const imageRef = useRef<HTMLDivElement>(null);
+  const imageEditorRef = useRef<ImageAtomEditorHandle>(null);
   const titleSelectionRef = useRef<{
     startUtf16: number;
     endUtf16: number;
@@ -112,6 +129,8 @@ export function NotesPageHeader({
     !disabled &&
     !readOnly &&
     state.status !== "loading";
+  const imageIngestEnabledRef = useRef(imageIngestEnabled);
+  imageIngestEnabledRef.current = imageIngestEnabled;
   const imageAttachmentTargetEnabled =
     imageIngestEnabled &&
     (actions.importDroppedImagePaths !== undefined ||
@@ -121,15 +140,29 @@ export function NotesPageHeader({
   const titlePresentationLabel =
     readOnly || disabled ? "Page title" : undefined;
   const attachments = state.attachmentsByNodeId?.[nodeId] ?? [];
+  const primaryImageAttachment =
+    node?.nodeKind === "image" &&
+    attachments.length === 1 &&
+    isValidNotesImageAttachmentMetadata(attachments[0]!)
+      ? attachments[0]!
+      : null;
   const datePicker = useNotesDatePickerIntegration({
     values: { title: titleValue, note: noteValue },
     refs: { title: titleRef, note: noteRef },
-    onCommit: (field, value) => {
+    onCommit: (field, value, replacement) => {
+      const nextImageOffsetUtf16 =
+        node?.nodeKind === "image" &&
+        field === "title" &&
+        replacement.endUtf16 <= imageOffsetUtf16
+          ? imageOffsetUtf16 +
+            replacement.text.length -
+            (replacement.endUtf16 - replacement.startUtf16)
+          : imageOffsetUtf16;
       actions.updateNodeDraft(
         nodeId,
         field === "title"
-          ? { title: value, note: noteValue, imageOffsetUtf16 }
-          : { title: titleValue, note: value, imageOffsetUtf16 },
+          ? { title: value, note: noteValue, imageOffsetUtf16: nextImageOffsetUtf16 }
+          : { title: titleValue, note: value, imageOffsetUtf16: nextImageOffsetUtf16 },
         field
       );
       void actions.flushNodeDraft(nodeId);
@@ -410,6 +443,141 @@ export function NotesPageHeader({
     }
   };
 
+  const updateImageDraft = (nextDraft: {
+    readonly title: string;
+    readonly note: string;
+    readonly imageOffsetUtf16: number;
+  }) => {
+    actions.updateNodeDraft(nodeId, nextDraft, "title");
+  };
+
+  const runImageAtomEnter = () => {
+    runCommand(async () => {
+      const selection = await imageEditorRef.current?.flushAndGetSelection();
+      if (!selection) return "skipped";
+      let siblingId: NoteId;
+      try {
+        siblingId = createNoteId();
+      } catch {
+        return "skipped";
+      }
+      return actions.applyImageAtomEdit(nodeId, selection, {
+        kind: "enter",
+        siblingId
+      });
+    });
+  };
+
+  const runImageAtomKeyboardRemove = () => {
+    runCommand(async () => {
+      const selection = await imageEditorRef.current?.flushAndGetSelection();
+      return selection
+        ? actions.applyImageAtomEdit(nodeId, selection, {
+            kind: "remove",
+            replacementText: ""
+          })
+        : "skipped";
+    });
+  };
+
+  const runImageAtomMenuRemove = () => {
+    runCommand(async () => {
+      const result = await imageEditorRef.current?.flush();
+      if (result !== "flushed" && result !== "deferred") return "skipped";
+      return actions.applyImageAtomEdit(
+        nodeId,
+        {
+          anchorUtf16: imageOffsetUtf16,
+          focusUtf16: imageOffsetUtf16 + 1
+        },
+        { kind: "remove", replacementText: "" }
+      );
+    });
+  };
+
+  const handleImageAtomPaste = (event: globalThis.ClipboardEvent): boolean => {
+    if (!imageIngestEnabled || !event.clipboardData) return false;
+    const clipboardData = event.clipboardData;
+    const candidate = readNotesImageAtomPasteCandidate(clipboardData);
+    if (!candidate.claimed) return false;
+
+    event.preventDefault();
+    const parse = parseNotesImageAtomPaste(candidate).catch(
+      () => ({ kind: "none" as const })
+    );
+    const editor = imageEditorRef.current;
+    void (async () => {
+      const initial = await editor?.flushAndGetSelectionSnapshot();
+      if (!editor || !initial || imageEditorRef.current !== editor) return;
+      const editorAuthority = captureActiveImageAtomEditorAuthority?.(
+        nodeId,
+        initial.authority
+      );
+      if (!editorAuthority) return;
+      let persisted = false;
+      try {
+        persisted = await actions.flushNodeDraft(nodeId);
+      } catch {
+        return;
+      }
+      if (
+        !persisted ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      const admitted = await editor.flushAndGetSelectionSnapshot();
+      if (
+        !admitted ||
+        admitted.selection.anchorUtf16 !== initial.selection.anchorUtf16 ||
+        admitted.selection.focusUtf16 !== initial.selection.focusUtf16 ||
+        admitted.authority !== initial.authority
+      ) {
+        return;
+      }
+      const authority = captureImageAtomPasteAuthority?.(
+        nodeId,
+        editorAuthority
+      );
+      if (!authority || !applyImageAtomPasteWithAuthority) return;
+      const exactSelection = { ...admitted.selection };
+      const parsed = await parse;
+      if (parsed.kind !== "imageAtom" && parsed.kind !== "external") return;
+      if (
+        !isImageAtomPasteAuthorityCurrent?.(authority) ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      const live = await editor.flushAndGetSelectionSnapshot();
+      if (
+        !live ||
+        live.selection.anchorUtf16 !== exactSelection.anchorUtf16 ||
+        live.selection.focusUtf16 !== exactSelection.focusUtf16 ||
+        live.authority !== admitted.authority ||
+        !isImageAtomPasteAuthorityCurrent(authority) ||
+        imageEditorRef.current !== editor ||
+        !imageRef.current?.contains(document.activeElement) ||
+        !imageIngestEnabledRef.current
+      ) {
+        return;
+      }
+      runCommand(() =>
+        applyImageAtomPasteWithAuthority(
+          authority,
+          nodeId,
+          exactSelection,
+          parsed.value
+        )
+      );
+    })().catch(() => undefined);
+    return true;
+  };
+
   return (
     <>
       <header
@@ -544,12 +712,62 @@ export function NotesPageHeader({
               }
             />
           </div>
-          {node.nodeKind === "image" ? (
+          {node.nodeKind === "image" ? primaryImageAttachment ? (
             <div className="notes-page-primary">
               <h1
                 className="notes-page-heading"
                 aria-label={headingLabel}
               />
+              <ImageAtomEditor
+                ref={imageEditorRef}
+                nodeId={nodeId}
+                draft={{ title: titleValue, note: noteValue, imageOffsetUtf16 }}
+                attachment={primaryImageAttachment}
+                onDraftChange={updateImageDraft}
+                registerFlushAdapter={actions.registerImageAtomFlushAdapter}
+                registerActiveEditor={registerActiveImageAtomEditor}
+                onEnter={readOnly ? undefined : runImageAtomEnter}
+                onAtomDelete={readOnly ? undefined : runImageAtomKeyboardRemove}
+                onUnhandledKeyDown={readOnly ? undefined : handleImageKeyDown}
+                onSupportingNote={readOnly ? undefined : openAndFocusNote}
+                onUndo={readOnly ? undefined : () => void actions.undo?.()}
+                onRedo={readOnly ? undefined : () => void actions.redo?.()}
+                onImageAtomPaste={readOnly ? undefined : handleImageAtomPaste}
+                onTagClick={(token) =>
+                  void actions.toggleTagFilter({
+                    prefix: token.prefix,
+                    normalizedTag: token.normalized
+                  })
+                }
+                onDateClick={readOnly || disabled ? undefined : (token, anchor) =>
+                  datePicker.openExistingDate(
+                    "title",
+                    token,
+                    anchor,
+                    imageRef.current ?? undefined
+                  )
+                }
+                onDateTrigger={readOnly || disabled ? undefined : (range, anchor, source) =>
+                  datePicker.openTypedDate("title", range, anchor, source)
+                }
+                isTagActive={(token) =>
+                  activeTagFilters.some(
+                    (filter) =>
+                      filter.prefix === token.prefix &&
+                      filter.normalizedTag === token.normalized
+                  )
+                }
+                today={datePicker.today}
+                className="notes-page-primary-image"
+                contentRef={imageRef}
+                readOnly={readOnly}
+                disabled={disabled}
+                onRemoveImage={readOnly ? undefined : runImageAtomMenuRemove}
+              />
+            </div>
+          ) : (
+            <div className="notes-page-primary">
+              <h1 className="notes-page-heading" aria-label={headingLabel} />
               <NotesImageNodeContent
                 nodeId={nodeId}
                 attachment={attachments[0]}

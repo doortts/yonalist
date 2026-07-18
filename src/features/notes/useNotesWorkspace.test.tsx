@@ -53,6 +53,10 @@ import {
   type NotesHistorySession,
   type NotesHistorySnapshot
 } from "./notesHistory";
+import type {
+  ImageAtomEditorSelectionAuthority,
+  NotesImageAtomEditorAuthority
+} from "./notesImageAtomEditorRegistry";
 
 const createNoteIdMock = vi.hoisted(() => vi.fn());
 const notesHistorySpies = vi.hoisted(() => ({
@@ -320,6 +324,33 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function activateImagePasteAuthority(
+  current: UseNotesWorkspaceResult,
+  nodeId: string
+): NotesImageAtomEditorAuthority {
+  const selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+  current.registerActiveImageAtomEditor?.({
+    nodeId,
+    flush: vi.fn().mockResolvedValue("flushed"),
+    flushAndGetSelection: vi.fn().mockResolvedValue({
+      anchorUtf16: 0,
+      focusUtf16: 0
+    }),
+    flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+      selection: { anchorUtf16: 0, focusUtf16: 0 },
+      authority: selectionAuthority
+    }),
+    isSelectionAuthorityCurrent: (candidate) => candidate === selectionAuthority,
+    claimPaste: vi.fn().mockReturnValue(false)
+  });
+  const editorAuthority = current.captureActiveImageAtomEditorAuthority?.(
+    nodeId,
+    selectionAuthority
+  );
+  if (!editorAuthority) throw new Error("Expected active image editor authority");
+  return editorAuthority;
 }
 
 function sizedImageBlob(size: number): Blob {
@@ -593,6 +624,658 @@ describe("useNotesWorkspace", () => {
     notesHistorySpies.rememberAfter.mockClear();
     notesHistorySpies.acceptMutationResult.mockClear();
     notesHistorySpies.acceptReplayResult.mockClear();
+  });
+
+  it.each(["draft", "attachment", "scope", "vault ABA"])(
+    "invalidates opaque image-paste authority across %s changes",
+    async (change) => {
+      const imageNodeId = "99100000-0000-4000-8000-000000000001";
+      const attachmentId = "99100000-0000-4000-8000-000000000002";
+      const imageNode = node({
+        id: imageNodeId,
+        nodeKind: "image",
+        title: "beforeafter",
+        note: "support",
+        imageOffsetUtf16: 6
+      });
+      const imageAttachment = attachment({
+        id: attachmentId,
+        nodeId: imageNodeId
+      });
+      const initial: NotesWorkspace = {
+        nodes: [imageNode],
+        attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+      };
+      const resized: NotesWorkspace = {
+        nodes: [imageNode],
+        attachmentsByNodeId: {
+          [imageNodeId]: [
+            { ...imageAttachment, displayWidth: 480, updatedAt: "2026-07-13T00:00:00Z" }
+          ]
+        }
+      };
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        resizeAttachment: vi.fn(async (_vaultRoot, _input, context) =>
+          mutationResult(resized, context)
+        )
+      });
+      const rendered = renderHook(
+        ({ vaultRoot }) => useNotesWorkspace({ vaultRoot, repository: store }),
+        { initialProps: { vaultRoot: "/authority-a" } }
+      );
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      const selectionAuthority = activateImagePasteAuthority(
+        rendered.result.current,
+        imageNodeId
+      );
+
+      const authority =
+        rendered.result.current.captureImageAtomPasteAuthority?.(
+          imageNodeId,
+          selectionAuthority
+        );
+      expect(authority).not.toBeNull();
+      expect(
+        rendered.result.current.isImageAtomPasteAuthorityCurrent?.(authority!)
+      ).toBe(true);
+
+      if (change === "draft") {
+        act(() => {
+          rendered.result.current.actions.updateNodeDraft(
+            imageNodeId,
+            { title: "changed", note: "support", imageOffsetUtf16: 6 },
+            "title"
+          );
+          rendered.result.current.actions.updateNodeDraft(
+            imageNodeId,
+            { title: "beforeafter", note: "support", imageOffsetUtf16: 6 },
+            "title"
+          );
+        });
+      } else if (change === "attachment") {
+        await act(async () => {
+          await rendered.result.current.actions.resizeImage!(attachmentId, 480);
+        });
+      } else if (change === "scope") {
+        await act(async () => {
+          await rendered.result.current.actions.selectLibraryView("starred");
+          await rendered.result.current.actions.selectLibraryView("all");
+        });
+      } else {
+        rendered.rerender({ vaultRoot: "/authority-b" });
+        await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+        rendered.rerender({ vaultRoot: "/authority-a" });
+        await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      }
+
+      expect(
+        rendered.result.current.isImageAtomPasteAuthorityCurrent?.(authority!)
+      ).toBe(false);
+      rendered.unmount();
+    }
+  );
+
+  it("persists a pending image draft before capturing paste authority and committing", async () => {
+    const imageNodeId = "99105000-0000-4000-8000-000000000001";
+    const attachmentId = "99105000-0000-4000-8000-000000000002";
+    createNoteIdMock
+      .mockReturnValueOnce("99105000-0000-4000-8000-000000000003")
+      .mockReturnValueOnce("99105000-0000-4000-8000-000000000004");
+    const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+    const initialNode = node({
+      id: imageNodeId,
+      nodeKind: "image",
+      title: "beforeafter",
+      note: "support",
+      imageOffsetUtf16: 6
+    });
+    const persistedNode = {
+      ...initialNode,
+      title: "typedafter",
+      imageOffsetUtf16: 5,
+      updatedAt: "2026-07-13T00:00:00Z"
+    };
+    const initial: NotesWorkspace = {
+      nodes: [initialNode],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const persisted: NotesWorkspace = {
+      nodes: [persistedNode],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const order: string[] = [];
+    const updateNode = vi.fn<NotesStore["updateNode"]>(
+      async (_vaultRoot, _input, context) => {
+        order.push("draft");
+        return mutationResult(persisted, context);
+      }
+    );
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>(
+      async (_vaultRoot, _input, context) => {
+        order.push("paste");
+        return imageAtomMutationResult(
+          persisted,
+          context,
+          imageNodeId,
+          "paste"
+        );
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode,
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/pending-image-paste", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+    const selectionAuthority = activateImagePasteAuthority(
+      rendered.result.current,
+      imageNodeId
+    );
+
+    act(() => {
+      rendered.result.current.actions.updateNodeDraft(
+        imageNodeId,
+        { title: "typedafter", note: "support", imageOffsetUtf16: 5 },
+        "title"
+      );
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.draftsByNodeId[imageNodeId]).toBeDefined()
+    );
+    expect(
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      )
+    ).toBeNull();
+    await act(async () => {
+      await expect(
+        rendered.result.current.actions.flushNodeDraft(imageNodeId)
+      ).resolves.toBe(true);
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.draftsByNodeId[imageNodeId]).toBeUndefined()
+    );
+    const authority =
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    expect(authority).not.toBeNull();
+
+    await act(async () => {
+      await expect(
+        rendered.result.current.applyImageAtomPasteWithAuthority!(
+          authority!,
+          imageNodeId,
+          { anchorUtf16: 5, focusUtf16: 6 },
+          {
+            version: 1,
+            fragment: [
+              {
+                kind: "image",
+                source: {
+                  originalName: "pending.png",
+                  mimeType: "image/png",
+                  blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+                }
+              }
+            ]
+          }
+        )
+      ).resolves.toBe("committed");
+    });
+    expect(order).toEqual(["draft", "paste"]);
+    expect(updateNode).toHaveBeenCalledOnce();
+    expect(applyImageAtomPaste).toHaveBeenCalledOnce();
+  });
+
+  it("refuses to seal a pre-flush image-editor lease after registration A-to-B-to-A ABA", async () => {
+    const imageNodeId = "99107500-0000-4000-8000-000000000001";
+    const attachmentId = "99107500-0000-4000-8000-000000000002";
+    const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+    const initialNode = node({
+      id: imageNodeId,
+      nodeKind: "image",
+      title: "beforeafter",
+      note: "support",
+      imageOffsetUtf16: 6
+    });
+    const persistedNode = {
+      ...initialNode,
+      title: "typedafter",
+      imageOffsetUtf16: 5,
+      updatedAt: "2026-07-13T00:00:00Z"
+    };
+    const initial: NotesWorkspace = {
+      nodes: [initialNode],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const persisted: NotesWorkspace = {
+      nodes: [persistedNode],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const updateGate = deferred<NotesMutationResult>();
+    let updateContext: NotesHistoryContext | null = null;
+    const updateNode = vi.fn<NotesStore["updateNode"]>(
+      async (_vaultRoot, _input, context) => {
+        updateContext = context;
+        return updateGate.promise;
+      }
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      updateNode
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/pending-image-paste-aba", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    const selectionA = {} as ImageAtomEditorSelectionAuthority;
+    const editorA = {
+      nodeId: imageNodeId,
+      flush: vi.fn().mockResolvedValue("flushed" as const),
+      flushAndGetSelection: vi.fn().mockResolvedValue({
+        anchorUtf16: 5,
+        focusUtf16: 6
+      }),
+      flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+        selection: { anchorUtf16: 5, focusUtf16: 6 },
+        authority: selectionA
+      }),
+      isSelectionAuthorityCurrent: (candidate: ImageAtomEditorSelectionAuthority) =>
+        candidate === selectionA,
+      claimPaste: vi.fn().mockReturnValue(false)
+    };
+    const unregisterA =
+      rendered.result.current.registerActiveImageAtomEditor?.(editorA)!;
+    act(() => {
+      rendered.result.current.actions.updateNodeDraft(
+        imageNodeId,
+        { title: "typedafter", note: "support", imageOffsetUtf16: 5 },
+        "title"
+      );
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.draftsByNodeId[imageNodeId]).toBeDefined()
+    );
+    const preFlushLease =
+      rendered.result.current.captureActiveImageAtomEditorAuthority?.(
+        imageNodeId,
+        selectionA
+      );
+    expect(preFlushLease).not.toBeNull();
+
+    let flush!: Promise<boolean>;
+    act(() => {
+      flush = rendered.result.current.actions.flushNodeDraft(imageNodeId);
+    });
+    await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+
+    unregisterA();
+    const selectionB = {} as ImageAtomEditorSelectionAuthority;
+    const unregisterB = rendered.result.current.registerActiveImageAtomEditor?.({
+      ...editorA,
+      flushAndGetSelectionSnapshot: vi.fn().mockResolvedValue({
+        selection: { anchorUtf16: 5, focusUtf16: 6 },
+        authority: selectionB
+      }),
+      isSelectionAuthorityCurrent: (candidate) => candidate === selectionB
+    })!;
+    unregisterB();
+    rendered.result.current.registerActiveImageAtomEditor?.(editorA);
+
+    updateGate.resolve(mutationResult(persisted, updateContext!));
+    await act(async () => {
+      await expect(flush).resolves.toBe(true);
+    });
+    await waitFor(() =>
+      expect(rendered.result.current.draftsByNodeId[imageNodeId]).toBeUndefined()
+    );
+    expect(
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        preFlushLease!
+      )
+    ).toBeNull();
+  });
+
+  it("rechecks deferred image-paste authority when an earlier queued target mutation settles", async () => {
+    const imageNodeId = "99110000-0000-4000-8000-000000000001";
+    const attachmentId = "99110000-0000-4000-8000-000000000002";
+    const pastedNodeId = "99110000-0000-4000-8000-000000000003";
+    const pastedAttachmentId = "99110000-0000-4000-8000-000000000004";
+    createNoteIdMock
+      .mockReturnValueOnce(pastedNodeId)
+      .mockReturnValueOnce(pastedAttachmentId);
+    const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+    const initial: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          note: "support",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const changed: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "changed",
+          note: "support",
+          imageOffsetUtf16: 3,
+          updatedAt: "2026-07-13T00:00:00Z"
+        })
+      ],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const editGate = deferred<ImageAtomMutationResult>();
+    let editContext: NotesHistoryContext | null = null;
+    const applyImageAtomEdit = vi.fn<NotesStore["applyImageAtomEdit"]>(
+      async (_vaultRoot, _input, context) => {
+        editContext = context;
+        return editGate.promise;
+      }
+    );
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>();
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      applyImageAtomEdit,
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/authority-queue", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+    const selectionAuthority = activateImagePasteAuthority(
+      rendered.result.current,
+      imageNodeId
+    );
+    const authority =
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    expect(authority).not.toBeNull();
+
+    const edit = rendered.result.current.actions.applyImageAtomEdit(
+      imageNodeId,
+      { anchorUtf16: 0, focusUtf16: 0 },
+      { kind: "remove", replacementText: "x" }
+    );
+    await waitFor(() => expect(applyImageAtomEdit).toHaveBeenCalledOnce());
+    const paste = rendered.result.current.applyImageAtomPasteWithAuthority!(
+      authority!,
+      imageNodeId,
+      { anchorUtf16: 6, focusUtf16: 7 },
+      {
+        version: 1,
+        fragment: [
+          {
+            kind: "image",
+            source: {
+              originalName: "queued.png",
+              mimeType: "image/png",
+              blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+            }
+          }
+        ]
+      }
+    );
+    editGate.resolve(
+      await imageAtomMutationResult(changed, editContext!, imageNodeId)
+    );
+
+    await act(async () => {
+      await expect(edit).resolves.toBe("committed");
+      await expect(paste).resolves.toBe("skipped");
+    });
+    expect(applyImageAtomPaste).not.toHaveBeenCalled();
+    expect(rendered.result.current.state.nodesById[imageNodeId]?.title).toBe(
+      "changed"
+    );
+  });
+
+  it.each(["registration", "selection ABA"])(
+    "rejects image paste at its queue turn after editor %s changes",
+    async (change) => {
+      const imageNodeId = "99115000-0000-4000-8000-000000000001";
+      const attachmentId = "99115000-0000-4000-8000-000000000002";
+      const blockerNodeId = "99115000-0000-4000-8000-000000000003";
+      createNoteIdMock
+        .mockReturnValueOnce("99115000-0000-4000-8000-000000000004")
+        .mockReturnValueOnce("99115000-0000-4000-8000-000000000005");
+      const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+      const imageNode = node({
+        id: imageNodeId,
+        nodeKind: "image",
+        title: "beforeafter",
+        note: "support",
+        imageOffsetUtf16: 6
+      });
+      const blockerNode = node({ id: blockerNodeId, title: "blocker" });
+      const initial: NotesWorkspace = {
+        nodes: [imageNode, blockerNode],
+        attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+      };
+      const changed: NotesWorkspace = {
+        nodes: [imageNode, { ...blockerNode, title: "changed" }],
+        attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+      };
+      const blockerGate = deferred<NotesMutationResult>();
+      let blockerContext: NotesHistoryContext | null = null;
+      const updateNode = vi.fn<NotesStore["updateNode"]>(
+        async (_vaultRoot, _input, context) => {
+          blockerContext = context;
+          return blockerGate.promise;
+        }
+      );
+      const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>();
+      const store = repository({
+        loadWorkspace: vi.fn().mockResolvedValue(initial),
+        updateNode,
+        applyImageAtomPaste
+      });
+      const rendered = renderHook(() =>
+        useNotesWorkspace({ vaultRoot: "/authority-editor-queue", repository: store })
+      );
+      await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+      rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+      let selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+      const activeEditor = {
+        nodeId: imageNodeId,
+        flush: vi.fn().mockResolvedValue("flushed" as const),
+        flushAndGetSelection: vi.fn().mockResolvedValue({
+          anchorUtf16: 6,
+          focusUtf16: 7
+        }),
+        flushAndGetSelectionSnapshot: vi.fn(async () => ({
+          selection: { anchorUtf16: 6, focusUtf16: 7 },
+          authority: selectionAuthority
+        })),
+        isSelectionAuthorityCurrent: (candidate: ImageAtomEditorSelectionAuthority) =>
+          candidate === selectionAuthority,
+        claimPaste: vi.fn().mockReturnValue(false)
+      };
+      const unregister =
+        rendered.result.current.registerActiveImageAtomEditor?.(activeEditor)!;
+      const editorAuthority =
+        rendered.result.current.captureActiveImageAtomEditorAuthority?.(
+          imageNodeId,
+          selectionAuthority
+        );
+      expect(editorAuthority).not.toBeNull();
+      const authority =
+        rendered.result.current.captureImageAtomPasteAuthority?.(
+          imageNodeId,
+          editorAuthority!
+        );
+      expect(authority).not.toBeNull();
+
+      const blocker = rendered.result.current.actions.updateNode(blockerNodeId, {
+        title: "changed",
+        note: ""
+      });
+      await waitFor(() => expect(updateNode).toHaveBeenCalledOnce());
+      const paste = rendered.result.current.applyImageAtomPasteWithAuthority!(
+        authority!,
+        imageNodeId,
+        { anchorUtf16: 6, focusUtf16: 7 },
+        {
+          version: 1,
+          fragment: [
+            {
+              kind: "image",
+              source: {
+                originalName: "queued.png",
+                mimeType: "image/png",
+                blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+              }
+            }
+          ]
+        }
+      );
+      if (change === "registration") {
+        unregister();
+        rendered.result.current.registerActiveImageAtomEditor?.(activeEditor);
+      } else {
+        selectionAuthority = {} as ImageAtomEditorSelectionAuthority;
+      }
+      blockerGate.resolve(mutationResult(changed, blockerContext!));
+
+      await act(async () => {
+        await expect(blocker).resolves.toBe("committed");
+        await expect(paste).resolves.toBe("skipped");
+      });
+      expect(applyImageAtomPaste).not.toHaveBeenCalled();
+    }
+  );
+
+  it("keeps overlapping image-paste admissions bound to their own authority", async () => {
+    const imageNodeId = "99120000-0000-4000-8000-000000000001";
+    const attachmentId = "99120000-0000-4000-8000-000000000002";
+    createNoteIdMock
+      .mockReturnValueOnce("99120000-0000-4000-8000-000000000003")
+      .mockReturnValueOnce("99120000-0000-4000-8000-000000000004")
+      .mockReturnValueOnce("99120000-0000-4000-8000-000000000005")
+      .mockReturnValueOnce("99120000-0000-4000-8000-000000000006");
+    const imageAttachment = attachment({ id: attachmentId, nodeId: imageNodeId });
+    const initial: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "beforeafter",
+          note: "support",
+          imageOffsetUtf16: 6
+        })
+      ],
+      attachmentsByNodeId: { [imageNodeId]: [imageAttachment] }
+    };
+    const resizedAttachment = {
+      ...imageAttachment,
+      displayWidth: 480,
+      updatedAt: "2026-07-13T00:00:00Z"
+    };
+    const resized: NotesWorkspace = {
+      nodes: initial.nodes,
+      attachmentsByNodeId: { [imageNodeId]: [resizedAttachment] }
+    };
+    const pasted: NotesWorkspace = {
+      nodes: [
+        node({
+          id: imageNodeId,
+          nodeKind: "image",
+          title: "first-paste",
+          note: "support",
+          imageOffsetUtf16: 5,
+          updatedAt: "2026-07-14T00:00:00Z"
+        })
+      ],
+      attachmentsByNodeId: { [imageNodeId]: [resizedAttachment] }
+    };
+    const applyImageAtomPaste = vi.fn<NotesStore["applyImageAtomPaste"]>(
+      async (_vaultRoot, _input, context) =>
+        imageAtomMutationResult(pasted, context, imageNodeId, "paste")
+    );
+    const store = repository({
+      loadWorkspace: vi.fn().mockResolvedValue(initial),
+      resizeAttachment: vi.fn(async (_vaultRoot, _input, context) =>
+        mutationResult(resized, context)
+      ),
+      applyImageAtomPaste
+    });
+    const rendered = renderHook(() =>
+      useNotesWorkspace({ vaultRoot: "/authority-overlap", repository: store })
+    );
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+    rendered.result.current.actions.setImageImportMaxDisplayWidth(480);
+    const selectionAuthority = activateImagePasteAuthority(
+      rendered.result.current,
+      imageNodeId
+    );
+    const fragment = {
+      version: 1 as const,
+      fragment: [
+        {
+          kind: "image" as const,
+          source: {
+            originalName: "overlap.png",
+            mimeType: "image/png" as const,
+            blob: new Blob([new Uint8Array([1])], { type: "image/png" })
+          }
+        }
+      ]
+    };
+    const firstAuthority =
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    await act(async () => {
+      await rendered.result.current.actions.resizeImage!(attachmentId, 480);
+    });
+    const secondAuthority =
+      rendered.result.current.captureImageAtomPasteAuthority?.(
+        imageNodeId,
+        selectionAuthority
+      );
+    expect(secondAuthority).not.toBe(firstAuthority);
+    await act(async () => {
+      await expect(
+        rendered.result.current.applyImageAtomPasteWithAuthority!(
+          firstAuthority!,
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          fragment
+        )
+      ).resolves.toBe("skipped");
+    });
+    expect(applyImageAtomPaste).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await expect(
+        rendered.result.current.applyImageAtomPasteWithAuthority!(
+          secondAuthority!,
+          imageNodeId,
+          { anchorUtf16: 6, focusUtf16: 7 },
+          fragment
+        )
+      ).resolves.toBe("committed");
+    });
+    expect(applyImageAtomPaste).toHaveBeenCalledOnce();
   });
 
   afterEach(() => {

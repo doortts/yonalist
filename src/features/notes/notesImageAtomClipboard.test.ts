@@ -3,6 +3,7 @@ import {
   NOTES_IMAGE_ATOM_CLIPBOARD_MIME,
   isNotesImageAtomHtmlWithinLimit,
   parseNotesImageAtomPaste,
+  readNotesImageAtomPasteCandidate,
   settleNotesImageAtomCut,
   serializeNotesImageAtomClipboard,
   writeNotesImageAtomClipboard,
@@ -69,6 +70,66 @@ function imageDescriptor(
 }
 
 describe("image atom clipboard serialization", () => {
+  it("keeps an unmarked native image external when clipboard text flavors are empty", async () => {
+    const file = new File([pngBytes], "external.png", { type: "image/png" });
+    const candidate = readNotesImageAtomPasteCandidate({
+      types: ["Files"],
+      items: {
+        0: {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => file
+        },
+        length: 1
+      },
+      getData: () => ""
+    } as unknown as DataTransfer);
+
+    expect(candidate.custom).toBeNull();
+    expect(candidate.claimed).toBe(true);
+    await expect(parseNotesImageAtomPaste(candidate)).resolves.toMatchObject({
+      kind: "external"
+    });
+  });
+
+  it("never lets throwing clipboard text reads escape or unclaim an image carrier", async () => {
+    const file = new File([pngBytes], "external.png", { type: "image/png" });
+    const candidate = readNotesImageAtomPasteCandidate({
+      types: ["Files"],
+      items: {
+        0: {
+          kind: "file",
+          type: "image/png",
+          getAsFile: () => file
+        },
+        length: 1
+      },
+      getData: () => {
+        throw new Error("clipboard text unavailable");
+      }
+    } as unknown as DataTransfer);
+
+    expect(candidate).toMatchObject({ custom: null, html: "", claimed: true });
+    await expect(parseNotesImageAtomPaste(candidate)).resolves.toMatchObject({
+      kind: "external"
+    });
+  });
+
+  it("fails closed when a declared private clipboard flavor cannot be read", async () => {
+    const candidate = readNotesImageAtomPasteCandidate({
+      types: [NOTES_IMAGE_ATOM_CLIPBOARD_MIME],
+      items: { length: 0 },
+      getData: () => {
+        throw new Error("clipboard text unavailable");
+      }
+    } as unknown as DataTransfer);
+
+    expect(candidate).toMatchObject({ custom: "", html: "", claimed: true });
+    await expect(parseNotesImageAtomPaste(candidate)).resolves.toMatchObject({
+      kind: "error"
+    });
+  });
+
   it("serializes mixed content with escaped HTML, a data URL, and a byte-free internal payload", async () => {
     const serialized = await serializeNotesImageAtomClipboard(copyInput(), {
       digest: async () => new Uint8Array(32)

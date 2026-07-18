@@ -9,6 +9,7 @@ import {
 import type { NotesClipboardEvent, NotesClipboardGlobals } from "./notesClipboard";
 import {
   canonicalClipboardImageExtension,
+  extractClipboardImages,
   isSupportedClipboardImageMime,
   type ClipboardImageDescriptor
 } from "./notesClipboardImages";
@@ -20,6 +21,79 @@ const maxEncodedMarkerBytes = 3 * MAX_NOTE_ATTACHMENT_BATCH_METADATA_BYTES;
 /** The private, byte-free flavor carried alongside the interoperable formats. */
 export const NOTES_IMAGE_ATOM_CLIPBOARD_MIME =
   "application/x-yonalist-notes-image-atom-v1";
+
+export interface NotesImageAtomPasteCandidate {
+  readonly custom: string | null;
+  readonly html: string;
+  readonly images: readonly ClipboardImageDescriptor[];
+  readonly claimed: boolean;
+}
+
+function clipboardTypesInclude(
+  types: DataTransfer["types"] | undefined,
+  value: string
+): boolean {
+  if (!types) return false;
+  for (let index = 0; index < types.length; index += 1) {
+    if (types[index] === value) return true;
+  }
+  return false;
+}
+
+/**
+ * Reads only the small, synchronous paste carriers needed to decide ownership.
+ * A marked flavor or HTML image remains editor-owned if native item access
+ * fails, so it cannot fall through to the pane's generic image importer.
+ */
+export function readNotesImageAtomPasteCandidate(
+  clipboardData: DataTransfer
+): NotesImageAtomPasteCandidate {
+  let customFlavorPresent = false;
+  try {
+    customFlavorPresent = clipboardTypesInclude(
+      clipboardData.types,
+      NOTES_IMAGE_ATOM_CLIPBOARD_MIME
+    );
+  } catch {
+    // An unreadable type list is not itself evidence of an internal marker.
+  }
+  let rawCustom = "";
+  let html = "";
+  try {
+    rawCustom = clipboardData.getData(NOTES_IMAGE_ATOM_CLIPBOARD_MIME);
+  } catch {
+    // Preserve an advertised private flavor as an invalid empty payload so the
+    // parser rejects it rather than allowing a generic import fallback.
+  }
+  try {
+    html = clipboardData.getData("text/html");
+  } catch {
+    // Native image carriers can still be safely handled without HTML text.
+  }
+  const custom = customFlavorPresent || rawCustom.length > 0 ? rawCustom : null;
+  const markedOrHtml = custom !== null || /<img\b/i.test(html);
+  try {
+    const items = clipboardData.items;
+    let hasImageCarrier = false;
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        hasImageCarrier = true;
+        break;
+      }
+    }
+    const extraction = extractClipboardImages(items);
+    const images = extraction.kind === "images" ? extraction.items : [];
+    return {
+      custom,
+      html,
+      images,
+      claimed: markedOrHtml || hasImageCarrier
+    };
+  } catch {
+    return { custom, html, images: [], claimed: markedOrHtml };
+  }
+}
 
 export interface NotesImageAtomClipboardV1 {
   readonly version: 1;

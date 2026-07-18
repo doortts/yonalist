@@ -1834,6 +1834,42 @@ button.notes-date-token:hover {
   display: inline;
 }
 
+.notes-image-atom-editor.notes-page-primary-image
+  [data-image-atom-region="before"],
+.notes-image-atom-editor.notes-page-primary-image
+  [data-image-atom-region="after"] {
+  color: var(--text-1);
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 34px;
+}
+
+.notes-image-atom-editor.notes-node-primary-image
+  [data-image-atom-region="before"],
+.notes-image-atom-editor.notes-node-primary-image
+  [data-image-atom-region="after"] {
+  color: var(--text-1);
+  font-size: 16px;
+  line-height: 24px;
+  padding-block: 2px;
+}
+
+.notes-page-header[data-completed="true"]
+  .notes-image-atom-editor.notes-page-primary-image
+  [data-image-atom-region="before"],
+.notes-page-header[data-completed="true"]
+  .notes-image-atom-editor.notes-page-primary-image
+  [data-image-atom-region="after"],
+.notes-node[data-completed="true"]
+  .notes-image-atom-editor.notes-node-primary-image
+  [data-image-atom-region="before"],
+.notes-node[data-completed="true"]
+  .notes-image-atom-editor.notes-node-primary-image
+  [data-image-atom-region="after"] {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
 .notes-image-attachment-slot:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

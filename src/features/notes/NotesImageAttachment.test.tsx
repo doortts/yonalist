@@ -248,7 +248,7 @@ describe("NotesImageAttachment", () => {
       "aria-disabled",
       "true"
     );
-    for (const name of ["View original", "Download", "Delete", "Settings"]) {
+    for (const name of ["View original", "Download", "Settings"]) {
       expect(screen.getByRole("menuitem", { name })).not.toHaveAttribute(
         "aria-disabled",
         "true"
@@ -559,7 +559,7 @@ describe("NotesImageAttachment", () => {
     ).toBeEnabled();
   });
 
-  it("keeps recovery settings and whole-node delete available when an image node has no attachment", async () => {
+  it("keeps recovery settings but no ambiguous image-removal action when an image node has no attachment", async () => {
     const user = userEvent.setup();
     const openSettings = vi.fn();
     render(
@@ -585,26 +585,10 @@ describe("NotesImageAttachment", () => {
         "true"
       );
     }
-    expect(screen.getByRole("menuitem", { name: "Delete" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true"
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const dialog = screen.getByRole("alertdialog", {
-      name: "Delete image node?"
-    });
-    expect(dialog).toHaveTextContent("Move this image node to Trash?");
-    expect(dialog).not.toHaveTextContent("missing-diagram.png");
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    expect(screen.queryByRole("menuitem", { name: "Remove image" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
     expect(workspaceActions.deleteNode).not.toHaveBeenCalled();
 
-    await user.click(
-      screen.getByRole("button", {
-        name: "Image actions"
-      })
-    );
-    await screen.findByRole("menu");
     await user.click(screen.getByRole("menuitem", { name: "Settings" }));
 
     expect(openSettings).toHaveBeenCalledOnce();
@@ -865,250 +849,74 @@ describe("NotesImageAttachment", () => {
     );
   });
 
-  it("confirms before deleting an entire image node and treats cancel as no-op", async () => {
+  it("routes only the current writable image-node removal callback without deleting the node", async () => {
     const user = userEvent.setup();
+    const firstRemove = vi.fn();
+    const secondRemove = vi.fn();
     const view = render(
       <NotesImageResidencyProvider scopeKey="image-node-delete-test">
         <NotesImageNodeContent
           nodeId="image-node"
           attachment={imageNodeAttachment}
+          onRemoveImage={firstRemove}
         />
       </NotesImageResidencyProvider>
     );
 
     await user.click(
-      screen.getByRole("button", { name: "Load image diagram.png" })
-    );
-    await screen.findByRole("img", { name: "diagram.png" });
-
-    await user.click(
       screen.getByRole("button", { name: "Image actions for diagram.png" })
     );
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const cancelDialog = screen.getByRole("alertdialog", {
-      name: "Delete image node?"
-    });
-    await user.click(within(cancelDialog).getByRole("button", { name: "Cancel" }));
-    expect(workspaceActions.deleteNode).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("menuitem", { name: "Remove image" }));
 
-    view.unmount();
-    render(
-      <NotesImageResidencyProvider scopeKey="image-node-delete-test-2">
-        <NotesImageNodeContent
-          nodeId="image-node"
-          attachment={imageNodeAttachment}
-        />
-      </NotesImageResidencyProvider>
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Load image diagram.png" })
-    );
-    await screen.findByRole("img", { name: "diagram.png" });
-    await user.click(
-      screen.getByRole("button", { name: "Image actions for diagram.png" })
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const confirmDialog = screen.getByRole("alertdialog", {
-      name: "Delete image node?"
-    });
-    expect(confirmDialog).toHaveTextContent("Move this image node to Trash?");
-    expect(confirmDialog).not.toHaveTextContent("diagram.png");
-    await user.click(
-      within(confirmDialog).getByRole("button", { name: "Delete image node" })
-    );
-
-    expect(workspaceActions.deleteNode).toHaveBeenCalledOnce();
-    expect(workspaceActions.deleteNode).toHaveBeenCalledWith("image-node");
-  });
-
-  it("invalidates a loaded image delete confirmation when the node identity changes", async () => {
-    const user = userEvent.setup();
-    const view = render(
-      <NotesImageResidencyProvider scopeKey="loaded-image-delete-identity-test">
-        <NotesImageNodeContent
-          nodeId="image-node-a"
-          attachment={imageNodeAttachment}
-        />
-      </NotesImageResidencyProvider>
-    );
-
-    await user.click(
-      screen.getByRole("button", { name: "Load image diagram.png" })
-    );
-    await screen.findByRole("img", { name: "diagram.png" });
-    await user.click(
-      screen.getByRole("button", { name: "Image actions for diagram.png" })
-    );
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const confirmButton = within(
-      screen.getByRole("alertdialog", { name: "Delete image node?" })
-    ).getByRole("button", { name: "Delete image node" });
+    expect(firstRemove).toHaveBeenCalledOnce();
 
     view.rerender(
-      <NotesImageResidencyProvider scopeKey="loaded-image-delete-identity-test">
-        <NotesImageNodeContent
-          nodeId="image-node-b"
-          attachment={imageNodeAttachment}
-        />
-      </NotesImageResidencyProvider>
-    );
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    fireEvent.click(confirmButton);
-    expect(workspaceActions.deleteNode).not.toHaveBeenCalled();
-  });
-
-  it("invalidates an inactive image delete confirmation when the attachment identity changes", async () => {
-    const user = userEvent.setup();
-    const replacementAttachment = {
-      ...imageNodeAttachment,
-      id: "attachment-2",
-      originalName: "replacement.png"
-    };
-    const view = render(
-      <NotesImageResidencyProvider scopeKey="placeholder-image-delete-identity-test">
+      <NotesImageResidencyProvider scopeKey="image-node-delete-test">
         <NotesImageNodeContent
           nodeId="image-node"
           attachment={imageNodeAttachment}
+          onRemoveImage={secondRemove}
         />
       </NotesImageResidencyProvider>
     );
-
     await user.click(
       screen.getByRole("button", { name: "Image actions for diagram.png" })
     );
-    await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-    const confirmButton = within(
-      screen.getByRole("alertdialog", { name: "Delete image node?" })
-    ).getByRole("button", { name: "Delete image node" });
+    await user.click(screen.getByRole("menuitem", { name: "Remove image" }));
+
+    expect(firstRemove).toHaveBeenCalledOnce();
+    expect(secondRemove).toHaveBeenCalledOnce();
 
     view.rerender(
-      <NotesImageResidencyProvider scopeKey="placeholder-image-delete-identity-test">
+      <NotesImageResidencyProvider scopeKey="image-node-delete-test">
         <NotesImageNodeContent
           nodeId="image-node"
-          attachment={replacementAttachment}
+          attachment={imageNodeAttachment}
+          onRemoveImage={secondRemove}
+          readOnly
         />
       </NotesImageResidencyProvider>
     );
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    fireEvent.click(confirmButton);
+    await user.click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+    expect(screen.queryByRole("menuitem", { name: "Remove image" })).toBeNull();
+
+    view.rerender(
+      <NotesImageResidencyProvider scopeKey="image-node-delete-test">
+        <NotesImageNodeContent
+          nodeId="image-node"
+          attachment={imageNodeAttachment}
+          onRemoveImage={secondRemove}
+          disabled
+        />
+      </NotesImageResidencyProvider>
+    );
+    expect(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    ).toBeDisabled();
+    expect(secondRemove).toHaveBeenCalledOnce();
     expect(workspaceActions.deleteNode).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["disabled", { disabled: true }],
-    ["read-only", { readOnly: true }]
-  ] as const)(
-    "invalidates a loaded image delete confirmation when the node becomes %s",
-    async (_permission, restrictedProps) => {
-      const user = userEvent.setup();
-      const view = render(
-        <NotesImageResidencyProvider scopeKey={`image-delete-${_permission}-test`}>
-          <NotesImageNodeContent
-            nodeId="image-node"
-            attachment={imageNodeAttachment}
-          />
-        </NotesImageResidencyProvider>
-      );
-
-      await user.click(
-        screen.getByRole("button", { name: "Load image diagram.png" })
-      );
-      await screen.findByRole("img", { name: "diagram.png" });
-      await user.click(
-        screen.getByRole("button", { name: "Image actions for diagram.png" })
-      );
-      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-      const confirmButton = within(
-        screen.getByRole("alertdialog", { name: "Delete image node?" })
-      ).getByRole("button", { name: "Delete image node" });
-
-      view.rerender(
-        <NotesImageResidencyProvider scopeKey={`image-delete-${_permission}-test`}>
-          <NotesImageNodeContent
-            nodeId="image-node"
-            attachment={imageNodeAttachment}
-            {...restrictedProps}
-          />
-        </NotesImageResidencyProvider>
-      );
-      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-      fireEvent.click(confirmButton);
-      expect(workspaceActions.deleteNode).not.toHaveBeenCalled();
-    }
-  );
-
-  it("invalidates an image delete confirmation when the delete action changes", async () => {
-    const user = userEvent.setup();
-    const originalDeleteNode = workspaceActions.deleteNode;
-    const replacementDeleteNode = vi.fn().mockResolvedValue("applied");
-    const view = render(
-      <NotesImageResidencyProvider scopeKey="image-delete-action-change-test">
-        <NotesImageNodeContent
-          nodeId="image-node"
-          attachment={imageNodeAttachment}
-        />
-      </NotesImageResidencyProvider>
-    );
-
-    try {
-      await user.click(
-        screen.getByRole("button", { name: "Image actions for diagram.png" })
-      );
-      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-      const confirmButton = within(
-        screen.getByRole("alertdialog", { name: "Delete image node?" })
-      ).getByRole("button", { name: "Delete image node" });
-
-      workspaceActions.deleteNode = replacementDeleteNode;
-      view.rerender(
-        <NotesImageResidencyProvider scopeKey="image-delete-action-change-test">
-          <NotesImageNodeContent
-            nodeId="image-node"
-            attachment={imageNodeAttachment}
-          />
-        </NotesImageResidencyProvider>
-      );
-      await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-      fireEvent.click(confirmButton);
-      expect(originalDeleteNode).not.toHaveBeenCalled();
-      expect(replacementDeleteNode).not.toHaveBeenCalled();
-    } finally {
-      workspaceActions.deleteNode = originalDeleteNode;
-    }
-  });
-
-  it("rechecks the exact delete action at confirmation time", async () => {
-    const user = userEvent.setup();
-    const originalDeleteNode = workspaceActions.deleteNode;
-    const replacementDeleteNode = vi.fn().mockResolvedValue("applied");
-    render(
-      <NotesImageResidencyProvider scopeKey="image-delete-action-guard-test">
-        <NotesImageNodeContent
-          nodeId="image-node"
-          attachment={imageNodeAttachment}
-        />
-      </NotesImageResidencyProvider>
-    );
-
-    try {
-      await user.click(
-        screen.getByRole("button", { name: "Image actions for diagram.png" })
-      );
-      await user.click(screen.getByRole("menuitem", { name: "Delete" }));
-      const dialog = screen.getByRole("alertdialog", {
-        name: "Delete image node?"
-      });
-
-      workspaceActions.deleteNode = replacementDeleteNode;
-      await user.click(
-        within(dialog).getByRole("button", { name: "Delete image node" })
-      );
-
-      expect(originalDeleteNode).not.toHaveBeenCalled();
-      expect(replacementDeleteNode).not.toHaveBeenCalled();
-    } finally {
-      workspaceActions.deleteNode = originalDeleteNode;
-    }
   });
 
   it("keeps read-only image-node viewing actions but disables delete and resize", async () => {
@@ -1134,10 +942,7 @@ describe("NotesImageAttachment", () => {
     await user.click(
       screen.getByRole("button", { name: "Image actions for diagram.png" })
     );
-    expect(screen.getByRole("menuitem", { name: "Delete" })).toHaveAttribute(
-      "aria-disabled",
-      "true"
-    );
+    expect(screen.queryByRole("menuitem", { name: "Remove image" })).toBeNull();
     await user.click(screen.getByRole("menuitem", { name: "View original" }));
     expect(workspaceActions.viewImageOriginal).toHaveBeenCalledWith(
       imageNodeAttachment.id
@@ -2225,6 +2030,21 @@ describe("NotesImageAttachment", () => {
     await user.click(menuTrigger);
     await user.click(screen.getByRole("menuitem", { name: "Delete" }));
     expect(onRemove).toHaveBeenCalledOnce();
+  });
+
+  it("marks only a lightbox-enabled resident image as image-atom interactive", async () => {
+    const view = render(<NotesImageAttachment {...standardProps()} />);
+
+    expect(await screen.findByRole("img", { name: "diagram.png" })).toHaveAttribute(
+      "data-image-atom-interactive",
+      "true"
+    );
+    expect(
+      view.container.querySelector(".notes-image-attachment-frame")
+    ).not.toHaveAttribute("data-image-atom-interactive");
+    expect(view.container.firstElementChild).not.toHaveAttribute(
+      "data-image-atom-interactive"
+    );
   });
 
   it("opens Notes image settings through the app navigation context", async () => {

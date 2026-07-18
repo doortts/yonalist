@@ -116,6 +116,24 @@ describe("NotesImageMenu", () => {
     );
   });
 
+  it("uses a caller-provided destructive action label", async () => {
+    const user = userEvent.setup();
+    render(
+      <NotesImageMenu
+        originalName="diagram.png"
+        deleteLabel="Discard image"
+        {...callbacks()}
+      />
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Image actions for diagram.png" })
+    );
+
+    expect(screen.getByRole("menuitem", { name: "Discard image" })).toBeVisible();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
+  });
+
   it("does not pass trigger or command pointer-down events to the outline row", async () => {
     const user = userEvent.setup();
     const onParentPointerDown = vi.fn();

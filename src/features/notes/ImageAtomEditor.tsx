@@ -35,6 +35,9 @@ import {
   writeImageAtomDomSelection
 } from "./imageAtomDomSelection";
 import {
+  type ActiveImageAtomEditor,
+  type ImageAtomEditorSelectionAuthority,
+  type ImageAtomEditorSelectionSnapshot,
   type ImageAtomEditorFlushResult,
   type NotesImageAtomFlushAdapter
 } from "./notesImageAtomEditorRegistry";
@@ -48,6 +51,7 @@ export interface ImageAtomEditorHandle {
   restoreSelection(selection: LogicalSelection): void;
   flush(): Promise<ImageAtomEditorFlushResult>;
   flushAndGetSelection(): Promise<LogicalSelection | null>;
+  flushAndGetSelectionSnapshot(): Promise<ImageAtomEditorSelectionSnapshot | null>;
   containsAtomSelection(): boolean;
 }
 
@@ -59,18 +63,24 @@ export interface ImageAtomEditorProps {
     draft: Pick<NoteNode, "title" | "note" | "imageOffsetUtf16">
   ) => void;
   readonly registerFlushAdapter?: (adapter: NotesImageAtomFlushAdapter) => () => void;
+  readonly registerActiveEditor?: (
+    editor: ActiveImageAtomEditor
+  ) => () => void;
   readonly onEnter?: () => void;
   readonly onSupportingNote?: () => void;
   readonly onAtomDelete?: (kind: "forward" | "backward" | "selection") => void;
+  readonly onUnhandledKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
   readonly onUndo?: () => void;
   readonly onRedo?: () => void;
   readonly onPaste?: (event: ClipboardEvent<HTMLDivElement>) => boolean;
+  readonly onImageAtomPaste?: (event: globalThis.ClipboardEvent) => boolean;
   readonly onDrop?: (event: DragEvent<HTMLDivElement>) => boolean;
   readonly onTagClick?: (token: NoteTagToken) => void;
   readonly onDateClick?: (token: NoteDateMatch, anchor: HTMLButtonElement) => void;
   readonly onDateTrigger?: (
     range: { readonly startUtf16: number; readonly endUtf16: number },
-    anchor: HTMLDivElement
+    anchor: HTMLDivElement,
+    source: string
   ) => void;
   readonly isTagActive?: (token: NoteTagToken) => boolean;
   readonly today?: LocalDate;
@@ -79,6 +89,7 @@ export interface ImageAtomEditorProps {
   readonly disabled?: boolean;
   readonly className?: string;
   readonly ariaLabel?: string;
+  readonly onRemoveImage?: () => void;
 }
 
 type CompositionWaiter = (result: ImageAtomEditorFlushResult) => void;
@@ -294,12 +305,15 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       attachment,
       onDraftChange,
       registerFlushAdapter,
+      registerActiveEditor,
       onEnter,
       onSupportingNote,
       onAtomDelete,
+      onUnhandledKeyDown,
       onUndo,
       onRedo,
       onPaste,
+      onImageAtomPaste,
       onDrop,
       onTagClick = () => undefined,
       onDateClick,
@@ -310,7 +324,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       readOnly = false,
       disabled = false,
       className,
-      ariaLabel = "Image note"
+      ariaLabel = "Image note",
+      onRemoveImage
     },
     forwardedRef
   ) {
@@ -336,16 +351,36 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     });
     const pendingIncomingValueRef = useRef<ImagePrimaryValue | null>(null);
     const onDraftChangeRef = useRef(onDraftChange);
+    const onImageAtomPasteRef = useRef(onImageAtomPaste);
     const observerRef = useRef<MutationObserver | null>(null);
     const pointerAnchorRef = useRef<number | null>(null);
     const pointerActiveRef = useRef(false);
     const pointerDraggedRef = useRef(false);
     const pointerIdRef = useRef<number | null>(null);
+    const selectionOwnerRef = useRef(Symbol("image-atom-selection-owner"));
+    const selectionSignatureRef = useRef<string | null>(null);
+    const selectionEpochRef = useRef(0);
+    const selectionAuthorityRef = useRef<ImageAtomEditorSelectionAuthority>(
+      { owner: selectionOwnerRef.current, epoch: 0 } as unknown as ImageAtomEditorSelectionAuthority
+    );
     const projectionPendingRef = useRef(false);
     const projectionSelectionRef = useRef<LogicalSelection | null>(null);
     const [atomSelected, setAtomSelected] = useState(false);
     const [editing, setEditing] = useState(false);
     const [projectionVersion, setProjectionVersion] = useState(0);
+
+    const finishAtomPointerInteraction = (
+      element: HTMLElement,
+      dragged: boolean
+    ) => {
+      if (pointerIdRef.current !== null) {
+        element.releasePointerCapture?.(pointerIdRef.current);
+      }
+      pointerActiveRef.current = false;
+      pointerIdRef.current = null;
+      pointerAnchorRef.current = null;
+      pointerDraggedRef.current = dragged;
+    };
 
     const incomingValue = {
       title: draft.title,
@@ -366,6 +401,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
     }
     noteRef.current = draft.note;
     onDraftChangeRef.current = onDraftChange;
+    onImageAtomPasteRef.current = onImageAtomPaste;
     const segments = validateImagePrimary(
       composingRef.current
         ? compositionProjectionRef.current ?? valueRef.current
@@ -389,6 +425,25 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         : null;
     }, [regions]);
 
+    const observeSemanticSelection = useCallback(
+      (known?: LogicalSelection | null): LogicalSelection | null => {
+        const selection = known === undefined ? logicalSelection() : known;
+        const signature = selection
+          ? `${selection.anchorUtf16}:${selection.focusUtf16}`
+          : null;
+        if (signature !== selectionSignatureRef.current) {
+          selectionSignatureRef.current = signature;
+          selectionEpochRef.current += 1;
+          selectionAuthorityRef.current = {
+            owner: selectionOwnerRef.current,
+            epoch: selectionEpochRef.current
+          } as unknown as ImageAtomEditorSelectionAuthority;
+        }
+        return selection;
+      },
+      [logicalSelection]
+    );
+
     // Registry consumers may publish a selection only after their flush barrier
     // settles. Do not leak a DOM selection while IME composition, teardown, or
     // a disconnected host makes it stale; normalize the remaining selection
@@ -401,32 +456,34 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       ) {
         return null;
       }
-      const selection = logicalSelection();
+      const selection = observeSemanticSelection();
       if (!selection) return null;
       try {
         return normalizeLogicalSelection(valueRef.current, selection);
       } catch {
         return null;
       }
-    }, [logicalSelection]);
+    }, [observeSemanticSelection]);
 
     const restoreSelection = useCallback((selection: LogicalSelection): void => {
       const currentRegions = regions();
       const domSelection = document.getSelection();
       if (!currentRegions?.host.isConnected || !domSelection) return;
+      const normalized = normalizeLogicalSelection(valueRef.current, selection);
       writeImageAtomDomSelection(
         currentRegions,
-        normalizeLogicalSelection(valueRef.current, selection),
+        normalized,
         domSelection
       );
-    }, [regions]);
+      observeSemanticSelection(normalized);
+    }, [observeSemanticSelection, regions]);
 
     const syncAtomSelected = useCallback(() => {
-      const selection = logicalSelection();
+      const selection = observeSemanticSelection();
       setAtomSelected(
         selection !== null && isAtomSelection(valueRef.current, selection)
       );
-    }, [logicalSelection]);
+    }, [observeSemanticSelection]);
 
     useEffect(() => {
       document.addEventListener("selectionchange", syncAtomSelected);
@@ -495,13 +552,65 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
       return "flushed";
     }, [logicalSelection, publishDom]);
 
-    const flushAndGetSelection = useCallback(async (): Promise<LogicalSelection | null> => {
+    const flushAndGetSelectionSnapshot = useCallback(async (): Promise<ImageAtomEditorSelectionSnapshot | null> => {
       try {
-        return (await flush()) === "cancelled" ? null : publishedSelection();
+        if ((await flush()) === "cancelled") return null;
+        const selection = publishedSelection();
+        return selection
+          ? { selection, authority: selectionAuthorityRef.current }
+          : null;
       } catch {
         return null;
       }
     }, [flush, publishedSelection]);
+
+    const flushAndGetSelection = useCallback(async (): Promise<LogicalSelection | null> =>
+      (await flushAndGetSelectionSnapshot())?.selection ?? null,
+    [flushAndGetSelectionSnapshot]);
+
+    const isSelectionAuthorityCurrent = useCallback(
+      (authority: ImageAtomEditorSelectionAuthority): boolean => {
+        const selection = observeSemanticSelection();
+        return selection !== null && selectionAuthorityRef.current === authority;
+      },
+      [observeSemanticSelection]
+    );
+
+    const activeEditor = useMemo<ActiveImageAtomEditor>(
+      () => ({
+        nodeId,
+        flush,
+        flushAndGetSelection,
+        flushAndGetSelectionSnapshot,
+        isSelectionAuthorityCurrent,
+        claimPaste: (event) => onImageAtomPasteRef.current?.(event) ?? false
+      }),
+      [
+        flush,
+        flushAndGetSelection,
+        flushAndGetSelectionSnapshot,
+        isSelectionAuthorityCurrent,
+        nodeId
+      ]
+    );
+    const activeRegistrationCleanupRef = useRef<(() => void) | null>(null);
+    const deactivateActiveEditor = useCallback(() => {
+      activeRegistrationCleanupRef.current?.();
+      activeRegistrationCleanupRef.current = null;
+    }, []);
+    const activateActiveEditor = useCallback(() => {
+      deactivateActiveEditor();
+      activeRegistrationCleanupRef.current =
+        registerActiveEditor?.(activeEditor) ?? null;
+    }, [activeEditor, deactivateActiveEditor, registerActiveEditor]);
+
+    useEffect(() => {
+      deactivateActiveEditor();
+      if (!unavailable && hostRef.current?.contains(document.activeElement)) {
+        activateActiveEditor();
+      }
+      return deactivateActiveEditor;
+    }, [activateActiveEditor, deactivateActiveEditor, unavailable]);
 
     useImperativeHandle(
       forwardedRef,
@@ -513,12 +622,19 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         restoreSelection,
         flush,
         flushAndGetSelection,
+        flushAndGetSelectionSnapshot,
         containsAtomSelection: () => {
           const selected = logicalSelection();
           return selected ? isAtomSelection(valueRef.current, selected) : false;
         }
       }),
-      [flush, flushAndGetSelection, logicalSelection, restoreSelection]
+      [
+        flush,
+        flushAndGetSelection,
+        flushAndGetSelectionSnapshot,
+        logicalSelection,
+        restoreSelection
+      ]
     );
 
     useEffect(() => {
@@ -626,7 +742,8 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         ) {
           onDateTrigger?.(
             { startUtf16: endUtf16 - 2, endUtf16 },
-            hostRef.current
+            hostRef.current,
+            result.value.title
           );
         }
       }
@@ -749,7 +866,12 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         (event.shiftKey ? onSupportingNote : onEnter)?.();
         return;
       }
-      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      if (
+        (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
         const selected = logicalSelection();
         if (!selected) return;
         const next = nextArrowSelection(valueRef.current, selected, event.key, event.shiftKey);
@@ -782,6 +904,7 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
           });
         }
       }
+      if (!event.defaultPrevented) onUnhandledKeyDown?.(event);
     };
 
     const onCompositionStart = () => {
@@ -908,8 +1031,11 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
         onCompositionStart={onCompositionStart}
         onCompositionEnd={onCompositionEnd}
         onFocus={(event) => {
-          if (!unavailable && event.target === event.currentTarget) {
-            setEditing(true);
+          if (!unavailable) {
+            activateActiveEditor();
+            if (event.target === event.currentTarget) {
+              setEditing(true);
+            }
           }
         }}
         onBlur={(event) => {
@@ -920,10 +1046,24 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             return;
           }
           if (!composingRef.current) setEditing(false);
+          deactivateActiveEditor();
           void flush();
         }}
         onPaste={(event) => {
-          if (onPaste?.(event)) event.preventDefault();
+          if (onImageAtomPaste?.(event.nativeEvent) || onPaste?.(event)) {
+            event.preventDefault();
+            return;
+          }
+          if (unavailable) return;
+          let plainText = "";
+          try {
+            plainText = event.clipboardData?.getData("text/plain") ?? "";
+          } catch {
+            return;
+          }
+          if (!plainText) return;
+          event.preventDefault();
+          applyLogicalEdit(plainText);
         }}
         onDrop={(event) => {
           if (onDrop?.(event)) event.preventDefault();
@@ -1008,6 +1148,10 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             ) {
               return;
             }
+            if (event.defaultPrevented) {
+              finishAtomPointerInteraction(event.currentTarget, true);
+              return;
+            }
             const currentRegions = regions();
             if (!currentRegions) return;
             pointerDraggedRef.current = true;
@@ -1022,27 +1166,21 @@ export const ImageAtomEditor = forwardRef<ImageAtomEditorHandle, ImageAtomEditor
             });
           }}
           onPointerUp={(event) => {
-            if (pointerIdRef.current !== null) {
-              event.currentTarget.releasePointerCapture?.(pointerIdRef.current);
-            }
-            pointerActiveRef.current = false;
-            pointerIdRef.current = null;
-            pointerAnchorRef.current = null;
+            finishAtomPointerInteraction(
+              event.currentTarget,
+              pointerDraggedRef.current
+            );
           }}
           onPointerCancel={(event) => {
-            if (pointerIdRef.current !== null) {
-              event.currentTarget.releasePointerCapture?.(pointerIdRef.current);
-            }
-            pointerActiveRef.current = false;
-            pointerIdRef.current = null;
-            pointerAnchorRef.current = null;
-            pointerDraggedRef.current = false;
+            finishAtomPointerInteraction(event.currentTarget, false);
           }}
         >
           <NotesImageNodeContent
             nodeId={nodeId}
             attachment={attachment}
             contentRef={atomContentRef}
+            onKeyDown={onUnhandledKeyDown}
+            onRemoveImage={onRemoveImage}
             readOnly={readOnly}
             disabled={disabled}
           />

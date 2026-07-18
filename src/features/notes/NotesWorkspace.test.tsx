@@ -76,6 +76,10 @@ import {
 import type { NotesAttachmentUiBoundary } from "./notesAttachmentController";
 import { NotesLibraryPane } from "./NotesLibraryPane";
 import { NotesOutlinePane } from "./NotesOutlinePane";
+import {
+  isOutlineSelectionInteractiveTarget,
+  isOutlineSelectionTextSurface
+} from "./OutlineNodeRow";
 
 const notesStyles = readFileSync(
   join(process.cwd(), "src/features/notes/notes.css"),
@@ -1500,8 +1504,8 @@ describe("Notes workspace", () => {
     expect(photoContent.closest(".notes-node-main")).not.toBeNull();
     expect(queryTitleInput("diagram.png")).toBeNull();
     expect(queryTitleInput("photo.png")).toBeNull();
-    expect(diagramRow).not.toHaveTextContent("diagram.png");
-    expect(photoRow).not.toHaveTextContent("photo.png");
+    expect(within(diagramRow).getByRole("textbox", { name: "Image note" })).toBeVisible();
+    expect(within(photoRow).getByRole("textbox", { name: "Image note" })).toBeVisible();
     expect(
       within(diagramRow).getByRole("button", {
         name: "Zoom into diagram.png"
@@ -1577,7 +1581,7 @@ describe("Notes workspace", () => {
     expect(row.outerHTML).toContain("missing.png");
   });
 
-  it("opens an image description and creates a focused text sibling without splitting", async () => {
+  it("routes image Shift+Enter without using the legacy text split command", async () => {
     const image = node({
       id: "image-node",
       nodeKind: "image",
@@ -1596,47 +1600,34 @@ describe("Notes workspace", () => {
         ]
       }
     );
-    vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue(
-      "00000000-0000-4000-8000-000000000001"
-    );
     renderNotesWorkspace();
-    const content = await screen.findByRole("group", {
+    await screen.findByRole("group", {
       name: "Image: diagram.png"
     });
 
-    expect(
-      fireEvent.keyDown(content, { key: "Enter", shiftKey: true })
-    ).toBe(false);
+    const editor = screen.getByRole("textbox", { name: "Image note" });
+    expect(fireEvent.keyDown(editor, { key: "Enter", shiftKey: true })).toBe(false);
     expect(getTextareaByName("Supporting note: diagram.png")).toHaveFocus();
 
-    content.focus();
-    expect(fireEvent.keyDown(content, { key: "Enter" })).toBe(false);
-    await waitFor(() => expect(notesStoreMock.createNode).toHaveBeenCalledOnce());
-    expect(notesStoreMock.createNode).toHaveBeenCalledWith(
-      "/vault",
-      {
-        id: "00000000-0000-4000-8000-000000000001",
-        parentId: null,
-        afterId: "image-node",
-        title: "",
-        note: ""
-      },
-      historyContextMatcher()
-    );
+    expect(notesStoreMock.createNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
-    expect(await findTitleInput("")).toHaveFocus();
   });
 
   it("indents and outdents image nodes with Tab and Shift+Tab", async () => {
-    configureRepository([
-      node({ id: "previous", sortKey: 1, title: "Previous" }),
-      node({
-        id: "image-node",
-        nodeKind: "image",
-        sortKey: 2,
-        title: "diagram.png"
-      })
-    ]);
+    configureRepository(
+      [
+        node({ id: "previous", sortKey: 1, title: "Previous" }),
+        node({
+          id: "image-node",
+          nodeKind: "image",
+          sortKey: 2,
+          title: "diagram.png"
+        })
+      ],
+      {
+        "image-node": [attachment({ id: "image-primary", nodeId: "image-node" })]
+      }
+    );
     notesStoreMock.moveNode.mockImplementation(
       async (_vaultRoot: string, input: MoveNoteNodeInput) => {
         confirmedNodes = confirmedNodes.map((current) =>
@@ -1648,12 +1639,11 @@ describe("Notes workspace", () => {
       }
     );
     renderNotesWorkspace();
-    const content = await screen.findByRole("group", {
-      name: "Image: diagram.png"
+    let imageEditor = await screen.findByRole("textbox", { name: "Image note" });
+    act(() => imageEditor.focus());
+    await act(async () => {
+      fireEvent.keyDown(imageEditor, { key: "Tab" });
     });
-
-    content.focus();
-    expect(fireEvent.keyDown(content, { key: "Tab" })).toBe(false);
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledOnce());
     expect(notesStoreMock.moveNode).toHaveBeenCalledWith("/vault", {
       id: "image-node",
@@ -1661,15 +1651,28 @@ describe("Notes workspace", () => {
       afterId: null
     }, historyContextMatcher());
 
-    content.focus();
-    expect(
-      fireEvent.keyDown(content, { key: "Tab", shiftKey: true })
-    ).toBe(false);
+    imageEditor = screen.getByRole("textbox", { name: "Image note" });
+    act(() => imageEditor.focus());
+    await act(async () => {
+      fireEvent.keyDown(imageEditor, { key: "Tab", shiftKey: true });
+    });
     await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(2));
     expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith("/vault", {
       id: "image-node",
       parentId: null,
       afterId: "previous"
+    }, historyContextMatcher());
+
+    imageEditor = screen.getByRole("textbox", { name: "Image note" });
+    act(() => imageEditor.focus());
+    await act(async () => {
+      fireEvent.keyDown(imageEditor, { key: "ArrowRight", altKey: true });
+    });
+    await waitFor(() => expect(notesStoreMock.moveNode).toHaveBeenCalledTimes(3));
+    expect(notesStoreMock.moveNode).toHaveBeenLastCalledWith("/vault", {
+      id: "image-node",
+      parentId: "previous",
+      afterId: null
     }, historyContextMatcher());
     expect(notesStoreMock.updateNode).not.toHaveBeenCalled();
     expect(notesStoreMock.splitNode).not.toHaveBeenCalled();
@@ -3990,6 +3993,83 @@ describe("Notes workspace", () => {
 
       expect(selectedOutlineIds()).toEqual(["b", "c", "d"]);
       fireEvent.pointerUp(deltaRow, { button: 0, pointerId: 10 });
+    });
+
+    it("hands a captured image atom drag to cross-row selection without restoring its native range", async () => {
+      const imageNode = node({
+        id: "image-a",
+        nodeKind: "image",
+        sortKey: 1,
+        title: "beforeafter",
+        imageOffsetUtf16: 6
+      });
+      const targetNode = node({
+        id: "target-b",
+        sortKey: 2,
+        title: "Target"
+      });
+      configureRepository([imageNode, targetNode], {
+        [imageNode.id]: [
+          attachment({ id: "image-attachment", nodeId: imageNode.id })
+        ]
+      });
+      renderNotesWorkspace();
+      const editor = await screen.findByRole("textbox", { name: "Image note" });
+      const atom = editor.querySelector<HTMLElement>(
+        "[data-image-atom-region=atom]"
+      )!;
+      const targetRow = (await findTitleInput("Target")).closest<HTMLElement>(
+        ".notes-node"
+      )!;
+      const setPointerCapture = vi.fn();
+      const releasePointerCapture = vi.fn();
+      Object.assign(atom, { setPointerCapture, releasePointerCapture });
+      const originalElementFromPoint = Object.getOwnPropertyDescriptor(
+        document,
+        "elementFromPoint"
+      );
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => targetRow)
+      });
+
+      try {
+        fireEvent.pointerDown(atom, {
+          button: 0,
+          pointerId: 18,
+          clientX: 20,
+          clientY: 20
+        });
+        const selection = document.getSelection()!;
+        const removeAllRanges = vi.spyOn(selection, "removeAllRanges");
+        fireEvent.pointerMove(atom, {
+          buttons: 1,
+          pointerId: 18,
+          clientX: 20,
+          clientY: 80
+        });
+
+        expect(selectedOutlineIds()).toEqual(["image-a", "target-b"]);
+        expect(removeAllRanges).toHaveBeenCalledOnce();
+        expect(selection.rangeCount).toBe(0);
+        expect(releasePointerCapture).toHaveBeenCalledWith(18);
+        fireEvent.pointerUp(atom, { button: 0, pointerId: 18 });
+        fireEvent.click(atom);
+        expect(removeAllRanges).toHaveBeenCalledOnce();
+        expect(selection.rangeCount).toBe(0);
+        expect(screen.queryByTestId("notes-selection-drag-preview")).toBeNull();
+        expect(notesStoreMock.moveNode).not.toHaveBeenCalled();
+      } finally {
+        if (originalElementFromPoint) {
+          Object.defineProperty(
+            document,
+            "elementFromPoint",
+            originalElementFromPoint
+          );
+        } else {
+          Reflect.deleteProperty(document, "elementFromPoint");
+        }
+      }
     });
 
     it("retires a cross-row drag after an off-list pointer release", async () => {
@@ -9372,5 +9452,25 @@ describe("Notes workspace", () => {
     expect(notesStyles).toMatch(
       /\.notes-library-page-menu-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*-1px;/
     );
+  });
+
+  it("treats only marked image-editor controls as interactive while preserving blank atom bodies", () => {
+    const surface = document.createElement("span");
+    surface.dataset.notesNativeSelectionSurface = "true";
+    const image = document.createElement("img");
+    image.dataset.imageAtomInteractive = "true";
+    const menu = document.createElement("button");
+    menu.textContent = "Image actions";
+    surface.append(image, menu);
+    document.body.append(surface);
+
+    expect(isOutlineSelectionTextSurface(surface)).toBe(true);
+    expect(isOutlineSelectionInteractiveTarget(surface)).toBe(false);
+    expect(isOutlineSelectionInteractiveTarget(image)).toBe(true);
+    expect(isOutlineSelectionTextSurface(image)).toBe(false);
+    expect(isOutlineSelectionInteractiveTarget(menu)).toBe(true);
+    expect(isOutlineSelectionTextSurface(menu)).toBe(false);
+
+    surface.remove();
   });
 });

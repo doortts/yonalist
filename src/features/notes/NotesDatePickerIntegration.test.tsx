@@ -263,7 +263,8 @@ describe("NotesDatePickerHost", () => {
     expect(onCommit).toHaveBeenCalledOnce();
     expect(onCommit).toHaveBeenCalledWith(
       "title",
-      "Plan 07/12/2026 later"
+      "Plan 07/12/2026 later",
+      { startUtf16: 5, endUtf16: 7, text: "07/12/2026" }
     );
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -317,7 +318,8 @@ describe("NotesDatePickerHost", () => {
 
     expect(onCommit).toHaveBeenCalledWith(
       "title",
-      "First , second tomorrow"
+      "First , second tomorrow",
+      { startUtf16: 6, endUtf16: 11, text: "" }
     );
   });
 
